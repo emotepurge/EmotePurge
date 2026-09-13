@@ -60,7 +60,7 @@ sind Festlegungen, die der Entwurf offen ließ oder nur als Alternative nannte.
 
 | # | Frage | Entscheidung | Begründung |
 |---|---|---|---|
-| E1 | Gemeinsames Request-Budget für Api **und** Worker (Codex-Empfehlung)? | **Nicht in dieser Runde.** Nur die Bestenliste bekommt ihr hartes Fensterbudget (10 Requests je 60 min). Die gemeinsame Bremse wird ein **eigenes Folge-Issue, fällig nach dem Messfenster** (ab 2026-10-08) | Sie fasst den Resync-Pfad an, also Code, den der Worker ausführt — im Messfenster gesperrt. Und die Risikorichtung ist gemessen umgekehrt: unser Pfad belastet den Eimer im ungünstigsten Fall mit 10 von 100 Freigaben je Minute (der Eimer erneuert sich pro ~60 s, der Minutenmaßstab zählt), eine dauerhaft nicht auflösbare Kanalzeile das Sechsfache unseres Budgets. Die Verschiebung ist durch die Vorab-Kontrolle aus AK 36 abgesichert, die das eigentliche Risiko prüft, ohne den Worker anzufassen. Steht in Abschnitt 15 **und** 16 |
+| E1 | Gemeinsames Request-Budget für Api **und** Worker (Codex-Empfehlung)? | **Nicht in dieser Runde.** Nur die Bestenliste bekommt ihr hartes Fensterbudget (10 Requests je 60 min). Die gemeinsame Bremse wird ein **eigenes Folge-Issue, fällig nach dem Messfenster** (ab 2026-10-08) | Sie fasst den Resync-Pfad an, also Code, den der Worker ausführt — im Messfenster gesperrt. Und die Risikorichtung ist gemessen umgekehrt: unser Pfad belastet den Eimer im ungünstigsten Fall mit 10 von 100 Freigaben je Minute (der Eimer erneuert sich pro ~60 s, der Minutenmaßstab zählt); eine dauerhaft nicht auflösbare Kanalzeile zieht dagegen 1 von 100 Freigaben je Minute — bei heute rund 15 getrackten Kanälen weit vom Leerlaufen entfernt (das bräuchte rund 90 solcher Kanäle gleichzeitig), aber ohne gemeinsames Budget ein mit der Kanalzahl wachsendes Risiko. Die Verschiebung ist durch die Vorab-Kontrolle aus AK 36 abgesichert — bei der heutigen Kanalzahl vor allem Hygiene, kein akutes Kontingentrisiko; echter Schutz vor einem geteilten Kontingent kommt erst mit dem gemeinsamen Budget aus #165. Steht in Abschnitt 15 **und** 16 |
 | E2 | Was trägt die Audit-Zeile als Herkunft, wenn es keinen Quellkanal gibt? | **Die Sortierung:** „7TV Trend heute" bzw. „7TV Top insgesamt". Der Bestätigungsdialog zeigt dasselbe | Ehrlicher als ein leeres Feld, und der Dialog hat wieder etwas zu zeigen. Genau deshalb muss `EmoteEndpoints.cs:164` **geändert** werden und nicht nur die Vokabelliste auf `:142` erweitert (F1) |
 | E3 | Sortier-Semantik auf einer Bestenliste vs. P5' und Punkt 5 aus `DECISIONS.md` 2026-09-10 | **Beide Verträge werden auf die Beschriftung eingegrenzt.** Sortieren nach Score ist auf der Bestenliste zulässig — die Rangfolge *ist* der Inhalt. Verboten bleibt, die Spalte bloß „Beliebtheit" zu nennen oder sie als kanal-lokal lesbar zu machen | Vertragsänderung → `DECISIONS.md`-Eintrag **im selben Commit** wie die Umsetzung (Regel 3; Aufgabe T6, AK 25). Nachtrag zum Entwurf: `DECISIONS.md:507` schreibt in Punkt 5 die Labels „7TV-Verbreitung (gesamt)/(Trend)" fest, ausgeliefert ist „7TV-Score (gesamt)/(Trend)" — **Punkt 10 desselben Eintrags (`:538-546`) hält diese Umbenennung aber bereits fest.** Der neue Eintrag verweist also nur darauf, dass Punkt 5 in seiner Label-Angabe von Punkt 10 überholt ist; ein veralteter Vertrag ohne Korrektur existiert nicht |
 | E4 | Overlay-Emotes (`flags.defaultZeroWidth`) kennzeichnen? | **Nein.** Bekannte Einschränkung, keine Aufgabe (Abschnitt 15) | Gemessen 5 von 250. Die ausgelieferte Fremdkanal-Ansicht kennzeichnet sie auch nicht; Gleichlauf schlägt Verbesserung an geteiltem Code |
@@ -74,7 +74,7 @@ sind Festlegungen, die der Entwurf offen ließ oder nur als Alternative nannte.
 | E12 | Raster-Erweiterung | **Vier additive, optionale Inputs** auf `ForeignEmoteGrid`: `forcedSortMode` (`null` \| `'topAllTime'` \| `'trending'`, Default `null`) sowie `emptyMessageKey`, `truncatedMessageKey`, `scoreHintKey` (Defaults = die heutigen `import.foreignChannel.*`-Schlüssel). Die DOM-id des Sortier-`<select>` wird **instanzeindeutig** (Zähler) | `forcedSortMode` statt `hideSortControl`: `sortMode` steuert vier Dinge (F2). Die drei Schlüssel-Inputs, weil die heutigen Texte kanalgebunden formuliert sind. Die id, weil `:272` hart `'foreign-emote-sort'` ist — auch wenn die beiden Instanzen im Dialog nie gleichzeitig gerendert werden, kostet die Eindeutigkeit nichts und die Falle ist damit weg |
 | E13 | Fehlercodes | **Ein** neuer Code `invalid_leaderboard_sort` (400). Die 503-Fälle (7TV nicht erreichbar, 429, Breaker offen, **Budget verweigert**) verwenden den **vorhandenen** `foreign_channel_seventv_unavailable` | Sein Text ist quellneutral („7TV ist gerade nicht erreichbar", `de.json:1097`, `en.json:1097`); ein zweiter Code mit demselben Satz wäre Vokabular ohne Unterschied. Eine Budget-Verweigerung ist `SevenTvUnavailable`, wie bei #147 (`SevenTvEndpoints.cs:60-66`) |
 | E14 | Auswahl beim Sortierwechsel | **Sichtbar geleert**, „Weiter" wieder gesperrt, `result()` wieder `null` | Die beiden Listen sind verschiedene Grundmengen; ein Emote kann in beiden stehen, und `ListSelection` hält Schlüssel über Listenwechsel hinweg (`foreign-emote-grid.ts:314-317`). Zustandsübergang → Spec nach Regel 12 |
-| E15 | Nachweis, dass `x-ratelimit-search-remaining` bei den Bestenlisten-Stichproben über 90 bleibt | **Aus den Log-Zeilen des Abnahmelaufs, eingegrenzt auf die Stichproben der Bestenliste** — nicht aus einem gespeicherten Minimum im `RateLimitTelemetryStore` und ausdrücklich **keine** Aussage über das Eimer-Minimum aller Verbraucher. Der Client loggt je Upstream-Request `remaining` und `reset` (Information) | Der Store hält nur `LastHeaderSample` (F5). Der Eimer erneuert sich pro ~60 s, verglichen wird also pro Minute, nicht pro Stunde: im ungünstigsten Fall feuert unser Budget alle 10 Freigaben innerhalb einer Minute, das sind 10 von 100 — „10 von 6.000 pro Stunde" war der falsche Maßstab. Das Minimum über alle Verbraucher gehört zur gemeinsamen Bremse (E1, Abschnitt 16); die Vorab-Kontrolle aus AK 36 prüft das eigentliche Risiko unterdessen ohne Code |
+| E15 | Nachweis, dass `x-ratelimit-search-remaining` bei den Bestenlisten-Stichproben über 90 bleibt | **Aus den Log-Zeilen des Abnahmelaufs, eingegrenzt auf die Stichproben der Bestenliste** — nicht aus einem gespeicherten Minimum im `RateLimitTelemetryStore` und ausdrücklich **keine** Aussage über das Eimer-Minimum aller Verbraucher. Der Client loggt je Upstream-Request `remaining` und `reset` (Information) | Der Store hält nur `LastHeaderSample` (F5). Der Eimer erneuert sich pro ~60 s, verglichen wird also pro Minute, nicht pro Stunde: im ungünstigsten Fall feuert unser Budget alle 10 Freigaben innerhalb einer Minute, das sind 10 von 100 — „10 von 6.000 pro Stunde" war der falsche Maßstab. Das Minimum über alle Verbraucher gehört zur gemeinsamen Bremse (E1, Abschnitt 16); die Vorab-Kontrolle aus AK 36 stellt unterdessen ohne Code sicher, dass keine hängende Kanalzeile den Eimer mitzieht — bei der heutigen Kanalzahl Hygiene, kein akutes Kontingentrisiko (E1) |
 | E16 | Per-Nutzer-Policy | Neue Fixed-Window-Policy `SevenTvLeaderboard`, **20 Requests/Minute** je Nutzer, an **drei** Stellen (`RateLimitPolicyNames`, `Program.cs`, `RateLimitingOptions.Validate()`) | Der Endpunkt kostet 7TV nichts (Vorrat), aber 30 KB Antwort; 20/min deckt jeden Sortierwechsel und jedes Neuöffnen. `ForeignEmoteLookup` (10/min) ist nicht wiederverwendbar, weil es einen anderen Pfad bemisst. `Validate()` ist der Fail-Fast: eine nicht validierte Policy mit Kapazität 0 ist laut Kommentar dort (`RateLimitingOptions.cs:61`) „a total outage" |
 
 ---
@@ -533,7 +533,7 @@ Review-Befunden in Code, den die Spec als unverändert deklariert hatte.
 | T4 | **Herkunft (F1, E8, E9):** `leaderboardSort` in `SyncImportedRequest`, Vokabeltabelle statt `:164`, `IEmoteService`/`EmoteService`, `AuditLogDetail.Kinds.ImportedFromLeaderboard` + `ProjectDetail`-Zweig; Frontend: vierter `ImportOrigin`-Zweig, zweite Hilfsfunktion, `SyncImportedBody`, `reportImported`, Bestätigungsdialog-Zweig, Audit-Anzeige, Locales | Unabhängig von T1–T3 (eigene Leitung). Vor T6, damit der Fluss beim ersten Durchlauf eine korrekte Herkunft schreibt |
 | T5 | **Raster:** die vier Inputs (E12/F2), instanzeindeutige id, Specs für `forcedSortMode`-Verhalten | Unabhängig; Aufsatz für T6 |
 | T6 | **Verdrahtung:** `LeaderboardStep`, dritte Dialog-Option (F4), `leaderboard.model.ts`, `SevenTvLeaderboardService`, `startLeaderboardImportFlow`/`buildLeaderboardImportSource`, `import-trigger`-Zweig, Regressionsfall `nameCollisions`, **`DECISIONS.md`-Eintrag im selben Commit** (E3, Regel 3) | Braucht T3, T4, T5 |
-| — | **Vorab-Kontrolle vor dem Stack-Update** (AK 36): im Admin-Bereich auf Prod von Hand prüfen, ob Kanäle mit Sync-Fehlergrund und leerer Twitch-ID existieren — kein Subagent, kein Code, letzter Schritt vor dem Stack-Update, nicht vor dem Merge | Kein Task im üblichen Sinn, weil ohne Code; steht trotzdem hier, weil sie **vor** dem Stack-Update laufen muss und sonst vergessen wird |
+| — | **Vorab-Kontrolle vor dem Stack-Update** (AK 36): im Admin-Bereich auf Prod von Hand für jeden aktiven Kanal auf der Detailseite prüfen, ob die Twitch-ID leer ist — keine Vorauswahl über den Fehlergrund in der Kanalliste (die findet nicht jeden Fall), kein Subagent, kein Code, letzter Schritt vor dem Stack-Update, nicht vor dem Merge | Kein Task im üblichen Sinn, weil ohne Code; steht trotzdem hier, weil sie **vor** dem Stack-Update laufen muss und sonst vergessen wird |
 
 **Abhängigkeiten:** T0 → T1 → T3; T2 → T3; T3 + T4 + T5 → T6. **Parallel möglich:** T0/T1, T2, T4,
 T5 gegeneinander, sobald die Antwortform aus Abschnitt 4 steht (T0 und T1 bleiben untereinander
@@ -716,18 +716,28 @@ Nummeriert, pass/fail.
     gewährt, Seite 2 verweigert → ganzer Eintrag `BudgetRefused` mit 30 s, keine Teilliste, die
     Freigabe für Seite 1 bleibt verbraucht.
 36. **Vorab-Kontrolle vor dem Stack-Update, pass/fail, von Hand im Admin-Bereich auf Prod:**
-    Kanalliste öffnen und notieren, welche Kanäle einen Sync-Fehlergrund zeigen
-    (`admin-channels-page.ts:276-284` zeigt `lastSyncFailureReason`). Für jeden davon die
-    Detailseite öffnen: ist die Twitch-ID leer (`admin-channel-detail-page.ts:183-189`)?
-    **Die Anzahl der Kanäle mit Fehlergrund und leerer Twitch-ID muss 0 sein.** Begründung, kurz:
-    Die Auflösung läuft nur, wenn die Twitch-ID fehlt (`SevenTvSyncService.cs:75`), und beim
-    ersten Erfolg wird die ID gespeichert (`:146`). Fehlergrund plus leere ID heißt also, die
-    Auflösung scheitert dauerhaft. Jeder solche Kanal zieht jede Minute eine Suchabfrage aus dem
-    geteilten Eimer (60 pro Stunde) und zählt dabei nichts. Ist die Anzahl nicht 0: diese Kanäle
-    zuerst klären. Sonst wartet der Stack-Update bis nach dem 2026-10-07, es sei denn, der
-    Betreiber nimmt es ausdrücklich in Kauf. Hinweis: Fehlergrund allein reicht nicht — aus den
-    Codes (`SevenTvSyncFailureReasons`) lässt sich nicht unterscheiden, ob die Auflösung oder ein
-    späterer Schritt gescheitert ist. Erst die leere Twitch-ID macht es eindeutig.
+    für **jeden aktiven Kanal** die Detailseite öffnen und die Twitch-ID prüfen
+    (`admin-channel-detail-page.ts:183-189`). **Die Anzahl aktiver Kanäle mit leerer Twitch-ID
+    muss 0 sein.** **Keine Vorauswahl über den Sync-Fehlergrund in der Kanalliste**
+    (`admin-channels-page.ts:276-284`, `lastSyncFailureReason`) — sie reicht nicht und entfällt
+    deshalb: ein Umbenennungs-Duplikat, dessen Merge verweigert wird, weil beide Zeilen Emotes
+    haben (`MergesRefused`, `ChannelIdentityService.cs:378-401`), bleibt mit leerer Twitch-ID
+    bestehen, aber der anschließende Sync überspringt in `SevenTvSyncService.cs:89-96` (der
+    `existingOwner`-Zweig) **ohne** `RecordFailedAttemptAsync` — ein solcher Kanal zeigt also **nie**
+    einen Fehlergrund und wäre bei einer Filterung danach unsichtbar. Ebenso bleibt ein Kanal ohne
+    Twitch-ID dauerhaft bestehen, wenn Twitch seinen Login nicht mehr auflöst
+    (`ChannelIdentityService.cs:254-268`, „Case 5") — bewusst nicht automatisch entfernt. Begründung
+    für die Prüfung selbst, kurz: Die Auflösung läuft nur, wenn die Twitch-ID fehlt
+    (`SevenTvSyncService.cs:75`), und beim ersten Erfolg wird die ID gespeichert (`:146`). Eine
+    leere Twitch-ID heißt also: die Auflösung scheitert dauerhaft, mit oder ohne sichtbaren
+    Fehlergrund. Jeder solche Kanal zieht bei jedem Resync-Lauf (Default 60 s) eine Suchabfrage aus
+    dem geteilten Eimer — das ist 1 von 100 Freigaben je Minute; leer wird der Eimer dadurch erst
+    bei rund 90 gleichzeitig hängenden Kanälen, heute sind es etwa 15 getrackte Kanäle insgesamt.
+    Die Prüfung bleibt trotzdem Pflicht: bei der heutigen Kanalzahl ist das vor allem Hygiene (ein
+    hängender Kanal zählt nichts, kein akutes Kontingentrisiko), echter Schutz vor einem geteilten
+    Kontingent kommt erst mit dem gemeinsamen Budget aus #165 (Abschnitt 16), sobald die Kanalzahl
+    wächst. Ist die Anzahl nicht 0: diese Kanäle zuerst klären. Sonst wartet der Stack-Update bis
+    nach dem 2026-10-07, es sei denn, der Betreiber nimmt es ausdrücklich in Kauf.
 
 ---
 
@@ -847,7 +857,8 @@ ausgeführten neuen Pfad; ein Revert baut es erneut, mehr nicht.
 **Nicht angefasst:** `src/EmotePurge.Worker/**`, `SevenTvSyncService.cs`,
 `ResolveTwitchUserIdAsync`/`GqlUsersQuery`, `GetChannelStateForTwitchUserAsync`,
 `ForeignEmoteSetProviderBudget`, `ForeignEmoteSetCache`, `ForeignEmoteSetRequestCoalescer`,
-`HardenedForeignEmoteSetService`, `ForeignEmoteSetService`, `ForeignChannelStep`,
+`src/EmotePurge.Infrastructure/SevenTv/HardenedForeignEmoteSetService.cs`, `ForeignEmoteSetService`,
+`src/EmotePurge.Infrastructure/Telemetry/ProviderRequestTelemetryHandler.cs`, `ForeignChannelStep`,
 `ImportTargetDialog`, `usage-stats-page.*`, `already-present-filter.ts`, `import-preview.ts`.
 
 ---
@@ -916,9 +927,12 @@ Dazu die Entscheidungen des Betreibers:
      heute behält `RateLimitTelemetryStore` nur `LastHeaderSample`, und der v3-Handler liest
      Twitchs Schreibweise `Ratelimit-*`, nicht 7TVs;
    - einen **Umgang mit dauerhaft nicht auflösbaren Kanälen** (Schwelle oder Backoff statt fester
-     60 s) — jede solche Zeile (`LastSyncFailureReason`, Admin-Kanalliste) zieht heute jede Minute
-     eine Suchabfrage, das Sechsfache des Bestenlisten-Budgets, ohne etwas zu zählen (AK 36 ist die
-     Vorab-Kontrolle dafür, nicht der Fix); Messung (b) vorab.
+     60 s) — jede solche Zeile zieht heute bei jedem Resync-Lauf eine Suchabfrage aus dem geteilten
+     Eimer (1 von 100 Freigaben je Minute), ohne etwas zu zählen, und nicht jede zeigt dabei einen
+     Sync-Fehlergrund (AK 36 begründet das) — die Admin-Kanalliste allein findet sie deshalb nicht.
+     Bei der heutigen Kanalzahl (rund 15) ist das vor allem Hygiene, kein akutes Kontingentrisiko
+     (der Eimer liefe erst bei rund 90 solchen Kanälen leer); AK 36 ist die Vorab-Kontrolle dafür,
+     nicht der Fix, und echter Schutz wächst erst mit der Kanalzahl. Messung (b) vorab.
 
    Fasst Code an, den der Worker ausführt, deshalb nicht früher.
 
