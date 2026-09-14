@@ -65,13 +65,24 @@ public class SevenTvApiClient(
 
     // v4 schema, the leaderboard import source (spec 2026-09-13, F7): EmoteQuery.search — a
     // network-wide ranking, not a set's contents, so this takes a sort instead of a set id and
-    // returns flat Emote objects (no per-set alias). sort is bound to one of
-    // SevenTvLeaderboardSortWireCode's two wire codes (TRENDING_DAILY/TOP_ALL_TIME), the exact
-    // vocabulary verified live against this same query
-    // (docs/designs/Fremde-Kanaele-als-Import-Quelle-2026-09-09.md, "Trending-Katalog
-    // funktioniert"). Deliberately no query/filters/tags (E5) and no defaultZeroWidth (E4).
+    // returns flat Emote objects (no per-set alias). Deliberately no query/filters/tags (E5) and
+    // no defaultZeroWidth (E4).
+    //
+    // $sort: Sort! is an INPUT_OBJECT, not an enum — introspected live 2026-09-14: `Sort {
+    // sortBy: SortBy!, order: SortOrder! }`. An earlier revision of this client sent a bare string
+    // for $sort, reconstructed from two documents that were each individually correct and jointly
+    // misleading (one showed the SDL argument `sort: Sort!`, the other listed SortBy's members
+    // under the shorthand "SortBy = …"); 7TV answered every such request with a coercion error —
+    // HTTP 200, errors[] without extensions.status: 429 — which this client reads as Unavailable,
+    // so the symptom was a permanently unavailable leaderboard, not an obviously wrong shape. See
+    // BuildSortVariable for the corrected object and spec section 4 for the introspection result.
     private const string GqlLeaderboardSearchQuery =
         "query($sort: Sort!, $page: Int!, $perPage: Int!) { emotes { search(sort: $sort, page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } }";
+
+    // SortOrder's other member (ASCENDING) would rank the leaderboard from the bottom — never what
+    // this import source wants. A named constant rather than an inline literal so the choice reads
+    // as deliberate, not as a typo candidate next to sortBy's own wire code.
+    private const string SearchSortOrderDescending = "DESCENDING";
 
     // 7TV's own hard ceiling (E5, measured live): 251+ answers "Failed to parse "Int": the value is
     // …, must be less than or equal to 250" — a validation rejection, not a rate limit, and one that
@@ -443,7 +454,7 @@ public class SevenTvApiClient(
             var payload = new
             {
                 query = GqlLeaderboardSearchQuery,
-                variables = new { sort = sortBy.ToWireCode(), page, perPage = SearchPerPage }
+                variables = new { sort = BuildSortVariable(sortBy), page, perPage = SearchPerPage }
             };
 
             var result = await FetchV4PageAsync<SevenTvGqlLeaderboardSearchResponseDto>(
@@ -910,6 +921,13 @@ public class SevenTvApiClient(
             BuildForeignImageUrl(dto.Id, dto.Flags?.Animated ?? false),
             dto.Scores?.TopAllTime,
             dto.Scores?.TrendingDay);
+
+    // The GraphQL $sort: Sort! variable's value — an anonymous object shaped exactly like the
+    // introspected INPUT_OBJECT (Sort { sortBy: SortBy!, order: SortOrder! }, 2026-09-14), not the
+    // bare enum value an earlier revision of this method sent. See GqlLeaderboardSearchQuery's
+    // comment for why that shape was wrong and what it broke.
+    private static object BuildSortVariable(SevenTvLeaderboardSort sortBy) =>
+        new { sortBy = sortBy.ToWireCode(), order = SearchSortOrderDescending };
 
     private enum V4PageStatus
     {

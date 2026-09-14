@@ -265,6 +265,64 @@ public class SevenTvApiClientLeaderboardSearchTests
             o.CallSource is RateLimitCallSources.SevenTvForeignPreview or RateLimitCallSources.SevenTvRest);
     }
 
+    /// <summary>
+    /// Pins the <em>outgoing</em> request body — nothing else in this file, or in
+    /// <see cref="SevenTvApiClientEmoteSetPreviewTests"/>, ever inspects what this client sends,
+    /// only how it parses what comes back. That gap is exactly how an earlier revision shipped a
+    /// bare-string <c>$sort</c> value: 7TV's <c>Sort</c> is an <c>INPUT_OBJECT</c>
+    /// (<c>{ sortBy: SortBy!, order: SortOrder! }</c>, introspected live 2026-09-14), and every
+    /// request in the wrong shape got a coercion error back — HTTP 200, no
+    /// <c>extensions.status: 429</c> — which reads as a plain <see cref="V4PageStatus.Unavailable"/>
+    /// here, not as an obviously broken query. One case per sort value, so a mix-up between
+    /// <see cref="SevenTvLeaderboardSort.TrendingDaily"/> and
+    /// <see cref="SevenTvLeaderboardSort.TopAllTime"/>'s wire codes would fail too.
+    /// </summary>
+    [Theory]
+    [InlineData(SevenTvLeaderboardSort.TrendingDaily, "TRENDING_DAILY")]
+    [InlineData(SevenTvLeaderboardSort.TopAllTime, "TOP_ALL_TIME")]
+    public async Task RequestBody_SendsSortAsTheInputObjectItsSchemaDeclares_WithDescendingOrder(
+        SevenTvLeaderboardSort sortBy, string expectedSortByWireCode)
+    {
+        var capturingHandler = new CapturingStubHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(Page(totalCount: 1, pageCount: 1, ("e1", "PogChamp", true, 1, 1)), Encoding.UTF8, "application/json"),
+        });
+        var client = CreateCapturingClient(capturingHandler);
+
+        await client.SearchEmotesAsync(sortBy, page: 3);
+
+        Assert.NotNull(capturingHandler.CapturedRequestBody);
+        var body = JsonNode.Parse(capturingHandler.CapturedRequestBody!)!;
+        var sortVariable = body["variables"]!["sort"]!;
+
+        // An object with exactly these two fields — not a bare string, not a third field, and not
+        // ASCENDING, which would rank the leaderboard from the bottom.
+        Assert.Equal(expectedSortByWireCode, sortVariable["sortBy"]!.GetValue<string>());
+        Assert.Equal("DESCENDING", sortVariable["order"]!.GetValue<string>());
+        Assert.Equal(3, body["variables"]!["page"]!.GetValue<int>());
+        Assert.Equal(250, body["variables"]!["perPage"]!.GetValue<int>());
+    }
+
+    private static SevenTvApiClient CreateCapturingClient(HttpMessageHandler handler)
+    {
+        var telemetry = new RecordingRateLimitTelemetry();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
+        return new SevenTvApiClient(httpClient, telemetry, new RecordingForeignUpstreamRequestBudget(), new RecordingLogger<SevenTvApiClient>());
+    }
+
+    private sealed class CapturingStubHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        public string? CapturedRequestBody { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            CapturedRequestBody = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+            return response;
+        }
+    }
+
     private static string Page(
         int totalCount, int pageCount, params (string Id, string DefaultName, bool Animated, int? TopAllTime, int? TrendingDay)[] items)
     {
