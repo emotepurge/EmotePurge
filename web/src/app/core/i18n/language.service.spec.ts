@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
+import { Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LanguageService, resolveInitialLang } from './language.service';
@@ -81,5 +82,82 @@ describe('LanguageService', () => {
     service.setLang('en');
 
     expect(resolveInitialLang()).toBe('en');
+  });
+
+  it('sets <html lang> and the stored preference immediately, but defers the signal and Transloco until the locale has loaded', () => {
+    const load$ = new Subject<Record<string, never>>();
+    vi.spyOn(transloco, 'load').mockReturnValue(load$);
+
+    service.setLang('en');
+
+    // Announced and persisted right away, even though nothing has loaded yet.
+    expect(document.documentElement.lang).toBe('en');
+    expect(localStorage.getItem('ep_lang')).toBe('en');
+    // The signal and Transloco's own active language must not jump ahead of the loaded table.
+    expect(service.lang()).toBe('de');
+    expect(transloco.getActiveLang()).toBe('de');
+
+    load$.next({});
+    load$.complete();
+
+    expect(service.lang()).toBe('en');
+    expect(transloco.getActiveLang()).toBe('en');
+  });
+
+  it('reverts <html lang> and the stored preference to the rendered language when the load fails', () => {
+    const load$ = new Subject<Record<string, never>>();
+    vi.spyOn(transloco, 'load').mockReturnValue(load$);
+
+    service.setLang('en');
+    load$.error(new Error('network error'));
+
+    expect(service.lang()).toBe('de');
+    expect(transloco.getActiveLang()).toBe('de');
+    // <html lang> must not announce a language with nothing behind it, and the stored preference
+    // must not make the next boot pick the failed language again.
+    expect(document.documentElement.lang).toBe('de');
+    expect(localStorage.getItem('ep_lang')).toBe('de');
+  });
+
+  it('ignores a failed load that a later switch has already superseded (de fails while en is pending)', () => {
+    const loads = {
+      de: new Subject<Record<string, never>>(),
+      en: new Subject<Record<string, never>>(),
+    };
+    vi.spyOn(transloco, 'load').mockImplementation(
+      (...args: Parameters<typeof transloco.load>) => loads[args[0] as 'de' | 'en'],
+    );
+
+    service.setLang('de');
+    service.setLang('en');
+    loads.de.error(new Error('network error'));
+
+    // The en switch is still the one in flight: a revert to the rendered de would undo it.
+    expect(document.documentElement.lang).toBe('en');
+    expect(localStorage.getItem('ep_lang')).toBe('en');
+    expect(service.lang()).toBe('de');
+  });
+
+  it('does not let a late-arriving load overwrite a language picked again in the meantime (de -> en -> de)', () => {
+    const enLoad$ = new Subject<Record<string, never>>();
+    const originalLoad = transloco.load.bind(transloco);
+    vi.spyOn(transloco, 'load').mockImplementation((...args: Parameters<typeof transloco.load>) =>
+      args[0] === 'en' ? enLoad$ : originalLoad(...args),
+    );
+
+    service.setLang('en');
+    service.setLang('de');
+
+    // The de switch resolves instantly (it is the already-loaded, currently active language), so
+    // it must win even though it started after the still-pending en request.
+    expect(service.lang()).toBe('de');
+    expect(transloco.getActiveLang()).toBe('de');
+
+    // The stale en response must be ignored once it does arrive.
+    enLoad$.next({});
+    enLoad$.complete();
+
+    expect(service.lang()).toBe('de');
+    expect(transloco.getActiveLang()).toBe('de');
   });
 });

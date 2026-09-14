@@ -10,6 +10,29 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-14 — `LanguageService.lang` flips only once the locale has loaded, not synchronously with the switch (#169)
+
+**Betrifft:** `web/src/app/core/i18n/language.service.ts`
+
+Boot awaits only the active locale (`app.config.ts`); the other one is fetched lazily on the first
+switch. `setLang` used to flip the `lang` signal and call `TranslocoService.setActiveLang` before
+that fetch resolved, so a `computed()` calling `translate()` off `lang()` (audit rows, the
+leaderboard-sort label in the import confirm dialog) re-ran against a missing table and kept the raw
+key: nothing it reads changes when the table arrives.
+
+`setLang` now sets `<html lang>` and the stored preference immediately, but flips the `lang` signal
+and calls `setActiveLang` only after `TranslocoService.load(lang)` resolves. **The contract:** once
+`lang()` reads a language, its translation table is loaded — which also means the signal no longer
+changes synchronously inside `setLang`. A load that resolves or fails after a later `setLang` has
+superseded it is ignored.
+
+A failed load reverts `<html lang>` and the stored preference to the language still rendered;
+`lang()` and Transloco's active language never moved. Keeping the failed language stored would make
+the next boot pick it again, where the initializer swallows the repeat failure and every label
+renders as its raw key.
+
+---
+
 ### 2026-09-14 — Sorting by score is allowed where the ranking *is* the content: the 2026-09-10 ban narrows to the wording, and the leaderboard's stock is a per-process promise (#148)
 
 **Betrifft:** `web/src/app/shared/seven-tv/leaderboard-step.ts` ·
