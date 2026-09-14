@@ -283,15 +283,42 @@ auch (`ForeignEmoteRow` hat kein `trendingWeek`-Feld — `IForeignEmoteSetServic
   nicht vorratsfähig.
 - Unbekannte Query-Parameter werden ignoriert, nicht abgelehnt (wie überall in der Api).
 
-**Upstream-Abfrage** (Form, kein Code; die Variablenform für `sort` aus der Sonde vom
-2026-09-13 übernehmen, nicht raten):
+**Upstream-Abfrage** (Form, kein Code):
 
 ```
-emotes { search(sort: $sort, page: $page, perPage: 250) {
-  totalCount pageCount
-  items { id defaultName flags { animated } scores { topAllTime trendingDay } }
-} }
+query($sort: Sort!, $page: Int!, $perPage: Int!) {
+  emotes { search(sort: $sort, page: $page, perPage: $perPage) {
+    totalCount pageCount
+    items { id defaultName flags { animated } scores { topAllTime trendingDay } }
+  } }
+}
 ```
+
+**`$sort: Sort!` ist kein Enum, sondern ein Input-Objekt mit zwei Pflichtfeldern** —
+introspiziert 2026-09-14, anonym, read-only:
+
+```json
+{"__type":{"kind":"INPUT_OBJECT","name":"Sort","inputFields":[
+  {"name":"sortBy","type":{"kind":"NON_NULL","ofType":{"kind":"ENUM","name":"SortBy"}}},
+  {"name":"order","type":{"kind":"NON_NULL","ofType":{"kind":"ENUM","name":"SortOrder"}}}]}}
+```
+
+Der Wert für `$sort` ist also `{ sortBy: <Wire-Code>, order: DESCENDING }`, nicht der rohe
+Wire-Code allein. `SortBy` (dieselbe Vokabel, ebenfalls 2026-09-14 introspiziert):
+`TRENDING_DAILY`, `TRENDING_WEEKLY`, `TRENDING_MONTHLY`, `TOP_DAILY`, `TOP_WEEKLY`,
+`TOP_MONTHLY`, `TOP_ALL_TIME`, `NAME_ALPHABETICAL`, `UPLOAD_DATE` — die beiden Codes dieser Spec
+(`TRENDING_DAILY`/`TOP_ALL_TIME`) sind darin enthalten, die Allowlist bleibt unverändert.
+`SortOrder`: `ASCENDING`, `DESCENDING` — eine Bestenliste braucht `DESCENDING` (die einzige
+Ordnung, die je gesendet wird, spec-weit).
+
+**Wie es zur ersten, falschen Fassung kam** (zur Warnung für den nächsten Leser): eine frühere
+Version dieser Spec zitierte zwei für sich richtige Quellen — ein SDL-Fragment, das nur
+`sort: Sort!` zeigte, und die ältere #147-Messung, die `SortBy = TRENDING_DAILY|…` als
+Kurzschreibweise für die Vokabelliste notierte, nicht als vollständige Wire-Form. Zusammengelesen
+ergab das „`sort` ist ein flacher Enum-Wert" — plausibel, aber falsch, und erst durch eine echte
+Introspektion widerlegt. `Sort` ist ein Feldname *und* ein Typname zugleich, was diese Verwechslung
+begünstigt hat. Der ausgelieferte Client sendet seit dem Fix das Objekt, nicht den nackten String
+(`SevenTvApiClient.BuildSortVariable`).
 
 Ohne `query`, ohne `filters`, ohne `tags`. `defaultZeroWidth` wird nicht geholt (E4).
 
