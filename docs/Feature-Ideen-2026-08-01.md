@@ -535,8 +535,9 @@ Roster in jeden Heartbeat packen, sondern einen zweiten Key mit längerem Takt.
 2026-08-01, `GET /api/admin/roster` + `admin-roster-card.ts`).
 Der Soll/Ist-Abgleich ist vollständig da, inklusive der Gegenrichtung („Worker hat Channel, DB nicht
 mehr aktiv") und mit Boot-Recovery- und Staleness-Gate gegen Fehlalarme. Bei den Decken weicht die
-Umsetzung bewusst ab: der Twitch-Balken läuft gegen ein **Join-Budget von 20** (TwitchLibs
-Rejoin-Burst nach einem Reconnect, begründet in `Api/Health/WorkerCapacity.cs`), die 100er-Decke
+Umsetzung bewusst ab: der Twitch-Balken läuft gegen ein **Join-Budget von 20** (selbst gesetzt,
+kein Twitch-Riegel — seit dem Reconnect-Umbau begründet über die Rejoin-Dauer nach einem Reconnect,
+nicht mehr über einen TwitchLib-Burst; Einzelheiten in `Api/Health/WorkerCapacity.cs`), die 100er-Decke
 steht als Hinweistext daneben; 7TV wird gegen das gemeldete `subscription_limit` gezeigt statt gegen
 eine abgeleitete 250er-Channel-Decke; für 7TV-REST gibt es bewusst nur eine Rate ohne Balken, weil es
 kein veröffentlichtes Quota als ehrlichen Nenner gibt. Die Frühwarnung fährt seit dem 2026-08-02 die
