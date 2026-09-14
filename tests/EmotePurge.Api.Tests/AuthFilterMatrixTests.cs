@@ -440,7 +440,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "handofblood", "sourceKind": "seventv-channel"}""";
@@ -452,6 +452,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             Arg.Is<IReadOnlyList<string>>(ids => ids.Count == 1 && ids[0] == "7tv-x1"),
             "handofblood",
             "seventv-channel",
+            null,
             Arg.Any<AuditActor>(),
             Arg.Any<CancellationToken>());
     }
@@ -472,7 +473,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -505,6 +506,130 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
+    }
+
+    // The fourth vocabulary word (leaderboard-import spec E8/F1): a network-wide 7TV ranking has no
+    // source channel at all, so its contract is the mirror image of the three name-carrying kinds
+    // above — no name, but a mandatory sort code instead. The six cases below pin the vocabulary
+    // table in every direction (AK 15), the same way F5.2/F5.3 pinned the third word.
+
+    [Fact]
+    public async Task SyncImported_AcceptsALeaderboardSource_AndForwardsItsSortToMarkImportedAsync()
+    {
+        // What must survive here is the *sort code*, not just the status code: it travels in its own
+        // field (E8) rather than SourceChannelName, and is written into a write-once audit row that
+        // AuditLogQueryService can only render if the code it reads back is the one that was sent.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Emotes.MarkImportedAsync(
+                Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_DAILY"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.Emotes.Received(1).MarkImportedAsync(
+            Channel,
+            Arg.Is<IReadOnlyList<string>>(ids => ids.Count == 1 && ids[0] == "7tv-x1"),
+            null,
+            "seventv-leaderboard",
+            "TRENDING_DAILY",
+            Arg.Any<AuditActor>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SyncImported_AcceptsTheOtherAllowlistedSort_ForALeaderboardSource()
+    {
+        // The allowlist has exactly two members (E8) — a single accepted-case test would not tell
+        // "any non-null string" apart from "one specific hardcoded string".
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Emotes.MarkImportedAsync(
+                Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TOP_ALL_TIME"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SyncImported_Answers400_ForALeaderboardSourceCarryingAName()
+    {
+        // A network-wide ranking cannot name a source channel — accepting one here would file the
+        // row under an origin the import never had (same reasoning as the channel/file mismatch
+        // above, just the leaderboard kind's own direction of it).
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "handofblood", "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_DAILY"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
+        await _factory.Emotes.DidNotReceive().MarkImportedAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SyncImported_Answers400_ForALeaderboardSourceWithoutASort()
+    {
+        // The sort is the leaderboard kind's mandatory counterpart to a channel-shaped kind's name —
+        // missing it is a vocabulary-table mismatch (invalid_source_kind), not an allowlist miss.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task SyncImported_Answers400_ForALeaderboardSourceWithASortOutsideTheAllowlist()
+    {
+        // Unlike a missing sort, a *present but unrecognized* one is its own error (E8/E13): the kind
+        // is right, the value just is not one of 7TV's own two wire codes
+        // (SevenTvLeaderboardSortWireCode), so it gets the sort-specific code instead of the generic
+        // vocabulary mismatch.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_WEEKLY"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidLeaderboardSort, await ReadErrorCodeAsync(response));
+    }
+
+    [Theory]
+    [InlineData("channel", "handofblood")]
+    [InlineData("seventv-channel", "handofblood")]
+    [InlineData("file", null)]
+    public async Task SyncImported_Answers400_ForAnyOtherSourceKind_CarryingALeaderboardSort(string sourceKind, string? sourceChannelName)
+    {
+        // The mirror image of the four cases above: LeaderboardSort belongs to exactly one word in
+        // the vocabulary (F1 Station 3). Any of the other three claiming a ranking it did not come
+        // from is the same class of mismatch as a channel import without a name.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var nameJson = sourceChannelName is null ? "null" : $"\"{sourceChannelName}\"";
+        var body = $$"""{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": {{nameJson}}, "sourceKind": "{{sourceKind}}", "leaderboardSort": "TRENDING_DAILY"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
+        await _factory.Emotes.DidNotReceive().MarkImportedAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

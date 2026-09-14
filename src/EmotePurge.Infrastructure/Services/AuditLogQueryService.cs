@@ -2,6 +2,7 @@ using System.Text.Json;
 
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,20 +17,23 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     private const int MaxDetailTextLength = 200;
 
     // Property names in emotes.syncImported's DetailsJson payload. Deliberately not in
-    // AuditLogDetail.Kinds: "sourceKind" is only the discriminator that picks between the two import
-    // Kinds, never a Kind itself, and "sourceChannelName" feeds the Text of whichever is chosen.
+    // AuditLogDetail.Kinds: "sourceKind" is only the discriminator that picks between the import
+    // Kinds, never a Kind itself, "sourceChannelName" feeds the Text of a channel-shaped one, and
+    // "leaderboardSort" feeds the Text of the leaderboard one (leaderboard-import spec E9).
     private const string SourceKindProperty = "sourceKind";
     private const string SourceChannelNameProperty = "sourceChannelName";
+    private const string LeaderboardSortProperty = "leaderboardSort";
 
-    // The closed vocabulary the endpoint accepts for that discriminator (EmoteEndpoints, F5.1).
+    // The closed vocabulary the endpoint accepts for that discriminator (EmoteEndpoints, F5.1/F1).
     // Both channel-shaped kinds render as ImportedFromChannel: what the row has to preserve is that
     // the emotes came from a channel and which one, not through which of the two read paths we saw
     // that channel. Kept as a named set so the connection to the endpoint's list is visible — an
     // unlisted word here costs the provenance of every row written with it, permanently, because
-    // audit rows are write-once (F5.3).
+    // audit rows are write-once (F5.3/F1 Station 5).
     private const string ChannelSourceKind = "channel";
     private const string ForeignChannelSourceKind = "seventv-channel";
     private const string FileSourceKind = "file";
+    private const string LeaderboardSourceKind = "seventv-leaderboard";
 
     public async Task<PagedResult<AuditLogEntryDto>> ListAsync(int page, int pageSize, AuditLogFilter? filter = null, CancellationToken cancellationToken = default)
     {
@@ -151,6 +155,23 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             && sourceKindElement.ValueKind == JsonValueKind.String)
         {
             var sourceKind = sourceKindElement.GetString();
+
+            // Checked ahead of the channel/file branch below (F1 Station 5): a network-wide 7TV
+            // ranking has no source channel to fall through to, so it needs its own kind rather than
+            // sharing the source-name check that follows. Degrades to the bare EmoteCount branch —
+            // not a throw — when leaderboardSort is missing or outside the allowlist, which also
+            // doubles as this feature's rollback behavior: if this PR were ever reverted, rows
+            // already written with "seventv-leaderboard" would simply read back as a plain count
+            // instead of the endpoint crashing on a Kind it no longer recognizes.
+            if (sourceKind == LeaderboardSourceKind
+                && TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var leaderboardCount)
+                && root.TryGetProperty(LeaderboardSortProperty, out var leaderboardSortElement)
+                && leaderboardSortElement.ValueKind == JsonValueKind.String
+                && SevenTvLeaderboardSortWireCode.TryParse(leaderboardSortElement.GetString(), out _))
+            {
+                return new AuditLogDetail(
+                    AuditLogDetail.Kinds.ImportedFromLeaderboard, leaderboardCount, leaderboardSortElement.GetString());
+            }
 
             if (sourceKind is ChannelSourceKind or ForeignChannelSourceKind or FileSourceKind
                 && TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var importedCount))

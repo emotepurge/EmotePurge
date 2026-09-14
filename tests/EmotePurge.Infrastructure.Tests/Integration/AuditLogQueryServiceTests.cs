@@ -238,6 +238,61 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ListAsync_ProjectsAnImportFromTheLeaderboard_OnBothCountAndSortCode()
+    {
+        // The fourth sourceKind (leaderboard-import spec E2/E8/E9): a network-wide 7TV ranking has
+        // no source channel, so Text carries the language-neutral sort wire code instead of a
+        // channel name — the frontend, not this service, turns it into "7TV Trend heute"/"7TV Top
+        // insgesamt" (rule 7).
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-imp-ldb";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 18, 30, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncImported,
+            ChannelName = channel,
+            DetailsJson = """{"emoteCount": 9, "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_DAILY"}"""
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromLeaderboard, 9, "TRENDING_DAILY"), dto.Detail);
+    }
+
+    [Fact]
+    public async Task ListAsync_FallsBackToTheBareCount_WhenALeaderboardSourceCarriesAnUnknownSortCode()
+    {
+        // The rollback case (F1 Station 5, task 6a brief): a row written with "seventv-leaderboard"
+        // must never make the reader throw or invent an origin, whether the code is simply
+        // unrecognized or this feature was ever reverted after such rows existed. Degrading to the
+        // bare count is the same choice ProjectDetail already makes for a channel import that
+        // cannot name its channel.
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-imp-ldb-unk";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 18, 35, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncImported,
+            ChannelName = channel,
+            DetailsJson = """{"emoteCount": 9, "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_WEEKLY"}"""
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(new AuditLogDetail(AuditLogDetail.Kinds.EmoteCount, 9, null), dto.Detail);
+    }
+
+    [Fact]
     public async Task ListAsync_FallsBackToTheBareCount_WhenAForeignChannelSourceCarriesNoName()
     {
         // Same degradation as the tracked-channel case below: the endpoint rejects this combination,

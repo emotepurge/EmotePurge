@@ -34,7 +34,11 @@ public interface IEmoteService
     // resync cannot reconstruct — an emotes.syncImported audit entry naming how many 7TV ids were
     // reported and where they came from. sevenTvEmoteIds is deduplicated ordinally before counting
     // (a client that reported the same id twice did not import it twice); sourceChannelName is the
-    // normalized source channel, or null for a file import that did not carry one; sourceKind is
-    // "channel" or "file". Returns false — writing nothing — for an unknown target channel.
-    Task<bool> MarkImportedAsync(string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind, AuditActor actor, CancellationToken cancellationToken = default);
+    // normalized source channel, or null for a file import or a leaderboard import, neither of
+    // which carries one; sourceKind is "channel", "file", "seventv-channel" or "seventv-leaderboard".
+    // leaderboardSort is the 7TV sort wire code (SevenTvLeaderboardSortWireCode) for a
+    // "seventv-leaderboard" import — the only kind that has one, since a network-wide ranking has no
+    // source channel to name (leaderboard-import spec E8) — and null for every other kind. Returns
+    // false — writing nothing — for an unknown target channel.
+    Task<bool> MarkImportedAsync(string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind, string? leaderboardSort, AuditActor actor, CancellationToken cancellationToken = default);
 }
