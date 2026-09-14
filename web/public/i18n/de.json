@@ -384,7 +384,7 @@
       "joinBudgetWarning": "Das Join-Budget ist zu {{percent}} % ausgeschöpft.",
       "joinBudgetCritical": "Das Join-Budget ist zu {{percent}} % ausgeschöpft — vor weiteren Channels prüfen.",
       "joinBudgetExceeded": "Mehr getrackte Channels als Join-Budget ({{tracked}} / {{budget}}).",
-      "joinBudgetHint": "Selbst gesetzt: TwitchLib rejoint nach einem Reconnect ungedrosselt, oberhalb dieser Zahl reißt ein einzelner Reconnect Twitchs Fenster von 20 JOINs je 10 s.",
+      "joinBudgetHint": "Selbst gesetzt, kein Riegel: Joins laufen auch über dieser Zahl weiter. Was noch bindet, ist die Rejoin-Dauer nach einem Reconnect (~0,6 s je Channel) — Dauerbetrieb, echtes Chat-Volumen und Worker-Speicher darüber hinaus sind ungemessen.",
       "twitchLimitHint": "Twitchs eigenes Limit liegt bei {{limit}} gleichzeitig gejointen Chatrooms je Account (seit 2024-05-15, dev.twitch.tv/docs/chat).",
       "missingIrc": "{{count}} Channel ohne bestätigten IRC-Join:",
       "missingSevenTv": "{{count}} Channel ohne bestätigte 7TV-Subscription:",
