@@ -515,3 +515,113 @@ public record SevenTvEmoteSetPreviewItem(
     string ImageUrl,
     int? TopAllTime,
     int? Trending);
+
+/// <summary>
+/// Why <see cref="ISevenTvApiClient.SearchEmotesAsync"/> produced no usable page. Mirrors
+/// <see cref="SevenTvPreviewLookupStatus"/>'s RateLimited/Unavailable split (foreign-channel-import
+/// spec's F429) but without a BudgetExhausted arm: this client charges no request budget itself —
+/// only its caller, <c>SevenTvLeaderboardService</c>, does that.
+/// </summary>
+public enum SevenTvEmoteSearchLookupStatus
+{
+    Ok,
+    RateLimited,
+    Unavailable
+}
+
+/// <summary>
+/// One page of 7TV's network-wide leaderboard search (spec 2026-09-13, F7/T1).
+/// <see cref="TotalCount"/>/<see cref="PageCount"/> are what 7TV itself reports for the current
+/// sort; <see cref="Items"/> reuses <see cref="SevenTvEmoteSetPreviewItem"/> with
+/// <c>Alias == DefaultName</c> (a leaderboard hit has no per-set alias) so the row mapping onto
+/// <c>ForeignEmoteRow</c> stays identical to the foreign-channel-import preview
+/// (<c>ForeignEmoteSetService.cs:129</c>).
+/// </summary>
+public sealed record SevenTvEmoteSearchPage(int TotalCount, int PageCount, IReadOnlyList<SevenTvEmoteSetPreviewItem> Items);
+
+/// <summary>
+/// <see cref="Page"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEmoteSearchLookupStatus.Ok"/> — same invariant-by-construction shape as
+/// <see cref="SevenTvEmoteSetPreviewResult"/> and for the same reason.
+/// </summary>
+/// <remarks>
+/// <see cref="RateLimitLimit"/>/<see cref="RateLimitRemaining"/>/<see cref="RateLimitReset"/> carry
+/// 7TV's <c>x-ratelimit-search-*</c> response headers verbatim, in <b>every</b> outcome — including
+/// <see cref="SevenTvEmoteSearchLookupStatus.Unavailable"/> and
+/// <see cref="SevenTvEmoteSearchLookupStatus.RateLimited"/>. That is deliberate: the one log line
+/// per upstream request the spec wants (<c>sortBy</c>, <c>page</c>, outcome, <c>remaining</c>,
+/// <c>reset</c>, <c>usedInWindow</c>) is written by <c>SevenTvLeaderboardService</c>, not this
+/// client — the service knows the budget window this client does not, and a second line here would
+/// make AK 31's count ambiguous. So the service needs these values regardless of which way the
+/// request came back, and this result carries them instead of a log line. <c>null</c> when 7TV sent
+/// no such header, which is the normal case for a validation rejection (measured live: an invalid
+/// <c>perPage</c> costs no bucket charge and carries none of these headers) and for the one
+/// transport/parse failure that happens before or during reading the response these values would
+/// come from.
+/// </remarks>
+public sealed class SevenTvEmoteSearchPageResult
+{
+    private SevenTvEmoteSearchPageResult(
+        SevenTvEmoteSearchLookupStatus status,
+        SevenTvEmoteSearchPage? page,
+        TimeSpan? retryAfter,
+        string? rateLimitLimit,
+        string? rateLimitRemaining,
+        string? rateLimitReset)
+    {
+        Status = status;
+        Page = page;
+        RetryAfter = retryAfter;
+        RateLimitLimit = rateLimitLimit;
+        RateLimitRemaining = rateLimitRemaining;
+        RateLimitReset = rateLimitReset;
+    }
+
+    public SevenTvEmoteSearchLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="SevenTvEmoteSearchLookupStatus.Ok"/>.</summary>
+    public SevenTvEmoteSearchPage? Page { get; }
+
+    /// <summary>
+    /// 7TV's own retry hint for <see cref="SevenTvEmoteSearchLookupStatus.RateLimited"/>, taken in
+    /// this order: the HTTP <c>x-ratelimit-search-reset</c> header, then a GraphQL error payload's
+    /// reset hint, then <c>Retry-After</c> — <c>null</c> for every other status, and also
+    /// <c>null</c> for a rate limit 7TV reported with none of the three.
+    /// </summary>
+    public TimeSpan? RetryAfter { get; }
+
+    public string? RateLimitLimit { get; }
+
+    public string? RateLimitRemaining { get; }
+
+    public string? RateLimitReset { get; }
+
+    public static SevenTvEmoteSearchPageResult Ok(
+        SevenTvEmoteSearchPage page, string? rateLimitLimit, string? rateLimitRemaining, string? rateLimitReset)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        return new SevenTvEmoteSearchPageResult(
+            SevenTvEmoteSearchLookupStatus.Ok, page, null, rateLimitLimit, rateLimitRemaining, rateLimitReset);
+    }
+
+    public static SevenTvEmoteSearchPageResult Failed(
+        SevenTvEmoteSearchLookupStatus status,
+        string? rateLimitLimit,
+        string? rateLimitRemaining,
+        string? rateLimitReset,
+        TimeSpan? retryAfter = null)
+    {
+        if (status == SevenTvEmoteSearchLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(page, ...) is responsible for Ok.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown SevenTvEmoteSearchLookupStatus.");
+        }
+
+        return new SevenTvEmoteSearchPageResult(status, null, retryAfter, rateLimitLimit, rateLimitRemaining, rateLimitReset);
+    }
+}

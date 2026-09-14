@@ -164,6 +164,48 @@ public class RateLimitTelemetryStoreTests(RedisFixture fixture)
         Assert.Equal("1756500060", counters.LastHeaderSample.Reset);
     }
 
+    /// <summary>
+    /// The leaderboard import source's own call source (spec 2026-09-13, F5): a real store round
+    /// trip, not the client's own suppression/isolation contract
+    /// (<see cref="EmotePurge.Infrastructure.Tests.Unit.SevenTvApiClientLeaderboardSearchTests"/>'s
+    /// job). Proves the new call source lands with its own minute/24 h counters and header sample,
+    /// separate from the foreign-channel preview's.
+    /// </summary>
+    [Fact]
+    public async Task RecordProviderResponseAsync_SeparatesSevenTvLeaderboard_FromForeignPreview()
+    {
+        var clock = NewClock();
+        var store = NewStore(clock);
+
+        await store.RecordProviderResponseAsync(new ProviderResponseObservation(
+            RateLimitProviders.SevenTv, RateLimitCallSources.SevenTvLeaderboard, StatusCode: 200,
+            RateLimitLimit: "100", RateLimitRemaining: "97", RateLimitReset: "40"));
+        await store.RecordProviderResponseAsync(new ProviderResponseObservation(
+            RateLimitProviders.SevenTv, RateLimitCallSources.SevenTvLeaderboard, StatusCode: 429, RetryAfterSeconds: 55,
+            RateLimitLimit: "100", RateLimitRemaining: "0", RateLimitReset: "55"));
+        await store.RecordProviderResponseAsync(new ProviderResponseObservation(
+            RateLimitProviders.SevenTv, RateLimitCallSources.SevenTvForeignPreview, StatusCode: 200));
+
+        var snapshot = await store.ReadAsync();
+
+        var leaderboard = Assert.Single(snapshot.Providers, p =>
+            p.ProviderName == RateLimitProviders.SevenTv && p.CallSource == RateLimitCallSources.SevenTvLeaderboard);
+        Assert.Equal(2, leaderboard.RequestsLastMinute);
+        Assert.Equal(2, leaderboard.RequestsLast24Hours);
+        Assert.Equal(1, leaderboard.RateLimitedLastMinute);
+        Assert.Equal(1, leaderboard.RateLimitedLast24Hours);
+        Assert.Equal(55, leaderboard.LastRetryAfterSeconds);
+        Assert.NotNull(leaderboard.LastHeaderSample);
+        Assert.Equal("100", leaderboard.LastHeaderSample!.Limit);
+        Assert.Equal("0", leaderboard.LastHeaderSample.Remaining);
+        Assert.Equal("55", leaderboard.LastHeaderSample.Reset);
+
+        var preview = Assert.Single(snapshot.Providers, p =>
+            p.ProviderName == RateLimitProviders.SevenTv && p.CallSource == RateLimitCallSources.SevenTvForeignPreview);
+        Assert.Equal(1, preview.RequestsLast24Hours);
+        Assert.Equal(0, preview.RateLimitedLast24Hours);
+    }
+
     [Fact]
     public async Task RecordProviderResponseAsync_SeparatesCallSourcesOfTheSameProvider()
     {

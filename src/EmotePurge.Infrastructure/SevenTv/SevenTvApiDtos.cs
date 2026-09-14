@@ -331,3 +331,46 @@ internal sealed class SevenTvGqlEmoteSetPreviewScoresDto
     public int TopAllTime { get; set; }
     public int TrendingDay { get; set; }
 }
+
+// GQL v4 (host-absolute /v4/gql), the leaderboard import source (spec 2026-09-13, F7): emotes {
+// search(sort, page, perPage) { totalCount pageCount items { id defaultName flags { animated }
+// scores { topAllTime trendingDay } } } } — deliberately without query/filters/tags (E5) and
+// without defaultZeroWidth (E4). Reuses SevenTvGqlEmoteSetPreviewFlagsDto/ScoresDto: EmoteQuery.
+// search returns flat Emote objects, and both fields have the exact same JSON shape there as on
+// the preview's embedded Emote — only the wrapping item (no per-set alias here, see F7) differs.
+internal sealed class SevenTvGqlLeaderboardSearchResponseDto : ISevenTvGqlErrorEnvelope
+{
+    public SevenTvGqlLeaderboardSearchDataDto? Data { get; set; }
+
+    // Same envelope 7TV uses to disguise an overload as HTTP 200 for this query too — see the
+    // comment on SevenTvGqlEmoteSetPreviewResponseDto.Errors.
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
+}
+
+internal sealed class SevenTvGqlLeaderboardSearchDataDto
+{
+    public SevenTvGqlEmoteQueryDto? Emotes { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteQueryDto
+{
+    public SevenTvGqlLeaderboardSearchPageDto? Search { get; set; }
+}
+
+internal sealed class SevenTvGqlLeaderboardSearchPageDto
+{
+    public int TotalCount { get; set; }
+    public int PageCount { get; set; }
+    public List<SevenTvGqlLeaderboardSearchItemDto> Items { get; set; } = [];
+}
+
+internal sealed class SevenTvGqlLeaderboardSearchItemDto
+{
+    public string Id { get; set; } = string.Empty;
+
+    // The emote's global base name — a flat Emote object from EmoteQuery.search carries no
+    // per-set alias (F7), unlike SevenTvGqlEmoteSetPreviewItemDto.Alias.
+    public string DefaultName { get; set; } = string.Empty;
+    public SevenTvGqlEmoteSetPreviewFlagsDto? Flags { get; set; }
+    public SevenTvGqlEmoteSetPreviewScoresDto? Scores { get; set; }
+}

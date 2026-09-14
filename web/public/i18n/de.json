@@ -350,7 +350,8 @@
         "callSources": {
           "twitch-helix": "Helix-Client",
           "twitch-auth": "Auth-Client (OAuth/Refresh)",
-          "seventv-rest": "7TV-REST-Client"
+          "seventv-rest": "7TV-REST-Client",
+          "seventv-leaderboard": "7TV-Bestenlisten-Client"
         }
       },
       "hints": {
