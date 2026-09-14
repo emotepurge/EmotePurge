@@ -351,6 +351,7 @@
           "twitch-helix": "Helix client",
           "twitch-auth": "Auth client (OAuth/refresh)",
           "seventv-rest": "7TV REST client",
+          "seventv-foreign-preview": "7TV foreign-preview client",
           "seventv-leaderboard": "7TV leaderboard client"
         }
       },
