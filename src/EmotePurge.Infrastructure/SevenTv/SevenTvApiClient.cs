@@ -353,7 +353,7 @@ public class SevenTvApiClient(
                 // state table), so both forms of a confirmed 429 are checked before the "no usable
                 // data" branch below, not folded into it. FetchPreviewPageAsync tells the two forms
                 // apart itself; from here on they are one outcome.
-                if (pageResult.Status == PreviewPageStatus.RateLimited)
+                if (pageResult.Status == V4PageStatus.RateLimited)
                 {
                     logger.LogWarning(
                         "7TV meldet Überlast (429) beim Vorschau-Abruf für Set {SetId}, Seite {Page}.",
@@ -362,7 +362,7 @@ public class SevenTvApiClient(
                 }
 
                 var pageDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet?.Emotes;
-                if (pageResult.Status == PreviewPageStatus.Unavailable || pageDto is null)
+                if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
                 {
                     logger.LogWarning(
                         "7TV-Vorschau-Abruf für Set {SetId} lieferte keine verwertbaren Daten (GraphQL-Fehlerantwort?), Seite {Page}.",
@@ -401,19 +401,20 @@ public class SevenTvApiClient(
         }
     }
 
-    // One HTTP request, one telemetry observation — the unit the telemetry vertrag (spec section 6)
-    // is written against. ProviderRequestTelemetryHandler is silenced for this request
-    // (ProviderTelemetrySuppression.OptionsKey) because it only ever sees the raw HTTP status: a 7TV
-    // overload disguised as HTTP 200 with extensions.status 429 would land in its count as a plain
-    // success. This method reports itself instead, after parsing far enough to know the real,
-    // semantic outcome, under RateLimitCallSources.SevenTvForeignPreview rather than SevenTvRest.
-    private async Task<PreviewPageResult> FetchPreviewPageAsync(string emoteSetId, int page, CancellationToken cancellationToken)
+    // The shared v4 GraphQL page-fetch behind both FetchPreviewPageAsync and the leaderboard
+    // search (spec 2026-09-13, E11/F3) — one HTTP request, one telemetry observation, the unit the
+    // telemetry vertrag (spec section 6) is written against. ProviderRequestTelemetryHandler is
+    // silenced for this request (ProviderTelemetrySuppression.OptionsKey) because it only ever sees
+    // the raw HTTP status: a 7TV overload disguised as HTTP 200 with extensions.status 429 would
+    // land in its count as a plain success. This method reports itself instead, after parsing far
+    // enough to know the real, semantic outcome, under the caller's own call source —
+    // RecordForeignPreviewObservation takes that call source as a parameter rather than assuming
+    // SevenTvForeignPreview, precisely so this one fetch can serve more than one caller without
+    // either one's telemetry landing under the other's name.
+    private async Task<V4PageResult<TDto>> FetchV4PageAsync<TDto>(
+        object payload, string callSource, CancellationToken cancellationToken)
+        where TDto : class, ISevenTvGqlErrorEnvelope
     {
-        var payload = new
-        {
-            query = GqlEmoteSetPreviewQuery,
-            variables = new { id = emoteSetId, page, perPage = SetEntriesPerPage }
-        };
         using var request = new HttpRequestMessage(HttpMethod.Post, V4GqlPath) { Content = JsonContent.Create(payload) };
         request.Options.Set(ProviderTelemetrySuppression.OptionsKey, true);
 
@@ -426,27 +427,26 @@ public class SevenTvApiClient(
         // the breaker immediately instead of counting toward its five-failure threshold.
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
-            RecordForeignPreviewObservation(response, statusOverride: 429, retryAfterSeconds);
-            return new PreviewPageResult(PreviewPageStatus.RateLimited, null, ToRetryAfter(retryAfterSeconds));
+            RecordForeignPreviewObservation(response, callSource, statusOverride: 429, retryAfterSeconds);
+            return new V4PageResult<TDto>(V4PageStatus.RateLimited, null, ToRetryAfter(retryAfterSeconds));
         }
 
         if (!response.IsSuccessStatusCode)
         {
-            RecordForeignPreviewObservation(response, statusOverride: null, retryAfterSeconds);
-            return new PreviewPageResult(PreviewPageStatus.Unavailable, null, null);
+            RecordForeignPreviewObservation(response, callSource, statusOverride: null, retryAfterSeconds);
+            return new V4PageResult<TDto>(V4PageStatus.Unavailable, null, null);
         }
 
-        SevenTvGqlEmoteSetPreviewResponseDto? dto;
+        TDto? dto;
         try
         {
-            dto = await response.Content.ReadFromJsonAsync<SevenTvGqlEmoteSetPreviewResponseDto>(
-                SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            dto = await response.Content.ReadFromJsonAsync<TDto>(SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
         }
         catch (JsonException)
         {
             // The HTTP layer really did answer 200 — that is what gets counted — even though the body
             // could not be parsed. The caller's outer catch maps the rethrown exception to Unavailable.
-            RecordForeignPreviewObservation(response, statusOverride: null, retryAfterSeconds);
+            RecordForeignPreviewObservation(response, callSource, statusOverride: null, retryAfterSeconds);
             throw;
         }
 
@@ -457,18 +457,32 @@ public class SevenTvApiClient(
             // existence is neither assumed nor denied — so on the payload shape we have actually seen,
             // this behaves exactly as it did before: retryAfterSeconds, or nothing.
             var effectiveRetryAfterSeconds = ReadResetHintSeconds(dto!.Errors) ?? retryAfterSeconds;
-            RecordForeignPreviewObservation(response, statusOverride: 429, effectiveRetryAfterSeconds);
-            return new PreviewPageResult(PreviewPageStatus.RateLimited, null, ToRetryAfter(effectiveRetryAfterSeconds));
+            RecordForeignPreviewObservation(response, callSource, statusOverride: 429, effectiveRetryAfterSeconds);
+            return new V4PageResult<TDto>(V4PageStatus.RateLimited, null, ToRetryAfter(effectiveRetryAfterSeconds));
         }
 
-        RecordForeignPreviewObservation(response, statusOverride: null, retryAfterSeconds);
-        return new PreviewPageResult(PreviewPageStatus.Ok, dto, null);
+        RecordForeignPreviewObservation(response, callSource, statusOverride: null, retryAfterSeconds);
+        return new V4PageResult<TDto>(V4PageStatus.Ok, dto, null);
     }
 
-    private void RecordForeignPreviewObservation(HttpResponseMessage response, int? statusOverride, int? retryAfterSeconds) =>
+    private Task<V4PageResult<SevenTvGqlEmoteSetPreviewResponseDto>> FetchPreviewPageAsync(
+        string emoteSetId, int page, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            query = GqlEmoteSetPreviewQuery,
+            variables = new { id = emoteSetId, page, perPage = SetEntriesPerPage }
+        };
+
+        return FetchV4PageAsync<SevenTvGqlEmoteSetPreviewResponseDto>(
+            payload, RateLimitCallSources.SevenTvForeignPreview, cancellationToken);
+    }
+
+    private void RecordForeignPreviewObservation(
+        HttpResponseMessage response, string callSource, int? statusOverride, int? retryAfterSeconds) =>
         telemetry.RecordProviderResponse(new ProviderResponseObservation(
             RateLimitProviders.SevenTv,
-            RateLimitCallSources.SevenTvForeignPreview,
+            callSource,
             statusOverride ?? (int)response.StatusCode,
             retryAfterSeconds,
             ProviderRequestTelemetryHandler.ReadHeader(response, "Ratelimit-Limit"),
@@ -752,15 +766,14 @@ public class SevenTvApiClient(
             ? string.Empty
             : $"https://cdn.7tv.app/emote/{emoteId}/{(animated ? "4x_static.webp" : "4x.webp")}";
 
-    private enum PreviewPageStatus
+    private enum V4PageStatus
     {
         Ok,
         RateLimited,
         Unavailable
     }
 
-    // Nested at the class end (Regel 19) — a pure return-value carrier local to FetchPreviewPageAsync,
-    // not part of this client's public shape.
-    private readonly record struct PreviewPageResult(
-        PreviewPageStatus Status, SevenTvGqlEmoteSetPreviewResponseDto? Dto, TimeSpan? RetryAfter);
+    // Nested at the class end (Regel 19) — a pure return-value carrier local to FetchV4PageAsync and
+    // its callers (FetchPreviewPageAsync, SearchEmotesAsync), not part of this client's public shape.
+    private readonly record struct V4PageResult<TDto>(V4PageStatus Status, TDto? Dto, TimeSpan? RetryAfter);
 }

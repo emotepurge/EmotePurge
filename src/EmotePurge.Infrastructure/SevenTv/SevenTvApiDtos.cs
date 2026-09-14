@@ -222,7 +222,7 @@ internal sealed class SevenTvGqlSetEntryEmoteDto
 // images vs. 7734 bytes without, both against 7TV's own "global" set). The image url is instead
 // built from the emote id directly (SevenTvApiClient.BuildForeignImageUrl) — 7TV's CDN url shape is
 // fixed and keyed only by that id, confirmed live against the same measurement.
-internal sealed class SevenTvGqlEmoteSetPreviewResponseDto
+internal sealed class SevenTvGqlEmoteSetPreviewResponseDto : ISevenTvGqlErrorEnvelope
 {
     public SevenTvGqlEmoteSetPreviewDataDto? Data { get; set; }
 
@@ -232,6 +232,17 @@ internal sealed class SevenTvGqlEmoteSetPreviewResponseDto
     // one detail this DTO exists to expose, since every other query on this client infers failure
     // from `data` being empty and never needed to read `errors` itself.
     public List<SevenTvGqlErrorDto>? Errors { get; set; }
+}
+
+/// <summary>
+/// The shape <c>SevenTvApiClient</c>'s shared v4 page-fetch (<c>FetchV4PageAsync</c>) needs from
+/// any v4 GraphQL response DTO it parses: just enough to find a disguised-as-200 rate limit
+/// (<c>errors[].extensions.status == 429</c>), the same way both the preview and the leaderboard
+/// search responses expose it. Lets that one shared method stay generic over the concrete DTO.
+/// </summary>
+internal interface ISevenTvGqlErrorEnvelope
+{
+    List<SevenTvGqlErrorDto>? Errors { get; }
 }
 
 internal sealed class SevenTvGqlErrorDto
