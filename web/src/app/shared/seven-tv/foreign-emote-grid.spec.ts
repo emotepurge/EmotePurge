@@ -178,9 +178,8 @@ describe('ForeignEmoteGrid', () => {
     expect(emitted.at(-1)).toEqual([]);
   });
 
-  it('clears the whole selection and emits an empty array (#166)', () => {
-    // The emission is the point of the test: neither host step reads ListSelection directly, both
-    // learn about a cleared selection only through selectionChange (see clearSelection()'s doc).
+  it('clears the whole selection and emits an empty array', () => {
+    // The emission is the point: host steps see the selection only through selectionChange.
     const a = row({ sevenTvEmoteId: 'a' });
     const b = row({ sevenTvEmoteId: 'b' });
     render([a, b]);
@@ -198,7 +197,7 @@ describe('ForeignEmoteGrid', () => {
     expect(emitted.at(-1)).toEqual([]);
   });
 
-  it('shows the clear-selection button only while at least one emote is selected (#166)', () => {
+  it('shows the clear-selection button only while at least one emote is selected', () => {
     const a = row({ sevenTvEmoteId: 'a' });
     render([a]);
     const clearButton = () =>
@@ -216,6 +215,25 @@ describe('ForeignEmoteGrid', () => {
     fixture.detectChanges();
     expect(clearButton()).toBeUndefined();
     expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+
+  // The button unmounts on its own click; focus must not fall to <body> inside the modal.
+  it('moves focus to the grid when the clear-selection button removes itself', () => {
+    const a = row({ sevenTvEmoteId: 'a' });
+    render([a]);
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+    const clearButton = () =>
+      Array.from(host.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Auswahl aufheben',
+      );
+
+    clearButton()!.focus();
+    clearButton()!.click();
+    fixture.detectChanges();
+
+    expect(clearButton()).toBeUndefined();
+    expect(document.activeElement).toBe(host.querySelector('[role="group"]'));
   });
 
   it('selects a contiguous range on a shift-click, only the selected rows appear in toAdd', () => {

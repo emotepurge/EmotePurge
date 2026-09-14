@@ -47,26 +47,21 @@ media-query signal is a new `ReducedMotionService`, shaped like `PointerModeServ
 **Betrifft:** `web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
 `docs/UI-Designsprache.md` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
-`ForeignEmoteGrid` gained a clear-selection button next to its "N selected" count, modelled on the
-atlas's existing button in `MassDeletePanel` — same look, same "only while something is picked"
-gate, no count on the label. Two things had to be decided rather than assumed.
+`ForeignEmoteGrid` gained a clear-selection button next to its "N selected" count, modelled on
+`MassDeletePanel`'s: the same neutral variant, shown only while something is marked, no count in the
+label.
 
-**§8.7 stays scoped to pages with a dock; the dialog is recorded as its own case in §7.3 instead.**
-§8.7's own "area of application" line already limits it to "pages with multiple selection on a
-sheet", and its ordering rule ("neutral exits such as clear selection may follow" the constructive
-group) presumes a page header and/or a dock to order things on. The import dialog has neither: it is
-one step inside a modal, with no destructive action next to this button and no run state to outlast.
-Stretching §8.7 to cover it would have made its criteria (page header, dock, position relative to a
-destructive action) apply to a place where none of the three exist. The dialog's own section (§7.3)
-already governs `ForeignEmoteGrid`, `ForeignChannelStep` and `LeaderboardStep`, so the button is
-documented there instead, as a case with its own reasoning rather than a footnote on §8.7.
+**§8.7 stays scoped to pages with a dock.** Its ordering rule places neutral exits relative to a page
+header, a dock and a destructive action, and the import dialog step has none of the three. The button
+is documented in §7.3, which already governs the dialog's grid and steps.
 
-**New key `import.clearSelection`, not a reuse of `massDelete.clearSelection`.** The two buttons look
-alike on purpose, but the rest of this dialog already keys its texts per namespace
-(`import.foreignChannel.*`, `import.leaderboard.*`) rather than reaching into an unrelated feature's
-translation table for a string that happens to read the same today. Reusing the mass-delete key would
-also couple the two call sites' wording: a future change to how the atlas phrases its own button
-would silently reword this one too.
+**New key `import.clearSelection` rather than `massDelete.clearSelection`.** The dialog keys its texts
+per namespace (`import.foreignChannel.*`, `import.leaderboard.*`), and a shared key would reword this
+button whenever the atlas's wording changes.
+
+**Focus moves to the grid group when the button removes itself**, instead of falling to `<body>`
+inside the modal (WCAG 2.4.3, the defect §8.4 describes for the pager). The group is the stable element
+next to the button and names what was just cleared.
 
 ---
 

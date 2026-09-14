@@ -201,7 +201,7 @@ describe('ForeignChannelStep', () => {
     });
   });
 
-  it("locks the result again once the grid's clear-selection button empties the pick (#166)", () => {
+  it("locks the result again once the grid's clear-selection button empties the pick", () => {
     component['channelNameControl'].setValue('handofblood');
     component['submit']();
     httpMock.expectOne('/api/seventv/channels/handofblood/emotes').flush(response());
@@ -211,9 +211,7 @@ describe('ForeignChannelStep', () => {
     fixture.detectChanges();
     expect(component.result()).not.toBeNull();
 
-    // Drives it through the grid's own method, the same path the button in its template calls —
-    // this step only ever learns about the selection through selectionChange (see that method's
-    // doc comment on ForeignEmoteGrid).
+    // The same method the grid's button calls.
     grid()['clearSelection']();
     fixture.detectChanges();
 

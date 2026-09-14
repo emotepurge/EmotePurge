@@ -167,12 +167,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
             </select>
           </div>
         }
-        <!-- Count and clear stand in their own tight group, same reasoning as the score hint below:
-             what belongs together more closely than the row's own gap wraps itself in a narrower
-             flex row instead of floating at the row's own justify-between distance from the sort
-             control on the far side (§7). Clearing lives here, on the grid itself, rather than on a
-             host step: both host steps only see the selection through selectionChange, so this is
-             the one place a "clear" can act and stay honest about what it announces (#166). -->
+        <!-- Count and clear grouped tightly (§7). -->
         <div class="flex items-center gap-2">
           <span class="text-xs text-fg-muted">
             {{ 'import.foreignChannel.selectedCount' | transloco: selectedCountParams() }}
@@ -201,9 +196,11 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
 
         <!-- Leaving the grid as a whole also ends playback: a cell the viewport recycled while the
              pointer rested on it is gone, and fires no mouseleave of its own. -->
+        <!-- tabindex -1: where focus goes when the clear button unmounts itself. -->
         <div
           #gridContainer
           role="group"
+          tabindex="-1"
           [attr.aria-label]="'import.foreignChannel.grid.ariaLabel' | transloco"
           (mouseleave)="hoveredKey.set(null)"
         >
@@ -483,14 +480,10 @@ export class ForeignEmoteGrid {
     this.selectionChange.emit(this.selection.selectedItems());
   }
 
-  /**
-   * The emission is not cosmetic (#166): neither host step (`LeaderboardStep`,
-   * `ForeignChannelStep`) reads `ListSelection` itself, both only learn about a selection change
-   * through `selectionChange` — clearing the selection here without emitting would leave `result()`
-   * non-null and "Continue" enabled against a grid that visibly shows nothing marked, the same
-   * defect class as #132/#133.
-   */
+  /** Must emit: host steps see the selection only through selectionChange. */
   protected clearSelection(): void {
+    // The clicked button unmounts with the selection; focus must not fall to <body> (WCAG 2.4.3).
+    this.gridContainerRef()?.nativeElement.focus({ preventScroll: true });
     this.selection.clear();
     this.selectionChange.emit([]);
   }
