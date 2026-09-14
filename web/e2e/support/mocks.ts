@@ -755,6 +755,59 @@ export async function mockSyncImported(page: Page, channelName: string): Promise
   );
 }
 
+export interface MockLeaderboardEmote {
+  sevenTvEmoteId: string;
+  /** Sent as both `name` and `defaultName`: a leaderboard row is an `Emote`, not a set's aliased
+   *  `EmoteSetEmote`, so it never has a separate alias (spec F7, `buildLeaderboardImportSource`). */
+  name: string;
+  topAllTime: number | null;
+  trending: number | null;
+  imageUrl?: string;
+}
+
+/**
+ * GET /api/seventv/leaderboard?sortBy=... (#148, spec §4) — 7TV's network-wide leaderboard as the
+ * import dialog's third source. Keyed by the exact sort code so a test answers only the sorts it
+ * exercises; a requested sort with no entry here falls through unhandled (`route.fallback()`), same
+ * "answer only what you mock" contract as the rest of this file. A numeric entry answers with that
+ * HTTP status instead of a 200 body — used for the 503 the endpoint maps every upstream failure onto
+ * (`foreign_channel_seventv_unavailable`, E13).
+ */
+export async function mockSevenTvLeaderboard(
+  page: Page,
+  responses: Partial<
+    Record<
+      'TRENDING_DAILY' | 'TOP_ALL_TIME',
+      { totalCount: number; truncated: boolean; emotes: MockLeaderboardEmote[] } | number
+    >
+  >,
+): Promise<void> {
+  await page.route('**/api/seventv/leaderboard**', (route) => {
+    const sortBy = new URL(route.request().url()).searchParams.get('sortBy');
+    const entry =
+      sortBy === 'TRENDING_DAILY' || sortBy === 'TOP_ALL_TIME' ? responses[sortBy] : undefined;
+    if (entry === undefined) {
+      return route.fallback();
+    }
+    if (typeof entry === 'number') {
+      return fulfillJson(route, entry, { errorCode: 'foreign_channel_seventv_unavailable' });
+    }
+    return fulfillJson(route, 200, {
+      sortBy,
+      totalCount: entry.totalCount,
+      truncated: entry.truncated,
+      emotes: entry.emotes.map((emote) => ({
+        sevenTvEmoteId: emote.sevenTvEmoteId,
+        name: emote.name,
+        defaultName: emote.name,
+        imageUrl: emote.imageUrl ?? `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
+        topAllTime: emote.topAllTime,
+        trending: emote.trending,
+      })),
+    });
+  });
+}
+
 /**
  * GET /api/channels/{channelName}/emotes/active-set — needed for the mass-delete panel to render,
  * and the source of the slot-budget bar above the grid.
