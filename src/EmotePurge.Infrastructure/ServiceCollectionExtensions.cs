@@ -25,6 +25,12 @@ public static class ServiceCollectionExtensions
     // and it takes the raw chain through a plain constructor parameter, not a keyed-service attribute.
     private const string RawForeignEmoteSetServiceKey = "raw-foreign-emote-set";
 
+    // The leaderboard's own circuit-breaker instance (see its registration below). Keyed rather than
+    // typed because the foreign-channel preview already holds the typed registration of the same
+    // policy class, and the two must not share state: a 7TV search-bucket lockout has to stop the
+    // leaderboard without closing a preview path that never touches that bucket.
+    private const string LeaderboardBreakerKey = "seventv-leaderboard";
+
     public static IServiceCollection AddEmotePurgeInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddDbContext<AppDbContext>(options =>
@@ -114,6 +120,33 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ForeignEmoteSetProviderBudget>(),
             sp.GetRequiredService<IRateLimitTelemetry>(),
             sp.GetRequiredService<ILogger<HardenedForeignEmoteSetService>>()));
+
+        // Leaderboard import source (spec 2026-09-13, section 6, T3). Purely additive: the typed
+        // ForeignSevenTvBreakerPolicy registration above is untouched, and line 113 above still
+        // hands the foreign-channel preview that same typed instance. The keyed registration here is
+        // a second, independent object of the same class — the policy keeps all its state in
+        // instance fields, so two of them share nothing.
+        services.AddKeyedSingleton<ForeignSevenTvBreakerPolicy>(LeaderboardBreakerKey);
+
+        // Singletons by necessity, like the preview's guards: a stock, a window budget or an alarm
+        // latch scoped per request would guard nothing at all. The budget is registered as a built
+        // instance so that the two figures the spec fixes stay where they are documented, on the
+        // class itself.
+        services.AddSingleton<SevenTvLeaderboardStore<SevenTvLeaderboardResult>>();
+        services.AddSingleton(new SevenTvLeaderboardRequestBudget(
+            SevenTvLeaderboardRequestBudget.DefaultMaxRequests, SevenTvLeaderboardRequestBudget.DefaultWindow));
+        services.AddSingleton<SevenTvLeaderboardBudgetAlarm>();
+
+        // The service itself stays scoped, matching every other read path: it holds no state of its
+        // own, and its 7TV client is a typed HttpClient that must not be captured for the life of the
+        // process.
+        services.AddScoped<ISevenTvLeaderboardService>(sp => new SevenTvLeaderboardService(
+            sp.GetRequiredService<ISevenTvApiClient>(),
+            sp.GetRequiredService<SevenTvLeaderboardStore<SevenTvLeaderboardResult>>(),
+            sp.GetRequiredService<SevenTvLeaderboardRequestBudget>(),
+            sp.GetRequiredKeyedService<ForeignSevenTvBreakerPolicy>(LeaderboardBreakerKey),
+            sp.GetRequiredService<SevenTvLeaderboardBudgetAlarm>(),
+            sp.GetRequiredService<ILogger<SevenTvLeaderboardService>>()));
 
         services.AddHttpClient<ITwitchAuthClient, TwitchAuthClient>(client =>
         {

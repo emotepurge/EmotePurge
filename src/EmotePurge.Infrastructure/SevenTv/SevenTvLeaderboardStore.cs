@@ -109,6 +109,10 @@ public sealed class SevenTvLeaderboardStore<TValue>(TimeProvider? timeProvider =
                 // matter how many readers reach this line together.
                 var work = entry.Value;
 
+                // Load-bearing read point: the clock is read here, after the entry was taken out of
+                // the dictionary and before the swap below is attempted. That is the window a second
+                // reader can slip into, and the window both concurrency tests wind their clock into
+                // — moving this read (or reading it twice) invalidates their proof.
                 if (!IsExpired(work, _timeProvider.GetUtcNow()))
                 {
                     return AwaitAsync(work, callerCancellationToken);
