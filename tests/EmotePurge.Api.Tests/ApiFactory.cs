@@ -74,6 +74,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IForeignEmoteSetService ForeignEmoteSet { get; } = Substitute.For<IForeignEmoteSetService>();
 
     /// <summary>
+    /// Substituted for the same reason as <see cref="ForeignEmoteSet"/> above: the leaderboard
+    /// endpoint's whole filter-matrix test suite never needs a real 7TV round trip, only control over
+    /// what <c>GetLeaderboardAsync</c> answers.
+    /// </summary>
+    public ISevenTvLeaderboardService Leaderboard { get; } = Substitute.For<ISevenTvLeaderboardService>();
+
+    /// <summary>
     /// Substituted so the sync-imported contract tests can reach the handler at all: every other
     /// case in that group is answered by a filter or a body check short-circuiting before it, but
     /// "this SourceKind is accepted" can only be shown by the call arriving at the service — and the
@@ -119,6 +126,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddSingleton(_ => WorkerHealth);
             services.AddSingleton(_ => LiveEventStream);
             services.AddScoped(_ => ForeignEmoteSet);
+            services.AddScoped(_ => Leaderboard);
             services.AddScoped(_ => Emotes);
             services.AddScoped(_ => _migrationGuard);
 

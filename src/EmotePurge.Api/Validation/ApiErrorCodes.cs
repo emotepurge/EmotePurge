@@ -45,6 +45,12 @@ internal static class ApiErrorCodes
     // extensions.status: 429) — one code for both, because the caller cannot act on the two any
     // differently (spec section 5: "7TV nicht erreichbar / 429" is a single table row).
     public const string ForeignChannelSevenTvUnavailable = "foreign_channel_seventv_unavailable";
+    // GET /api/seventv/leaderboard (7TV-leaderboard-as-import-source spec, section 5, E13): a
+    // missing or unrecognized sortBy. The three failure states of ISevenTvLeaderboardService itself
+    // (7TV unreachable, 429, our own window budget refused) deliberately reuse
+    // ForeignChannelSevenTvUnavailable above rather than getting a code of their own — its text is
+    // already source-neutral, and the caller cannot act on the three any differently.
+    public const string InvalidLeaderboardSort = "invalid_leaderboard_sort";
     // 429 with a body, unlike the rate limiter's bare 429: the client can tell the two apart and
     // say "already running, try again shortly" instead of a generic throttling message.
     public const string ResyncCooldownActive = "resync_cooldown_active";

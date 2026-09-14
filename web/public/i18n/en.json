@@ -1097,6 +1097,7 @@
       "foreign_channel_no_seventv_account": "This channel has no 7TV account.",
       "foreign_channel_no_active_emote_set": "This channel currently has no active 7TV emote set.",
       "foreign_channel_seventv_unavailable": "7TV is not reachable right now. Please try again shortly.",
+      "invalid_leaderboard_sort": "Invalid sort for the 7TV leaderboard.",
       "vote_session_not_found": "Voting session not found.",
       "vote_session_ended": "This voting session has already ended.",
       "emote_not_eligible": "This emote can no longer be voted on.",

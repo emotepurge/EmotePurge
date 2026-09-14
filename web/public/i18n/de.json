@@ -1097,6 +1097,7 @@
       "foreign_channel_no_seventv_account": "Für diesen Channel existiert kein 7TV-Account.",
       "foreign_channel_no_active_emote_set": "Dieser Channel hat aktuell kein aktives 7TV-Emote-Set.",
       "foreign_channel_seventv_unavailable": "7TV ist gerade nicht erreichbar. Bitte versuch es in Kürze erneut.",
+      "invalid_leaderboard_sort": "Ungültige Sortierung für die 7TV-Bestenliste.",
       "vote_session_not_found": "Abstimmung nicht gefunden.",
       "vote_session_ended": "Diese Abstimmung ist bereits beendet.",
       "emote_not_eligible": "Dieses Emote ist nicht mehr abstimmbar.",
