@@ -942,6 +942,10 @@
       "channel": {
         "label": "From a channel",
         "hint": "The active 7TV set of any Twitch channel"
+      },
+      "leaderboard": {
+        "label": "From 7TV's leaderboard",
+        "hint": "The emotes leading network-wide — without knowing which channel they sit in"
       }
     },
     "dockCopyButton": "Transfer ({{ count }})",
@@ -979,6 +983,20 @@
         "noScore": "no value",
         "scoreHint": "The number on each tile is 7TV's network-wide comparison value for that one emote — not a measure of how often it is used in this channel."
       }
+    },
+    "leaderboard": {
+      "title": "Import from 7TV's leaderboard",
+      "sortLabel": "List",
+      "sort": {
+        "TRENDING_DAILY": "Trending today",
+        "TOP_ALL_TIME": "Top overall"
+      },
+      "empty": "7TV currently returns no entries for this list.",
+      "truncated": {
+        "TRENDING_DAILY": "Showing the first {{ loaded }} of {{ totalCount }} entries of today's list — 7TV caps how many one lookup returns.",
+        "TOP_ALL_TIME": "Showing the first {{ loaded }} entries; 7TV counts {{ totalCount }} emotes in this ranking overall."
+      },
+      "scoreHint": "The order is 7TV's own. The number on each tile is 7TV's network-wide comparison value for that one emote — not a measure of how often it is used in this channel."
     },
     "confirm": {
       "title": {

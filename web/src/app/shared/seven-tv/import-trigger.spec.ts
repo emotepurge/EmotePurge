@@ -431,6 +431,49 @@ describe('ImportTrigger', () => {
     });
   });
 
+  describe('leaderboard result: the same target rule, with even less to ask (#148)', () => {
+    it("confirms against this page's channel and carries the list as the origin", () => {
+      hasToken.set(true);
+      const dialog = render();
+      dialog.click();
+
+      closedAt<ImportSourceDialogResult | undefined>(0).next({
+        kind: 'leaderboard',
+        picked: {
+          sortBy: 'TOP_ALL_TIME',
+          rows: [
+            {
+              sevenTvEmoteId: '7tv-2',
+              name: 'Dance',
+              defaultName: 'Dance',
+              imageUrl: 'https://cdn.7tv.app/7tv-2/2x.webp',
+              topAllTime: 99,
+              trending: 12,
+            },
+          ],
+        },
+      });
+
+      // One further dialog, and it is the confirmation: a leaderboard row belongs to no channel at
+      // all, so the target question the page already answers is even less open than for a channel.
+      expect(dialogOpen).toHaveBeenCalledTimes(2);
+      expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
+
+      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+        targetSetId: CURRENT_SET,
+        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL },
+        { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
+        [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        0,
+        true,
+      );
+    });
+  });
+
   describe('trigger lock', () => {
     it('disables exactly while arbiter.activeRun() is not null', () => {
       const dialog = render();

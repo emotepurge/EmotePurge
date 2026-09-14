@@ -942,6 +942,10 @@
       "channel": {
         "label": "Aus einem Kanal",
         "hint": "Das aktive 7TV-Set eines beliebigen Twitch-Kanals"
+      },
+      "leaderboard": {
+        "label": "Aus 7TVs Bestenliste",
+        "hint": "Die netzwerkweit vorn liegenden Emotes — ohne zu wissen, in welchem Kanal sie stecken"
       }
     },
     "dockCopyButton": "Übertragen ({{ count }})",
@@ -979,6 +983,20 @@
         "noScore": "kein Wert",
         "scoreHint": "Die Zahl auf jeder Kachel ist 7TVs netzwerkweiter Vergleichswert für dieses eine Emote — kein Maß dafür, wie oft es in diesem Kanal benutzt wird."
       }
+    },
+    "leaderboard": {
+      "title": "Aus 7TVs Bestenliste importieren",
+      "sortLabel": "Liste",
+      "sort": {
+        "TRENDING_DAILY": "Trend heute",
+        "TOP_ALL_TIME": "Top insgesamt"
+      },
+      "empty": "7TV liefert für diese Liste gerade keine Einträge.",
+      "truncated": {
+        "TRENDING_DAILY": "Gezeigt werden die ersten {{ loaded }} von {{ totalCount }} Einträgen der Tagesliste — 7TV begrenzt, wie viele ein Abruf zurückgibt.",
+        "TOP_ALL_TIME": "Gezeigt werden die ersten {{ loaded }} Einträge; 7TV führt in dieser Rangfolge insgesamt {{ totalCount }} Emotes."
+      },
+      "scoreHint": "Die Reihenfolge ist 7TVs eigene. Die Zahl auf jeder Kachel ist 7TVs netzwerkweiter Vergleichswert für dieses eine Emote — kein Maß dafür, wie oft es in diesem Kanal benutzt wird."
     },
     "confirm": {
       "title": {

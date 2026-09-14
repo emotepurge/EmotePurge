@@ -10,8 +10,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LanguageService } from '../../core/i18n/language.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
+import { SevenTvLeaderboardResponse } from '../../core/seven-tv/leaderboard.model';
 import { FileImportStep } from './file-import-step';
 import { ForeignChannelStep } from './foreign-channel-step';
+import { LeaderboardStep } from './leaderboard-step';
 import { ImportSourceDialog, ImportSourceDialogResult } from './import-source-dialog';
 
 const DE_TRANSLATIONS = {
@@ -34,6 +36,21 @@ const DE_TRANSLATIONS = {
       back: 'Zurück',
       file: { label: 'Aus einer Datei', hint: 'Purge-Protokoll, Emote-Liste oder Nutzungs-Export' },
       channel: { label: 'Aus einem Kanal', hint: 'Das aktive 7TV-Set eines Twitch-Kanals' },
+      leaderboard: {
+        label: 'Aus 7TVs Bestenliste',
+        hint: 'Die netzwerkweit vorn liegenden Emotes',
+      },
+    },
+    leaderboard: {
+      title: 'Aus 7TVs Bestenliste importieren',
+      sortLabel: 'Liste',
+      sort: { TRENDING_DAILY: 'Trend heute', TOP_ALL_TIME: 'Top insgesamt' },
+      empty: '7TV liefert für diese Liste gerade keine Einträge.',
+      truncated: {
+        TRENDING_DAILY: 'Tagesliste: {{ loaded }} von {{ totalCount }}.',
+        TOP_ALL_TIME: 'Rangfolge: {{ loaded }}, insgesamt {{ totalCount }}.',
+      },
+      scoreHint: 'Die Reihenfolge ist 7TVs eigene.',
     },
     foreignChannel: {
       title: 'Aus einem Kanal importieren',
@@ -85,6 +102,22 @@ const FOREIGN_SET: ForeignEmoteSetResponse = {
       imageUrl: 'https://cdn.7tv.app/e1/4x.webp',
       topAllTime: null,
       trending: null,
+    },
+  ],
+};
+
+const LEADERBOARD: SevenTvLeaderboardResponse = {
+  sortBy: 'TRENDING_DAILY',
+  totalCount: 705,
+  truncated: false,
+  emotes: [
+    {
+      sevenTvEmoteId: 'l1',
+      name: 'Dance',
+      defaultName: 'Dance',
+      imageUrl: 'https://cdn.7tv.app/l1/4x.webp',
+      topAllTime: 99,
+      trending: 12,
     },
   ],
 };
@@ -193,6 +226,23 @@ describe('ImportSourceDialog', () => {
   function markOneEmote(): void {
     channelStep().onSelectionChange(FOREIGN_SET.emotes);
     fixture.detectChanges();
+  }
+
+  /** Enters the leaderboard branch. Unlike the channel branch this one asks for its list straight
+   *  away — there is nothing to type in first — so the request is part of entering. */
+  function goToLeaderboardStep(): void {
+    sourceOption('Aus 7TVs Bestenliste').click();
+    fixture.detectChanges();
+  }
+
+  function answerLeaderboard(response: SevenTvLeaderboardResponse = LEADERBOARD): void {
+    httpMock.expectOne((candidate) => candidate.url === '/api/seventv/leaderboard').flush(response);
+    fixture.detectChanges();
+  }
+
+  function leaderboardStep(): { onSelectionChange(rows: unknown[]): void } {
+    return fixture.debugElement.query(By.directive(LeaderboardStep))
+      .componentInstance as unknown as { onSelectionChange(rows: unknown[]): void };
   }
 
   function actionRowLabels(): string[] {
@@ -369,6 +419,19 @@ describe('ImportSourceDialog', () => {
       ]);
     });
 
+    it('closes with the leaderboard source, its picked rows and the list they came off', () => {
+      goToLeaderboardStep();
+      answerLeaderboard();
+      leaderboardStep().onSelectionChange(LEADERBOARD.emotes);
+      fixture.detectChanges();
+
+      button('Weiter').click();
+
+      expect(closed).toEqual([
+        { kind: 'leaderboard', picked: { sortBy: 'TRENDING_DAILY', rows: LEADERBOARD.emotes } },
+      ]);
+    });
+
     it('cancel closes with no result, from any step', () => {
       goToChannelStep();
       loadSet();
@@ -376,6 +439,43 @@ describe('ImportSourceDialog', () => {
       button('Abbrechen').click();
 
       expect(closed).toEqual([undefined]);
+    });
+  });
+
+  describe('the leaderboard is the third source (#148)', () => {
+    it('offers it as a row of the same menu, not as a door of its own', () => {
+      // Spec E1: every source is reached the same way. A third one is a third row.
+      expect(sourceOption('Aus 7TVs Bestenliste')).toBeTruthy();
+      expect(host.querySelector('app-leaderboard-step')).toBeNull();
+    });
+
+    it('names the branch in the heading and enters it without a form to fill in first', () => {
+      goToLeaderboardStep();
+
+      expect(heading()).toBe('Aus 7TVs Bestenliste importieren');
+      expect(host.querySelector('app-leaderboard-step')).not.toBeNull();
+      // Still narrow, and still no "Weiter": the list is what needs the width, and it is in flight.
+      expect(addPanelClass).not.toHaveBeenCalled();
+      expect(actionRowLabels()).toEqual(['Abbrechen', 'Zurück']);
+    });
+
+    it('widens the pane and grows a "Weiter" when the list arrives — the same state as the channel branch', () => {
+      goToLeaderboardStep();
+      answerLeaderboard();
+
+      expect(addPanelClass).toHaveBeenCalledWith('app-dialog-panel-wide');
+      expect(actionRowLabels()).toEqual(['Abbrechen', 'Zurück', 'Weiter']);
+    });
+
+    it('keeps "Weiter" locked until something is marked on the list', () => {
+      goToLeaderboardStep();
+      answerLeaderboard();
+      expect(button('Weiter').disabled).toBe(true);
+
+      leaderboardStep().onSelectionChange(LEADERBOARD.emotes);
+      fixture.detectChanges();
+
+      expect(button('Weiter').disabled).toBe(false);
     });
   });
 });

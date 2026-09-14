@@ -10,6 +10,83 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-14 — Sorting by score is allowed where the ranking *is* the content: the 2026-09-10 ban narrows to the wording, and the leaderboard's stock is a per-process promise (#148)
+
+**Betrifft:** `web/src/app/shared/seven-tv/leaderboard-step.ts` ·
+`web/src/app/shared/seven-tv/import-source-dialog.ts` ·
+`web/src/app/shared/seven-tv/foreign-import-flow.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
+`web/src/app/core/seven-tv/seven-tv-leaderboard.service.ts` ·
+`web/src/app/core/seven-tv/leaderboard.model.ts` ·
+`web/src/app/core/seven-tv/import-source.ts` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvLeaderboardService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvLeaderboardStore.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvLeaderboardRequestBudget.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` · `web/public/i18n/de.json` ·
+`web/public/i18n/en.json`
+
+7TV's network-wide leaderboard ships as the third source of the one import dialog. Three contracts
+change with it, and all three are the kind that get mis-cited later if they are not written down.
+
+**1. The score-sort ban of 2026-09-10 narrows to the wording; it does not survive as a ban on
+sorting.** That entry's point 5 and the design doc's P5' put two obligations on the foreign-channel
+grid: a score must never be the pre-selected sort, and the column must never be called mere
+"Beliebtheit" or read as channel-local. The first of the two was always an argument about a
+*channel's* set, where a leading score silently claims "popular here" for a channel nobody in this
+installation has a role in. A leaderboard is the opposite case: the ranking is not a view of the
+list, it *is* the list — the server fetched `TRENDING_DAILY` or `TOP_ALL_TIME` and nothing else, and
+a grid showing those rows in any other order would be showing something the user did not ask for.
+
+So the leaderboard step forces the grid's sort (`forcedSortMode`) and suppresses the grid's own sort
+`<select>` entirely, while the foreign-channel view is **unchanged**: `'none'` stays its default and
+its select stays. What survives unrestricted from 2026-09-10 is the *wording* obligation — the tile
+number is labelled as 7TV's network-wide comparison value for that one emote, never as popularity,
+never with an invented unit, in both locales. The sort chooser on this step is labelled "Liste" /
+"List" rather than "Sortieren nach", because what it picks is which leaderboard is being read; the
+ordering follows from that rather than the other way round.
+
+**Correction of a stale citation in the same entry:** point 5 of 2026-09-10 records the option
+labels as "7TV-Verbreitung (gesamt)/(Trend)". Those labels no longer exist — point 10 of that very
+entry replaced them with "7TV-Score (gesamt)/(Trend)" because "Verbreitung" asserted a quantity
+nobody had measured. Point 5's label list is therefore superseded by point 10 within its own entry;
+only its two obligations still bind. Nothing is being reverted here, and no contract is left
+uncorrected — this note exists so the next reader of point 5 does not resurrect a label that lost
+its argument four days later.
+
+**2. The stock and its ceiling are a promise per *process*, not per deployment — and one more Api
+replica breaks it silently.** The endpoint answers from an in-process store (one entry per sort, one
+hour of freshness) behind an in-process window budget (at most 10 upstream requests per rolling 60
+minutes), which together hold the expected load at 4 requests an hour and the worst case at 10. Both
+live in the process's own memory, deliberately: Redis for a two-entry cache would buy coordination
+this single-replica deployment has no use for, and the budget must be able to refuse instantly
+rather than wait.
+
+The condition that makes that sound is `Replicas == 1`, and it is a condition, not an assumption:
+with N Api replicas the ceiling is `N × 10` per hour, since each process counts only its own permits
+and nothing tells it about its siblings. **Scaling the Api past one replica therefore requires two
+changes before the second replica starts, not after:** the shared state moves to Redis and is
+fail-closed (an unreachable Redis must refuse the upstream call, not fall through to it — otherwise
+the outage that motivates a second replica is exactly when the ceiling disappears), and the window
+budget becomes distributed rather than per-process. Until then the deployment is single-replica by
+contract. The per-run figure is observable: every upstream request logs its `usedInWindow`, and the
+admin rate-limit view deliberately cannot answer this question — it counts per `(provider,
+callSource)` in Redis with no process-run dimension and so shows a cross-run sum.
+
+**3. `seventv-leaderboard` and its `leaderboardSort` are a permanent audit contract.** The import
+provenance vocabulary gains its fourth word, and `SyncImportedRequest` gains an optional
+`leaderboardSort` carrying the language-neutral sort code (`TRENDING_DAILY` / `TOP_ALL_TIME`; the
+sort cannot travel in `SourceChannelName`, which is validated as a Twitch login and would reject it
+with a 400 *after* the 7TV mutations have already run). Both are written into write-once audit rows
+and outlive any rollback of this feature: reverting the UI does not rewrite history, and a build
+that no longer knows the fourth word would render every row written with it as a bare emote count,
+losing its origin silently. So the vocabulary and the field stay understood by the reading paths —
+`AuditLogQueryService`'s projection and the audit view's `renderDetail` — even if the writing path
+goes away. An unrecognized sort code degrades to the plain count by design; an unrecognized *kind*
+must not be allowed to arise in the first place.
+
+---
+
 ### 2026-09-11 — Explicit `DELETE /api/live/connections/{id}` release replaces the next-write assumption: the proxy chain holds an abandoned SSE slot regardless of write frequency (#128)
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/LiveStreamConnectionRegistry.cs` ·

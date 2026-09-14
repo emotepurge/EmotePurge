@@ -13,11 +13,13 @@ import {
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
+import { LeaderboardImportResult } from '../../core/seven-tv/leaderboard.model';
 import { Button } from '../ui/button';
 import { openAppDialog } from '../ui/dialog';
 import { DialogShell } from '../ui/dialog-shell';
 import { FileImportResult, FileImportStep } from './file-import-step';
 import { ForeignChannelImportResult, ForeignChannelStep } from './foreign-channel-step';
+import { LeaderboardStep } from './leaderboard-step';
 
 /**
  * Frozen at the moment of the triggering click (#91) — never a live signal, so a channel switch or
@@ -31,16 +33,18 @@ export interface ImportSourceDialogData {
 
 /**
  * What the dialog closes with on success. The two file outcomes are unchanged (`FileImportResult`);
- * `'foreign'` is the third source. `undefined` on cancel, Escape or a backdrop click, same as every
- * other dialog in the app.
+ * `'foreign'` is a foreign channel's set and `'leaderboard'` is 7TV's network-wide ranking.
+ * `undefined` on cancel, Escape or a backdrop click, same as every other dialog in the app.
  */
 export type ImportSourceDialogResult =
-  FileImportResult | { kind: 'foreign'; picked: ForeignChannelImportResult };
+  | FileImportResult
+  | { kind: 'foreign'; picked: ForeignChannelImportResult }
+  | { kind: 'leaderboard'; picked: LeaderboardImportResult };
 
-/** Which sources the first step offers, in the order it offers them. A fourth source (7TV's
- *  leaderboard, #148) is one more entry here plus one more `@case` below — deliberately not a
- *  greyed-out placeholder in the meantime. */
-type ImportSourceStep = 'file' | 'channel';
+/** Which sources the first step offers, in the order it offers them. A further source is one more
+ *  entry here plus one more `@case` below — deliberately not a greyed-out placeholder in the
+ *  meantime. */
+type ImportSourceStep = 'file' | 'channel' | 'leaderboard';
 
 interface SourceOption {
   step: ImportSourceStep;
@@ -63,6 +67,14 @@ const SOURCE_OPTIONS: SourceOption[] = [
     labelKey: 'import.source.channel.label',
     hintKey: 'import.source.channel.hint',
   },
+  // Last, and deliberately so: the two above answer "I know where these emotes are", this one
+  // answers "show me something good" (spec §1). A reader scanning the list recognizes their own
+  // case in the first two or falls through to the open-ended one.
+  {
+    step: 'leaderboard',
+    labelKey: 'import.source.leaderboard.label',
+    hintKey: 'import.source.leaderboard.hint',
+  },
 ];
 
 /**
@@ -74,8 +86,9 @@ const SOURCE_OPTIONS: SourceOption[] = [
  * source a front door of its own. The source choice is now the dialog's first step, so every source
  * is reached the same way and a third one is a third row rather than a third button in the header.
  *
- * Neither branch opens a dialog of its own: the file step reports its parsed result, the channel
- * step reports its picked rows, and this dialog closes with whichever came back. The chains that
+ * No branch opens a dialog of its own: the file step reports its parsed result, the channel step
+ * and the leaderboard step report their picked rows, and this dialog closes with whichever came
+ * back. The chains that
  * follow (`startRestoreFlow`, `startImportFlow`) are started by the trigger *after* this dialog has
  * closed, which is what keeps the app's one-dialog-at-a-time rule intact and lets each chain keep
  * its own ordering.
@@ -89,7 +102,8 @@ const SOURCE_OPTIONS: SourceOption[] = [
  * That leaves exactly one resize, and it coincides with "Set laden" — i.e. with a content change the
  * reader is already watching, which is the one moment a size change reads as consequence rather than
  * caprice. Nothing else moves. The trigger is therefore the grid's visibility, not the step: entering
- * the channel branch changes nothing until the set is there.
+ * the channel branch changes nothing until the set is there, and entering the leaderboard branch
+ * nothing until its list has arrived.
  *
  * **The action row's cast follows the same state**, and only that one: "Weiter" is absent until the
  * grid is there. Without that, the channel step carried two forward actions at once — "Set laden" at
@@ -107,7 +121,14 @@ const SOURCE_OPTIONS: SourceOption[] = [
  */
 @Component({
   selector: 'app-import-source-dialog',
-  imports: [Button, DialogShell, FileImportStep, ForeignChannelStep, TranslocoPipe],
+  imports: [
+    Button,
+    DialogShell,
+    FileImportStep,
+    ForeignChannelStep,
+    LeaderboardStep,
+    TranslocoPipe,
+  ],
   template: `
     <app-dialog-shell [dialogTitle]="titleKey() | transloco">
       @switch (step()) {
@@ -146,6 +167,9 @@ const SOURCE_OPTIONS: SourceOption[] = [
         @case ('channel') {
           <app-foreign-channel-step />
         }
+        @case ('leaderboard') {
+          <app-leaderboard-step />
+        }
       }
 
       <button
@@ -173,8 +197,8 @@ const SOURCE_OPTIONS: SourceOption[] = [
           type="button"
           appButton="primary"
           buttonSize="lg"
-          [disabled]="channelResult() === null"
-          (click)="continueWithChannel()"
+          [disabled]="pickedResult() === null"
+          (click)="continueWithPicked()"
         >
           {{ 'import.foreignChannel.continue' | transloco }}
         </button>
@@ -190,6 +214,7 @@ export class ImportSourceDialog {
 
   private readonly fileStep = viewChild(FileImportStep);
   private readonly channelStep = viewChild(ForeignChannelStep);
+  private readonly leaderboardStep = viewChild(LeaderboardStep);
   private readonly sourceOptionButtons =
     viewChildren<ElementRef<HTMLButtonElement>>('sourceOption');
 
@@ -206,17 +231,38 @@ export class ImportSourceDialog {
         return 'restore.import.title';
       case 'channel':
         return 'import.foreignChannel.title';
+      case 'leaderboard':
+        return 'import.leaderboard.title';
       default:
         return 'import.source.title';
     }
   });
 
   protected readonly channelResult = computed(() => this.channelStep()?.result() ?? null);
+  protected readonly leaderboardResult = computed(() => this.leaderboardStep()?.result() ?? null);
+
+  /**
+   * What the current branch has to carry forward, or `null`. Only one of the two grid-bearing steps
+   * is ever mounted — `@switch` destroys the other — so this is a coalesce rather than a decision,
+   * and the "Weiter" button stays one button with one condition instead of one per source.
+   */
+  protected readonly pickedResult = computed<ImportSourceDialogResult | null>(() => {
+    const channel = this.channelResult();
+    if (channel !== null) {
+      return { kind: 'foreign', picked: channel };
+    }
+    const leaderboard = this.leaderboardResult();
+    return leaderboard === null ? null : { kind: 'leaderboard', picked: leaderboard };
+  });
 
   /** The one state this dialog changes shape around — see the class doc. `false` on every step that
-   *  has no grid on it, including the channel step before its first successful load. It drives both
-   *  the pane width and whether the action row carries a "Weiter" at all. */
-  protected readonly gridVisible = computed(() => this.channelStep()?.showsGrid() ?? false);
+   *  has no grid on it, including the channel step before its first successful load and the
+   *  leaderboard step while its first list is still loading. It drives both the pane width and
+   *  whether the action row carries a "Weiter" at all. */
+  protected readonly gridVisible = computed(
+    () =>
+      (this.channelStep()?.showsGrid() ?? false) || (this.leaderboardStep()?.showsGrid() ?? false),
+  );
 
   constructor() {
     // The overlay ref is CDK's own handle on the pane element, and the pane is where a width has to
@@ -243,12 +289,12 @@ export class ImportSourceDialog {
     this.focusStepEntryAfterRender();
   }
 
-  protected continueWithChannel(): void {
-    const picked = this.channelResult();
-    if (picked === null) {
+  protected continueWithPicked(): void {
+    const result = this.pickedResult();
+    if (result === null) {
       return;
     }
-    this.dialogRef.close({ kind: 'foreign', picked });
+    this.dialogRef.close(result);
   }
 
   // Deferred, because the control to focus is only queried into existence by the render that the
@@ -264,6 +310,9 @@ export class ImportSourceDialog {
         return;
       case 'channel':
         this.channelStep()?.focusFirstControl();
+        return;
+      case 'leaderboard':
+        this.leaderboardStep()?.focusFirstControl();
         return;
       default: {
         const buttons = this.sourceOptionButtons();
