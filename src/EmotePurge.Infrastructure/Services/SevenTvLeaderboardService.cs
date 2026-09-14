@@ -255,9 +255,9 @@ public sealed class SevenTvLeaderboardService(
     /// </summary>
     /// <remarks>
     /// The rate-limit figures come from the client's result rather than from a second observation,
-    /// which is why that result carries them in every outcome. They are <c>null</c> when 7TV sent no
-    /// such header — the normal case for a validation rejection, and for a parse failure behind
-    /// HTTP 200 — and an empty value in this line is therefore information, not a defect.
+    /// which is why that result carries them in every outcome. They are <c>null</c> when 7TV sent
+    /// no such header (normal for a validation rejection) or when no response came back at all —
+    /// an empty value in this line is therefore information, not a defect.
     /// </remarks>
     private void LogUpstreamRequest(
         SevenTvLeaderboardSort sortBy, int page, SevenTvEmoteSearchPageResult result, int usedInWindow)

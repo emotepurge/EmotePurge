@@ -403,9 +403,20 @@ public class SevenTvApiClient(
                 var pageDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet?.Emotes;
                 if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
                 {
-                    logger.LogWarning(
-                        "7TV-Vorschau-Abruf für Set {SetId} lieferte keine verwertbaren Daten (GraphQL-Fehlerantwort?), Seite {Page}.",
-                        emoteSetId, page);
+                    // A parse failure says so and carries the exception; everything else keeps the GraphQL hint.
+                    if (pageResult.ParseException is { } parseException)
+                    {
+                        logger.LogWarning(parseException,
+                            "7TV preview fetch for set {SetId} returned an unparseable response body, page {Page}.",
+                            emoteSetId, page);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                            "7TV-Vorschau-Abruf für Set {SetId} lieferte keine verwertbaren Daten (GraphQL-Fehlerantwort?), Seite {Page}.",
+                            emoteSetId, page);
+                    }
+
                     return SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.Unavailable);
                 }
 
@@ -446,9 +457,9 @@ public class SevenTvApiClient(
         // No log line here by design (spec 2026-09-13, T1, operator decision 2026-09-14): the one
         // line per upstream request that matters — sortBy, page, outcome, remaining, reset,
         // usedInWindow — belongs to SevenTvLeaderboardService, which knows the budget window this
-        // client does not. A second line here would make that count ambiguous (AK 31). So neither
-        // branch below logs, including the catch: a transport/parse failure still reaches the
-        // service as a plain Unavailable, which is all it needs to write its one line.
+        // client does not. A second line here would make that count ambiguous (AK 31). Neither
+        // branch below logs: a transport or parse failure still reaches the service as a plain
+        // Unavailable, which is all it needs for its one line.
         try
         {
             var payload = new
@@ -493,9 +504,9 @@ public class SevenTvApiClient(
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
-            // The header sample is unreachable for this one outcome specifically: a
-            // transport/parse failure happens before or during reading the response it would come
-            // from. Every other Unavailable/RateLimited outcome above still carries it.
+            // Reached only when SendAsync itself throws (connection/DNS/TLS failure, or a timeout/
+            // cancellation while it buffers the body) — no response exists to read headers from.
+            // JsonException stays in the guard defensively; FetchV4PageAsync handles a parse failure.
             return SevenTvEmoteSearchPageResult.Failed(SevenTvEmoteSearchLookupStatus.Unavailable, null, null, null);
         }
     }
@@ -553,12 +564,13 @@ public class SevenTvApiClient(
         {
             dto = await response.Content.ReadFromJsonAsync<TDto>(SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            // The HTTP layer really did answer 200 — that is what gets counted — even though the body
-            // could not be parsed. The caller's outer catch maps the rethrown exception to Unavailable.
+            // HTTP 200 did answer (that's what gets counted) and the headers already exist, so
+            // return Unavailable with the sample instead of rethrowing into a catch with no response to read;
+            // the exception rides along for callers that log it.
             RecordForeignPreviewObservation(response, callSource, statusOverride: null, retryAfterSeconds);
-            throw;
+            return new V4PageResult<TDto>(V4PageStatus.Unavailable, null, null, headerSample, ex);
         }
 
         if (IsRateLimited(dto?.Errors))
@@ -939,8 +951,10 @@ public class SevenTvApiClient(
     // Nested at the class end (Regel 19) — a pure return-value carrier local to FetchV4PageAsync and
     // its callers (FetchPreviewPageAsync, SearchEmotesAsync), not part of this client's public shape.
     // HeaderSample is null unless UsesSearchRateLimitHeaders(callSource) — FetchPreviewPageAsync
-    // never reads or forwards one.
-    private readonly record struct V4PageResult<TDto>(V4PageStatus Status, TDto? Dto, TimeSpan? RetryAfter, V4HeaderSample? HeaderSample = null);
+    // never reads or forwards one. ParseException is set only when a JSON parse failure caused the
+    // Unavailable outcome, so a caller can tell that case apart from the rest.
+    private readonly record struct V4PageResult<TDto>(
+        V4PageStatus Status, TDto? Dto, TimeSpan? RetryAfter, V4HeaderSample? HeaderSample = null, JsonException? ParseException = null);
 
     // 7TV's x-ratelimit-search-* header sample, as read for one response. Only ever built for the
     // leaderboard call source (BuildSearchHeaderSample) — see SevenTvEmoteSearchPageResult for why
