@@ -42,8 +42,10 @@ public class SevenTvApiClient(
     private const int SetEntriesPerPage = 500;
     private const int MaxSetEntryPages = 10;
 
-    // Ceiling for a reset hint read out of a GraphQL error payload (ReadResetHintSeconds). Six hours
-    // is comfortably above the ~1 h search-bucket lockout measured live and far below anything that
+    // Ceiling for a reset hint, whether read out of a GraphQL error payload's extensions.headers
+    // (ReadResetHintSeconds) or out of the HTTP x-ratelimit-search-reset header directly
+    // (ReadSearchResetHeaderSeconds) — both feed a circuit breaker's open duration. Six hours is
+    // comfortably above the ~1 h search-bucket lockout measured live and far below anything that
     // could be a Unix timestamp, so an unexpected unit is dropped instead of silently keeping the
     // circuit breaker shut for years.
     private const int MaxResetHintSeconds = 6 * 60 * 60;
@@ -589,8 +591,15 @@ public class SevenTvApiClient(
     private static bool UsesSearchRateLimitHeaders(string callSource) =>
         callSource == RateLimitCallSources.SevenTvLeaderboard;
 
+    // Same plausibility bound as ReadResetHintSeconds's MaxResetHintSeconds, and for the same
+    // reason (Fix-Lauf 1, Befund A): this value feeds the leaderboard breaker's open duration
+    // exactly as the GraphQL hint feeds the preview breaker's, and an epoch-shaped or negative
+    // x-ratelimit-search-reset would otherwise hold it shut for decades. The stock's own [60 s, 1 h]
+    // clamp only protects the stock entry, not this earlier read.
     private static int? ReadSearchResetHeaderSeconds(HttpResponseMessage response) =>
         int.TryParse(ProviderRequestTelemetryHandler.ReadHeader(response, SearchRateLimitResetHeader), out var seconds)
+            && seconds > 0
+            && seconds <= MaxResetHintSeconds
             ? seconds
             : null;
 

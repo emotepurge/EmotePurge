@@ -92,6 +92,29 @@ public class SevenTvApiClientLeaderboardSearchTests
     }
 
     /// <summary>
+    /// An epoch-shaped (or otherwise implausible) <c>x-ratelimit-search-reset</c> must not become
+    /// a decades-long <c>RetryAfter</c> — the same plausibility bound
+    /// <c>ReadResetHintSeconds</c>/<c>MaxResetHintSeconds</c> already applies to the GraphQL hint
+    /// (Fix-Lauf 1, Befund A). Falls back to <c>Retry-After</c> when the header value is rejected.
+    /// The header <em>sample</em> is unaffected — it carries the header's raw string verbatim
+    /// regardless of plausibility, same as every other <c>RateLimit*</c> field on the observation.
+    /// </summary>
+    [Fact]
+    public async Task LiteralHttp429_WithAnEpochShapedSearchResetHeader_IsIgnored_FallingBackToRetryAfter()
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        response.Headers.TryAddWithoutValidation("Retry-After", "30");
+        response.Headers.TryAddWithoutValidation("x-ratelimit-search-reset", "1893456000");
+        var client = CreateClient(response);
+
+        var result = await client.SearchEmotesAsync(SevenTvLeaderboardSort.TopAllTime, page: 1);
+
+        Assert.Equal(SevenTvEmoteSearchLookupStatus.RateLimited, result.Status);
+        Assert.Equal(TimeSpan.FromSeconds(30), result.RetryAfter);
+        Assert.Equal("1893456000", result.RateLimitReset);
+    }
+
+    /// <summary>
     /// The disguised-as-200 form, with all three retry-hint sources present at once: the HTTP
     /// search-reset header must still win over both the GraphQL payload's own hint and
     /// <c>Retry-After</c> — the full F3 order, not just the two-way case the preview's own tests
@@ -192,6 +215,9 @@ public class SevenTvApiClientLeaderboardSearchTests
     {
         var telemetry = new RecordingRateLimitTelemetry();
         var response = new HttpResponseMessage(HttpStatusCode.InternalServerError);
+        response.Headers.TryAddWithoutValidation("x-ratelimit-search-limit", "100");
+        response.Headers.TryAddWithoutValidation("x-ratelimit-search-remaining", "99");
+        response.Headers.TryAddWithoutValidation("x-ratelimit-search-reset", "58");
         var client = CreateClient(response, telemetry);
 
         var result = await client.SearchEmotesAsync(SevenTvLeaderboardSort.TrendingDaily, page: 1);
@@ -200,6 +226,13 @@ public class SevenTvApiClientLeaderboardSearchTests
         var observation = Assert.Single(telemetry.Observations);
         Assert.Equal(500, observation.StatusCode);
         Assert.Equal(RateLimitCallSources.SevenTvLeaderboard, observation.CallSource);
+
+        // "Header sample in every outcome" (spec 2026-09-13) also holds for a plain 5xx — the
+        // sample is built before FetchV4PageAsync branches on the response's success/failure, so a
+        // generic upstream failure must not silently drop it.
+        Assert.Equal("100", result.RateLimitLimit);
+        Assert.Equal("99", result.RateLimitRemaining);
+        Assert.Equal("58", result.RateLimitReset);
     }
 
     /// <summary>
