@@ -328,6 +328,7 @@
         "hits24h": "Hits (24 h)",
         "misses24h": "Misses (24 h)",
         "names": {
+          "foreign-emote-set": "Foreign channel emote sets",
           "moderated-channels": "Moderated channels",
           "seventv-grants": "7TV editor grants",
           "subscriber-check": "Subscriber check"

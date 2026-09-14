@@ -328,6 +328,7 @@
         "hits24h": "Treffer (24 h)",
         "misses24h": "Fehltreffer (24 h)",
         "names": {
+          "foreign-emote-set": "Fremdkanal-Emote-Sets",
           "moderated-channels": "Moderierte Channels",
           "seventv-grants": "7TV-Editor-Grants",
           "subscriber-check": "Subscriber-Check"
