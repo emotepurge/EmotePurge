@@ -48,9 +48,7 @@ import { animatedEmoteUrl } from './emote-url';
  *
  * **Under `prefers-reduced-motion: reduce` the still is all there is.** The dwell timer never starts,
  * so the animated variant is never requested, and a preference switched on while an animation is
- * showing withdraws it at once. Handled here rather than at each call site on purpose: every surface
- * that shows a single emote goes through this component (sidecar, inspector row, drilldown dialog,
- * ballot, import grid), and a preference that one of them forgot to ask about would not be honoured.
+ * showing withdraws it at once. Decided here rather than at each call site, so no surface can forget it.
  */
 @Component({
   selector: 'app-emote-sprite-animated',
@@ -95,13 +93,8 @@ export class EmoteSpriteAnimated {
    */
   readonly dwellMs = input(200);
 
-  /**
-   * Fires the animated url once the animation has actually painted over the still — the moment the
-   * still hides itself. For a caller that keeps a still of its own underneath this component (the
-   * import grid does, so that hovering a cell never re-creates, and therefore never blanks, the
-   * picture already on screen): that still has to hide at the same moment, or it shows through the
-   * animation exactly like the doubled still described in the class comment.
-   */
+  /** Fires the animated url once the animation has painted over the still. A caller with a still of
+   *  its own underneath (the import grid) hides that still at the same moment. */
   readonly animationShown = output<string>();
 
   private readonly reducedMotion = inject(ReducedMotionService);
@@ -145,8 +138,11 @@ export class EmoteSpriteAnimated {
       if (target === this.url()) {
         return;
       }
-      // See the class comment: under reduced motion there is no animation to earn.
+      // See the class comment: under reduced motion there is no animation to earn. Forgetting the
+      // earned upgrade makes switching the preference off again go through dwell and reveal anew.
       if (this.reducedMotion.prefersReducedMotion()) {
+        this.upgradedUrl.set(null);
+        this.revealedAnimatedUrl.set(null);
         return;
       }
 

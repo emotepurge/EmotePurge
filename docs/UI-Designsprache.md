@@ -467,20 +467,20 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   Clicking it empties the grid's selection and emits the empty selection through `selectionChange`,
   which re-locks "Continue". The button removes itself with the selection, so focus moves to the grid
   group (`role="group"`, `tabindex="-1"`) instead of falling to `<body>`.
-- **Animated emotes are marked in the grid and play in place (#167).** An animated emote carries a
-  small play triangle in the free top-right corner of its cell, drawn on the same scrim tokens as the
-  score badge (`--ep-sprite-scrim`/`--ep-sprite-scrim-fg`) and `aria-hidden`; the accessible name
-  says it instead, as `import.animated` between the names and the score ("Pog, animated, 7TV score
-  (all-time): 12.4k"). Whether an emote is animated comes from its url alone (`isAnimatedEmoteUrl`:
-  both sources store `4x_static.webp` for animated emotes, `4x.webp` for stills) — no field, no
-  request. Hovering or focusing an animated cell plays it after the 200 ms dwell of §2.5; leaving the
-  cell, blurring it, or leaving the grid stops it. **Exactly one cell may play:** the grid keeps a
-  single hovered key (by 7TV id, so a recycled virtual-scroll view never inherits it), and only the
-  matching cell mounts `EmoteSpriteAnimated`, on top of its own still, which it never removes — a
-  freshly mounted sprite stays invisible until it has loaded, so swapping the still out on hover
-  would blank the cell under the pointer. The still hides only once the animation has painted
-  (`EmoteSpriteAnimated.animationShown`). There is no sidecar: the dialog has no room for one. The
-  import dialog is unreachable on a coarse pointer (§2.5), so there is no touch variant.
+- **Animated emotes are marked in the grid and play in place.** An animated emote carries a small
+  play triangle in the top-right corner of its cell, on the score badge's scrim tokens
+  (`--ep-sprite-scrim`/`--ep-sprite-scrim-fg`) and `aria-hidden`; its accessible name says it instead,
+  as `import.animated` between the names and the score ("Pog, animated, 7TV score (all-time): 12.4k").
+  Whether an emote is animated comes from its url alone (`isAnimatedEmoteUrl`: `4x_static.webp` for
+  animated emotes, `4x.webp` for stills). Hovering or focusing an animated cell plays it after the
+  200 ms dwell of §2.5. **Exactly one cell plays:** the grid keeps a single playing key by 7TV id, and
+  only that cell mounts `EmoteSpriteAnimated` on top of its own still, which hides once the animation
+  has painted (`animationShown`). The pointer's hold ends when the pointer leaves the cell or the
+  grid, and whenever the viewport scrolls; focus's hold (in Chrome and Firefox a click focuses the cell
+  too) ends when focus leaves the cell. While the pointer rests on a different cell than the focused
+  one, that cell plays; when it leaves, the focused cell plays again. Either hold ends once its cell
+  leaves the rows the viewport renders, so it does not resume when the cell renders again. There is
+  no sidecar and no touch variant (the dialog is unreachable on a coarse pointer, §2.5).
 - **Focus contract: whoever enters a step lands on that step's first meaningful control.**
   Concretely: file branch → "Choose file" (the hidden `<input type="file">` cannot take focus
   itself), channel branch → the channel field, "Back" → the source row you came from (the same

@@ -18,27 +18,30 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
 **The animated marker is derived from the url, not carried as a field.** Both import sources already
-encode 7TV's `flags.animated` into `imageUrl` (`4x_static.webp` against `4x.webp`), the same marker
-`animatedEmoteUrl` has relied on since the sidecar got its animation. `isAnimatedEmoteUrl` reads it as
-a flag; a DTO field would have been a second statement of the same fact that could drift from the url
-the sprite actually loads. An unrecognised url counts as a still, because a marker that promises an
-animation which then does not play is the worse error.
+encode 7TV's `flags.animated` into `imageUrl` (`4x_static.webp` against `4x.webp`), the marker
+`animatedEmoteUrl` relies on. A DTO field would restate that fact and could drift from the url the
+sprite loads. An unrecognised url counts as a still: a marker promising an animation that does not
+play is the worse error.
 
-**One hovered key per grid, and exactly one `EmoteSpriteAnimated` for it — never one per cell.** The
-component starts its dwell timer on mount. The grid is virtualised, so a per-cell instance would start
-a timer for every row the viewport recycles while scrolling and fetch animations nobody pointed at —
-the atlas avoids this by having one instance in the sidecar, and the dialog has no room for a sidecar.
-The key is the 7TV id, not a position, so a recycled row view cannot inherit it. The playing cell keeps
-its own still underneath and hides it only once the animation has painted (new output
-`animationShown`): swapping the still for the animated component on hover would re-create the picture,
-and a fresh `EmoteSprite` is invisible until its load event, so the cell would blink on every hover.
+**One playing key per grid, and one `EmoteSpriteAnimated` for it — never one per cell.** The component
+starts its dwell on mount, so per-cell instances in the virtualised grid would start a timer for every
+recycled row and fetch animations nobody pointed at. The playing key is derived from a pointer key and
+a focus key, pointer first, each ended only by its own events; keys are 7TV ids, so a recycled row view
+cannot inherit one. **A scroll clears the pointer key:** a cell recycled under a resting pointer fires
+no mouseleave, so its key would otherwise survive and play the cell as soon as it rendered again. The
+focus key survives a scroll, so a cell that Tab scrolls into view still plays. **Either key is cleared
+once its cell leaves the viewport's rendered range**: virtualisation removes a
+focused cell without a blur, and in Chrome and Firefox a click focuses the cell, so neither pointer nor
+focus events can end playback on their own. A click deliberately stays focus playback: telling it apart
+would take the `:focus-visible` heuristic, and the range check already ends it. The playing cell keeps
+its still underneath and hides it on `animationShown`, because a freshly mounted sprite stays
+invisible until it has loaded.
 
-**`prefers-reduced-motion: reduce` is honoured inside `EmoteSpriteAnimated`, not per call site.** Under
-the preference the dwell timer never starts, so the animation is neither requested nor played, and a
-preference switched on mid-animation withdraws it. This deliberately changes the sidecar, the
-inspector row, the drilldown dialog and the ballot as well: all of them show a single emote through
-this component, and a preference that one of them forgot to ask about would not be honoured. The live
-media-query signal is a new `ReducedMotionService`, shaped like `PointerModeService`.
+**`prefers-reduced-motion: reduce` is honoured inside `EmoteSpriteAnimated`, not per call site.** The
+dwell timer never starts; a preference switched on mid-animation withdraws the animation and forgets the
+earned upgrade, so switching it off again goes through dwell and reveal anew. This deliberately changes
+the sidecar, inspector row, drilldown dialog and ballot too. The live media-query signal is a new
+`ReducedMotionService`, shaped like `PointerModeService`.
 
 ---
 

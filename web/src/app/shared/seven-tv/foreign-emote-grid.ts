@@ -1,4 +1,5 @@
-import { ScrollingModule } from '@angular/cdk/scrolling';
+import { ListRange } from '@angular/cdk/collections';
+import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
 import {
   Component,
   ElementRef,
@@ -194,15 +195,13 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
           </p>
         }
 
-        <!-- Leaving the grid as a whole also ends playback: a cell the viewport recycled while the
-             pointer rested on it is gone, and fires no mouseleave of its own. -->
         <!-- tabindex -1: where focus goes when the clear button unmounts itself. -->
         <div
           #gridContainer
           role="group"
           tabindex="-1"
           [attr.aria-label]="'import.foreignChannel.grid.ariaLabel' | transloco"
-          (mouseleave)="hoveredKey.set(null)"
+          (mouseleave)="onGridLeave()"
         >
           <cdk-virtual-scroll-viewport
             [itemSize]="rowPx"
@@ -226,21 +225,18 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
                     (click)="onCellClick(emote, $event)"
                     (mousedown)="$event.shiftKey && $event.preventDefault()"
                     (mouseenter)="onCellEnter(emote)"
-                    (focus)="onCellEnter(emote)"
+                    (focus)="onCellFocus(emote)"
                     (mouseleave)="onCellLeave(emote)"
-                    (blur)="onCellLeave(emote)"
+                    (blur)="onCellBlur(emote)"
                   >
                     <span
                       class="app-sprite-cell relative block h-16 w-16 transition-shadow hover:inset-ring-1 hover:inset-ring-border-strong"
                     >
-                      <!-- The still never leaves the cell, not even while the animation plays: a
-                           freshly mounted sprite stays invisible until its load event, so swapping it
-                           out on hover would blank the picture under the pointer. The animation lies
-                           on top instead, and the still only hides once that has painted. -->
+                      <!-- The still stays mounted under the animation and hides once that has painted. -->
                       <app-emote-sprite
                         [url]="emote.imageUrl"
                         [size]="cellPx"
-                        [spriteClass]="stillSpriteClass(emote)"
+                        [spriteClass]="stillHidden(emote) ? hiddenSpriteClass : spriteClass"
                       />
                       @if (playsAnimation(emote)) {
                         <span class="absolute inset-0">
@@ -338,7 +334,10 @@ export class ForeignEmoteGrid {
   private readonly transloco = inject(TranslocoService);
 
   private readonly gridContainerRef = viewChild<ElementRef<HTMLElement>>('gridContainer');
+  private readonly viewport = viewChild(CdkVirtualScrollViewport);
   private readonly containerWidth = signal(0);
+  /** The rows the viewport currently renders, mirrored from `renderedRangeStream`. */
+  private readonly renderedRange = signal<ListRange>({ start: 0, end: 0 });
 
   /** Never pre-selected (spec P5'/AK16) — see {@link ForeignEmoteSortMode}. Only meaningful without
    *  a `forcedSortMode`; see {@link effectiveSortMode}. */
@@ -433,23 +432,24 @@ export class ForeignEmoteGrid {
 
   protected readonly cellPx = CELL_PX;
   protected readonly rowPx = ROW_PX;
+  protected readonly spriteClass = SPRITE_CLASS;
+  protected readonly hiddenSpriteClass = `${SPRITE_CLASS} invisible`;
+
+  /** The cell the pointer rests on and the focused cell, by 7TV id, each ended only by its own events. */
+  private readonly pointerKey = signal<string | null>(null);
+  private readonly focusKey = signal<string | null>(null);
+  /** The one cell that may play, pointer first. One per grid because `EmoteSpriteAnimated` starts its
+   *  dwell on mount, in every cell it is rendered in. */
+  protected readonly playingKey = computed(() => this.pointerKey() ?? this.focusKey());
 
   /**
-   * The one cell the pointer or the keyboard is on, by 7TV id. Exactly one cell may play its
-   * animation, and only this one: `EmoteSpriteAnimated` starts its dwell timer on mount, so an
-   * instance in every cell would start a timer for every row the virtual viewport recycles while
-   * scrolling, and fetch animations nobody pointed at. Keyed by id rather than by position, so a
-   * recycled row view never inherits another emote's hover.
-   */
-  protected readonly hoveredKey = signal<string | null>(null);
-
-  /**
-   * Which hovered cell's animation has painted, so its still can hide (see `stillSpriteClass`).
-   * Reset on every hover change, the same race `EmoteSpriteAnimated.revealedAnimatedUrl` guards
-   * against: coming back to a cell must not hide its still before the new animation has painted.
+   * Which playing cell's animation has painted, so its still can hide (see `stillHidden`).
+   * Reset whenever the playing key changes, including the hand-back from pointer to focus — the same
+   * race `EmoteSpriteAnimated.revealedAnimatedUrl` guards against: coming back to a cell must not hide
+   * its still before the new animation has painted.
    */
   protected readonly revealedKey = linkedSignal<string | null, string | null>({
-    source: this.hoveredKey,
+    source: this.playingKey,
     computation: () => null,
   });
 
@@ -469,6 +469,32 @@ export class ForeignEmoteGrid {
       observer.observe(element);
       onCleanup(() => observer.disconnect());
     });
+
+    effect((onCleanup) => {
+      const viewport = this.viewport();
+      if (!viewport) {
+        return;
+      }
+      const subscription = viewport.elementScrolled().subscribe(() => this.onViewportScroll());
+      this.renderedRange.set(viewport.getRenderedRange());
+      subscription.add(
+        viewport.renderedRangeStream.subscribe((range) => this.renderedRange.set(range)),
+      );
+      onCleanup(() => subscription.unsubscribe());
+    });
+
+    // Either key outlives its cell otherwise: virtualisation removes a focused cell without a blur,
+    // and a click focuses the cell in Chrome and Firefox. The cell would then play again when it
+    // renders with no hover and no focus on it. Checked against the rendered range, not the scroll
+    // event, because the range can change after the last scroll event has been handled.
+    for (const key of [this.pointerKey, this.focusKey]) {
+      effect(() => {
+        const value = key();
+        if (value !== null && !this.isRendered(value)) {
+          key.set(null);
+        }
+      });
+    }
   }
 
   protected onSortChange(event: Event): void {
@@ -489,15 +515,30 @@ export class ForeignEmoteGrid {
   }
 
   protected onCellEnter(emote: ForeignEmoteRow): void {
-    this.hoveredKey.set(emote.sevenTvEmoteId);
+    this.pointerKey.set(emote.sevenTvEmoteId);
   }
 
-  /** Only clears the key if it is still this cell's: a blur on a keyboard-focused cell must not stop
-   *  the animation of a different cell the mouse is resting on. */
+  /** Only if the pointer key is still this cell's: events from another cell must not end it. */
   protected onCellLeave(emote: ForeignEmoteRow): void {
-    if (this.hoveredKey() === emote.sevenTvEmoteId) {
-      this.hoveredKey.set(null);
+    if (this.pointerKey() === emote.sevenTvEmoteId) {
+      this.pointerKey.set(null);
     }
+  }
+
+  protected onCellFocus(emote: ForeignEmoteRow): void {
+    this.focusKey.set(emote.sevenTvEmoteId);
+  }
+
+  /** Ends focus playback only: a clicked cell keeps its pointer key until the pointer leaves. */
+  protected onCellBlur(emote: ForeignEmoteRow): void {
+    if (this.focusKey() === emote.sevenTvEmoteId) {
+      this.focusKey.set(null);
+    }
+  }
+
+  /** Hands playback back to the focused cell, if any. */
+  protected onGridLeave(): void {
+    this.pointerKey.set(null);
   }
 
   /** Both import sources encode 7TV's animated flag into the url (`4x_static.webp`), so the marker
@@ -506,16 +547,15 @@ export class ForeignEmoteGrid {
     return isAnimatedEmoteUrl(emote.imageUrl);
   }
 
-  /** Whether this cell mounts the animated sprite: the hovered one, and only if it has an animation.
+  /** Whether this cell mounts the animated sprite: the playing one, and only if it has an animation.
    *  A hovered still mounts nothing and requests nothing. */
   protected playsAnimation(emote: ForeignEmoteRow): boolean {
-    return this.hoveredKey() === emote.sevenTvEmoteId && this.isAnimated(emote);
+    return this.playingKey() === emote.sevenTvEmoteId && this.isAnimated(emote);
   }
 
-  protected stillSpriteClass(emote: ForeignEmoteRow): string {
-    return this.playsAnimation(emote) && this.revealedKey() === emote.sevenTvEmoteId
-      ? `${SPRITE_CLASS} invisible`
-      : SPRITE_CLASS;
+  /** The cell's own still hides only once its animation has painted over it. */
+  protected stillHidden(emote: ForeignEmoteRow): boolean {
+    return this.playsAnimation(emote) && this.revealedKey() === emote.sevenTvEmoteId;
   }
 
   protected trackRowIndex(index: number): number {
@@ -561,6 +601,27 @@ export class ForeignEmoteGrid {
     return value >= 1000
       ? `${(value / 1000).toLocaleString(locale, { maximumFractionDigits: 1 })}k`
       : value.toLocaleString(locale);
+  }
+
+  /**
+   * A cell recycled under a resting pointer fires no mouseleave, so a scroll clears the pointer key.
+   * The focus key survives it: Tab scrolls a partly hidden cell into view, and that cell should play.
+   * Focus leaving the cell ends it through blur, the cell leaving the rendered range through the
+   * range check in the constructor.
+   */
+  private onViewportScroll(): void {
+    this.pointerKey.set(null);
+  }
+
+  /** Whether the cell for this key is among the rows the viewport renders. */
+  private isRendered(key: string): boolean {
+    const index = this.sortedEmotes().findIndex((emote) => emote.sevenTvEmoteId === key);
+    if (index < 0) {
+      return false;
+    }
+    const rowIndex = Math.floor(index / this.columns());
+    const { start, end } = this.renderedRange();
+    return rowIndex >= start && rowIndex < end;
   }
 
   /** The score as it is announced: the tile's own text, except that the typographic dash it uses

@@ -1,5 +1,6 @@
 import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ReducedMotionService } from '../../core/motion/reduced-motion.service';
@@ -158,6 +159,44 @@ describe('EmoteSpriteAnimated', () => {
     fixture.detectChanges();
     expect(stillImage().className).toContain('invisible');
   });
+
+  it('reports the animation as shown once it has painted', () => {
+    const shown = subscribeShown();
+    vi.advanceTimersByTime(200);
+    fixture.detectChanges();
+    expect(shown).toEqual([]);
+
+    overlayImage().dispatchEvent(new Event('load'));
+    fixture.detectChanges();
+
+    expect(shown).toEqual(['https://cdn.7tv.app/emote/aaa/2x.webp']);
+  });
+
+  // A settle report still in flight for an emote the url has moved past.
+  it('ignores a settle report for an animation the url has already left', () => {
+    const shown = subscribeShown();
+    vi.advanceTimersByTime(200);
+    fixture.detectChanges();
+    host.url.set(ANIMATED_B);
+    fixture.detectChanges();
+
+    sprite()['onOverlaySettled']('https://cdn.7tv.app/emote/aaa/2x.webp');
+    fixture.detectChanges();
+
+    expect(shown).toEqual([]);
+    expect(sprite()['stillHidden']()).toBe(false);
+  });
+
+  function sprite(): EmoteSpriteAnimated {
+    return fixture.debugElement.query(By.directive(EmoteSpriteAnimated))
+      .componentInstance as EmoteSpriteAnimated;
+  }
+
+  function subscribeShown(): string[] {
+    const shown: string[] = [];
+    sprite().animationShown.subscribe((url) => shown.push(url));
+    return shown;
+  }
 });
 
 describe('EmoteSpriteAnimated under prefers-reduced-motion', () => {
@@ -169,6 +208,16 @@ describe('EmoteSpriteAnimated under prefers-reduced-motion', () => {
     return [...fixture.nativeElement.querySelectorAll('img')].map(
       (img: HTMLImageElement) => img.getAttribute('src') ?? '',
     );
+  }
+
+  function overlayImage(): HTMLImageElement {
+    return fixture.nativeElement.querySelectorAll('img')[1];
+  }
+
+  function stillHidden(): boolean {
+    return fixture.debugElement
+      .query(By.directive(EmoteSpriteAnimated))
+      .componentInstance['stillHidden']();
   }
 
   beforeEach(async () => {
@@ -218,17 +267,44 @@ describe('EmoteSpriteAnimated under prefers-reduced-motion', () => {
     vi.advanceTimersByTime(200);
     fixture.detectChanges();
     expect(sources()).toEqual([ANIMATED_B, 'https://cdn.7tv.app/emote/bbb/2x.webp']);
-    const images = [...fixture.nativeElement.querySelectorAll('img')] as HTMLImageElement[];
-    images[1].dispatchEvent(new Event('load'));
+    overlayImage().dispatchEvent(new Event('load'));
     fixture.detectChanges();
-    expect(images[0].className).toContain('invisible');
+    expect(stillHidden()).toBe(true);
 
     reduce.set(true);
     fixture.detectChanges();
 
     expect(sources()).toEqual([ANIMATED_B]);
     // The still has to come back with it — a withdrawn overlay over a hidden still is a blank cell.
-    expect(images[0].className).not.toContain('invisible');
+    expect(stillHidden()).toBe(false);
+  });
+
+  // Switched off again with the same emote under the pointer: a remembered upgrade would mount an
+  // unloaded overlay at once and hide the still under it, a blank cell until (or unless) it loads.
+  it('makes the animation earn its dwell and reveal again once the preference is switched off', () => {
+    reduce.set(false);
+    host.url.set(ANIMATED_B);
+    fixture.detectChanges();
+    vi.advanceTimersByTime(200);
+    fixture.detectChanges();
+    overlayImage().dispatchEvent(new Event('load'));
+    fixture.detectChanges();
+    reduce.set(true);
+    fixture.detectChanges();
+
+    reduce.set(false);
+    fixture.detectChanges();
+    expect(sources()).toEqual([ANIMATED_B]);
+    expect(stillHidden()).toBe(false);
+
+    vi.advanceTimersByTime(200);
+    fixture.detectChanges();
+    expect(sources()).toEqual([ANIMATED_B, 'https://cdn.7tv.app/emote/bbb/2x.webp']);
+    expect(stillHidden()).toBe(false);
+
+    overlayImage().dispatchEvent(new Event('load'));
+    fixture.detectChanges();
+    expect(stillHidden()).toBe(true);
   });
 
   it('leaves a still emote a single image', () => {
