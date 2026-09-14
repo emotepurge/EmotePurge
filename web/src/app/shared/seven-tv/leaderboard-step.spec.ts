@@ -241,7 +241,9 @@ describe('LeaderboardStep', () => {
     fixture.detectChanges();
 
     expect(grid().truncatedMessageKey()).toBe('import.leaderboard.truncated.TOP_ALL_TIME');
-    expect(host.textContent).toContain('Rangfolge: 1, insgesamt 1371890.');
+    // Locale-grouped, not the raw 1371890 — 7TV's own totals run into the millions, and the
+    // truncation notice's counts are formatted for the active locale now.
+    expect(host.textContent).toContain('Rangfolge: 1, insgesamt 1.371.890.');
   });
 
   it('puts the caret on the list chooser while the first list is still loading', () => {

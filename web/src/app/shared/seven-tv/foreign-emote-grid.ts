@@ -133,9 +133,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
   template: `
     @if (truncated()) {
       <app-notice-banner variant="warning">
-        {{
-          truncatedMessageKey() | transloco: { loaded: emotes().length, totalCount: totalCount() }
-        }}
+        {{ truncatedMessageKey() | transloco: truncatedNoticeParams() }}
       </app-notice-banner>
     }
 
@@ -164,10 +162,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
           </div>
         }
         <span class="text-xs text-fg-muted">
-          {{
-            'import.foreignChannel.selectedCount'
-              | transloco: { count: selection.selectedKeys().length }
-          }}
+          {{ 'import.foreignChannel.selectedCount' | transloco: selectedCountParams() }}
         </span>
       </div>
 
@@ -356,6 +351,32 @@ export class ForeignEmoteGrid {
     this.sortedEmotes,
     (row) => row.sevenTvEmoteId,
   );
+
+  /**
+   * Transloco interpolation prints its params as raw JS numbers — no grouping. 7TV's "top overall"
+   * leaderboard reports totals in the millions (1372094, not 1.372.094/1,372,094), and `loaded`
+   * runs into the low thousands on a truncated load, so both need locale-aware formatting rather
+   * than a straight pass-through. Regel 14: a `computed()` over `languageService.lang()`, so a
+   * language switch reformats the separator instead of freezing on whatever was active on first
+   * render.
+   */
+  protected readonly truncatedNoticeParams = computed(() => {
+    const locale = toLocale(this.languageService.lang());
+    const total = this.totalCount();
+    return {
+      loaded: this.emotes().length.toLocaleString(locale),
+      totalCount: total === null ? total : total.toLocaleString(locale),
+    };
+  });
+
+  /** Same reasoning as {@link truncatedNoticeParams}: a channel's 7TV set can hold well over 1000
+   *  emotes (`SevenTvApiClient.cs`'s "subscriber-sized sets" note), so a "N selected" count reaches
+   *  four digits once a large set is mostly picked. */
+  protected readonly selectedCountParams = computed(() => ({
+    count: this.selection
+      .selectedKeys()
+      .length.toLocaleString(toLocale(this.languageService.lang())),
+  }));
 
   protected readonly cellPx = CELL_PX;
   protected readonly rowPx = ROW_PX;

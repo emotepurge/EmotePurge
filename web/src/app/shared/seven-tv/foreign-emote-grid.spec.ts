@@ -352,4 +352,30 @@ describe('ForeignEmoteGrid', () => {
     expect(ownId).not.toBe(otherId);
     expect(host.querySelector('select')?.getAttribute('id')).toBe(ownId);
   });
+
+  it('formats the truncation-notice and selected-count parameters with locale grouping, and reacts to a language switch (Regel 14)', () => {
+    // 7TV's "top overall" leaderboard reported 1,372,094 total entries live — six digits is the
+    // shape the observed defect actually had, not a synthetic edge case.
+    const many = Array.from({ length: 1500 }, (_, i) => row({ sevenTvEmoteId: `e${i}` }));
+    render(many, true, 1372094);
+
+    component['selection'].onRowClick(many[0], { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(many[1499], { shiftKey: true } as MouseEvent);
+    expect(component['selection'].selectedKeys().length).toBe(1500);
+
+    expect(component['truncatedNoticeParams']()).toEqual({
+      loaded: '1.500',
+      totalCount: '1.372.094',
+    });
+    expect(component['selectedCountParams']()).toEqual({ count: '1.500' });
+
+    const languageService = TestBed.inject(LanguageService);
+    (languageService.lang as unknown as { set: (value: string) => void }).set('en');
+
+    expect(component['truncatedNoticeParams']()).toEqual({
+      loaded: '1,500',
+      totalCount: '1,372,094',
+    });
+    expect(component['selectedCountParams']()).toEqual({ count: '1,500' });
+  });
 });
