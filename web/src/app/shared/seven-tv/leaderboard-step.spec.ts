@@ -15,6 +15,7 @@ import { LeaderboardStep } from './leaderboard-step';
 
 const DE_TRANSLATIONS = {
   import: {
+    clearSelection: 'Auswahl aufheben',
     foreignChannel: {
       retry: 'Erneut versuchen',
       selectedCount: '{{ count }} ausgewählt',
@@ -182,6 +183,23 @@ describe('LeaderboardStep', () => {
     expect(grid()).not.toBe(firstGrid);
     expect(grid()['selection'].selectedKeys()).toEqual([]);
     expect(host.textContent).toContain('0 ausgewählt');
+    expect(component.result()).toBeNull();
+  });
+
+  it('locks "Continue" again once the grid\'s clear-selection button empties the pick (#166)', () => {
+    expectRequest('TRENDING_DAILY').flush(response());
+    fixture.detectChanges();
+
+    component['onSelectionChange']([row('e1', 'catJAM')]);
+    fixture.detectChanges();
+    expect(component.result()).not.toBeNull();
+
+    // Drives it through the grid's own method, the same path the button in its template calls —
+    // this step only ever learns about the selection through selectionChange (see that method's
+    // doc comment on ForeignEmoteGrid).
+    grid()['clearSelection']();
+    fixture.detectChanges();
+
     expect(component.result()).toBeNull();
   });
 

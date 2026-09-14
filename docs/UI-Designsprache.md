@@ -461,6 +461,20 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   cannot take focus. Switching the list clears the grid's selection visibly and re-locks
   "Continue" — a selection made against one list has no honest meaning against the other, the same
   reasoning `ForeignChannelStep` already applies to a new channel query.
+- **`ForeignEmoteGrid` carries its own clear-selection button, next to the "N selected" count in its
+  header row, shown only while at least one emote is marked (#166).** It is the atlas's
+  `MassDeletePanel` button reused in shape — same `appButton="neutral"` look, same "only while
+  something is picked" gate, no count baked into the label — but it does **not** fall under §8.7:
+  that section governs a page's own action surfaces (the header, the dock) for a selection that
+  lives on a sheet, and this is neither — it is one control inside a dialog step, with no dock and
+  no destructive action for the section's ordering rule to place it against. It gets its own key,
+  `import.clearSelection`, rather than reusing `massDelete.clearSelection`: the two buttons happen
+  to look alike, but a per-namespace key for a per-namespace control is the pattern the rest of this
+  dialog already follows (`import.foreignChannel.*`, `import.leaderboard.*`). Clicking it clears the
+  grid's own `ListSelection` **and** emits the now-empty selection through `selectionChange` — the
+  emission is what the button actually depends on, since neither host step reads the selection any
+  other way and a clear that only emptied the grid without emitting would leave "Continue" enabled
+  against nothing marked (the defect class of #132/#133).
 - **Focus contract: whoever enters a step lands on that step's first meaningful control.**
   Concretely: file branch → "Choose file" (the hidden `<input type="file">` cannot take focus
   itself), channel branch → the channel field, "Back" → the source row you came from (the same

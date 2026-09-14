@@ -11,6 +11,7 @@ import { ForeignEmoteGrid } from './foreign-emote-grid';
 // Only the keys this component translates.
 const DE_TRANSLATIONS = {
   import: {
+    clearSelection: 'Auswahl aufheben',
     foreignChannel: {
       empty: 'Das aktive 7TV-Set dieses Kanals hat keine Emotes.',
       truncated: 'Nur ein Teil des Sets konnte geladen werden ({{ loaded }} von {{ totalCount }}).',
@@ -174,6 +175,46 @@ describe('ForeignEmoteGrid', () => {
     component['onCellClick'](a, { shiftKey: false } as MouseEvent);
     expect(component['selection'].isSelected(a)).toBe(false);
     expect(emitted.at(-1)).toEqual([]);
+  });
+
+  it('clears the whole selection and emits an empty array (#166)', () => {
+    // The emission is the point of the test: neither host step reads ListSelection directly, both
+    // learn about a cleared selection only through selectionChange (see clearSelection()'s doc).
+    const a = row({ sevenTvEmoteId: 'a' });
+    const b = row({ sevenTvEmoteId: 'b' });
+    render([a, b]);
+
+    const emitted: ForeignEmoteRow[][] = [];
+    component.selectionChange.subscribe((rows) => emitted.push(rows));
+
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    component['onCellClick'](b, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+
+    component['clearSelection']();
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+    expect(emitted.at(-1)).toEqual([]);
+  });
+
+  it('shows the clear-selection button only while at least one emote is selected (#166)', () => {
+    const a = row({ sevenTvEmoteId: 'a' });
+    render([a]);
+    const clearButton = () =>
+      Array.from(host.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Auswahl aufheben',
+      );
+
+    expect(clearButton()).toBeUndefined();
+
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+    expect(clearButton()).not.toBeUndefined();
+
+    clearButton()?.click();
+    fixture.detectChanges();
+    expect(clearButton()).toBeUndefined();
+    expect(component['selection'].selectedKeys()).toEqual([]);
   });
 
   it('selects a contiguous range on a shift-click, only the selected rows appear in toAdd', () => {

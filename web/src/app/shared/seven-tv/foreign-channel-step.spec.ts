@@ -2,6 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
+import { By } from '@angular/platform-browser';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,9 +10,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LanguageService } from '../../core/i18n/language.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { ForeignChannelStep } from './foreign-channel-step';
+import { ForeignEmoteGrid } from './foreign-emote-grid';
 
 const DE_TRANSLATIONS = {
   import: {
+    clearSelection: 'Auswahl aufheben',
     foreignChannel: {
       channelLabel: 'Kanalname',
       placeholder: 'z. B. handofblood',
@@ -115,6 +118,11 @@ describe('ForeignChannelStep', () => {
     return found;
   }
 
+  function grid(): ForeignEmoteGrid {
+    return fixture.debugElement.query(By.directive(ForeignEmoteGrid))
+      .componentInstance as ForeignEmoteGrid;
+  }
+
   it('rejects an obviously invalid channel name locally, without making a request', () => {
     component['channelNameControl'].setValue('ab');
     component['submit']();
@@ -191,6 +199,25 @@ describe('ForeignChannelStep', () => {
       emoteSetId: 'set-1',
       rows: picked,
     });
+  });
+
+  it("locks the result again once the grid's clear-selection button empties the pick (#166)", () => {
+    component['channelNameControl'].setValue('handofblood');
+    component['submit']();
+    httpMock.expectOne('/api/seventv/channels/handofblood/emotes').flush(response());
+    fixture.detectChanges();
+
+    component['onSelectionChange'](response().emotes);
+    fixture.detectChanges();
+    expect(component.result()).not.toBeNull();
+
+    // Drives it through the grid's own method, the same path the button in its template calls —
+    // this step only ever learns about the selection through selectionChange (see that method's
+    // doc comment on ForeignEmoteGrid).
+    grid()['clearSelection']();
+    fixture.detectChanges();
+
+    expect(component.result()).toBeNull();
   });
 
   it('drops a selection made against the previous channel when a new query starts', () => {

@@ -17,6 +17,7 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { ListSelection } from '../selection/list-selection';
 import { EmoteSprite } from '../emotes/emote-sprite';
+import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 
 /** Sprite edge and gutter in px — same numbers as the usage atlas (`ATLAS_CELL_PX`/`ATLAS_GAP_PX` in
@@ -129,7 +130,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
  */
 @Component({
   selector: 'app-foreign-emote-grid',
-  imports: [EmoteSprite, NoticeBanner, ScrollingModule, TranslocoPipe],
+  imports: [Button, EmoteSprite, NoticeBanner, ScrollingModule, TranslocoPipe],
   template: `
     @if (truncated()) {
       <app-notice-banner variant="warning">
@@ -161,9 +162,22 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
             </select>
           </div>
         }
-        <span class="text-xs text-fg-muted">
-          {{ 'import.foreignChannel.selectedCount' | transloco: selectedCountParams() }}
-        </span>
+        <!-- Count and clear stand in their own tight group, same reasoning as the score hint below:
+             what belongs together more closely than the row's own gap wraps itself in a narrower
+             flex row instead of floating at the row's own justify-between distance from the sort
+             control on the far side (§7). Clearing lives here, on the grid itself, rather than on a
+             host step: both host steps only see the selection through selectionChange, so this is
+             the one place a "clear" can act and stay honest about what it announces (#166). -->
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-fg-muted">
+            {{ 'import.foreignChannel.selectedCount' | transloco: selectedCountParams() }}
+          </span>
+          @if (selection.selectedKeys().length > 0) {
+            <button type="button" appButton="neutral" (click)="clearSelection()">
+              {{ 'import.clearSelection' | transloco }}
+            </button>
+          }
+        </div>
       </div>
 
       <!-- The hint belongs to the TILES, not to the sort row: it explains the number printed on
@@ -406,6 +420,18 @@ export class ForeignEmoteGrid {
   protected onCellClick(emote: ForeignEmoteRow, event: MouseEvent): void {
     this.selection.onRowClick(emote, event);
     this.selectionChange.emit(this.selection.selectedItems());
+  }
+
+  /**
+   * The emission is not cosmetic (#166): neither host step (`LeaderboardStep`,
+   * `ForeignChannelStep`) reads `ListSelection` itself, both only learn about a selection change
+   * through `selectionChange` — clearing the selection here without emitting would leave `result()`
+   * non-null and "Continue" enabled against a grid that visibly shows nothing marked, the same
+   * defect class as #132/#133.
+   */
+  protected clearSelection(): void {
+    this.selection.clear();
+    this.selectionChange.emit([]);
   }
 
   protected trackRowIndex(index: number): number {

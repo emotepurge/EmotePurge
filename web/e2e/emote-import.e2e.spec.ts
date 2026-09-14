@@ -441,6 +441,19 @@ test.describe('push flow: the 7TV leaderboard source (#148)', () => {
     // The default list loads without any sort switch — the third source's whole point (E7):
     // reachable without first knowing which channel the emotes live in.
     await expect(sourceDialog.getByRole('group', { name: 'Emote-Auswahl' })).toBeVisible();
+    // #166: the clear-selection button is not there with nothing marked.
+    await expect(sourceDialog.getByRole('button', { name: 'Auswahl aufheben' })).toHaveCount(0);
+
+    await sourceDialog.getByRole('button', { name: /^LBOne/ }).click();
+    await sourceDialog.getByRole('button', { name: /^LBTwo/ }).click();
+    await expect(sourceDialog.getByRole('button', { name: 'Weiter' })).toBeEnabled();
+
+    // #166: clicking it empties the grid's selection and locks "Weiter" again — proof the button
+    // does not just clear visually but actually goes through ForeignEmoteGrid.selectionChange, the
+    // one thing this step's result() reacts to.
+    await sourceDialog.getByRole('button', { name: 'Auswahl aufheben' }).click();
+    await expect(sourceDialog.getByRole('button', { name: 'Weiter' })).toBeDisabled();
+    await expect(sourceDialog.getByRole('button', { name: 'Auswahl aufheben' })).toHaveCount(0);
 
     await sourceDialog.getByRole('button', { name: /^LBOne/ }).click();
     await sourceDialog.getByRole('button', { name: /^LBTwo/ }).click();

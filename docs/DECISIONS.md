@@ -10,6 +10,34 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-14 — The import grid's clear-selection button is its own §7.3 case, not an extension of §8.7, and gets its own i18n key (#166)
+
+**Betrifft:** `web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
+`docs/UI-Designsprache.md` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+`ForeignEmoteGrid` gained a clear-selection button next to its "N selected" count, modelled on the
+atlas's existing button in `MassDeletePanel` — same look, same "only while something is picked"
+gate, no count on the label. Two things had to be decided rather than assumed.
+
+**§8.7 stays scoped to pages with a dock; the dialog is recorded as its own case in §7.3 instead.**
+§8.7's own "area of application" line already limits it to "pages with multiple selection on a
+sheet", and its ordering rule ("neutral exits such as clear selection may follow" the constructive
+group) presumes a page header and/or a dock to order things on. The import dialog has neither: it is
+one step inside a modal, with no destructive action next to this button and no run state to outlast.
+Stretching §8.7 to cover it would have made its criteria (page header, dock, position relative to a
+destructive action) apply to a place where none of the three exist. The dialog's own section (§7.3)
+already governs `ForeignEmoteGrid`, `ForeignChannelStep` and `LeaderboardStep`, so the button is
+documented there instead, as a case with its own reasoning rather than a footnote on §8.7.
+
+**New key `import.clearSelection`, not a reuse of `massDelete.clearSelection`.** The two buttons look
+alike on purpose, but the rest of this dialog already keys its texts per namespace
+(`import.foreignChannel.*`, `import.leaderboard.*`) rather than reaching into an unrelated feature's
+translation table for a string that happens to read the same today. Reusing the mass-delete key would
+also couple the two call sites' wording: a future change to how the atlas phrases its own button
+would silently reword this one too.
+
+---
+
 ### 2026-09-14 — `LanguageService.lang` flips only once the locale has loaded, not synchronously with the switch (#169)
 
 **Betrifft:** `web/src/app/core/i18n/language.service.ts`
