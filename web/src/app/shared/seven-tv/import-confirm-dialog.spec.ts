@@ -22,6 +22,17 @@ const DE_TRANSLATIONS = {
     cancel: 'Abbrechen',
     loading: 'Lädt …',
   },
+  // Same key namespace the audit view's `renderDetail` reads (`leaderboard.model.ts`,
+  // `LEADERBOARD_SORT_LABEL_KEYS`) — the dialog translates a leaderboard origin's sort through it
+  // too, so the two surfaces say exactly the same thing (E2).
+  audit: {
+    details: {
+      leaderboardSort: {
+        TRENDING_DAILY: '7TV Trend heute',
+        TOP_ALL_TIME: '7TV Top insgesamt',
+      },
+    },
+  },
   massDelete: {
     sharedSetWarningTitle:
       'Achtung: Das aktive Emote-Set gehört möglicherweise nicht (nur) diesem Channel.',
@@ -44,6 +55,7 @@ const DE_TRANSLATIONS = {
       originChannel: 'Aus Kanal {{ channel }}',
       originFile: 'Aus Datei {{ fileName }}',
       originFileDetails: 'Export aus {{ channel }}, {{ date }}',
+      originLeaderboard: 'Aus 7TVs Bestenliste: {{ sort }}',
       dateUnknown: 'Datum unbekannt',
       channelUnknown: 'Kanal unbekannt',
       target: 'Ziel: {{ channel }} · Set {{ setId }}',
@@ -125,6 +137,20 @@ function channelSource(rows: ImportRow[], overrides: Partial<ImportSource> = {})
 function foreignChannelSource(rows: ImportRow[], channelName = 'handofblood'): ImportSource {
   return {
     origin: { kind: 'seventv-channel', channelName },
+    rows,
+    duplicatesCollapsed: 0,
+    discardedRows: 0,
+  };
+}
+
+/** The fourth source (#148): 7TV's network-wide leaderboard. No channel at all — the sort itself is
+ *  the origin (spec E2/E8). */
+function leaderboardSource(
+  rows: ImportRow[],
+  sortBy: 'TRENDING_DAILY' | 'TOP_ALL_TIME' = 'TRENDING_DAILY',
+): ImportSource {
+  return {
+    origin: { kind: 'seventv-leaderboard', sortBy },
     rows,
     duplicatesCollapsed: 0,
     discardedRows: 0,
@@ -608,6 +634,36 @@ describe('ImportConfirmDialog', () => {
     it('does not flag a file from another channel', () => {
       const dialog = render({
         source: fileSource([row('new-1', 'Kappa')], { channelName: 'someoneelse' }),
+        targetChannelName: 'targetchannel',
+      });
+
+      expect(dialog.text()).not.toContain('Diese Liste stammt aus diesem Kanal.');
+    });
+
+    it('names the sort as the origin for a leaderboard pick — no channel, no file (spec E2)', () => {
+      // AK 17: nothing about the file/channel origin lines changes for this — they are covered by
+      // the tests above and left untouched.
+      const dialog = render({
+        source: leaderboardSource([row('new-1', 'Kappa')], 'TRENDING_DAILY'),
+      });
+
+      expect(dialog.text()).toContain('Aus 7TVs Bestenliste: 7TV Trend heute');
+      expect(dialog.text()).not.toContain('Aus Kanal');
+      expect(dialog.text()).not.toContain('Aus Datei');
+    });
+
+    it('names the other sort for the other leaderboard pick', () => {
+      const dialog = render({
+        source: leaderboardSource([row('new-1', 'Kappa')], 'TOP_ALL_TIME'),
+      });
+
+      expect(dialog.text()).toContain('Aus 7TVs Bestenliste: 7TV Top insgesamt');
+    });
+
+    it('does not flag a leaderboard pick as a list that came from this channel', () => {
+      // A leaderboard row has no source channel at all — `sameChannelFile` stays `fileOrigin`-only.
+      const dialog = render({
+        source: leaderboardSource([row('new-1', 'Kappa')]),
         targetChannelName: 'targetchannel',
       });
 

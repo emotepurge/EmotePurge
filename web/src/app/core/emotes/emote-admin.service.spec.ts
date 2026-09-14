@@ -149,6 +149,7 @@ describe('EmoteAdminService', () => {
         sevenTvEmoteIds: ['7tv-1', '7tv-2'],
         sourceChannelName: 'other-channel',
         sourceKind: 'channel',
+        leaderboardSort: null,
       })
       .subscribe();
 
@@ -158,6 +159,7 @@ describe('EmoteAdminService', () => {
       sevenTvEmoteIds: ['7tv-1', '7tv-2'],
       sourceChannelName: 'other-channel',
       sourceKind: 'channel',
+      leaderboardSort: null,
     });
     req.flush(null, { status: 204, statusText: 'No Content' });
   });
@@ -168,6 +170,7 @@ describe('EmoteAdminService', () => {
         sevenTvEmoteIds: ['7tv-1'],
         sourceChannelName: null,
         sourceKind: 'file',
+        leaderboardSort: null,
       })
       .subscribe();
 
@@ -176,8 +179,29 @@ describe('EmoteAdminService', () => {
       sevenTvEmoteIds: ['7tv-1'],
       sourceChannelName: null,
       sourceKind: 'file',
+      leaderboardSort: null,
     });
     expect('sourceChannelName' in req.request.body).toBe(true);
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('syncImported sends the leaderboard sort and no source channel for a leaderboard import', () => {
+    service
+      .syncImported('sensitron', {
+        sevenTvEmoteIds: ['7tv-1'],
+        sourceChannelName: null,
+        sourceKind: 'seventv-leaderboard',
+        leaderboardSort: 'TOP_ALL_TIME',
+      })
+      .subscribe();
+
+    const req = httpMock.expectOne('/api/channels/sensitron/emotes/sync-imported');
+    expect(req.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-1'],
+      sourceChannelName: null,
+      sourceKind: 'seventv-leaderboard',
+      leaderboardSort: 'TOP_ALL_TIME',
+    });
     req.flush(null, { status: 204, statusText: 'No Content' });
   });
 });

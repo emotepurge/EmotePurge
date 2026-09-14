@@ -30,7 +30,12 @@ export type AuditAction =
 
 /** The recognized `AuditLogDetail.kind` values, mirroring `AuditLogDetail.Kinds` on the server. */
 export type AuditDetailKind =
-  'emoteCount' | 'removedEntries' | 'title' | 'importedFromChannel' | 'importedFromFile';
+  | 'emoteCount'
+  | 'removedEntries'
+  | 'title'
+  | 'importedFromChannel'
+  | 'importedFromFile'
+  | 'importedFromLeaderboard';
 
 /**
  * The renderable part of an entry's details, already reduced to a closed set of shapes by the

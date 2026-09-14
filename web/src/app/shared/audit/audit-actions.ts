@@ -54,4 +54,5 @@ export const DETAIL_KEYS: Record<string, string> = {
   title: 'audit.details.title',
   importedFromChannel: 'audit.details.importedFromChannel',
   importedFromFile: 'audit.details.importedFromFile',
+  importedFromLeaderboard: 'audit.details.importedFromLeaderboard',
 };

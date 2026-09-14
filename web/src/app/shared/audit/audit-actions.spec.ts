@@ -53,8 +53,19 @@ describe('audit action tables', () => {
       'emoteCount',
       'importedFromChannel',
       'importedFromFile',
+      'importedFromLeaderboard',
       'removedEntries',
       'title',
     ]);
+  });
+
+  it('translates both leaderboard sort codes in both locales (#148, E9)', () => {
+    // Not covered by DETAIL_KEYS itself — `leaderboardSort` is a separate lookup table
+    // (`leaderboard.model.ts`, `LEADERBOARD_SORT_LABEL_KEYS`) that `renderDetail` keys into for
+    // exactly this one kind.
+    for (const code of ['TRENDING_DAILY', 'TOP_ALL_TIME']) {
+      expect(lookup(de, `audit.details.leaderboardSort.${code}`)).toBeTypeOf('string');
+      expect(lookup(en, `audit.details.leaderboardSort.${code}`)).toBeTypeOf('string');
+    }
   });
 });

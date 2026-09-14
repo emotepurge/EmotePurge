@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { ImportRow, dedupeImportRows, importOriginSourceChannelName } from './import-source';
+import {
+  ImportRow,
+  dedupeImportRows,
+  importOriginLeaderboardSort,
+  importOriginSourceChannelName,
+} from './import-source';
 
 describe('dedupeImportRows', () => {
   it('collapses a duplicate sevenTvEmoteId and keeps the first occurrence', () => {
@@ -59,6 +64,41 @@ describe('importOriginSourceChannelName', () => {
   it('sends no channel for a file origin even when the file names one', () => {
     expect(
       importOriginSourceChannelName({
+        kind: 'file',
+        fileName: 'emotes.json',
+        exportedAt: '2026-09-05T10:00:00Z',
+        channelName: 'brudivoeller_tv',
+        envelopeKind: 'emote-list',
+      }),
+    ).toBeNull();
+  });
+
+  it('sends no channel for a leaderboard origin — it has no source channel at all', () => {
+    expect(
+      importOriginSourceChannelName({ kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' }),
+    ).toBeNull();
+  });
+});
+
+describe('importOriginLeaderboardSort', () => {
+  it('names the sort for a leaderboard origin', () => {
+    expect(
+      importOriginLeaderboardSort({ kind: 'seventv-leaderboard', sortBy: 'TRENDING_DAILY' }),
+    ).toBe('TRENDING_DAILY');
+    expect(
+      importOriginLeaderboardSort({ kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' }),
+    ).toBe('TOP_ALL_TIME');
+  });
+
+  it('sends no sort for the three origins that are not a leaderboard pick', () => {
+    expect(
+      importOriginLeaderboardSort({ kind: 'channel', channelName: 'brudivoeller_tv' }),
+    ).toBeNull();
+    expect(
+      importOriginLeaderboardSort({ kind: 'seventv-channel', channelName: 'handofblood' }),
+    ).toBeNull();
+    expect(
+      importOriginLeaderboardSort({
         kind: 'file',
         fileName: 'emotes.json',
         exportedAt: '2026-09-05T10:00:00Z',

@@ -1,7 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, computed, inject } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { AdminService } from '../../core/admin/admin.service';
 import { AuditLogEntry } from '../../core/audit/audit.model';
@@ -152,6 +152,7 @@ const EMPTY_PAGE: PagedResult<AuditLogEntry> = {
 export class AdminAuditLogPage {
   private readonly adminService = inject(AdminService);
   private readonly languageService = inject(LanguageService);
+  private readonly translocoService = inject(TranslocoService);
 
   // Page *and* all three filters live in the URL: a restored "page 3" without the filter that made
   // page 3 mean anything is worse than useless (core/routing/list-query-state.ts).
@@ -207,7 +208,9 @@ export class AdminAuditLogPage {
   // Reads `lang()` so a language switch re-formats the timestamps: LOCALE_ID is fixed at bootstrap
   // and cannot follow one (same reasoning as the other two admin pages).
   protected readonly rows = computed(() =>
-    toAuditRows(this.auditLogResource.value().items, toLocale(this.languageService.lang())),
+    toAuditRows(this.auditLogResource.value().items, toLocale(this.languageService.lang()), (key) =>
+      this.translocoService.translate(key),
+    ),
   );
 
   protected readonly errorMessage = computed(() => {

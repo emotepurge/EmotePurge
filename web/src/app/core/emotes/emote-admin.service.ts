@@ -2,6 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { map, Observable } from 'rxjs';
 
+import { LeaderboardSort } from '../seven-tv/leaderboard.model';
 import { DuplicateEmoteName } from './duplicate-emote-name.model';
 import { EmoteListItem } from './emote-list-item.model';
 import { EmoteSetStatus } from './emote-set-status.model';
@@ -28,13 +29,16 @@ export interface EmoteSetWarning {
  *  `sourceKind` is spelled out here rather than derived from `ImportOrigin['kind']`: this is the
  *  wire contract, and it has to be readable next to the endpoint that validates it
  *  (`EmoteEndpoints.cs`, closed vocabulary, ordinal and lower-case). The union stays in step with
- *  `ImportOrigin` because `importOriginSourceChannelName` is exhaustive over that union — a fourth
- *  origin breaks the build there and lands here on the way past. `sourceChannelName` must be set for
- *  every non-file kind: the server answers 400 otherwise, *after* the 7TV writes have happened. */
+ *  `ImportOrigin` because `importOriginSourceChannelName`/`importOriginLeaderboardSort` are
+ *  exhaustive over that union — a fifth origin breaks the build there and lands here on the way
+ *  past. `sourceChannelName` must be set for `channel`/`seventv-channel`, `leaderboardSort` for
+ *  `seventv-leaderboard`; the server answers 400 for either gap, *after* the 7TV writes have
+ *  happened (spec F1). */
 export interface SyncImportedBody {
   sevenTvEmoteIds: string[];
   sourceChannelName: string | null;
-  sourceKind: 'channel' | 'file' | 'seventv-channel';
+  sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard';
+  leaderboardSort: LeaderboardSort | null;
 }
 
 /** Wire shape of GET .../emotes — wrapped in an object like the admin channel list, not a bare

@@ -544,7 +544,12 @@
       "removedEntries": "{{count}} Einträge entfernt",
       "title": "„{{title}}“",
       "importedFromChannel": "{{count}} Emotes aus {{title}}",
-      "importedFromFile": "{{count}} Emotes aus einer Datei"
+      "importedFromFile": "{{count}} Emotes aus einer Datei",
+      "importedFromLeaderboard": "{{count}} Emotes aus {{title}}",
+      "leaderboardSort": {
+        "TRENDING_DAILY": "7TV Trend heute",
+        "TOP_ALL_TIME": "7TV Top insgesamt"
+      }
     }
   },
   "emoteCount": {
@@ -983,6 +988,7 @@
       "originChannel": "Aus Kanal {{ channel }}",
       "originFile": "Aus Datei {{ fileName }}",
       "originFileDetails": "Export aus {{ channel }}, {{ date }}",
+      "originLeaderboard": "Aus 7TVs Bestenliste: {{ sort }}",
       "dateUnknown": "Datum unbekannt",
       "channelUnknown": "Kanal unbekannt",
       "target": "Ziel: {{ channel }} · Set {{ setId }}",

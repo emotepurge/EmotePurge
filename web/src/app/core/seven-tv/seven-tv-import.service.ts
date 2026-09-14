@@ -5,7 +5,12 @@ import { retry, throwError, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteAdminService } from '../emotes/emote-admin.service';
-import { ImportOrigin, ImportRow, importOriginSourceChannelName } from './import-source';
+import {
+  ImportOrigin,
+  ImportRow,
+  importOriginLeaderboardSort,
+  importOriginSourceChannelName,
+} from './import-source';
 import {
   MAX_AUTOMATIC_SYNC_RETRIES,
   SYNC_RETRY_DELAY_MS,
@@ -296,12 +301,15 @@ export class SevenTvImportService {
     this.emoteAdminService
       .syncImported(run.targetChannelName, {
         sevenTvEmoteIds: doneKeys,
-        // Through the exhaustive helper, never through a `=== 'channel'` test: this call runs after
-        // the 7TV mutations, so a kind that silently loses its source name here is answered with a
-        // 400 when the emotes are already copied and the provenance is unrecoverable (spec F6). A
-        // file still sends `null` even when it names a channel — that rule lives in the helper.
+        // Through the two exhaustive helpers, never through a `=== 'channel'`/`=== 'seventv-leaderboard'`
+        // test: this call runs after the 7TV mutations, so a kind that silently loses its source name
+        // or sort here is answered with a 400 when the emotes are already copied and the provenance is
+        // unrecoverable (spec F6/F1). A file still sends `null` for the source channel even when it
+        // names one, and every non-leaderboard origin sends `null` for the sort — both rules live in
+        // the helpers, not here.
         sourceChannelName: importOriginSourceChannelName(run.origin),
         sourceKind: run.origin.kind,
+        leaderboardSort: importOriginLeaderboardSort(run.origin),
       })
       .pipe(
         // Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a
