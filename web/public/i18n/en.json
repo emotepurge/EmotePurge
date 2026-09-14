@@ -343,7 +343,7 @@
         "rateLimited24h": "429s (24 h)",
         "lastRateLimitedAt": "Last 429",
         "retryAfter": "Retry-After",
-        "headerSample": "Twitch rate-limit headers (sample)",
+        "headerSample": "Rate-limit headers (sample)",
         "headerSampleValue": "Limit {{limit}} · Remaining {{remaining}} · Reset {{reset}} — observed {{observedAt}}",
         "names": {
           "twitch": "Twitch",
