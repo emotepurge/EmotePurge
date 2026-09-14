@@ -411,9 +411,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   not inherited from the neighbour), in dialog spacing instead of toolbar spacing, and **without** `flex-wrap`:
   if the button broke below the field, the field would lose its height at the same time. It shrinks instead
   (`min-w-0`).
-- **The head names the branch:** "Import emotes" on the first step, "Import file" or
-  "Import from a channel" below it. That is the only location cue a one-dialog flow
-  has besides "Back".
+- **The head names the branch:** "Import emotes" on the first step, "Import file", "Import from
+  a channel" or "Import from 7TV's leaderboard" below it. That is the only location cue a
+  one-dialog flow has besides "Back".
 - **The pane is wide as long as the grid stands — and only then** (`app-dialog-panel-wide`, see §7 and
   `styles.css`). The width belongs to the pane, not to the content, so the switch is the
   panel class and not a `max-w-*` in the template; it is set at runtime via
@@ -447,6 +447,20 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   labelled channel field (§5.2 applies here in full — it is not a filter bar) plus "Load set", after that
   loading state/error banner and the `ForeignEmoteGrid`. The step closes nothing; it reports its
   result as a signal against which the dialog blocks its "Continue".
+- **Leaderboard branch (`LeaderboardStep`, `shared/seven-tv/leaderboard-step.ts`), the third
+  source and the only one that starts without the user already knowing where the emotes sit:** a
+  labelled "List" `<select>` (`import.leaderboard.sortLabel`, not "Sort by" — what it picks is
+  which of 7TV's two network-wide lists is being read, "Trending today" or "Top overall"; the
+  ordering follows from that pick, not the other way round) above the same
+  loading/error/`ForeignEmoteGrid` sequence as the channel branch. Changing the list is a **server**
+  request, not a client-side re-sort: the grid below is handed `[forcedSortMode]` and answers in
+  that list's own rank order with its own sort control suppressed entirely — see the sorting
+  contract below. While a request is in flight the chooser carries `aria-disabled`, not `disabled`,
+  for the same reason the field/button pair elsewhere in this dialog does: it is the control the
+  dialog hands focus to on entry (see the focus contract below), and a truly disabled element
+  cannot take focus. Switching the list clears the grid's selection visibly and re-locks
+  "Continue" — a selection made against one list has no honest meaning against the other, the same
+  reasoning `ForeignChannelStep` already applies to a new channel query.
 - **Focus contract: whoever enters a step lands on that step's first meaningful control.**
   Concretely: file branch → "Choose file" (the hidden `<input type="file">` cannot take focus
   itself), channel branch → the channel field, "Back" → the source row you came from (the same
@@ -497,7 +511,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   browser then silently does not open the file window. Inside the open dialog the click
   (or Enter/space on the button) is a fresh activation.
 - **The sorting in the grid names a property of the individual emote, never the origin of the
-  list — and claims no unit.** Three requirements, all three born of one mistake:
+  list — and claims no unit. This governs `ForeignEmoteGrid`'s own, in-grid sort control, which
+  the channel branch keeps: its default stays `'none'` and its `<select>` stays visible.** Three
+  requirements, all three born of one mistake:
   1. *No statement about the list.* "7TV global · top of all time" in a tab bar had led the
      operator to conclude that the grid showed 7TV's global emotes instead of the set of the
      entered channel. Binding since then: a labelled `<select>` ("Sort by"), no
@@ -512,6 +528,13 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
      an invented unit is not.
   3. *Never a preselection, never "popularity"* (concept P5') — a channel-related popularity does not exist
      for a foreign channel.
+  4. *Exception, narrowly: the leaderboard branch forces and pre-selects the sort, on purpose*
+     (decided 2026-09-14). There the ranking **is** the list — the server fetched
+     `TRENDING_DAILY`/`TOP_ALL_TIME` and nothing else — so `[forcedSortMode]` sets the grid's mode
+     and its own `<select>` is not rendered at all; showing the rows in any other order would show
+     something the user did not ask for. This narrows the 2026-09-10 ban to its wording obligation
+     (requirement 2 above — unit and channel-local reading stay forbidden everywhere); requirement 3
+     is unchanged for the channel branch.
 - **The active score is in the accessible name of the tile.** An explicit `aria-label` **replaces**
   the descendant text in the accessibility tree, so for screen readers the visible number does not
   otherwise exist at all — and it is exactly what is currently being sorted by. It is announced under the same
@@ -519,8 +542,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   a unit. The only difference from the tile: the missing value becomes a word, because the
   tile has only an en dash for it and a screen reader does not pronounce that at all.
 - **Reference:** `web/src/app/shared/seven-tv/import-source-dialog.ts`, `file-import-step.ts`,
-  `foreign-channel-step.ts`, `foreign-emote-grid.ts`, `import-trigger.ts`, `import-trigger-gate.ts`,
-  `restore-flow.ts`; parsers `shared/export/read-envelope.ts`, `purge-run-export.ts`,
+  `foreign-channel-step.ts`, `leaderboard-step.ts`, `foreign-emote-grid.ts`, `import-trigger.ts`,
+  `import-trigger-gate.ts`, `restore-flow.ts`; `core/seven-tv/seven-tv-leaderboard.service.ts`,
+  `leaderboard.model.ts`; parsers `shared/export/read-envelope.ts`, `purge-run-export.ts`,
   `import-source-parser.ts`.
 
 ### 7.4 Export dialog (purpose instead of format)
