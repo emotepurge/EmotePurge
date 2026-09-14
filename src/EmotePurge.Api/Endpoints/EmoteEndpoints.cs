@@ -4,6 +4,7 @@ using EmotePurge.Api.Validation;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 
 namespace EmotePurge.Api.Endpoints;
 
@@ -133,13 +134,16 @@ public static class EmoteEndpoints
             // Ordinal and strictly lower-case (F3, import plan): the only caller is our own
             // frontend, so a silent case-insensitive fallback would hide a frontend bug rather than
             // surfacing it.
-            // "seventv-channel" is the third and newest member (foreign-import spec E6/F5.1): a
-            // channel EmotePurge does not track, read straight from 7TV. It is deliberately its own
-            // word rather than being folded into "channel" — the two are read through different
-            // paths and an audit row must still say which one it was, forever. Adding a word here is
-            // never enough on its own: AuditLogQueryService.ProjectDetail has to learn it too, or
-            // every row written with it silently loses its provenance (F5.3).
-            if (request.SourceKind is not ("channel" or "file" or "seventv-channel"))
+            // "seventv-channel" is the third member (foreign-import spec E6/F5.1): a channel
+            // EmotePurge does not track, read straight from 7TV. "seventv-leaderboard" is the fourth
+            // (leaderboard-import spec E8/F1): a network-wide 7TV ranking, which has no source
+            // channel at all — its origin travels in LeaderboardSort instead (see the vocabulary
+            // table below). Every word is deliberately its own rather than folded into an existing
+            // one — they are read through different paths and an audit row must still say which one
+            // it was, forever. Adding a word here is never enough on its own:
+            // AuditLogQueryService.ProjectDetail has to learn it too, or every row written with it
+            // silently loses its provenance (F5.3/F1 Station 5).
+            if (request.SourceKind is not ("channel" or "file" or "seventv-channel" or "seventv-leaderboard"))
             {
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
             }
@@ -152,18 +156,42 @@ public static class EmoteEndpoints
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidChannelName });
             }
 
-            // The kind and the name have to agree, in both directions. Audit rows are write-once and
-            // kept forever, so an inconsistent body would leave a permanently wrong entry: "channel"
-            // without a name claims an origin it cannot name, and "file" with one gets filed under a
-            // channel origin the import never had. Rejecting beats guessing which half was meant.
-            // The condition asks "file versus not-file", so it covers "seventv-channel" as well —
-            // correctly, but only because that kind happens to be name-carrying too (F5.2). It stays
-            // written this way and is pinned by tests for both directions of the new word instead;
-            // a fourth kind without a source name would have to change this line, not just add to
-            // the vocabulary above.
-            if (string.IsNullOrWhiteSpace(request.SourceChannelName) != (request.SourceKind == "file"))
+            // The kind decides what else may be set, in both directions. Audit rows are write-once
+            // and kept forever, so an inconsistent body would leave a permanently wrong entry:
+            // "channel"/"seventv-channel" without a name claims an origin they cannot name, "file"
+            // or "seventv-leaderboard" with one gets filed under a channel origin the import never
+            // had, and any kind other than "seventv-leaderboard" carrying a LeaderboardSort claims a
+            // ranking it did not come from. This used to be a single binary check ("file versus
+            // not-file"), which covered "seventv-channel" correctly only by accident (F5.2) and
+            // predicted its own failure for a fourth, source-less kind (comment removed above) —
+            // this vocabulary table (leaderboard-import spec F1 Station 3) is that fourth kind's
+            // answer. A LeaderboardSort that is present but outside 7TV's own sort vocabulary is its
+            // own error, invalid_leaderboard_sort, because it is not "the wrong kind of import" —
+            // the kind is right, the sort code just is not one the endpoint knows how to hand to 7TV.
+            var isChannelSourceKind = request.SourceKind is "channel" or "seventv-channel";
+            if (isChannelSourceKind
+                && (string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is not null))
             {
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
+            }
+
+            if (request.SourceKind == "file"
+                && (!string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is not null))
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
+            }
+
+            if (request.SourceKind == "seventv-leaderboard")
+            {
+                if (!string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is null)
+                {
+                    return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
+                }
+
+                if (!SevenTvLeaderboardSortWireCode.TryParse(request.LeaderboardSort, out _))
+                {
+                    return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidLeaderboardSort });
+                }
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
@@ -173,7 +201,8 @@ public static class EmoteEndpoints
             }
 
             var written = await emoteService.MarkImportedAsync(
-                channelName, request.SevenTvEmoteIds, request.SourceChannelName, request.SourceKind, actor, ct);
+                channelName, request.SevenTvEmoteIds, request.SourceChannelName, request.SourceKind,
+                request.LeaderboardSort, actor, ct);
             return written ? Results.NoContent() : Results.NotFound();
         })
         // Same reasoning as its two neighbors above: the emotes were already imported on 7TV by the
@@ -259,4 +288,10 @@ internal sealed record SyncDeletedRequest(IReadOnlyList<string> EmoteIds);
 
 internal sealed record SyncRestoredRequest(IReadOnlyList<string> EmoteIds);
 
-internal sealed record SyncImportedRequest(IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind);
+// LeaderboardSort is the wire code (SevenTvLeaderboardSortWireCode.TrendingDailyWireCode /
+// TopAllTimeWireCode) carried separately from SourceChannelName (leaderboard-import spec E8): a
+// sort code is not a channel name and never validates as one (ChannelNameValidation.IsValid would
+// reject "TRENDING_DAILY" — the exact F1/F6-class bug this field exists to avoid, a 400 arriving
+// after the 7TV mutation already happened).
+internal sealed record SyncImportedRequest(
+    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null);

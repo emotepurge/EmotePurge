@@ -22,11 +22,15 @@ public record AuditLogDetail(string Kind, long? Count, string? Text)
         public const string EmoteCount = "emoteCount";
         public const string RemovedEntries = "removedEntries";
         public const string Title = "title";
-        // The two emotes.syncImported shapes: same payload (an emote count plus the source), but
+        // The three emotes.syncImported shapes: same payload (an emote count plus the source), but
         // "where from" only renders when there is somewhere to point to. Count and Text are both
         // set for ImportedFromChannel; ImportedFromFile carries only Count.
         public const string ImportedFromChannel = "importedFromChannel";
         public const string ImportedFromFile = "importedFromFile";
+        // A network-wide 7TV ranking has no source channel (leaderboard-import spec E2/E8/E9): Text
+        // carries the language-neutral sort wire code (e.g. "TRENDING_DAILY") instead of a channel
+        // name, and the frontend translates it — the same contract as every other Kind here (rule 7).
+        public const string ImportedFromLeaderboard = "importedFromLeaderboard";
     }
 }
 

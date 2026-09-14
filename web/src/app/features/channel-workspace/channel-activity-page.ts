@@ -1,7 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, computed, inject, input } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { AuditLogEntry } from '../../core/audit/audit.model';
 import { ChannelAuditService } from '../../core/channels/channel-audit.service';
@@ -143,6 +143,7 @@ export class ChannelActivityPage {
 
   private readonly channelAuditService = inject(ChannelAuditService);
   private readonly languageService = inject(LanguageService);
+  private readonly translocoService = inject(TranslocoService);
 
   // Page *and* both filters live in the URL, same as the global admin log: a restored "page 3"
   // without the filter that made page 3 mean anything is worse than useless (core/routing).
@@ -189,7 +190,9 @@ export class ChannelActivityPage {
   // Reads `lang()` so a language switch re-formats the timestamps: LOCALE_ID is fixed at bootstrap
   // and cannot follow one.
   protected readonly rows = computed(() =>
-    toAuditRows(this.auditLogResource.value().items, toLocale(this.languageService.lang())),
+    toAuditRows(this.auditLogResource.value().items, toLocale(this.languageService.lang()), (key) =>
+      this.translocoService.translate(key),
+    ),
   );
 
   protected readonly errorMessage = computed(() => {

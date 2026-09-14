@@ -106,6 +106,17 @@ public static class RateLimitCallSources
     /// <see cref="SevenTvRest"/>, the exact gap the spec calls "the most expensive single mistake".
     /// </summary>
     public const string SevenTvForeignPreview = "seventv-foreign-preview";
+
+    /// <summary>
+    /// The leaderboard import source's own paginated v4 GraphQL requests (spec 2026-09-13, F7/T1) —
+    /// <c>SevenTvApiClient.SearchEmotesAsync</c>'s call source, reported by the client itself for
+    /// the same reason as <see cref="SevenTvForeignPreview"/>: only the client sees the parsed
+    /// GraphQL body, and 7TV disguises an overload as HTTP 200 with <c>extensions.status: 429</c>
+    /// here too. Kept apart from <see cref="SevenTvForeignPreview"/> because it is a genuinely
+    /// different upstream bucket — 7TV's <c>x-ratelimit-search-*</c> headers, distinct from the
+    /// <c>Ratelimit-*</c> ones the preview path (still) never reads.
+    /// </summary>
+    public const string SevenTvLeaderboard = "seventv-leaderboard";
 }
 
 /// <summary>

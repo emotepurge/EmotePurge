@@ -104,7 +104,7 @@ public class EmoteService(AppDbContext db) : IEmoteService
         return new SyncRestoredResultDto(emotes.Count, notFoundIds, newlyRestored.Count);
     }
 
-    public async Task<bool> MarkImportedAsync(string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind, AuditActor actor, CancellationToken cancellationToken = default)
+    public async Task<bool> MarkImportedAsync(string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind, string? leaderboardSort, AuditActor actor, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
 
@@ -122,11 +122,15 @@ public class EmoteService(AppDbContext db) : IEmoteService
         // a client that reported the same 7TV id twice did not import it twice.
         var emoteCount = sevenTvEmoteIds.Distinct(StringComparer.Ordinal).Count();
 
+        // leaderboardSort is written verbatim — it already passed EmoteEndpoints' allowlist check
+        // and is language-neutral by design (E9, leaderboard-import spec), the same wire code
+        // SevenTvLeaderboardSortWireCode uses. AuditLogQueryService.ProjectDetail reads it back
+        // under the same property name.
         db.AddAuditEntry(
             actor,
             AuditActions.EmotesSyncImported,
             channelName: normalized,
-            details: new { emoteCount, sourceChannelName = normalizedSourceChannelName, sourceKind });
+            details: new { emoteCount, sourceChannelName = normalizedSourceChannelName, sourceKind, leaderboardSort });
 
         await db.SaveChangesAsync(cancellationToken);
 

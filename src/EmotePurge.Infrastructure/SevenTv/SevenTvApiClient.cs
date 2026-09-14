@@ -42,8 +42,10 @@ public class SevenTvApiClient(
     private const int SetEntriesPerPage = 500;
     private const int MaxSetEntryPages = 10;
 
-    // Ceiling for a reset hint read out of a GraphQL error payload (ReadResetHintSeconds). Six hours
-    // is comfortably above the ~1 h search-bucket lockout measured live and far below anything that
+    // Ceiling for a reset hint, whether read out of a GraphQL error payload's extensions.headers
+    // (ReadResetHintSeconds) or out of the HTTP x-ratelimit-search-reset header directly
+    // (ReadSearchResetHeaderSeconds) — both feed a circuit breaker's open duration. Six hours is
+    // comfortably above the ~1 h search-bucket lockout measured live and far below anything that
     // could be a Unix timestamp, so an unexpected unit is dropped instead of silently keeping the
     // circuit breaker shut for years.
     private const int MaxResetHintSeconds = 6 * 60 * 60;
@@ -60,6 +62,43 @@ public class SevenTvApiClient(
     // for why, and BuildForeignImageUrl for how the image url is built instead.
     private const string GqlEmoteSetPreviewQuery =
         "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
+
+    // v4 schema, the leaderboard import source (spec 2026-09-13, F7): EmoteQuery.search — a
+    // network-wide ranking, not a set's contents, so this takes a sort instead of a set id and
+    // returns flat Emote objects (no per-set alias). Deliberately no query/filters/tags (E5) and
+    // no defaultZeroWidth (E4).
+    //
+    // $sort: Sort! is an INPUT_OBJECT, not an enum — introspected live 2026-09-14: `Sort {
+    // sortBy: SortBy!, order: SortOrder! }`. An earlier revision of this client sent a bare string
+    // for $sort, reconstructed from two documents that were each individually correct and jointly
+    // misleading (one showed the SDL argument `sort: Sort!`, the other listed SortBy's members
+    // under the shorthand "SortBy = …"); 7TV answered every such request with a coercion error —
+    // HTTP 200, errors[] without extensions.status: 429 — which this client reads as Unavailable,
+    // so the symptom was a permanently unavailable leaderboard, not an obviously wrong shape. See
+    // BuildSortVariable for the corrected object and spec section 4 for the introspection result.
+    private const string GqlLeaderboardSearchQuery =
+        "query($sort: Sort!, $page: Int!, $perPage: Int!) { emotes { search(sort: $sort, page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } }";
+
+    // SortOrder's other member (ASCENDING) would rank the leaderboard from the bottom — never what
+    // this import source wants. A named constant rather than an inline literal so the choice reads
+    // as deliberate, not as a typo candidate next to sortBy's own wire code.
+    private const string SearchSortOrderDescending = "DESCENDING";
+
+    // 7TV's own hard ceiling (E5, measured live): 251+ answers "Failed to parse "Int": the value is
+    // …, must be less than or equal to 250" — a validation rejection, not a rate limit, and one that
+    // costs no bucket charge (Sonde 2, 2026-09-13). Fixed here, never taken from the caller.
+    private const int SearchPerPage = 250;
+
+    // 7TV's own rate-limit headers for the search bucket specifically (Sonde 1, 2026-09-13) —
+    // distinct from Twitch's Ratelimit-* spelling FetchV4PageAsync's preview caller reads, and
+    // distinct from the GraphQL-payload reset hint ReadResetHintSeconds reads. Read only for
+    // RateLimitCallSources.SevenTvLeaderboard (UsesSearchRateLimitHeaders) — never for the preview
+    // path, which this same header would otherwise silently start affecting (spec 2026-09-13, the
+    // characterization test HttpSearchResetHeader_HasNoEffect_OnRetryAfterOrTheObservation pins
+    // exactly this).
+    private const string SearchRateLimitHeader = "x-ratelimit-search-limit";
+    private const string SearchRateLimitRemainingHeader = "x-ratelimit-search-remaining";
+    private const string SearchRateLimitResetHeader = "x-ratelimit-search-reset";
 
     // Latches the fallback-set-load path (issue #43) from Information down to Debug after its first
     // occurrence in this process. Once 7TV finishes rolling out the null embedded emote_set, this
@@ -353,7 +392,7 @@ public class SevenTvApiClient(
                 // state table), so both forms of a confirmed 429 are checked before the "no usable
                 // data" branch below, not folded into it. FetchPreviewPageAsync tells the two forms
                 // apart itself; from here on they are one outcome.
-                if (pageResult.Status == PreviewPageStatus.RateLimited)
+                if (pageResult.Status == V4PageStatus.RateLimited)
                 {
                     logger.LogWarning(
                         "7TV meldet Überlast (429) beim Vorschau-Abruf für Set {SetId}, Seite {Page}.",
@@ -362,7 +401,7 @@ public class SevenTvApiClient(
                 }
 
                 var pageDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet?.Emotes;
-                if (pageResult.Status == PreviewPageStatus.Unavailable || pageDto is null)
+                if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
                 {
                     logger.LogWarning(
                         "7TV-Vorschau-Abruf für Set {SetId} lieferte keine verwertbaren Daten (GraphQL-Fehlerantwort?), Seite {Page}.",
@@ -401,24 +440,96 @@ public class SevenTvApiClient(
         }
     }
 
-    // One HTTP request, one telemetry observation — the unit the telemetry vertrag (spec section 6)
-    // is written against. ProviderRequestTelemetryHandler is silenced for this request
-    // (ProviderTelemetrySuppression.OptionsKey) because it only ever sees the raw HTTP status: a 7TV
-    // overload disguised as HTTP 200 with extensions.status 429 would land in its count as a plain
-    // success. This method reports itself instead, after parsing far enough to know the real,
-    // semantic outcome, under RateLimitCallSources.SevenTvForeignPreview rather than SevenTvRest.
-    private async Task<PreviewPageResult> FetchPreviewPageAsync(string emoteSetId, int page, CancellationToken cancellationToken)
+    public async Task<SevenTvEmoteSearchPageResult> SearchEmotesAsync(
+        SevenTvLeaderboardSort sortBy, int page, CancellationToken cancellationToken = default)
     {
-        var payload = new
+        // No log line here by design (spec 2026-09-13, T1, operator decision 2026-09-14): the one
+        // line per upstream request that matters — sortBy, page, outcome, remaining, reset,
+        // usedInWindow — belongs to SevenTvLeaderboardService, which knows the budget window this
+        // client does not. A second line here would make that count ambiguous (AK 31). So neither
+        // branch below logs, including the catch: a transport/parse failure still reaches the
+        // service as a plain Unavailable, which is all it needs to write its one line.
+        try
         {
-            query = GqlEmoteSetPreviewQuery,
-            variables = new { id = emoteSetId, page, perPage = SetEntriesPerPage }
-        };
+            var payload = new
+            {
+                query = GqlLeaderboardSearchQuery,
+                variables = new { sort = BuildSortVariable(sortBy), page, perPage = SearchPerPage }
+            };
+
+            var result = await FetchV4PageAsync<SevenTvGqlLeaderboardSearchResponseDto>(
+                payload, RateLimitCallSources.SevenTvLeaderboard, cancellationToken);
+
+            if (result.Status == V4PageStatus.RateLimited)
+            {
+                return SevenTvEmoteSearchPageResult.Failed(
+                    SevenTvEmoteSearchLookupStatus.RateLimited,
+                    result.HeaderSample?.Limit,
+                    result.HeaderSample?.Remaining,
+                    result.HeaderSample?.Reset,
+                    result.RetryAfter);
+            }
+
+            // Covers both the generic-failure branch of FetchV4PageAsync (5xx, e.g.) and a
+            // validation rejection (Data present, but Search null — 7TV answers those as HTTP 200
+            // with an errors[] that never carries extensions.status: 429, so IsRateLimited above
+            // already ruled that branch out and this is the only place left to catch it).
+            var searchDto = result.Dto?.Data?.Emotes?.Search;
+            if (result.Status == V4PageStatus.Unavailable || searchDto is null)
+            {
+                return SevenTvEmoteSearchPageResult.Failed(
+                    SevenTvEmoteSearchLookupStatus.Unavailable,
+                    result.HeaderSample?.Limit,
+                    result.HeaderSample?.Remaining,
+                    result.HeaderSample?.Reset);
+            }
+
+            var items = searchDto.Items.Select(MapSearchItem).ToList();
+            return SevenTvEmoteSearchPageResult.Ok(
+                new SevenTvEmoteSearchPage(searchDto.TotalCount, searchDto.PageCount, items),
+                result.HeaderSample?.Limit,
+                result.HeaderSample?.Remaining,
+                result.HeaderSample?.Reset);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            // The header sample is unreachable for this one outcome specifically: a
+            // transport/parse failure happens before or during reading the response it would come
+            // from. Every other Unavailable/RateLimited outcome above still carries it.
+            return SevenTvEmoteSearchPageResult.Failed(SevenTvEmoteSearchLookupStatus.Unavailable, null, null, null);
+        }
+    }
+
+    // The shared v4 GraphQL page-fetch behind both FetchPreviewPageAsync and SearchEmotesAsync
+    // (spec 2026-09-13, E11/F3) — one HTTP request, one telemetry observation, the unit the
+    // telemetry vertrag (spec section 6) is written against. ProviderRequestTelemetryHandler is
+    // silenced for this request (ProviderTelemetrySuppression.OptionsKey) because it only ever sees
+    // the raw HTTP status: a 7TV overload disguised as HTTP 200 with extensions.status 429 would
+    // land in its count as a plain success. This method reports itself instead, after parsing far
+    // enough to know the real, semantic outcome, under the caller's own call source —
+    // RecordForeignPreviewObservation takes that call source as a parameter rather than assuming
+    // SevenTvForeignPreview, precisely so this one fetch can serve more than one caller without
+    // either one's telemetry landing under the other's name.
+    //
+    // The one place this method itself branches on which caller it is serving: whether to read
+    // 7TV's search-bucket headers at all. That branch hangs on callSource
+    // (UsesSearchRateLimitHeaders), not on any structural difference between the two callers'
+    // requests or responses — the preview path must keep reading none of this header (Task 2's
+    // characterization test pins exactly that), and the only thing that tells the two callers apart
+    // here is which call source they passed in.
+    private async Task<V4PageResult<TDto>> FetchV4PageAsync<TDto>(
+        object payload, string callSource, CancellationToken cancellationToken)
+        where TDto : class, ISevenTvGqlErrorEnvelope
+    {
         using var request = new HttpRequestMessage(HttpMethod.Post, V4GqlPath) { Content = JsonContent.Create(payload) };
         request.Options.Set(ProviderTelemetrySuppression.OptionsKey, true);
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
         var retryAfterSeconds = ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response);
+        var searchResetHeaderSeconds = UsesSearchRateLimitHeaders(callSource)
+            ? ReadSearchResetHeaderSeconds(response)
+            : null;
+        var headerSample = BuildSearchHeaderSample(response, callSource);
 
         // A literal HTTP 429 — distinct from the disguised-as-200 form checked below, and previously
         // indistinguishable from it: EnsureSuccessStatusCode() used to throw here and fall into the
@@ -426,54 +537,104 @@ public class SevenTvApiClient(
         // the breaker immediately instead of counting toward its five-failure threshold.
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
-            RecordForeignPreviewObservation(response, statusOverride: 429, retryAfterSeconds);
-            return new PreviewPageResult(PreviewPageStatus.RateLimited, null, ToRetryAfter(retryAfterSeconds));
+            var effectiveRetryAfterSeconds = searchResetHeaderSeconds ?? retryAfterSeconds;
+            RecordForeignPreviewObservation(response, callSource, statusOverride: 429, effectiveRetryAfterSeconds);
+            return new V4PageResult<TDto>(V4PageStatus.RateLimited, null, ToRetryAfter(effectiveRetryAfterSeconds), headerSample);
         }
 
         if (!response.IsSuccessStatusCode)
         {
-            RecordForeignPreviewObservation(response, statusOverride: null, retryAfterSeconds);
-            return new PreviewPageResult(PreviewPageStatus.Unavailable, null, null);
+            RecordForeignPreviewObservation(response, callSource, statusOverride: null, retryAfterSeconds);
+            return new V4PageResult<TDto>(V4PageStatus.Unavailable, null, null, headerSample);
         }
 
-        SevenTvGqlEmoteSetPreviewResponseDto? dto;
+        TDto? dto;
         try
         {
-            dto = await response.Content.ReadFromJsonAsync<SevenTvGqlEmoteSetPreviewResponseDto>(
-                SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+            dto = await response.Content.ReadFromJsonAsync<TDto>(SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
         }
         catch (JsonException)
         {
             // The HTTP layer really did answer 200 — that is what gets counted — even though the body
             // could not be parsed. The caller's outer catch maps the rethrown exception to Unavailable.
-            RecordForeignPreviewObservation(response, statusOverride: null, retryAfterSeconds);
+            RecordForeignPreviewObservation(response, callSource, statusOverride: null, retryAfterSeconds);
             throw;
         }
 
         if (IsRateLimited(dto?.Errors))
         {
-            // Reset hint first, Retry-After second, the breaker's own 60 s default last (E4). The hint
+            // Reset hint order (F3): the HTTP search-reset header first (only ever present for the
+            // leaderboard call source — see UsesSearchRateLimitHeaders), then the GraphQL payload's
+            // own hint, then Retry-After, the breaker's own 60 s default last (E4). The GraphQL hint
             // is read opportunistically — see SevenTvGqlErrorExtensionsDto.Headers for why its
-            // existence is neither assumed nor denied — so on the payload shape we have actually seen,
-            // this behaves exactly as it did before: retryAfterSeconds, or nothing.
-            var effectiveRetryAfterSeconds = ReadResetHintSeconds(dto!.Errors) ?? retryAfterSeconds;
-            RecordForeignPreviewObservation(response, statusOverride: 429, effectiveRetryAfterSeconds);
-            return new PreviewPageResult(PreviewPageStatus.RateLimited, null, ToRetryAfter(effectiveRetryAfterSeconds));
+            // existence is neither assumed nor denied — so on the preview path, where
+            // searchResetHeaderSeconds is always null, this behaves exactly as it did before:
+            // ReadResetHintSeconds(...) ?? retryAfterSeconds, or nothing.
+            var effectiveRetryAfterSeconds = searchResetHeaderSeconds ?? ReadResetHintSeconds(dto!.Errors) ?? retryAfterSeconds;
+            RecordForeignPreviewObservation(response, callSource, statusOverride: 429, effectiveRetryAfterSeconds);
+            return new V4PageResult<TDto>(V4PageStatus.RateLimited, null, ToRetryAfter(effectiveRetryAfterSeconds), headerSample);
         }
 
-        RecordForeignPreviewObservation(response, statusOverride: null, retryAfterSeconds);
-        return new PreviewPageResult(PreviewPageStatus.Ok, dto, null);
+        RecordForeignPreviewObservation(response, callSource, statusOverride: null, retryAfterSeconds);
+        return new V4PageResult<TDto>(V4PageStatus.Ok, dto, null, headerSample);
     }
 
-    private void RecordForeignPreviewObservation(HttpResponseMessage response, int? statusOverride, int? retryAfterSeconds) =>
+    private Task<V4PageResult<SevenTvGqlEmoteSetPreviewResponseDto>> FetchPreviewPageAsync(
+        string emoteSetId, int page, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            query = GqlEmoteSetPreviewQuery,
+            variables = new { id = emoteSetId, page, perPage = SetEntriesPerPage }
+        };
+
+        return FetchV4PageAsync<SevenTvGqlEmoteSetPreviewResponseDto>(
+            payload, RateLimitCallSources.SevenTvForeignPreview, cancellationToken);
+    }
+
+    // The one predicate FetchV4PageAsync hangs its search-header behaviour on (spec 2026-09-13,
+    // Task 3 dispatch note "die engste Stelle des ganzen Tasks"): true only for the leaderboard
+    // call source. Everything that must NOT affect the preview path — the HTTP
+    // x-ratelimit-search-reset header's influence on RetryAfter, and its appearance in the
+    // telemetry observation and in SevenTvEmoteSearchPageResult — is conditioned on this one
+    // check, so the distinction lives at the call source, not in some incidental difference
+    // between the two callers' requests.
+    private static bool UsesSearchRateLimitHeaders(string callSource) =>
+        callSource == RateLimitCallSources.SevenTvLeaderboard;
+
+    // Same plausibility bound as ReadResetHintSeconds's MaxResetHintSeconds, and for the same
+    // reason (Fix-Lauf 1, Befund A): this value feeds the leaderboard breaker's open duration
+    // exactly as the GraphQL hint feeds the preview breaker's, and an epoch-shaped or negative
+    // x-ratelimit-search-reset would otherwise hold it shut for decades. The stock's own [60 s, 1 h]
+    // clamp only protects the stock entry, not this earlier read.
+    private static int? ReadSearchResetHeaderSeconds(HttpResponseMessage response) =>
+        int.TryParse(ProviderRequestTelemetryHandler.ReadHeader(response, SearchRateLimitResetHeader), out var seconds)
+            && seconds > 0
+            && seconds <= MaxResetHintSeconds
+            ? seconds
+            : null;
+
+    private static V4HeaderSample? BuildSearchHeaderSample(HttpResponseMessage response, string callSource) =>
+        UsesSearchRateLimitHeaders(callSource)
+            ? new V4HeaderSample(
+                ProviderRequestTelemetryHandler.ReadHeader(response, SearchRateLimitHeader),
+                ProviderRequestTelemetryHandler.ReadHeader(response, SearchRateLimitRemainingHeader),
+                ProviderRequestTelemetryHandler.ReadHeader(response, SearchRateLimitResetHeader))
+            : null;
+
+    private void RecordForeignPreviewObservation(
+        HttpResponseMessage response, string callSource, int? statusOverride, int? retryAfterSeconds)
+    {
+        var usesSearchHeaders = UsesSearchRateLimitHeaders(callSource);
         telemetry.RecordProviderResponse(new ProviderResponseObservation(
             RateLimitProviders.SevenTv,
-            RateLimitCallSources.SevenTvForeignPreview,
+            callSource,
             statusOverride ?? (int)response.StatusCode,
             retryAfterSeconds,
-            ProviderRequestTelemetryHandler.ReadHeader(response, "Ratelimit-Limit"),
-            ProviderRequestTelemetryHandler.ReadHeader(response, "Ratelimit-Remaining"),
-            ProviderRequestTelemetryHandler.ReadHeader(response, "Ratelimit-Reset")));
+            ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitHeader : "Ratelimit-Limit"),
+            ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitRemainingHeader : "Ratelimit-Remaining"),
+            ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitResetHeader : "Ratelimit-Reset")));
+    }
 
     private static TimeSpan? ToRetryAfter(int? retryAfterSeconds) =>
         retryAfterSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null;
@@ -752,15 +913,37 @@ public class SevenTvApiClient(
             ? string.Empty
             : $"https://cdn.7tv.app/emote/{emoteId}/{(animated ? "4x_static.webp" : "4x.webp")}";
 
-    private enum PreviewPageStatus
+    private static SevenTvEmoteSetPreviewItem MapSearchItem(SevenTvGqlLeaderboardSearchItemDto dto) =>
+        new(
+            dto.Id,
+            dto.DefaultName, // Alias = DefaultName (spec 2026-09-13, T1): a leaderboard hit has no per-set alias.
+            dto.DefaultName,
+            BuildForeignImageUrl(dto.Id, dto.Flags?.Animated ?? false),
+            dto.Scores?.TopAllTime,
+            dto.Scores?.TrendingDay);
+
+    // The GraphQL $sort: Sort! variable's value — an anonymous object shaped exactly like the
+    // introspected INPUT_OBJECT (Sort { sortBy: SortBy!, order: SortOrder! }, 2026-09-14), not the
+    // bare enum value an earlier revision of this method sent. See GqlLeaderboardSearchQuery's
+    // comment for why that shape was wrong and what it broke.
+    private static object BuildSortVariable(SevenTvLeaderboardSort sortBy) =>
+        new { sortBy = sortBy.ToWireCode(), order = SearchSortOrderDescending };
+
+    private enum V4PageStatus
     {
         Ok,
         RateLimited,
         Unavailable
     }
 
-    // Nested at the class end (Regel 19) — a pure return-value carrier local to FetchPreviewPageAsync,
-    // not part of this client's public shape.
-    private readonly record struct PreviewPageResult(
-        PreviewPageStatus Status, SevenTvGqlEmoteSetPreviewResponseDto? Dto, TimeSpan? RetryAfter);
+    // Nested at the class end (Regel 19) — a pure return-value carrier local to FetchV4PageAsync and
+    // its callers (FetchPreviewPageAsync, SearchEmotesAsync), not part of this client's public shape.
+    // HeaderSample is null unless UsesSearchRateLimitHeaders(callSource) — FetchPreviewPageAsync
+    // never reads or forwards one.
+    private readonly record struct V4PageResult<TDto>(V4PageStatus Status, TDto? Dto, TimeSpan? RetryAfter, V4HeaderSample? HeaderSample = null);
+
+    // 7TV's x-ratelimit-search-* header sample, as read for one response. Only ever built for the
+    // leaderboard call source (BuildSearchHeaderSample) — see SevenTvEmoteSearchPageResult for why
+    // it has to survive into every outcome, not just Ok.
+    private readonly record struct V4HeaderSample(string? Limit, string? Remaining, string? Reset);
 }

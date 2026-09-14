@@ -56,6 +56,14 @@ internal sealed class RateLimitingOptions
     public FixedWindowPolicy ForeignEmoteLookup { get; set; } = new() { PermitLimit = 10 };
 
     /// <summary>
+    /// 7TV leaderboard (spec 2026-09-13, E16): unlike <see cref="ForeignEmoteLookup"/> this endpoint
+    /// never costs 7TV anything directly — it reads an in-process stock — but its response is up to
+    /// ~30 KB, so it is not as cheap as <see cref="Bookkeeping"/> either. 20/min per user comfortably
+    /// covers every sort switch and re-open of the import dialog.
+    /// </summary>
+    public FixedWindowPolicy SevenTvLeaderboard { get; set; } = new() { PermitLimit = 20 };
+
+    /// <summary>
     /// Throws unless every budget is usable. Called during startup, so a typo in an environment
     /// variable stops the container with a readable message instead of silently handing some policy
     /// a capacity of zero — which is not a lax limiter but a total outage of every route it guards,
@@ -69,6 +77,7 @@ internal sealed class RateLimitingOptions
         ChannelResync.Validate(nameof(ChannelResync));
         PublicHealth.Validate(nameof(PublicHealth));
         ForeignEmoteLookup.Validate(nameof(ForeignEmoteLookup));
+        SevenTvLeaderboard.Validate(nameof(SevenTvLeaderboard));
     }
 
     private static void RequirePositive(string policyName, string valueName, int value)

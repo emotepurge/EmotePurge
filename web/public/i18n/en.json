@@ -303,7 +303,9 @@
           "Voting": "Voting",
           "Bookkeeping": "Bookkeeping (sync/join)",
           "ChannelResync": "Manual channel resync",
-          "PublicHealth": "Public health check"
+          "PublicHealth": "Public health check",
+          "ForeignEmoteLookup": "Foreign channel preview (7TV)",
+          "SevenTvLeaderboard": "7TV leaderboard"
         }
       },
       "lastRejection": {
@@ -341,7 +343,7 @@
         "rateLimited24h": "429s (24 h)",
         "lastRateLimitedAt": "Last 429",
         "retryAfter": "Retry-After",
-        "headerSample": "Twitch rate-limit headers (sample)",
+        "headerSample": "Rate-limit headers (sample)",
         "headerSampleValue": "Limit {{limit}} · Remaining {{remaining}} · Reset {{reset}} — observed {{observedAt}}",
         "names": {
           "twitch": "Twitch",
@@ -350,7 +352,9 @@
         "callSources": {
           "twitch-helix": "Helix client",
           "twitch-auth": "Auth client (OAuth/refresh)",
-          "seventv-rest": "7TV REST client"
+          "seventv-rest": "7TV REST client",
+          "seventv-foreign-preview": "7TV foreign-preview client",
+          "seventv-leaderboard": "7TV leaderboard client"
         }
       },
       "hints": {
@@ -540,7 +544,12 @@
       "removedEntries": "{{count}} entries removed",
       "title": "“{{title}}”",
       "importedFromChannel": "{{count}} emotes from {{title}}",
-      "importedFromFile": "{{count}} emotes from a file"
+      "importedFromFile": "{{count}} emotes from a file",
+      "importedFromLeaderboard": "{{count}} emotes from {{title}}",
+      "leaderboardSort": {
+        "TRENDING_DAILY": "7TV trending today",
+        "TOP_ALL_TIME": "7TV top overall"
+      }
     }
   },
   "emoteCount": {
@@ -933,6 +942,10 @@
       "channel": {
         "label": "From a channel",
         "hint": "The active 7TV set of any Twitch channel"
+      },
+      "leaderboard": {
+        "label": "From 7TV's leaderboard",
+        "hint": "The emotes leading network-wide — without knowing which channel they sit in"
       }
     },
     "dockCopyButton": "Transfer ({{ count }})",
@@ -971,6 +984,20 @@
         "scoreHint": "The number on each tile is 7TV's network-wide comparison value for that one emote — not a measure of how often it is used in this channel."
       }
     },
+    "leaderboard": {
+      "title": "Import from 7TV's leaderboard",
+      "sortLabel": "List",
+      "sort": {
+        "TRENDING_DAILY": "Trending today",
+        "TOP_ALL_TIME": "Top overall"
+      },
+      "empty": "7TV currently returns no entries for this list.",
+      "truncated": {
+        "TRENDING_DAILY": "Showing the first {{ loaded }} of {{ totalCount }} entries of today's list — 7TV caps how many one lookup returns.",
+        "TOP_ALL_TIME": "Showing the first {{ loaded }} entries; 7TV counts {{ totalCount }} emotes in this ranking overall."
+      },
+      "scoreHint": "The order is 7TV's own. The number on each tile is 7TV's network-wide comparison value for that one emote — not a measure of how often it is used in this channel."
+    },
     "confirm": {
       "title": {
         "one": "Copy {{ count }} emote to {{ channel }}?",
@@ -979,6 +1006,7 @@
       "originChannel": "From channel {{ channel }}",
       "originFile": "From file {{ fileName }}",
       "originFileDetails": "Exported from {{ channel }}, {{ date }}",
+      "originLeaderboard": "From 7TV's leaderboard: {{ sort }}",
       "dateUnknown": "date unknown",
       "channelUnknown": "channel unknown",
       "target": "Target: {{ channel }} · set {{ setId }}",
@@ -1095,6 +1123,7 @@
       "foreign_channel_no_seventv_account": "This channel has no 7TV account.",
       "foreign_channel_no_active_emote_set": "This channel currently has no active 7TV emote set.",
       "foreign_channel_seventv_unavailable": "7TV is not reachable right now. Please try again shortly.",
+      "invalid_leaderboard_sort": "Invalid sort for the 7TV leaderboard.",
       "vote_session_not_found": "Voting session not found.",
       "vote_session_ended": "This voting session has already ended.",
       "emote_not_eligible": "This emote can no longer be voted on.",

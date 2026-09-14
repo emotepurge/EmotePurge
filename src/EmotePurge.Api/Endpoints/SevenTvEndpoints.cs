@@ -1,6 +1,7 @@
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 
 namespace EmotePurge.Api.Endpoints;
 
@@ -64,6 +65,50 @@ public static class SevenTvEndpoints
                     statusCode: StatusCodes.Status503ServiceUnavailable),
                 _ => throw new ArgumentOutOfRangeException(
                     nameof(result), result.Status, "Unbekannter ForeignEmoteSetLookupStatus.")
+            };
+        });
+
+        // GET /api/seventv/leaderboard (7TV-leaderboard-as-import-source spec 2026-09-13, section 4):
+        // a network-wide ranking, not scoped to any channel — RequireAuthorization() only, no
+        // ChannelNameValidationFilter (there is no channel name here at all) and no
+        // UsageStatsAccessAuthorizationFilter (there is no role to check). The same middleware-before-
+        // filter ordering as the group above applies: RequireRateLimiting still runs as middleware
+        // before LeaderboardSortValidationFilter can, so a caller over budget gets 429 even with an
+        // invalid sortBy.
+        var leaderboardGroup = app.MapGroup("/api/seventv/leaderboard")
+            .RequireAuthorization()
+            .AddEndpointFilter<LeaderboardSortValidationFilter>()
+            .RequireRateLimiting(RateLimitPolicyNames.SevenTvLeaderboard);
+
+        leaderboardGroup.MapGet("", async (
+            string? sortBy,
+            ISevenTvLeaderboardService leaderboardService,
+            CancellationToken ct) =>
+        {
+            if (!SevenTvLeaderboardSortWireCode.TryParse(sortBy, out var sort))
+            {
+                // LeaderboardSortValidationFilter has already rejected anything outside the allowlist
+                // by the time this handler runs — reaching here with an unparsable sortBy would be a
+                // bug in that filter, not something a caller can trigger.
+                throw new InvalidOperationException(
+                    "LeaderboardSortValidationFilter should have rejected this sortBy before the handler ran.");
+            }
+
+            var result = await leaderboardService.GetLeaderboardAsync(sort, ct);
+
+            // Spec section 5: all three failure states share the existing ForeignChannelSevenTvUnavailable
+            // code (E13) — the caller cannot act on "7TV unreachable", "7TV rate-limited" and "our own
+            // window budget refused a permit" any differently.
+            return result.Status switch
+            {
+                SevenTvLeaderboardStatus.Ok => Results.Ok(result.Response),
+                SevenTvLeaderboardStatus.SevenTvUnavailable
+                    or SevenTvLeaderboardStatus.SevenTvRateLimited
+                    or SevenTvLeaderboardStatus.BudgetRefused => Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(result), result.Status, "Unknown SevenTvLeaderboardStatus.")
             };
         });
     }

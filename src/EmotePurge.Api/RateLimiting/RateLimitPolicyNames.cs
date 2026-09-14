@@ -35,4 +35,12 @@ internal static class RateLimitPolicyNames
     /// Core rate-limit policy.
     /// </summary>
     internal const string ForeignEmoteLookup = "ForeignEmoteLookup";
+
+    /// <summary>
+    /// <c>GET /api/seventv/leaderboard</c> (7TV-leaderboard-as-import-source spec 2026-09-13, E16).
+    /// Per-user only — the provider-wide window budget across all users lives in
+    /// <c>SevenTvLeaderboardRequestBudget</c>, an in-process concern the leaderboard service owns, not
+    /// an ASP.NET Core rate-limit policy, exactly like <see cref="ForeignEmoteLookup"/>'s split.
+    /// </summary>
+    internal const string SevenTvLeaderboard = "SevenTvLeaderboard";
 }

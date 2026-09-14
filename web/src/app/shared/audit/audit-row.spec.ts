@@ -17,9 +17,18 @@ function entry(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
   };
 }
 
+/** Identity stand-in for `TranslocoService.translate` — every existing kind's `title` is already
+ *  displayable text and never runs through it; only `importedFromLeaderboard` does (see the
+ *  dedicated `describe` block below), so a fixed dictionary is easier to read there than a stub. */
+const IDENTITY_TRANSLATE = (key: string) => key;
+
 describe('toAuditRows', () => {
   it('resolves a known action to its translation key', () => {
-    const [row] = toAuditRows([entry({ action: 'voteSession.delete' })], 'de-DE');
+    const [row] = toAuditRows(
+      [entry({ action: 'voteSession.delete' })],
+      'de-DE',
+      IDENTITY_TRANSLATE,
+    );
 
     expect(row.actionKey).toBe('audit.actions.voteSessionDelete');
     expect(row.action).toBe('voteSession.delete');
@@ -27,7 +36,11 @@ describe('toAuditRows', () => {
 
   it('leaves an unknown action without a key but keeps it verbatim', () => {
     // An entry written by a newer backend: showing the raw string beats hiding the row.
-    const [row] = toAuditRows([entry({ action: 'channel.somethingNew' })], 'de-DE');
+    const [row] = toAuditRows(
+      [entry({ action: 'channel.somethingNew' })],
+      'de-DE',
+      IDENTITY_TRANSLATE,
+    );
 
     expect(row.actionKey).toBeNull();
     expect(row.action).toBe('channel.somethingNew');
@@ -37,6 +50,7 @@ describe('toAuditRows', () => {
     const [row] = toAuditRows(
       [entry({ detail: { kind: 'emoteCount', count: 12, text: null } })],
       'de-DE',
+      IDENTITY_TRANSLATE,
     );
 
     expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 12 } });
@@ -46,6 +60,7 @@ describe('toAuditRows', () => {
     const [row] = toAuditRows(
       [entry({ detail: { kind: 'title', count: null, text: 'Sommer-Purge' } })],
       'de-DE',
+      IDENTITY_TRANSLATE,
     );
 
     expect(row.detail).toEqual({
@@ -60,6 +75,7 @@ describe('toAuditRows', () => {
     const [row] = toAuditRows(
       [entry({ detail: { kind: 'importedFromChannel', count: 5, text: 'sourcechannel' } })],
       'de-DE',
+      IDENTITY_TRANSLATE,
     );
 
     expect(row.detail).toEqual({
@@ -72,6 +88,7 @@ describe('toAuditRows', () => {
     const [row] = toAuditRows(
       [entry({ detail: { kind: 'importedFromFile', count: 7, text: null } })],
       'de-DE',
+      IDENTITY_TRANSLATE,
     );
 
     expect(row.detail).toEqual({
@@ -86,16 +103,77 @@ describe('toAuditRows', () => {
     const [row] = toAuditRows(
       [entry({ detail: { kind: 'somethingNew', count: 3, text: null } })],
       'de-DE',
+      IDENTITY_TRANSLATE,
     );
 
     expect(row.detail).toBeNull();
   });
 
   it('formats the timestamp in the given locale', () => {
-    const rows = toAuditRows([entry({ occurredAtUtc: '2026-07-31T12:00:00Z' })], 'en-US');
+    const rows = toAuditRows(
+      [entry({ occurredAtUtc: '2026-07-31T12:00:00Z' })],
+      'en-US',
+      IDENTITY_TRANSLATE,
+    );
 
     // Only the shape is asserted: the exact string depends on the runtime's timezone.
     expect(rows[0].timestamp).toMatch(/\d/);
     expect(rows[0].occurredAtUtc).toBe('2026-07-31T12:00:00Z');
+  });
+
+  // #148, E9: the server writes a language-neutral sort code here, never text — this is the one
+  // kind whose `text` this function translates itself instead of passing through.
+  describe('importedFromLeaderboard (#148, E9)', () => {
+    const TRANSLATE_LEADERBOARD_SORT = (key: string) =>
+      ({
+        'audit.details.leaderboardSort.TRENDING_DAILY': '7TV Trend heute',
+        'audit.details.leaderboardSort.TOP_ALL_TIME': '7TV Top insgesamt',
+      })[key] ?? key;
+
+    it('translates the sort code into the title parameter', () => {
+      const [row] = toAuditRows(
+        [entry({ detail: { kind: 'importedFromLeaderboard', count: 12, text: 'TRENDING_DAILY' } })],
+        'de-DE',
+        TRANSLATE_LEADERBOARD_SORT,
+      );
+
+      expect(row.detail).toEqual({
+        key: 'audit.details.importedFromLeaderboard',
+        params: { count: 12, title: '7TV Trend heute' },
+      });
+    });
+
+    it('translates the other sort code too', () => {
+      const [row] = toAuditRows(
+        [entry({ detail: { kind: 'importedFromLeaderboard', count: 3, text: 'TOP_ALL_TIME' } })],
+        'de-DE',
+        TRANSLATE_LEADERBOARD_SORT,
+      );
+
+      expect(row.detail?.params['title']).toBe('7TV Top insgesamt');
+    });
+
+    it('drops the whole detail for a code outside the allowlist instead of crashing', () => {
+      // Forward-compatibility case: a future backend writes a third sort this build does not know.
+      // Same degradation as an unrecognized `kind` — no crash, no raw code, no missing-key
+      // placeholder, the row simply keeps its action and actor.
+      const [row] = toAuditRows(
+        [entry({ detail: { kind: 'importedFromLeaderboard', count: 3, text: 'TRENDING_WEEKLY' } })],
+        'de-DE',
+        TRANSLATE_LEADERBOARD_SORT,
+      );
+
+      expect(row.detail).toBeNull();
+    });
+
+    it('drops the whole detail when the server sent no code at all', () => {
+      const [row] = toAuditRows(
+        [entry({ detail: { kind: 'importedFromLeaderboard', count: 3, text: null } })],
+        'de-DE',
+        TRANSLATE_LEADERBOARD_SORT,
+      );
+
+      expect(row.detail).toBeNull();
+    });
   });
 });

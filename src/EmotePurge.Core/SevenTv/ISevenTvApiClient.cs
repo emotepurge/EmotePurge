@@ -38,4 +38,15 @@ public interface ISevenTvApiClient
     // specifically so a hardening decorator can react to a confirmed 7TV overload differently from a
     // generic upstream failure (spec E4) — see SevenTvPreviewLookupStatus.
     Task<SevenTvEmoteSetPreviewResult> GetEmoteSetPreviewAsync(string emoteSetId, CancellationToken cancellationToken = default);
+
+    // One page of 7TV's network-wide emote leaderboard for the given sort — the leaderboard
+    // import source (spec 2026-09-13), sibling to the preview above but reading
+    // EmoteQuery.search rather than emoteSet(id): there is no set here, only a global ranking, so
+    // this takes a sort instead of a set id. page is 1-based, matching 7TV's own convention; the
+    // per-page size is fixed at 250 inside the client (E5) and is never taken from the caller.
+    // Never null; Page is populated if and only if Status is Ok. See
+    // SevenTvEmoteSearchPageResult for why every outcome — including a failure — still carries
+    // 7TV's rate-limit header sample.
+    Task<SevenTvEmoteSearchPageResult> SearchEmotesAsync(
+        SevenTvLeaderboardSort sortBy, int page, CancellationToken cancellationToken = default);
 }

@@ -3,6 +3,7 @@ import { Locator, Page, expect, test } from '@playwright/test';
 import {
   AUTH_USER,
   MockEmoteUsage,
+  MockLeaderboardEmote,
   emitLive,
   installLiveStub,
   mockActiveEmoteSet,
@@ -15,6 +16,7 @@ import {
   mockMyChannels,
   mockSetWarning,
   mockSevenTvGql,
+  mockSevenTvLeaderboard,
   mockSyncImported,
   mockUsageTotals,
   mockVoteSessionList,
@@ -374,6 +376,133 @@ test.describe('push flow: picker to confirmation dialog', () => {
     // gone, rather than sitting there relocked at "(0)".
     await expect(dockCopyButton(page, 2)).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Übertragen \(\d+\)$/ })).toHaveCount(0);
+  });
+});
+
+/**
+ * #148: 7TV's network-wide leaderboard as the import dialog's third source (spec AK 15/16/22).
+ * Unlike the other two sources the target is never asked for — `import-trigger.ts` always starts
+ * `startLeaderboardImportFlow` against the page's own channel, exactly as it does for the file path
+ * — so both tests below target `SOURCE_CHANNEL` itself rather than `TARGET_CHANNEL`. The mutation
+ * pattern (7TV GQL stub seeding the write token, `page.clock.install()`, a captured `sync-imported`
+ * body, `mockChannelScopedResync`) mirrors the completed runs elsewhere in this file (e.g. "the dock
+ * shortcut skips the scope question…" above) — the same shape the push flow uses for every source.
+ */
+test.describe('push flow: the 7TV leaderboard source (#148)', () => {
+  const LEADERBOARD_EMOTES: MockLeaderboardEmote[] = [
+    { sevenTvEmoteId: 'lb-1', name: 'LBOne', topAllTime: 500_000, trending: 900 },
+    { sevenTvEmoteId: 'lb-2', name: 'LBTwo', topAllTime: 300_000, trending: 700 },
+  ];
+
+  test('picking two leaderboard rows completes a run whose sync-imported body names the sort as origin', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    // Empty target list: both picked rows survive the already-present filter, so the confirm
+    // dialog's count is pure proof of the picked rows, not diluted by a collision (same reasoning as
+    // the dock-shortcut test above).
+    await mockEmoteList(page, SOURCE_CHANNEL, []);
+    // Only TRENDING_DAILY is answered — it is the step's entry point (LeaderboardStep.sortBy's
+    // initial value), so the default load never has to switch lists.
+    await mockSevenTvLeaderboard(page, {
+      TRENDING_DAILY: { totalCount: 2, truncated: false, emotes: LEADERBOARD_EMOTES },
+    });
+
+    let syncImportedBody: Record<string, unknown> | null = null;
+    await page.route(`**/api/channels/${SOURCE_CHANNEL}/emotes/sync-imported`, (route) => {
+      syncImportedBody = route.request().postDataJSON();
+      return route.fulfill({ status: 204 });
+    });
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    await mockSevenTvGql(page, () => ({
+      data: { emoteSets: { emoteSet: { addEmote: { id: 'lb-1' } } } },
+    }));
+    // Frozen for the same reason as the other run-completion tests: the engine's trailing pacing
+    // delay would otherwise race a real wait.
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const sourceDialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await expect(sourceDialog.locator('#app-dialog-title')).toHaveText('Emotes importieren');
+    await sourceDialog.getByRole('button', { name: /^Aus 7TVs Bestenliste/ }).click();
+    await expect(sourceDialog.locator('#app-dialog-title')).toHaveText(
+      'Aus 7TVs Bestenliste importieren',
+    );
+
+    // The default list loads without any sort switch — the third source's whole point (E7):
+    // reachable without first knowing which channel the emotes live in.
+    await expect(sourceDialog.getByRole('group', { name: 'Emote-Auswahl' })).toBeVisible();
+
+    await sourceDialog.getByRole('button', { name: /^LBOne/ }).click();
+    await sourceDialog.getByRole('button', { name: /^LBTwo/ }).click();
+    await expect(sourceDialog.getByRole('button', { name: 'Weiter' })).toBeEnabled();
+    await sourceDialog.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = page.getByRole('dialog');
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      `2 Emotes nach ${SOURCE_CHANNEL} kopieren?`,
+    );
+    // The origin line names the sort, not a channel — a leaderboard row has none (spec E2/E8).
+    await expect(confirm.getByText('Aus 7TVs Bestenliste: 7TV Trend heute')).toBeVisible();
+    await expect(confirm.getByText(`Ziel: ${SOURCE_CHANNEL} · Set set-1`)).toBeVisible();
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(2000);
+    await expect(page.getByText('2 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    // AK 15/16's wire contract: the fourth ImportOrigin member sends no source channel, only the
+    // sort it was picked off of.
+    expect(syncImportedBody).not.toBeNull();
+    // Cast through `unknown` first: `syncImportedBody` is a `let` reassigned only inside the
+    // `page.route` callback above, so TS's control-flow analysis never sees that reachable and
+    // narrows the read here to the literal `null` from the initializer — a direct cast to
+    // `Record<string, unknown>` therefore looks like a mistake to the compiler (TS2352) even
+    // though the `expect(...).not.toBeNull()` above proves it isn't.
+    const body = syncImportedBody as unknown as Record<string, unknown>;
+    expect(body['sourceKind']).toBe('seventv-leaderboard');
+    expect(body['sourceChannelName']).toBeNull();
+    expect(body['leaderboardSort']).toBe('TRENDING_DAILY');
+    expect((body['sevenTvEmoteIds'] as string[]).slice().sort()).toEqual(['lb-1', 'lb-2']);
+  });
+
+  test('a 503 from the endpoint shows the error state and never offers "Weiter"', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // Every failure state of the endpoint maps onto this one 503/errorCode (E13) — the step's error
+    // banner does not distinguish them, so a bare 503 is representative of all of them.
+    await mockSevenTvLeaderboard(page, { TRENDING_DAILY: 503 });
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const dialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await dialog.getByRole('button', { name: /^Aus 7TVs Bestenliste/ }).click();
+
+    await expect(dialog.getByRole('alert')).toContainText(
+      '7TV ist gerade nicht erreichbar. Bitte versuch es in Kürze erneut.',
+    );
+    // "Weiter" only ever renders once a list is on screen (ImportSourceDialog.gridVisible, shared
+    // with the foreign-channel branch) — an error state never mounts the grid, so the button is not
+    // merely disabled, it never appears at all. Its absence is the lock.
+    await expect(dialog.getByRole('button', { name: 'Weiter' })).toHaveCount(0);
+    await expect(dialog.getByRole('group', { name: 'Emote-Auswahl' })).toHaveCount(0);
   });
 });
 
@@ -1365,6 +1494,12 @@ test.describe('create-vote-session dialog: follows the live selection (#132)', (
     await expect(page.getByRole('dialog')).toHaveCount(0);
     // CatJAM (e1) and Pog (e3) — KEKW (e2), pruned by the live reload, never went out.
     expect(createRequestBody).not.toBeNull();
-    expect((createRequestBody as { emoteIds?: string[] }).emoteIds?.sort()).toEqual(['e1', 'e3']);
+    // Same cast-through-`unknown` reasoning as the leaderboard body above: `createRequestBody` is
+    // only ever reassigned inside the `page.route` callback, so TS still sees it as the literal
+    // `null` initializer here and flags a direct cast as TS2352.
+    expect((createRequestBody as unknown as { emoteIds?: string[] }).emoteIds?.sort()).toEqual([
+      'e1',
+      'e3',
+    ]);
   });
 });

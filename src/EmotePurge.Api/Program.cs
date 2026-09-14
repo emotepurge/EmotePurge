@@ -186,6 +186,12 @@ builder.Services.AddRateLimiter(options =>
     // across all users (E5b) is a separate, in-process concern the hardening decorator around
     // IForeignEmoteSetService owns, not a policy here.
     AddFixedWindowPolicy(RateLimitPolicyNames.ForeignEmoteLookup, rateLimits.ForeignEmoteLookup);
+
+    // GET /api/seventv/leaderboard (7TV-leaderboard-as-import-source spec 2026-09-13, E16): unlike
+    // ForeignEmoteLookup above this call never costs 7TV a round trip directly — it reads an
+    // in-process stock guarded by its own window budget and circuit breaker — but its response runs
+    // to tens of KB, so it gets its own policy rather than sharing InteractiveRead's.
+    AddFixedWindowPolicy(RateLimitPolicyNames.SevenTvLeaderboard, rateLimits.SevenTvLeaderboard);
 });
 
 var app = builder.Build();

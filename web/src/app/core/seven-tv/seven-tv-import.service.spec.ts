@@ -44,6 +44,7 @@ const FILE_ORIGIN: ImportOrigin = {
   channelName: 'brudivoeller_tv',
   envelopeKind: 'emote-list',
 };
+const LEADERBOARD_ORIGIN: ImportOrigin = { kind: 'seventv-leaderboard', sortBy: 'TRENDING_DAILY' };
 
 const ROWS: ImportRow[] = [
   { sevenTvEmoteId: '7tv-1', name: 'PogU' },
@@ -144,6 +145,7 @@ describe('SevenTvImportService', () => {
       sevenTvEmoteIds: ['7tv-1', '7tv-2'],
       sourceChannelName: 'brudivoeller_tv',
       sourceKind: 'channel',
+      leaderboardSort: null,
     });
     expect(service.syncReport()).toBe('pending');
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
@@ -171,6 +173,7 @@ describe('SevenTvImportService', () => {
       sevenTvEmoteIds: ['7tv-1', '7tv-2'],
       sourceChannelName: 'handofblood',
       sourceKind: 'seventv-channel',
+      leaderboardSort: null,
     });
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
     expect(service.syncReport()).toBe('succeeded');
@@ -188,6 +191,26 @@ describe('SevenTvImportService', () => {
       sevenTvEmoteIds: ['7tv-1', '7tv-2'],
       sourceChannelName: null,
       sourceKind: 'file',
+      leaderboardSort: null,
+    });
+    reportReq.flush(null, { status: 204, statusText: 'No Content' });
+    httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
+  it('reports a leaderboard import with its sort and no source channel', () => {
+    // The case F1 Station 6/#148 exists for: `sourceKind` alone used to be enough to reconstruct the
+    // wire body from `origin.kind`. A fourth origin without a source channel needs a second field,
+    // and a direct `origin.kind === 'seventv-leaderboard'` test here would be exactly the shortcut
+    // that could ship this call without it — sent through the two exhaustive helpers instead.
+    service.startImport(TARGET_B, LEADERBOARD_ORIGIN, ROWS);
+    runTwoRowsToDone();
+
+    const reportReq = httpMock.expectOne(SYNC_IMPORTED_B);
+    expect(reportReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+      sourceChannelName: null,
+      sourceKind: 'seventv-leaderboard',
+      leaderboardSort: 'TRENDING_DAILY',
     });
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
@@ -473,6 +496,7 @@ describe('SevenTvImportService', () => {
       sevenTvEmoteIds: ['7tv-9'],
       sourceChannelName: null,
       sourceKind: 'file',
+      leaderboardSort: null,
     });
     retryReq.flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectNone(SYNC_IMPORTED_B);

@@ -26,6 +26,15 @@ const DE_TRANSLATIONS = {
           'Die Zahl auf jeder Kachel ist 7TVs netzwerkweiter Vergleichswert für dieses eine Emote — kein Maß dafür, wie oft es in diesem Kanal benutzt wird.',
       },
     },
+    // Stand-ins for `emptyMessageKey`/`truncatedMessageKey`/`scoreHintKey` (Task 7, spec E12):
+    // arbitrary keys that only need to exist in this test's translation map to prove the grid
+    // renders whatever key it is handed, not real production i18n — no entry belongs in
+    // `web/public/i18n/*.json` for this task (that file is owned by a later task).
+    leaderboard: {
+      empty: 'Die 7TV-Bestenliste ist leer.',
+      truncated: 'Nur ein Teil der Bestenliste geladen ({{ loaded }} von {{ totalCount }}).',
+      scoreHint: 'Eigener Bestenlisten-Hinweistext.',
+    },
   },
 };
 
@@ -253,5 +262,120 @@ describe('ForeignEmoteGrid', () => {
     expect(component['scoreBadge'](row({ topAllTime: 12400 }))).toBe('12,4k');
     expect(component['scoreBadge'](row({ topAllTime: 42 }))).toBe('42');
     expect(component['scoreBadge'](row({ topAllTime: null }))).toBe('–');
+  });
+
+  // The six cases below cover `forcedSortMode` and the three caption inputs (spec E12/F2, AK 19,
+  // 20, 23). None of them touch a case above — the render() helper and every existing `it` are
+  // untouched, since a caller that never sets these four new inputs must see today's behaviour.
+
+  it('with a forcedSortMode, renders no sort select but still shows the score explainer', () => {
+    fixture.componentRef.setInput('emotes', [row()]);
+    fixture.componentRef.setInput('forcedSortMode', 'topAllTime');
+    fixture.detectChanges();
+
+    expect(host.querySelector('select')).toBeNull();
+    expect(host.querySelector('label')).toBeNull();
+    expect(
+      Array.from(host.querySelectorAll('p')).some((p) =>
+        p.textContent?.includes('netzwerkweiter Vergleichswert'),
+      ),
+    ).toBe(true);
+  });
+
+  it('drives the score tile and each cell aria-label from the forced mode, leaving the internal sortMode at its default', () => {
+    fixture.componentRef.setInput('emotes', [row()]);
+    fixture.componentRef.setInput('forcedSortMode', 'trending');
+    fixture.detectChanges();
+
+    // The grid never had a select to change this from — a forced mode bypasses it entirely
+    // rather than setting it (spec F2's "one signal drives four things").
+    expect(component['sortMode']()).toBe('none');
+    expect(component['scoreBadge'](row({ trending: 12400 }))).toBe('12,4k');
+    expect(component['cellLabel'](row({ name: 'catJAM', trending: 12400 }))).toBe(
+      'catJAM, 7TV-Score (Trend): 12,4k',
+    );
+  });
+
+  it('orders sortedEmotes by the forced score field (AK 19), independent of the unset select', () => {
+    const a = row({ sevenTvEmoteId: 'a', topAllTime: 5 });
+    const b = row({ sevenTvEmoteId: 'b', topAllTime: 50 });
+    fixture.componentRef.setInput('emotes', [a, b]);
+    fixture.componentRef.setInput('forcedSortMode', 'topAllTime');
+    fixture.detectChanges();
+
+    expect(component['sortedEmotes']()).toEqual([b, a]);
+  });
+
+  it('lets the three caption inputs override the rendered message text (AK 20)', () => {
+    fixture.componentRef.setInput('emotes', []);
+    fixture.componentRef.setInput('truncated', true);
+    fixture.componentRef.setInput('totalCount', 5);
+    fixture.componentRef.setInput('emptyMessageKey', 'import.leaderboard.empty');
+    fixture.componentRef.setInput('truncatedMessageKey', 'import.leaderboard.truncated');
+    fixture.detectChanges();
+
+    expect(host.textContent).toContain('Die 7TV-Bestenliste ist leer.');
+    expect(host.textContent).toContain('Nur ein Teil der Bestenliste geladen (0 von 5).');
+    expect(host.textContent).not.toContain('Das aktive 7TV-Set dieses Kanals hat keine Emotes.');
+
+    // Switch to the populated view to reach the score hint, the third overridable caption — it
+    // only renders while a score sort is active (spec F2), which the empty view above never is.
+    fixture.componentRef.setInput('emotes', [row()]);
+    fixture.componentRef.setInput('truncated', false);
+    fixture.componentRef.setInput('forcedSortMode', 'topAllTime');
+    fixture.componentRef.setInput('scoreHintKey', 'import.leaderboard.scoreHint');
+    fixture.detectChanges();
+
+    expect(host.textContent).toContain('Eigener Bestenlisten-Hinweistext.');
+  });
+
+  it('defaults the three caption inputs to the current foreignChannel keys when left unset (AK 23)', () => {
+    render([]);
+
+    expect(component.emptyMessageKey()).toBe('import.foreignChannel.empty');
+    expect(component.truncatedMessageKey()).toBe('import.foreignChannel.truncated');
+    expect(component.scoreHintKey()).toBe('import.foreignChannel.sort.scoreHint');
+  });
+
+  it('gives two grid instances different sort-select ids (AK 20)', () => {
+    // Set this suite's own fixture first: `detectChanges()` under zoneless CD ticks the whole
+    // `ApplicationRef`, not just the fixture it was called on — creating and detecting `other`
+    // below before this one had its required `emotes` input set would trip NG0950 on `component`.
+    render([row()]);
+
+    const other = TestBed.createComponent(ForeignEmoteGrid);
+    other.componentRef.setInput('emotes', [row()]);
+    other.detectChanges();
+
+    const ownId = component['sortSelectId'];
+    const otherId = other.componentInstance['sortSelectId'];
+    expect(ownId).not.toBe(otherId);
+    expect(host.querySelector('select')?.getAttribute('id')).toBe(ownId);
+  });
+
+  it('formats the truncation-notice and selected-count parameters with locale grouping, and reacts to a language switch (Regel 14)', () => {
+    // 7TV's "top overall" leaderboard reported 1,372,094 total entries live — six digits is the
+    // shape the observed defect actually had, not a synthetic edge case.
+    const many = Array.from({ length: 1500 }, (_, i) => row({ sevenTvEmoteId: `e${i}` }));
+    render(many, true, 1372094);
+
+    component['selection'].onRowClick(many[0], { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(many[1499], { shiftKey: true } as MouseEvent);
+    expect(component['selection'].selectedKeys().length).toBe(1500);
+
+    expect(component['truncatedNoticeParams']()).toEqual({
+      loaded: '1.500',
+      totalCount: '1.372.094',
+    });
+    expect(component['selectedCountParams']()).toEqual({ count: '1.500' });
+
+    const languageService = TestBed.inject(LanguageService);
+    (languageService.lang as unknown as { set: (value: string) => void }).set('en');
+
+    expect(component['truncatedNoticeParams']()).toEqual({
+      loaded: '1,500',
+      totalCount: '1,372,094',
+    });
+    expect(component['selectedCountParams']()).toEqual({ count: '1,500' });
   });
 });

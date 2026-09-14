@@ -225,7 +225,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
 
         var service = new EmoteService(db);
         var written = await service.MarkImportedAsync(
-            "syncimporttest_a", ["7tv-ia1", "7tv-ia2"], "SourceChannel", "channel", Actor);
+            "syncimporttest_a", ["7tv-ia1", "7tv-ia2"], "SourceChannel", "channel", null, Actor);
 
         Assert.True(written);
         var audit = await db.AuditLogEntries.SingleAsync(a =>
@@ -249,7 +249,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var service = new EmoteService(db);
-        await service.MarkImportedAsync("syncimporttest_b", ["7tv-ib1"], null, "file", Actor);
+        await service.MarkImportedAsync("syncimporttest_b", ["7tv-ib1"], null, "file", null, Actor);
 
         var row = await db.Emotes.Where(e => e.Id == emote.Id)
             .Select(e => new { e.IsArchived, e.ArchivedAt })
@@ -268,7 +268,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var service = new EmoteService(db);
-        await service.MarkImportedAsync("syncimporttest_c", ["7tv-ic1", "7tv-ic1"], null, "file", Actor);
+        await service.MarkImportedAsync("syncimporttest_c", ["7tv-ic1", "7tv-ic1"], null, "file", null, Actor);
 
         var audit = await db.AuditLogEntries.SingleAsync(a =>
             a.ChannelName == "syncimporttest_c" && a.Action == AuditActions.EmotesSyncImported);
@@ -281,7 +281,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
 
         var service = new EmoteService(db);
-        var written = await service.MarkImportedAsync("syncimporttest_unknown", ["7tv-id1"], null, "channel", Actor);
+        var written = await service.MarkImportedAsync("syncimporttest_unknown", ["7tv-id1"], null, "channel", null, Actor);
 
         Assert.False(written);
         Assert.Equal(0, await db.AuditLogEntries.CountAsync(a => a.ChannelName == "syncimporttest_unknown"));

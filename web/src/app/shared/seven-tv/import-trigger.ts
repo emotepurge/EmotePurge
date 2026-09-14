@@ -9,7 +9,7 @@ import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.serv
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { Button } from '../ui/button';
-import { startForeignChannelImportFlow } from './foreign-import-flow';
+import { startForeignChannelImportFlow, startLeaderboardImportFlow } from './foreign-import-flow';
 import { importTriggerDisabled } from './import-trigger-gate';
 import { openImportSourceDialog } from './import-source-dialog';
 import { startImportFlow } from './import-flow';
@@ -121,6 +121,12 @@ export class ImportTrigger {
         // The target is this page's channel, exactly as it is for the file path — no target picker
         // in between any more (#147).
         startForeignChannelImportFlow(importDeps, result.picked, channelName);
+        return;
+      }
+      if (result.kind === 'leaderboard') {
+        // Same target rule, and even less to ask for: a leaderboard row belongs to no channel at
+        // all. Foreign is the source, never the target.
+        startLeaderboardImportFlow(importDeps, result.picked, channelName);
         return;
       }
       startImportFlow(importDeps, result.source, channelName);

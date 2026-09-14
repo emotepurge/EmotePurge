@@ -222,7 +222,7 @@ internal sealed class SevenTvGqlSetEntryEmoteDto
 // images vs. 7734 bytes without, both against 7TV's own "global" set). The image url is instead
 // built from the emote id directly (SevenTvApiClient.BuildForeignImageUrl) — 7TV's CDN url shape is
 // fixed and keyed only by that id, confirmed live against the same measurement.
-internal sealed class SevenTvGqlEmoteSetPreviewResponseDto
+internal sealed class SevenTvGqlEmoteSetPreviewResponseDto : ISevenTvGqlErrorEnvelope
 {
     public SevenTvGqlEmoteSetPreviewDataDto? Data { get; set; }
 
@@ -232,6 +232,17 @@ internal sealed class SevenTvGqlEmoteSetPreviewResponseDto
     // one detail this DTO exists to expose, since every other query on this client infers failure
     // from `data` being empty and never needed to read `errors` itself.
     public List<SevenTvGqlErrorDto>? Errors { get; set; }
+}
+
+/// <summary>
+/// The shape <c>SevenTvApiClient</c>'s shared v4 page-fetch (<c>FetchV4PageAsync</c>) needs from
+/// any v4 GraphQL response DTO it parses: just enough to find a disguised-as-200 rate limit
+/// (<c>errors[].extensions.status == 429</c>), the same way both the preview and the leaderboard
+/// search responses expose it. Lets that one shared method stay generic over the concrete DTO.
+/// </summary>
+internal interface ISevenTvGqlErrorEnvelope
+{
+    List<SevenTvGqlErrorDto>? Errors { get; }
 }
 
 internal sealed class SevenTvGqlErrorDto
@@ -319,4 +330,47 @@ internal sealed class SevenTvGqlEmoteSetPreviewScoresDto
 {
     public int TopAllTime { get; set; }
     public int TrendingDay { get; set; }
+}
+
+// GQL v4 (host-absolute /v4/gql), the leaderboard import source (spec 2026-09-13, F7): emotes {
+// search(sort, page, perPage) { totalCount pageCount items { id defaultName flags { animated }
+// scores { topAllTime trendingDay } } } } — deliberately without query/filters/tags (E5) and
+// without defaultZeroWidth (E4). Reuses SevenTvGqlEmoteSetPreviewFlagsDto/ScoresDto: EmoteQuery.
+// search returns flat Emote objects, and both fields have the exact same JSON shape there as on
+// the preview's embedded Emote — only the wrapping item (no per-set alias here, see F7) differs.
+internal sealed class SevenTvGqlLeaderboardSearchResponseDto : ISevenTvGqlErrorEnvelope
+{
+    public SevenTvGqlLeaderboardSearchDataDto? Data { get; set; }
+
+    // Same envelope 7TV uses to disguise an overload as HTTP 200 for this query too — see the
+    // comment on SevenTvGqlEmoteSetPreviewResponseDto.Errors.
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
+}
+
+internal sealed class SevenTvGqlLeaderboardSearchDataDto
+{
+    public SevenTvGqlEmoteQueryDto? Emotes { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteQueryDto
+{
+    public SevenTvGqlLeaderboardSearchPageDto? Search { get; set; }
+}
+
+internal sealed class SevenTvGqlLeaderboardSearchPageDto
+{
+    public int TotalCount { get; set; }
+    public int PageCount { get; set; }
+    public List<SevenTvGqlLeaderboardSearchItemDto> Items { get; set; } = [];
+}
+
+internal sealed class SevenTvGqlLeaderboardSearchItemDto
+{
+    public string Id { get; set; } = string.Empty;
+
+    // The emote's global base name — a flat Emote object from EmoteQuery.search carries no
+    // per-set alias (F7), unlike SevenTvGqlEmoteSetPreviewItemDto.Alias.
+    public string DefaultName { get; set; } = string.Empty;
+    public SevenTvGqlEmoteSetPreviewFlagsDto? Flags { get; set; }
+    public SevenTvGqlEmoteSetPreviewScoresDto? Scores { get; set; }
 }

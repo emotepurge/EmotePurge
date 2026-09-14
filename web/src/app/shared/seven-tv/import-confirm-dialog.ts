@@ -14,6 +14,7 @@ import {
   ImportSource,
   importOriginSourceChannelName,
 } from '../../core/seven-tv/import-source';
+import { LEADERBOARD_SORT_LABEL_KEYS } from '../../core/seven-tv/leaderboard.model';
 import { Button } from '../ui/button';
 import { openAppDialog } from '../ui/dialog';
 import { DialogShell } from '../ui/dialog-shell';
@@ -73,7 +74,7 @@ type BlockReason = string | null;
         titleKey() | transloco: { count: titleCount(), channel: data.targetChannelName }
       "
     >
-      <!-- Branches on the two computeds below, never on origin.kind: with a third origin
+      <!-- Branches on the three computeds below, never on origin.kind: with a fourth origin
            "not a channel" and "is a file" stopped being the same question, and a template test is
            exactly where that goes unnoticed (spec F6). -->
       @if (originChannelName(); as channel) {
@@ -89,6 +90,10 @@ type BlockReason = string | null;
             {{ 'import.confirm.originFileDetails' | transloco: fileDetails() }}
           </p>
         </div>
+      } @else if (leaderboardOrigin(); as origin) {
+        <p class="text-sm text-fg-secondary">
+          {{ 'import.confirm.originLeaderboard' | transloco: origin }}
+        </p>
       }
 
       @if (ready(); as target) {
@@ -296,6 +301,23 @@ export class ImportConfirmDialog {
   protected readonly fileOrigin = computed<Extract<ImportOrigin, { kind: 'file' }> | null>(() => {
     const origin = this.data.source.origin;
     return origin.kind === 'file' ? origin : null;
+  });
+
+  /**
+   * The leaderboard origin's sort, already translated and ready to spread as the transloco params
+   * for `import.confirm.originLeaderboard` — or `null` for the other three origins. A leaderboard
+   * pick has no source channel at all (E2/E8): the sort *is* the origin, and this reads it through
+   * the same `audit.details.leaderboardSort.<code>` table the audit view's `renderDetail` uses, so
+   * the dialog and a later audit row for the same import say exactly the same thing (E2: "Der
+   * Bestätigungsdialog zeigt dasselbe"). Reads `lang()` first so a language switch while the dialog
+   * is open re-translates it — same reasoning as `fileDetails`.
+   */
+  protected readonly leaderboardOrigin = computed<{ sort: string } | null>(() => {
+    this.languageService.lang();
+    const origin = this.data.source.origin;
+    return origin.kind === 'seventv-leaderboard'
+      ? { sort: this.translocoService.translate(LEADERBOARD_SORT_LABEL_KEYS[origin.sortBy]) }
+      : null;
   });
 
   protected readonly ready = computed(() => {

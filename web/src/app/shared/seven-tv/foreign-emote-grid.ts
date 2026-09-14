@@ -66,6 +66,12 @@ const SORT_OPTIONS: SortOption[] = [
   { value: 'trending', labelKey: 'import.foreignChannel.sort.trending' },
 ];
 
+/** Instance-unique suffix for {@link ForeignEmoteGrid.sortSelectId} (spec E12) — the id was
+ *  hardcoded (`'foreign-emote-sort'`), and while the picker step and the leaderboard step never
+ *  render two grids at once today, a colliding `id`/`for` pair costs nothing to avoid and removes
+ *  the trap for whoever adds a second simultaneous instance later. */
+let foreignEmoteGridInstanceCount = 0;
+
 function columnsForWidth(width: number): number {
   if (!Number.isFinite(width) || width <= 0) {
     return 1;
@@ -127,37 +133,36 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
   template: `
     @if (truncated()) {
       <app-notice-banner variant="warning">
-        {{
-          'import.foreignChannel.truncated'
-            | transloco: { loaded: emotes().length, totalCount: totalCount() }
-        }}
+        {{ truncatedMessageKey() | transloco: truncatedNoticeParams() }}
       </app-notice-banner>
     }
 
     @if (emotes().length === 0) {
-      <p class="text-sm text-fg-muted">{{ 'import.foreignChannel.empty' | transloco }}</p>
+      <p class="text-sm text-fg-muted">{{ emptyMessageKey() | transloco }}</p>
     } @else {
       <div class="flex flex-wrap items-center justify-between gap-2">
         <!-- A labelled select, not a segmented control: the old segmented control read as a tab bar
              announcing what the list *was*, which is exactly the misreading this whole rewording
-             fixes. "Sortieren nach" in front of it says what the choice does. -->
-        <div class="flex items-center gap-2">
-          <label class="text-sm text-fg-secondary" [for]="sortSelectId">
-            {{ 'import.foreignChannel.sort.label' | transloco }}
-          </label>
-          <select [id]="sortSelectId" class="app-input-sm" (change)="onSortChange($event)">
-            @for (option of sortOptions; track option.value) {
-              <option [value]="option.value" [selected]="option.value === sortMode()">
-                {{ option.labelKey | transloco }}
-              </option>
-            }
-          </select>
-        </div>
+             fixes. "Sortieren nach" in front of it says what the choice does. Rendered only without
+             a forcedSortMode (spec E12/F2) — on the leaderboard the sort IS the list, and a second
+             control that re-sorts it on top would be a second, contradicting way to do the same
+             thing. -->
+        @if (forcedSortMode() === null) {
+          <div class="flex items-center gap-2">
+            <label class="text-sm text-fg-secondary" [for]="sortSelectId">
+              {{ 'import.foreignChannel.sort.label' | transloco }}
+            </label>
+            <select [id]="sortSelectId" class="app-input-sm" (change)="onSortChange($event)">
+              @for (option of sortOptions; track option.value) {
+                <option [value]="option.value" [selected]="option.value === sortMode()">
+                  {{ option.labelKey | transloco }}
+                </option>
+              }
+            </select>
+          </div>
+        }
         <span class="text-xs text-fg-muted">
-          {{
-            'import.foreignChannel.selectedCount'
-              | transloco: { count: selection.selectedKeys().length }
-          }}
+          {{ 'import.foreignChannel.selectedCount' | transloco: selectedCountParams() }}
         </span>
       </div>
 
@@ -165,12 +170,13 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
            each of them, and says what it is not — network-wide, this one emote, no unit claimed. So it wraps together with the grid in its own tight column (§7 — spacing is
            the shell's flex gap, and what belongs together more closely than that rhythm wraps
            itself in its own tighter flex column), instead of floating at equal distance between the two
-           and reading as a caption for neither. It appears only while a score sort is active; with
-           the set order showing there is no number to explain. -->
+           and reading as a caption for neither. It appears only while a score sort is active — under
+           the *effective* mode (spec F2), so a forcedSortMode shows it too even though there is no
+           select to have driven it; with the set order showing there is no number to explain. -->
       <div class="flex flex-col gap-1">
-        @if (sortMode() !== 'none') {
+        @if (effectiveSortMode() !== 'none') {
           <p class="text-xs text-fg-muted">
-            {{ 'import.foreignChannel.sort.scoreHint' | transloco }}
+            {{ scoreHintKey() | transloco }}
           </p>
         }
 
@@ -205,7 +211,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
                       class="app-sprite-cell relative block h-16 w-16 transition-shadow hover:inset-ring-1 hover:inset-ring-border-strong"
                     >
                       <app-emote-sprite [url]="emote.imageUrl" [size]="cellPx" />
-                      @if (sortMode() !== 'none') {
+                      @if (effectiveSortMode() !== 'none') {
                         <span
                           class="absolute bottom-0 left-0 px-1 font-mono text-[9px] leading-[1.4] font-medium"
                           [style.background-color]="'var(--ep-sprite-scrim)'"
@@ -252,6 +258,22 @@ export class ForeignEmoteGrid {
   readonly truncated = input(false);
   /** What 7TV reports as the set's total entry count — only meaningful together with `truncated`. */
   readonly totalCount = input<number | null>(null);
+  /**
+   * Additive, optional (spec E12): a caller-supplied sort that wins over the grid's own `<select>`,
+   * which is not rendered while this is set. On the leaderboard the sort is the server-side
+   * dimension that picked the list in the first place — a second, in-grid control that re-sorts it
+   * on top would be a bug, not a feature (spec F2). `'none'` is deliberately not a legal value here:
+   * the grid's own default already covers "no score sort", and allowing `'none'` would let a caller
+   * force the `<select>` away while asking for the un-forced default, which is indistinguishable
+   * from simply leaving this input unset.
+   */
+  readonly forcedSortMode = input<Exclude<ForeignEmoteSortMode, 'none'> | null>(null);
+  /** Caption overrides (spec E12/F2) — the default texts are written for a channel's own set
+   *  ("…dieses Kanals", "…des Sets") and read wrong for a network-wide list. Left unset, the grid
+   *  behaves exactly as it does today. */
+  readonly emptyMessageKey = input('import.foreignChannel.empty');
+  readonly truncatedMessageKey = input('import.foreignChannel.truncated');
+  readonly scoreHintKey = input('import.foreignChannel.sort.scoreHint');
 
   /** The current selection, emitted on every change so a host (the picker step) can gate the
    *  dialog's "weiter" button and build the eventual `ImportRow[]`. */
@@ -265,11 +287,24 @@ export class ForeignEmoteGrid {
   private readonly gridContainerRef = viewChild<ElementRef<HTMLElement>>('gridContainer');
   private readonly containerWidth = signal(0);
 
-  /** Never pre-selected (spec P5'/AK16) — see {@link ForeignEmoteSortMode}. */
+  /** Never pre-selected (spec P5'/AK16) — see {@link ForeignEmoteSortMode}. Only meaningful without
+   *  a `forcedSortMode`; see {@link effectiveSortMode}. */
   protected readonly sortMode = signal<ForeignEmoteSortMode>('none');
 
   protected readonly sortOptions = SORT_OPTIONS;
-  protected readonly sortSelectId = 'foreign-emote-sort';
+  /** Instance-unique (spec E12) so two grids in the same document never collide on `id`/`for`. */
+  protected readonly sortSelectId = `foreign-emote-sort-${++foreignEmoteGridInstanceCount}`;
+
+  /**
+   * The mode that actually governs display order, the score tile, the explainer, and the cell's
+   * accessible name (spec F2 — one signal driving all four, not four separate reads of `sortMode`).
+   * A `forcedSortMode` wins outright; otherwise this is exactly the `<select>`'s own state. Regel
+   * 14: this is a `computed()` over signals, not a plain field, so every consumer below reacts the
+   * same way to either input changing.
+   */
+  protected readonly effectiveSortMode = computed<ForeignEmoteSortMode>(
+    () => this.forcedSortMode() ?? this.sortMode(),
+  );
 
   /**
    * Sorting rearranges display order only — it never touches `ListSelection`'s `selectedKeySet`,
@@ -278,7 +313,7 @@ export class ForeignEmoteGrid {
    * is not "the lowest score".
    */
   protected readonly sortedEmotes = computed<ForeignEmoteRow[]>(() => {
-    const mode = this.sortMode();
+    const mode = this.effectiveSortMode();
     const items = this.emotes();
     if (mode === 'none') {
       return items;
@@ -304,8 +339,9 @@ export class ForeignEmoteGrid {
    *  construction. */
   protected readonly activeSortOption = computed<SortOption | null>(
     () =>
-      SORT_OPTIONS.find((option) => option.value === this.sortMode() && option.value !== 'none') ??
-      null,
+      SORT_OPTIONS.find(
+        (option) => option.value === this.effectiveSortMode() && option.value !== 'none',
+      ) ?? null,
   );
 
   protected readonly columns = computed(() => columnsForWidth(this.containerWidth()));
@@ -315,6 +351,32 @@ export class ForeignEmoteGrid {
     this.sortedEmotes,
     (row) => row.sevenTvEmoteId,
   );
+
+  /**
+   * Transloco interpolation prints its params as raw JS numbers — no grouping. 7TV's "top overall"
+   * leaderboard reports totals in the millions (1372094, not 1.372.094/1,372,094), and `loaded`
+   * runs into the low thousands on a truncated load, so both need locale-aware formatting rather
+   * than a straight pass-through. Regel 14: a `computed()` over `languageService.lang()`, so a
+   * language switch reformats the separator instead of freezing on whatever was active on first
+   * render.
+   */
+  protected readonly truncatedNoticeParams = computed(() => {
+    const locale = toLocale(this.languageService.lang());
+    const total = this.totalCount();
+    return {
+      loaded: this.emotes().length.toLocaleString(locale),
+      totalCount: total === null ? total : total.toLocaleString(locale),
+    };
+  });
+
+  /** Same reasoning as {@link truncatedNoticeParams}: a channel's 7TV set can hold well over 1000
+   *  emotes (`SevenTvApiClient.cs`'s "subscriber-sized sets" note), so a "N selected" count reaches
+   *  four digits once a large set is mostly picked. */
+  protected readonly selectedCountParams = computed(() => ({
+    count: this.selection
+      .selectedKeys()
+      .length.toLocaleString(toLocale(this.languageService.lang())),
+  }));
 
   protected readonly cellPx = CELL_PX;
   protected readonly rowPx = ROW_PX;
@@ -375,7 +437,7 @@ export class ForeignEmoteGrid {
   }
 
   protected scoreBadge(emote: ForeignEmoteRow): string {
-    const value = emote[this.sortMode() as Exclude<ForeignEmoteSortMode, 'none'>];
+    const value = emote[this.effectiveSortMode() as Exclude<ForeignEmoteSortMode, 'none'>];
     if (value === null || value === undefined) {
       return '–';
     }
@@ -388,7 +450,7 @@ export class ForeignEmoteGrid {
   /** The score as it is announced: the tile's own text, except that the typographic dash it uses
    *  for "no score" becomes a word — a screen reader says nothing at all for the dash. */
   private spokenScore(emote: ForeignEmoteRow): string {
-    const value = emote[this.sortMode() as Exclude<ForeignEmoteSortMode, 'none'>];
+    const value = emote[this.effectiveSortMode() as Exclude<ForeignEmoteSortMode, 'none'>];
     return value === null || value === undefined
       ? this.transloco.translate('import.foreignChannel.sort.noScore')
       : this.scoreBadge(emote);

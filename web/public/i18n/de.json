@@ -303,7 +303,9 @@
           "Voting": "Voting",
           "Bookkeeping": "Buchführung (sync/join)",
           "ChannelResync": "Manueller Channel-Resync",
-          "PublicHealth": "Öffentlicher Health-Check"
+          "PublicHealth": "Öffentlicher Health-Check",
+          "ForeignEmoteLookup": "Fremdkanal-Vorschau (7TV)",
+          "SevenTvLeaderboard": "7TV-Bestenliste"
         }
       },
       "lastRejection": {
@@ -341,7 +343,7 @@
         "rateLimited24h": "429er (24 h)",
         "lastRateLimitedAt": "Letzte 429",
         "retryAfter": "Retry-After",
-        "headerSample": "Twitch-Rate-Limit-Header (Stichprobe)",
+        "headerSample": "Rate-Limit-Header (Stichprobe)",
         "headerSampleValue": "Limit {{limit}} · Remaining {{remaining}} · Reset {{reset}} — beobachtet {{observedAt}}",
         "names": {
           "twitch": "Twitch",
@@ -350,7 +352,9 @@
         "callSources": {
           "twitch-helix": "Helix-Client",
           "twitch-auth": "Auth-Client (OAuth/Refresh)",
-          "seventv-rest": "7TV-REST-Client"
+          "seventv-rest": "7TV-REST-Client",
+          "seventv-foreign-preview": "7TV-Fremdvorschau-Client",
+          "seventv-leaderboard": "7TV-Bestenlisten-Client"
         }
       },
       "hints": {
@@ -540,7 +544,12 @@
       "removedEntries": "{{count}} Einträge entfernt",
       "title": "„{{title}}“",
       "importedFromChannel": "{{count}} Emotes aus {{title}}",
-      "importedFromFile": "{{count}} Emotes aus einer Datei"
+      "importedFromFile": "{{count}} Emotes aus einer Datei",
+      "importedFromLeaderboard": "{{count}} Emotes aus {{title}}",
+      "leaderboardSort": {
+        "TRENDING_DAILY": "7TV Trend heute",
+        "TOP_ALL_TIME": "7TV Top insgesamt"
+      }
     }
   },
   "emoteCount": {
@@ -933,6 +942,10 @@
       "channel": {
         "label": "Aus einem Kanal",
         "hint": "Das aktive 7TV-Set eines beliebigen Twitch-Kanals"
+      },
+      "leaderboard": {
+        "label": "Aus 7TVs Bestenliste",
+        "hint": "Die netzwerkweit vorn liegenden Emotes — ohne zu wissen, in welchem Kanal sie stecken"
       }
     },
     "dockCopyButton": "Übertragen ({{ count }})",
@@ -971,6 +984,20 @@
         "scoreHint": "Die Zahl auf jeder Kachel ist 7TVs netzwerkweiter Vergleichswert für dieses eine Emote — kein Maß dafür, wie oft es in diesem Kanal benutzt wird."
       }
     },
+    "leaderboard": {
+      "title": "Aus 7TVs Bestenliste importieren",
+      "sortLabel": "Liste",
+      "sort": {
+        "TRENDING_DAILY": "Trend heute",
+        "TOP_ALL_TIME": "Top insgesamt"
+      },
+      "empty": "7TV liefert für diese Liste gerade keine Einträge.",
+      "truncated": {
+        "TRENDING_DAILY": "Gezeigt werden die ersten {{ loaded }} von {{ totalCount }} Einträgen der Tagesliste — 7TV begrenzt, wie viele ein Abruf zurückgibt.",
+        "TOP_ALL_TIME": "Gezeigt werden die ersten {{ loaded }} Einträge; 7TV führt in dieser Rangfolge insgesamt {{ totalCount }} Emotes."
+      },
+      "scoreHint": "Die Reihenfolge ist 7TVs eigene. Die Zahl auf jeder Kachel ist 7TVs netzwerkweiter Vergleichswert für dieses eine Emote — kein Maß dafür, wie oft es in diesem Kanal benutzt wird."
+    },
     "confirm": {
       "title": {
         "one": "{{ count }} Emote nach {{ channel }} kopieren?",
@@ -979,6 +1006,7 @@
       "originChannel": "Aus Kanal {{ channel }}",
       "originFile": "Aus Datei {{ fileName }}",
       "originFileDetails": "Export aus {{ channel }}, {{ date }}",
+      "originLeaderboard": "Aus 7TVs Bestenliste: {{ sort }}",
       "dateUnknown": "Datum unbekannt",
       "channelUnknown": "Kanal unbekannt",
       "target": "Ziel: {{ channel }} · Set {{ setId }}",
@@ -1095,6 +1123,7 @@
       "foreign_channel_no_seventv_account": "Für diesen Channel existiert kein 7TV-Account.",
       "foreign_channel_no_active_emote_set": "Dieser Channel hat aktuell kein aktives 7TV-Emote-Set.",
       "foreign_channel_seventv_unavailable": "7TV ist gerade nicht erreichbar. Bitte versuch es in Kürze erneut.",
+      "invalid_leaderboard_sort": "Ungültige Sortierung für die 7TV-Bestenliste.",
       "vote_session_not_found": "Abstimmung nicht gefunden.",
       "vote_session_ended": "Diese Abstimmung ist bereits beendet.",
       "emote_not_eligible": "Dieses Emote ist nicht mehr abstimmbar.",
