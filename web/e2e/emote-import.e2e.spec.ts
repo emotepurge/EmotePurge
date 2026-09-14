@@ -3,6 +3,7 @@ import { Locator, Page, expect, test } from '@playwright/test';
 import {
   AUTH_USER,
   MockEmoteUsage,
+  MockLeaderboardEmote,
   emitLive,
   installLiveStub,
   mockActiveEmoteSet,
@@ -462,7 +463,12 @@ test.describe('push flow: the 7TV leaderboard source (#148)', () => {
     // AK 15/16's wire contract: the fourth ImportOrigin member sends no source channel, only the
     // sort it was picked off of.
     expect(syncImportedBody).not.toBeNull();
-    const body = syncImportedBody as Record<string, unknown>;
+    // Cast through `unknown` first: `syncImportedBody` is a `let` reassigned only inside the
+    // `page.route` callback above, so TS's control-flow analysis never sees that reachable and
+    // narrows the read here to the literal `null` from the initializer — a direct cast to
+    // `Record<string, unknown>` therefore looks like a mistake to the compiler (TS2352) even
+    // though the `expect(...).not.toBeNull()` above proves it isn't.
+    const body = syncImportedBody as unknown as Record<string, unknown>;
     expect(body['sourceKind']).toBe('seventv-leaderboard');
     expect(body['sourceChannelName']).toBeNull();
     expect(body['leaderboardSort']).toBe('TRENDING_DAILY');
@@ -1488,6 +1494,12 @@ test.describe('create-vote-session dialog: follows the live selection (#132)', (
     await expect(page.getByRole('dialog')).toHaveCount(0);
     // CatJAM (e1) and Pog (e3) — KEKW (e2), pruned by the live reload, never went out.
     expect(createRequestBody).not.toBeNull();
-    expect((createRequestBody as { emoteIds?: string[] }).emoteIds?.sort()).toEqual(['e1', 'e3']);
+    // Same cast-through-`unknown` reasoning as the leaderboard body above: `createRequestBody` is
+    // only ever reassigned inside the `page.route` callback, so TS still sees it as the literal
+    // `null` initializer here and flags a direct cast as TS2352.
+    expect((createRequestBody as unknown as { emoteIds?: string[] }).emoteIds?.sort()).toEqual([
+      'e1',
+      'e3',
+    ]);
   });
 });
