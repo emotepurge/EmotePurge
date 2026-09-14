@@ -303,7 +303,9 @@
           "Voting": "Voting",
           "Bookkeeping": "Buchführung (sync/join)",
           "ChannelResync": "Manueller Channel-Resync",
-          "PublicHealth": "Öffentlicher Health-Check"
+          "PublicHealth": "Öffentlicher Health-Check",
+          "ForeignEmoteLookup": "Fremdkanal-Vorschau (7TV)",
+          "SevenTvLeaderboard": "7TV-Bestenliste"
         }
       },
       "lastRejection": {
