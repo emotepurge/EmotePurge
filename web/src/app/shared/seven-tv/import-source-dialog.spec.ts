@@ -329,6 +329,18 @@ describe('ImportSourceDialog', () => {
       expect(document.activeElement).toBe(host.querySelector('input[type="text"]'));
     });
 
+    it('puts the caret on the list chooser when the leaderboard branch is entered', async () => {
+      // The integration proof of the step's own contract, and the ordering that actually occurs:
+      // the dialog focuses right after the render that mounted the step, while its first list is
+      // still in flight. A control disabled for that window would swallow the focus silently.
+      goToLeaderboardStep();
+      await fixture.whenStable();
+
+      expect(document.activeElement).toBe(host.querySelector('select'));
+
+      answerLeaderboard();
+    });
+
     it('returns the caret to the source row it came from', async () => {
       goToChannelStep();
       await fixture.whenStable();

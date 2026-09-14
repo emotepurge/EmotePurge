@@ -244,14 +244,57 @@ describe('LeaderboardStep', () => {
     expect(host.textContent).toContain('Rangfolge: 1, insgesamt 1371890.');
   });
 
-  it('puts the caret on the list chooser when the step is entered', () => {
-    // CDK autofocuses once when the overlay opens and never again for a swap inside it (#147), so
-    // the dialog asks the step; the step's first meaningful control is the list.
-    expectRequest('TRENDING_DAILY').flush(response());
-    fixture.detectChanges();
+  it('puts the caret on the list chooser while the first list is still loading', () => {
+    // The real ordering, and the only one that occurs: the dialog calls focusFirstControl() from
+    // `afterNextRender`, i.e. right after the render that mounted this step — always before any
+    // response can have arrived. Focusing *after* the flush would test a sequence that never
+    // happens and would pass over a control that cannot take focus at the moment it is asked to.
+    const pending = expectRequest('TRENDING_DAILY');
 
     component.focusFirstControl();
 
     expect(document.activeElement).toBe(sortSelect());
+
+    // And it stays where it was put once the list lands — the select survives the state change.
+    pending.flush(response());
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(sortSelect());
+  });
+
+  it('marks the list chooser unavailable while loading without taking it out of the tab order', () => {
+    // `disabled` would make it unreachable exactly when the dialog hands it the caret; `aria-disabled`
+    // says the same thing to a screen reader while leaving the control focusable (WCAG AA).
+    expect(sortSelect().getAttribute('aria-disabled')).toBe('true');
+    expect(sortSelect().disabled).toBe(false);
+
+    expectRequest('TRENDING_DAILY').flush(response());
+    fixture.detectChanges();
+
+    expect(sortSelect().getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it('ignores a list change while a fetch is in flight, so no late answer can overwrite a newer one', () => {
+    const pending = expectRequest('TRENDING_DAILY');
+
+    chooseSort('TOP_ALL_TIME');
+
+    // No second request exists to race the first — the chooser is announced as unavailable and
+    // behaves that way, and the visible value is put back so it never names a list that is not the
+    // one being fetched.
+    httpMock.expectNone((candidate) => candidate.url === '/api/seventv/leaderboard');
+    expect(sortSelect().value).toBe('TRENDING_DAILY');
+
+    pending.flush(response());
+    fixture.detectChanges();
+
+    // What arrived is what the chooser names, and it is what the grid shows.
+    expect(grid().forcedSortMode()).toBe('trending');
+    expect(sortSelect().value).toBe('TRENDING_DAILY');
+
+    // Once the fetch is done the chooser works again.
+    chooseSort('TOP_ALL_TIME');
+    expectRequest('TOP_ALL_TIME').flush(response({ sortBy: 'TOP_ALL_TIME' }));
+    fixture.detectChanges();
+    expect(grid().forcedSortMode()).toBe('topAllTime');
   });
 });

@@ -124,8 +124,8 @@ export class ImportTrigger {
         return;
       }
       if (result.kind === 'leaderboard') {
-        // Same target rule, and the same reason it needs no question: fremd ist die Quelle, nie das
-        // Ziel. A leaderboard row belongs to no channel at all, so there is even less to ask.
+        // Same target rule, and even less to ask for: a leaderboard row belongs to no channel at
+        // all. Foreign is the source, never the target.
         startLeaderboardImportFlow(importDeps, result.picked, channelName);
         return;
       }

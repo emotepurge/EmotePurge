@@ -66,9 +66,13 @@ const TRUNCATED_KEYS: Record<LeaderboardSort, string> = {
  * channel query, for the same reason: a selection made against one list has no honest meaning in
  * another.
  *
- * The `<select>` is disabled while a load is in flight, which also makes that swap race-free: there
- * is never a second request that could resolve after the first and hand the grid a list the select
- * no longer names.
+ * While a list is in flight the chooser is marked `aria-disabled` and refuses changes — announced as
+ * unavailable, but still focusable and tabbable. It must stay focusable because it is what the
+ * dialog hands the caret to on the way in, at a moment when a request is always outstanding; a real
+ * `disabled` would make that focus call a silent no-op and drop the caret on `<body>` every time.
+ * Refusing the change in the handler (and restoring the visible value) is what makes the
+ * announcement honest, and it is also what makes the swap race-free: there is never a second request
+ * that could resolve after the first and hand the grid a list the chooser no longer names.
  *
  * {@link focusFirstControl} is the dialog's focus contract (#147): CDK autofocuses once when the
  * overlay opens and never again for a swap inside it, so entering a step has to place the caret
@@ -87,11 +91,17 @@ const TRUNCATED_KEYS: Record<LeaderboardSort, string> = {
       <label class="text-sm text-fg-secondary" [for]="sortSelectId">
         {{ 'import.leaderboard.sortLabel' | transloco }}
       </label>
+      <!-- aria-disabled, never the disabled attribute: this is the control the dialog hands the
+           caret to on the way in (see focusFirstControl), and at that moment a list is always still
+           in flight — a truly disabled element cannot take focus, so the caret would land on the
+           document body every single time. This says "unavailable right now" to assistive technology
+           while the control stays reachable and tabbable; onSortChange is what makes the word
+           true. -->
       <select
         #sortSelect
         [id]="sortSelectId"
-        class="app-input-sm"
-        [disabled]="state().status === 'loading'"
+        class="app-input-sm aria-disabled:opacity-60"
+        [attr.aria-disabled]="loading()"
         (change)="onSortChange($event)"
       >
         @for (option of sortOptions; track option.value) {
@@ -146,6 +156,11 @@ export class LeaderboardStep implements OnInit {
   protected readonly sortBy = signal<LeaderboardSort>('TRENDING_DAILY');
   protected readonly state = signal<LoadState>({ status: 'loading' });
   protected readonly selectedRows = signal<ForeignEmoteRow[]>([]);
+
+  /** Drives both halves of the "unavailable but reachable" pair: the `aria-disabled` the control
+   *  announces, and the refusal in {@link onSortChange} that makes the announcement honest. One
+   *  signal, so the two can never disagree (Regel 14). */
+  protected readonly loading = computed(() => this.state().status === 'loading');
 
   protected readonly loadedResponse = computed<SevenTvLeaderboardResponse | null>(() => {
     const current = this.state();
@@ -209,8 +224,20 @@ export class LeaderboardStep implements OnInit {
     this.sortSelectRef()?.nativeElement.focus();
   }
 
+  /**
+   * The enforcing half of `aria-disabled` (see the template): while a list is in flight this
+   * refuses the change and puts the visible value back, so the chooser never names a list other
+   * than the one being fetched. That is also what keeps the swap race-free without a generation
+   * counter — there is never a second request that could resolve after the first and hand the grid
+   * a list nobody asked for. It is not a race being tolerated, it is one that cannot arise.
+   */
   protected onSortChange(event: Event): void {
-    const value = (event.target as HTMLSelectElement).value;
+    const select = event.target as HTMLSelectElement;
+    if (this.loading()) {
+      select.value = this.sortBy();
+      return;
+    }
+    const value = select.value;
     if (value !== 'TRENDING_DAILY' && value !== 'TOP_ALL_TIME') {
       return;
     }
