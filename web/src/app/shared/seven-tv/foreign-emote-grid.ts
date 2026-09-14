@@ -6,6 +6,7 @@ import {
   effect,
   inject,
   input,
+  linkedSignal,
   output,
   signal,
   viewChild,
@@ -17,6 +18,8 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { ListSelection } from '../selection/list-selection';
 import { EmoteSprite } from '../emotes/emote-sprite';
+import { EmoteSpriteAnimated } from '../emotes/emote-sprite-animated';
+import { isAnimatedEmoteUrl } from '../emotes/emote-url';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 
@@ -32,6 +35,8 @@ const GAP_PX = 4;
 const LABEL_PX = 16;
 const TILE_PX = CELL_PX + LABEL_PX;
 const ROW_PX = TILE_PX + GAP_PX;
+/** EmoteSprite's own default, restated so the cell's still can add one class to it. */
+const SPRITE_CLASS = 'h-full w-full object-contain p-1';
 
 /**
  * Which 7TV score field the grid is currently sorted by, or `'none'` for the set's own order.
@@ -130,7 +135,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
  */
 @Component({
   selector: 'app-foreign-emote-grid',
-  imports: [Button, EmoteSprite, NoticeBanner, ScrollingModule, TranslocoPipe],
+  imports: [Button, EmoteSprite, EmoteSpriteAnimated, NoticeBanner, ScrollingModule, TranslocoPipe],
   template: `
     @if (truncated()) {
       <app-notice-banner variant="warning">
@@ -194,10 +199,13 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
           </p>
         }
 
+        <!-- Leaving the grid as a whole also ends playback: a cell the viewport recycled while the
+             pointer rested on it is gone, and fires no mouseleave of its own. -->
         <div
           #gridContainer
           role="group"
           [attr.aria-label]="'import.foreignChannel.grid.ariaLabel' | transloco"
+          (mouseleave)="hoveredKey.set(null)"
         >
           <cdk-virtual-scroll-viewport
             [itemSize]="rowPx"
@@ -220,11 +228,45 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
                     [title]="cellLabel(emote)"
                     (click)="onCellClick(emote, $event)"
                     (mousedown)="$event.shiftKey && $event.preventDefault()"
+                    (mouseenter)="onCellEnter(emote)"
+                    (focus)="onCellEnter(emote)"
+                    (mouseleave)="onCellLeave(emote)"
+                    (blur)="onCellLeave(emote)"
                   >
                     <span
                       class="app-sprite-cell relative block h-16 w-16 transition-shadow hover:inset-ring-1 hover:inset-ring-border-strong"
                     >
-                      <app-emote-sprite [url]="emote.imageUrl" [size]="cellPx" />
+                      <!-- The still never leaves the cell, not even while the animation plays: a
+                           freshly mounted sprite stays invisible until its load event, so swapping it
+                           out on hover would blank the picture under the pointer. The animation lies
+                           on top instead, and the still only hides once that has painted. -->
+                      <app-emote-sprite
+                        [url]="emote.imageUrl"
+                        [size]="cellPx"
+                        [spriteClass]="stillSpriteClass(emote)"
+                      />
+                      @if (playsAnimation(emote)) {
+                        <span class="absolute inset-0">
+                          <app-emote-sprite-animated
+                            [url]="emote.imageUrl"
+                            [size]="cellPx"
+                            (animationShown)="revealedKey.set(emote.sevenTvEmoteId)"
+                          />
+                        </span>
+                      }
+                      @if (isAnimated(emote)) {
+                        <!-- Decorative: the accessible name already says animated. -->
+                        <span
+                          class="pointer-events-none absolute top-0 right-0 flex h-3 w-3 items-center justify-center"
+                          [style.background-color]="'var(--ep-sprite-scrim)'"
+                          [style.color]="'var(--ep-sprite-scrim-fg)'"
+                          aria-hidden="true"
+                        >
+                          <svg class="h-2 w-2" viewBox="0 0 8 8" aria-hidden="true">
+                            <path d="M2 1v6l5-3z" fill="currentColor" />
+                          </svg>
+                        </span>
+                      }
                       @if (effectiveSortMode() !== 'none') {
                         <span
                           class="absolute bottom-0 left-0 px-1 font-mono text-[9px] leading-[1.4] font-medium"
@@ -395,6 +437,25 @@ export class ForeignEmoteGrid {
   protected readonly cellPx = CELL_PX;
   protected readonly rowPx = ROW_PX;
 
+  /**
+   * The one cell the pointer or the keyboard is on, by 7TV id. Exactly one cell may play its
+   * animation, and only this one: `EmoteSpriteAnimated` starts its dwell timer on mount, so an
+   * instance in every cell would start a timer for every row the virtual viewport recycles while
+   * scrolling, and fetch animations nobody pointed at. Keyed by id rather than by position, so a
+   * recycled row view never inherits another emote's hover.
+   */
+  protected readonly hoveredKey = signal<string | null>(null);
+
+  /**
+   * Which hovered cell's animation has painted, so its still can hide (see `stillSpriteClass`).
+   * Reset on every hover change, the same race `EmoteSpriteAnimated.revealedAnimatedUrl` guards
+   * against: coming back to a cell must not hide its still before the new animation has painted.
+   */
+  protected readonly revealedKey = linkedSignal<string | null, string | null>({
+    source: this.hoveredKey,
+    computation: () => null,
+  });
+
   constructor() {
     // Same pattern as `usage-stats-page.ts`'s sheet-width effect: the column count follows the
     // element that actually holds the cells, not the viewport, and jsdom has no ResizeObserver at
@@ -434,6 +495,36 @@ export class ForeignEmoteGrid {
     this.selectionChange.emit([]);
   }
 
+  protected onCellEnter(emote: ForeignEmoteRow): void {
+    this.hoveredKey.set(emote.sevenTvEmoteId);
+  }
+
+  /** Only clears the key if it is still this cell's: a blur on a keyboard-focused cell must not stop
+   *  the animation of a different cell the mouse is resting on. */
+  protected onCellLeave(emote: ForeignEmoteRow): void {
+    if (this.hoveredKey() === emote.sevenTvEmoteId) {
+      this.hoveredKey.set(null);
+    }
+  }
+
+  /** Both import sources encode 7TV's animated flag into the url (`4x_static.webp`), so the marker
+   *  needs no field of its own. */
+  protected isAnimated(emote: ForeignEmoteRow): boolean {
+    return isAnimatedEmoteUrl(emote.imageUrl);
+  }
+
+  /** Whether this cell mounts the animated sprite: the hovered one, and only if it has an animation.
+   *  A hovered still mounts nothing and requests nothing. */
+  protected playsAnimation(emote: ForeignEmoteRow): boolean {
+    return this.hoveredKey() === emote.sevenTvEmoteId && this.isAnimated(emote);
+  }
+
+  protected stillSpriteClass(emote: ForeignEmoteRow): string {
+    return this.playsAnimation(emote) && this.revealedKey() === emote.sevenTvEmoteId
+      ? `${SPRITE_CLASS} invisible`
+      : SPRITE_CLASS;
+  }
+
   protected trackRowIndex(index: number): number {
     return index;
   }
@@ -451,10 +542,16 @@ export class ForeignEmoteGrid {
    * number its meaning without inventing a unit for it. The number itself is the same compact text
    * the tile shows; only the *missing* case differs, because the tile's dash is a typographic
    * placeholder and reads as nothing at all when spoken.
+   *
+   * "Animated" sits between the names and the score, for the same reason: the play marker in the
+   * corner is `aria-hidden`, so this is the only place a screen reader learns it.
    */
   protected cellLabel(emote: ForeignEmoteRow): string {
-    const names =
+    const aliased =
       emote.name === emote.defaultName ? emote.name : `${emote.name} (${emote.defaultName})`;
+    const names = this.isAnimated(emote)
+      ? `${aliased}, ${this.transloco.translate('import.animated')}`
+      : aliased;
     const active = this.activeSortOption();
     if (active === null) {
       return names;

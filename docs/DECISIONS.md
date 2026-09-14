@@ -10,6 +10,38 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-14 — Animated emotes in the import grid: marker from the url, one playing cell, reduced motion decided in `EmoteSpriteAnimated` (#167)
+
+**Betrifft:** `web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
+`web/src/app/shared/emotes/emote-sprite-animated.ts` · `web/src/app/shared/emotes/emote-url.ts` ·
+`web/src/app/core/motion/reduced-motion.service.ts` · `docs/UI-Designsprache.md` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+**The animated marker is derived from the url, not carried as a field.** Both import sources already
+encode 7TV's `flags.animated` into `imageUrl` (`4x_static.webp` against `4x.webp`), the same marker
+`animatedEmoteUrl` has relied on since the sidecar got its animation. `isAnimatedEmoteUrl` reads it as
+a flag; a DTO field would have been a second statement of the same fact that could drift from the url
+the sprite actually loads. An unrecognised url counts as a still, because a marker that promises an
+animation which then does not play is the worse error.
+
+**One hovered key per grid, and exactly one `EmoteSpriteAnimated` for it — never one per cell.** The
+component starts its dwell timer on mount. The grid is virtualised, so a per-cell instance would start
+a timer for every row the viewport recycles while scrolling and fetch animations nobody pointed at —
+the atlas avoids this by having one instance in the sidecar, and the dialog has no room for a sidecar.
+The key is the 7TV id, not a position, so a recycled row view cannot inherit it. The playing cell keeps
+its own still underneath and hides it only once the animation has painted (new output
+`animationShown`): swapping the still for the animated component on hover would re-create the picture,
+and a fresh `EmoteSprite` is invisible until its load event, so the cell would blink on every hover.
+
+**`prefers-reduced-motion: reduce` is honoured inside `EmoteSpriteAnimated`, not per call site.** Under
+the preference the dwell timer never starts, so the animation is neither requested nor played, and a
+preference switched on mid-animation withdraws it. This deliberately changes the sidecar, the
+inspector row, the drilldown dialog and the ballot as well: all of them show a single emote through
+this component, and a preference that one of them forgot to ask about would not be honoured. The live
+media-query signal is a new `ReducedMotionService`, shaped like `PointerModeService`.
+
+---
+
 ### 2026-09-14 — The import grid's clear-selection button is its own §7.3 case, not an extension of §8.7, and gets its own i18n key (#166)
 
 **Betrifft:** `web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·

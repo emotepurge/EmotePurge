@@ -932,6 +932,7 @@
   "import": {
     "copyButton": "Übertragen",
     "clearSelection": "Auswahl aufheben",
+    "animated": "animiert",
     "source": {
       "title": "Emotes importieren",
       "legend": "Woher kommen die Emotes?",

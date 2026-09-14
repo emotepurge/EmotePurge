@@ -2,6 +2,7 @@ import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ReducedMotionService } from '../../core/motion/reduced-motion.service';
 import { EmoteSpriteAnimated } from './emote-sprite-animated';
 
 const ANIMATED_A = 'https://cdn.7tv.app/emote/aaa/4x_static.webp';
@@ -156,5 +157,86 @@ describe('EmoteSpriteAnimated', () => {
     overlayImage().dispatchEvent(new Event('load'));
     fixture.detectChanges();
     expect(stillImage().className).toContain('invisible');
+  });
+});
+
+describe('EmoteSpriteAnimated under prefers-reduced-motion', () => {
+  let fixture: ComponentFixture<Host>;
+  let host: Host;
+  const reduce = signal(true);
+
+  function sources(): string[] {
+    return [...fixture.nativeElement.querySelectorAll('img')].map(
+      (img: HTMLImageElement) => img.getAttribute('src') ?? '',
+    );
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    reduce.set(true);
+    await TestBed.configureTestingModule({
+      imports: [Host],
+      providers: [
+        {
+          provide: ReducedMotionService,
+          useValue: { prefersReducedMotion: reduce.asReadonly() },
+        },
+      ],
+    }).compileComponents();
+    fixture = TestBed.createComponent(Host);
+    host = fixture.componentInstance;
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The whole point of the preference: the pointer resting on an emote is no longer a reason to
+  // fetch and play its animation.
+  it('never requests the animation, however long the pointer rests', () => {
+    vi.advanceTimersByTime(5000);
+    fixture.detectChanges();
+
+    expect(sources()).toEqual([ANIMATED_A]);
+  });
+
+  it('does not upgrade a later emote either', () => {
+    host.url.set(ANIMATED_B);
+    fixture.detectChanges();
+    vi.advanceTimersByTime(5000);
+    fixture.detectChanges();
+
+    expect(sources()).toEqual([ANIMATED_B]);
+  });
+
+  // Switched on in the OS while an animation is already playing: it stops at once.
+  it('withdraws an animation already showing once the preference is switched on', () => {
+    reduce.set(false);
+    host.url.set(ANIMATED_B);
+    fixture.detectChanges();
+    vi.advanceTimersByTime(200);
+    fixture.detectChanges();
+    expect(sources()).toEqual([ANIMATED_B, 'https://cdn.7tv.app/emote/bbb/2x.webp']);
+    const images = [...fixture.nativeElement.querySelectorAll('img')] as HTMLImageElement[];
+    images[1].dispatchEvent(new Event('load'));
+    fixture.detectChanges();
+    expect(images[0].className).toContain('invisible');
+
+    reduce.set(true);
+    fixture.detectChanges();
+
+    expect(sources()).toEqual([ANIMATED_B]);
+    // The still has to come back with it — a withdrawn overlay over a hidden still is a blank cell.
+    expect(images[0].className).not.toContain('invisible');
+  });
+
+  it('leaves a still emote a single image', () => {
+    host.url.set(STILL_ONLY);
+    fixture.detectChanges();
+    vi.advanceTimersByTime(5000);
+    fixture.detectChanges();
+
+    expect(sources()).toEqual([STILL_ONLY]);
   });
 });

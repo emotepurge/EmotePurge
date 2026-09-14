@@ -12,6 +12,7 @@ import { ForeignEmoteGrid } from './foreign-emote-grid';
 const DE_TRANSLATIONS = {
   import: {
     clearSelection: 'Auswahl aufheben',
+    animated: 'animiert',
     foreignChannel: {
       empty: 'Das aktive 7TV-Set dieses Kanals hat keine Emotes.',
       truncated: 'Nur ein Teil des Sets konnte geladen werden ({{ loaded }} von {{ totalCount }}).',
@@ -267,6 +268,109 @@ describe('ForeignEmoteGrid', () => {
 
     expect(component['cellLabel'](aliased)).toBe('PogChamp2 (PogChamp)');
     expect(component['cellLabel'](plain)).toBe('catJAM');
+  });
+
+  // The play marker in the corner is aria-hidden, so the label is the only place a screen reader
+  // learns that an emote is animated.
+  it('says "animated" in the label of an animated emote, and only there', () => {
+    const animated = row({ imageUrl: 'https://cdn.7tv.app/e1/4x_static.webp' });
+    const still = row({ sevenTvEmoteId: 'e2', imageUrl: 'https://cdn.7tv.app/e2/4x.webp' });
+
+    expect(component['cellLabel'](animated)).toBe('catJAM, animiert');
+    expect(component['cellLabel'](still)).toBe('catJAM');
+  });
+
+  it('puts "animated" after the names and before the active score', () => {
+    render([row()]);
+    component['sortMode'].set('topAllTime');
+    fixture.detectChanges();
+
+    expect(
+      component['cellLabel'](
+        row({
+          name: 'PogChamp2',
+          defaultName: 'PogChamp',
+          imageUrl: 'https://cdn.7tv.app/e1/4x_static.webp',
+          topAllTime: 12400,
+        }),
+      ),
+    ).toBe('PogChamp2 (PogChamp), animiert, 7TV-Score (gesamt): 12,4k');
+  });
+
+  describe('hover playback', () => {
+    const animatedA = row({
+      sevenTvEmoteId: 'a',
+      imageUrl: 'https://cdn.7tv.app/a/4x_static.webp',
+    });
+    const animatedB = row({
+      sevenTvEmoteId: 'b',
+      imageUrl: 'https://cdn.7tv.app/b/4x_static.webp',
+    });
+    const still = row({ sevenTvEmoteId: 's', imageUrl: 'https://cdn.7tv.app/s/4x.webp' });
+
+    beforeEach(() => render([animatedA, animatedB, still]));
+
+    // The whole design: one animated sprite in the grid, not one per cell — so nothing plays until
+    // a cell is pointed at or focused.
+    it('plays nothing before any cell is hovered', () => {
+      expect(
+        [animatedA, animatedB, still].some((emote) => component['playsAnimation'](emote)),
+      ).toBe(false);
+    });
+
+    it('plays only the hovered animated emote', () => {
+      component['onCellEnter'](animatedA);
+
+      expect(component['playsAnimation'](animatedA)).toBe(true);
+      expect(component['playsAnimation'](animatedB)).toBe(false);
+      expect(component['playsAnimation'](still)).toBe(false);
+    });
+
+    it('moves playback with the pointer rather than adding a second one', () => {
+      component['onCellEnter'](animatedA);
+      component['onCellEnter'](animatedB);
+
+      expect(component['playsAnimation'](animatedA)).toBe(false);
+      expect(component['playsAnimation'](animatedB)).toBe(true);
+    });
+
+    // A still has no animation to fetch: mounting the animated sprite on it would be pointless.
+    it('plays nothing for a hovered still', () => {
+      component['onCellEnter'](still);
+
+      expect(component['playsAnimation'](still)).toBe(false);
+    });
+
+    // mouseleave and blur share the handler.
+    it('stops once the pointer or the focus leaves the cell', () => {
+      component['onCellEnter'](animatedA);
+      component['onCellLeave'](animatedA);
+
+      expect(component['playsAnimation'](animatedA)).toBe(false);
+    });
+
+    it('does not stop a cell when a different cell loses focus', () => {
+      component['onCellEnter'](animatedA);
+      component['onCellLeave'](animatedB);
+
+      expect(component['playsAnimation'](animatedA)).toBe(true);
+    });
+
+    // The cell keeps its own still underneath; hiding it before the animation has painted would
+    // blank the cell, keeping it visible afterwards would show it through the animation.
+    it('hides the cell still only once the hovered animation has painted', () => {
+      const hidden = () =>
+        component['stillSpriteClass'](animatedA).split(' ').includes('invisible');
+      component['onCellEnter'](animatedA);
+      expect(hidden()).toBe(false);
+
+      component['revealedKey'].set('a');
+      expect(hidden()).toBe(true);
+
+      component['onCellEnter'](animatedB);
+      component['onCellEnter'](animatedA);
+      expect(hidden()).toBe(false);
+    });
   });
 
   it('names the active score in the cell label — an aria-label replaces the tile text', () => {

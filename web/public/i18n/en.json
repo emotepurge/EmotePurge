@@ -932,6 +932,7 @@
   "import": {
     "copyButton": "Transfer",
     "clearSelection": "Clear selection",
+    "animated": "animated",
     "source": {
       "title": "Import emotes",
       "legend": "Where do the emotes come from?",
