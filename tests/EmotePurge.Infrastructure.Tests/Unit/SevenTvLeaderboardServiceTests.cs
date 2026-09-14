@@ -91,11 +91,12 @@ public class SevenTvLeaderboardServiceTests
     }
 
     [Fact]
-    public async Task ARateLimitOnOneSort_StopsTheOtherSortWithoutUpstream_AndLeavesThePreviewBreakerClosed()
+    public async Task ARateLimitOnOneSort_StopsTheOtherSortWithoutUpstream_ForTheBreakersOwnOpenTime()
     {
-        // The foreign-channel preview's own instance of the same policy class, stood up here exactly
-        // as the keyed DI registration stands it up in production: a second object, sharing no state.
-        var previewBreaker = new ForeignSevenTvBreakerPolicy();
+        // The other half of AK 12 — the foreign-channel preview's breaker staying closed — is a
+        // property of the registration, not of this class, and is proven where it lives:
+        // SevenTvLeaderboardRegistrationTests. A second instance constructed here would only ever
+        // assert that a breaker nobody touched is closed.
         var harness = new Harness();
         harness.Answer(
             Trending, 1, FailedPage(SevenTvEmoteSearchLookupStatus.RateLimited, retryAfter: TimeSpan.FromSeconds(300)));
@@ -110,12 +111,12 @@ public class SevenTvLeaderboardServiceTests
         Assert.Equal(1, harness.UpstreamRequests);
 
         // Shelf-life of the rejected sort comes from the breaker's remaining open time, not from the
-        // 60 s an ordinary failure would get: still stocked four minutes later.
+        // 60 s an ordinary failure would get. Identity is what tells those two apart: with a 60 s
+        // shelf-life the entry would have been refilled by now — against the still-open breaker, so
+        // with the same status and the same request count, but a different object.
         harness.Clock.Advance(TimeSpan.FromSeconds(250));
-        Assert.Equal(SevenTvLeaderboardStatus.SevenTvRateLimited, (await harness.Service.GetLeaderboardAsync(AllTime)).Status);
+        Assert.Same(second, await harness.Service.GetLeaderboardAsync(AllTime));
         Assert.Equal(1, harness.UpstreamRequests);
-
-        Assert.True(previewBreaker.TryAcquire().Allowed);
     }
 
     [Fact]

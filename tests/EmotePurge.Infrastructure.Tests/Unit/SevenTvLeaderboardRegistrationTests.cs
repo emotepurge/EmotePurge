@@ -4,6 +4,8 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.SevenTv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
+using StackExchange.Redis;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
@@ -14,8 +16,10 @@ namespace EmotePurge.Infrastructure.Tests.Unit;
 /// foreign-channel preview holding the same typed instance it has always had (spec section 6, AK 12).
 /// </summary>
 /// <remarks>
-/// Nothing here connects. The container is built but only the leaderboard's own guards are resolved —
-/// none of them reaches a database, Redis or 7TV — so this stays a unit test.
+/// Nothing here connects. The container is built and the leaderboard's own graph is resolved — its
+/// guards and the service above them, including the 7TV client, which constructs an HttpClient but
+/// never sends anything. The one registration that would dial on resolve, the Redis multiplexer, is
+/// substituted; no database, no Redis, no 7TV, so this stays a unit test.
 /// </remarks>
 public class SevenTvLeaderboardRegistrationTests
 {
@@ -53,6 +57,18 @@ public class SevenTvLeaderboardRegistrationTests
     }
 
     [Fact]
+    public void TheServiceItself_ResolvesWithItsWholeDependencyGraph()
+    {
+        using var provider = BuildProvider();
+        using var scope = provider.CreateScope();
+
+        // The only way to find out that the factory lambda's keyed lookup, its typed client and its
+        // five collaborators actually line up: a factory registration is never checked until
+        // somebody resolves it.
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ISevenTvLeaderboardService>());
+    }
+
+    [Fact]
     public void TheWindowBudget_CarriesTheTwoFiguresTheSpecFixes()
     {
         using var provider = BuildProvider();
@@ -76,6 +92,10 @@ public class SevenTvLeaderboardRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddEmotePurgeInfrastructure(configuration);
+        // Substituted for the same reason WorkerServiceRegistrationTests substitutes it: the real
+        // registration is a factory that dials on first resolve, and the telemetry handler wrapped
+        // around the 7TV client reaches it. Nothing here connects to anything.
+        services.AddSingleton(Substitute.For<IConnectionMultiplexer>());
         return services.BuildServiceProvider();
     }
 }

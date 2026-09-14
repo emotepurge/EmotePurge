@@ -84,6 +84,18 @@ public sealed class SevenTvLeaderboardService(
 
         // The caller's token cancels this caller's wait, never the shared fill: whoever arrived
         // first does not own the work everyone else is waiting on.
+        //
+        // The other half of that split is not enforced, only true today: this closure captures a
+        // *scoped* service — and through it a transient 7TV client — into a task the singleton stock
+        // keeps running past the end of the request scope that started it. It holds because nothing
+        // in that graph objects to being used afterwards: the typed HttpClient comes from the client
+        // factory and is not disposed with the scope, SevenTvApiClient is not IDisposable, and the
+        // telemetry and logger below it are singletons. Break any of those three — make the client
+        // IDisposable, or give it a scoped collaborator — and one browser navigating away turns the
+        // shared fill into an ObjectDisposedException for every reader waiting on it, which is
+        // exactly the damage the CancellationToken.None rule prevents on the token side. Then this
+        // service has to stop capturing its own collaborators (an IServiceScopeFactory per fill, or
+        // a singleton fill engine), not merely catch the exception.
         return stock.GetOrFillAsync(key, fillToken => FillAsync(sortBy, fillToken), cancellationToken);
     }
 
@@ -147,10 +159,6 @@ public sealed class SevenTvLeaderboardService(
         return Stock(SevenTvLeaderboardResult.Ok(response), SevenTvLeaderboardFillOutcome.Hit());
     }
 
-    private static SevenTvLeaderboardStoreFill<SevenTvLeaderboardResult> Stock(
-        SevenTvLeaderboardResult result, SevenTvLeaderboardFillOutcome outcome) =>
-        new(result, SevenTvLeaderboardTtlPolicy.TimeToLiveFor(outcome));
-
     /// <summary>
     /// One upstream page, with the three guards in front of it in their fixed order: breaker, then
     /// budget, then the request. Never throws for an outcome it expects — a rate limit is a value it
@@ -195,9 +203,16 @@ public sealed class SevenTvLeaderboardService(
                     SevenTvLeaderboardStatus.BudgetRefused, SevenTvLeaderboardFillOutcome.BudgetRefused());
             }
 
-            // Only ever fed granted permits. A refusal reports the window as full, which is at or
-            // above the alarm threshold by definition — feeding those in would raise the alarm on
-            // exactly the requests that never happened.
+            // Only ever fed granted permits — a refusal reports the window as full, and reporting a
+            // request that never happened is not what this alarm is for.
+            //
+            // No test can fail on that today, and it is worth knowing why before trusting it: a
+            // refusal reports exactly MaxRequests, and every path to a full window runs through a
+            // granted permit that already tripped the latch, so a naive version that fed refusals in
+            // would be silenced by the latch rather than by this gate — for every configuration, not
+            // just this one. The moment the latch goes (a warning per request instead of once per
+            // window, say), this line becomes the only thing standing between a full window and a
+            // stream of false alarms, and it is untested. Whoever makes that change owes it a test.
             WarnIfBudgetRunningHot(usedInWindow);
 
             var result = await client.SearchEmotesAsync(sortBy, page, cancellationToken);
@@ -315,6 +330,10 @@ public sealed class SevenTvLeaderboardService(
                     nameof(transition), transition, "Unknown ForeignSevenTvBreakerTransition.");
         }
     }
+
+    private static SevenTvLeaderboardStoreFill<SevenTvLeaderboardResult> Stock(
+        SevenTvLeaderboardResult result, SevenTvLeaderboardFillOutcome outcome) =>
+        new(result, SevenTvLeaderboardTtlPolicy.TimeToLiveFor(outcome));
 
     /// <param name="Page">Non-null if and only if this page came back <c>Ok</c>.</param>
     /// <param name="Status">The status the whole entry takes if this page failed.</param>

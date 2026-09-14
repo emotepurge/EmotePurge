@@ -122,10 +122,10 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ILogger<HardenedForeignEmoteSetService>>()));
 
         // Leaderboard import source (spec 2026-09-13, section 6, T3). Purely additive: the typed
-        // ForeignSevenTvBreakerPolicy registration above is untouched, and line 113 above still
-        // hands the foreign-channel preview that same typed instance. The keyed registration here is
-        // a second, independent object of the same class — the policy keeps all its state in
-        // instance fields, so two of them share nothing.
+        // ForeignSevenTvBreakerPolicy registration above is untouched, and the HardenedForeignEmoteSetService
+        // factory above still takes that same typed instance through GetRequiredService, not a keyed
+        // lookup. The keyed registration here is a second, independent object of the same class — the
+        // policy keeps all its state in instance fields, so two of them share nothing.
         services.AddKeyedSingleton<ForeignSevenTvBreakerPolicy>(LeaderboardBreakerKey);
 
         // Singletons by necessity, like the preview's guards: a stock, a window budget or an alarm
