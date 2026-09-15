@@ -817,6 +817,7 @@
   "restore": {
     "button": "Emotes wiederherstellen",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
+    "progressBarLabel": "Wiederherstellungsfortschritt",
     "deleteFailedFallback": "Wiederherstellen fehlgeschlagen",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "confirmTitle": {
@@ -898,6 +899,7 @@
     "deleteButton": "Löschen ({{ count }})",
     "clearSelection": "Auswahl aufheben",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
+    "progressBarLabel": "Löschfortschritt",
     "deleteFailedFallback": "Löschen fehlgeschlagen",
     "confirmTitle": {
       "one": "{{ count }} Emote von 7TV löschen?",
@@ -1047,6 +1049,7 @@
       "execute": "Kopieren"
     },
     "progress": "{{ finished }} / {{ total }} verarbeitet",
+    "progressBarLabel": "Kopierfortschritt",
     "deleteFailedFallback": "Kopieren fehlgeschlagen",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {

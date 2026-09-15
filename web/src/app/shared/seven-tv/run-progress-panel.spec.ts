@@ -1,6 +1,5 @@
 import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { By } from '@angular/platform-browser';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -17,6 +16,7 @@ const DE_TRANSLATIONS = {
   common: { cancel: 'Abbrechen', close: 'Schließen' },
   massDelete: {
     progress: '{{ finished }} / {{ total }} verarbeitet',
+    progressBarLabel: 'Löschfortschritt',
     deleteFailedFallback: 'Löschen fehlgeschlagen',
     syncFailedTitle: 'Rückmeldung an EmotePurge fehlgeschlagen',
     syncFailed:
@@ -33,6 +33,31 @@ const DE_TRANSLATIONS = {
  *  compile error rather than a silently-ignored property. */
 function queueItem(key: string, status: RunItemStatus): RunQueueItem {
   return { key, sevenTvEmoteId: `7tv-${key}`, name: `Emote-${key}`, status };
+}
+
+/** The accname precedence this codebase relies on for an accessible name: `aria-labelledby`
+ *  (joining the referenced elements' text, space-separated) beats `aria-label`, which beats plain
+ *  `textContent`. Resolving it this way instead of reading `aria-label` directly keeps the
+ *  assertion honest about what a screen reader would actually announce, not just one of the
+ *  attributes that can produce it. */
+function accessibleName(el: Element): string {
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const text = labelledBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => el.ownerDocument.getElementById(id)?.textContent ?? '')
+      .join(' ')
+      .trim();
+    if (text) {
+      return text;
+    }
+  }
+  const label = el.getAttribute('aria-label')?.trim();
+  if (label) {
+    return label;
+  }
+  return (el.textContent ?? '').trim();
 }
 
 @Component({
@@ -74,10 +99,9 @@ interface Harness {
   host: HostComponent;
   text(): string;
   button(label: string): HTMLButtonElement | null;
-  /** `progressPercent` is `protected` on `RunProgressPanel` (template-only by design) — bracket
-   *  access reaches it directly (compiler-checked against the real class, so a rename is a compile
-   *  error) rather than inferring it back out of rendered markup. */
-  progressPercent(): number;
+  /** The single `role="progressbar"` element (the track, not the fill) — queried by role like an
+   *  assistive-tech user would land on it, rather than by a CSS class. */
+  progressBar(): HTMLElement;
 }
 
 describe('RunProgressPanel', () => {
@@ -103,8 +127,6 @@ describe('RunProgressPanel', () => {
     Object.assign(fixture.componentInstance, setup);
     fixture.detectChanges();
     const nativeElement: HTMLElement = fixture.nativeElement;
-    const instance = fixture.debugElement.query(By.directive(RunProgressPanel)).componentInstance;
-    const panel = instance as RunProgressPanel;
 
     return {
       fixture,
@@ -114,28 +136,41 @@ describe('RunProgressPanel', () => {
         Array.from(nativeElement.querySelectorAll('button')).find(
           (candidate) => candidate.textContent?.trim() === label,
         ) ?? null,
-      progressPercent: () => panel['progressPercent'](),
+      progressBar: () => nativeElement.querySelector('[role="progressbar"]') as HTMLElement,
     };
   }
 
-  describe('progressPercent', () => {
-    it('returns 0, not NaN, for an empty queue', () => {
-      const dialog = render({ items: [] });
+  describe('progress bar', () => {
+    it('exposes role="progressbar" with a range of 0..total, not a fixed 0-100', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'pending')],
+      });
 
-      expect(dialog.progressPercent()).toBe(0);
+      expect(dialog.progressBar()).not.toBeNull();
+      expect(dialog.progressBar().getAttribute('aria-valuemin')).toBe('0');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('2');
     });
 
-    it('returns 0 while nothing in a non-empty queue has finished yet', () => {
+    it('reports aria-valuenow 0, not NaN, for an empty queue', () => {
+      const dialog = render({ items: [] });
+
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('0');
+      expect(dialog.progressBar().getAttribute('aria-valuemin')).toBe('0');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('1');
+    });
+
+    it('reports aria-valuenow 0 while nothing in a non-empty queue has finished yet', () => {
       const dialog = render({
         items: [queueItem('a', 'pending'), queueItem('b', 'in-progress')],
       });
 
-      expect(dialog.progressPercent()).toBe(0);
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('0');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('2');
     });
 
-    it('reports the finished (done + failed) fraction as a percentage of the total', () => {
+    it('reports the finished (done + failed) count as aria-valuenow — pending/in-progress do not count', () => {
       // 2 of 5 are finished — the other 3 (pending/in-progress) deliberately do not count, only
-      // 'done'/'failed' do (see `finished` in run-progress-panel.ts).
+      // 'done'/'failed' do (see `finished` in run-progress-panel.ts). This is the partial state.
       const dialog = render({
         items: [
           queueItem('a', 'done'),
@@ -146,15 +181,83 @@ describe('RunProgressPanel', () => {
         ],
       });
 
-      expect(dialog.progressPercent()).toBe(40);
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('2');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('5');
     });
 
-    it('reports 100 once every item is done or failed', () => {
+    it('reports an integer count, not a rounded percentage (1 of 3 finished reads "1", not "33")', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'pending'), queueItem('c', 'pending')],
+      });
+
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('1');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('3');
+    });
+
+    it('reports aria-valuenow === aria-valuemax once every item is done or failed (the complete state)', () => {
       const dialog = render({
         items: [queueItem('a', 'done'), queueItem('b', 'failed'), queueItem('c', 'done')],
       });
 
-      expect(dialog.progressPercent()).toBe(100);
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('3');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('3');
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe(
+        dialog.progressBar().getAttribute('aria-valuemax'),
+      );
+    });
+
+    it('does not report early completion for a large queue (199 of 200 finished)', () => {
+      const dialog = render({
+        items: [
+          ...Array.from({ length: 199 }, (_, index) => queueItem(`done-${index}`, 'done')),
+          queueItem('pending', 'pending'),
+        ],
+      });
+
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('199');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('200');
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).not.toBe(
+        dialog.progressBar().getAttribute('aria-valuemax'),
+      );
+    });
+
+    it('does not report a false zero for a large queue (1 of 201 finished)', () => {
+      const dialog = render({
+        items: [
+          queueItem('done', 'done'),
+          ...Array.from({ length: 200 }, (_, index) => queueItem(`pending-${index}`, 'pending')),
+        ],
+      });
+
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('1');
+      expect(dialog.progressBar().getAttribute('aria-valuemax')).toBe('201');
+    });
+
+    // The panel's own `role="status"` region already announces the textual progress; the bar's
+    // accessible name must not repeat that as visible/live text — it lives only in `aria-label`, an
+    // attribute that is not itself live-announced (see the aria-atomic comment on the
+    // panel's status region in run-progress-panel.ts). What matters here is that assistive tech resolves a real,
+    // translated name — not the raw i18n key, and not empty — for whichever run kind is showing.
+    it('resolves a non-empty, translated accessible name via aria-label, not the raw key', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        labelPrefix: 'massDelete',
+      });
+
+      const name = accessibleName(dialog.progressBar());
+
+      expect(name).toBe(DE_TRANSLATIONS.massDelete.progressBarLabel);
+    });
+
+    it('sits in a non-atomic status region, so a progress tick does not re-read the bar', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'pending')],
+      });
+
+      const region = dialog.progressBar().closest('[role="status"]');
+
+      expect(region).not.toBeNull();
+      expect(region?.getAttribute('aria-atomic')).toBe('false');
     });
   });
 
