@@ -73,6 +73,50 @@ public class HarnessCommandLineTests
         Assert.Equal("HandOfBlood", result.ChannelName);
     }
 
+    // #119: report-only recompute of an existing run. The accepted form and every rejection the
+    // parser owns for it — everything downstream (file existence, header, channel identity, day
+    // coverage) is HarnessRunner's job, not the parser's.
+    [Fact]
+    public void ReportOnly_WithAPlainFileName_SelectsTheRecompute()
+    {
+        var result = Assert.IsType<HarnessCommandLineResult.RunHarness>(
+            HarnessCommandLine.Parse(["harness", "foo", "--report-only", "foo-2026-09-02-2026-09-04-abc123.jsonl"]));
+
+        Assert.Equal("foo", result.ChannelName);
+        Assert.Equal("foo-2026-09-02-2026-09-04-abc123.jsonl", result.ReportOnlyFile);
+        Assert.Null(result.Days);
+        Assert.False(result.Diagnostic);
+    }
+
+    [Theory]
+    [InlineData("harness", "foo", "--report-only")]
+    [InlineData("harness", "foo", "--report-only", "sub/dir.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "sub\\dir.jsonl")]
+    [InlineData("harness", "foo", "--report-only", ".")]
+    [InlineData("harness", "foo", "--report-only", "..")]
+    // P3-2 of the #119 review round: ':' (a Windows drive letter/ADS marker) and the two catch-all
+    // checks (Path.IsPathRooted, Path.GetFileName(v) != v) alongside the explicit separator checks.
+    [InlineData("harness", "foo", "--report-only", "na:me.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "/abs.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "C:\\abs.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "report.json")]
+    [InlineData("harness", "foo", "--report-only", "report.txt")]
+    [InlineData("harness", "foo", "--report-only", "-report.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "report.jsonl", "--report-only", "report.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "report.jsonl", "--days", "3")]
+    [InlineData("harness", "foo", "--days", "3", "--report-only", "report.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "report.jsonl", "--diagnostic")]
+    [InlineData("harness", "foo", "--diagnostic", "--report-only", "report.jsonl")]
+    public void ReportOnly_EveryRejection_IsInvalidWithAnEnglishMessage(params string[] args)
+    {
+        var result = Assert.IsType<HarnessCommandLineResult.Invalid>(HarnessCommandLine.Parse(args));
+
+        Assert.False(string.IsNullOrWhiteSpace(result.Message));
+        // New messages are English since #152 — the one thing this theory adds over the German
+        // catch-all below, which only asserts non-empty.
+        Assert.Contains("--report-only", result.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("harness")]
     [InlineData("harness", "foo", "bar")]

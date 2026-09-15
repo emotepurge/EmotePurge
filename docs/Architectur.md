@@ -293,7 +293,7 @@ There are two compose files, and no YAML is mirrored here any more — the embed
 
 ### 6a. Local (`docker-compose.yml`)
 
-For local development/tests: `docker compose up -d --build` builds `api`/`worker` from the repo state (`build:` section, no prebuilt image). Started with `redis`, `postgres`, `api`, `worker` in the shared `emotepurge-network` bridge network. A fifth service, `harness` (#69), carries `profiles: ["harness"]` and therefore never starts with `up` — only deliberately via `docker compose --profile harness run --rm harness <channel>` (see DECISIONS).
+For local development/tests: `docker compose up -d --build` builds `api`/`worker` from the repo state (`build:` section, no prebuilt image). Started with `redis`, `postgres`, `api`, `worker` in the shared `emotepurge-network` bridge network. A fifth service, `harness` (#69), carries `profiles: ["harness"]` and therefore never starts with `up` — only deliberately via `docker compose --profile harness run --rm harness <channel> [--days <n>] [--diagnostic]`, or, to recompute an existing run's report against the current code and a current live snapshot without touching the archive (#119), `docker compose --profile harness run --rm harness <channel> --report-only <file>` (see DECISIONS).
 
 ### 6b. Production (`docker-compose.prod.yml` + `.github/workflows/publish.yml`)
 
@@ -315,7 +315,7 @@ Deliberately **not** different: `redis` runs in both files with `--maxmemory 256
 
 Configuration is done in both cases through a `.env` file at the repo root (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`) — template in `.env.example`, `.env` itself is git-ignored.
 
-`docker-compose.prod.yml` also carries the `harness` service from 6a, here on the same worker image (`ghcr.io/sensitron/emotepurge-worker:latest`) instead of a second image, likewise reachable only via `--profile harness run --rm harness <channel>` — never through the normal stack redeploy.
+`docker-compose.prod.yml` also carries the `harness` service from 6a, here on the same worker image (`ghcr.io/sensitron/emotepurge-worker:latest`) instead of a second image, likewise reachable only via `--profile harness run --rm harness <channel> [--days <n>] [--diagnostic]` (or `--report-only <file>`, #119) — never through the normal stack redeploy.
 
 ## 7. Local development & debugging
 

@@ -30,10 +30,27 @@ public abstract record HarnessCommandLineResult
     /// <c>Harness:SharedChatCutover</c> refuses to start at all, and only a diagnostic run may. It
     /// is not part of the run identity — see the remark at its use in <c>HarnessRunner</c>.
     /// </para>
+    /// <para>
+    /// <see cref="ReportOnlyFile"/> (issue #119) selects the report-only recompute instead of an
+    /// ordinary run: <c>null</c> for the ordinary <c>[--days &lt;n&gt;] [--diagnostic]</c> form, a
+    /// plain file name (validated by <see cref="HarnessCommandLine.Parse"/>, never a path) for
+    /// <c>--report-only &lt;file&gt;</c>. The parser refuses to combine it with <c>--days</c> or
+    /// <c>--diagnostic</c> — the window and the diagnostic flag are inherited from the frozen run a
+    /// recompute reads, not chosen anew — so at most one of <see cref="Days"/>/<see cref="Diagnostic"/>
+    /// and <see cref="ReportOnlyFile"/> is ever non-default on a given instance. A default of
+    /// <c>null</c> keeps every existing positional call site (<c>Program</c>, the test suite)
+    /// compiling unchanged.
+    /// </para>
     /// </summary>
-    public sealed record RunHarness(string ChannelName, int? Days, bool Diagnostic) : HarnessCommandLineResult;
+    public sealed record RunHarness(string ChannelName, int? Days, bool Diagnostic, string? ReportOnlyFile = null)
+        : HarnessCommandLineResult;
 
-    /// <summary>Anything else. <see cref="Message"/> is the single German line for stderr.</summary>
+    /// <summary>
+    /// Anything else. <see cref="Message"/> is the single line for stderr — German for every
+    /// pre-existing rejection, English for the ones added by <c>--report-only</c> (issue #119, see
+    /// the remark on <see cref="ReportOnlyOption"/>): the language is per call site, not a promise of
+    /// this type.
+    /// </summary>
     public sealed record Invalid(string Message) : HarnessCommandLineResult;
 }
 
@@ -47,9 +64,11 @@ public abstract record HarnessCommandLineResult
 /// <c>Program</c> nothing but the channel name, and a lenient parser would then start the full
 /// worker — a second IRC counter next to the production one, doubling every usage row through the
 /// additive UPSERT (Codex-adversarial "Fail-open CLI"). Hence: no arguments means worker, exactly
-/// <c>harness &lt;channel&gt; [--days &lt;n&gt;] [--diagnostic]</c> means harness (the two options
-/// in either order, each at most once), and every other shape is a refusal with exit code 2 rather
-/// than a guess.
+/// <c>harness &lt;channel&gt; [--days &lt;n&gt;] [--diagnostic]</c> or
+/// <c>harness &lt;channel&gt; --report-only &lt;file&gt;</c> means harness (the first form's two
+/// options in either order, each at most once; the second form is mutually exclusive with both —
+/// see <see cref="HarnessCommandLineResult.RunHarness.ReportOnlyFile"/>), and every other shape is
+/// a refusal with exit code 2 rather than a guess.
 /// </para>
 /// </summary>
 public static class HarnessCommandLine
@@ -66,6 +85,14 @@ public static class HarnessCommandLine
     /// </summary>
     public const string DiagnosticOption = "--diagnostic";
 
+    /// <summary>
+    /// Takes a value: a plain file name inside <c>Harness:OutputDirectory</c> of an existing report
+    /// (issue #119). Selects the report-only recompute instead of an ordinary run; see
+    /// <see cref="HarnessCommandLineResult.RunHarness.ReportOnlyFile"/> and
+    /// <c>HarnessRunner.RecomputeReportAsync</c>.
+    /// </summary>
+    public const string ReportOnlyOption = "--report-only";
+
     public const int MinDays = 1;
 
     /// <summary>
@@ -76,7 +103,15 @@ public static class HarnessCommandLine
     public const int MaxDays = 90;
 
     private const string Usage =
-        "Aufruf: 'harness <kanal> [--days <n>] [--diagnostic]' oder gar kein Argument für den Worker.";
+        "Aufruf: 'harness <kanal> [--days <n>] [--diagnostic]', 'harness <kanal> --report-only <datei>' "
+        + "oder gar kein Argument für den Worker.";
+
+    /// <summary>
+    /// English on purpose (Sprache, seit #152): every message below that only a
+    /// <c>--report-only</c> call site can reach is new code, unlike <see cref="Usage"/>'s
+    /// surrounding German clauses, which predate that rule and stay as they are.
+    /// </summary>
+    private const string ReportOnlyUsage = "Expected: 'harness <channel> --report-only <file>'.";
 
     public static HarnessCommandLineResult Parse(string[] args)
     {
@@ -103,6 +138,7 @@ public static class HarnessCommandLine
 
         int? days = null;
         var diagnostic = false;
+        string? reportOnlyFile = null;
 
         var index = 2;
         while (index < args.Length)
@@ -146,11 +182,68 @@ public static class HarnessCommandLine
                 continue;
             }
 
+            if (string.Equals(token, ReportOnlyOption, StringComparison.Ordinal))
+            {
+                if (reportOnlyFile is not null)
+                {
+                    return Invalid($"'{ReportOnlyOption}' may be given at most once. {ReportOnlyUsage}");
+                }
+
+                if (index + 1 >= args.Length)
+                {
+                    return Invalid($"'{ReportOnlyOption}' needs a file name. {ReportOnlyUsage}");
+                }
+
+                var value = args[index + 1];
+                if (!IsValidReportOnlyFileName(value))
+                {
+                    return Invalid(
+                        $"'{value}' is not a valid '{ReportOnlyOption}' file name: it must be a plain file "
+                        + $"name inside the harness output directory — no '/', '\\' or ':', not '.' or '..', "
+                        + $"not rooted, not starting with '-', ending in '.jsonl'. {ReportOnlyUsage}");
+                }
+
+                reportOnlyFile = value;
+                index += 2;
+                continue;
+            }
+
             return Invalid($"Unbekanntes Argument '{token}'. {Usage}");
         }
 
-        return new HarnessCommandLineResult.RunHarness(channelName, days, diagnostic);
+        if (reportOnlyFile is not null && (days is not null || diagnostic))
+        {
+            return Invalid(
+                $"'{ReportOnlyOption}' cannot be combined with '{DaysOption}' or '{DiagnosticOption}': a "
+                + $"recompute inherits its window and its diagnostic flag from the frozen run it reads, "
+                + $"rather than choosing them anew. {ReportOnlyUsage}");
+        }
+
+        return new HarnessCommandLineResult.RunHarness(channelName, days, diagnostic, reportOnlyFile);
     }
 
     private static HarnessCommandLineResult.Invalid Invalid(string message) => new(message);
+
+    /// <summary>
+    /// Whether <paramref name="value"/> is safe to use as a bare file name under
+    /// <c>Harness:OutputDirectory</c>: no directory separator and no <c>:</c> (a drive letter or an
+    /// NTFS alternate-data-stream marker on Windows, so it cannot address another directory or
+    /// stream), not exactly <c>.</c> or <c>..</c> (the two special path segments), not rooted and not
+    /// changed by <see cref="Path.GetFileName(string)"/> (the two catch-all checks — belt and braces
+    /// alongside the explicit character checks above, since a same-string comparison against
+    /// <c>Path.GetFileName</c> also rejects anything the separator/rooted checks might have missed
+    /// for a platform this runs on), not starting with <c>-</c> (so it can never be mistaken for a
+    /// flag by a later parse), and ending in <c>.jsonl</c> (so it can only ever name a harness
+    /// protocol file, never an arbitrary path the process happens to be able to read).
+    /// </summary>
+    private static bool IsValidReportOnlyFileName(string value) =>
+        !string.IsNullOrWhiteSpace(value)
+        && !value.StartsWith('-')
+        && !value.Contains('/', StringComparison.Ordinal)
+        && !value.Contains('\\', StringComparison.Ordinal)
+        && !value.Contains(':', StringComparison.Ordinal)
+        && value is not ("." or "..")
+        && !Path.IsPathRooted(value)
+        && Path.GetFileName(value) == value
+        && value.EndsWith(".jsonl", StringComparison.Ordinal);
 }

@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Text.Json.Serialization;
 
 namespace EmotePurge.Worker.Harness;
 
@@ -423,12 +424,68 @@ public sealed record ReplayRunInfo(
 /// The final report: two runs of <see cref="ReplayFidelityCalculator.Compute"/> over the same
 /// arguments are <c>Equals</c>. Every measured number comes from the day lines; only the two
 /// run-level counters on <see cref="ReplayRunInfo"/> that no day line can carry are passed in.
+/// <para>
+/// <see cref="Recomputation"/> defaults to <c>null</c> and stays <c>null</c> for every ordinary run
+/// — <see cref="ReplayFidelityCalculator.Compute"/> never sets it, it is filled in only by
+/// <c>HarnessRunner.RecomputeReportAsync</c> (issue #119) after <c>Compute</c> returns. The
+/// <see cref="JsonIgnoreAttribute"/> is load-bearing, not decoration: <c>ReportOptions</c> (unlike
+/// <c>LineOptions</c>) carries no <c>DefaultIgnoreCondition</c>, so without it every ordinary run's
+/// <c>.report.json</c> would gain a literal <c>"recomputation": null</c> property — bytes an
+/// unrelated run did not have before this feature existed. With it, an ordinary report's bytes are
+/// unchanged, which is the actual claim behind "purely additive to the JSON shape", the same
+/// treatment the #97 tie-count fields got and for the same reason it needs no
+/// <c>HarnessRunner.AlgorithmVersion</c> bump: it changes nothing about how a day is counted, only
+/// what a report says about how it was produced.
+/// </para>
 /// </summary>
 public sealed record ReplayFinalReport(
     ReplayRunInfo Run,
     ReplayGateMetrics Gate,
     ReplayPlausibility Plausibility,
-    ReplayDiagnostics Diagnostics);
+    ReplayDiagnostics Diagnostics,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HarnessRecomputation? Recomputation = null);
+
+/// <summary>
+/// Present exactly when the <see cref="ReplayFinalReport"/> carrying it came from a report-only
+/// recompute (issue #119) instead of a run that fetched the archive — see
+/// <see cref="ReplayFinalReport.Recomputation"/>.
+/// <para>
+/// A recompute reads a live snapshot that is, by construction, at least as new as the one the
+/// original run compared against — Postgres keeps moving while the frozen <c>.jsonl</c> does not —
+/// so <see cref="InputHashMatches"/> and <see cref="BotSplitCutoverMatches"/> are the two things a
+/// reader has to check before trusting the numbers as a reproduction of the original run rather
+/// than a comparison against a newer database state. Both cutovers in this record are read from the
+/// original run's frozen header, never from today's configuration or today's live bot usage — see
+/// the remark on <c>HarnessRunner.RecomputeReportAsync</c>.
+/// </para>
+/// <para>
+/// <see cref="DiagnosticSource"/> is <c>"inherited"</c> when the original run's
+/// <c>&lt;stem&gt;.report.json</c> exists and is readable, so its own <c>Run.Diagnostic</c> flag can
+/// be reused, and <c>"defaulted"</c> when it does not — missing, unparsable or otherwise unreadable
+/// are all the same case (the diagnostic flag is never part of <c>HarnessRunIdentity</c> or the
+/// header — see the remark on <see cref="ReplayRunInfo.Diagnostic"/> — so a header-only recompute has
+/// no other source for it). A defaulted flag falls back to <c>true</c>, not <c>false</c>: the same
+/// fail-closed spirit as D4 — a missing original must never silently turn a diagnostic run into a
+/// binding verdict just because nothing was left to say otherwise.
+/// </para>
+/// <para>
+/// <see cref="Warnings"/> carries machine-readable codes rather than prose, so a caller can branch
+/// on it without parsing a sentence: currently <c>"input-hash-mismatch"</c> and/or
+/// <c>"bot-split-cutover-drift"</c>, each also logged as its own English warning line and rendered
+/// as a prominent block at the top of the recompute's Markdown.
+/// </para>
+/// </summary>
+public sealed record HarnessRecomputation(
+    string SourceFile,
+    DateTime RecomputedAtUtc,
+    string OriginalInputHash,
+    string CurrentInputHash,
+    bool InputHashMatches,
+    DateOnly? OriginalBotSplitCutover,
+    DateOnly? CurrentBotSplitCutover,
+    bool BotSplitCutoverMatches,
+    string DiagnosticSource,
+    ValueList<string> Warnings);
 
 /// <summary>
 /// A read-only list with value equality. Exists for one reason: the report must satisfy "two

@@ -123,10 +123,12 @@ services:
   # #69: the accuracy probe of the chat-log backfill, a second entry point of the same
   # Worker image, not a hosted service (see DECISIONS "Der Harness ist ein zweiter Einstiegspunkt
   # des Worker-Images, kein Hosted Service"). Never runs through `up`, only through
-  # `docker compose --profile harness run --build --rm harness <channel> [--days <n>]` — `--build`
-  # is mandatory here, not a style preference: the service has its own `build:` without `image:`,
-  # and a `run` without `--build` happily keeps running an existing, potentially ancient image
-  # (Rule 15).
+  # `docker compose --profile harness run --build --rm harness <channel> [--days <n>] [--diagnostic]`,
+  # or, to recompute an existing run's report with zero archive requests (#119),
+  # `docker compose --profile harness run --build --rm harness <channel> --report-only <file>` —
+  # `--build` is mandatory here, not a style preference: the service has its own `build:` without
+  # `image:`, and a `run` without `--build` happily keeps running an existing, potentially ancient
+  # image (Rule 15).
   harness:
     build:
       context: .

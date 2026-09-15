@@ -96,10 +96,18 @@ public sealed class HarnessReportFile
         WriteIndented = false
     };
 
+    // The Converters entry is read-only new code (issue #119): before TryReadExistingReport, nothing
+    // ever deserialized a .report.json — only wrote one — so ValueList<T>'s missing read support
+    // (it satisfies none of System.Text.Json's recognized collection shapes: no accessible
+    // constructor-plus-Add, no recognized immutable-collection factory) never mattered. Writing is
+    // unaffected: ValueListJsonConverter.Write delegates to the exact same IReadOnlyList<T> array
+    // serialization System.Text.Json already used for it before this converter existed, so an
+    // untouched report's bytes are unchanged.
     private static readonly JsonSerializerOptions ReportOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
+        WriteIndented = true,
+        Converters = { new ValueListJsonConverterFactory() }
     };
 
     public HarnessReportFile(string path)
@@ -325,6 +333,90 @@ public sealed class HarnessReportFile
         WriteAtomically(ReportMarkdownPath, markdown);
     }
 
+    /// <summary>
+    /// The final report already sitting at <see cref="ReportJsonPath"/>, or <c>null</c> if it does
+    /// not exist, cannot be read, or cannot be parsed — the same tolerance <see cref="TryReadHeader"/>
+    /// gives a foreign or damaged file. The one caller is a report-only recompute (issue #119), which
+    /// reads <c>Run.Diagnostic</c> off it: that flag lives only in a closed report, never in the
+    /// header or the identity (Plan-Entscheidung 7, D4), so a recompute has nowhere else to inherit
+    /// it from. Deliberately tolerant — a damaged or half-written <c>.report.json</c> must not block
+    /// a recompute that only actually needs the <c>.jsonl</c> beside it; the caller falls back to the
+    /// fail-closed default instead (D4's spirit: a missing, unparsable or unreadable original never
+    /// silently upgrades a diagnostic run into a binding one — see <c>HarnessRunner.ExecuteRecomputeAsync</c>).
+    /// </summary>
+    public ReplayFinalReport? TryReadExistingReport()
+    {
+        if (!File.Exists(ReportJsonPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var text = File.ReadAllText(ReportJsonPath);
+
+            // Fail-closed rather than merely tolerant (issue #119, second review round): a
+            // syntactically valid report can still lack a usable Run.Diagnostic — a pre-#97 report
+            // predates that JSON property, and a hand-edited or foreign one could omit it or give it
+            // the wrong shape. A missing or non-boolean run.diagnostic must read the same as a
+            // missing report, not as `false` sneaking in through the deserializer's own default for
+            // an absent bool. Checked with JsonDocument rather than by turning on
+            // RespectRequiredConstructorParameters/RespectNullableAnnotations on ReportOptions:
+            // either of those would make every report whose JSON predates a later-added property
+            // (the #97 tie fields, this very Recomputation field) fail to deserialize at all —
+            // downgrading it to "no report" for a reason that has nothing to do with the diagnostic
+            // flag.
+            using var document = JsonDocument.Parse(text);
+            if (!document.RootElement.TryGetProperty("run", out var run)
+                || run.ValueKind != JsonValueKind.Object
+                || !run.TryGetProperty("diagnostic", out var diagnostic)
+                || diagnostic.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            {
+                return null;
+            }
+
+            var report = JsonSerializer.Deserialize<ReplayFinalReport>(text, ReportOptions);
+            return report?.Run is null ? null : report;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Writes a final report pair the same temp-file-plus-rename way as
+    /// <see cref="WriteFinalReportAtomically"/>, but to caller-supplied paths rather than this
+    /// instance's own <see cref="ReportJsonPath"/>/<see cref="ReportMarkdownPath"/>, and — the one
+    /// real difference — the rename never overwrites. The one caller is a report-only recompute
+    /// (issue #119): its output sits beside the run under a timestamped name and must never land on
+    /// the paths that close the original run (writing there would flip <see cref="IsClosed"/> for a
+    /// run the recompute never actually finished fetching, and would silently discard whatever the
+    /// original run had written), and must never silently replace another recompute either — unlike
+    /// <see cref="WriteFinalReportAtomically"/>, which legitimately overwrites an ordinary run's own
+    /// report on every resume, a recompute has no "own" file here to overwrite: a collision on these
+    /// paths can only mean two recomputes landed on the same timestamp, and
+    /// <c>HarnessRunner.ExecuteRecomputeAsync</c> already refuses that case up front — this is the
+    /// same refusal, closing the gap between that check and the write a moment later.
+    /// <see cref="WriteAtomically"/> itself stays untouched
+    /// (overwriting), because the ordinary run's own resume genuinely needs it to.
+    /// </summary>
+    /// <exception cref="HarnessReportFileException">
+    /// Either target already existed at the moment of the rename (a race past the caller's own
+    /// existence check). The offending temp file is deleted before this throws, so no stray
+    /// <c>.tmp</c> is left behind.
+    /// </exception>
+    public static void WriteReportPairAtomically(string jsonPath, string markdownPath, ReplayFinalReport report, string markdown)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(markdownPath);
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(markdown);
+
+        WriteWithoutOverwrite(jsonPath, JsonSerializer.Serialize(report, ReportOptions));
+        WriteWithoutOverwrite(markdownPath, markdown);
+    }
+
     private void Append(HarnessJsonLine line)
     {
         RemoveDanglingTail();
@@ -393,6 +485,28 @@ public sealed class HarnessReportFile
         File.Move(temporaryPath, path, overwrite: true);
     }
 
+    /// <summary>
+    /// <see cref="WriteAtomically"/> with <c>overwrite: false</c> on the rename — see
+    /// <see cref="WriteReportPairAtomically"/>, the only caller, for why. <see cref="File.Move(string, string, bool)"/>
+    /// throws <see cref="IOException"/> when the destination already exists; that is turned into a
+    /// <see cref="HarnessReportFileException"/> here, after cleaning up the temp file, so the one
+    /// caller never has to know the collision surfaced as an I/O exception rather than a domain one.
+    /// </summary>
+    private static void WriteWithoutOverwrite(string path, string content)
+    {
+        var temporaryPath = path + ".tmp";
+        File.WriteAllText(temporaryPath, content);
+        try
+        {
+            File.Move(temporaryPath, path, overwrite: false);
+        }
+        catch (IOException ex)
+        {
+            File.Delete(temporaryPath);
+            throw new HarnessReportFileException($"'{path}' already exists: {ex.Message}");
+        }
+    }
+
     private static string Sanitize(string channelName)
     {
         var invalid = System.IO.Path.GetInvalidFileNameChars();
@@ -415,4 +529,32 @@ public sealed class HarnessReportFile
         HarnessReportHeader? Header,
         ReplayDayLine? Day,
         HarnessEventLine? Event);
+
+    /// <summary>
+    /// Read/write support for <see cref="ValueList{T}"/> in <see cref="ReportOptions"/> (issue #119,
+    /// see the remark there). <see cref="ValueListConverter{T}.Write"/> re-serializes the value as a
+    /// plain <c>IReadOnlyList&lt;T&gt;</c> — the exact array System.Text.Json already produced for it
+    /// without any converter — so an untouched report's bytes do not move.
+    /// </summary>
+    private sealed class ValueListJsonConverterFactory : JsonConverterFactory
+    {
+        public override bool CanConvert(Type typeToConvert) =>
+            typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(ValueList<>);
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            var itemType = typeToConvert.GetGenericArguments()[0];
+            var converterType = typeof(ValueListConverter<>).MakeGenericType(itemType);
+            return (JsonConverter)Activator.CreateInstance(converterType)!;
+        }
+
+        private sealed class ValueListConverter<T> : JsonConverter<ValueList<T>>
+        {
+            public override ValueList<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+                new(JsonSerializer.Deserialize<List<T>>(ref reader, options) ?? []);
+
+            public override void Write(Utf8JsonWriter writer, ValueList<T> value, JsonSerializerOptions options) =>
+                JsonSerializer.Serialize(writer, (IReadOnlyList<T>)value, options);
+        }
+    }
 }

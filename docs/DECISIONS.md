@@ -182,6 +182,140 @@ not treated as a reason to weaken the gate.
 
 ---
 
+### 2026-09-15 — Report-only recompute of a harness run, without touching the archive (#119)
+
+**Betrifft:** `docker-compose.prod.yml` · `docker-compose.yml` · `docs/Architectur.md` ·
+`src/EmotePurge.Worker/Harness/HarnessCommandLine.cs` · `src/EmotePurge.Worker/Harness/HarnessReportFile.cs` ·
+`src/EmotePurge.Worker/Harness/HarnessRunner.cs` · `src/EmotePurge.Worker/Harness/ReplayModels.cs` ·
+`src/EmotePurge.Worker/Program.cs` · `tests/EmotePurge.Worker.Tests/HarnessCommandLineTests.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs`
+
+**The gap, and why it was closeable without re-fetching 30 days of chat logs.** Raised while closing
+Task 3 of #97 (the quartile-precision tie-break rewrite): to hold a changed fidelity formula against
+the existing probe runs would have needed a recompute of their reports, and there was no way to ask
+for one — the log-side data was already sitting in the `.jsonl` (`ReplayDayLine`, read via
+`HarnessReportFile.ReadDays()`), only the live-side comparison (`GetEmoteLifetimesAsync`/`GetRowsAsync`)
+gets re-fetched on every ordinary run regardless. `HarnessCommandLine.Parse` only knew two shapes
+before this, `Program` only two branches, and a closed run was invisible to every resume search
+(`FindFrozenWindow` skips anything `IsClosed`) — none of that needed to change to add a third,
+read-only path.
+
+**Grammar is a flag on the existing verb, not a third verb.** `harness <channel> --report-only <file>`,
+mutually exclusive with `--days`/`--diagnostic` (both come from the frozen run, not chosen anew). A
+sub-verb (`harness recompute <channel> <file>`) was rejected for the reason the compose service
+already forces one form: `docker-compose.yml`'s `harness` service hardcodes the verb into its
+`entrypoint`, not its `command` (see "Der Harness ist ein zweiter Einstiegspunkt des Worker-Images,
+kein Hosted Service", 2026-09-06, on the fail-open CLI finding this rests on) — a channel literally
+named `recompute` would otherwise collide with a second sub-verb the same way a channel named
+`harness` would collide with the top-level one. `<file>` is validated as a bare file name — no `/`,
+`\` or `:`, not exactly `.`/`..`, not rooted, unchanged by `Path.GetFileName`, no leading `-`, must
+end in `.jsonl` — so it can only ever name a protocol file already inside `Harness:OutputDirectory`,
+never an arbitrary path.
+
+**Output sits beside the run, timestamped, and never overwrites.** `<stem>.recompute-<yyyyMMddTHHmmssZ>.report.json`
+/ `.md`, refusing outright if either file already exists (same clock second twice). The check runs
+twice, not once: an upfront `File.Exists` closes the ordinary case cheaply, and
+`HarnessReportFile.WriteReportPairAtomically`'s own rename — `overwrite: false`, added in the second
+review round (Codex P2-3) — closes the TOCTOU gap between that check and the write a moment later,
+surfacing a collision as a `HarnessReportFileException` (mapped to exit 3) with its `.tmp` sibling
+cleaned up rather than left behind. `HarnessReportFile.WriteAtomically` itself — the ordinary run's
+own writer — stays untouched and keeps overwriting: `WriteFinalReportAtomically` legitimately
+replaces a run's own report on every resume, and a recompute has no "own" file to overwrite in the
+first place, only another recompute's to collide with. It deliberately never writes to
+`<stem>.report.json`/`.report.md` themselves either way: those two files existing together is the
+*closed* signal (`HarnessReportFile.IsClosed`), and writing there for a run that never actually
+finished fetching its window would close a run the recompute did not perform — the one thing
+`RecomputeReportAsync` must never do to a complete-but-unclosed file it recomputes from.
+
+**The channel is matched by id, not by name.** A rename (#34/#44) keeps the `Channel.Id` row and must
+not make its own prior runs unrecomputable — the same reasoning `FindFrozenWindow` already applies
+when matching a resume candidate ("The channel name is not part of the match"). The first review
+round had a channel-*name* equality check ahead of the id check; it was dropped in the fix-up round
+below, since it could only ever refuse a rename that the id check alone already handles correctly by
+accepting it.
+
+**Three checks, all against the frozen header, never against today.** (1) The input hash
+(`HarnessInputHash.Compute`) is recomputed over the *current* live rows and compared to the header's
+— matching means the live snapshot has not moved since the run; a mismatch does not refuse, it warns
+(`recomputation.inputHashMatches = false`, code `input-hash-mismatch`, both hashes shown at the very
+top of the Markdown, and the "Input-Hash" row of the body itself now shows both, labelled). (2) The
+bot-split cutover is compared the same way (`bot-split-cutover-drift`). (3) Both cutovers actually fed
+into the calculation — `BotSplitCutover` and `SharedChatCutover` — are read from the header's
+`HarnessRunIdentity`, never from `Harness:SharedChatCutover` or from a fresh
+`GetEarliestBotUsageDateAsync` call: a recompute answers "what would this run's numbers be under
+today's code and today's data", not "what would a fresh run measure today", and today's configuration
+answering a different question than the one the file was frozen against is exactly the drift check
+above exists to catch, not to silently apply. The diagnostic flag is inherited from the original
+`<stem>.report.json` (`Run.Diagnostic`) when it exists and is readable, and **defaults to `true`**
+(no gate verdict), named as such (`recomputation.diagnosticSource = "defaulted"`), when it does not —
+D4's fail-closed rule extended: a missing, unparsable or otherwise unreadable original must never
+silently upgrade a diagnostic run into a binding verdict. (An earlier version of this feature
+defaulted to `false` instead — the opposite direction from D4 — and was corrected before merge.)
+"Readable" was itself widened in the second review round (Codex P2-4): a syntactically valid report
+that merely lacks a usable `run.diagnostic` — a pre-#97 report predates that JSON property; a
+hand-edited or foreign one could omit or misshape it — now counts as unreadable too, checked with a
+`JsonDocument` peek for a boolean `run.diagnostic` (and a null deserialized `Run`) ahead of the full
+deserialize, rather than by turning on `RespectRequiredConstructorParameters`/
+`RespectNullableAnnotations` on `ReportOptions`: either would make every report whose JSON predates a
+later-added property — the #97 tie fields, `Recomputation` itself — fail to deserialize outright, for
+a reason that has nothing to do with the diagnostic flag.
+
+**The code-drift caveat.** `AlgorithmVersion` in the header is a tag on the counting path that
+produced the `.jsonl`'s day lines, never a promise that `ReplayFidelityCalculator` itself is
+unchanged since. Task 3 of #97 landed a formula change to the bottom-quartile pair — reading value-
+defined cutoff sets instead of the old rank-and-tie-break construction — without any `AlgorithmVersion`
+bump, precisely because it does not touch counting. A recompute of a pre-#97 file therefore reproduces
+the *old* run's day-line data through the *current* formula even at a matching input hash; the
+Markdown's provenance banner says so explicitly rather than let `AlgorithmVersion` be read as more of
+a promise than it is.
+
+**Timing-neutral for the #69/#118 measurement window.** No change to `ReplayDayLine`, to
+`HarnessRunIdentity`/`BuildFileName`/`SerializeIdentity`, to the resume logic
+(`FindFrozenWindow`/`IsClosed`), or to the counting path (`ReplayDayCounter`, the bot/shared-chat
+classification) — and correspondingly no `AlgorithmVersion` bump. `ReplayFinalReport.Recomputation`
+is additive and defaults to `null`, the same treatment the #97 tie-count fields and the `Bytes` field
+on `HarnessEventLine` already got — with one difference from those two precedents that the first
+review round missed and the fix-up round corrected: `null` alone is not invisible on the wire.
+`ReportOptions` carries no `DefaultIgnoreCondition` (unlike `LineOptions`), so a plain nullable
+record parameter would still serialize as a literal `"recomputation": null` in *every* ordinary run's
+`.report.json` — bytes an unrelated run never had before this feature existed, which is a real,
+if small, change to a file outside this feature's own output. The property now carries
+`[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]`, and a test asserts a normal run's
+`.report.json` contains no `recomputation` key at all. The recompute path makes zero
+`IChatLogArchiveClient` calls, verified by a substitute-call assertion in the test suite (`Assert.Empty`
+on every received call, not just the one method expected to be absent), not just by code inspection —
+reading the `.jsonl` a second time was the entire point.
+
+**One incidental fix, needed to make any of this readable back.** `System.Text.Json` never had read
+support for `ValueList<T>` — nothing ever deserialized a `.report.json` before this feature, only
+wrote one, so the gap was latent. `HarnessReportFile.ReportOptions` now carries a
+`ValueListJsonConverterFactory`; its write side re-serializes through the exact `IReadOnlyList<T>`
+array shape System.Text.Json already produced without a converter, so this specific converter does
+not move an untouched report's bytes (asserted directly: the original `.jsonl`/`.report.json`/
+`.report.md` are byte-identical before and after a recompute in the test suite) — the byte movement
+described above came from the missing `JsonIgnore`, not from this converter, and the two are
+independent fixes for two independent gaps.
+
+No new exit code: every refusal (missing file, unreadable header, a foreign `AlgorithmVersion`,
+channel id mismatch, a duplicated in-window day line, missing day line, empty log across the whole
+window, an existing recompute pair at the same timestamp, or one that appears at the moment of the
+write) returns `HarnessRunner.ExitPreconditionViolated` (3) — the same code an ordinary run already
+uses for "the question could not be asked at all". Two of these were added in a second review round
+(Codex, two "MUST" findings, both accepted by an arbiter after independent verification): a foreign
+`AlgorithmVersion` — day lines from `harness-1` predate `SharedChatCounts` (#73), and
+`ReplayFidelityCalculator` read that dictionary unconditionally, so recomputing one used to throw
+(exit 6) instead of refusing; and a duplicated day line — a shape an ordinary run can never itself
+produce (its in-memory `dayLines` dictionary forbids a second write for the same day, and a *resumed*
+run with one already on disk throws on `ToDictionary` before ever reaching `Compute`), but which a
+recompute, reading whatever file it is pointed at, used to silently double-count instead of refusing.
+Both checks run before any database access. A hash or cutover mismatch is deliberately not a refusal. Outside
+the refusal list, `RecomputeReportAsync` reuses two more of the ordinary run's exit codes for the same
+reasons `RunAsync` does: `ExitAbortedWithResumePoint` (4) on cancellation — "resume point" carries no
+literal resume meaning here (a recompute has nothing to continue, only to retry outright), it is still
+the code that means "ask again" — and `ExitUnexpectedError` (6) on anything unhandled.
+
+---
+
 ### 2026-09-15 — `duplicate-names` retired: the collision banner moves to the usage-stats page, riding along on `active-set` (#45)
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` ·

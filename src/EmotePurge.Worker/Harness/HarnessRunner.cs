@@ -134,6 +134,48 @@ public sealed class HarnessRunner(
         }
     }
 
+    /// <summary>
+    /// Report-only recompute of an existing run (issue #119): reads the frozen <c>.jsonl</c> named
+    /// by <paramref name="reportOnlyFileName"/> and the header's own window, reloads the live side
+    /// through the exact same services <see cref="RunAsync"/> uses, and writes a second, timestamped
+    /// report pair beside the original — never touching the original <c>.jsonl</c>,
+    /// <c>.report.json</c> or <c>.report.md</c>, and never calling <c>IChatLogArchiveClient</c>.
+    /// <para>
+    /// Deliberately its own entry point rather than a branch inside <see cref="RunAsync"/>/
+    /// <see cref="ExecuteAsync"/>: it skips the shared-chat-cutover fail-closed precondition (D4)
+    /// and the configured <c>Harness:SharedChatCutover</c> entirely — a recompute's window, bot
+    /// list and cutovers all come from the frozen header, never from today's configuration or
+    /// today's clock, so none of that precondition applies to it.
+    /// </para>
+    /// <para>
+    /// Exit codes are the existing ones: every refusal below — a missing file, an unreadable header,
+    /// a channel that no longer matches, a window with a gap, a window with no log anywhere, an
+    /// already-existing recompute pair at the same timestamp — is <see cref="ExitPreconditionViolated"/>,
+    /// the same code an ordinary run uses for "the question could not be asked at all". A hash or
+    /// cutover mismatch is deliberately <b>not</b> one of these: the recompute still runs to
+    /// completion and reports the drift as a warning (see <see cref="HarnessRecomputation"/>) rather
+    /// than refusing, because a stale snapshot is exactly the case this method exists to make
+    /// visible instead of silently produce.
+    /// </para>
+    /// </summary>
+    public async Task<int> RecomputeReportAsync(string channelName, string reportOnlyFileName, CancellationToken ct)
+    {
+        try
+        {
+            return await ExecuteRecomputeAsync(channelName, reportOnlyFileName, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogError("Report-only recompute for channel '{Channel}' was cancelled.", channelName);
+            return ExitAbortedWithResumePoint;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Report-only recompute for channel '{Channel}' failed unexpectedly.", channelName);
+            return ExitUnexpectedError;
+        }
+    }
+
     private async Task<int> ExecuteAsync(string channelName, int days, bool diagnostic, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channelName);
@@ -448,6 +490,226 @@ public sealed class HarnessRunner(
         return ExitSuccess;
     }
 
+    /// <summary>See <see cref="RecomputeReportAsync"/> for the contract; this is its body.</summary>
+    private async Task<int> ExecuteRecomputeAsync(string channelName, string reportOnlyFileName, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reportOnlyFileName);
+
+        var stopwatch = Stopwatch.StartNew();
+        var recomputedAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+
+        var sourceFile = new HarnessReportFile(Path.Combine(options.OutputDirectory, reportOnlyFileName));
+        if (!sourceFile.Exists)
+        {
+            logger.LogError(
+                "Report-only file '{File}' does not exist under '{Directory}'; nothing to recompute.",
+                reportOnlyFileName, options.OutputDirectory);
+            return ExitPreconditionViolated;
+        }
+
+        var header = sourceFile.TryReadHeader();
+        if (header is null)
+        {
+            logger.LogError("Report-only file '{File}' has no readable header; it cannot be recomputed.", sourceFile.Path);
+            return ExitPreconditionViolated;
+        }
+
+        var identity = header.Identity;
+
+        // Refuses a foreign AlgorithmVersion before any DB access (issue #119, second review round):
+        // ReplayDayCounter's day-line shape changed at "harness-2" (SharedChatCounts, #73), and
+        // ReplayFidelityCalculator reads that dictionary unconditionally — recomputing a "harness-1"
+        // file throws (a bare NullReferenceException today) rather than refusing cleanly. There is no
+        // migration path between versions: a version bump means the counting rule itself changed, so
+        // an old file's day lines cannot be reinterpreted under the new one, only refused.
+        if (!string.Equals(identity.AlgorithmVersion, AlgorithmVersion, StringComparison.Ordinal))
+        {
+            logger.LogError(
+                "Report-only file '{File}' was written by algorithm version '{FileVersion}', but this build only recomputes '{CurrentVersion}'; there is no migration between versions.",
+                sourceFile.Path, identity.AlgorithmVersion, AlgorithmVersion);
+            return ExitPreconditionViolated;
+        }
+
+        // The channel NAME is deliberately not compared — a rename (#34/#44) keeps the id and must
+        // not make a run unrecomputable, exactly the reasoning FindFrozenWindow already applies when
+        // matching a resume candidate by id alone. The id is what the header actually identifies the
+        // run by (HarnessRunIdentity.ChannelId, not ChannelName), so that is the only thing checked.
+        var channel = await channelService.GetByNameAsync(channelName, ct);
+        if (channel is null || !string.Equals(channel.Id, identity.ChannelId, StringComparison.Ordinal))
+        {
+            logger.LogError(
+                "Channel '{Channel}' does not resolve to the id '{HeaderChannelId}' that report-only file '{File}' was written for; the channel row may have changed since.",
+                channelName, identity.ChannelId, sourceFile.Path);
+            return ExitPreconditionViolated;
+        }
+
+        HarnessReportContent content;
+        try
+        {
+            content = sourceFile.ReadDays();
+        }
+        catch (HarnessReportFileException ex)
+        {
+            logger.LogError(ex, "Report-only file '{File}' cannot be read.", sourceFile.Path);
+            return ExitPreconditionViolated;
+        }
+
+        var allDays = content.Days.OrderBy(d => d.Day).ToList();
+
+        // Refuses a duplicated day line before it can double-count (issue #119, second review
+        // round): an ordinary run can never produce one — AppendDay's in-memory dayLines dictionary
+        // makes a second write for the same day impossible — but this file did not necessarily come
+        // from one. Left unchecked, a HashSet-based completeness check below would report full
+        // coverage while allDays still carried the duplicate straight into
+        // ReplayFidelityCalculator.Compute, which has no duplicate-day contract of its own and would
+        // silently sum both copies into every total. Restricted to the window: a stray day line
+        // outside [WindowFrom, WindowTo] is not this check's concern (it is never read by Compute).
+        var duplicateDays = allDays
+            .Where(d => d.Day >= identity.WindowFrom && d.Day <= identity.WindowTo)
+            .GroupBy(d => d.Day)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+        if (duplicateDays.Count > 0)
+        {
+            logger.LogError(
+                "Report-only file '{File}' has more than one day line for {Days}; a duplicated day would be double-counted, so it cannot be recomputed.",
+                sourceFile.Path, string.Join(", ", duplicateDays.Select(Iso)));
+            return ExitPreconditionViolated;
+        }
+
+        var daysPresent = new HashSet<DateOnly>(allDays.Select(d => d.Day));
+        for (var day = identity.WindowFrom; day <= identity.WindowTo; day = day.AddDays(1))
+        {
+            if (!daysPresent.Contains(day))
+            {
+                logger.LogError(
+                    "Report-only file '{File}' is missing the day line for {Day}; the window {From}..{To} is not fully covered, so it cannot be recomputed.",
+                    sourceFile.Path, Iso(day), Iso(identity.WindowFrom), Iso(identity.WindowTo));
+                return ExitPreconditionViolated;
+            }
+        }
+
+        // Same refusal an ordinary run gives for the same fact (ExecuteAsync, just below the day
+        // loop): a window with no log on any day cannot answer the comparison question at all.
+        if (allDays.Count > 0 && allDays.TrueForAll(d => d.Status == ReplayDayStatuses.NoLog))
+        {
+            logger.LogError(
+                "None of the {Days} days from {From} to {To} in '{File}' has a log; the comparison is not possible for channel '{Channel}'.",
+                allDays.Count, Iso(identity.WindowFrom), Iso(identity.WindowTo), sourceFile.Path, channel.ChannelName);
+            return ExitPreconditionViolated;
+        }
+
+        var timestamp = recomputedAtUtc.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
+        var stem = Path.ChangeExtension(sourceFile.Path, null);
+        var recomputeJsonPath = $"{stem}.recompute-{timestamp}.report.json";
+        var recomputeMarkdownPath = $"{stem}.recompute-{timestamp}.report.md";
+        if (File.Exists(recomputeJsonPath) || File.Exists(recomputeMarkdownPath))
+        {
+            logger.LogError(
+                "A recompute of '{File}' already exists for timestamp '{Timestamp}'; refusing to overwrite '{JsonPath}' or '{MarkdownPath}'.",
+                sourceFile.Path, timestamp, recomputeJsonPath, recomputeMarkdownPath);
+            return ExitPreconditionViolated;
+        }
+
+        // From here on: exactly what ExecuteAsync loads for the input hash, against the header's
+        // frozen window — never a freshly derived one, and never today's Harness:SharedChatCutover.
+        var lifetimes = await usageStatQueryService.GetEmoteLifetimesAsync(channel.Id, ct);
+        var liveRowDtos = await usageStatQueryService.GetRowsAsync(
+            [.. lifetimes.Select(e => e.Id)], identity.WindowFrom, identity.WindowTo, ct);
+        var currentBotSplitCutover = await usageStatQueryService.GetEarliestBotUsageDateAsync(channel.Id, ct);
+        var botAccountIds = botChatterDetector.KnownBotAccountIds;
+
+        var currentInputHash = HarnessInputHash.Compute(lifetimes, liveRowDtos, botAccountIds, identity.WindowFrom);
+        var inputHashMatches = string.Equals(currentInputHash, identity.InputHash, StringComparison.Ordinal);
+        var botSplitCutoverMatches = currentBotSplitCutover == identity.BotSplitCutover;
+
+        var emotes = lifetimes
+            .Select(e => new ReplayEmote(e.Id, e.Name, e.IsArchived, e.FirstSeenAt, e.ArchivedAt, e.LastSyncedAt))
+            .ToList();
+        var liveRows = liveRowDtos
+            .Select(r => new ReplayUsageRow(r.EmoteId, r.Date, r.UseCount, r.BotUseCount, r.SharedChatUseCount))
+            .ToList();
+
+        // Both cutovers come from the frozen header, not from currentBotSplitCutover above and not
+        // from options.SharedChatCutover: a recompute answers "what would this run's numbers be
+        // under today's code and today's data", not "what would a fresh run measure today".
+        var window = new ReplayWindow(identity.WindowFrom, identity.WindowTo, identity.BotSplitCutover, identity.SharedChatCutover);
+        var windowDays = identity.WindowTo.DayNumber - identity.WindowFrom.DayNumber + 1;
+        var totalBytes = allDays.Sum(d => d.Bytes) + content.Events.Sum(e => e.Bytes);
+        var rateLimitedDays = content.Events.Count(e => e.HttpStatusCode == 429);
+        var resumePoint = allDays.Count == 0 ? (DateOnly?)null : allDays[^1].Day;
+
+        var originalReport = sourceFile.TryReadExistingReport();
+        // Fail-closed, in D4's spirit: with no readable original to inherit Run.Diagnostic from, the
+        // recompute defaults to true (no gate verdict) rather than false (a binding one) — a missing,
+        // unparsable or otherwise unreadable .report.json must never silently upgrade a diagnostic
+        // run into a binding verdict just because nothing was left to say it was one.
+        var diagnostic = originalReport?.Run.Diagnostic ?? true;
+        var diagnosticSource = originalReport is not null ? "inherited" : "defaulted";
+        if (originalReport is null)
+        {
+            logger.LogInformation(
+                "'{File}' has no readable '{JsonPath}' to inherit the diagnostic flag from; the recompute defaults it to true (no gate verdict), per the D4 fail-closed rule.",
+                sourceFile.Path, sourceFile.ReportJsonPath);
+        }
+
+        var report = ReplayFidelityCalculator.Compute(
+            window, emotes, liveRows, allDays, windowDays, runComplete: true, totalBytes, rateLimitedDays, resumePoint, diagnostic);
+
+        var warnings = new List<string>();
+        if (!inputHashMatches)
+        {
+            warnings.Add("input-hash-mismatch");
+            logger.LogWarning(
+                "Recompute of '{File}' was computed against a live snapshot different from the one the original run used (original input hash '{Original}', current '{Current}'); these numbers are not a re-evaluation of the same run.",
+                sourceFile.Path, identity.InputHash, currentInputHash);
+        }
+
+        if (!botSplitCutoverMatches)
+        {
+            warnings.Add("bot-split-cutover-drift");
+            logger.LogWarning(
+                "Recompute of '{File}' sees a different bot-split cutover than the original run (original '{Original}', current '{Current}').",
+                sourceFile.Path, Iso(identity.BotSplitCutover), Iso(currentBotSplitCutover));
+        }
+
+        var recomputation = new HarnessRecomputation(
+            sourceFile.Path,
+            recomputedAtUtc,
+            identity.InputHash,
+            currentInputHash,
+            inputHashMatches,
+            identity.BotSplitCutover,
+            currentBotSplitCutover,
+            botSplitCutoverMatches,
+            diagnosticSource,
+            new ValueList<string>(warnings));
+        var reportWithRecomputation = report with { Recomputation = recomputation };
+
+        var markdown = BuildRecomputeMarkdown(
+            identity, header, reportWithRecomputation, allDays, liveRows, recomputedAtUtc, stopwatch.Elapsed, totalBytes, rateLimitedDays);
+
+        try
+        {
+            // The pre-check above already refused an existing pair; this is the TOCTOU close, not the
+            // primary defence — WriteReportPairAtomically's own rename is what actually cannot
+            // overwrite (issue #119, second review round).
+            HarnessReportFile.WriteReportPairAtomically(recomputeJsonPath, recomputeMarkdownPath, reportWithRecomputation, markdown);
+        }
+        catch (HarnessReportFileException ex)
+        {
+            logger.LogError(ex, "Recompute of '{File}' could not be written to '{JsonPath}'.", sourceFile.Path, recomputeJsonPath);
+            return ExitPreconditionViolated;
+        }
+
+        logger.LogInformation(
+            "Recompute of channel '{Channel}' from '{File}' written to '{JsonPath}' (input hash match: {HashMatch}, bot-split cutover match: {CutoverMatch}).",
+            channel.ChannelName, sourceFile.Path, recomputeJsonPath, inputHashMatches, botSplitCutoverMatches);
+        return ExitSuccess;
+    }
+
     /// <summary>
     /// The frozen window this invocation should continue, or <c>null</c> if there is nothing to
     /// continue and a fresh window is to be derived.
@@ -559,10 +821,76 @@ public sealed class HarnessRunner(
     // archive itself had answered for.
     private static string Iso(DateOnly value) => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
+    /// <summary>"none" rather than a dash — the recompute's warning block reads two of these side by
+    /// side and a missing value is a fact worth naming, not a blank.</summary>
+    private static string Iso(DateOnly? value) => value is { } day ? Iso(day) : "none";
+
     private static void AppendDay(HarnessReportFile file, Dictionary<DateOnly, ReplayDayLine> dayLines, ReplayDayLine line)
     {
         file.AppendDay(line);
         dayLines[line.Day] = line;
+    }
+
+    /// <summary>
+    /// The Markdown of a report-only recompute (issue #119): a provenance banner — what was
+    /// recomputed, from which file, with zero archive requests, and (prominently, if either
+    /// mismatches) how the current live snapshot and bot-split cutover compare to the ones the
+    /// original run used — followed by the same body <see cref="BuildMarkdown"/> renders for an
+    /// ordinary run, with three rows adjusted so the body does not itself contradict the banner:
+    /// the "loaded at" row shows both the original run's snapshot time and this recompute's, the
+    /// "Input-Hash" row is labelled as the original's and gets a second row for the current one, and
+    /// the "distinct chatters" fallback text names a recompute rather than a resume (the window-wide
+    /// chatter set is never persisted, so a recompute cannot have it either, same as a resumed run).
+    /// </summary>
+    private static string BuildRecomputeMarkdown(
+        HarnessRunIdentity identity,
+        HarnessReportHeader header,
+        ReplayFinalReport report,
+        IReadOnlyList<ReplayDayLine> days,
+        IReadOnlyList<ReplayUsageRow> liveRows,
+        DateTime recomputedAtUtc,
+        TimeSpan elapsed,
+        long bytes,
+        int rateLimitedDays)
+    {
+        var recomputation = report.Recomputation
+            ?? throw new ArgumentException("Report carries no Recomputation; BuildRecomputeMarkdown is only for a recompute's own report.", nameof(report));
+
+        var text = new StringBuilder();
+        text.Append(Invariant($"# Report-only-Neuberechnung: {identity.ChannelName}\n\n"));
+        text.Append(Invariant(
+            $"> **Report-only-Neuberechnung von `{recomputation.SourceFile}`, erzeugt am {recomputedAtUtc:yyyy-MM-dd HH:mm:ss} UTC.**\n"));
+        text.Append(
+            "> Es wurden keine Archiv-Requests gestellt (#119) — jede Zahl unten ist aus den "
+            + "vorhandenen `.jsonl`-Tageszeilen gegen den *aktuellen* Code und einen *aktuellen* "
+            + "Live-Snapshot aus Postgres berechnet. Die `Algorithmus-Version` weiter unten ist ein "
+            + "Etikett auf dem Zählpfad, der diese Tageszeilen erzeugt hat — kein Versprechen, dass "
+            + "die Berechnung selbst seither unverändert ist (siehe docs/DECISIONS.md).\n\n");
+
+        if (!recomputation.InputHashMatches || !recomputation.BotSplitCutoverMatches)
+        {
+            text.Append(
+                "> **⚠ Achtung: Der Live-Snapshot hat sich seit dem ursprünglichen Lauf verschoben.** "
+                + "Diese Zahlen sind KEINE Neubewertung desselben Laufs — sie vergleichen das "
+                + "eingefrorene Log gegen einen neueren Datenbankstand.\n>\n");
+            text.Append(Invariant(
+                $"> - Input-Hash: ursprünglich `{recomputation.OriginalInputHash}`, aktuell `{recomputation.CurrentInputHash}` (Übereinstimmung: {(recomputation.InputHashMatches ? "ja" : "nein")})\n"));
+            text.Append(Invariant(
+                $"> - Bot-Split-Stichtag: ursprünglich `{Iso(recomputation.OriginalBotSplitCutover)}`, aktuell `{Iso(recomputation.CurrentBotSplitCutover)}` (Übereinstimmung: {(recomputation.BotSplitCutoverMatches ? "ja" : "nein")})\n\n"));
+        }
+
+        text.Append(Invariant(
+            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? "übernommen aus dem ursprünglichen Bericht" : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
+        text.Append("---\n\n");
+
+        text.Append(BuildMarkdown(
+            identity, report, days, liveRows, header.LoadedAtUtc, recomputedAtUtc, elapsed, bytes, rateLimitedDays,
+            distinctChatters: null,
+            unavailableDistinctChattersLabel: "nicht verfügbar (Neuberechnung)",
+            recomputeLoadedAtUtc: recomputedAtUtc,
+            currentInputHash: recomputation.CurrentInputHash));
+
+        return text.ToString();
     }
 
     /// <summary>
@@ -580,7 +908,13 @@ public sealed class HarnessRunner(
         TimeSpan elapsed,
         long bytes,
         int rateLimitedDays,
-        int? distinctChatters)
+        int? distinctChatters,
+        // The four parameters below default to the ordinary-run rendering, so ExecuteAsync's call
+        // site (positional, ten arguments) is untouched and an ordinary run's Markdown does not move
+        // a single byte. BuildRecomputeMarkdown is the only caller that ever supplies them.
+        string unavailableDistinctChattersLabel = "nicht verfügbar (wiederaufgenommen)",
+        DateTime? recomputeLoadedAtUtc = null,
+        string? currentInputHash = null)
     {
         var gate = report.Gate;
         var diagnostics = report.Diagnostics;
@@ -604,16 +938,22 @@ public sealed class HarnessRunner(
         Row(text, "Human-only-Tage im Fenster", Invariant($"{diagnostics.HumanOnlyDays}"));
         Row(text, "Tage mit Log / ohne Log", Invariant($"{diagnostics.LogDays} / {diagnostics.NoLogDays}"));
         Row(text, "Bot-IDs", identity.BotAccountIds.Count == 0 ? "keine" : string.Join(", ", identity.BotAccountIds.Select(id => "`" + id + "`")));
-        Row(text, "Ladezeitpunkt der Vergleichsdaten (UTC)", Invariant($"{loadedAtUtc:yyyy-MM-dd HH:mm:ss}"));
+        Row(text, "Ladezeitpunkt der Vergleichsdaten (UTC)", recomputeLoadedAtUtc is { } recomputeLoaded
+            ? Invariant($"ursprünglicher Lauf: {loadedAtUtc:yyyy-MM-dd HH:mm:ss} · diese Neuberechnung: {recomputeLoaded:yyyy-MM-dd HH:mm:ss}")
+            : Invariant($"{loadedAtUtc:yyyy-MM-dd HH:mm:ss}"));
         Row(text, "Bericht erzeugt (UTC)", Invariant($"{generatedAtUtc:yyyy-MM-dd HH:mm:ss}"));
         Row(text, "Laufzeit dieses Laufs", Invariant($"{elapsed:hh\\:mm\\:ss}"));
         Row(text, "Übertragene Bytes (alle Läufe dieser Datei)", Invariant($"{bytes}"));
         Row(text, "HTTP 429", Invariant($"{rateLimitedDays}"));
         Row(text, "Distinkte Chatter im Fenster", distinctChatters is { } count
             ? Invariant($"{count}")
-            : "nicht verfügbar (wiederaufgenommen)");
+            : unavailableDistinctChattersLabel);
         Row(text, "Algorithmus-Version", "`" + identity.AlgorithmVersion + "`");
-        Row(text, "Input-Hash", "`" + identity.InputHash + "`");
+        Row(text, currentInputHash is null ? "Input-Hash" : "Input-Hash (ursprünglicher Lauf)", "`" + identity.InputHash + "`");
+        if (currentInputHash is { } current)
+        {
+            Row(text, "Input-Hash (aktuell, diese Neuberechnung)", "`" + current + "`");
+        }
         Row(text, "Lauf vollständig", report.Run.RunComplete ? "ja" : "nein");
         Row(text, "Gate-tauglich", gate.GateEligible
             ? "ja"

@@ -123,7 +123,9 @@ services:
   # #69: the accuracy probe of the chat-log backfill, a second entry point of the same
   # Worker image, not a hosted service (see DECISIONS "Der Harness ist ein zweiter Einstiegspunkt
   # des Worker-Images, kein Hosted Service"). Never runs through `up`, only through
-  # `docker compose -f docker-compose.prod.yml --profile harness run --rm harness <channel> [--days <n>]`,
+  # `docker compose -f docker-compose.prod.yml --profile harness run --rm harness <channel> [--days <n>] [--diagnostic]`,
+  # or, to recompute an existing run's report with zero archive requests (#119),
+  # `docker compose -f docker-compose.prod.yml --profile harness run --rm harness <channel> --report-only <file>` —
   # after a prior `pull harness` (otherwise `:latest` quietly keeps running the old one).
   harness:
     image: ghcr.io/sensitron/emotepurge-worker:latest
