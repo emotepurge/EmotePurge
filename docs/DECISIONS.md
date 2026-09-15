@@ -10,6 +10,42 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — New SonarCloud org runs the "comprehensive" quality profile, not "core"
+
+**Betrifft:** `.github/workflows/sonarcloud.yml` (unchanged, but the scope of what it reports) ·
+SonarCloud project `emotepurge_EmotePurge`
+
+The `emotepurge` SonarCloud org created for the org move assigns the built-in "Sonar way
+comprehensive" profile to every language by default. The old `sensitron` org ran "Sonar way core".
+On the Free plan the new org can select neither "core" nor "extended", and cannot define a custom
+profile either — both are gated behind an upgrade. On the old org "core" was never picked by hand;
+it was simply that org's default.
+
+Measured 2026-09-15 on identical code: active rules went from 166 to 379 for C# and from 245 to 492
+for TypeScript, and open issues on `main` went from 36 to 247. Most of the new findings come from
+rules that simply were not active before, e.g. `csharpsquid:S3776` (cognitive complexity, 23 hits),
+`S107` (too many parameters, 12), `S125` (commented-out code, 12).
+
+The quality gate itself is unchanged: still "Sonar way" (the Free plan allows nothing else), still
+ignoring duplication/coverage on small changes, still measuring New Code against the previous
+version — same as on the old project. Because the gate only judges new code, the larger backlog
+does not block merges by itself, but new code now passes through more rules, and a bug/security
+rule tripped on a new line can lower the new-code rating.
+
+**Decision:** keep "comprehensive" rather than rebuild "core" by excluding roughly 200 rules via
+`sonar.issue.ignore.multicriteria` — that list would not stay maintainable and would not stop
+future comprehensive-only rules from reappearing. A rule that genuinely contradicts a project
+convention is switched off individually in the workflow instead, the same way `javascript:S4036`
+already is for `scripts/**/*.mjs`.
+
+Manually set issue states do not survive a new Sonar project on their own. A one-off script matched
+the 21 False Positive and 8 Accepted issues from the old project by rule + file path + line hash,
+re-applied the same transition on the new project, and left a comment pointing at the old issue
+key; all 29 matched exactly once. Open issues after that pass: 218. The old project has since been
+deleted, so this cannot be rerun or re-checked against it.
+
+---
+
 ### 2026-09-15 — Images are pushed by a BuildKit container builder, not by the Docker daemon
 
 **Betrifft:** `.github/workflows/publish.yml`
