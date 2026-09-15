@@ -7,9 +7,9 @@ import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvDeleteService, SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
-import { RunResult } from '../../core/seven-tv/seven-tv-run-engine';
+import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { CSV_MIME } from '../export/csv';
@@ -585,5 +585,508 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
     ).find((element) => element.textContent?.trim() === text);
     expect(notice).toBeDefined();
     expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
+  });
+});
+
+/**
+ * Shared, correctly-typed fakes for the #89 blocks below, replacing repeated ~50-line provider
+ * arrays. `Pick`ing straight off the real service classes means every field here is a
+ * `WritableSignal<T>` of the exact `T` the real class declares (e.g. `rateLimitPauseSeconds` starts
+ * `null`, not `0` — see `SevenTvRunEngine.rateLimitPauseSeconds`, seven-tv-run-engine.ts:221 — and
+ * `syncReport` is typed against its real union) — a renamed or mistyped field becomes a compile
+ * error instead of silently not mattering inside an `as unknown` cast. `SevenTvRunArbiter.activeRun`
+ * is the one exception: the real class types it as a read-only `Signal` (it is a `computed()`, see
+ * that class's doc), so its fake gets its own tiny interface with a writable signal a test can
+ * actually drive.
+ */
+type DeleteServiceFake = Pick<
+  SevenTvDeleteService,
+  'isRunning' | 'queue' | 'syncReport' | 'rateLimitPauseSeconds' | 'lastRun'
+>;
+
+function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteServiceFake {
+  return {
+    isRunning: signal(false),
+    queue: signal<RunQueueItem[]>([]),
+    syncReport: signal<SyncReportState>('idle'),
+    rateLimitPauseSeconds: signal<number | null>(null),
+    lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
+    ...overrides,
+  };
+}
+
+type RestoreServiceFake = Pick<
+  SevenTvRestoreService,
+  | 'isRunning'
+  | 'queue'
+  | 'syncReport'
+  | 'rateLimitPauseSeconds'
+  | 'resyncTrigger'
+  | 'skippedDuplicates'
+  | 'duplicateCheckAvailable'
+  | 'duplicateNoticePending'
+>;
+
+function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): RestoreServiceFake {
+  return {
+    isRunning: signal(false),
+    queue: signal<RunQueueItem[]>([]),
+    syncReport: signal<SyncReportState>('idle'),
+    rateLimitPauseSeconds: signal<number | null>(null),
+    resyncTrigger: signal('idle'),
+    skippedDuplicates: signal(0),
+    duplicateCheckAvailable: signal(true),
+    duplicateNoticePending: signal(false),
+    ...overrides,
+  };
+}
+
+interface RunArbiterFake {
+  activeRun: WritableSignal<SevenTvRunKind | null>;
+}
+
+function fakeRunArbiter(
+  activeRun: WritableSignal<SevenTvRunKind | null> = signal(null),
+): RunArbiterFake {
+  return { activeRun };
+}
+
+/** The provider list every #89 block below needs, differing only in which fakes a test wants to
+ *  drive — the rest default to an idle/untouched instance. */
+function panelProviders(
+  options: {
+    deleteService?: DeleteServiceFake;
+    restoreService?: RestoreServiceFake;
+    arbiter?: RunArbiterFake;
+    dialogOpen?: ReturnType<typeof vi.fn>;
+  } = {},
+) {
+  return [
+    provideHttpClient(),
+    { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
+    {
+      provide: SevenTvDeleteService,
+      useValue: (options.deleteService ?? fakeDeleteService()) as unknown as SevenTvDeleteService,
+    },
+    {
+      provide: SevenTvRestoreService,
+      useValue: (options.restoreService ??
+        fakeRestoreService()) as unknown as SevenTvRestoreService,
+    },
+    {
+      provide: SevenTvRunArbiter,
+      useValue: (options.arbiter ?? fakeRunArbiter()) as unknown as SevenTvRunArbiter,
+    },
+    {
+      provide: SevenTvTokenService,
+      useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
+    },
+    { provide: Dialog, useValue: { open: options.dialogOpen ?? vi.fn() } as unknown as Dialog },
+  ];
+}
+
+/** `Löschen (n)` — the same wording `DELETE_LABEL` pins for n=2, generalised so the lock block can
+ *  look the button up by its accessible name at any selection size instead of by DOM position. */
+function deleteButtonLabel(count: number): string {
+  return `Löschen (${count})`;
+}
+
+function findButtonByLabel(host: HTMLElement, label: string): HTMLButtonElement {
+  const button = Array.from(host.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  if (!button) {
+    throw new Error(`button with accessible name "${label}" not found`);
+  }
+  return button;
+}
+
+/**
+ * #89: the per-run latch that decides whether the host gets `deleted` (an optimistic client-side
+ * drop) or `reloadRequested` (a forced refetch) once a delete run settles — per the constructor
+ * effect's own comment, this is the highest-stakes decision in the component: emitting `deleted`
+ * before the backend actually confirmed the archival is the exact regression the latch exists to
+ * prevent ("showed a cleaned-up list while the database still held every emote"). Unaffected by
+ * #134/#176 (that PR only touched the resync/duplicate notices and their aria-hidden state). Mounts
+ * `MassDeletePanel` directly, same style as the protocol-export/duplicate-check blocks above, so
+ * `deleteService`'s `isRunning`/`syncReport`/`lastRun` can be driven straight from the test.
+ */
+describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let panel: MassDeletePanel;
+  let isRunning: WritableSignal<boolean>;
+  let syncReport: WritableSignal<SyncReportState>;
+  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+
+  function runResult(doneIds: string[]): RunResult {
+    return {
+      doneIds,
+      doneKeys: doneIds,
+      items: doneIds.map((id) => ({
+        key: id,
+        emoteId: id,
+        sevenTvEmoteId: `7tv-${id}`,
+        name: id,
+        status: 'done',
+      })),
+      startedAt: Date.parse('2026-09-01T12:00:00Z'),
+      finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+    };
+  }
+
+  beforeEach(async () => {
+    isRunning = signal(false);
+    syncReport = signal<SyncReportState>('idle');
+    lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({
+        deleteService: fakeDeleteService({ isRunning, syncReport, lastRun }),
+      }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    panel = fixture.componentInstance;
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  it('emits deleted with the run doneIds once the closing sync report succeeds', () => {
+    const deleted: string[][] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('succeeded');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1', 'e2']) });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['e1', 'e2']]);
+  });
+
+  it('asks the host to reload instead when the closing sync report fails', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('failed');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('asks the host to reload instead when the closing sync report only partially archived the run', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('partial');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    fixture.detectChanges();
+
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('waits for a terminal report while idle/pending, then emits deleted once the report actually succeeds', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    fixture.detectChanges();
+    syncReport.set('pending');
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toEqual([]);
+
+    syncReport.set('succeeded');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['e1']]);
+    expect(reloads).toEqual([]);
+  });
+
+  it('emits nothing at all when the run succeeded but nothing was actually deleted', () => {
+    // doneIds.length === 0: there is nothing to drop from the host list and nothing wrong to
+    // report either, so neither output is the right call.
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('succeeded');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult([]) });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toEqual([]);
+  });
+
+  it('does not retroactively emit deleted when a manual retry of a failed sync report later succeeds', () => {
+    // The real path this guards: retrySyncReport() (seven-tv-delete.service.ts ~162-219) re-sends
+    // the closing report and walks syncReport from 'pending' to 'succeeded' without isRunning ever
+    // becoming true again. The panel already chose reloadRequested for this run the moment it saw
+    // 'failed' — a later, unrelated success on the same run must not flip that choice into a late
+    // (and now double) deleted emission; the host already reloaded and moved on.
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('failed');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+    expect(deleted).toEqual([]);
+
+    // A manual retry (retrySyncReport) succeeds this time — same run, isRunning stays false.
+    syncReport.set('pending');
+    fixture.detectChanges();
+    syncReport.set('succeeded');
+    fixture.detectChanges();
+
+    expect(reloads).toHaveLength(1);
+    expect(deleted).toEqual([]);
+  });
+
+  it('re-arms the latch and resets protocolSaved once a new run starts', () => {
+    const deleted: string[][] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('succeeded');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e1']) });
+    fixture.detectChanges();
+    expect(deleted).toEqual([['e1']]);
+
+    // Simulates the admin having downloaded the first run's protocol (same seam as the
+    // protocol-export block above) — this is the reminder state a new run has to clear.
+    panel['protocolSaved'].set(true);
+    expect(panel['protocolSaved']()).toBe(true);
+
+    // A second run over the same panel instance (the service is a root singleton, see the class
+    // doc) — the latch must fire again for its own outcome instead of staying spent forever, and
+    // the "not yet saved" reminder must not carry over from the previous run's protocol.
+    isRunning.set(true);
+    fixture.detectChanges();
+    expect(panel['protocolSaved']()).toBe(false);
+
+    isRunning.set(false);
+    syncReport.set('succeeded');
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result: runResult(['e2']) });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['e1'], ['e2']]);
+  });
+});
+
+/**
+ * #89: the restore side's own latch (the constructor's second effect) — differently shaped than
+ * the delete latch above: binary rather than three-way, it always asks the host to reload and has
+ * no `deleted`-style optimistic branch, because a restore changes the inventory back in a way the
+ * host cannot safely mirror locally (see that effect's own comment). Same once-per-run and
+ * empty-queue guard shape as the delete latch, tested independently since the two effects share no
+ * state with each other. Unaffected by #134/#176.
+ */
+describe('MassDeletePanel — restore latch (#89)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let isRunning: WritableSignal<boolean>;
+  let queue: WritableSignal<RunQueueItem[]>;
+
+  function item(key: string): RunQueueItem {
+    return { key, emoteId: key, sevenTvEmoteId: `7tv-${key}`, name: key, status: 'done' };
+  }
+
+  beforeEach(async () => {
+    isRunning = signal(false);
+    queue = signal<RunQueueItem[]>([]);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({ restoreService: fakeRestoreService({ isRunning, queue }) }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  it('asks the host to reload once the restore run settles with a non-empty queue', () => {
+    const panel = fixture.componentInstance;
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    queue.set([item('e1')]);
+    fixture.detectChanges();
+
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('does not ask the host to reload when the run ends without ever queuing anything', () => {
+    const panel = fixture.componentInstance;
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    fixture.detectChanges();
+
+    expect(reloads).toEqual([]);
+  });
+
+  it('fires only once per run even if the queue signal changes again afterwards', () => {
+    const panel = fixture.componentInstance;
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    queue.set([item('e1')]);
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+
+    queue.set([item('e1'), item('e2')]);
+    fixture.detectChanges();
+
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('re-arms once a new restore run starts, so a second run gets its own reload request', () => {
+    const panel = fixture.componentInstance;
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    queue.set([item('e1')]);
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    queue.set([item('e2')]);
+    fixture.detectChanges();
+
+    expect(reloads).toHaveLength(2);
+  });
+});
+
+/**
+ * #89: the delete button's own lock — the gate in front of what the class doc calls the panel's
+ * "only unumkehrbare Aktion" (the only irreversible action). Three independent sources disable it
+ * (`selectedEmotes().length === 0`, `deleteService.isRunning()`, `arbiter.activeRun() !== null`),
+ * each checked in isolation here: a bug that accidentally ORs two of them together, or silently
+ * drops one, would otherwise only surface once two conditions happen to overlap. Unaffected by
+ * #134/#176.
+ */
+describe('MassDeletePanel — delete button lock, three independent sources (#89)', () => {
+  let isRunning: WritableSignal<boolean>;
+  let activeRun: WritableSignal<SevenTvRunKind | null>;
+
+  async function render(selectedEmotes: DeletableEmote[]): Promise<HTMLButtonElement> {
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({
+        deleteService: fakeDeleteService({ isRunning }),
+        arbiter: fakeRunArbiter(activeRun),
+      }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    const fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    fixture.detectChanges();
+
+    return findButtonByLabel(fixture.nativeElement, deleteButtonLabel(selectedEmotes.length));
+  }
+
+  beforeEach(() => {
+    isRunning = signal(false);
+    activeRun = signal<SevenTvRunKind | null>(null);
+  });
+
+  it('disables the button when the selection is empty, even with nothing else blocking', async () => {
+    const button = await render([]);
+
+    expect(button.disabled).toBe(true);
+  });
+
+  it('disables the button while the delete run itself is in progress, even with a selection and no other active run', async () => {
+    isRunning.set(true);
+    const button = await render(EMOTES);
+
+    expect(button.disabled).toBe(true);
+  });
+
+  it('disables the button while a different 7TV run is active, even with a selection and this run idle', async () => {
+    activeRun.set('import');
+    const button = await render(EMOTES);
+
+    expect(button.disabled).toBe(true);
+  });
+
+  it('enables the button once none of the three sources blocks it', async () => {
+    const button = await render(EMOTES);
+
+    expect(button.disabled).toBe(false);
   });
 });
