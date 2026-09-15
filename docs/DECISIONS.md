@@ -10,6 +10,84 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — `duplicate-names` retired: the collision banner moves to the usage-stats page, riding along on `active-set` (#45)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` ·
+`src/EmotePurge.Core/Services/DuplicateEmoteNameDto.cs` (neu) ·
+`src/EmotePurge.Core/Services/IDuplicateEmoteNameQueryService.cs` (entfernt) ·
+`src/EmotePurge.Core/Services/IEmoteSetStatusService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Infrastructure/Services/DuplicateEmoteNameQueryService.cs` (entfernt) ·
+`src/EmotePurge.Infrastructure/Services/EmoteListQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteSetStatusService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`web/e2e/atlas-image-loading.measure.ts` · `web/e2e/channel-workspace.e2e.spec.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` · `web/e2e/support/mocks.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`web/e2e/usage-range-resolution.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/emotes/emote-admin.service.spec.ts` · `web/src/app/core/emotes/emote-admin.service.ts` ·
+`web/src/app/core/emotes/emote-set-status.model.ts` · `web/src/app/core/live/live-reload.ts` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/shared/seven-tv/import-flow.spec.ts` · `web/src/app/shared/seven-tv/import-trigger.spec.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.spec.ts` · `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Api.Tests/RateLimitPolicyBudgetTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/DuplicateEmoteNameQueryServiceTests.cs` (entfernt) ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteListQueryServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/EmoteSetStatusServiceTests.cs`
+
+Follow-up to the 2026-09-05 entry below ("Entscheidung 4 des Rate-Limit-Plans"), which left the fold
+undone pending an answer to its own closing question: does the collision banner need the vote-sessions
+and activity tabs, or only usage-stats? The product owner answered on issue #45 the same day: only
+usage-stats has anything to say about a name collision, so the banner moves off
+`ChannelWorkspaceLayout` — which used to wrap every tab — onto `usage-stats-page`, the one tab that
+actually renders it.
+
+**What changed.** The dedicated `GET .../emotes/duplicate-names` endpoint, its
+`IDuplicateEmoteNameQueryService`/`DuplicateEmoteNameQueryService` pair, and their DI registration are
+removed. The same collision data now rides along in the `active-set` response's `DuplicateNames`
+field on `EmoteSetStatusDto`, which the usage-stats page already fetches for the slot budget. This
+answers the cost objection the prior entry raised against the first attempt at this fold: that attempt
+materialized every active emote row on every `active-set` poll for a field nobody consumed yet. This
+time the SQL groups by name first and only the rows for the colliding names are fetched —
+materialization is restricted to colliding rows only.
+
+That does **not** mean an uncollided channel (the overwhelming majority) pays nothing extra: it still
+runs one `GROUP BY` aggregate query over the channel's active rows on every `active-set` call — there
+is no `(ChannelId, Name)` index backing it — and `active-set` is called far more often than a page-open:
+the 60 s sync-failure recheck, the `usageFlushed` probes, and the mass-delete/restore/import panels all
+call it too (the `awaitSync` probes only once the set id exists, since the query sits inside the
+first-sync gate). What makes this acceptable is narrower than "no extra cost": in the no-collision case
+zero emote *rows* are materialized, and the aggregate scans the same `ChannelId`-prefixed rows the
+existing `OccupiedSlots` count already scans on every one of those calls. It is one more query per
+call, not a heavier access path.
+
+**Request budget.** Opening a channel workspace's `InteractiveRead` permit cost drops from 5 requests
+(permissions, duplicate-names, active-set, totals, series) to 4 (permissions, active-set, totals,
+series) — `duplicate-names` is gone, not folded into a second `active-set` read, because that read was
+already the endpoint the banner's data now travels on. `RateLimitPolicyBudgetTests`' modelled load
+over its twelve simulated workspace round trips (each round trip also counts the return-trip `/mine`,
+so one more request than the page-open figure above) drops from 84 (7 requests per trip × 12) to 60
+(5 × 12).
+
+Measured 2026-09-15 against the local stack (Api via dotnet run + ng serve, real Twitch session,
+channel sensitron), Playwright counting `/api/` requests, 3 fresh-context runs per flow, all runs
+identical.
+- Deep link to `/channels/sensitron/usage-stats`: before 8 `/api` requests, of which 5
+  `InteractiveRead` permits (permissions, duplicate-names, active-set, totals, series; 4 of them
+  uncached); after 7 requests, 4 permits, 3 uncached. The remaining requests (auth/me, worker/health,
+  live SSE) carry no `InteractiveRead` permit.
+- In-app navigation from `/channels` into the workspace: before 7 requests (5 permits), after 6 (4
+  permits); the extra non-permit request there is the `DELETE` releasing the previous live
+  connection.
+
+Implemented in three steps — carrying `DuplicateNames` on `active-set`, moving the banner to
+`usage-stats-page` and dropping the frontend's `duplicate-names` call, then dropping the now-dead
+server code and its tests — see the file list above for what each one touched.
+
+---
+
 ### 2026-09-14 — Animated emotes in the import grid: marker from the url, one playing cell, reduced motion decided in `EmoteSpriteAnimated` (#167)
 
 **Betrifft:** `web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
@@ -4451,7 +4529,7 @@ Schritt 2 des Umsetzungsplans zu Issue #33 (`docs/superpowers/specs/2026-08-30-r
 
 | Policy | Routen |
 |---|---|
-| `InteractiveRead` | `GET /{channelName}`, `GET /{channelName}/permissions`, `GET /mine` (`ChannelEndpoints.cs`); die gesamte Emote-Gruppe auf Gruppenebene — `GET /active-set`, `GET /duplicate-names`, `GET /set-warning` (`EmoteEndpoints.cs`); die gesamte Usage-Stats-Gruppe auf Gruppenebene — `GET ""`, `GET /totals`, `GET /daily`, `GET /series` (`UsageStatsEndpoints.cs`); die Vote-Session-Liste `GET ""`, `GET /{sessionId}/results` und `GET /api/vote-sessions/mine` (`VoteSessionEndpoints.cs`) |
+| `InteractiveRead` | `GET /{channelName}`, `GET /{channelName}/permissions`, `GET /mine` (`ChannelEndpoints.cs`); die gesamte Emote-Gruppe auf Gruppenebene — `GET /active-set`, `GET /duplicate-names` (Route seit 2026-09-15/#45 entfernt, s. Eintrag oben), `GET /set-warning` (`EmoteEndpoints.cs`); die gesamte Usage-Stats-Gruppe auf Gruppenebene — `GET ""`, `GET /totals`, `GET /daily`, `GET /series` (`UsageStatsEndpoints.cs`); die Vote-Session-Liste `GET ""`, `GET /{sessionId}/results` und `GET /api/vote-sessions/mine` (`VoteSessionEndpoints.cs`) |
 | `Voting` | `POST /{sessionId}/votes`, `DELETE /{sessionId}/votes/{emoteId}` (`VoteSessionEndpoints.cs`), partitioniert per User **und** Session |
 | `Bookkeeping` | `GET /{channelName}/audit-log`, `POST /{channelName}/join`, `DELETE /{channelName}`, `DELETE /{channelName}/purge` (`ChannelEndpoints.cs`); `POST /sync-deleted`, `POST /sync-restored` (`EmoteEndpoints.cs`); `POST ""` (anlegen), `POST /{sessionId}/end`, `DELETE /{sessionId}` (`VoteSessionEndpoints.cs`) |
 | `ChannelResync` | `POST /{channelName}/resync` (`ChannelEndpoints.cs`), unverändert |

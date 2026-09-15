@@ -38,8 +38,7 @@ public class EmoteListQueryServiceTests(PostgresFixture fixture)
         // 0x61) under ordinal comparison, but after it under a locale-aware collation, which
         // treats case as a secondary sort key and compares "z" against "a" first. This is exactly
         // the pair that would expose a query still relying on Postgres's default collation instead
-        // of an in-memory StringComparer.Ordinal sort (see DuplicateEmoteNameQueryService for the
-        // established pattern, and Plan-71 R4 for the trap).
+        // of an in-memory StringComparer.Ordinal sort (see Plan-71 R4 for the trap).
         await SeedChannelAsync(db, "emotelist2",
             ("7tv-a", "apple", false),
             ("7tv-b", "Zebra", false));

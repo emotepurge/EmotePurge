@@ -22,7 +22,7 @@ public class EmoteListQueryService(AppDbContext db) : IEmoteListQueryService
         // Sorted in memory: Postgres orders by the column's collation, not ordinally, and EF Core
         // cannot translate an OrderBy(StringComparer.Ordinal) into SQL at all. Chat matching is
         // ordinal case-sensitive, and the import dialog compares names against that same semantic,
-        // so the sort here has to match it (same pattern as DuplicateEmoteNameQueryService).
+        // so the sort here has to match it.
         return activeEmotes
             .OrderBy(e => e.Name, StringComparer.Ordinal)
             .Select(e => new EmoteListItemDto(e.SevenTvEmoteId, e.Name))

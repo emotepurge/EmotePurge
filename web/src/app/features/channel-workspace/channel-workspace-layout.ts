@@ -1,17 +1,13 @@
 import { Dialog } from '@angular/cdk/dialog';
-import { NgOptimizedImage } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { Router, RouterOutlet } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { ChannelService } from '../../core/channels/channel.service';
-import { DuplicateEmoteName } from '../../core/emotes/duplicate-emote-name.model';
-import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
-import { pluralKey } from '../../core/i18n/plural';
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
-import { CHANNEL_RELOAD_DEBOUNCE_MS, liveEvents, liveReload } from '../../core/live/live-reload';
+import { liveEvents } from '../../core/live/live-reload';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { BackLink } from '../../shared/ui/back-link';
@@ -25,7 +21,7 @@ const RESYNC_FEEDBACK_MS = 4000;
 
 @Component({
   selector: 'app-channel-workspace-layout',
-  imports: [BackLink, Button, NgOptimizedImage, NoticeBanner, RouterOutlet, TabLink, TranslocoPipe],
+  imports: [BackLink, Button, NoticeBanner, RouterOutlet, TabLink, TranslocoPipe],
   template: `
     <div>
       <div class="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -81,65 +77,6 @@ const RESYNC_FEEDBACK_MS = 4000;
         </app-notice-banner>
       }
 
-      <!-- A name collision silently folds all chat usage of the name onto one of the emotes, so
-           the usage numbers below undercount the others. Fixing it happens on 7TV (rename or
-           remove one copy), which the channel's 7TV editors can do too — hence the same audience
-           as the usage tab, not canManage. -->
-      @if (duplicateNames().length > 0) {
-        <app-notice-banner variant="warning" class="mb-4 block">
-          {{ duplicateNoticeKey() | transloco: { count: duplicateNames().length } }}
-          <button
-            notice-action
-            type="button"
-            appButton="outline"
-            [attr.aria-expanded]="duplicatesExpanded()"
-            aria-controls="duplicate-names-details"
-            (click)="duplicatesExpanded.set(!duplicatesExpanded())"
-          >
-            {{
-              (duplicatesExpanded()
-                ? 'channelWorkspace.duplicateNames.hide'
-                : 'channelWorkspace.duplicateNames.show'
-              ) | transloco
-            }}
-          </button>
-        </app-notice-banner>
-        @if (duplicatesExpanded()) {
-          <!-- Neutral, not a second warning-tinted box under the first: the banner above states the
-               problem, and this is the evidence for it. Two stacked amber panels made the evidence
-               argue as loudly as the finding, which is the "notable how often?" rule one level up
-               from the badges — a warning that keeps warning about itself stops being one. -->
-          <div
-            id="duplicate-names-details"
-            class="mb-4 rounded-md border border-border bg-surface-inset px-4 py-3 text-sm text-fg-secondary"
-          >
-            <p class="mb-3">{{ 'channelWorkspace.duplicateNames.explanation' | transloco }}</p>
-            <ul class="flex max-h-64 flex-col gap-2 overflow-y-auto">
-              @for (group of duplicateNames(); track group.name) {
-                <li class="flex flex-wrap items-center gap-2">
-                  <span class="font-medium">{{ group.name }}</span>
-                  @for (emote of group.emotes; track emote.emoteId) {
-                    <div
-                      class="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-emote-canvas"
-                    >
-                      @if (emote.imageUrl) {
-                        <img
-                          [ngSrc]="emote.imageUrl"
-                          width="40"
-                          height="40"
-                          alt=""
-                          class="max-h-10 max-w-10 object-contain"
-                        />
-                      }
-                    </div>
-                  }
-                </li>
-              }
-            </ul>
-          </div>
-        }
-      }
-
       @if (errorMessage(); as message) {
         <app-notice-banner variant="error" class="mb-4 block">{{
           message | transloco
@@ -169,7 +106,6 @@ export class ChannelWorkspaceLayout {
   readonly channelName = input.required<string>();
 
   private readonly channelService = inject(ChannelService);
-  private readonly emoteAdminService = inject(EmoteAdminService);
   private readonly deleteService = inject(SevenTvDeleteService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly router = inject(Router);
@@ -196,12 +132,6 @@ export class ChannelWorkspaceLayout {
 
   protected readonly errorMessage = signal<string | null>(null);
 
-  protected readonly duplicateNames = signal<DuplicateEmoteName[]>([]);
-  protected readonly duplicatesExpanded = signal(false);
-  protected readonly duplicateNoticeKey = computed(() =>
-    pluralKey(this.duplicateNames().length, 'channelWorkspace.duplicateNames.notice'),
-  );
-
   private feedbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
@@ -210,9 +140,6 @@ export class ChannelWorkspaceLayout {
       // A finished mass-delete or restore run from another channel must not follow the user in here.
       this.deleteService.resetIfChannelChanged(channelName);
       this.restoreService.resetIfChannelChanged(channelName);
-      // Another channel's collisions must not flash up while this one's answer is in flight.
-      this.duplicateNames.set([]);
-      this.duplicatesExpanded.set(false);
       this.loadPermissions(channelName);
     });
 
@@ -223,19 +150,20 @@ export class ChannelWorkspaceLayout {
     // resync of ours is still on screen, otherwise the periodic sync of any channel would announce
     // itself.
     //
-    // liveEvents, undebounced, and split off from the duplicate-names refetch below: the two used to
-    // share one liveReload subscription, which raced in both directions. A channel.synced that
-    // arrived before the click (the periodic resync, say) sat in the debounce window and fired after
-    // resyncFeedbackKey was set by the click, reporting "abgeschlossen" for a resync that had barely
-    // started. And during a dense burst (7TV mass delete, ~275 ms apart) the window never elapsed at
-    // all, so a resync started mid-burst showed "angestoßen" and then lost the confirmation entirely
-    // once RESYNC_FEEDBACK_MS cleared it. Neither race needs debouncing to fix — this handler only
-    // sets a signal, it makes no HTTP request — so it gets its own, immediate subscription instead.
+    // liveEvents, undebounced, on purpose (see the two regression tests in
+    // channel-workspace.e2e.spec.ts): a channel.synced that arrived before the click (the periodic
+    // resync, say) must not sit in a debounce window and fire after resyncFeedbackKey was set by the
+    // click, reporting "abgeschlossen" for a resync that had barely started. And during a dense burst
+    // (7TV mass delete, ~275 ms apart) a debounce window never elapses at all, so a resync started
+    // mid-burst would show "angestoßen" and then lose the confirmation entirely once
+    // RESYNC_FEEDBACK_MS cleared it. This handler only sets a signal — it makes no HTTP request — so
+    // none of that debouncing applies to it, unlike usage-stats-page.ts's own reload of this same
+    // channel's live stream for its totals/set-status refetch.
     //
     // This costs nothing extra: since 5f4cd14 ("share one live sse connection per url")
-    // LiveUpdateService.stream() is shared and ref-counted per URL, so a second subscription to the
-    // same channelLiveUrl no longer opens a second EventSource. That coupling is exactly what forced
-    // both concerns onto one pipeline originally, and it no longer holds.
+    // LiveUpdateService.stream() is shared and ref-counted per URL, so this subscription and
+    // usage-stats-page.ts's separate one against the same channelLiveUrl share one EventSource
+    // rather than opening two.
     liveEvents(
       computed(() => channelLiveUrl(this.channelName())),
       [LIVE_EVENT_TYPES.channelSynced],
@@ -243,23 +171,6 @@ export class ChannelWorkspaceLayout {
       if (this.resyncFeedbackKey() !== null) {
         this.showResyncFeedback('channelWorkspace.resync.completed');
       }
-    });
-
-    // liveReload rather than liveEvents: a 7TV mass delete pushes one channel.synced per removed
-    // emote, roughly every 275 ms, and this handler refetches duplicate-names on every one of them.
-    // Undebounced that was the single largest source of the 429s in issue #35 — 22 of 38 rejected
-    // requests. All HTTP requests stay on this debounced branch; the confirmation subscription above
-    // makes none, so splitting it off does not reopen that 429 exposure.
-    liveReload(
-      computed(() => channelLiveUrl(this.channelName())),
-      {
-        accept: [LIVE_EVENT_TYPES.channelSynced],
-        debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
-      },
-    ).subscribe(() => {
-      // The inventory changed, so the collision set may have too — including the good case where
-      // the banner disappears right after the user fixed the duplicate on 7TV.
-      this.loadDuplicateNames(this.channelName());
     });
   }
 
@@ -351,9 +262,6 @@ export class ChannelWorkspaceLayout {
         this.canManage.set(permissions.canManage);
         this.canViewUsageStats.set(permissions.canViewUsageStats);
         this.isBotActive.set(permissions.isBotActive);
-        // After, not alongside, the permissions call: the endpoint carries the usage-stats access
-        // filter, so asking without the permission would only produce a guaranteed 403.
-        this.loadDuplicateNames(channelName);
       },
       // Only reachable for a logged-out user (the interceptor already redirects) or a server error —
       // hide everything privileged rather than guess.
@@ -361,17 +269,6 @@ export class ChannelWorkspaceLayout {
         this.canManage.set(false);
         this.canViewUsageStats.set(false);
       },
-    });
-  }
-
-  private loadDuplicateNames(channelName: string): void {
-    if (!this.canViewUsageStats()) {
-      return;
-    }
-    this.emoteAdminService.getDuplicateNames(channelName).subscribe({
-      next: (duplicates) => this.duplicateNames.set(duplicates),
-      // Best-effort hint, not page content: a failed check renders nothing rather than an error.
-      error: () => this.duplicateNames.set([]),
     });
   }
 }

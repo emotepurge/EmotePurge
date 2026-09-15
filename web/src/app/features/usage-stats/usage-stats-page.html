@@ -3,6 +3,68 @@
      IS the cell, weight is carried by order, band and a hairline fill bar, and the labels that used
      to be printed 900 times over live once in the inspector line under the toolbar. -->
 <div [class]="'flex flex-col gap-5 ' + (dockVisible() ? 'pb-40' : '')">
+  <!-- A name collision silently folds all chat usage of the name onto one of the emotes, so the
+       usage numbers below undercount the others. Fixing it happens on 7TV (rename or remove one
+       copy), which the channel's 7TV editors can do too — hence gated on this whole page's
+       audience (canViewUsageStats via the route guard), not canManage. See DECISIONS 2026-09-15
+       (#45) for why this banner lives here and not on ChannelWorkspaceLayout. duplicateNames() is
+       itself guarded against a stale answer from a channel the user has since navigated away
+       from. -->
+  @if (duplicateNames().length > 0) {
+    <app-notice-banner variant="warning" class="block">
+      {{ duplicateNoticeKey() | transloco: { count: duplicateNames().length } }}
+      <button
+        notice-action
+        type="button"
+        appButton="outline"
+        [attr.aria-expanded]="duplicatesExpanded()"
+        aria-controls="duplicate-names-details"
+        (click)="duplicatesExpanded.set(!duplicatesExpanded())"
+      >
+        {{
+          (duplicatesExpanded()
+            ? 'usageStats.duplicateNames.hide'
+            : 'usageStats.duplicateNames.show'
+          ) | transloco
+        }}
+      </button>
+    </app-notice-banner>
+    @if (duplicatesExpanded()) {
+      <!-- Neutral, not a second warning-tinted box under the first: the banner above states the
+           problem, and this is the evidence for it. Two stacked amber panels made the evidence
+           argue as loudly as the finding, which is the "notable how often?" rule one level up
+           from the badges — a warning that keeps warning about itself stops being one. -->
+      <div
+        id="duplicate-names-details"
+        class="rounded-md border border-border bg-surface-inset px-4 py-3 text-sm text-fg-secondary"
+      >
+        <p class="mb-3">{{ 'usageStats.duplicateNames.explanation' | transloco }}</p>
+        <ul class="flex max-h-64 flex-col gap-2 overflow-y-auto">
+          @for (group of duplicateNames(); track group.name) {
+            <li class="flex flex-wrap items-center gap-2">
+              <span class="font-medium">{{ group.name }}</span>
+              @for (emote of group.emotes; track emote.emoteId) {
+                <div
+                  class="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-emote-canvas"
+                >
+                  @if (emote.imageUrl) {
+                    <img
+                      [ngSrc]="emote.imageUrl"
+                      width="40"
+                      height="40"
+                      alt=""
+                      class="max-h-10 max-w-10 object-contain"
+                    />
+                  }
+                </div>
+              }
+            </li>
+          }
+        </ul>
+      </div>
+    }
+  }
+
   <header class="flex flex-wrap items-center justify-between gap-3">
     <h2 class="text-lg font-semibold">{{ 'usageStats.title' | transloco }}</h2>
     <div class="flex flex-wrap items-center gap-2">

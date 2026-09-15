@@ -142,6 +142,7 @@ function setStatus(overrides: Partial<EmoteSetStatus>): EmoteSetStatus {
     lastSyncAttemptAtUtc: null,
     botsExcludedSince: null,
     sharedChatSeparatedSince: null,
+    duplicateNames: [],
     ...overrides,
   };
 }
@@ -432,6 +433,149 @@ describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', (
     // totalsChannel was already 'a' — set alongside the totals fired earlier once the failure
     // resolved rangeResolved — so this is also where importScopeCurrent() turns true.
     expect(component['importScopeCurrent']()).toBe(true);
+  });
+});
+
+/**
+ * duplicateNames()/duplicatesExpanded() (#45). duplicateNames() is a computed derived from
+ * setStatus()/setStatusChannel(), guarded by the same channel-freeze check importScopeCurrent()
+ * relies on (see the #112 block above) — setStatus() keeps the outgoing channel's last answer on
+ * screen until the incoming channel's own request lands (see setStatusChannel's own comment), and
+ * duplicateNames() must not read through that window. duplicatesExpanded() gets its own, narrower
+ * effect, keyed on channelName() alone, so a same-channel rerun of load()'s constructor effect
+ * cannot collapse a panel the user just opened — only a genuine channel switch does.
+ */
+describe('UsageStatsPage — duplicateNames() channel guard and expand-state reset (#45)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  const DUPES_A = [
+    { name: 'ApuDrums', emotes: [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', imageUrl: '' }] },
+  ];
+  const DUPES_B = [
+    { name: 'PogU', emotes: [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', imageUrl: '' }] },
+  ];
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not surface the outgoing channel's collisions while the incoming channel's own active-set answer is still in flight", () => {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ trackedSince: '2026-01-01T00:00:00Z', duplicateNames: DUPES_A }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['duplicateNames']()).toEqual(DUPES_A);
+
+    // Switch channels before B's own active-set answer lands.
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+
+    // setStatusChannel is still 'a' — A's collisions must not show up under B's heading, even
+    // though setStatus() itself still holds A's last answer (see setStatusChannel's own comment).
+    expect(component['setStatusChannel']()).toBe('a');
+    expect(component['duplicateNames']()).toEqual([]);
+
+    httpMock
+      .expectOne('/api/channels/b/emotes/active-set')
+      .flush(setStatus({ trackedSince: '2026-02-01T00:00:00Z', duplicateNames: DUPES_B }));
+    httpMock
+      .expectOne('/api/channels/b/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    fixture.detectChanges();
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/b/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/b/usage-stats/series', {
+      from: '2026-02-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['duplicateNames']()).toEqual(DUPES_B);
+  });
+
+  it('does not collapse an already-expanded details panel on a same-channel rerun of load() (the "all time" range correction), but a genuine channel switch does', () => {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+
+    // Expanded before this channel's own active-set answer lands: there is nothing to collapse yet,
+    // so the only way this could read false below is a reset that fired on the rerun exercised next.
+    component['duplicatesExpanded'].set(true);
+    expect(component['duplicatesExpanded']()).toBe(true);
+
+    // rangePreset() defaults to "all", so from() starts at the placeholder span (see its own
+    // declaration) until this answer names the tracking start. Applying that correction reruns
+    // load()'s constructor effect a second time for the *same* channel — the range-only rerun the
+    // dedicated reset effect (keyed on channelName() alone) must not react to, unlike a channel
+    // switch.
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ trackedSince: '2026-01-01T00:00:00Z', duplicateNames: DUPES_A }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['duplicatesExpanded']()).toBe(true);
+
+    // A genuine channel switch does collapse it, even before the new channel's own data lands.
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+    expect(component['duplicatesExpanded']()).toBe(false);
   });
 });
 

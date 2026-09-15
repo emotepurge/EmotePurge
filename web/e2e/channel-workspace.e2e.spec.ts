@@ -9,9 +9,9 @@ import {
   mockChannelPermissions,
   mockChannelScopedResync,
   mockChannelStatus,
-  mockDuplicateEmoteNames,
   mockMyChannels,
   mockUsageTotals,
+  mockVoteSessionList,
   mockWorkerHealth,
 } from './support/mocks';
 
@@ -75,30 +75,34 @@ test.describe('authenticated broadcaster', () => {
     await expect(page.getByRole('button', { name: 'Channel verlassen' })).toBeVisible();
   });
 
-  test('warns about duplicate emote names and reveals the colliding emotes on demand', async ({
+  test('warns about duplicate emote names and reveals the colliding emotes on demand, only on the usage-stats tab', async ({
     page,
   }) => {
     await mockChannelPermissions(page, 'sensitron');
     await mockChannelStatus(page, 'sensitron');
-    await mockActiveEmoteSet(page, 'sensitron');
+    await mockActiveEmoteSet(page, 'sensitron', 'set-1', {
+      duplicateNames: [
+        {
+          name: 'ApuDrums',
+          emotes: [
+            {
+              emoteId: 'e-dup-1',
+              sevenTvEmoteId: '7tv-dup-1',
+              imageUrl: 'https://cdn.7tv.app/emote/1/1x.webp',
+            },
+            {
+              emoteId: 'e-dup-2',
+              sevenTvEmoteId: '7tv-dup-2',
+              imageUrl: 'https://cdn.7tv.app/emote/2/1x.webp',
+            },
+          ],
+        },
+      ],
+    });
     await mockUsageTotals(page, 'sensitron', []);
-    await mockDuplicateEmoteNames(page, 'sensitron', [
-      {
-        name: 'ApuDrums',
-        emotes: [
-          {
-            emoteId: 'e-dup-1',
-            sevenTvEmoteId: '7tv-dup-1',
-            imageUrl: 'https://cdn.7tv.app/emote/1/1x.webp',
-          },
-          {
-            emoteId: 'e-dup-2',
-            sevenTvEmoteId: '7tv-dup-2',
-            imageUrl: 'https://cdn.7tv.app/emote/2/1x.webp',
-          },
-        ],
-      },
-    ]);
+    // Moving to the vote-sessions tab below (#45: the banner no longer lives in the layout, so it
+    // must not follow the outlet onto a tab that never fetches active-set at all).
+    await mockVoteSessionList(page, 'sensitron', []);
 
     await page.goto('/channels/sensitron/usage-stats');
 
@@ -112,6 +116,13 @@ test.describe('authenticated broadcaster', () => {
 
     await expect(page.getByText('ApuDrums')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Details ausblenden' })).toBeVisible();
+
+    // Switching tabs unmounts UsageStatsPage — the banner (and the workspace layout does not own a
+    // copy of it any more) must disappear along with it rather than lingering under a route that
+    // never asked for a duplicate-name check.
+    await page.getByRole('link', { name: 'Votings' }).click();
+    await expect(page).toHaveURL(/\/channels\/sensitron\/vote-sessions$/);
+    await expect(page.getByText('mehrfach vergeben')).toHaveCount(0);
   });
 
   test('shows no duplicate-name banner when every active emote name is unique', async ({
@@ -121,7 +132,6 @@ test.describe('authenticated broadcaster', () => {
     await mockChannelStatus(page, 'sensitron');
     await mockActiveEmoteSet(page, 'sensitron');
     await mockUsageTotals(page, 'sensitron', []);
-    await mockDuplicateEmoteNames(page, 'sensitron', []);
 
     await page.goto('/channels/sensitron/usage-stats');
 
@@ -129,27 +139,46 @@ test.describe('authenticated broadcaster', () => {
     await expect(page.getByText('mehrfach vergeben')).toHaveCount(0);
   });
 
-  test('a burst of sync events costs one duplicate-names refetch, not one per event', async ({
+  test('a burst of sync events costs one active-set refetch, not one per event', async ({
     page,
   }) => {
     // The measured cause of issue #35: a 7TV mass delete pushes one channel.synced per removed
-    // emote (~275 ms apart) and the workspace layout refetched the collision set on every one of
-    // them — 22 of the 38 requests the API rejected with 429 on 2026-08-28.
+    // emote (~275 ms apart), and a naively undebounced reload would refetch the collision set (now
+    // folded into active-set, #45) on every one of them — 22 of the 38 requests the API rejected
+    // with 429 on 2026-08-28.
     await mockChannelPermissions(page, 'sensitron');
-    await mockActiveEmoteSet(page, 'sensitron');
     await mockUsageTotals(page, 'sensitron', []);
 
-    // Counted instead of mocked through mockDuplicateEmoteNames: the number of calls *is* the
-    // assertion here.
-    let duplicateNameRequests = 0;
-    await page.route('**/api/channels/sensitron/emotes/duplicate-names', (route) => {
-      duplicateNameRequests++;
-      return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    // A non-empty set id and a null syncFailureReason, both deliberately: either an empty id or a
+    // failure reason would start awaitSync's own probe schedule, and a failure reason would also
+    // arm the 60 s sync-failure recheck poll — either adds active-set requests unrelated to what
+    // this test counts. Counted via page.route instead of going through mockActiveEmoteSet: the
+    // number of calls *is* the assertion here.
+    let activeSetRequests = 0;
+    await page.route('**/api/channels/sensitron/emotes/active-set', (route) => {
+      activeSetRequests++;
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          activeEmoteSetId: 'set-1',
+          capacity: 1000,
+          occupiedSlots: 3,
+          trackedSince: '2026-06-12T09:14:00Z',
+          syncFailureReason: null,
+          lastSyncAttemptAtUtc: null,
+          botsExcludedSince: null,
+          sharedChatSeparatedSince: null,
+          duplicateNames: [],
+        }),
+      });
     });
 
     await page.goto('/channels/sensitron/usage-stats');
-    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
-    expect(duplicateNameRequests).toBe(1);
+    // expect.poll rather than a static heading check: the heading only needs the totals response,
+    // which says nothing about whether the active-set request (what is actually being counted) has
+    // resolved yet.
+    await expect.poll(() => activeSetRequests).toBe(1);
 
     // Emitted inside one evaluate so the five frames really are one burst — five separate
     // round-trips from the test runner could straddle the debounce window.
@@ -164,7 +193,7 @@ test.describe('authenticated broadcaster', () => {
     // is that nothing happens for a second.
     await page.waitForTimeout(1500);
 
-    expect(duplicateNameRequests).toBe(2);
+    expect(activeSetRequests).toBe(2);
   });
 
   test('resync reports queued and upgrades to finished when the sync event arrives', async ({
@@ -187,11 +216,10 @@ test.describe('authenticated broadcaster', () => {
     await expect(page.getByText('Resync abgeschlossen.')).toBeVisible();
   });
 
-  // Regression pair for the race the shared liveReload subscription produced once it started
-  // debouncing the resync confirmation alongside the duplicate-names refetch (see
+  // Regression pair for the race a shared, debounced liveReload subscription used to produce (see
   // channel-workspace-layout.ts): a stray event straddling the click either faked a finish that
-  // never happened, or a real finish went missing behind the debounce window. The fix splits the
-  // confirmation onto its own undebounced subscription; these two cases pin the reason it needed to
+  // never happened, or a real finish went missing behind the debounce window. The fix keeps the
+  // confirmation on its own undebounced subscription; these two cases pin the reason it needed to
   // be undebounced, not just that it still eventually turns green.
   test('a channel.synced shortly before the resync click does not report a premature finish', async ({
     page,

@@ -13,13 +13,14 @@ export type LiveEventFilter = readonly string[] | ((event: LiveEvent) => boolean
  * The debounce every channel-scoped reload uses, so that the refetches one `channel.synced` triggers
  * land in one wave instead of several staggered ones.
  *
- * Shared rather than declared per page because the pages sit on top of each other: the workspace
- * layout and the usage page are mounted together and listen to the same (shared) connection, so one
- * value here means one burst boundary for both. One second was the usage page's own figure and the
- * reasoning carries over unchanged — the worker flushes chat usage in 30-second batches, so pushes
- * arrive in bursts rather than continuously, and a second merges a burst without making the update
- * feel delayed. Against a 7TV mass delete (one event every ~275 ms) it collapses the whole run into
- * one or two refetches, because the window only elapses in a gap.
+ * A named constant rather than a literal inline so the reasoning stays attached to the number, not
+ * because more than one page shares it today — usage-stats-page.ts is its only channel-scoped
+ * consumer (channel-workspace-layout.ts is mounted right alongside it but keeps its own live
+ * subscription deliberately undebounced, see that file's own comment). One second is the usage
+ * page's figure: the worker flushes chat usage in 30-second batches, so pushes arrive in bursts
+ * rather than continuously, and a second merges a burst without making the update feel delayed.
+ * Against a 7TV mass delete (one event every ~275 ms) it collapses the whole run into one or two
+ * refetches, because the window only elapses in a gap.
  *
  * The vote-session detail page keeps its own, shorter 500 ms window on purpose: a live tally is the
  * thing its user is watching, and it is never mounted while the mass-delete panel runs.

@@ -234,19 +234,6 @@ public static class EmoteEndpoints
             var status = await emoteSetStatusService.GetAsync(channelName, ct);
             return status is null ? Results.NotFound() : Results.Ok(status);
         });
-
-        // Same audience as active-set: a name collision silently folds the usage of all but one
-        // of the colliding emotes into a single counter, so it distorts exactly the numbers those
-        // pages show — and fixing it happens on 7TV, which editors can do without being allowed
-        // to manage the channel here.
-        group.MapGet("/duplicate-names", async (
-            string channelName,
-            IDuplicateEmoteNameQueryService duplicateEmoteNameQueryService,
-            CancellationToken ct) =>
-        {
-            var duplicates = await duplicateEmoteNameQueryService.GetAsync(channelName, ct);
-            return duplicates is null ? Results.NotFound() : Results.Ok(duplicates);
-        });
     }
 
     /// <summary>

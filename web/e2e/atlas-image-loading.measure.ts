@@ -7,7 +7,6 @@ import {
   mockAuthMe,
   mockChannelPermissions,
   mockChannelStatus,
-  mockDuplicateEmoteNames,
   mockMyChannels,
   mockUsageChannelSeries,
   mockUsageTotals,
@@ -102,7 +101,6 @@ async function openAtlas(page: Page): Promise<void> {
   ]);
   await mockChannelPermissions(page, 'sensitron');
   await mockChannelStatus(page, 'sensitron');
-  await mockDuplicateEmoteNames(page, 'sensitron');
   await mockActiveEmoteSet(page, 'sensitron', 'set-1', {
     capacity: 1000,
     occupiedSlots: emotes.length,

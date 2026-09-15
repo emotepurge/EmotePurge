@@ -59,6 +59,7 @@ function readyStatus(overrides: Partial<EmoteSetStatus> = {}): EmoteSetStatus {
     lastSyncAttemptAtUtc: null,
     botsExcludedSince: null,
     sharedChatSeparatedSince: null,
+    duplicateNames: [],
     ...overrides,
   };
 }

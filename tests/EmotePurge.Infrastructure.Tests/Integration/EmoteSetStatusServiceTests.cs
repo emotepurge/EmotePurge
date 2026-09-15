@@ -149,6 +149,90 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetAsync_DuplicateNames_ReturnsCollidingNames_WithAllInvolvedEmotes()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotstest16", capacity: 1000);
+        await SeedEmoteAsync(db, channel.Id, "Dup", sevenTvEmoteId: "7tv-b");
+        await SeedEmoteAsync(db, channel.Id, "Dup", sevenTvEmoteId: "7tv-a");
+        await SeedEmoteAsync(db, channel.Id, "Solo", sevenTvEmoteId: "7tv-c");
+
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+
+        Assert.NotNull(status);
+        var group = Assert.Single(status.DuplicateNames);
+        Assert.Equal("Dup", group.Name);
+        // Ordered by SevenTvEmoteId, not by insertion order.
+        Assert.Equal(["7tv-a", "7tv-b"], group.Emotes.Select(e => e.SevenTvEmoteId));
+        Assert.All(group.Emotes, e => Assert.False(string.IsNullOrEmpty(e.EmoteId)));
+        Assert.All(group.Emotes, e => Assert.False(string.IsNullOrEmpty(e.ImageUrl)));
+    }
+
+    [Fact]
+    public async Task GetAsync_DuplicateNames_IgnoresArchivedEmotes()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotstest17", capacity: 1000);
+        await SeedEmoteAsync(db, channel.Id, "Dup");
+        await SeedEmoteAsync(db, channel.Id, "Dup", isArchived: true);
+
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+
+        Assert.NotNull(status);
+        Assert.Empty(status.DuplicateNames);
+    }
+
+    [Fact]
+    public async Task GetAsync_DuplicateNames_TreatsCasingVariantsAsDistinctNames()
+    {
+        // Verified against real Postgres, not assumed: text equality (the operator GROUP BY relies
+        // on) is a byte comparison regardless of collation, so this was already ordinal
+        // case-sensitive before the in-memory grouping ever runs — but that is exactly the kind of
+        // thing EF Core's SQL translation could get wrong silently.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotstest18", capacity: 1000);
+        await SeedEmoteAsync(db, channel.Id, "Emote");
+        await SeedEmoteAsync(db, channel.Id, "emote");
+
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+
+        Assert.NotNull(status);
+        Assert.Empty(status.DuplicateNames);
+    }
+
+    [Fact]
+    public async Task GetAsync_DuplicateNames_NoCollisions_ReturnsEmptyList()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotstest19", capacity: 1000);
+        await SeedEmoteAsync(db, channel.Id, "One");
+        await SeedEmoteAsync(db, channel.Id, "Two");
+
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+
+        Assert.NotNull(status);
+        Assert.Empty(status.DuplicateNames);
+    }
+
+    [Fact]
+    public async Task GetAsync_BeforeTheFirstSync_SkipsTheDuplicateNamesQueryToo()
+    {
+        // Same gate as occupiedSlots and the two usage dates: an empty ActiveEmoteSetId means the
+        // collision scan is not even sent. Two colliding rows existing regardless (seeded directly,
+        // bypassing the normal sync path that could never target an unsynced channel) prove the
+        // skip happened — nothing else could produce an empty list here.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotstest20", capacity: null, activeEmoteSetId: "");
+        await SeedEmoteAsync(db, channel.Id, "Dup");
+        await SeedEmoteAsync(db, channel.Id, "Dup");
+
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+
+        Assert.NotNull(status);
+        Assert.Empty(status.DuplicateNames);
+    }
+
+    [Fact]
     public async Task GetAsync_BotsExcludedSince_IsTheEarliestBotRow_NotTheEarliestRowOverall()
     {
         // A human-only row from before the bot ever showed up must not win the MIN — the field
@@ -291,13 +375,14 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         return channel;
     }
 
-    private static async Task<Emote> SeedEmoteAsync(AppDbContext db, string channelId, string name, bool isArchived = false)
+    private static async Task<Emote> SeedEmoteAsync(
+        AppDbContext db, string channelId, string name, bool isArchived = false, string? sevenTvEmoteId = null)
     {
         var emote = new Emote
         {
             ChannelId = channelId,
             Name = name,
-            SevenTvEmoteId = Guid.NewGuid().ToString("N")[..24],
+            SevenTvEmoteId = sevenTvEmoteId ?? Guid.NewGuid().ToString("N")[..24],
             ImageUrl = "https://cdn.7tv.app/emote/example/2x.webp",
             IsArchived = isArchived
         };

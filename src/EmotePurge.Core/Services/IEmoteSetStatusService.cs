@@ -56,6 +56,12 @@ namespace EmotePurge.Core.Services;
 /// what <c>null</c> does <em>not</em> mean — the separation itself applies to every channel, so a
 /// later consumer must not read it as "shared chat is still counted here".
 /// </param>
+/// <param name="DuplicateNames">
+/// Active emotes that collide on chat-match name (issue #45). Always a list, never null: "no
+/// collisions" is an empty list, and there is no third state to report. Empty while the first sync
+/// is still pending, for the same reason <paramref name="OccupiedSlots"/> is 0 there — no emote rows
+/// can exist yet, so the query is skipped rather than run for a guaranteed empty answer.
+/// </param>
 public record EmoteSetStatusDto(
     string ActiveEmoteSetId,
     int? Capacity,
@@ -64,7 +70,8 @@ public record EmoteSetStatusDto(
     string? SyncFailureReason,
     DateTime? LastSyncAttemptAtUtc,
     DateOnly? BotsExcludedSince,
-    DateOnly? SharedChatSeparatedSince);
+    DateOnly? SharedChatSeparatedSince,
+    IReadOnlyList<DuplicateEmoteNameDto> DuplicateNames);
 
 public interface IEmoteSetStatusService
 {

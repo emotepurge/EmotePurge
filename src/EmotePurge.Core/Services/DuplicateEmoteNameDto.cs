@@ -10,9 +10,3 @@ public record DuplicateEmoteDto(string EmoteId, string SevenTvEmoteId, string Im
 /// collision exists, all chat usage of the name is counted onto a single one of the emotes.
 /// </summary>
 public record DuplicateEmoteNameDto(string Name, IReadOnlyList<DuplicateEmoteDto> Emotes);
-
-public interface IDuplicateEmoteNameQueryService
-{
-    /// <summary>Returns <c>null</c> for a channel that is not tracked at all.</summary>
-    Task<IReadOnlyList<DuplicateEmoteNameDto>?> GetAsync(string channelName, CancellationToken cancellationToken = default);
-}

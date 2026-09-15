@@ -3,7 +3,6 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { DuplicateEmoteName } from './duplicate-emote-name.model';
 import { EmoteAdminService } from './emote-admin.service';
 import { EmoteListItem } from './emote-list-item.model';
 import { EmoteSetStatus } from './emote-set-status.model';
@@ -101,27 +100,6 @@ describe('EmoteAdminService', () => {
     });
 
     expect(status?.syncFailureReason).toBe('no_active_emote_set');
-  });
-
-  it('getDuplicateNames GETs the duplicate-names endpoint', () => {
-    let result: DuplicateEmoteName[] | undefined;
-    service.getDuplicateNames('sensitron').subscribe((value) => (result = value));
-
-    const req = httpMock.expectOne('/api/channels/sensitron/emotes/duplicate-names');
-    expect(req.request.method).toBe('GET');
-    req.flush([
-      {
-        name: 'ApuDrums',
-        emotes: [
-          { emoteId: 'id-1', sevenTvEmoteId: '7tv-1', imageUrl: 'https://cdn/1.webp' },
-          { emoteId: 'id-2', sevenTvEmoteId: '7tv-2', imageUrl: 'https://cdn/2.webp' },
-        ],
-      },
-    ]);
-
-    expect(result).toHaveLength(1);
-    expect(result?.[0].name).toBe('ApuDrums');
-    expect(result?.[0].emotes).toHaveLength(2);
   });
 
   it('listEmotes GETs the emotes endpoint and unwraps the response', () => {

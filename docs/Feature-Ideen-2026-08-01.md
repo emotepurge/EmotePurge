@@ -491,7 +491,8 @@ kein `Option<String>`, und wird bei fehlender Angabe mit `emote.default_name` be
 damit rechnen, dass ein Teil der Liste abprallt, und das als Ergebnis zeigen statt als Fehler —
 die Purge-Protokoll-Zeilen mit `status: 'failed'` sind das Muster dafür. Der Vergleich ist
 case-sensitiv und unnormalisiert, deckt sich also exakt mit dem ordinalen Vergleich in
-`DuplicateEmoteNameQueryService`: was unser Duplikat-Banner zeigt, ist auch für 7TV eine Kollision.
+`EmoteSetStatusService` (die Duplikat-Erkennung ist seit #45 dort gefaltet, kein eigener
+Query-Service mehr): was unser Duplikat-Banner zeigt, ist auch für 7TV eine Kollision.
 
 ---
 
