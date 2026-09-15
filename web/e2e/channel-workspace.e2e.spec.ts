@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import {
   AUTH_USER,
@@ -14,6 +14,30 @@ import {
   mockVoteSessionList,
   mockWorkerHealth,
 } from './support/mocks';
+
+// The resync acknowledgement (#134) is a permanently mounted sr-only role="status" region plus a
+// visible aria-hidden twin (docs/UI-Designsprache.md §4.5) — a bare getByText now matches both
+// under strict mode, so tests that need the on-screen copy target the aria-hidden span instead.
+const resyncQueuedNotice = (page: Page) =>
+  page.locator('[aria-hidden="true"]').filter({ hasText: 'Resync angestoßen …' });
+const resyncCompletedNotice = (page: Page) =>
+  page.locator('[aria-hidden="true"]').filter({ hasText: 'Resync abgeschlossen.' });
+
+// Same tagging technique as emote-import.e2e.spec.ts's "dock outcomes … region that outlives the
+// dock" (#134 follow-up): tag every role="status" element present at rest, then require the
+// region that later carries the feedback text to still carry that tag. A plain count-under-retry
+// check can pass for the wrong reason — the feedback clears after RESYNC_FEEDBACK_MS (4 s) while
+// the count assertion itself retries for only 1000 ms, so on a slow run a defect's extra node can
+// self-clear inside that retry window before it is ever counted.
+const AT_REST = 'data-e2e-at-rest';
+
+async function tagStatusRegionsAtRest(page: Page): Promise<void> {
+  await page.evaluate((attribute) => {
+    document.querySelectorAll('[role="status"]').forEach((node) => {
+      node.setAttribute(attribute, '');
+    });
+  }, AT_REST);
+}
 
 test.describe('authenticated broadcaster', () => {
   test.beforeEach(async ({ page }) => {
@@ -209,11 +233,55 @@ test.describe('authenticated broadcaster', () => {
 
     // The 202 only means the worker was told; the confirmation is a separate live event.
     // Located by text, not by role: the usage grid below carries its own role="status" counter.
-    await expect(page.getByText('Resync angestoßen …')).toBeVisible();
+    await expect(resyncQueuedNotice(page)).toBeVisible();
 
     await emitLive(page, { type: 'channel.synced', channel: 'sensitron' });
 
-    await expect(page.getByText('Resync abgeschlossen.')).toBeVisible();
+    await expect(resyncCompletedNotice(page)).toBeVisible();
+  });
+
+  // #134: a role="status" region that enters the DOM together with its content announces nothing
+  // to most screen reader/browser pairings — only a mutation *inside* an already-mounted region is
+  // announced. Pins the fix (docs/UI-Designsprache.md §4.5): the sr-only status region is mounted
+  // permanently and only its text changes via @if; a click must never add a *new* status node to
+  // the page, and the visible twin next to it is aria-hidden so nothing is read out twice.
+  test('resync acknowledgement lives in an already-mounted status region, not a freshly mounted one', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    await mockActiveEmoteSet(page, 'sensitron');
+    await mockUsageTotals(page, 'sensitron', []);
+    await mockChannelScopedResync(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/usage-stats');
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    // The heading sits outside the loading branch and proves nothing about the sheet below it
+    // (usage-atlas.e2e.spec.ts). Wait for the loading skeleton's own role="status" to go before
+    // taking the baseline count, otherwise a transient loading-state region could be counted in
+    // its place.
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+
+    // At rest: no status region anywhere on the page carries resync wording yet. Every
+    // role="status" element present now is tagged, so the region that later carries the feedback
+    // text can be checked for identity rather than merely counted.
+    const resyncStatus = () => page.getByRole('status').filter({ hasText: 'Resync' });
+    await expect(resyncStatus()).toHaveCount(0);
+    await tagStatusRegionsAtRest(page);
+
+    await page.getByRole('button', { name: 'Neu synchronisieren' }).click();
+
+    await expect(resyncStatus()).toHaveText('Resync angestoßen …');
+
+    // The region the text appeared in must be one that already existed at rest, not a freshly
+    // created node — checked with a short timeout so a defect that only self-clears after
+    // RESYNC_FEEDBACK_MS (4 s) cannot pass by outliving this assertion's window.
+    await expect(resyncStatus()).toHaveAttribute(AT_REST, '', { timeout: 1000 });
+
+    // The visible copy is a separate, aria-hidden element — otherwise the same message is spoken
+    // twice, once from the live region and once from the visible text.
+    await expect(
+      page.locator('[aria-hidden="true"]').filter({ hasText: 'Resync angestoßen …' }),
+    ).toBeVisible();
   });
 
   // Regression pair for the race a shared, debounced liveReload subscription used to produce (see
@@ -241,12 +309,12 @@ test.describe('authenticated broadcaster', () => {
     await emitLive(page, { type: 'channel.synced', channel: 'sensitron' });
 
     await page.getByRole('button', { name: 'Neu synchronisieren' }).click();
-    await expect(page.getByText('Resync angestoßen …')).toBeVisible();
+    await expect(resyncQueuedNotice(page)).toBeVisible();
 
     // Longer than CHANNEL_RELOAD_DEBOUNCE_MS (1000 ms): the old bug needed exactly this wait for the
     // stale event to fall out of the debounce window and fire.
     await page.waitForTimeout(1500);
-    await expect(page.getByText('Resync angestoßen …')).toBeVisible();
+    await expect(resyncQueuedNotice(page)).toBeVisible();
     await expect(page.getByText('Resync abgeschlossen.')).toHaveCount(0);
   });
 
@@ -266,11 +334,11 @@ test.describe('authenticated broadcaster', () => {
 
     await page.goto('/channels/sensitron/usage-stats');
     await page.getByRole('button', { name: 'Neu synchronisieren' }).click();
-    await expect(page.getByText('Resync angestoßen …')).toBeVisible();
+    await expect(resyncQueuedNotice(page)).toBeVisible();
 
     await emitLive(page, { type: 'channel.synced', channel: 'sensitron' });
 
-    await expect(page.getByText('Resync abgeschlossen.')).toBeVisible({ timeout: 500 });
+    await expect(resyncCompletedNotice(page)).toBeVisible({ timeout: 500 });
   });
 
   // The endpoint sits behind the wider permission check on purpose: the person who just added an
