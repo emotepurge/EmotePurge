@@ -4,7 +4,7 @@ import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { listQueryState } from './list-query-state';
 
@@ -46,10 +46,33 @@ describe('list query state', () => {
   });
 
   /** Lets the fire-and-forget `router.navigate` inside the state object finish. */
-  async function settle(afterMs = 0): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, afterMs));
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await harness.fixture.whenStable();
     harness.detectChanges();
+  }
+
+  /**
+   * Runs `body` with fake timers installed, so a pending `textFilter` `debounceTime` can be advanced
+   * deterministically instead of waiting real time for it — real time was observed to flake this
+   * suite under CPU load (2 failures in 26 runs).
+   *
+   * Fake timers must go in *before* `FilterHost` (and its `textFilter`'s `toObservable`/`debounceTime`
+   * pipeline) is created, not merely before the value change that starts the debounce window: in
+   * RxJS 7.8, a value arriving while `debounceTime` already has a pending task only updates its
+   * `lastValue`/`lastTime` — it does not reschedule. The pending action re-checks `scheduler.now()`
+   * when it fires and, since it recomputes the same target delay, `AsyncAction.recycleAsyncId` keeps
+   * reusing the interval it was first scheduled with. A `debounceTime` first scheduled under real
+   * timers therefore keeps running on a real interval no matter how many fake-timer values arrive
+   * afterwards — it has to be installed before the very first schedule call.
+   */
+  async function withFakeTimers(body: () => Promise<void>): Promise<void> {
+    vi.useFakeTimers();
+    try {
+      await body();
+    } finally {
+      vi.useRealTimers();
+    }
   }
 
   describe('listQueryState', () => {
@@ -141,33 +164,42 @@ describe('list query state', () => {
     });
 
     it('shows typing immediately and reaches the URL only once it settles', async () => {
-      const host = await harness.navigateByUrl('/filtered', FilterHost);
+      await withFakeTimers(async () => {
+        const host = await harness.navigateByUrl('/filtered', FilterHost);
 
-      host.draft.set('som');
-      harness.detectChanges();
+        host.draft.set('som');
+        harness.detectChanges();
 
-      // Immediate on screen — a router navigation between the key and the character would eat input.
-      expect(host.draft()).toBe('som');
-      expect(router.url).toBe('/filtered');
+        // Immediate on screen — a router navigation between the key and the character would eat input.
+        expect(host.draft()).toBe('som');
+        expect(router.url).toBe('/filtered');
 
-      await settle(DEBOUNCE_MS * 3);
-      expect(router.url).toBe('/filtered?actor=som');
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS - 1);
+        expect(router.url).toBe('/filtered');
+
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 3);
+        expect(router.url).toBe('/filtered?actor=som');
+      });
     });
 
     // The reset button clears the *URL*, not the input — so the input has to follow, or it keeps
     // showing a filter that is no longer applied.
     it('follows the URL when the page clears the filter', async () => {
-      const host = await harness.navigateByUrl('/filtered', FilterHost);
+      await withFakeTimers(async () => {
+        const host = await harness.navigateByUrl('/filtered', FilterHost);
 
-      host.draft.set('somemod');
-      await settle(DEBOUNCE_MS * 3);
-      expect(router.url).toBe('/filtered?actor=somemod');
+        host.draft.set('somemod');
+        harness.detectChanges();
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 3);
+        expect(router.url).toBe('/filtered?actor=somemod');
 
-      host.query.setParams({ actor: '' });
-      await settle(DEBOUNCE_MS * 3);
+        host.query.setParams({ actor: '' });
+        harness.detectChanges();
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 3);
 
-      expect(router.url).toBe('/filtered');
-      expect(host.draft()).toBe('');
+        expect(router.url).toBe('/filtered');
+        expect(host.draft()).toBe('');
+      });
     });
 
     // The other direction the URL can move on its own: a back button or a pasted deep link.
@@ -185,18 +217,20 @@ describe('list query state', () => {
     // and one debounce window later that value writes itself back — under a filter the page just
     // ruled out. `setParams` clears the draft with the URL because the two are one state.
     it('drops a draft that has not reached the URL yet when the page clears the key', async () => {
-      const host = await harness.navigateByUrl('/filtered', FilterHost);
+      await withFakeTimers(async () => {
+        const host = await harness.navigateByUrl('/filtered', FilterHost);
 
-      // Typed and still inside the debounce window — nothing has been written anywhere.
-      host.draft.set('somemod');
-      harness.detectChanges();
-      expect(router.url).toBe('/filtered');
+        // Typed and still inside the debounce window — nothing has been written anywhere.
+        host.draft.set('somemod');
+        harness.detectChanges();
+        expect(router.url).toBe('/filtered');
 
-      host.query.setParams({ action: 'user.revokeSessions', actor: '' });
-      await settle(DEBOUNCE_MS * 3);
+        host.query.setParams({ action: 'user.revokeSessions', actor: '' });
+        await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 3);
 
-      expect(host.draft()).toBe('');
-      expect(router.url).toBe('/filtered?action=user.revokeSessions');
+        expect(host.draft()).toBe('');
+        expect(router.url).toBe('/filtered?action=user.revokeSessions');
+      });
     });
   });
 });
