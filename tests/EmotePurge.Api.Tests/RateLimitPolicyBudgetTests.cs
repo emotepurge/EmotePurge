@@ -27,18 +27,24 @@ public class RateLimitPolicyBudgetTests : IClassFixture<ApiFactory>
 
     /// <summary>
     /// <c>docs/superpowers/2026-08-30-rate-limit-baseline-messung.md</c>, Ablauf (b): a round trip from
-    /// the overview into a channel's workspace and back cost 7 permits under the since-removed
-    /// <c>ExternalApi</c> policy
-    /// (permissions, duplicate-names, two active-set reads — the range-resolution quirk documented
-    /// there — totals, series, and the return-trip /mine). The baseline's "Folge für die
-    /// Abnahmekriterien" section found the spec's original threshold of six round trips already green
-    /// without any code change: a cold client-side permissions cache means only the first of several
-    /// dense round trips costs the full 7, so six sum to just 38 — under the 40-permit window. It
-    /// recommends twelve round trips instead: reliably over that budget, and still comfortably inside
-    /// the <c>InteractiveRead</c> capacity of 300 at 5 tokens/s refill it now runs on. This test drives the
-    /// same seven requests directly through <c>HttpClient</c> rather than through the Angular app, so
-    /// there is no client-side permissions cache here at all — every one of the twelve round trips
-    /// below costs the full seven counting requests, which only sharpens the point.
+    /// the overview into a channel's workspace and back originally cost 7 permits under the
+    /// since-removed <c>ExternalApi</c> policy (permissions, duplicate-names, two active-set reads —
+    /// the range-resolution quirk documented there — totals, series, and the return-trip /mine). That
+    /// cost model has since dropped by two: the range-resolution fix in ade8bb1 removed the second,
+    /// redundant active-set read (see <c>web/e2e/usage-range-resolution.e2e.spec.ts</c>, "asks once,
+    /// against the tracking start rather than the placeholder year"), well before issue #45 removed the
+    /// duplicate-names permit itself by folding its data into the active-set response. The
+    /// workspace-open sequence below is now permissions,
+    /// active-set, totals, series, and the return-trip /mine — 5 requests, each counted once. The
+    /// baseline's "Folge für die Abnahmekriterien" section found the spec's original threshold of six
+    /// round trips already green without any code change: a cold client-side permissions cache means
+    /// only the first of several dense round trips costs the full permit count, so six trips summed to
+    /// well under the 40-permit window that policy ran on at the time. It recommends twelve round trips
+    /// instead: reliably over that budget, and still comfortably inside the <c>InteractiveRead</c>
+    /// capacity of 300 at 5 tokens/s refill it now runs on. This test drives the same five requests
+    /// directly through <c>HttpClient</c> rather than through the Angular app, so there is no
+    /// client-side permissions cache here at all — every one of the twelve round trips below costs the
+    /// full five counting requests, which only sharpens the point.
     /// </summary>
     [Fact]
     public async Task TwelveWorkspaceRoundTripsInOneMinute_ProduceNoLocal429()
@@ -88,16 +94,19 @@ public class RateLimitPolicyBudgetTests : IClassFixture<ApiFactory>
         Assert.NotEqual(HttpStatusCode.TooManyRequests, navigationResponse.StatusCode);
     }
 
-    /// <summary>The seven-request sequence measured as baseline (b): workspace entry, then the return
-    /// trip to the overview.</summary>
+    /// <summary>
+    /// The current five-request workspace-open sequence: permissions, active-set, totals, series, then
+    /// the return trip to the overview. Down from the seven-request baseline (b) in two steps that
+    /// happened well apart in time — ade8bb1 dropped the redundant second active-set read, and issue
+    /// #45 dropped the dedicated duplicate-names request by folding its data into active-set. Each
+    /// route below is counted exactly once, matching what the Angular app itself now does per open.
+    /// </summary>
     private static async Task<List<HttpStatusCode>> RunWorkspaceRoundTripAsync(HttpClient client, string userId)
     {
         var statusCodes = new List<HttpStatusCode>();
 
         // Hinweg: identical to baseline (a) minus auth/me and worker/health, which carry no policy.
         statusCodes.Add((await GetAsync(client, userId, $"/api/channels/{Channel}/permissions")).StatusCode);
-        statusCodes.Add((await GetAsync(client, userId, $"/api/channels/{Channel}/emotes/duplicate-names")).StatusCode);
-        statusCodes.Add((await GetAsync(client, userId, $"/api/channels/{Channel}/emotes/active-set")).StatusCode);
         statusCodes.Add((await GetAsync(client, userId, $"/api/channels/{Channel}/emotes/active-set")).StatusCode);
         statusCodes.Add((await GetAsync(client, userId, $"/api/channels/{Channel}/usage-stats/totals?from=2026-08-01&to=2026-08-30")).StatusCode);
         statusCodes.Add((await GetAsync(client, userId, $"/api/channels/{Channel}/usage-stats/series?from=2026-08-01&to=2026-08-30")).StatusCode);

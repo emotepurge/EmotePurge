@@ -4529,7 +4529,7 @@ Schritt 2 des Umsetzungsplans zu Issue #33 (`docs/superpowers/specs/2026-08-30-r
 
 | Policy | Routen |
 |---|---|
-| `InteractiveRead` | `GET /{channelName}`, `GET /{channelName}/permissions`, `GET /mine` (`ChannelEndpoints.cs`); die gesamte Emote-Gruppe auf Gruppenebene — `GET /active-set`, `GET /duplicate-names`, `GET /set-warning` (`EmoteEndpoints.cs`); die gesamte Usage-Stats-Gruppe auf Gruppenebene — `GET ""`, `GET /totals`, `GET /daily`, `GET /series` (`UsageStatsEndpoints.cs`); die Vote-Session-Liste `GET ""`, `GET /{sessionId}/results` und `GET /api/vote-sessions/mine` (`VoteSessionEndpoints.cs`) |
+| `InteractiveRead` | `GET /{channelName}`, `GET /{channelName}/permissions`, `GET /mine` (`ChannelEndpoints.cs`); die gesamte Emote-Gruppe auf Gruppenebene — `GET /active-set`, `GET /duplicate-names` (Route seit 2026-09-15/#45 entfernt, s. Eintrag oben), `GET /set-warning` (`EmoteEndpoints.cs`); die gesamte Usage-Stats-Gruppe auf Gruppenebene — `GET ""`, `GET /totals`, `GET /daily`, `GET /series` (`UsageStatsEndpoints.cs`); die Vote-Session-Liste `GET ""`, `GET /{sessionId}/results` und `GET /api/vote-sessions/mine` (`VoteSessionEndpoints.cs`) |
 | `Voting` | `POST /{sessionId}/votes`, `DELETE /{sessionId}/votes/{emoteId}` (`VoteSessionEndpoints.cs`), partitioniert per User **und** Session |
 | `Bookkeeping` | `GET /{channelName}/audit-log`, `POST /{channelName}/join`, `DELETE /{channelName}`, `DELETE /{channelName}/purge` (`ChannelEndpoints.cs`); `POST /sync-deleted`, `POST /sync-restored` (`EmoteEndpoints.cs`); `POST ""` (anlegen), `POST /{sessionId}/end`, `DELETE /{sessionId}` (`VoteSessionEndpoints.cs`) |
 | `ChannelResync` | `POST /{channelName}/resync` (`ChannelEndpoints.cs`), unverändert |

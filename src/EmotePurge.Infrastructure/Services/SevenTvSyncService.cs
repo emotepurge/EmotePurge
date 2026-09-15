@@ -368,7 +368,7 @@ public class SevenTvSyncService(
         // keeping whichever was loaded first (the load order above has no OrderBy, so "first" is
         // whatever Postgres returns). Logged only when the collision set changes: this method
         // runs on every resync tick, and a static collision would spam the log otherwise. The
-        // full current state is served by IDuplicateEmoteNameQueryService instead.
+        // full current state is served by EmoteSetStatusService's DuplicateNames field instead.
         var (emoteNameToId, duplicateNames) = EmoteNameMatching.Coalesce(
             activeEmotes.Select(e => new KeyValuePair<string, string>(e.Name, e.Id)));
 
