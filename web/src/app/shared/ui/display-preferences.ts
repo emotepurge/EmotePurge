@@ -51,7 +51,7 @@ const LANGUAGE_OPTIONS: SegmentedControlOption[] = SUPPORTED_LANGS.map((value) =
           size="lg"
           [options]="languageOptions"
           [ariaLabel]="'languageSwitcher.ariaLabel' | transloco"
-          [value]="languageService.lang()"
+          [value]="languageService.selectedLang()"
           (valueChange)="setLanguage($event)"
         />
       </div>

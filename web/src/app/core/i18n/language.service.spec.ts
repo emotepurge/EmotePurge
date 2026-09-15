@@ -119,6 +119,85 @@ describe('LanguageService', () => {
     expect(localStorage.getItem('ep_lang')).toBe('de');
   });
 
+  it('selectedLang updates immediately on setLang, before the load resolves', () => {
+    const load$ = new Subject<Record<string, never>>();
+    vi.spyOn(transloco, 'load').mockReturnValue(load$);
+
+    service.setLang('en');
+
+    expect(service.selectedLang()).toBe('en');
+    // Unlike selectedLang, lang() itself only flips once the load actually resolves.
+    expect(service.lang()).toBe('de');
+  });
+
+  it('selectedLang reverts to the rendered language when the load fails', () => {
+    const load$ = new Subject<Record<string, never>>();
+    vi.spyOn(transloco, 'load').mockReturnValue(load$);
+
+    service.setLang('en');
+    load$.error(new Error('network error'));
+
+    expect(service.selectedLang()).toBe('de');
+  });
+
+  it('a superseded failure does not revert selectedLang to the older rendered language', () => {
+    const loads = {
+      de: new Subject<Record<string, never>>(),
+      en: new Subject<Record<string, never>>(),
+    };
+    vi.spyOn(transloco, 'load').mockImplementation(
+      (...args: Parameters<typeof transloco.load>) => loads[args[0] as 'de' | 'en'],
+    );
+
+    service.setLang('de');
+    service.setLang('en');
+    loads.de.error(new Error('network error'));
+
+    // The en pick is still the current selection: the stale de failure must not stomp it.
+    expect(service.selectedLang()).toBe('en');
+  });
+
+  it('selectedLang equals lang() once a switch succeeds', () => {
+    service.setLang('en');
+
+    expect(service.selectedLang()).toBe('en');
+    expect(service.selectedLang()).toBe(service.lang());
+  });
+
+  it('a stale failure from a request a later pick has already superseded does not revert that later pick, even when both requested the same language', () => {
+    // Two independent loads for 'en': the first (A) never resolves, the second (C) is a separate
+    // request started after a 'de' switch resolved in between. Comparing selectedLang's *value*
+    // against 'en' cannot tell A and C apart — only comparing request identity can.
+    const loadA$ = new Subject<Record<string, never>>();
+    const loadC$ = new Subject<Record<string, never>>();
+    const originalLoad = transloco.load.bind(transloco);
+    let enLoadCount = 0;
+    vi.spyOn(transloco, 'load').mockImplementation((...args: Parameters<typeof transloco.load>) => {
+      if (args[0] !== 'en') {
+        return originalLoad(...args);
+      }
+      enLoadCount += 1;
+      return enLoadCount === 1 ? loadA$ : loadC$;
+    });
+
+    service.setLang('en'); // load A pending
+    service.setLang('de'); // resolves synchronously (already-loaded language)
+    service.setLang('en'); // load C pending, independent of A
+
+    loadA$.error(new Error('network error'));
+
+    // A is stale: its failure must not revert the pick (C) that superseded it.
+    expect(service.selectedLang()).toBe('en');
+    expect(document.documentElement.lang).toBe('en');
+    expect(localStorage.getItem('ep_lang')).toBe('en');
+
+    loadC$.next({});
+    loadC$.complete();
+
+    expect(service.lang()).toBe('en');
+    expect(transloco.getActiveLang()).toBe('en');
+  });
+
   it('ignores a failed load that a later switch has already superseded (de fails while en is pending)', () => {
     const loads = {
       de: new Subject<Record<string, never>>(),
