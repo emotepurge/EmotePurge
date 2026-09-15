@@ -10,6 +10,61 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — Light-mode `warning-fg` moves to `amber-800`, and the live-quota badge stops diluting its own contrast on hover (#106)
+
+**Betrifft:** `web/src/styles.css` · `web/src/app/features/shell/app-shell.ts` · `docs/UI-Designsprache.md` · `DESIGN.md`
+
+**Why.** The UI audit's axe contrast gate flagged 18 `color-contrast` findings in light mode
+(`welcome`, the `admin-monitoring-*` scenarios, `vote-detail-subset-archived`), all tracing back to
+`--ep-warning-fg`: `amber-700` reaches only 4.40:1 on `page` and 4.09:1 on `surface-inset`, both
+under the 4.5:1 text gate. The 2026-08-07 entry "Das helle Blatt ist nicht mehr reinweiß, und die
+ganze Rampe geht mit" measured the surface ramp itself — page/surface/inset and the fg-muted/accent
+pairs sitting on it — but never re-measured the semantic tones layered on top of that ramp, so this
+gap went unnoticed for over a month. A trial run with the token at `amber-800` cleared 18 of the 20
+findings.
+
+**What changed.** `--ep-warning-fg` moves from `amber-700` to `amber-800` in the light block of
+`web/src/styles.css`:
+
+| pairing | amber-700 (before) | amber-800 (now) |
+|---|---|---|
+| warning-fg on page | 4.40:1 | 6.21:1 |
+| warning-fg on surface-inset | 4.09:1 | 5.76:1 |
+| warning-fg on surface / on warning-wash (status-badge pill) | 4.86:1 / 4.85:1 | 6.84:1 / 6.84:1 |
+| warning-fg on surface-inset-hover | 3.69:1 | 5.20:1 |
+
+(`run-progress-panel.ts`'s rate-limit text sits on `surface-inset` but is not exercised by any audit
+scenario — it benefits from the same move without being one of the 18 findings.)
+
+`--ep-warning-dot` stays at `amber-700`: it is a meaning-bearing graphic and owes only 3:1, and
+4.09:1 on `surface-inset` already clears that with reserve — darkening it too would have cost the
+amber hue its last distinction from `--ep-danger-fg` (red-700) for no contrast benefit. The token's
+own comment previously claimed "amber-700 gets 4,6:1" on `surface-inset`; that was wrong, the
+measured value is 4,1:1 — the intro comment on the light block already carried the correct 4,08:1
+for the same pairing, so the two comments disagreed with each other. Fixed in the same commit.
+`--ep-warning-fg` still separates from `--ep-danger-fg` after moving: OKLab ΔE is 0.094 against
+amber-800, versus 0.087 against amber-700 before, so darkening did not pull the two tones together.
+
+The remaining finding, `shell-live-quota-open`, was not a token problem. The "Live-Updates
+pausiert" badge in `app-shell.ts` sits inside a trigger button styled `transition hover:opacity-80`,
+and the audit's click leaves the mouse on the button, so it measures the `:hover` state. Opacity
+dilutes a two-tone surface (the badge's own `warning-wash`/`warning-fg` pill) toward the backdrop
+behind it rather than leaving either colour intact — axe measured 3.44:1 today, and still only
+4.4:1 with `amber-800` alone (#ab622f on #fcf9ec). A hover is a state of its own and owes the same
+4.5:1 as rest (§10). The trigger now gets `hover:bg-surface-inset` instead of the opacity filter —
+the same idiom comparable header/menu triggers already use (`account-menu.ts`'s row hovers, and the
+dead band's "select all" button in `usage-stats-page.html`): a background sits behind the badge
+rather than a filter sitting over it, so the badge's own wash+fg carry the same contrast in both
+states.
+
+**Docs.** `docs/UI-Designsprache.md` §10 gets the warning-fg numbers next to the existing
+`fg-muted` tightest-case note. `DESIGN.md`'s "Semantic Tones" section is rephrased: it previously
+said light mode sets `warning-dot` as "the only tone two steps darker"; now both `warning-fg`
+(`amber-800` instead of the `700` step every other fg uses) and `warning-dot` (`amber-700` instead
+of the `600` step every other dot uses) deviate, each one step darker than its own row's peers.
+
+---
+
 ### 2026-09-15 — Remove the unused Dev Container setup (#85)
 
 **Betrifft:** `.devcontainer/` · `CLAUDE.md` · `docs/Architectur.md`

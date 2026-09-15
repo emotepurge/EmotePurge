@@ -275,14 +275,28 @@
   --ep-success-dot: var(--color-emerald-600);
 
   --ep-warning-wash: var(--color-amber-50);
-  --ep-warning-fg: var(--color-amber-700);
+  /* One step darker than danger-fg/info-fg, which stay at their 700 step:
+     amber-700 was the one whose 700 step did not clear the gate on the page
+     background itself — 4,40:1 there, versus emerald-700's 4,70:1 on the
+     same surface. amber-700 also measured only 4,09:1 on surface-inset —
+     both under the 4,5:1 text gate (18 axe findings: welcome,
+     admin-monitoring-*, vote-detail-subset-archived). amber-800 gets 6,21:1
+     and 5,76:1, clearing both with room to spare. It still separates from
+     --ep-danger-fg (red-700): OKLab ΔE is 0,094 against amber-800, versus
+     0,087 against amber-700 before, so darkening did not pull the two tones
+     together. success-fg (emerald-700) sits close to/below its own gate on
+     surface-inset too (4,36:1, and 3,94:1 on surface-inset-hover) — open:
+     not yet moved. */
+  --ep-warning-fg: var(--color-amber-800);
   --ep-warning-border: var(--color-amber-300);
   /* amber-700, not amber-500/600 like everywhere else: amber is mid-light by
      nature and has no reserve on a light track. Against surface-inset,
-     amber-500 reaches 2,0:1 and amber-600 2,9:1 — both fail the 3:1 gate for
-     meaning-bearing graphics. amber-700 gets 4,6:1. It reads brownish rather
-     than warning-ish; orange-600 would read better but would introduce a
-     seventh colour family for a single token, which was decided against. */
+     amber-500 reaches 1,7:1 and amber-600 2,6:1 — both fail the 3:1 gate for
+     meaning-bearing graphics. amber-700 gets 4,1:1, enough for a graphic's 3:1
+     gate (--ep-warning-fg above needed amber-800 instead, because text owes
+     4,5:1). It reads brownish rather than warning-ish; orange-600 would read
+     better but would introduce a seventh colour family for a single token,
+     which was decided against. */
   --ep-warning-dot: var(--color-amber-700);
 
   --ep-danger-wash: var(--color-red-50);
