@@ -5,11 +5,12 @@ using EmotePurge.Worker.Harness;
 
 // The very first statement of the image, before any host exists. The worker image has two entry
 // points, and this is the only thing between them: no arguments means the long-running worker,
-// exactly "harness <kanal> [--days <n>] [--diagnostic]" means one accuracy run, and anything else
-// is refused with exit code 2 instead of guessed. A lenient parser here would let a harness
-// container whose verb went missing (docker compose run replaces command, not entrypoint) start
-// the full worker beside the production one and double every usage row — Codex-adversarial
-// "Fail-open CLI".
+// exactly "harness <kanal> [--days <n>] [--diagnostic]" means one accuracy run, exactly
+// "harness <kanal> --report-only <datei>" means a report-only recompute of an existing run instead
+// (#119 — zero archive requests, see HarnessRunner.RecomputeReportAsync), and anything else is
+// refused with exit code 2 instead of guessed. A lenient parser here would let a harness container
+// whose verb went missing (docker compose run replaces command, not entrypoint) start the full
+// worker beside the production one and double every usage row — Codex-adversarial "Fail-open CLI".
 switch (HarnessCommandLine.Parse(args))
 {
     case HarnessCommandLineResult.Invalid invalid:
@@ -88,6 +89,15 @@ async Task<int> RunHarnessAsync(HarnessCommandLineResult.RunHarness request)
         await Console.Error.WriteLineAsync(
             $"Der Dienst-Graph des Harness ließ sich nicht aufbauen, vermutlich weil Redis beim Start nicht erreichbar war: {ex.Message}");
         return HarnessRunner.ExitUnexpectedError;
+    }
+
+    // A report-only recompute (#119) branches off here rather than through HarnessOptions: it takes
+    // its window, its bot list and its cutovers from the frozen header of the file it reads, never
+    // from Harness:WindowDays or Harness:SharedChatCutover — the same reason RecomputeReportAsync is
+    // its own entry point on HarnessRunner rather than a flag threaded through RunAsync.
+    if (request.ReportOnlyFile is { } reportOnlyFile)
+    {
+        return await runner.RecomputeReportAsync(request.ChannelName, reportOnlyFile, cancellation.Token);
     }
 
     // The parser cannot see the configuration (it runs before the builder), so the configured

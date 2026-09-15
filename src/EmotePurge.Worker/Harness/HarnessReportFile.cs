@@ -96,10 +96,18 @@ public sealed class HarnessReportFile
         WriteIndented = false
     };
 
+    // The Converters entry is read-only new code (issue #119): before TryReadExistingReport, nothing
+    // ever deserialized a .report.json — only wrote one — so ValueList<T>'s missing read support
+    // (it satisfies none of System.Text.Json's recognized collection shapes: no accessible
+    // constructor-plus-Add, no recognized immutable-collection factory) never mattered. Writing is
+    // unaffected: ValueListJsonConverter.Write delegates to the exact same IReadOnlyList<T> array
+    // serialization System.Text.Json already used for it before this converter existed, so an
+    // untouched report's bytes are unchanged.
     private static readonly JsonSerializerOptions ReportOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
+        WriteIndented = true,
+        Converters = { new ValueListJsonConverterFactory() }
     };
 
     public HarnessReportFile(string path)
@@ -325,6 +333,52 @@ public sealed class HarnessReportFile
         WriteAtomically(ReportMarkdownPath, markdown);
     }
 
+    /// <summary>
+    /// The final report already sitting at <see cref="ReportJsonPath"/>, or <c>null</c> if it does
+    /// not exist or cannot be parsed. The one caller is a report-only recompute (issue #119), which
+    /// reads <c>Run.Diagnostic</c> off it: that flag lives only in a closed report, never in the
+    /// header or the identity (Plan-Entscheidung 7, D4), so a recompute has nowhere else to inherit
+    /// it from. Deliberately tolerant — a damaged or half-written <c>.report.json</c> must not block
+    /// a recompute that only actually needs the <c>.jsonl</c> beside it; the caller falls back to a
+    /// documented default instead.
+    /// </summary>
+    public ReplayFinalReport? TryReadExistingReport()
+    {
+        if (!File.Exists(ReportJsonPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<ReplayFinalReport>(File.ReadAllText(ReportJsonPath), ReportOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Writes a final report pair the same atomic way as <see cref="WriteFinalReportAtomically"/>,
+    /// but to caller-supplied paths rather than this instance's own <see cref="ReportJsonPath"/>/
+    /// <see cref="ReportMarkdownPath"/>. The one caller is a report-only recompute (issue #119): its
+    /// output sits beside the run under a timestamped name and must never land on the paths that
+    /// close the original run — writing there would flip <see cref="IsClosed"/> for a run the
+    /// recompute never actually finished fetching, and would silently discard whatever the original
+    /// run had written.
+    /// </summary>
+    public static void WriteReportPairAtomically(string jsonPath, string markdownPath, ReplayFinalReport report, string markdown)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(markdownPath);
+        ArgumentNullException.ThrowIfNull(report);
+        ArgumentNullException.ThrowIfNull(markdown);
+
+        WriteAtomically(jsonPath, JsonSerializer.Serialize(report, ReportOptions));
+        WriteAtomically(markdownPath, markdown);
+    }
+
     private void Append(HarnessJsonLine line)
     {
         RemoveDanglingTail();
@@ -415,4 +469,32 @@ public sealed class HarnessReportFile
         HarnessReportHeader? Header,
         ReplayDayLine? Day,
         HarnessEventLine? Event);
+
+    /// <summary>
+    /// Read/write support for <see cref="ValueList{T}"/> in <see cref="ReportOptions"/> (issue #119,
+    /// see the remark there). <see cref="ValueListConverter{T}.Write"/> re-serializes the value as a
+    /// plain <c>IReadOnlyList&lt;T&gt;</c> — the exact array System.Text.Json already produced for it
+    /// without any converter — so an untouched report's bytes do not move.
+    /// </summary>
+    private sealed class ValueListJsonConverterFactory : JsonConverterFactory
+    {
+        public override bool CanConvert(Type typeToConvert) =>
+            typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(ValueList<>);
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            var itemType = typeToConvert.GetGenericArguments()[0];
+            var converterType = typeof(ValueListConverter<>).MakeGenericType(itemType);
+            return (JsonConverter)Activator.CreateInstance(converterType)!;
+        }
+
+        private sealed class ValueListConverter<T> : JsonConverter<ValueList<T>>
+        {
+            public override ValueList<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+                new(JsonSerializer.Deserialize<List<T>>(ref reader, options) ?? []);
+
+            public override void Write(Utf8JsonWriter writer, ValueList<T> value, JsonSerializerOptions options) =>
+                JsonSerializer.Serialize(writer, (IReadOnlyList<T>)value, options);
+        }
+    }
 }

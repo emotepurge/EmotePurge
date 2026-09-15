@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using EmotePurge.Core.ChatLogArchive;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
@@ -965,6 +967,297 @@ public class HarnessRunnerTests : IDisposable
             File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.report.json"))));
     }
 
+    // #119: report-only recompute of an existing, complete run. No test here touches the archive
+    // substitute except to assert it was never called — that is the one property this feature exists
+    // for — and none of them run through RunAsync a second time; every recompute goes through
+    // RecomputeReportAsync directly, via the Recompute(...) helper below.
+    [Fact]
+    public async Task ReportOnly_OnAnUnchangedRun_ReproducesTheOriginalNumbersWithoutTouchingTheArchive()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+        var reportJsonPath = Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+        var reportMdPath = Assert.Single(Directory.GetFiles(_directory, "*.report.md"));
+
+        var jsonlBefore = File.ReadAllBytes(jsonlPath);
+        var reportJsonBefore = File.ReadAllBytes(reportJsonPath);
+        var reportMdBefore = File.ReadAllBytes(reportMdPath);
+        var originalReport = ReadReport(reportJsonPath);
+
+        // The run above already exercised the archive substitute; only calls made by the recompute
+        // itself are relevant to the "zero archive requests" claim.
+        _archive.ClearReceivedCalls();
+
+        Assert.Equal(0, await Recompute(fileName));
+
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Equal(jsonlBefore, File.ReadAllBytes(jsonlPath));
+        Assert.Equal(reportJsonBefore, File.ReadAllBytes(reportJsonPath));
+        Assert.Equal(reportMdBefore, File.ReadAllBytes(reportMdPath));
+
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+        Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.md"));
+
+        Assert.Equal(originalReport.Gate, recomputedReport.Gate);
+        Assert.Equal(originalReport.Plausibility, recomputedReport.Plausibility);
+        Assert.Equal(originalReport.Diagnostics, recomputedReport.Diagnostics);
+        Assert.Equal(originalReport.Run.WindowFrom, recomputedReport.Run.WindowFrom);
+        Assert.Equal(originalReport.Run.WindowTo, recomputedReport.Run.WindowTo);
+        Assert.Equal(originalReport.Run.WindowDays, recomputedReport.Run.WindowDays);
+        Assert.Equal(originalReport.Run.BotSplitCutover, recomputedReport.Run.BotSplitCutover);
+        Assert.Equal(originalReport.Run.SharedChatCutover, recomputedReport.Run.SharedChatCutover);
+        Assert.Equal(originalReport.Run.Diagnostic, recomputedReport.Run.Diagnostic);
+        Assert.True(recomputedReport.Run.RunComplete);
+
+        Assert.NotNull(recomputedReport.Recomputation);
+        Assert.True(recomputedReport.Recomputation!.InputHashMatches);
+        Assert.True(recomputedReport.Recomputation.BotSplitCutoverMatches);
+        Assert.Equal("inherited", recomputedReport.Recomputation.DiagnosticSource);
+        Assert.Empty(recomputedReport.Recomputation.Warnings);
+        Assert.Null(originalReport.Recomputation);
+    }
+
+    [Fact]
+    public async Task ReportOnly_WhenLiveRowsChangedSinceTheRun_WarnsOnInputHashMismatchButStillSucceeds()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+
+        // The live worker kept flushing after the run: the comparison snapshot has moved.
+        _usage.GetRowsAsync(
+                Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<DateOnly>(), Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
+            .Returns(Rows(day2SharedChatUseCount: 3));
+
+        Assert.Equal(0, await Recompute(fileName));
+
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+
+        Assert.False(recomputedReport.Recomputation!.InputHashMatches);
+        Assert.Contains("input-hash-mismatch", recomputedReport.Recomputation.Warnings);
+        Assert.NotEqual(recomputedReport.Recomputation.OriginalInputHash, recomputedReport.Recomputation.CurrentInputHash);
+
+        var markdown = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.md")));
+        Assert.Contains(recomputedReport.Recomputation.OriginalInputHash, markdown, StringComparison.Ordinal);
+        Assert.Contains(recomputedReport.Recomputation.CurrentInputHash, markdown, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReportOnly_OnACompleteButUnclosedRun_WritesASidecarWithoutClosingTheOriginalRun()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+
+        // Simulate a process that wrote every day line but died before WriteFinalReportAtomically —
+        // the run is complete on disk, but never closed.
+        File.Delete(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+        File.Delete(Assert.Single(Directory.GetFiles(_directory, "*.report.md")));
+        Assert.False(new HarnessReportFile(jsonlPath).IsClosed);
+
+        Assert.Equal(0, await Recompute(fileName));
+
+        Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json"));
+        Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.md"));
+
+        // Still not closed: the recompute never wrote <stem>.report.json/.md. Exact paths, not a
+        // glob — "*.report.json" would also match the just-written "*.recompute-….report.json".
+        var reportFile = new HarnessReportFile(jsonlPath);
+        Assert.False(reportFile.IsClosed);
+        Assert.False(File.Exists(reportFile.ReportJsonPath));
+        Assert.False(File.Exists(reportFile.ReportMarkdownPath));
+    }
+
+    [Fact]
+    public async Task ReportOnly_WithAMissingFile_RefusesAndWritesNothing()
+    {
+        var exitCode = await Recompute("does-not-exist-2026-09-02-2026-09-04-abc123.jsonl");
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Empty(Directory.GetFiles(_directory));
+        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+    }
+
+    [Fact]
+    public async Task ReportOnly_WithAMismatchedChannelName_RefusesAndWritesNothing()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        var filesBefore = ListFiles();
+
+        var exitCode = await Recompute(fileName, channelName: "someone_else");
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+    }
+
+    [Fact]
+    public async Task ReportOnly_WithAChannelThatNoLongerResolvesToTheHeaderId_RefusesAndWritesNothing()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        var filesBefore = ListFiles();
+
+        // Same login, a different id — e.g. the channel row was purged and rejoined since the run.
+        var recreatedChannel = NewChannel();
+        recreatedChannel.Id = "a-different-channel-guid";
+        _channels.GetByNameAsync(ChannelName, Arg.Any<CancellationToken>()).Returns(recreatedChannel);
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+    }
+
+    [Fact]
+    public async Task ReportOnly_WithAMissingDayLine_RefusesAndWritesNothing()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+
+        // Drop Day2's line, as if that day's write never reached disk — rebuilt through the public
+        // protocol API rather than by hand-editing JSON, so the test does not depend on its exact
+        // on-disk shape.
+        var original = new HarnessReportFile(jsonlPath);
+        var header = original.TryReadHeader() ?? throw new InvalidOperationException("Header must exist.");
+        var content = original.ReadDays();
+        File.Delete(jsonlPath);
+        var rebuilt = new HarnessReportFile(jsonlPath);
+        rebuilt.WriteHeader(header);
+        foreach (var day in content.Days.Where(d => d.Day != Day2))
+        {
+            rebuilt.AppendDay(day);
+        }
+
+        File.Delete(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+        File.Delete(Assert.Single(Directory.GetFiles(_directory, "*.report.md")));
+        var filesBefore = ListFiles();
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+    }
+
+    [Fact]
+    public async Task ReportOnly_WhenTheBotSplitCutoverHasMoved_Warns()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+
+        _usage.GetEarliestBotUsageDateAsync(ChannelId, Arg.Any<CancellationToken>()).Returns(new DateOnly(2026, 8, 20));
+
+        Assert.Equal(0, await Recompute(fileName));
+
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+
+        Assert.False(recomputedReport.Recomputation!.BotSplitCutoverMatches);
+        Assert.Contains("bot-split-cutover-drift", recomputedReport.Recomputation.Warnings);
+        Assert.Equal(new DateOnly(2026, 8, 30), recomputedReport.Recomputation.OriginalBotSplitCutover);
+        Assert.Equal(new DateOnly(2026, 8, 20), recomputedReport.Recomputation.CurrentBotSplitCutover);
+    }
+
+    [Fact]
+    public async Task ReportOnly_TakesTheSharedChatCutoverFromTheHeaderEvenIfConfigDiffers()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3, sharedChatCutover: "2026-09-01"));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+
+        var runner = new HarnessRunner(
+            _channels,
+            _usage,
+            _archive,
+            _bots,
+            new HarnessOptions
+            {
+                OutputDirectory = _directory,
+                MaxMegabytesPerRun = 200,
+                WindowDays = 30,
+                // Deliberately different from the header's cutover: the recompute must ignore this.
+                SharedChatCutover = "2026-09-04"
+            },
+            _clock,
+            NullLogger<HarnessRunner>.Instance);
+
+        Assert.Equal(0, await runner.RecomputeReportAsync(ChannelName, fileName, default));
+
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+        Assert.Equal(new DateOnly(2026, 9, 1), recomputedReport.Run.SharedChatCutover);
+    }
+
+    [Fact]
+    public async Task ReportOnly_ASecondRecomputeAtADifferentClockTime_CreatesASecondPair_SameTimestampRefuses()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+
+        Assert.Equal(0, await Recompute(fileName));
+        Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json"));
+
+        // Same instant again: refuses rather than silently overwriting the first recompute.
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, await Recompute(fileName));
+        Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json"));
+
+        _clock.Now = _clock.Now.AddSeconds(5);
+        Assert.Equal(0, await Recompute(fileName));
+        Assert.Equal(2, Directory.GetFiles(_directory, "*.recompute-*.report.json").Length);
+    }
+
     // SharedChatCutover defaults to a day before Day1 (D4): almost every test in this file predates
     // #73 and asserts on behaviour the fail-closed precondition would otherwise block outright. The
     // handful of tests about the precondition itself override it explicitly.
@@ -991,6 +1284,64 @@ public class HarnessRunnerTests : IDisposable
             NullLogger<HarnessRunner>.Instance);
 
         return runner.RunAsync(ChannelName, days, diagnostic, ct);
+    }
+
+    // The Harness:SharedChatCutover config passed here is deliberately irrelevant to every
+    // RecomputeReportAsync test above except the one that says so explicitly — a recompute takes
+    // its cutovers from the header, not from this options instance.
+    private Task<int> Recompute(string reportOnlyFileName, CancellationToken ct = default, string? channelName = null)
+    {
+        var runner = new HarnessRunner(
+            _channels,
+            _usage,
+            _archive,
+            _bots,
+            new HarnessOptions
+            {
+                OutputDirectory = _directory,
+                MaxMegabytesPerRun = 200,
+                WindowDays = 30,
+                SharedChatCutover = "2026-09-01"
+            },
+            _clock,
+            NullLogger<HarnessRunner>.Instance);
+
+        return runner.RecomputeReportAsync(channelName ?? ChannelName, reportOnlyFileName, ct);
+    }
+
+    private string[] ListFiles() => [.. Directory.GetFiles(_directory).OrderBy(f => f, StringComparer.Ordinal)];
+
+    // A read-side mirror of HarnessReportFile's private ValueListJsonConverterFactory (Worker has no
+    // InternalsVisibleTo to this test project): System.Text.Json cannot deserialize ValueList<T> on
+    // its own — it satisfies none of the recognized collection shapes — and .report.json is full of
+    // it (GateIneligibleReasons, KHistogram, the day-ratio lists, and now Warnings).
+    private static readonly JsonSerializerOptions ReadReportOptions =
+        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Converters = { new ValueListJsonConverterFactory() } };
+
+    private static ReplayFinalReport ReadReport(string path) =>
+        JsonSerializer.Deserialize<ReplayFinalReport>(File.ReadAllText(path), ReadReportOptions)
+        ?? throw new InvalidOperationException($"'{path}' did not deserialize to a report.");
+
+    private sealed class ValueListJsonConverterFactory : JsonConverterFactory
+    {
+        public override bool CanConvert(Type typeToConvert) =>
+            typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(ValueList<>);
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            var itemType = typeToConvert.GetGenericArguments()[0];
+            var converterType = typeof(ValueListConverter<>).MakeGenericType(itemType);
+            return (JsonConverter)Activator.CreateInstance(converterType)!;
+        }
+
+        private sealed class ValueListConverter<T> : JsonConverter<ValueList<T>>
+        {
+            public override ValueList<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+                new(JsonSerializer.Deserialize<List<T>>(ref reader, options) ?? []);
+
+            public override void Write(Utf8JsonWriter writer, ValueList<T> value, JsonSerializerOptions options) =>
+                JsonSerializer.Serialize(writer, (IReadOnlyList<T>)value, options);
+        }
     }
 
     private void RespondWith(
