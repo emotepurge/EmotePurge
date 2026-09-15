@@ -36,8 +36,22 @@ const RESYNC_FEEDBACK_MS = 4000;
         <!-- One wrapper carries the ml-auto, not each button: with it on two siblings they would be
              pushed to opposite ends and collide with the title's order-last/md:flex-1 contract. -->
         <div class="ml-auto flex flex-wrap items-center gap-2">
+          <!-- A role="status" region that enters the DOM together with its content announces
+               nothing to most screen reader/browser pairings — only a mutation *inside* an
+               already-mounted region is announced. So the sr-only region below is permanent and
+               only its text comes and goes; the visible twin stays an @if (it must not occupy
+               layout space when there is nothing to say) and is aria-hidden so the message is not
+               spoken twice — once from the live region, once from the visible text a screen
+               reader would otherwise also read. Same split as usage-stats-page.html's
+               selection-pruned notice and app-shell.ts's live-quota announcement
+               (docs/UI-Designsprache.md §4.5). -->
+          <span role="status" class="sr-only">
+            @if (resyncFeedbackKey(); as key) {
+              {{ key | transloco }}
+            }
+          </span>
           @if (resyncFeedbackKey(); as key) {
-            <span role="status" class="text-sm text-fg-muted">{{ key | transloco }}</span>
+            <span aria-hidden="true" class="text-sm text-fg-muted">{{ key | transloco }}</span>
           }
           @if (canViewUsageStats() && isBotActive()) {
             <button

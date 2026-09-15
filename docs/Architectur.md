@@ -317,11 +317,10 @@ Configuration is done in both cases through a `.env` file at the repo root (`POS
 
 `docker-compose.prod.yml` also carries the `harness` service from 6a, here on the same worker image (`ghcr.io/sensitron/emotepurge-worker:latest`) instead of a second image, likewise reachable only via `--profile harness run --rm harness <channel>` — never through the normal stack redeploy.
 
-## 7. Local development & debugging (Dev Containers)
+## 7. Local development & debugging
 
-For debugging `EmotePurge.Api`/`EmotePurge.Worker` directly in VS Code (breakpoints, F5), the official **Dev Containers** model is used, not attaching to a production-like, prebuilt image:
+For debugging `EmotePurge.Api`/`EmotePurge.Worker` directly in VS Code (breakpoints, F5):
 
-- `.devcontainer/devcontainer.json` + `.devcontainer/docker-compose.yml` define a dedicated `devcontainer` service (SDK image, repo mounted as a volume) in the same compose network as `postgres`/`redis`. The `api`/`worker` services from the root `docker-compose.yml` are deliberately **not** started (`runServices: ["postgres", "redis"]`) — inside the dev container the app runs directly through the .NET debugger, not as a prebuilt Docker image.
-- Connection strings (`ConnectionStrings__DefaultConnection`, `Redis__ConnectionString`) point automatically to the compose hostnames `postgres`/`redis` inside the dev container; outside the container (normal host debugging) the same `.vscode/launch.json` configurations fall back to `localhost` from `appsettings.json` instead (provided `docker compose up postgres redis` is running locally).
 - `.vscode/launch.json` contains the `coreclr` launch configs `Api` and `Worker` as well as a compound config `Api + Worker` for debugging both processes together; `.vscode/tasks.json` builds beforehand in each case (`build-api`/`build-worker`).
-- The Api explicitly binds to `http://0.0.0.0:8080` (`ASPNETCORE_URLS`), matching the port that the productive `api` container exposes as well — HTTPS dev certificates are deliberately not set up inside the Linux container.
+- These configs use the `localhost` connection strings from `appsettings.json`, so `docker compose up -d postgres redis` must be running locally first.
+- The `Api` launch config binds to `http://0.0.0.0:8080` (`ASPNETCORE_URLS`), matching the port that the productive `api` container exposes. This does **not** match the locally registered Twitch OAuth redirect (`http://localhost:5151/api/auth/twitch/callback`) — for login/frontend work, run `dotnet run --project src/EmotePurge.Api` instead (port `5151`).

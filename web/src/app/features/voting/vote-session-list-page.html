@@ -76,10 +76,26 @@
             >
               {{ 'voting.list.copyLink' | transloco }}
             </button>
+            <!-- A role="status" region that enters the DOM together with its content announces
+                 nothing to most screen reader/browser pairings — only a mutation *inside* an
+                 already-mounted region is announced. So the sr-only region below is permanent (one
+                 per row) and only its text comes and goes via @if; the visible twin stays an @if
+                 (it must not occupy layout space when there is nothing to say) and is aria-hidden
+                 so the message is not spoken twice (docs/UI-Designsprache.md §4.5). -->
+            <span role="status" class="sr-only">
+              @if (copyFeedback(); as feedback) {
+                @if (feedback.sessionId === session.id) {
+                  {{
+                    (feedback.status === 'copied' ? 'voting.list.copied' : 'voting.list.copyFailed')
+                      | transloco
+                  }}
+                }
+              }
+            </span>
             @if (copyFeedback(); as feedback) {
               @if (feedback.sessionId === session.id) {
                 <span
-                  role="status"
+                  aria-hidden="true"
                   [class]="
                     feedback.status === 'copied'
                       ? 'text-xs text-success-fg'
