@@ -15,9 +15,16 @@ test.describe('language switch: a failed locale load snaps the switcher back', (
     await mockAuthMe(page, AUTH_USER);
     await mockMyChannels(page, []);
 
-    // Fails every attempt — Transloco retries a failed load twice by default, so failing only the
-    // first request would let a retry quietly succeed and hide the bug.
-    await page.route('**/i18n/en.json', (route) => route.abort('failed'));
+    // Held open until released below, so the optimistic English state can be asserted before any
+    // attempt fails. Every attempt (including Transloco's two default retries) hits this same gate.
+    let releaseFailure!: () => void;
+    const failureGate = new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    await page.route('**/i18n/en.json', async (route) => {
+      await failureGate;
+      await route.abort('failed');
+    });
 
     await page.goto('/');
     await expect(page.locator('html')).toHaveAttribute('lang', 'de');
@@ -31,9 +38,11 @@ test.describe('language switch: a failed locale load snaps the switcher back', (
     await expect(english).not.toBeChecked();
 
     await english.click();
+    // The optimistic switch, rendered before the load has had any chance to fail.
+    await expect(english).toBeChecked();
 
-    // Snaps back once the failed load (and its two retries) has actually settled — not proof of
-    // nothing having happened yet.
+    releaseFailure();
+
     await expect(german).toBeChecked({ timeout: 10000 });
     await expect(english).not.toBeChecked();
     await expect(page.locator('html')).toHaveAttribute('lang', 'de');
