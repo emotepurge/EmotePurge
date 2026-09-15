@@ -10,6 +10,48 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — Four rule filters against the "comprehensive" profile's noise
+
+**Betrifft:** `.github/workflows/sonarcloud.yml`, `.editorconfig`
+
+Four individual rules are switched off, following the filter-don't-disable line from the entry
+below and from 2026-09-06 ("Roslyn is filtered in `.editorconfig`, not at the Sonar import"). Each
+one contradicts a project convention rather than flagging a real defect; everything else from the
+"comprehensive" profile stays active.
+
+**`csharpsquid:S2325`** ("methods that don't access instance data should be static") is switched
+off project-wide via `sonar.issue.ignore.multicriteria` (new entry `e2`). It's Sonar's own twin of
+Roslyn's `CA1822`, already `none` in `.editorconfig` since 2026-09-06 with the same reasoning
+("micro-optimizations with no relation to an observed problem"). Leaving `S2325` active would just
+have the same convention reappear from the other analyzer under a different rule key.
+
+**`CA1861`** ("prefer static readonly fields over constant arrays as arguments") is set to `none`
+in `.editorconfig`, but only for `tests/**/*.cs` — a new glob section, `src/**` keeps the rule
+active. Same reasoning as `CA1859`/`CA1822`: a literal array passed straight into
+`Assert.Equal(...)`/`(...).Should().BeEquivalentTo(...)` is the point of the assertion, not a hot
+path worth a static field for. Verified with a per-project `dotnet build .../*.csproj
+"/p:ErrorLog=<path>.sarif,version=2.1"` before and after: `EmotePurge.Infrastructure.Tests` went
+from 5 `CA1861` findings to 0, `EmotePurge.Worker.Tests` from 1 to 0, while `EmotePurge.Infrastructure`
+(`src/**`) still reports 11 — the rule stayed active where it was left active.
+
+**`Web:S6819`** ("prefer the semantic HTML tag over the ARIA role") is switched off for
+`web/src/**/*.html` only (multicriteria `e3`). It contradicts `docs/UI-Designsprache.md` §4.5 ("a
+permanently mounted `sr-only` region with `role="status"`") and §6.1's skeleton rule ("one
+`role="status"` element with a translated `aria-label`, the shimmer blocks in an `aria-hidden`
+container") — both call for exactly the `div`/`span` + `role="status"` pattern this rule flags in
+favor of `<output>`. `<output>`'s content model is phrasing content only, so it cannot validly
+hold the skeleton's block-level shimmer children, and it has weaker live-region support across
+screen reader/browser pairings than an explicit `role="status"`. The price: the rule's other checks
+for these files (e.g. preferring `<button>`/`<a>` over `role="button"`/`"link"`) are lost too,
+because `ignore.multicriteria` filters by rule key, not by which role triggered a given finding.
+
+**`docs/superpowers/prototypes/**`** is appended to `sonar.exclusions`. These are throwaway HTML
+prototypes kept only as a record cited by `DECISIONS.md` entries (e.g. the distribution-band
+comparison behind the usage-stats page), never served or built — Sonar has nothing useful to say
+about a page nobody ships.
+
+---
+
 ### 2026-09-15 — New SonarCloud org runs the "comprehensive" quality profile, not "core"
 
 **Betrifft:** `.github/workflows/sonarcloud.yml` (unchanged, but the scope of what it reports) ·

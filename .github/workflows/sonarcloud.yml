@@ -123,6 +123,27 @@ jobs:
       # The price: in these two files the gate will never again report missing coverage — even
       # if testable logic moves in there later. Anyone adding such logic should pull it into
       # its own class instead of relying on this line.
+      #
+      # docs/superpowers/prototypes/** is excluded from sonar.exclusions since the "comprehensive"
+      # profile switch (2026-09-15, see DECISIONS): these are throwaway HTML prototypes kept only
+      # as a record cited by DECISIONS entries (e.g. the distribution-band comparison), never
+      # served or built. Sonar has nothing useful to say about a page nobody ships.
+      #
+      # multicriteria e2 filters csharpsquid:S2325 ("methods that don't access instance data
+      # should be static") project-wide. It's Sonar's own twin of Roslyn's CA1822, which
+      # .editorconfig already sets to `none` repo-wide (2026-09-06, see DECISIONS: "micro-optimizations
+      # with no relation to an observed problem") — leaving S2325 active here would just have the
+      # same convention reappear under Sonar's own rule key instead of Roslyn's.
+      #
+      # multicriteria e3 filters Web:S6819 ("prefer the semantic HTML tag over the ARIA role") for
+      # web/src/**/*.html only. It contradicts docs/UI-Designsprache.md §4.5 ("a permanently
+      # mounted sr-only region with role="status"") and §6.1 ("one role="status" element ... the
+      # shimmer blocks in an aria-hidden container") — both call for exactly the div/span-plus-role
+      # pattern this rule flags in favor of <output>. <output> cannot validly hold the skeleton's
+      # block-level shimmer children (its content model is phrasing content only) and has weaker
+      # live-region support across screen readers than an explicit role="status". The price: for
+      # these files the rule's other checks (e.g. preferring <button>/<a> over role="button"/"link")
+      # are lost too, since ignore.multicriteria filters by rule key, not by which role triggered it.
       - name: Sonar Scanner begin
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -133,12 +154,16 @@ jobs:
           /d:sonar.host.url="https://sonarcloud.io"
           /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
           /d:sonar.javascript.lcov.reportPaths="web/coverage/web/lcov.info"
-          /d:sonar.exclusions="**/Migrations/**,src/EmotePurge.Api/wwwroot/**,web/dist/**,**/node_modules/**"
+          /d:sonar.exclusions="**/Migrations/**,src/EmotePurge.Api/wwwroot/**,web/dist/**,**/node_modules/**,docs/superpowers/prototypes/**"
           /d:sonar.coverage.exclusions="web/e2e/**,**/Migrations/**,scripts/**,src/EmotePurge.Worker/TwitchChatManager.cs,src/EmotePurge.Worker/TwitchConnectionWatchdog.cs"
           /d:sonar.qualitygate.wait=true
-          /d:sonar.issue.ignore.multicriteria=e1
+          /d:sonar.issue.ignore.multicriteria=e1,e2,e3
           /d:sonar.issue.ignore.multicriteria.e1.ruleKey="javascript:S4036"
           /d:sonar.issue.ignore.multicriteria.e1.resourceKey="scripts/**/*.mjs"
+          /d:sonar.issue.ignore.multicriteria.e2.ruleKey="csharpsquid:S2325"
+          /d:sonar.issue.ignore.multicriteria.e2.resourceKey="**/*"
+          /d:sonar.issue.ignore.multicriteria.e3.ruleKey="Web:S6819"
+          /d:sonar.issue.ignore.multicriteria.e3.resourceKey="web/src/**/*.html"
 
       # --no-incremental is mandatory, not style: MSBuild otherwise skips already-built projects
       # incrementally (e.g. from a previous cache restore), and the Sonar-Scanner-MSBuild hook sees
