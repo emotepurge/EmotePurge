@@ -816,7 +816,7 @@
   },
   "restore": {
     "button": "Emotes wiederherstellen",
-    "progress": "{{ finished }} / {{ total }} wiederhergestellt",
+    "progress": "{{ finished }} / {{ total }} verarbeitet",
     "deleteFailedFallback": "Wiederherstellen fehlgeschlagen",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "confirmTitle": {
@@ -1046,7 +1046,7 @@
       "runNotice": "Das Hinzufügen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
       "execute": "Kopieren"
     },
-    "progress": "{{ finished }} / {{ total }} kopiert",
+    "progress": "{{ finished }} / {{ total }} verarbeitet",
     "deleteFailedFallback": "Kopieren fehlgeschlagen",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
