@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import {
   AUTH_USER,
@@ -10,6 +10,29 @@ import {
 } from './support/mocks';
 
 const ADMIN_USER = { ...AUTH_USER, isGlobalAdmin: true };
+
+// The role-cache-cleared acknowledgement (#134) is a permanently mounted sr-only role="status"
+// region plus a visible aria-hidden twin (docs/UI-Designsprache.md §4.5) — a bare getByText now
+// matches both under strict mode, so a test that needs the on-screen copy targets the aria-hidden
+// span instead.
+const roleCacheClearedNotice = (row: Locator) =>
+  row.locator('[aria-hidden="true"]').filter({ hasText: 'Rollen-Cache geleert' });
+
+// Same tagging technique as emote-import.e2e.spec.ts's "dock outcomes … region that outlives the
+// dock" (#134 follow-up): tag every role="status" element present at rest, then require the
+// region that later carries the feedback text to still carry that tag. A plain count-under-retry
+// check can pass for the wrong reason — the feedback clears after ROLE_CACHE_FEEDBACK_MS (4 s)
+// while the count assertion itself retries for only 1000 ms, so on a slow run a defect's extra
+// node can self-clear inside that retry window before it is ever counted.
+const AT_REST = 'data-e2e-at-rest';
+
+async function tagStatusRegionsAtRest(page: Page): Promise<void> {
+  await page.evaluate((attribute) => {
+    document.querySelectorAll('[role="status"]').forEach((node) => {
+      node.setAttribute(attribute, '');
+    });
+  }, AT_REST);
+}
 
 test.describe('global admin on /admin/users', () => {
   test.beforeEach(async ({ page }) => {
@@ -94,7 +117,54 @@ test.describe('global admin on /admin/users', () => {
 
     // Non-destructive, so no confirmation step — the removed count is the whole feedback.
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    await expect(page.getByText('Rollen-Cache geleert (3 Einträge)')).toBeVisible();
+    await expect(roleCacheClearedNotice(page.getByRole('listitem'))).toBeVisible();
+  });
+
+  // #134: a role="status" region that enters the DOM together with its content announces nothing
+  // to most screen reader/browser pairings — only a mutation *inside* an already-mounted region is
+  // announced. Pins the fix (docs/UI-Designsprache.md §4.5): the sr-only status region on the row
+  // is mounted permanently and only its text changes via @if; a click must never add a *new*
+  // status node to the row, and the visible twin next to it is aria-hidden so nothing is read out
+  // twice.
+  test('role-cache acknowledgement lives in an already-mounted status region, not a freshly mounted one', async ({
+    page,
+  }) => {
+    await mockAdminUsers(page, [
+      { twitchUserId: '4712', twitchUsername: 'zweitaccount', displayName: 'Zweitaccount' },
+    ]);
+    await mockInvalidateRoleCache(page, '4712', 3);
+
+    await page.goto('/admin/users');
+
+    const row = page.getByRole('listitem').filter({ hasText: 'Zweitaccount' });
+    await expect(row.getByRole('button', { name: 'Rollen-Cache leeren' })).toBeVisible();
+
+    // At rest: the row carries no "Rollen-Cache geleert" status text yet. Every role="status"
+    // element present now is tagged, so the region that later carries the feedback text can be
+    // checked for identity rather than merely counted.
+    const rowStatus = () => row.getByRole('status');
+    await expect(rowStatus().filter({ hasText: 'Rollen-Cache geleert' })).toHaveCount(0);
+    await tagStatusRegionsAtRest(page);
+
+    const cacheRequest = page.waitForRequest(
+      (request) =>
+        request.method() === 'POST' &&
+        request.url().includes('/api/admin/users/4712/invalidate-role-cache'),
+    );
+    await row.getByRole('button', { name: 'Rollen-Cache leeren' }).click();
+    await cacheRequest;
+
+    const notice = rowStatus().filter({ hasText: 'Rollen-Cache geleert' });
+    await expect(notice).toHaveText('Rollen-Cache geleert (3 Einträge)');
+
+    // The region the text appeared in must be one that already existed at rest, not a freshly
+    // created node — checked with a short timeout so a defect that only self-clears after
+    // ROLE_CACHE_FEEDBACK_MS (4 s) cannot pass by outliving this assertion's window.
+    await expect(notice).toHaveAttribute(AT_REST, '', { timeout: 1000 });
+
+    // The visible copy is a separate, aria-hidden element — otherwise the same message is spoken
+    // twice, once from the live region and once from the visible text.
+    await expect(roleCacheClearedNotice(row)).toBeVisible();
   });
 
   test('cancelling the dialog sends nothing', async ({ page }) => {

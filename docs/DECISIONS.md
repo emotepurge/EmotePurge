@@ -10,6 +10,178 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — Dock outcome notices are announced from a page-level region that outlives the dock (#134)
+
+**Betrifft:** `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` · `web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/voting/vote-session-detail-page.html` · `web/e2e/emote-import.e2e.spec.ts` · `docs/UI-Designsprache.md`
+
+**Why.** The #134 fix split every transient notice into a permanently mounted sr-only
+`role="status"` region plus an `aria-hidden` visible twin, because a status region that enters the
+DOM together with its text announces nothing on most screen reader/browser pairings. For the
+duplicate and resync notices of a restore and of an import, that "permanent" region still lived
+inside `ImportProgressSection` and `MassDeletePanel` — and on the usage-stats page both sit inside
+the action dock, whose `@if` follows `actionDockHasContent`. That function is true when only a
+duplicate notice is pending (#149 P2): a fully refused run, every row already present, leaves no
+run and no queue and is the one thing that mounts the dock. Dock, component and region were then
+created in the same change-detection pass that set the notice text, so exactly that outcome was
+silent again. An E2E case that tags every status region at rest and requires the notice to land in
+a tagged one failed on the previous code for this case and passed for the dock-already-open case.
+
+**What changed.** The announcement moves out of the dock. `DockOutcomeAnnouncer` is a component
+whose host element is the `sr-only role="status"` region; each host page mounts it once,
+unconditionally, outside every dock gate (`!isCoarse()` included): `usage-stats-page.html` with
+`withImport`, `vote-session-detail-page.html` without it, because that page mounts the mass-delete
+panel but no import section and must not speak for a run it does not show. Its content mirrors the
+service signals the visible notices are gated on. The two components keep their visible notices,
+`aria-hidden`, and own no status region for them any more, so nothing is announced twice. With
+several outcomes at once the region holds one paragraph each, in the dock's reading order —
+restore before import, within each skipped count, check unavailable, resync. `role="status"` is
+implicitly `aria-atomic="true"` (WAI-ARIA 1.2, §status), a default Blink and WebKit apply: without
+an override, adding or changing one paragraph would re-read the whole region, standing ones
+included — an independent second review (Codex) caught this omission after the initial merge, so
+the region's host now sets `aria-atomic="false"` explicitly, and a new outcome is announced once
+without repeating standing ones. The resync
+key mapping became one exported function (`resyncNoticeKey`) used by the announcer and both
+components, so spoken and shown wording cannot drift.
+
+**Rejected.** Keeping the region in the components and making the dock stay mounted instead: the
+dock's whole contract is to exist only while there is something to act on (§2, §8.7), and it would
+still unmount under a notice on a pointer-mode switch. A region per component on each page: two
+voices for the same outcome on the usage-stats page is what the twin split exists to prevent.
+
+**Still open.** `run-progress-panel.ts` is itself `role="status"` and mounts together with its first
+state, so the start of a run is not announced. Named in §4.5 as the one known open instance.
+
+---
+
+### 2026-09-15 — Light-mode `warning-fg` moves to `amber-800`, and the live-quota badge stops diluting its own contrast on hover (#106)
+
+**Betrifft:** `web/src/styles.css` · `web/src/app/features/shell/app-shell.ts` · `docs/UI-Designsprache.md` · `DESIGN.md`
+
+**Why.** The UI audit's axe contrast gate flagged 18 `color-contrast` findings in light mode
+(`welcome`, the `admin-monitoring-*` scenarios, `vote-detail-subset-archived`), all tracing back to
+`--ep-warning-fg`: `amber-700` reaches only 4.40:1 on `page` and 4.09:1 on `surface-inset`, both
+under the 4.5:1 text gate. The 2026-08-07 entry "Das helle Blatt ist nicht mehr reinweiß, und die
+ganze Rampe geht mit" measured the surface ramp itself — page/surface/inset and the fg-muted/accent
+pairs sitting on it — but never re-measured the semantic tones layered on top of that ramp, so this
+gap went unnoticed for over a month. A trial run with the token at `amber-800` cleared 18 of the 20
+findings.
+
+**What changed.** `--ep-warning-fg` moves from `amber-700` to `amber-800` in the light block of
+`web/src/styles.css`:
+
+| pairing | amber-700 (before) | amber-800 (now) |
+|---|---|---|
+| warning-fg on page | 4.40:1 | 6.21:1 |
+| warning-fg on surface-inset | 4.09:1 | 5.76:1 |
+| warning-fg on surface / on warning-wash (status-badge pill) | 4.86:1 / 4.85:1 | 6.84:1 / 6.84:1 |
+| warning-fg on surface-inset-hover | 3.69:1 | 5.20:1 |
+
+(`run-progress-panel.ts`'s rate-limit text sits on `surface-inset` but is not exercised by any audit
+scenario — it benefits from the same move without being one of the 18 findings.)
+
+`--ep-warning-dot` stays at `amber-700`: it is a meaning-bearing graphic and owes only 3:1, and
+4.09:1 on `surface-inset` already clears that with reserve — darkening it too would have cost the
+amber hue its last distinction from `--ep-danger-fg` (red-700) for no contrast benefit. The token's
+own comment previously claimed "amber-700 gets 4,6:1" on `surface-inset`; that was wrong, the
+measured value is 4,1:1 — the intro comment on the light block already carried the correct 4,08:1
+for the same pairing, so the two comments disagreed with each other. Fixed in the same commit.
+`--ep-warning-fg` still separates from `--ep-danger-fg` after moving: OKLab ΔE is 0.094 against
+amber-800, versus 0.087 against amber-700 before, so darkening did not pull the two tones together.
+
+The remaining finding, `shell-live-quota-open`, was not a token problem. The "Live-Updates
+pausiert" badge in `app-shell.ts` sits inside a trigger button styled `transition hover:opacity-80`,
+and the audit's click leaves the mouse on the button, so it measures the `:hover` state. Opacity
+dilutes a two-tone surface (the badge's own `warning-wash`/`warning-fg` pill) toward the backdrop
+behind it rather than leaving either colour intact — axe measured 3.44:1 today, and still only
+4.4:1 with `amber-800` alone (#ab622f on #fcf9ec). A hover is a state of its own and owes the same
+4.5:1 as rest (§10). The trigger now gets `hover:bg-surface-inset` instead of the opacity filter —
+the same idiom comparable header/menu triggers already use (`account-menu.ts`'s row hovers, and the
+dead band's "select all" button in `usage-stats-page.html`): a background sits behind the badge
+rather than a filter sitting over it, so the badge's own wash+fg carry the same contrast in both
+states.
+
+**Docs.** `docs/UI-Designsprache.md` §10 gets the warning-fg numbers next to the existing
+`fg-muted` tightest-case note. `DESIGN.md`'s "Semantic Tones" section is rephrased: it previously
+said light mode sets `warning-dot` as "the only tone two steps darker"; now both `warning-fg`
+(`amber-800` instead of the `700` step every other fg uses) and `warning-dot` (`amber-700` instead
+of the `600` step every other dot uses) deviate, each one step darker than its own row's peers.
+
+---
+
+### 2026-09-15 — Remove the unused Dev Container setup (#85)
+
+**Betrifft:** `.devcontainer/` · `CLAUDE.md` · `docs/Architectur.md`
+
+**Why.** The Dev Container setup was never actually used: the operator works on the devbox with
+`dotnet run` plus `docker compose up postgres redis`, or with the LAN profile for mobile testing —
+never through "Reopen in Container". An unused setup rots silently: the 2026-08-01 structure review
+already found it carrying a Node version that had diverged from the rest of the toolchain, and its
+existence misleads contributors into a path nobody maintains or verifies. This supersedes the
+undated entry "Dev Containers statt Debugger-Attach an einen laufenden Produktions-Container" further
+down this log — that historical entry is left unedited.
+
+**What changed.** `.devcontainer/` (`devcontainer.json`, `devcontainer-lock.json`,
+`docker-compose.yml`, `Dockerfile`) is deleted. `CLAUDE.md` drops the `.devcontainer`
+postCreateCommand mention and the "Dev Container Debugging (VS Code)" section. `docs/Architectur.md`
+section 7 is rewritten to describe local VS Code debugging without the container — the
+`.vscode/launch.json`/`tasks.json` configs stay, since they never depended on the container: `Api`
+already fell back to the `localhost` connection strings from `appsettings.json` outside the
+container, and its `http://0.0.0.0:8080` bind (mismatched with the local Twitch OAuth redirect on
+port 5151) was already true on the host, not something the container introduced.
+
+---
+
+### 2026-09-15 — UI audit harness: a fifth viewport (480 px, fine pointer) closes the gap below `tablet` (#111)
+
+**Betrifft:** `web/e2e/audit/ui-audit.audit.ts` · `docs/UI-Designsprache.md`
+
+**Why.** #91's PR #110 shipped a harness run that reported 426 byte-identical metric files and zero
+regressions, yet an independent second opinion (Codex Sol) reviewing the same diff found two overflow
+P2 findings — one of them the header button group in `usage-stats-grid`. A later re-measurement
+(real pixels, Archivo woff2, 14 px, `px-3`, `nowrap`) pinned that overflow to a measured 503 px
+browser window; that number is the author's own follow-up measurement, not something Codex's review
+itself reported. The harness could not have caught either finding: its narrowest fine-pointer
+viewport was `tablet` at 768 px, and every surface
+gated on `!isCoarse()` (`core/pointer/pointer-mode.service.ts`, the 7TV mass-delete write paths) was
+therefore never measured with a mouse below that width. A green run only ever meant "no overflow at
+768/1024/1536", not "no overflow below 768" — for fine-pointer-only surfaces it meant nothing at all
+under 768 px, because they render on no viewport that narrow. A fine pointer under 768 px is not a
+hypothetical state: a desktop window at 200 % zoom, a window snapped to half a screen, DevTools docked
+to one side all produce it without switching the OS pointer to touch.
+
+**What changed.** `VIEWPORTS` in `web/e2e/audit/ui-audit.audit.ts` gains `narrow` (480×800,
+`pointerCoarse: false`), between `mobile` and `tablet`. 480 sits below Tailwind's `sm` breakpoint
+(640), so it measures the unprefixed, mobile-first layout under a mouse rather than re-measuring
+`sm:` rules `tablet` already covers.
+
+`narrow` runs for **every** scenario, not only ones flagged `requiresFinePointer`: the motivating
+regression sat in a page header (`usage-stats-grid`) that carries no such flag, so restricting the new
+viewport to flagged scenarios would have reproduced the exact blind spot this entry closes.
+
+`narrow` runs `de`-only and `dark`-only, the same trade the harness already makes for `tablet` and for
+`light`: German strings are the longer ones, so `de` is the stricter overflow test, and layout breaks
+are theme-independent while contrast is checked in every state regardless via the axe gate. That
+keeps `narrow` to one additional state per scenario — nine states per scenario before, ten now, an
+11 % increase — not a full extra viewport's worth.
+
+`assertEmulatedState()` is strengthened to also assert `matchMedia('(pointer: fine)').matches`, not
+only `(pointer: coarse)`. A known Chromium behaviour leaves a context matching *neither* query after
+`Emulation.setTouchEmulationEnabled({enabled: false})` runs on a context that previously had touch
+emulation on — a single-sided `coarse` assertion cannot tell that broken state apart from a genuine
+fine-pointer emulation, since both make `(pointer: coarse)` false. Both call sites (right after the
+CDP calls, and again immediately before `collectMetrics()`) now check both queries.
+
+`docs/UI-Designsprache.md` §12 is updated to match: the viewport list, the "dark covers all N
+viewports" line, the pointer-emulation sentence's viewport count, and a new bullet for `narrow`
+analogous to the existing "Two desktop cases" bullet. `CLAUDE.md` is unchanged — nothing here alters a
+command, a convention, or a Fertig-Gate.
+
+**Expected fallout.** The new viewport is expected to surface existing overflow/touch-target
+violations at widths nothing has looked at before now; these get triaged individually as findings,
+not treated as a reason to weaken the gate.
+
+---
+
 ### 2026-09-15 — Report-only recompute of a harness run, without touching the archive (#119)
 
 **Betrifft:** `docker-compose.prod.yml` · `docker-compose.yml` · `docs/Architectur.md` ·

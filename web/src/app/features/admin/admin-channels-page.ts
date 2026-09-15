@@ -182,11 +182,25 @@ const LIVE_AGE_TICK_MS = 30_000;
                         | transloco
                     }}
                   </app-state-dot>
+                  <!-- Transient inline confirmation, same pattern as the vote-session list's copy
+                       feedback: a 202 only means "queued". The live stream upgrades the wording to
+                       "completed" once the worker actually reports the sync back.
+
+                       A role="status" region that enters the DOM together with its content
+                       announces nothing to most screen reader/browser pairings — only a mutation
+                       *inside* an already-mounted region is announced. So the sr-only region below
+                       is permanent (one per row) and only its text comes and goes; the visible
+                       twin stays an @if (it must not occupy layout space when there is nothing to
+                       say) and is aria-hidden so the message is not spoken twice — once from the
+                       live region, once from the visible text a screen reader would otherwise also
+                       read (docs/UI-Designsprache.md §4.5). -->
+                  <span role="status" class="sr-only">
+                    @if (resyncFeedback() === channel.channelName) {
+                      {{ resyncFeedbackKey() | transloco }}
+                    }
+                  </span>
                   @if (resyncFeedback() === channel.channelName) {
-                    <!-- Transient inline confirmation, same pattern as the vote-session list's copy
-                         feedback: a 202 only means "queued". The live stream upgrades the wording to
-                         "completed" once the worker actually reports the sync back. -->
-                    <span role="status" class="text-xs text-success-fg">
+                    <span aria-hidden="true" class="text-xs text-success-fg">
                       {{ resyncFeedbackKey() | transloco }}
                     </span>
                   }

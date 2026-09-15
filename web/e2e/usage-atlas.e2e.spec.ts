@@ -81,9 +81,14 @@ async function openAtlas(
 // The permanent sr-only announcement region for the selection-pruned notice (usage-stats-page.html,
 // §4.5) is ALSO role="status" and stays mounted even with nothing to say (#94 follow-up P2) — so a
 // bare getByRole('status') resolves to two elements once loading is done, same strict-mode trap the
-// comment above already works around for the loading skeleton. `.filter({ hasText: 'von' })` picks
-// the emote-count line specifically; the sr-only region never contains that word.
-const emoteCountStatus = (page: Page) => page.getByRole('status').filter({ hasText: 'von' });
+// comment above already works around for the loading skeleton. A plain `.filter({ hasText: 'von' })`
+// used to pick this line out, but that word alone latently collides with the dock-outcome announcer
+// that is now also permanently mounted (#134 follow-up): its German restore-cooldown text contains
+// "von selbst" ("… aktualisiert sich innerhalb einer Minute von selbst."). The emote-count line's own
+// shape — "{{ shown }} von {{ total }} Emote(s)" (de.json) — is numeric on both sides of "von", which
+// the cooldown text never is, so a regex on that shape is specific to it.
+const emoteCountStatus = (page: Page) =>
+  page.getByRole('status').filter({ hasText: /\d+ von \d+/ });
 
 const cell = (page: Page, name: string) =>
   page.getByRole('button', { name: new RegExp(`^${name} ·`) });
