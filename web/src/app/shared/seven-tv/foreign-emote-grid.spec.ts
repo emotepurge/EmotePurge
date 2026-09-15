@@ -750,7 +750,7 @@ describe('ForeignEmoteGrid', () => {
 
     component['selection'].onRowClick(many[0], { shiftKey: false } as MouseEvent);
     component['selection'].onRowClick(many[1499], { shiftKey: true } as MouseEvent);
-    expect(component['selection'].selectedKeys().length).toBe(1500);
+    expect(component['selection'].selectedKeys()).toHaveLength(1500);
 
     expect(component['truncatedNoticeParams']()).toEqual({
       loaded: '1.500',
