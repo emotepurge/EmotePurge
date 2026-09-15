@@ -9,7 +9,7 @@ Befunde, gesammelt und triagiert am 2026-09-15 (`triage-backend.md`, `triage-fro
 `summary.tsv`). Zeilennummern in diesem Plan sind **Hinweise auf `main` = `3646d5b`** und driften,
 sobald frühere Tasks gelandet sind — Datei + Symbol sind bindend, die Zeile nicht.
 
-**Erwartete Wirkung:** 89 Befunde von 218. Der Rest ist bewusst ausgeschlossen (Abschnitt 1) und
+**Erwartete Wirkung:** 85 Befunde von 218. Der Rest ist bewusst ausgeschlossen (Abschnitt 1) und
 wird tagsüber oder in SonarCloud selbst erledigt.
 
 **Basis:** Der Worktree entsteht aus `main` = `3646d5b` (Merge von PR #191). Der Branch heißt, was
@@ -32,7 +32,9 @@ neben einem Task-Befund steht:
 |---|---|
 | **Alle K3-Refactorings**: `csharpsquid:S3776` (23), `csharpsquid:S107` (12, auch die 5 echten in `HarnessRunner`/`ReplayFidelityCalculator`), `javascript:S3776` (4), die 4 Produktions-`typescript:S3358` (`worker-health.service.ts`, `theme.service.ts`, `create-vote-session-dialog.ts:245`, `vote-session-list-page.ts:164` — inkl. der doppelten audience→roles-Abbildung) | Beurteilung nötig; Harness-Teile erst nach der bindenden Messung am 08.10. |
 | **OAuth-State-Cookie** `csharpsquid:S2092` (`AuthEndpoints.cs:32`) | braucht echten Twitch-Login auf localhost/LAN/Prod (Regel 16) |
-| **Rückwärtslauf-anfällige Regexe** `javascript:S8786` ×2 (`scripts/sonar-to-sarif.mjs` `htmlToPlainText`, `<[^>]+>` ~Z. 247 und `[ \t]+\n` ~Z. 253) | ein anderes Muster braucht einen **echten** `htmlDesc`-Korpus als Golden-Referenz, und den liefert SonarCloud nur mit Token (`rules/show` und `rules/search` geben ohne Token kein `htmlDesc`/`mdDesc`/`descriptionSections`; das Skript dokumentiert das selbst) — tagsüber. In F5 werden diese zwei Aufrufe nur auf `replaceAll` umgestellt, **Muster unverändert** |
+| **`switch`-Default in `LiveEndpoints.cs`** (`csharpsquid:S3928` + `external_roslyn:CA2208`, ~Z. 193) | der Default ist **erreichbar**: `LiveEventSubscribeResult` ist ein öffentlicher positionaler `record` (`ILiveEventStream.cs`), und `Failed(status)` prüft den Enum-Wert nicht — jede `ILiveEventStream`-Implementierung kann einen undefinierten Status liefern. Ein `UnreachableException` wäre dort eine falsche Behauptung; die richtige Form (Validierung in der Factory oder Enum-Prüfung im Handler) ist eine Tagesentscheidung |
+| **`authHeaders` und der Regel-Key-Comparator in `scripts/sonar-to-sarif.mjs`** (`javascript:S4624` ~Z. 73, `javascript:S3358` ~Z. 471) | keiner der beiden Codepfade wird von den F5-Golden-Läufen erreicht (der Lauf ohne Umgebungsvariablen endet in `readEnv()` davor), die Funktionen sind nicht exportiert, und Helfer nur für einen Nachtlauf-Check zu exportieren ist nicht vorgesehen — tagsüber mit Token-Lauf |
+| **Rückwärtslauf-anfällige Regexe** `javascript:S8786` ×2 (`scripts/sonar-to-sarif.mjs` `htmlToPlainText`, `<[^>]+>` ~Z. 247 und `[ \t]+\n` ~Z. 253) | ein anderes Muster braucht einen **echten** `htmlDesc`-Korpus als Golden-Referenz, und den liefert SonarCloud nur mit Token (`rules/show` und `rules/search` geben ohne Token kein `htmlDesc`/`mdDesc`/`descriptionSections`; das Skript dokumentiert das selbst) — tagsüber. F5 lässt die beiden **Muster unverändert** (höchstens der Aufruf wechselt in der Kette auf `replaceAll`) |
 | **Dockerfile** `docker:S6505` (`npm ci --ignore-scripts`) + `docker:S7031` (RUN-Zusammenlegung) | tagsüber: braucht einen Container-Healthcheck; der Lauf darf **kein** `docker compose`, `docker run`, `docker exec` aufrufen (feste `container_name`s — ein `up`/`down` aus dem Worktree ersetzt den Dev-Stack des Betreibers) |
 | **Regel-/Workflow-Filter und `.editorconfig`**: `csharpsquid:S2325`, `external_roslyn:CA1861` (6, Tests), `Web:S6819` (6), Prototyp-Ausschluss (`docs/superpowers/prototypes/**`, 7 JS-Befunde) | macht ein eigener Branch gerade; der Lauf ändert **nie** `.github/workflows/sonarcloud.yml`, `.editorconfig` oder `docs/DECISIONS.md` |
 | **Alle K4-Befunde** (FP/Accepted): `S125` ×12, `S3265` ×4, `S5034`, `S6966` ×5 (`LiveEndpoints` 334/371/398, `HardenedForeignEmoteSetService:79`, `SevenTvEventClient:152`), `S6667` ×6, `S1075` ×3, `S3267` ×3 (`SevenTvLeaderboardService:128`, `RosterPrunePolicy:47`, `ReplayFidelityCalculator:504`), `S6444` ×2, `S127`, `ASP0018`, `S2699` ×2, `S7747` ×3, `Web:S6853`, `S2925` ×7, `typescript:S7755` ×5 (`usage-bands.ts` 66/67/184, `atlas-grid.ts:106`, `list-selection.ts:113`), `S2094`, `S3358` in `ui-audit.audit.ts` ×3 und `check-color-tokens.mjs:140` | werden per Skript **in SonarCloud** markiert — nicht durch Codeänderung, nicht durch `// NOSONAR` |
@@ -67,8 +69,16 @@ neben einem Task-Befund steht:
 - **Kein Fragen möglich.** Jede Unklarheit löst dieser Plan auf; wo er es nicht tut, gilt:
   **überspringen und melden**, nicht improvisieren. Ein Befund, der sich nicht wie beschrieben
   beheben lässt (Test rot, Warnung neu, Narrowing bricht), wird an dieser Stelle **zurückgesetzt**
-  (`git checkout -- <datei>` für die Stelle, der Rest des Tasks bleibt) und in der Notizdatei mit
-  Regel-Key + Ort + Grund geführt.
+  — nach dem Verfahren in Abschnitt 3 („Stellenweise arbeiten"), der Rest des Tasks bleibt — und in
+  der Notizdatei mit Regel-Key + Ort + Grund geführt.
+- **Testcontainers laufen offline — geprüfte Vorbedingung (Betreiber, 2026-09-15):** die Fixtures
+  in `tests/EmotePurge.Infrastructure.Tests/Fixtures/` pinnen `postgres:16-alpine` und
+  `redis:7.2-alpine` (Testcontainers 4.15.0, keine `PullPolicy`-Änderung, also Vorgabe „nur ziehen,
+  wenn nicht vorhanden"); diese beiden Images und `testcontainers/ryuk:0.14.0` liegen lokal, der
+  Docker-Daemon ist erreichbar. Damit braucht `dotnet test EmotePurge.slnx` kein Netz. Der Lauf
+  ändert **weder** Testcode **noch** `PullPolicy`. Fehlt ein Image trotzdem (Fehlerbild: Pull-Versuch
+  oder Timeout beim Container-Start in Task 0), ist das ein Blocker nach Task-0-Regel — nicht
+  nachziehen.
 
 ---
 
@@ -82,6 +92,23 @@ neben einem Task-Befund steht:
   liegt außerhalb des Worktrees und taucht in `git status` nie auf — die Pfad-Stage-Regel oben gilt
   trotzdem.
 - **Kein Netz** (Abschnitt 2): auch Scratch-Skripte öffnen keine Verbindung.
+- **Stellenweise arbeiten, Rücknahme deterministisch.** Ein Task besteht aus mehreren Stellen
+  (Datei + Symbol). Der Lauf bearbeitet sie **nacheinander**: eine Stelle ändern, ihre lokale Prüfung
+  fahren (Build bzw. das im Task genannte Test-Teilset oder der Golden-Diff), und **sofort danach
+  `git add <datei>`** — die Stelle ist damit als „gut" eingefroren. Schlägt die Prüfung einer Stelle
+  fehl, wird sie mit `git checkout -- <datei>` zurückgenommen: das verwirft **nur** den ungestageten
+  Stand seit der letzten guten Stelle, nichts Gestagtes. Danach `git diff --cached -- <datei>` lesen
+  und bestätigen, dass genau die erwarteten übrigen Änderungen stehen (und `git diff -- <datei>` leer
+  ist). Erlaubt sind `git add`, `git checkout -- <pfad>` und `git checkout HEAD -- <pfad>`;
+  **nicht** erlaubt sind `git reset --hard`, `git clean`, `git stash`. Diese Regel ist die **einzige**
+  Rücknahme-Vorschrift des Plans; wo ein Task „zurücknehmen"/„zurücksetzen" sagt, ist sie gemeint.
+- **Gate rot am Task-Ende (Backend wie Frontend):** zuerst die Ausgabe mit der Basislinie aus
+  Task 0 vergleichen (dieselben Tests rot mit derselben Meldung?). Ist der Fehler **schon in der
+  Basislinie**, gehört er nicht dem Task: notieren, Commit setzen, weiter. Ist er neu, den
+  **ganzen Task** zurücknehmen — `git checkout HEAD -- <jede Datei des Tasks>` (setzt Index und
+  Arbeitsbaum auf `HEAD`), `git status --porcelain` muss danach leer sein — in der Notizdatei mit
+  Regel-Keys, Orten und der Fehlermeldung führen und mit dem **nächsten Task** fortfahren. Kein
+  Debuggen in fremdem Code, kein zweiter Versuch mit anderer Form.
 - **Sprache:** Bezeichner, neue Kommentare, Log-/Throw-Messages englisch. Bestehende deutsche
   Texte, die ein Task **nicht** ersetzt, bleiben stehen (kein Übersetzen nebenbei).
 - **Formatierung ist Werkzeugsache** (Regel 18): vor jedem Backend-Commit `dotnet format
@@ -111,13 +138,21 @@ neben einem Task-Befund steht:
 - [ ] `/tmp/nacht-sonar-2026-09-15/` anlegen.
 - [ ] `dotnet build EmotePurge.slnx --no-incremental` → Ausgabe nach `/tmp/nacht-sonar-2026-09-15/build-baseline.txt`;
       Zahl der `warning`-Zeilen notieren (erwartet: 0).
-- [ ] `dotnet test EmotePurge.slnx` grün (Basiszahl der Tests notieren, zuletzt ~1025).
+- [ ] `dotnet test EmotePurge.slnx` grün (Basiszahl der Tests notieren, zuletzt ~1025); volle
+      Ausgabe nach `/tmp/nacht-sonar-2026-09-15/test-baseline.txt` (Vergleichsgrundlage für die
+      Gate-rot-Regel in Abschnitt 3).
 - [ ] `npm --prefix web test -- --watch=false` grün, `npm --prefix web run lint` und
-      `npm --prefix web run format:check` sauber.
-- [ ] `npm --prefix web run e2e` grün; Laufzeit notieren (~1,5 min ist normal). Rot oder deutlich
-      langsamer **vor jeder Änderung** = Umgebungsproblem (Abschnitt 2) → melden, weiter mit den
-      Backend-Tasks, E2E-Gates der Frontend-Tasks später erneut versuchen.
+      `npm --prefix web run format:check` sauber; Ausgaben ebenfalls ins Scratch-Verzeichnis.
+- [ ] `npm --prefix web run e2e`; Laufzeit notieren (~1,5 min ist normal); Ausgabe ins
+      Scratch-Verzeichnis.
 - [ ] `git rev-parse HEAD` = `3646d5b…` bestätigen; sonst Blocker melden und abbrechen.
+- [ ] **Stopp-Regel:** Ist eines der Gates oben nicht grün — `dotnet test` (Testcontainers), Vitest,
+      Lint, Format oder der Build mit Warnungen ≠ 0 — **endet der Lauf hier**, vor der ersten
+      Änderung und vor dem ersten Commit, und meldet die roten Tests/Meldungen wörtlich in der
+      Notizdatei. Einzige Ausnahme ist die E2E-Suite: ist **nur** sie rot und zeigt sie das
+      Umgebungsbild aus Abschnitt 2 (breit „element not found", Laufzeit ein Vielfaches), einmal
+      allein wiederholen; bleibt sie rot, läuft der Lauf mit den Backend-Tasks weiter, die
+      Frontend-Tasks führen ihr E2E-Gate dann als „nicht beweisbar" und die Notizdatei nennt es.
 
 ---
 
@@ -125,24 +160,34 @@ neben einem Task-Befund steht:
 
 ### Task B1: Unerreichbare `switch`-Defaults werfen keine `ArgumentOutOfRangeException` mehr
 
-**Befunde:** `csharpsquid:S3928` ×5 + `external_roslyn:CA2208` ×5 (dieselben 5 Stellen).
-**Dateien:** `src/EmotePurge.Api/Endpoints/LiveEndpoints.cs` (Default im `result.Status`-Switch,
-~Z. 193) · `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (zwei Defaults, ~Z. 66 und ~Z. 110) ·
-`src/EmotePurge.Infrastructure/Services/ForeignEmoteSetService.cs` (`previewResult`-Switch, ~Z. 123)
-· `src/EmotePurge.Infrastructure/Services/SevenTvLeaderboardService.cs` (~Z. 233).
+**Befunde:** `csharpsquid:S3928` ×4 + `external_roslyn:CA2208` ×4 (dieselben 4 Stellen).
+**Dateien:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (zwei Defaults, ~Z. 66 über
+`ForeignEmoteSetLookupStatus` und ~Z. 110 über `SevenTvLeaderboardStatus`) ·
+`src/EmotePurge.Infrastructure/Services/ForeignEmoteSetService.cs` (`previewResult`-Switch über
+`SevenTvPreviewLookupStatus`, ~Z. 123) · `src/EmotePurge.Infrastructure/Services/SevenTvLeaderboardService.cs`
+(über `SevenTvEmoteSearchLookupStatus`, ~Z. 233).
+**Nicht dabei:** `LiveEndpoints.cs` ~Z. 193 — dort ist der Default erreichbar (Abschnitt 1).
 
 **Absicht:** `nameof(result)` bzw. `nameof(previewResult)` benennt eine lokale Variable, keinen
-Parameter — der Konstruktor ist falsch benutzt. Alle fünf Stellen sind unerreichbare Default-Arme
-über geschlossenen Status-Enums. Sie werfen künftig einheitlich `System.Diagnostics.UnreachableException`
-mit einer **englischen** Message, die den Enum-Typ und den erhaltenen Wert nennt (die drei
-deutschen „Unbekannter …"-Texte werden dabei ersetzt, die zwei englischen bleiben inhaltlich).
+Parameter — der Konstruktor ist falsch benutzt. Die vier Stellen sind **nachweislich** unerreichbar:
+die vier Ergebnistypen (`ForeignEmoteSetLookupResult`, `SevenTvLeaderboardResult`,
+`SevenTvEmoteSetPreviewResult`, `SevenTvEmoteSearchPageResult`) sind `sealed` mit privatem
+Konstruktor, ihre `Failed(...)`-Factories lehnen `Ok` und jeden nicht definierten Wert per
+`Enum.IsDefined` ab, und jedes Enum-Mitglied hat einen eigenen Arm im jeweiligen Switch (am
+2026-09-15 gegen `3646d5b` geprüft: 8/8, 4/4, 4/4, 3/3). Sie werfen künftig einheitlich
+`System.Diagnostics.UnreachableException` mit einer **englischen** Message, die den Enum-Typ und den
+erhaltenen Wert nennt (die zwei deutschen „Unbekannter …"-Texte werden dabei ersetzt, die zwei
+englischen bleiben inhaltlich).
 
-**Grenzfälle:** Kein Test behauptet an diesen fünf Stellen `ArgumentOutOfRangeException` (die
+**Grenzfälle:** Kein Test behauptet an diesen vier Stellen `ArgumentOutOfRangeException` (die
 bestehenden `Assert.Throws<ArgumentOutOfRangeException>` zielen auf Factories wie `TwitchUserLookup`,
 `SevenTvDeltaResult`, `SevenTvLeaderboardTtlPolicy` — **nicht anfassen**). Andere
-`ArgumentOutOfRangeException`-Würfe mit korrektem `nameof(parameter)` bleiben unverändert.
+`ArgumentOutOfRangeException`-Würfe mit korrektem `nameof(parameter)` — auch die
+`Enum.IsDefined`-Prüfungen in den Factories — bleiben unverändert. Fügt ein Task davor dem Enum ein
+Mitglied ohne Switch-Arm hinzu, gilt das nicht (kein Task tut das); trotzdem vor dem Umbau je Stelle
+kurz gegenprüfen, dass die Arm-Zählung noch stimmt.
 
-- [ ] Fünf Stellen umstellen, `using System.Diagnostics;` wo nötig
+- [ ] Vier Stellen umstellen, `using System.Diagnostics;` wo nötig
 - [ ] `dotnet build EmotePurge.slnx --no-incremental` ohne neue Warnung; `dotnet format`
 - [ ] `dotnet test EmotePurge.slnx` grün
 - [ ] Commit: `refactor: throw UnreachableException from closed-enum switch defaults`
@@ -253,8 +298,10 @@ durch die Konstante ersetzen (oder `is { } d ? Iso(d) : "keiner (…)"`), Null-T
   .NET-10-Web-SDK erzeugt die öffentliche `Program`-Klasse selbst. **Vertrag:**
   `tests/EmotePurge.Api.Tests` (`ApiFactory : WebApplicationFactory<Program>` und die
   `WebApplicationFactory<Program>`-Helfer in den Rate-Limit-/Live-Stream-Tests) müssen unverändert
-  kompilieren und grün laufen. Kompiliert das nicht, **diese eine Änderung zurücknehmen** (Zeile
-  und Kommentar wiederherstellen), den Rest des Tasks behalten und melden.
+  kompilieren und grün laufen. Reihenfolge deshalb: erst `app.Run()` → `RunAsync()` ändern, bauen,
+  `git add` (Abschnitt 3); **dann** die `Program`-Zeile löschen und `dotnet build EmotePurge.slnx`
+  (inkl. Testprojekte) fahren. Kompiliert das nicht, `git checkout -- src/EmotePurge.Api/Program.cs`
+  (nimmt nur die ungestagte Löschung zurück), den Rest des Tasks behalten und melden.
 - `TwitchLivePollWorker.ExecuteAsync`: das Token `ct` als dritten Parameter an
   `liveStatusWriter.PublishAsync(...)` durchreichen (die Implementierung ignoriert es heute — das
   ist bekannt und nicht Teil dieses Tasks).
@@ -299,7 +346,8 @@ Compiler. `TryParse` bekommt `Assert.True(...)` um sich — macht die Vorbedingu
 `x === null || x.result === null` ist **falsch** — `undefined !== null`, der Guard würde nicht mehr
 greifen. Die Zielform je Stelle steht hier; vor jeder Änderung die Semantik für `null`/`undefined`/
 `0`/`''` prüfen. Bricht danach `tsc`s Narrowing hinter dem Guard (z. B. `stash.results`,
-`envelope.kind`, `status.occupiedSlots`), wird **diese Stelle** zurückgesetzt und gemeldet.
+`envelope.kind`, `status.occupiedSlots`), wird **diese Stelle** zurückgesetzt (Verfahren Abschnitt 3:
+je Stelle `npm --prefix web test -- --watch=false` als lokale Prüfung, dann `git add`) und gemeldet.
 
 | Datei · Symbol | Zielform |
 |---|---|
@@ -390,10 +438,16 @@ DB-Fixture) und wird nicht versucht.
 
 ### Task F5: Wurzel-Skripte und `check-color-tokens`
 
-**Befunde:** `javascript:S7781` ×7 · `javascript:S4624` ×1 · `javascript:S7785` ×2 ·
-`javascript:S3358` ×1 (`sonar-to-sarif.mjs` ~Z. 471) · `javascript:S7780` ×1 (`check-color-tokens.mjs` ~Z. 36).
+**Befunde:** `javascript:S7781` ×7 · `javascript:S7785` ×2 · `javascript:S7780` ×1
+(`check-color-tokens.mjs` ~Z. 36).
+**Nicht dabei** (Abschnitt 1): `javascript:S4624` (`authHeaders`, ~Z. 73) und `javascript:S3358`
+(Comparator in `main`, ~Z. 471) — ihre Codepfade erreicht kein Golden-Lauf, und sie sind nicht
+exportiert.
 **Dateien:** `scripts/sonar-to-sarif.mjs` · `scripts/coverage-local.mjs` · `web/scripts/check-color-tokens.mjs`.
-Diese Skripte haben **keine Tests** — die Abnahme ist der Vorher/Nachher-Vergleich.
+Diese Skripte haben **keine Tests**, und die Wurzel-Skripte liegen **außerhalb von ESLint und
+Prettier** (`eslint .`/`prettier` laufen in `web/`) — Lint/Format beweisen dort nichts. Die
+Abnahme ist allein der Vorher/Nachher-Vergleich, und **jede** geänderte Stelle muss von mindestens
+einem der Läufe unten tatsächlich durchlaufen werden (Zuordnung in der Tabelle).
 
 **Vorher-Läufe (vor der ersten Änderung, alles nach `/tmp/nacht-sonar-2026-09-15/`):**
 1. `node <abs>/scripts/coverage-local.mjs --help` → `cov-help-before.txt`.
@@ -419,6 +473,15 @@ Diese Skripte haben **keine Tests** — die Abnahme ist der Vorher/Nachher-Vergl
    Fragmente; die Ausgabe je Fragment als JSON-Array in fester Reihenfolge, damit `diff` Byte für
    Byte vergleicht. Das Skript und der Korpus bleiben im Scratch-Verzeichnis und kommen nie in
    den Worktree.
+6. `node <abs>/scripts/coverage-local.mjs --bogus-option` → erwartet
+   `Aborted with error: Unknown option: --bogus-option (see --help)` und Exit 1; Ausgabe und
+   `echo $?` → `cov-bogus-before.txt` (deckt den Fehlerpfad des zweiten `isDirectRun`-Blocks).
+7. **`normalizeToRepoRelativePosix`** (exportiert aus `coverage-local.mjs`): ein Scratch-Skript
+   `/tmp/nacht-sonar-2026-09-15/paths-golden.mjs`, das die Funktion importiert und über ein festes
+   Eingabeset die Ergebnisse als JSON nach `paths-before.txt` schreibt. Pflichtinhalt: Windows-Pfade
+   mit Backslashes (mehrere, führend, gemischt mit `/`), ein absoluter POSIX-Pfad unter dem
+   Repo-Root, ein Laufwerkspfad `C:/…` und `C:\…`, `./`-Präfix, Pfade relativ zu `web/`, ein
+   Pfad ohne Backslash; `repoRoot` fest als absoluter String.
 
 **Änderungen:**
 - `S7781`: `replace(/…/g, …)` → `replaceAll` mit **demselben** Regex (Flag `g` bleibt Pflicht für
@@ -427,24 +490,31 @@ Diese Skripte haben **keine Tests** — die Abnahme ist der Vorher/Nachher-Vergl
   (~Z. 247 `<[^>]+>` und ~Z. 253 `[ \t]+\n`) sind **kein** S7781-Befund und ausgeschlossen
   (Abschnitt 1): Muster **unverändert** lassen; ob sie in der Kette auf `replaceAll` mitgezogen
   werden, ist frei — das Muster selbst wird nicht angerührt.
-- `S4624` (`authHeaders`, ~Z. 73): den Base64-Credential-String in eine lokale Konstante, dann ein
-  einfaches Template.
 - `S7785` (beide `isDirectRun`-Blöcke): `main().catch(...)` → Top-Level-`await main()` **innerhalb**
   des bestehenden `if (isDirectRun)`, in `try`/`catch` mit **derselben** Fehlermeldung
   (`Aborted with error: …`) und `process.exitCode = 1`. Ein nacktes `await` ohne `try` änderte
   Exit-Code und Ausgabe.
-- `S3358` (`sonar-to-sarif.mjs` `main`, ~Z. 471): Modulfunktion `compareStrings(a, b)` mit
-  `if`/`return`; den S2871-Kommentar sinngemäß behalten. **Nicht** `localeCompare`.
 - `S7780` (`check-color-tokens.mjs` ~Z. 36): das `RegExp`-Quellmuster als `String.raw`-Template —
   jedes `\\` des alten Templates wird ein `\`, die `${PREFIXES}`/`${PALETTES}`-Interpolationen
   bleiben, Flag `'g'` bleibt.
+- `authHeaders` und der Comparator in `main` bleiben **unverändert** (Abschnitt 1).
 
-**Nachher-Läufe:** dieselben fünf Läufe nach `*-after.txt`; `diff -u` je Paar muss leer sein
+**Welcher Lauf welche Stelle beweist:**
+
+| Stelle | Lauf |
+|---|---|
+| `coverage-local.mjs` `normalizeToRepoRelativePosix` (S7781 ×2) | 7 (direkt), 2 (indirekt über die Report-Pfade) |
+| `coverage-local.mjs` `isDirectRun`-Block (S7785) | 1 (Erfolgspfad), 6 (Fehlerpfad, Exit 1), 2 |
+| `sonar-to-sarif.mjs` `htmlToPlainText` Entitäten (S7781 ×5) | 5 |
+| `sonar-to-sarif.mjs` `isDirectRun`-Block (S7785) | 3 (Fehlerpfad, Exit 1). Der Erfolgspfad ist ohne Token nicht erreichbar — das ist bekannt und wird in der Notizdatei als „nicht beweisbar" genannt, nicht als Lücke behandelt |
+| `check-color-tokens.mjs` `VIOLATION` (S7780) | 4 (das Muster läuft über den ganzen `web/`-Baum) |
+
+**Nachher-Läufe:** dieselben sieben Läufe nach `*-after.txt`; `diff -u` je Paar muss leer sein
 (Exit 0). Bei `cov-skip` gilt: gleicher HEAD, gleiche Reports → identisch erwartet. Ist ein Paar
-verschieden, die verursachende Änderung zurücknehmen und melden.
+verschieden, die verursachende Stelle nach Abschnitt 3 zurücknehmen und melden.
 
-- [ ] Vorher-Läufe · Änderungen · Nachher-Läufe · fünf leere Diffs
-- [ ] `npm --prefix web run lint` (deckt `web/scripts/`); die Wurzel-Skripte liegen außerhalb von Prettier
+- [ ] Vorher-Läufe · Änderungen (je Stelle: Golden-Lauf der Stelle, dann `git add`) · Nachher-Läufe · sieben leere Diffs
+- [ ] `npm --prefix web run lint` (deckt nur `web/scripts/`)
 - [ ] Commit: `chore(scripts): modernize string replacement and top-level await in the helper scripts`
 
 ---
@@ -461,7 +531,8 @@ der Konfiguration bleibt.
 → `/tmp/nacht-sonar-2026-09-15/eslint-ts-before.txt` und dasselbe für
 `<abs>/web/src/app/features/voting/vote-session-list-page.html` → `eslint-html-before.txt`; nach der
 Änderung erneut; beide `diff -u` leer. Zusätzlich `npm --prefix web run lint` vorher und nachher
-grün. Ist ein Diff nicht leer, zurücksetzen und melden — nicht an der Konfiguration drehen, bis es passt.
+grün. Ist ein Diff nicht leer, nach Abschnitt 3 zurücknehmen und melden — nicht an der
+Konfiguration drehen, bis es passt.
 
 - [ ] Vorher-Dumps · Änderung · Nachher-Dumps · leere Diffs · `lint` grün · `format:check`
 - [ ] Commit: `chore(web): define the ESLint config with defineConfig`
@@ -497,7 +568,7 @@ aus dem Haupt-Checkout neu bauen (B5 hat den Host-Start berührt).
 
 | Task | Regel-Keys | Anzahl |
 |---|---|---|
-| B1 | `csharpsquid:S3928` ×5, `external_roslyn:CA2208` ×5 | 10 |
+| B1 | `csharpsquid:S3928` ×4, `external_roslyn:CA2208` ×4 (ohne `LiveEndpoints.cs`) | 8 |
 | B2 | `csharpsquid:S8969` ×7 | 7 |
 | B3 | `csharpsquid:S1192` ×7 | 7 |
 | B4 | `csharpsquid:S3358` ×4, `csharpsquid:S3260` ×1, `csharpsquid:S3218` ×1, `csharpsquid:S3267` ×6 | 12 |
@@ -507,11 +578,11 @@ aus dem Haupt-Checkout neu bauen (B5 hat den Host-Start berührt).
 | F2 | `typescript:S1874` ×2 | 2 |
 | F3 | `typescript:S5906` ×4 | 4 |
 | F4 | `typescript:S4043` ×2, `typescript:S7755` ×4, `typescript:S5443` ×1 | 7 |
-| F5 | `javascript:S7781` ×7, `javascript:S4624` ×1, `javascript:S7785` ×2, `javascript:S3358` ×1, `javascript:S7780` ×1 | 12 |
+| F5 | `javascript:S7781` ×7, `javascript:S7785` ×2, `javascript:S7780` ×1 (ohne S4624 und S3358 in `sonar-to-sarif.mjs`) | 10 |
 | F7 | `javascript:S1874` ×1 | 1 |
-| **Summe** | | **89** |
+| **Summe** | | **85** |
 
-Nach dem Merge erwartet SonarCloud auf `main` entsprechend 218 − 89 = 129 offene Befunde,
+Nach dem Merge erwartet SonarCloud auf `main` entsprechend 218 − 85 = 133 offene Befunde,
 **bevor** die K4-Markierungen per Skript und der Filter-Branch greifen. Bleibt ein Key aus dieser
 Tabelle offen, ist der Ort in der Notizdatei nachzuschlagen: entweder „übersprungen" oder Sonar
 bewertet die neue Form anders — dann ist das ein Tagesbefund, kein Nachtlauf-Fehler.
