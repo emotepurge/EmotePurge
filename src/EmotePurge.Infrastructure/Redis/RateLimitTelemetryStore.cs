@@ -375,5 +375,5 @@ public class RateLimitTelemetryStore(
 
     /// <summary>The last real provider 429, kept next to its counters. Private: the reader folds it into
     /// <see cref="RateLimitProviderCounters"/>, so it never needs a name outside this class.</summary>
-    private record ProviderRateLimitIncident(DateTime ObservedAtUtc, int? RetryAfterSeconds);
+    private sealed record ProviderRateLimitIncident(DateTime ObservedAtUtc, int? RetryAfterSeconds);
 }

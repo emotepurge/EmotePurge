@@ -960,9 +960,10 @@ public sealed class HarnessRunner(
             Row(text, "Input-Hash (aktuell, diese Neuberechnung)", "`" + current + "`");
         }
         Row(text, "Lauf vollständig", report.Run.RunComplete ? "ja" : "nein");
-        Row(text, "Gate-tauglich", gate.GateEligible
-            ? "ja"
-            : "nein — " + (gate.GateIneligibleReasons.Count == 0 ? "ohne Grund" : string.Join(", ", gate.GateIneligibleReasons)));
+        var ineligibleReason = gate.GateIneligibleReasons.Count == 0
+            ? "ohne Grund"
+            : string.Join(", ", gate.GateIneligibleReasons);
+        Row(text, "Gate-tauglich", gate.GateEligible ? "ja" : "nein — " + ineligibleReason);
 
         text.Append("\n## Präregistrierte Kennzahlen (#69)\n\n| Kennzahl | Wert | Präregistrierte Schwelle |\n| --- | --- | --- |\n");
         Row(text, "Gesamtabweichung Σ\\|Log − Live\\| / ΣLive", Ratio(gate.TotalDeviation), "≤ 0.10");

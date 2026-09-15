@@ -129,6 +129,18 @@ public static class SevenTvLeaderboardTtlPolicy
             nameof(outcome), outcome.Kind, "Unknown leaderboard fill outcome.")
     };
 
-    private static TimeSpan Clamp(TimeSpan value, TimeSpan minimum, TimeSpan maximum) =>
-        value < minimum ? minimum : value > maximum ? maximum : value;
+    private static TimeSpan Clamp(TimeSpan value, TimeSpan minimum, TimeSpan maximum)
+    {
+        if (value < minimum)
+        {
+            return minimum;
+        }
+
+        if (value > maximum)
+        {
+            return maximum;
+        }
+
+        return value;
+    }
 }

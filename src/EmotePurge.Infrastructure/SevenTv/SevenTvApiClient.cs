@@ -752,12 +752,9 @@ public class SevenTvApiClient(
                     return null;
                 }
 
-                foreach (var entry in entryPage.Items)
+                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null && entry.AddedAt is not null))
                 {
-                    if (entry.Emote is not null && entry.AddedAt is not null)
-                    {
-                        result[entry.Emote.Id] = entry.AddedAt.Value.UtcDateTime;
-                    }
+                    result[entry.Emote!.Id] = entry.AddedAt!.Value.UtcDateTime;
                 }
 
                 if (page >= entryPage.PageCount)
@@ -924,10 +921,16 @@ public class SevenTvApiClient(
     // Emote.flags and its animated member as non-null, so no captured payload omits them. It falls to
     // 4x.webp on purpose, because that rendition exists for every emote — on an animated one it
     // simply carries all frames — whereas the other guess would render nothing at all.
-    private static string BuildForeignImageUrl(string emoteId, bool animated) =>
-        emoteId.Length == 0
-            ? string.Empty
-            : $"https://cdn.7tv.app/emote/{emoteId}/{(animated ? "4x_static.webp" : "4x.webp")}";
+    private static string BuildForeignImageUrl(string emoteId, bool animated)
+    {
+        if (emoteId.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var fileName = animated ? "4x_static.webp" : "4x.webp";
+        return $"https://cdn.7tv.app/emote/{emoteId}/{fileName}";
+    }
 
     private static SevenTvEmoteSetPreviewItem MapSearchItem(SevenTvGqlLeaderboardSearchItemDto dto) =>
         new(

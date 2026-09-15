@@ -92,14 +92,8 @@ public sealed class RedisLiveEventStream(
                 return LiveEventSubscribeResult.Failed(LiveEventSubscribeStatus.QuotaExhausted);
             }
 
-            var perSubscriber = 0;
-            foreach (var open in _subscriptions.Values)
-            {
-                if (string.Equals(open.SubscriberKey, subscriberKey, StringComparison.Ordinal))
-                {
-                    perSubscriber++;
-                }
-            }
+            var perSubscriber = _subscriptions.Values.Count(open =>
+                string.Equals(open.SubscriberKey, subscriberKey, StringComparison.Ordinal));
 
             if (perSubscriber >= _options.MaxPerSubscriber)
             {
@@ -124,14 +118,8 @@ public sealed class RedisLiveEventStream(
     {
         lock (_limitLock)
         {
-            var openConnections = 0;
-            foreach (var open in _subscriptions.Values)
-            {
-                if (string.Equals(open.SubscriberKey, subscriberKey, StringComparison.Ordinal))
-                {
-                    openConnections++;
-                }
-            }
+            var openConnections = _subscriptions.Values.Count(open =>
+                string.Equals(open.SubscriberKey, subscriberKey, StringComparison.Ordinal));
 
             return new LiveStreamQuota(
                 openConnections,

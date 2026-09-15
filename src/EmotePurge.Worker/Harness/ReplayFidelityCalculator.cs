@@ -228,12 +228,9 @@ public static class ReplayFidelityCalculator
         }
 
         var live = new Dictionary<string, long>(StringComparer.Ordinal);
-        foreach (var row in liveRows)
+        foreach (var row in liveRows.Where(row => daySet.Contains(row.Date)))
         {
-            if (daySet.Contains(row.Date))
-            {
-                live[row.EmoteId] = live.GetValueOrDefault(row.EmoteId) + row.UseCount;
-            }
+            live[row.EmoteId] = live.GetValueOrDefault(row.EmoteId) + row.UseCount;
         }
 
         var ids = new HashSet<string>(log.Keys, StringComparer.Ordinal);
@@ -447,21 +444,15 @@ public static class ReplayFidelityCalculator
         HashSet<DateOnly> logDays)
     {
         long log = 0;
-        foreach (var line in days)
+        foreach (var line in days.Where(line => logDays.Contains(line.Day)))
         {
-            if (logDays.Contains(line.Day))
-            {
-                log += Sum(line.HumanCounts) + Sum(line.BotCounts) + Sum(line.SharedChatCounts);
-            }
+            log += Sum(line.HumanCounts) + Sum(line.BotCounts) + Sum(line.SharedChatCounts);
         }
 
         long live = 0;
-        foreach (var row in liveRows)
+        foreach (var row in liveRows.Where(row => logDays.Contains(row.Date)))
         {
-            if (logDays.Contains(row.Date))
-            {
-                live += row.UseCount + row.BotUseCount + row.SharedChatUseCount;
-            }
+            live += row.UseCount + row.BotUseCount + row.SharedChatUseCount;
         }
 
         return new ReplayPlausibility(log, live, Round(live == 0 ? null : (double?)log / live), log - live);
@@ -702,7 +693,7 @@ public static class ReplayFidelityCalculator
         return new SubsetSpread(
             Percentile(deviations, 0.5),
             Percentile(deviations, 0.9),
-            Spearman(entries),
+            SpearmanRho(entries),
             entries.Count(e => e.Log == 0));
     }
 
@@ -730,7 +721,7 @@ public static class ReplayFidelityCalculator
     /// Spearman's rank correlation as Pearson over mid-ranks; <c>null</c> when there are fewer than
     /// two emotes or one side is constant (no variance, hence no correlation to report).
     /// </summary>
-    private static double? Spearman(List<PopulationEntry> entries)
+    private static double? SpearmanRho(List<PopulationEntry> entries)
     {
         if (entries.Count < 2)
         {

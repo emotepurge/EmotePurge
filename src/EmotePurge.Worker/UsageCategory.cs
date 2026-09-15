@@ -39,8 +39,10 @@ public static class UsageCategoryRule
     /// the fourth state, "bot in a foreign room", is deliberately not representable
     /// (DECISIONS.md, "Shared Chat", 2026-09-06, D2).
     /// </summary>
-    public static UsageCategory Resolve(MessageOrigin origin, bool isBot) =>
-        origin == MessageOrigin.Own
-            ? (isBot ? UsageCategory.Bot : UsageCategory.Human)
-            : UsageCategory.SharedChat;
+    public static UsageCategory Resolve(MessageOrigin origin, bool isBot) => (origin, isBot) switch
+    {
+        (MessageOrigin.Own, true) => UsageCategory.Bot,
+        (MessageOrigin.Own, false) => UsageCategory.Human,
+        _ => UsageCategory.SharedChat
+    };
 }
