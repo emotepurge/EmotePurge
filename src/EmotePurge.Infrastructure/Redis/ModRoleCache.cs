@@ -28,7 +28,7 @@ public class ModRoleCache(IConnectionMultiplexer connectionMultiplexer, IConfigu
 
         // A payload we cannot read is treated as a miss rather than as "no grants" — the caller then
         // resolves live, which is the safe direction for an authorization input.
-        var stored = JsonSerializer.Deserialize<StoredEditorGrants>((string)value!, JsonSerializerOptions.Web);
+        var stored = JsonSerializer.Deserialize<StoredEditorGrants>(value.ToString(), JsonSerializerOptions.Web);
         if (stored is null)
         {
             return null;

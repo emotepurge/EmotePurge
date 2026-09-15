@@ -371,7 +371,7 @@ public class RateLimitTelemetryStore(
     private static string Serialize<T>(T value) => JsonSerializer.Serialize(value, JsonSerializerOptions.Web);
 
     private static T? Deserialize<T>(RedisValue value) where T : class =>
-        value.IsNullOrEmpty ? null : JsonSerializer.Deserialize<T>((string)value!, JsonSerializerOptions.Web);
+        value.IsNullOrEmpty ? null : JsonSerializer.Deserialize<T>(value.ToString(), JsonSerializerOptions.Web);
 
     /// <summary>The last real provider 429, kept next to its counters. Private: the reader folds it into
     /// <see cref="RateLimitProviderCounters"/>, so it never needs a name outside this class.</summary>

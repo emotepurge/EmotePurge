@@ -110,7 +110,7 @@ public class ModeratedChannelsProvider(
         {
             // An empty JSON array is a valid, cached answer ("moderates nothing"); only a missing
             // key or an unreadable payload counts as a miss.
-            var stored = JsonSerializer.Deserialize<List<StoredModeratedChannel>>((string)value!, JsonSerializerOptions.Web);
+            var stored = JsonSerializer.Deserialize<List<StoredModeratedChannel>>(value.ToString(), JsonSerializerOptions.Web);
             return stored?.Select(entry => new TwitchModeratedChannelInfo(entry.Login, entry.BroadcasterId)).ToList();
         }
         catch (JsonException ex)

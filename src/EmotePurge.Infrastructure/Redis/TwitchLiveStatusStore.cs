@@ -33,7 +33,7 @@ public class TwitchLiveStatusStore(IConnectionMultiplexer connectionMultiplexer,
             return null;
         }
 
-        return JsonSerializer.Deserialize<TwitchLiveStatusSnapshot>((string)value!, JsonSerializerOptions.Web);
+        return JsonSerializer.Deserialize<TwitchLiveStatusSnapshot>(value.ToString(), JsonSerializerOptions.Web);
     }
 
     public async Task PublishAsync(TwitchLiveStatusSnapshot snapshot, TimeSpan timeToLive, CancellationToken cancellationToken = default)
