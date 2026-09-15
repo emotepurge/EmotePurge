@@ -137,7 +137,8 @@ public class TwitchLivePollWorker(
 
             await liveStatusWriter.PublishAsync(
                 new TwitchLiveStatusSnapshot(DateTime.UtcNow, liveLogins),
-                TwitchLiveStatusKeys.TimeToLiveFor(_pollInterval));
+                TwitchLiveStatusKeys.TimeToLiveFor(_pollInterval),
+                ct);
 
             _lastPublishedLiveLogins = liveLogins.ToHashSet(StringComparer.Ordinal);
 
