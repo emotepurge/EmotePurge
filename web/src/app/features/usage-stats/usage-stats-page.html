@@ -509,20 +509,29 @@
                 <h3 class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase">
                   {{ 'usageStats.bands.' + row.band + '.title' | transloco }}
                 </h3>
-                <span class="font-mono text-[11px] whitespace-nowrap text-fg-muted">
-                  @if (row.band === 'dead') {
-                    {{ 'usageStats.bands.dead.hint' | transloco }}
-                  } @else {
-                    {{
-                      'usageStats.bands.share' | transloco: { share: formatBandShare(row.share) }
-                    }}
-                  }
-                  ·
-                  @if (row.count === 1) {
-                    {{ 'usageStats.bands.countOne' | transloco }}
-                  } @else {
-                    {{ 'usageStats.bands.count' | transloco: { count: formatCount(row.count) } }}
-                  }
+                <!-- Two unbreakable phrases that wrap as wholes: where the column is too narrow for
+                     one line (German at 360 px), the heading breaks between the two numbers instead
+                     of widening the row. A nowrap row did not stay put, it pushed the virtual
+                     scroller's content wrapper, and with it every row of the sheet, into the gutter.
+                     The 1ch column gap is one space in this monospace face. -->
+                <span class="flex flex-wrap gap-x-[1ch] font-mono text-[11px] text-fg-muted">
+                  <span class="whitespace-nowrap">
+                    @if (row.band === 'dead') {
+                      {{ 'usageStats.bands.dead.hint' | transloco }}
+                    } @else {
+                      {{
+                        'usageStats.bands.share' | transloco: { share: formatBandShare(row.share) }
+                      }}
+                    }
+                    ·
+                  </span>
+                  <span class="whitespace-nowrap">
+                    @if (row.count === 1) {
+                      {{ 'usageStats.bands.countOne' | transloco }}
+                    } @else {
+                      {{ 'usageStats.bands.count' | transloco: { count: formatCount(row.count) } }}
+                    }
+                  </span>
                 </span>
                 <span class="h-px min-w-4 flex-1 bg-border"></span>
                 <!-- Only on the dead band: it is the one group whose members are candidates by
