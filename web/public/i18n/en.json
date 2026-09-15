@@ -816,7 +816,7 @@
   },
   "restore": {
     "button": "Restore emotes",
-    "progress": "{{ finished }} / {{ total }} restored",
+    "progress": "{{ finished }} / {{ total }} processed",
     "deleteFailedFallback": "Restore failed",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "confirmTitle": {
@@ -1046,7 +1046,7 @@
       "runNotice": "Adding then runs automatically, one emote at a time, with a short delay between each.",
       "execute": "Copy"
     },
-    "progress": "{{ finished }} / {{ total }} copied",
+    "progress": "{{ finished }} / {{ total }} processed",
     "deleteFailedFallback": "Copy failed",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {

@@ -1658,6 +1658,66 @@ test.describe('running import: a token without write rights', () => {
   });
 });
 
+/**
+ * A rejection with no `extensions.code` fails the row without aborting the run — contrast the
+ * "a token without write rights" block above, whose `LACKING_PRIVILEGES` error does abort. With
+ * one row selected that settles at done 0 / failed 1 / cancelled 0, which is the case the progress
+ * wording has to get right.
+ */
+test.describe('running import: progress wording matches the outcome (#158)', () => {
+  test('a single failed row is reported as processed, never as copied', async ({ page }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, []);
+
+    // A plain mutation rejection with no `extensions.code` — `abortsForMissingPrivileges` reads
+    // false for it, so the row fails but the run does not abort. With one row selected there is
+    // nothing left to cancel: the queue settles at done 0 / failed 1 / cancelled 0.
+    await mockSevenTvGql(page, () => ({
+      errors: [{ message: '7TV had an internal error' }],
+    }));
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await cell(page, 'CatJAM').click();
+    await expect(copyButton(page)).toBeEnabled();
+    await copyButton(page).click();
+
+    let dialog = page.getByRole('dialog');
+    await dialog.getByRole('radio', { name: '#aatrociity' }).check();
+    await dialog.getByRole('button', { name: 'Weiter' }).click();
+
+    dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#app-dialog-title')).toHaveText(
+      '1 Emote nach aatrociity kopieren?',
+    );
+    await dialog.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // Generous, same reasoning as the abort test above: the row's failure and the engine settling
+    // both sit behind the frozen pacing timer.
+    await page.clock.runFor(5000);
+
+    const section = page.locator('app-import-progress-section');
+    // Must not read "kopiert" — that would claim a row that never made it into the set.
+    await expect(section.getByText('1 / 1 verarbeitet')).toBeVisible();
+    await expect(section.getByText('1 / 1 kopiert')).toHaveCount(0);
+    await expect(section.getByText('0 kopiert · 1 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+  });
+});
+
 test.describe('running import: leaving the page', () => {
   /**
    * The half of R11 that asks (`usageStatsLeaveGuard`). Its exemption for a pure channel switch has
