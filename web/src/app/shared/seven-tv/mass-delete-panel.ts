@@ -127,6 +127,19 @@ export interface DeletableEmote {
         </app-run-progress-panel>
       }
 
+      <!-- A role="status" region that enters the DOM together with its content announces nothing to
+           most screen reader/browser pairings — only a mutation *inside* an already-mounted region
+           is announced. So the two sr-only regions below are permanent and only their text comes
+           and goes via @if; each visible twin below stays gated behind its own @if (it must not
+           occupy layout space when there is nothing to say) and is aria-hidden so the message is
+           not spoken twice (docs/UI-Designsprache.md §4.5). -->
+      <p class="sr-only" role="status">
+        @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
+          {{
+            restoreSkippedDuplicatesKey() | transloco: { count: restoreService.skippedDuplicates() }
+          }}
+        }
+      </p>
       <!-- #149 P2 (independent review): gated on duplicateNoticePending, not just
            skippedDuplicates() > 0 — a transient notice (design doc §4.5), not a persistent one, so
            it never sits attached to a *later*, unrelated run's details with nothing to clear it.
@@ -135,17 +148,22 @@ export interface DeletableEmote {
            its own — including the file-based restore reached via ImportTrigger, which has nothing
            marked in this channel's grid to keep the dock open otherwise. -->
       @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
-        <p class="text-sm text-fg-secondary" role="status">
+        <p aria-hidden="true" class="text-sm text-fg-secondary">
           {{
             restoreSkippedDuplicatesKey() | transloco: { count: restoreService.skippedDuplicates() }
           }}
         </p>
       }
+      <p class="sr-only" role="status">
+        @if (restoreService.duplicateNoticePending() && !restoreService.duplicateCheckAvailable()) {
+          {{ 'restore.duplicateCheckUnavailable' | transloco }}
+        }
+      </p>
       <!-- The pre-run duplicate check's fetch failed (already-present-filter.ts) — every row still
            went through, so a duplicate may have slipped in undetected. A quiet notice, not an
            alarm: the run is still expected to succeed, this only says the guard could not run. -->
       @if (restoreService.duplicateNoticePending() && !restoreService.duplicateCheckAvailable()) {
-        <p class="text-sm text-fg-secondary" role="status">
+        <p aria-hidden="true" class="text-sm text-fg-secondary">
           {{ 'restore.duplicateCheckUnavailable' | transloco }}
         </p>
       }
@@ -161,8 +179,17 @@ export interface DeletableEmote {
           (syncRetryRequested)="restoreService.retrySyncReport()"
         >
           <ng-container run-actions>
+            <!-- Same split as the two duplicate notices above (docs/UI-Designsprache.md §4.5): the
+                 sr-only region is permanent, the visible twin stays an @if and is aria-hidden. -->
+            <span role="status" class="sr-only">
+              @if (resyncNoticeKey(); as noticeKey) {
+                {{ noticeKey | transloco }}
+              }
+            </span>
             @if (resyncNoticeKey(); as noticeKey) {
-              <span class="text-xs text-fg-muted" role="status">{{ noticeKey | transloco }}</span>
+              <span aria-hidden="true" class="text-xs text-fg-muted">
+                {{ noticeKey | transloco }}
+              </span>
             }
           </ng-container>
         </app-run-progress-panel>

@@ -454,3 +454,144 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
     expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
   });
 });
+
+/**
+ * #134: a role="status" region that enters the DOM together with its content announces nothing to
+ * most screen reader/browser pairings — only a mutation *inside* an already-mounted region is
+ * announced. Pins the fix (design doc §4.5): the sr-only status node for the resync notice and for
+ * the duplicate-check-unavailable notice already exists before either notice has anything to say,
+ * and the visible copy next to it is a separate aria-hidden twin.
+ */
+describe('MassDeletePanel — resync and duplicate-check status regions stay mounted (#134)', () => {
+  const STATUS_REGION_TRANSLATIONS = {
+    ...DE_TRANSLATIONS,
+    restore: {
+      duplicateCheckUnavailable:
+        'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+      resync: {
+        pending: 'Synchronisierung wird angestoßen…',
+        succeeded: 'Synchronisierung angestoßen — die Liste aktualisiert sich gleich.',
+        cooldown:
+          'Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.',
+        failed:
+          'Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.',
+      },
+    },
+  };
+
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let resyncTrigger: WritableSignal<'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed'>;
+  let duplicateCheckAvailable: WritableSignal<boolean>;
+  let duplicateNoticePending: WritableSignal<boolean>;
+
+  beforeEach(async () => {
+    resyncTrigger = signal('idle');
+    duplicateCheckAvailable = signal(true);
+    duplicateNoticePending = signal(false);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: STATUS_REGION_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
+        {
+          provide: SevenTvDeleteService,
+          useValue: {
+            isRunning: signal(false),
+            queue: signal([]),
+            syncReport: signal('idle'),
+            rateLimitPauseSeconds: signal(0),
+            lastRun: signal(null),
+          } as unknown as SevenTvDeleteService,
+        },
+        {
+          provide: SevenTvRestoreService,
+          useValue: {
+            isRunning: signal(false),
+            // A non-empty queue, not running: the resync notice sits in the run-actions slot,
+            // which RunProgressPanel only projects once the restore run has settled
+            // (!isRunning() && total() > 0) — matching how resyncTrigger is only ever written from
+            // onRunComplete in the real service.
+            queue: signal([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]),
+            syncReport: signal('idle'),
+            rateLimitPauseSeconds: signal(0),
+            resyncTrigger,
+            skippedDuplicates: signal(0),
+            duplicateCheckAvailable,
+            duplicateNoticePending,
+          } as unknown as SevenTvRestoreService,
+        },
+        {
+          provide: SevenTvRunArbiter,
+          useValue: {
+            activeRun: signal<SevenTvRunKind | null>(null),
+          } as unknown as SevenTvRunArbiter,
+        },
+        {
+          provide: SevenTvTokenService,
+          useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
+        },
+        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
+      ],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+  });
+
+  it('keeps the same sr-only status node when the resync notice appears, with an aria-hidden visible twin', () => {
+    fixture.detectChanges();
+
+    const statusNodeAtRest = fixture.nativeElement.querySelector('span[role="status"]');
+    expect(statusNodeAtRest).not.toBeNull();
+    expect(statusNodeAtRest?.textContent.trim()).toBe('');
+
+    resyncTrigger.set('pending');
+    fixture.detectChanges();
+
+    const statusNodeAfter = fixture.nativeElement.querySelector('span[role="status"]');
+    expect(statusNodeAfter).toBe(statusNodeAtRest);
+    expect(statusNodeAfter?.textContent.trim()).toBe('Synchronisierung wird angestoßen…');
+
+    expect(
+      fixture.nativeElement.querySelector('span[aria-hidden="true"]')?.textContent.trim(),
+    ).toBe('Synchronisierung wird angestoßen…');
+  });
+
+  it('keeps the same sr-only status node when the duplicate-check-unavailable notice appears, with an aria-hidden visible twin', () => {
+    fixture.detectChanges();
+
+    const statusNodes = (): HTMLElement[] =>
+      Array.from(fixture.nativeElement.querySelectorAll('p[role="status"]'));
+    // The second <p role="status"> in document order is the duplicate-check-unavailable region —
+    // the first is the skipped-count one above it.
+    const statusNodeAtRest = statusNodes()[1];
+    expect(statusNodeAtRest).toBeDefined();
+    expect(statusNodeAtRest.textContent?.trim()).toBe('');
+
+    duplicateCheckAvailable.set(false);
+    duplicateNoticePending.set(true);
+    fixture.detectChanges();
+
+    const statusNodeAfter = statusNodes()[1];
+    expect(statusNodeAfter).toBe(statusNodeAtRest);
+    expect(statusNodeAfter.textContent?.trim()).toBe(
+      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+    );
+
+    const visibleTwin = fixture.nativeElement.querySelector('p[aria-hidden="true"]');
+    expect(visibleTwin?.textContent?.trim()).toBe(
+      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+    );
+  });
+});

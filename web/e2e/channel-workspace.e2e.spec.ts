@@ -232,7 +232,10 @@ test.describe('authenticated broadcaster', () => {
     await page.getByRole('button', { name: 'Neu synchronisieren' }).click();
 
     // The 202 only means the worker was told; the confirmation is a separate live event.
-    // Located by text, not by role: the usage grid below carries its own role="status" counter.
+    // Scoped to the aria-hidden visible twin, not a bare role="status" query: since #134 the
+    // acknowledgement's sr-only region is permanently mounted (docs/UI-Designsprache.md §4.5), and
+    // the usage grid below carries its own role="status" counter — either would make a bare query
+    // ambiguous under Playwright strict mode.
     await expect(resyncQueuedNotice(page)).toBeVisible();
 
     await emitLive(page, { type: 'channel.synced', channel: 'sensitron' });
