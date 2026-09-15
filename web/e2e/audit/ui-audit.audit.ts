@@ -726,9 +726,11 @@ const SCENARIOS: Scenario[] = [
       // and transfer — and since #147 the file source has to be picked in the dialog's first step.
       await page.locator('main header button').nth(2).click();
       await page.locator('#app-dialog-title').waitFor();
+      // "Aus einer Datei" / "From a file" (import.source.file.label) — no shared substring, so
+      // both languages need to be in the pattern, unlike the export trigger above.
       await page
         .getByRole('dialog')
-        .getByRole('button', { name: /^Aus einer Datei/ })
+        .getByRole('button', { name: /^(Aus einer Datei|From a file)/ })
         .click();
 
       const foreignProtocol = JSON.stringify({
@@ -800,9 +802,11 @@ const SCENARIOS: Scenario[] = [
     afterLoad: async (page) => {
       await page.locator('main header button').nth(2).click();
       await page.locator('#app-dialog-title').waitFor();
+      // "Aus einer Datei" / "From a file" (import.source.file.label) — no shared substring, so
+      // both languages need to be in the pattern, unlike the export trigger above.
       await page
         .getByRole('dialog')
-        .getByRole('button', { name: /^Aus einer Datei/ })
+        .getByRole('button', { name: /^(Aus einer Datei|From a file)/ })
         .click();
     },
   },
