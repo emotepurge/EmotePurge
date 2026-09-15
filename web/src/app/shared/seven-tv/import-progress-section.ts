@@ -6,6 +6,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
+import { resyncNoticeKey } from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
 
 /**
@@ -27,32 +28,21 @@ import { RunProgressPanel } from './run-progress-panel';
   selector: 'app-import-progress-section',
   imports: [Button, NoticeBanner, RouterLink, RunProgressPanel, TranslocoPipe],
   template: `
-    <!-- A role="status" region that enters the DOM together with its content announces nothing to
-         most screen reader/browser pairings — only a mutation *inside* an already-mounted region
-         is announced. So the two sr-only regions below are permanent and only their text comes and
-         goes via @if; each visible twin below stays gated behind its own @if (it must not occupy
-         layout space when there is nothing to say) and is aria-hidden so the message is not spoken
-         twice (docs/UI-Designsprache.md §4.5). -->
-    <p class="sr-only" role="status">
-      @if (importService.duplicateNoticePending() && importService.skippedDuplicates() > 0) {
-        {{ skippedDuplicatesKey() | transloco: { count: importService.skippedDuplicates() } }}
-      }
-    </p>
     <!-- #149 P2 (independent review): gated on duplicateNoticePending, not just skippedDuplicates() >
          0 — a transient notice (design doc §4.5), not a persistent one, so it never sits attached to
          a *later*, unrelated run's details with nothing to clear it. See that signal's doc for why
          it also has to be what keeps the dock (and this section) mounted for a fully-refused
-         (all-duplicates) run, which leaves no run/queue behind of its own. -->
+         (all-duplicates) run, which leaves no run/queue behind of its own.
+
+         Every notice in this section is aria-hidden: its announcement comes from the host page's
+         permanently mounted DockOutcomeAnnouncer, not from here. This section lives in the dock,
+         which can mount in the same pass that sets the notice, and a status region created
+         together with its text announces nothing (docs/UI-Designsprache.md §4.5). -->
     @if (importService.duplicateNoticePending() && importService.skippedDuplicates() > 0) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{ skippedDuplicatesKey() | transloco: { count: importService.skippedDuplicates() } }}
       </p>
     }
-    <p class="sr-only" role="status">
-      @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
-        {{ 'import.duplicateCheckUnavailable' | transloco }}
-      }
-    </p>
     <!-- The fresh pre-send duplicate check's fetch failed (already-present-filter.ts) — every row
          still went through, so a duplicate may have slipped in undetected. A quiet notice, not an
          alarm: the run is still expected to succeed, this only says the guard could not run. -->
@@ -83,14 +73,7 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ 'import.summary.insufficientPrivileges' | transloco }}
                 </app-notice-banner>
               }
-              <!-- Same split as the two duplicate notices above (docs/UI-Designsprache.md §4.5):
-                   the sr-only region is permanent, the visible twin stays an @if and is
-                   aria-hidden. -->
-              <span role="status" class="sr-only">
-                @if (resyncNoticeKey(); as noticeKey) {
-                  {{ noticeKey | transloco }}
-                }
-              </span>
+              <!-- aria-hidden for the same reason as the duplicate notices above. -->
               @if (resyncNoticeKey(); as noticeKey) {
                 <span aria-hidden="true" class="text-xs text-fg-muted">
                   {{ noticeKey | transloco }}
@@ -121,19 +104,8 @@ export class ImportProgressSection {
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
   );
 
-  /** Same pattern as `MassDeletePanel.resyncNoticeKey` — only the key family differs. */
-  protected readonly resyncNoticeKey = computed(() => {
-    switch (this.importService.resyncTrigger()) {
-      case 'pending':
-        return 'import.resync.pending';
-      case 'succeeded':
-        return 'import.resync.succeeded';
-      case 'cooldown':
-        return 'import.resync.cooldown';
-      case 'failed':
-        return 'import.resync.failed';
-      default:
-        return null;
-    }
-  });
+  /** Same key the page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
+  protected readonly resyncNoticeKey = computed(() =>
+    resyncNoticeKey(this.importService.resyncTrigger(), 'import'),
+  );
 }

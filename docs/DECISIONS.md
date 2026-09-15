@@ -10,6 +10,45 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — Dock outcome notices are announced from a page-level region that outlives the dock (#134)
+
+**Betrifft:** `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` · `web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/voting/vote-session-detail-page.html` · `web/e2e/emote-import.e2e.spec.ts` · `docs/UI-Designsprache.md`
+
+**Why.** The #134 fix split every transient notice into a permanently mounted sr-only
+`role="status"` region plus an `aria-hidden` visible twin, because a status region that enters the
+DOM together with its text announces nothing on most screen reader/browser pairings. For the
+duplicate and resync notices of a restore and of an import, that "permanent" region still lived
+inside `ImportProgressSection` and `MassDeletePanel` — and on the usage-stats page both sit inside
+the action dock, whose `@if` follows `actionDockHasContent`. That function is true when only a
+duplicate notice is pending (#149 P2): a fully refused run, every row already present, leaves no
+run and no queue and is the one thing that mounts the dock. Dock, component and region were then
+created in the same change-detection pass that set the notice text, so exactly that outcome was
+silent again. An E2E case that tags every status region at rest and requires the notice to land in
+a tagged one failed on the previous code for this case and passed for the dock-already-open case.
+
+**What changed.** The announcement moves out of the dock. `DockOutcomeAnnouncer` is a component
+whose host element is the `sr-only role="status"` region; each host page mounts it once,
+unconditionally, outside every dock gate (`!isCoarse()` included): `usage-stats-page.html` with
+`withImport`, `vote-session-detail-page.html` without it, because that page mounts the mass-delete
+panel but no import section and must not speak for a run it does not show. Its content mirrors the
+service signals the visible notices are gated on. The two components keep their visible notices,
+`aria-hidden`, and own no status region for them any more, so nothing is announced twice. With
+several outcomes at once the region holds one paragraph each, in the dock's reading order —
+restore before import, within each skipped count, check unavailable, resync — and each paragraph
+enters on its own, so a new outcome is announced once without repeating standing ones. The resync
+key mapping became one exported function (`resyncNoticeKey`) used by the announcer and both
+components, so spoken and shown wording cannot drift.
+
+**Rejected.** Keeping the region in the components and making the dock stay mounted instead: the
+dock's whole contract is to exist only while there is something to act on (§2, §8.7), and it would
+still unmount under a notice on a pointer-mode switch. A region per component on each page: two
+voices for the same outcome on the usage-stats page is what the twin split exists to prevent.
+
+**Still open.** `run-progress-panel.ts` is itself `role="status"` and mounts together with its first
+state, so the start of a run is not announced. Named in §4.5 as the one known open instance.
+
+---
+
 ### 2026-09-15 — Light-mode `warning-fg` moves to `amber-800`, and the live-quota badge stops diluting its own contrast on hover (#106)
 
 **Betrifft:** `web/src/styles.css` · `web/src/app/features/shell/app-shell.ts` · `docs/UI-Designsprache.md` · `DESIGN.md`

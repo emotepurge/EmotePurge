@@ -1877,3 +1877,153 @@ test.describe('create-vote-session dialog: follows the live selection (#132)', (
     ]);
   });
 });
+
+/**
+ * #134 follow-up: the dock mounts and unmounts with its own content (`actionDockHasContent`), and
+ * a fully refused run is one of the things that mounts it — so a `role="status"` region living
+ * inside the dock can be created in the very same change-detection pass that fills it, which most
+ * screen reader/browser pairings do not announce at all (docs/UI-Designsprache.md §4.5). The
+ * announcement for these outcomes therefore has to come from a region the page keeps mounted
+ * independently of the dock.
+ *
+ * Proof of "same node": every `role="status"` element present at rest is tagged before the run,
+ * and the region that later carries the notice must still carry that tag — a region created
+ * together with its text would not.
+ */
+test.describe('dock outcomes: announced from a region that outlives the dock (#134)', () => {
+  const AT_REST = 'data-e2e-at-rest';
+
+  async function tagStatusRegionsAtRest(page: Page): Promise<void> {
+    await page.evaluate((attribute) => {
+      document.querySelectorAll('[role="status"]').forEach((node) => {
+        node.setAttribute(attribute, '');
+      });
+    }, AT_REST);
+  }
+
+  /** The 7TV v4 read `filterAlreadyPresent` sends right before a run starts — answered with the
+   *  given ids, as one page. Every other GQL call (the ADD mutation) succeeds. */
+  async function mockFreshCheck(page: Page, presentIds: string[]): Promise<void> {
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('addEmote')) {
+        return {
+          data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+        };
+      }
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: presentIds.length,
+                pageCount: 1,
+                items: presentIds.map((id) => ({ emote: { id } })),
+              },
+            },
+          },
+        },
+      };
+    });
+  }
+
+  test('a fully refused import mounts the dock, and its notice lands in a region that existed before', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    // Our own mirror knows neither row, so both survive the confirm dialog — only the fresh 7TV
+    // check at confirm time finds them, which is exactly the "refused with nothing to run" case.
+    await mockEmoteList(page, SOURCE_CHANNEL, []);
+    await mockSevenTvLeaderboard(page, {
+      TRENDING_DAILY: {
+        totalCount: 2,
+        truncated: false,
+        emotes: [
+          { sevenTvEmoteId: 'lb-1', name: 'LBOne', topAllTime: 500_000, trending: 900 },
+          { sevenTvEmoteId: 'lb-2', name: 'LBTwo', topAllTime: 300_000, trending: 700 },
+        ],
+      },
+    });
+    await mockFreshCheck(page, ['lb-1', 'lb-2']);
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await tagStatusRegionsAtRest(page);
+
+    const sourceDialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await sourceDialog.getByRole('button', { name: /^Aus 7TVs Bestenliste/ }).click();
+    await sourceDialog.getByRole('button', { name: /^LBOne/ }).click();
+    await sourceDialog.getByRole('button', { name: /^LBTwo/ }).click();
+    await sourceDialog.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = page.getByRole('dialog');
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      `2 Emotes nach ${SOURCE_CHANNEL} kopieren?`,
+    );
+    // Nothing marked, no run: the dock is not there yet (its copy shortcut would be).
+    await expect(page.getByRole('button', { name: /^Übertragen \(/ })).toHaveCount(0);
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const text = '2 Emotes waren beim Start bereits im Zielset und wurden übersprungen.';
+    const notice = page.getByRole('status').filter({ hasText: text });
+    // Exactly one announcing region — the visible copy is aria-hidden, so it is not a second one.
+    await expect(notice).toHaveCount(1);
+    await expect(notice).toHaveAttribute(AT_REST, '', { timeout: 1000 });
+    await expect(page.locator('[aria-hidden="true"]').filter({ hasText: text })).toBeVisible();
+  });
+
+  test('a partly skipped import with the dock already open announces from the same standing region', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, []);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    // CatJAM (7tv-1) reached the target between the dialog and the confirm click.
+    await mockFreshCheck(page, ['7tv-1']);
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await expect(dockCopyButton(page, 2)).toBeEnabled();
+    // Tagged only now: case (a) is about a dock that is already standing when the notice arrives.
+    await tagStatusRegionsAtRest(page);
+    await dockCopyButton(page, 2).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: '#aatrociity' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+    const confirm = page.getByRole('dialog');
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '2 Emotes nach aatrociity kopieren?',
+    );
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const text = '1 Emote war beim Start bereits im Zielset und wurde übersprungen.';
+    const notice = page.getByRole('status').filter({ hasText: text });
+    await expect(notice).toHaveCount(1);
+    await expect(notice).toHaveAttribute(AT_REST, '', { timeout: 1000 });
+    await expect(page.locator('[aria-hidden="true"]').filter({ hasText: text })).toBeVisible();
+  });
+});

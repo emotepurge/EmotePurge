@@ -26,6 +26,7 @@ import {
 import { Button } from '../ui/button';
 import { filterAlreadyPresent } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
+import { resyncNoticeKey } from './dock-outcome-announcer';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { RunProgressPanel } from './run-progress-panel';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
@@ -127,26 +128,19 @@ export interface DeletableEmote {
         </app-run-progress-panel>
       }
 
-      <!-- A role="status" region that enters the DOM together with its content announces nothing to
-           most screen reader/browser pairings — only a mutation *inside* an already-mounted region
-           is announced. So the two sr-only regions below are permanent and only their text comes
-           and goes via @if; each visible twin below stays gated behind its own @if (it must not
-           occupy layout space when there is nothing to say) and is aria-hidden so the message is
-           not spoken twice (docs/UI-Designsprache.md §4.5). -->
-      <p class="sr-only" role="status">
-        @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
-          {{
-            restoreSkippedDuplicatesKey() | transloco: { count: restoreService.skippedDuplicates() }
-          }}
-        }
-      </p>
       <!-- #149 P2 (independent review): gated on duplicateNoticePending, not just
            skippedDuplicates() > 0 — a transient notice (design doc §4.5), not a persistent one, so
            it never sits attached to a *later*, unrelated run's details with nothing to clear it.
            See that signal's doc for why it also has to be what keeps the dock (and this panel)
            mounted for a fully-refused (all-duplicates) restore, which leaves no run/queue behind of
            its own — including the file-based restore reached via ImportTrigger, which has nothing
-           marked in this channel's grid to keep the dock open otherwise. -->
+           marked in this channel's grid to keep the dock open otherwise.
+
+           Every notice in this panel is aria-hidden: its announcement comes from the host page's
+           permanently mounted DockOutcomeAnnouncer, not from here. On the usage-stats page this
+           panel lives in the dock, which can mount in the same pass that sets the notice, and a
+           status region created together with its text announces nothing
+           (docs/UI-Designsprache.md §4.5). -->
       @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
         <p aria-hidden="true" class="text-sm text-fg-secondary">
           {{
@@ -154,11 +148,6 @@ export interface DeletableEmote {
           }}
         </p>
       }
-      <p class="sr-only" role="status">
-        @if (restoreService.duplicateNoticePending() && !restoreService.duplicateCheckAvailable()) {
-          {{ 'restore.duplicateCheckUnavailable' | transloco }}
-        }
-      </p>
       <!-- The pre-run duplicate check's fetch failed (already-present-filter.ts) — every row still
            went through, so a duplicate may have slipped in undetected. A quiet notice, not an
            alarm: the run is still expected to succeed, this only says the guard could not run. -->
@@ -179,13 +168,7 @@ export interface DeletableEmote {
           (syncRetryRequested)="restoreService.retrySyncReport()"
         >
           <ng-container run-actions>
-            <!-- Same split as the two duplicate notices above (docs/UI-Designsprache.md §4.5): the
-                 sr-only region is permanent, the visible twin stays an @if and is aria-hidden. -->
-            <span role="status" class="sr-only">
-              @if (resyncNoticeKey(); as noticeKey) {
-                {{ noticeKey | transloco }}
-              }
-            </span>
+            <!-- aria-hidden for the same reason as the duplicate notices above. -->
             @if (resyncNoticeKey(); as noticeKey) {
               <span aria-hidden="true" class="text-xs text-fg-muted">
                 {{ noticeKey | transloco }}
@@ -252,20 +235,10 @@ export class MassDeletePanel {
   /** Live slot view for the restore-confirm dialog, loaded when that dialog opens. */
   private readonly restoreSlots = signal<{ occupied: number; capacity: number } | null>(null);
 
-  protected readonly resyncNoticeKey = computed(() => {
-    switch (this.restoreService.resyncTrigger()) {
-      case 'pending':
-        return 'restore.resync.pending';
-      case 'succeeded':
-        return 'restore.resync.succeeded';
-      case 'cooldown':
-        return 'restore.resync.cooldown';
-      case 'failed':
-        return 'restore.resync.failed';
-      default:
-        return null;
-    }
-  });
+  /** Same key the host page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
+  protected readonly resyncNoticeKey = computed(() =>
+    resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),
+  );
 
   /** #149/T5: wording for how many rows the pre-run duplicate check (`already-present-filter.ts`)
    *  dropped — shown independently of the run-progress panel below, because a run where *every*

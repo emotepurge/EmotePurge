@@ -67,6 +67,7 @@ import {
   atlasColumns,
 } from '../../shared/grid/atlas-grid';
 import { chunkIntoRows } from '../../shared/grid/grid-columns';
+import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
 import { DeletableEmote, MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
 import { ListSelection } from '../../shared/selection/list-selection';
 
@@ -119,6 +120,7 @@ const FILTER_TOOLBAR_MIN_EMOTES = 13;
     ScrollingModule,
     EmoteSprite,
     EmoteSpriteAnimated,
+    DockOutcomeAnnouncer,
     MassDeletePanel,
     UsageRangeMenu,
     TranslocoPipe,

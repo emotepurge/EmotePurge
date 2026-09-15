@@ -91,6 +91,18 @@ function createFakeImportService(): FakeImportService {
   };
 }
 
+/** What the component's status regions would announce: their text minus aria-hidden descendants. */
+function announcedByStatusRegions(root: HTMLElement): string {
+  return Array.from(root.querySelectorAll('[role="status"]'))
+    .map((region) => {
+      const copy = region.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
+      return copy.textContent?.trim() ?? '';
+    })
+    .join(' ')
+    .trim();
+}
+
 describe('ImportProgressSection', () => {
   let importService: FakeImportService;
 
@@ -167,10 +179,9 @@ describe('ImportProgressSection', () => {
   // projects once the run has settled (`!isRunning() && total() > 0`, see run-progress-panel.ts) —
   // so every case below is post-run, not mid-run, matching how the real service actually sets
   // `resyncTrigger` (only from `onRunComplete`, after `isRunning` has already gone back to false).
-  // #134: since the fix, the sr-only status region for the resync notice is permanently mounted
-  // once the run-actions slot renders at all — only its text comes and goes with resyncNoticeKey().
-  // So "no notice" now means the region exists but is empty, and carries no visible aria-hidden
-  // twin, not that the region itself is absent (docs/UI-Designsprache.md §4.5).
+  // #134: this section lives in the usage-stats dock, which can mount in the same pass that sets a
+  // notice — so it owns no status region at all. Its notices are visible but aria-hidden; the page's
+  // permanently mounted DockOutcomeAnnouncer speaks them (docs/UI-Designsprache.md §4.5).
   it('shows no resync notice once settled while resyncTrigger is idle', () => {
     importService.isRunning.set(false);
     importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
@@ -179,35 +190,7 @@ describe('ImportProgressSection', () => {
 
     const fixture = render();
 
-    expect(fixture.nativeElement.querySelector('span[role="status"]')?.textContent.trim()).toBe('');
-    expect(fixture.nativeElement.querySelector('span[aria-hidden="true"]')).toBeNull();
-  });
-
-  // #134: a role="status" region that enters the DOM together with its content announces nothing to
-  // most screen reader/browser pairings — only a mutation *inside* an already-mounted region is
-  // announced. Pins the fix: the resync notice's status node is the same DOM node before and after
-  // resyncNoticeKey() turns non-null, and the visible copy next to it is a separate aria-hidden twin.
-  it('keeps the same sr-only status node when the resync notice appears, with an aria-hidden visible twin', () => {
-    importService.isRunning.set(false);
-    importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
-    importService.run.set(runInfo());
-    importService.resyncTrigger.set('idle');
-
-    const fixture = render();
-    const statusNodeAtRest = fixture.nativeElement.querySelector('span[role="status"]');
-    expect(statusNodeAtRest).not.toBeNull();
-    expect(statusNodeAtRest?.textContent.trim()).toBe('');
-
-    importService.resyncTrigger.set('pending');
-    fixture.detectChanges();
-
-    const statusNodeAfter = fixture.nativeElement.querySelector('span[role="status"]');
-    expect(statusNodeAfter).toBe(statusNodeAtRest);
-    expect(statusNodeAfter?.textContent.trim()).toBe('Abgleich des Zielkanals wird angestoßen…');
-
-    expect(
-      fixture.nativeElement.querySelector('span[aria-hidden="true"]')?.textContent.trim(),
-    ).toBe('Abgleich des Zielkanals wird angestoßen…');
+    expect(fixture.nativeElement.textContent).not.toContain('Abgleich');
   });
 
   it.each([
@@ -216,7 +199,7 @@ describe('ImportProgressSection', () => {
     ['cooldown', 'Der Zielkanal übernimmt die Emotes beim nächsten Abgleich.'],
     ['failed', 'Abgleich konnte nicht angestoßen werden.'],
   ] as const)(
-    'maps the settled resyncTrigger %s to its own notice text',
+    'maps the settled resyncTrigger %s to its own notice text, shown but not announced here',
     (trigger, expectedText) => {
       importService.isRunning.set(false);
       importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
@@ -225,9 +208,11 @@ describe('ImportProgressSection', () => {
 
       const fixture = render();
 
-      expect(fixture.nativeElement.querySelector('span[role="status"]')?.textContent.trim()).toBe(
-        expectedText,
-      );
+      const notice = fixture.nativeElement.querySelector('[aria-hidden="true"]');
+      expect(notice?.textContent.trim()).toBe(expectedText);
+      // RunProgressPanel is itself role="status" and this notice is projected into it — hidden
+      // there, so that region does not speak it either.
+      expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(expectedText);
     },
   );
 
@@ -306,36 +291,23 @@ describe('ImportProgressSection', () => {
     );
   });
 
-  // #134: same defect and fix as the resync notice above, applied to the skipped-duplicates
-  // acknowledgement — the sr-only <p role="status"> is mounted unconditionally (only its own text
-  // comes and goes via @if), so the node the notice appears in already existed before the run ever
-  // produced anything to report.
-  it('keeps the same sr-only status node when the skipped-duplicates notice appears, with an aria-hidden visible twin', () => {
+  // #134: same as the resync notice above — the duplicate notices are shown, not announced, here.
+  it('shows both duplicate notices aria-hidden, with no status region of its own', () => {
     importService.run.set(null);
-    importService.skippedDuplicates.set(0);
-    importService.duplicateNoticePending.set(false);
+    importService.skippedDuplicates.set(3);
+    importService.duplicateCheckAvailable.set(false);
+    importService.duplicateNoticePending.set(true);
 
     const fixture = render();
-    const statusNodes = (): HTMLElement[] =>
-      Array.from(fixture.nativeElement.querySelectorAll('p[role="status"]'));
-    const statusNodeAtRest = statusNodes()[0];
-    expect(statusNodeAtRest).toBeDefined();
-    expect(statusNodeAtRest.textContent?.trim()).toBe('');
 
-    importService.skippedDuplicates.set(3);
-    importService.duplicateNoticePending.set(true);
-    fixture.detectChanges();
-
-    const statusNodeAfter = statusNodes()[0];
-    expect(statusNodeAfter).toBe(statusNodeAtRest);
-    expect(statusNodeAfter.textContent?.trim()).toBe(
-      '3 Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
+    const notices: HTMLElement[] = Array.from(
+      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
     );
-
-    const visibleTwin = fixture.nativeElement.querySelector('p[aria-hidden="true"]');
-    expect(visibleTwin?.textContent?.trim()).toBe(
+    expect(notices.map((notice) => notice.textContent?.trim())).toEqual([
       '3 Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
-    );
+      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+    ]);
+    expect(announcedByStatusRegions(fixture.nativeElement)).toBe('');
   });
 
   // The other half of the P2 fix: the notice is transient (design doc §4.5), not a persistent flag

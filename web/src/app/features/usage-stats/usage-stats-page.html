@@ -823,6 +823,13 @@
   </div>
 </div>
 
+<!-- The screen-reader voice for what the dock below reports (duplicate and resync notices of a
+     restore and of an import). Outside the dock's @if, !isCoarse() included, because the dock mounts
+     and unmounts with its content — a fully refused run is what mounts it — and a status region
+     created in the same pass as its text announces nothing (docs/UI-Designsprache.md §4.5). The
+     notices inside the dock are aria-hidden for that reason. -->
+<app-dock-outcome-announcer [withImport]="true" />
+
 <!-- The action bar. It exists only while there is something to act on, which is what allows the
      surface above it to be nothing but emotes. Kept mounted through a settled run as well, because
      the run summary carries the protocol download and that file is the only durable record.

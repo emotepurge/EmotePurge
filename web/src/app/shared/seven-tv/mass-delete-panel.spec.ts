@@ -456,13 +456,25 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
 });
 
 /**
- * #134: a role="status" region that enters the DOM together with its content announces nothing to
- * most screen reader/browser pairings — only a mutation *inside* an already-mounted region is
- * announced. Pins the fix (design doc §4.5): the sr-only status node for the resync notice and for
- * the duplicate-check-unavailable notice already exists before either notice has anything to say,
- * and the visible copy next to it is a separate aria-hidden twin.
+ * #134: on the usage-stats page this panel lives in the action dock, which can mount in the same
+ * change-detection pass that sets a notice — a status region created together with its text
+ * announces nothing. So the panel's resync and duplicate-check notices are shown but aria-hidden,
+ * and the host page's permanently mounted DockOutcomeAnnouncer speaks them instead
+ * (docs/UI-Designsprache.md §4.5). Pinned here: the panel's own status regions (RunProgressPanel is
+ * one) never announce these notices, so nothing is spoken twice.
  */
-describe('MassDeletePanel — resync and duplicate-check status regions stay mounted (#134)', () => {
+function announcedByStatusRegions(root: HTMLElement): string {
+  return Array.from(root.querySelectorAll('[role="status"]'))
+    .map((region) => {
+      const copy = region.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
+      return copy.textContent?.trim() ?? '';
+    })
+    .join(' ')
+    .trim();
+}
+
+describe('MassDeletePanel — resync and duplicate-check notices are shown, not announced (#134)', () => {
   const STATUS_REGION_TRANSLATIONS = {
     ...DE_TRANSLATIONS,
     restore: {
@@ -549,49 +561,29 @@ describe('MassDeletePanel — resync and duplicate-check status regions stay mou
     fixture.componentRef.setInput('selectedEmotes', []);
   });
 
-  it('keeps the same sr-only status node when the resync notice appears, with an aria-hidden visible twin', () => {
-    fixture.detectChanges();
-
-    const statusNodeAtRest = fixture.nativeElement.querySelector('span[role="status"]');
-    expect(statusNodeAtRest).not.toBeNull();
-    expect(statusNodeAtRest?.textContent.trim()).toBe('');
-
+  it('shows the resync notice aria-hidden, so no status region of the panel speaks it', () => {
     resyncTrigger.set('pending');
     fixture.detectChanges();
 
-    const statusNodeAfter = fixture.nativeElement.querySelector('span[role="status"]');
-    expect(statusNodeAfter).toBe(statusNodeAtRest);
-    expect(statusNodeAfter?.textContent.trim()).toBe('Synchronisierung wird angestoßen…');
-
-    expect(
-      fixture.nativeElement.querySelector('span[aria-hidden="true"]')?.textContent.trim(),
-    ).toBe('Synchronisierung wird angestoßen…');
+    const text = 'Synchronisierung wird angestoßen…';
+    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
+      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
+    ).find((element) => element.textContent?.trim() === text);
+    expect(notice).toBeDefined();
+    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
   });
 
-  it('keeps the same sr-only status node when the duplicate-check-unavailable notice appears, with an aria-hidden visible twin', () => {
-    fixture.detectChanges();
-
-    const statusNodes = (): HTMLElement[] =>
-      Array.from(fixture.nativeElement.querySelectorAll('p[role="status"]'));
-    // The second <p role="status"> in document order is the duplicate-check-unavailable region —
-    // the first is the skipped-count one above it.
-    const statusNodeAtRest = statusNodes()[1];
-    expect(statusNodeAtRest).toBeDefined();
-    expect(statusNodeAtRest.textContent?.trim()).toBe('');
-
+  it('shows the duplicate-check-unavailable notice aria-hidden, so no status region of the panel speaks it', () => {
     duplicateCheckAvailable.set(false);
     duplicateNoticePending.set(true);
     fixture.detectChanges();
 
-    const statusNodeAfter = statusNodes()[1];
-    expect(statusNodeAfter).toBe(statusNodeAtRest);
-    expect(statusNodeAfter.textContent?.trim()).toBe(
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-    );
-
-    const visibleTwin = fixture.nativeElement.querySelector('p[aria-hidden="true"]');
-    expect(visibleTwin?.textContent?.trim()).toBe(
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-    );
+    const text =
+      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.';
+    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
+      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
+    ).find((element) => element.textContent?.trim() === text);
+    expect(notice).toBeDefined();
+    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
   });
 });
