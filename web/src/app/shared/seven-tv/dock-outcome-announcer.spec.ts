@@ -115,6 +115,10 @@ describe('DockOutcomeAnnouncer', () => {
     expect(regions()[0].textContent?.trim()).toBe('');
   });
 
+  it('sets aria-atomic to false so a new paragraph is not read together with standing ones', () => {
+    expect(regions()[0].getAttribute('aria-atomic')).toBe('false');
+  });
+
   it('fills the region that was already standing when a fully refused import reports its skips', () => {
     const regionAtRest = regions()[0];
 

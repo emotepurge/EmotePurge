@@ -33,8 +33,12 @@ export function resyncNoticeKey(
  *
  * Several outcomes at once: one paragraph each, in the dock's own reading order — restore (the
  * marking half) before import, and within each the skipped count, the check-unavailable notice,
- * then the resync acknowledgement. Each paragraph enters and leaves on its own, so a new one is
- * announced once without repeating those already standing (the region is not `aria-atomic`).
+ * then the resync acknowledgement. `role="status"` is implicitly `aria-atomic="true"` (WAI-ARIA
+ * 1.2, §status), and Blink/WebKit apply that default — so without an explicit override, a new or
+ * changed paragraph would make the whole region, standing ones included, be read again. This
+ * multi-message region therefore sets `aria-atomic="false"` on its host, so a new paragraph is
+ * announced alone; each paragraph's sentence stays a single interpolated text node so an in-place
+ * pending→succeeded change is still read as the full new sentence, not a fragment.
  *
  * `withImport`: the import section only exists on the usage-stats page. The voting-results page
  * mounts the mass-delete panel alone and must not speak for an import run it does not show.
@@ -42,7 +46,7 @@ export function resyncNoticeKey(
 @Component({
   selector: 'app-dock-outcome-announcer',
   imports: [TranslocoPipe],
-  host: { role: 'status', class: 'sr-only' },
+  host: { role: 'status', class: 'sr-only', 'aria-atomic': 'false' },
   template: `
     @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
       <p>

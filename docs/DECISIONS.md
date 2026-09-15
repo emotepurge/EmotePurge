@@ -34,8 +34,12 @@ panel but no import section and must not speak for a run it does not show. Its c
 service signals the visible notices are gated on. The two components keep their visible notices,
 `aria-hidden`, and own no status region for them any more, so nothing is announced twice. With
 several outcomes at once the region holds one paragraph each, in the dock's reading order —
-restore before import, within each skipped count, check unavailable, resync — and each paragraph
-enters on its own, so a new outcome is announced once without repeating standing ones. The resync
+restore before import, within each skipped count, check unavailable, resync. `role="status"` is
+implicitly `aria-atomic="true"` (WAI-ARIA 1.2, §status), a default Blink and WebKit apply: without
+an override, adding or changing one paragraph would re-read the whole region, standing ones
+included — an independent second review (Codex) caught this omission after the initial merge, so
+the region's host now sets `aria-atomic="false"` explicitly, and a new outcome is announced once
+without repeating standing ones. The resync
 key mapping became one exported function (`resyncNoticeKey`) used by the announcer and both
 components, so spoken and shown wording cannot drift.
 
