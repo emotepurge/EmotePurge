@@ -41,9 +41,17 @@ end in `.jsonl` — so it can only ever name a protocol file already inside `Har
 never an arbitrary path.
 
 **Output sits beside the run, timestamped, and never overwrites.** `<stem>.recompute-<yyyyMMddTHHmmssZ>.report.json`
-/ `.md`, refusing outright if either file already exists (same clock second twice). It deliberately
-never writes to `<stem>.report.json`/`.report.md` themselves: those two files existing together is
-the *closed* signal (`HarnessReportFile.IsClosed`), and writing there for a run that never actually
+/ `.md`, refusing outright if either file already exists (same clock second twice). The check runs
+twice, not once: an upfront `File.Exists` closes the ordinary case cheaply, and
+`HarnessReportFile.WriteReportPairAtomically`'s own rename — `overwrite: false`, added in the second
+review round (Codex P2-3) — closes the TOCTOU gap between that check and the write a moment later,
+surfacing a collision as a `HarnessReportFileException` (mapped to exit 3) with its `.tmp` sibling
+cleaned up rather than left behind. `HarnessReportFile.WriteAtomically` itself — the ordinary run's
+own writer — stays untouched and keeps overwriting: `WriteFinalReportAtomically` legitimately
+replaces a run's own report on every resume, and a recompute has no "own" file to overwrite in the
+first place, only another recompute's to collide with. It deliberately never writes to
+`<stem>.report.json`/`.report.md` themselves either way: those two files existing together is the
+*closed* signal (`HarnessReportFile.IsClosed`), and writing there for a run that never actually
 finished fetching its window would close a run the recompute did not perform — the one thing
 `RecomputeReportAsync` must never do to a complete-but-unclosed file it recomputes from.
 
@@ -71,6 +79,14 @@ above exists to catch, not to silently apply. The diagnostic flag is inherited f
 D4's fail-closed rule extended: a missing, unparsable or otherwise unreadable original must never
 silently upgrade a diagnostic run into a binding verdict. (An earlier version of this feature
 defaulted to `false` instead — the opposite direction from D4 — and was corrected before merge.)
+"Readable" was itself widened in the second review round (Codex P2-4): a syntactically valid report
+that merely lacks a usable `run.diagnostic` — a pre-#97 report predates that JSON property; a
+hand-edited or foreign one could omit or misshape it — now counts as unreadable too, checked with a
+`JsonDocument` peek for a boolean `run.diagnostic` (and a null deserialized `Run`) ahead of the full
+deserialize, rather than by turning on `RespectRequiredConstructorParameters`/
+`RespectNullableAnnotations` on `ReportOptions`: either would make every report whose JSON predates a
+later-added property — the #97 tie fields, `Recomputation` itself — fail to deserialize outright, for
+a reason that has nothing to do with the diagnostic flag.
 
 **The code-drift caveat.** `AlgorithmVersion` in the header is a tag on the counting path that
 produced the `.jsonl`'s day lines, never a promise that `ReplayFidelityCalculator` itself is
@@ -108,10 +124,19 @@ not move an untouched report's bytes (asserted directly: the original `.jsonl`/`
 described above came from the missing `JsonIgnore`, not from this converter, and the two are
 independent fixes for two independent gaps.
 
-No new exit code: every refusal (missing file, unreadable header, channel id mismatch, missing day
-line, empty log across the whole window, an existing recompute pair at the same timestamp) returns
-`HarnessRunner.ExitPreconditionViolated` (3) — the same code an ordinary run already uses for "the
-question could not be asked at all". A hash or cutover mismatch is deliberately not a refusal. Outside
+No new exit code: every refusal (missing file, unreadable header, a foreign `AlgorithmVersion`,
+channel id mismatch, a duplicated in-window day line, missing day line, empty log across the whole
+window, an existing recompute pair at the same timestamp, or one that appears at the moment of the
+write) returns `HarnessRunner.ExitPreconditionViolated` (3) — the same code an ordinary run already
+uses for "the question could not be asked at all". Two of these were added in a second review round
+(Codex, two "MUST" findings, both accepted by an arbiter after independent verification): a foreign
+`AlgorithmVersion` — day lines from `harness-1` predate `SharedChatCounts` (#73), and
+`ReplayFidelityCalculator` read that dictionary unconditionally, so recomputing one used to throw
+(exit 6) instead of refusing; and a duplicated day line — a shape an ordinary run can never itself
+produce (its in-memory `dayLines` dictionary forbids a second write for the same day, and a *resumed*
+run with one already on disk throws on `ToDictionary` before ever reaching `Compute`), but which a
+recompute, reading whatever file it is pointed at, used to silently double-count instead of refusing.
+Both checks run before any database access. A hash or cutover mismatch is deliberately not a refusal. Outside
 the refusal list, `RecomputeReportAsync` reuses two more of the ordinary run's exit codes for the same
 reasons `RunAsync` does: `ExitAbortedWithResumePoint` (4) on cancellation — "resume point" carries no
 literal resume meaning here (a recompute has nothing to continue, only to retry outright), it is still

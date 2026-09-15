@@ -517,6 +517,20 @@ public sealed class HarnessRunner(
 
         var identity = header.Identity;
 
+        // Refuses a foreign AlgorithmVersion before any DB access (issue #119, second review round):
+        // ReplayDayCounter's day-line shape changed at "harness-2" (SharedChatCounts, #73), and
+        // ReplayFidelityCalculator reads that dictionary unconditionally — recomputing a "harness-1"
+        // file throws (a bare NullReferenceException today) rather than refusing cleanly. There is no
+        // migration path between versions: a version bump means the counting rule itself changed, so
+        // an old file's day lines cannot be reinterpreted under the new one, only refused.
+        if (!string.Equals(identity.AlgorithmVersion, AlgorithmVersion, StringComparison.Ordinal))
+        {
+            logger.LogError(
+                "Report-only file '{File}' was written by algorithm version '{FileVersion}', but this build only recomputes '{CurrentVersion}'; there is no migration between versions.",
+                sourceFile.Path, identity.AlgorithmVersion, AlgorithmVersion);
+            return ExitPreconditionViolated;
+        }
+
         // The channel NAME is deliberately not compared — a rename (#34/#44) keeps the id and must
         // not make a run unrecomputable, exactly the reasoning FindFrozenWindow already applies when
         // matching a resume candidate by id alone. The id is what the header actually identifies the
@@ -542,6 +556,29 @@ public sealed class HarnessRunner(
         }
 
         var allDays = content.Days.OrderBy(d => d.Day).ToList();
+
+        // Refuses a duplicated day line before it can double-count (issue #119, second review
+        // round): an ordinary run can never produce one — AppendDay's in-memory dayLines dictionary
+        // makes a second write for the same day impossible — but this file did not necessarily come
+        // from one. Left unchecked, a HashSet-based completeness check below would report full
+        // coverage while allDays still carried the duplicate straight into
+        // ReplayFidelityCalculator.Compute, which has no duplicate-day contract of its own and would
+        // silently sum both copies into every total. Restricted to the window: a stray day line
+        // outside [WindowFrom, WindowTo] is not this check's concern (it is never read by Compute).
+        var duplicateDays = allDays
+            .Where(d => d.Day >= identity.WindowFrom && d.Day <= identity.WindowTo)
+            .GroupBy(d => d.Day)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+        if (duplicateDays.Count > 0)
+        {
+            logger.LogError(
+                "Report-only file '{File}' has more than one day line for {Days}; a duplicated day would be double-counted, so it cannot be recomputed.",
+                sourceFile.Path, string.Join(", ", duplicateDays.Select(Iso)));
+            return ExitPreconditionViolated;
+        }
+
         var daysPresent = new HashSet<DateOnly>(allDays.Select(d => d.Day));
         for (var day = identity.WindowFrom; day <= identity.WindowTo; day = day.AddDays(1))
         {
@@ -654,7 +691,18 @@ public sealed class HarnessRunner(
         var markdown = BuildRecomputeMarkdown(
             identity, header, reportWithRecomputation, allDays, liveRows, recomputedAtUtc, stopwatch.Elapsed, totalBytes, rateLimitedDays);
 
-        HarnessReportFile.WriteReportPairAtomically(recomputeJsonPath, recomputeMarkdownPath, reportWithRecomputation, markdown);
+        try
+        {
+            // The pre-check above already refused an existing pair; this is the TOCTOU close, not the
+            // primary defence — WriteReportPairAtomically's own rename is what actually cannot
+            // overwrite (issue #119, second review round).
+            HarnessReportFile.WriteReportPairAtomically(recomputeJsonPath, recomputeMarkdownPath, reportWithRecomputation, markdown);
+        }
+        catch (HarnessReportFileException ex)
+        {
+            logger.LogError(ex, "Recompute of '{File}' could not be written to '{JsonPath}'.", sourceFile.Path, recomputeJsonPath);
+            return ExitPreconditionViolated;
+        }
 
         logger.LogInformation(
             "Recompute of channel '{Channel}' from '{File}' written to '{JsonPath}' (input hash match: {HashMatch}, bot-split cutover match: {CutoverMatch}).",

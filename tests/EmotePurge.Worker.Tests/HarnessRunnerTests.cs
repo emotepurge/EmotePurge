@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using EmotePurge.Core.ChatLogArchive;
 using EmotePurge.Core.Entities;
@@ -1103,6 +1105,64 @@ public class HarnessRunnerTests : IDisposable
         Assert.Contains(ReplayGateIneligibleReasons.DiagnosticRun, recomputedReport.Gate.GateIneligibleReasons);
     }
 
+    // P2-4 of the #119 second review round: TryReadExistingReport must be fail-closed about what
+    // "readable" means, not merely tolerant of I/O and JSON errors. A pre-#97 report — or any report
+    // missing or misshaping Run.Diagnostic — must read the same as no report at all (defaulted to
+    // true), never let JsonSerializer's own default-for-an-absent-bool quietly hand back `false`.
+    [Fact]
+    public async Task ReportOnly_WhenTheOriginalReportsRunDiagnosticIsMissing_DefaultsDiagnosticToTrue()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        var reportJsonPath = Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+
+        var root = JsonNode.Parse(File.ReadAllText(reportJsonPath))!.AsObject();
+        ((JsonObject)root["run"]!).Remove("diagnostic");
+        File.WriteAllText(reportJsonPath, root.ToJsonString());
+
+        Assert.Equal(0, await Recompute(fileName));
+
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+        Assert.True(recomputedReport.Run.Diagnostic);
+        Assert.Equal("defaulted", recomputedReport.Recomputation!.DiagnosticSource);
+        Assert.Contains(ReplayGateIneligibleReasons.DiagnosticRun, recomputedReport.Gate.GateIneligibleReasons);
+    }
+
+    // P2-4: a report missing the whole "run" object (more damaged than the case above, or simply
+    // foreign) must default the same way — exit 0, not the unexpected-error exit 6 a bare
+    // NullReferenceException from a null Run would otherwise have produced before this fix.
+    [Fact]
+    public async Task ReportOnly_WhenTheOriginalReportsRunObjectIsMissing_DefaultsDiagnosticToTrue()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        var reportJsonPath = Assert.Single(Directory.GetFiles(_directory, "*.report.json"));
+
+        var root = JsonNode.Parse(File.ReadAllText(reportJsonPath))!.AsObject();
+        root.Remove("run");
+        File.WriteAllText(reportJsonPath, root.ToJsonString());
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitSuccess, exitCode);
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+        Assert.True(recomputedReport.Run.Diagnostic);
+        Assert.Equal("defaulted", recomputedReport.Recomputation!.DiagnosticSource);
+        Assert.Contains(ReplayGateIneligibleReasons.DiagnosticRun, recomputedReport.Gate.GateIneligibleReasons);
+    }
+
     [Fact]
     public async Task ReportOnly_WhenLiveRowsChangedSinceTheRun_WarnsOnInputHashMismatchButStillSucceeds()
     {
@@ -1234,6 +1294,82 @@ public class HarnessRunnerTests : IDisposable
         Assert.Equal(filesBefore, ListFiles());
     }
 
+    // P2-1 (Codex "MUST" #1) of the #119 second review round: a foreign AlgorithmVersion's day lines
+    // have a different shape (harness-1 predates SharedChatCounts, #73), and
+    // ReplayFidelityCalculator reads that dictionary unconditionally — recomputing such a file used
+    // to NRE (exit 6) instead of refusing cleanly, and it must refuse before touching the database at
+    // all, since there is no migration between versions to make the DB round trip worthwhile.
+    [Fact]
+    public async Task ReportOnly_WithAForeignAlgorithmVersion_RefusesBeforeAnyDatabaseAccess()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+
+        // Rewrite the header to a foreign AlgorithmVersion, through the public protocol API.
+        var original = new HarnessReportFile(jsonlPath);
+        var header = original.TryReadHeader() ?? throw new InvalidOperationException("Header must exist.");
+        var content = original.ReadDays();
+        File.Delete(jsonlPath);
+        var rebuilt = new HarnessReportFile(jsonlPath);
+        rebuilt.WriteHeader(header with { Identity = header.Identity with { AlgorithmVersion = "harness-1" } });
+        foreach (var day in content.Days)
+        {
+            rebuilt.AppendDay(day);
+        }
+
+        var filesBefore = ListFiles();
+        _archive.ClearReceivedCalls();
+        _usage.ClearReceivedCalls();
+        _channels.ClearReceivedCalls();
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+        Assert.Empty(_archive.ReceivedCalls());
+        Assert.Empty(_usage.ReceivedCalls());
+    }
+
+    // P2-2 (Codex "MUST" #2) of the #119 second review round: an ordinary run can never write a
+    // duplicated day line itself (its in-memory dayLines dictionary makes a second write for the
+    // same day impossible, and a *resumed* run with one already on disk throws on ToDictionary before
+    // it ever reaches Compute) — but a report-only recompute reads whatever file it is pointed at,
+    // and Compute has no duplicate-day contract of its own: left unchecked, it would silently sum
+    // both copies into every total instead of refusing.
+    [Fact]
+    public async Task ReportOnly_WithADuplicatedDayLine_RefusesAndWritesNothing()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+
+        // Append Day1's line a second time, through the public protocol API — the day-completeness
+        // check's HashSet alone would not notice this, only a dedicated duplicate check would.
+        var file = new HarnessReportFile(jsonlPath);
+        var day1Line = file.ReadDays().Days.Single(d => d.Day == Day1);
+        file.AppendDay(day1Line);
+
+        var filesBefore = ListFiles();
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+    }
+
     [Fact]
     public async Task ReportOnly_WithAMissingDayLine_RefusesAndWritesNothing()
     {
@@ -1351,6 +1487,37 @@ public class HarnessRunnerTests : IDisposable
         _clock.Now = _clock.Now.AddSeconds(5);
         Assert.Equal(0, await Recompute(fileName));
         Assert.Equal(2, Directory.GetFiles(_directory, "*.recompute-*.report.json").Length);
+    }
+
+    // P2-3 of the #119 second review round: the pre-check above (File.Exists on both targets) closes
+    // the ordinary case, but not a TOCTOU race — something else creating the exact target between
+    // that check and the write a moment later. WriteReportPairAtomically's own rename now never
+    // overwrites either, so even a target that appears out of nowhere right before the write is
+    // refused rather than silently replaced, and its .tmp sibling is cleaned up rather than left
+    // behind. Simulated here by creating the target before Recompute(...) even runs — indistinguishable
+    // from the file system's point of view.
+    [Fact]
+    public async Task ReportOnly_WhenTheRecomputeJsonAlreadyExistsAtWriteTime_RefusesAndLeavesNoTmpFile()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var jsonlPath = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var fileName = Path.GetFileName(jsonlPath);
+
+        var timestamp = _clock.Now.UtcDateTime.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
+        var stem = Path.ChangeExtension(jsonlPath, null);
+        var recomputeJsonPath = $"{stem}.recompute-{timestamp}.report.json";
+        File.WriteAllText(recomputeJsonPath, "not a report");
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
     }
 
     // SharedChatCutover defaults to a day before Day1 (D4): almost every test in this file predates

@@ -353,7 +353,30 @@ public sealed class HarnessReportFile
 
         try
         {
-            return JsonSerializer.Deserialize<ReplayFinalReport>(File.ReadAllText(ReportJsonPath), ReportOptions);
+            var text = File.ReadAllText(ReportJsonPath);
+
+            // Fail-closed rather than merely tolerant (issue #119, second review round): a
+            // syntactically valid report can still lack a usable Run.Diagnostic — a pre-#97 report
+            // predates that JSON property, and a hand-edited or foreign one could omit it or give it
+            // the wrong shape. A missing or non-boolean run.diagnostic must read the same as a
+            // missing report, not as `false` sneaking in through the deserializer's own default for
+            // an absent bool. Checked with JsonDocument rather than by turning on
+            // RespectRequiredConstructorParameters/RespectNullableAnnotations on ReportOptions:
+            // either of those would make every report whose JSON predates a later-added property
+            // (the #97 tie fields, this very Recomputation field) fail to deserialize at all —
+            // downgrading it to "no report" for a reason that has nothing to do with the diagnostic
+            // flag.
+            using var document = JsonDocument.Parse(text);
+            if (!document.RootElement.TryGetProperty("run", out var run)
+                || run.ValueKind != JsonValueKind.Object
+                || !run.TryGetProperty("diagnostic", out var diagnostic)
+                || diagnostic.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            {
+                return null;
+            }
+
+            var report = JsonSerializer.Deserialize<ReplayFinalReport>(text, ReportOptions);
+            return report?.Run is null ? null : report;
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
@@ -362,14 +385,27 @@ public sealed class HarnessReportFile
     }
 
     /// <summary>
-    /// Writes a final report pair the same atomic way as <see cref="WriteFinalReportAtomically"/>,
-    /// but to caller-supplied paths rather than this instance's own <see cref="ReportJsonPath"/>/
-    /// <see cref="ReportMarkdownPath"/>. The one caller is a report-only recompute (issue #119): its
-    /// output sits beside the run under a timestamped name and must never land on the paths that
-    /// close the original run — writing there would flip <see cref="IsClosed"/> for a run the
-    /// recompute never actually finished fetching, and would silently discard whatever the original
-    /// run had written.
+    /// Writes a final report pair the same temp-file-plus-rename way as
+    /// <see cref="WriteFinalReportAtomically"/>, but to caller-supplied paths rather than this
+    /// instance's own <see cref="ReportJsonPath"/>/<see cref="ReportMarkdownPath"/>, and — the one
+    /// real difference — the rename never overwrites. The one caller is a report-only recompute
+    /// (issue #119): its output sits beside the run under a timestamped name and must never land on
+    /// the paths that close the original run (writing there would flip <see cref="IsClosed"/> for a
+    /// run the recompute never actually finished fetching, and would silently discard whatever the
+    /// original run had written), and must never silently replace another recompute either — unlike
+    /// <see cref="WriteFinalReportAtomically"/>, which legitimately overwrites an ordinary run's own
+    /// report on every resume, a recompute has no "own" file here to overwrite: a collision on these
+    /// paths can only mean two recomputes landed on the same timestamp, and
+    /// <c>HarnessRunner.ExecuteRecomputeAsync</c> already refuses that case up front — this is the
+    /// same refusal, closing the gap between that check and the write a moment later.
+    /// <see cref="WriteAtomically"/> itself stays untouched
+    /// (overwriting), because the ordinary run's own resume genuinely needs it to.
     /// </summary>
+    /// <exception cref="HarnessReportFileException">
+    /// Either target already existed at the moment of the rename (a race past the caller's own
+    /// existence check). The offending temp file is deleted before this throws, so no stray
+    /// <c>.tmp</c> is left behind.
+    /// </exception>
     public static void WriteReportPairAtomically(string jsonPath, string markdownPath, ReplayFinalReport report, string markdown)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
@@ -377,8 +413,8 @@ public sealed class HarnessReportFile
         ArgumentNullException.ThrowIfNull(report);
         ArgumentNullException.ThrowIfNull(markdown);
 
-        WriteAtomically(jsonPath, JsonSerializer.Serialize(report, ReportOptions));
-        WriteAtomically(markdownPath, markdown);
+        WriteWithoutOverwrite(jsonPath, JsonSerializer.Serialize(report, ReportOptions));
+        WriteWithoutOverwrite(markdownPath, markdown);
     }
 
     private void Append(HarnessJsonLine line)
@@ -447,6 +483,28 @@ public sealed class HarnessReportFile
         var temporaryPath = path + ".tmp";
         File.WriteAllText(temporaryPath, content);
         File.Move(temporaryPath, path, overwrite: true);
+    }
+
+    /// <summary>
+    /// <see cref="WriteAtomically"/> with <c>overwrite: false</c> on the rename — see
+    /// <see cref="WriteReportPairAtomically"/>, the only caller, for why. <see cref="File.Move(string, string, bool)"/>
+    /// throws <see cref="IOException"/> when the destination already exists; that is turned into a
+    /// <see cref="HarnessReportFileException"/> here, after cleaning up the temp file, so the one
+    /// caller never has to know the collision surfaced as an I/O exception rather than a domain one.
+    /// </summary>
+    private static void WriteWithoutOverwrite(string path, string content)
+    {
+        var temporaryPath = path + ".tmp";
+        File.WriteAllText(temporaryPath, content);
+        try
+        {
+            File.Move(temporaryPath, path, overwrite: false);
+        }
+        catch (IOException ex)
+        {
+            File.Delete(temporaryPath);
+            throw new HarnessReportFileException($"'{path}' already exists: {ex.Message}");
+        }
     }
 
     private static string Sanitize(string channelName)
