@@ -199,15 +199,6 @@
       "queued": "Resync angestoßen …",
       "completed": "Resync abgeschlossen."
     },
-    "duplicateNames": {
-      "notice": {
-        "one": "Ein Emote-Name ist im aktiven 7TV-Set mehrfach vergeben.",
-        "other": "{{ count }} Emote-Namen sind im aktiven 7TV-Set mehrfach vergeben."
-      },
-      "show": "Details anzeigen",
-      "hide": "Details ausblenden",
-      "explanation": "Die Chat-Nutzung eines mehrfach vergebenen Namens zählt nur auf eines der Emotes — die Statistik der übrigen bleibt leer. Zum Beheben eines der Emotes auf 7TV umbenennen oder entfernen."
-    },
     "activity": {
       "title": "Aktivitätsverlauf",
       "refresh": "Aktualisieren",
@@ -559,6 +550,15 @@
   },
   "usageStats": {
     "title": "Emote-Nutzung",
+    "duplicateNames": {
+      "notice": {
+        "one": "Ein Emote-Name ist im aktiven 7TV-Set mehrfach vergeben.",
+        "other": "{{ count }} Emote-Namen sind im aktiven 7TV-Set mehrfach vergeben."
+      },
+      "show": "Details anzeigen",
+      "hide": "Details ausblenden",
+      "explanation": "Die Chat-Nutzung eines mehrfach vergebenen Namens zählt nur auf eines der Emotes — die Statistik der übrigen bleibt leer. Zum Beheben eines der Emotes auf 7TV umbenennen oder entfernen."
+    },
     "reloadTitle": "Nutzungsdaten neu laden",
     "refresh": "Aktualisieren",
     "dateRangeTo": "bis",

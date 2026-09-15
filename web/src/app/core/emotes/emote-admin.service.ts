@@ -3,7 +3,6 @@ import { inject, Injectable } from '@angular/core';
 import { map, Observable } from 'rxjs';
 
 import { LeaderboardSort } from '../seven-tv/leaderboard.model';
-import { DuplicateEmoteName } from './duplicate-emote-name.model';
 import { EmoteListItem } from './emote-list-item.model';
 import { EmoteSetStatus } from './emote-set-status.model';
 
@@ -80,15 +79,6 @@ export class EmoteAdminService {
    *  Carries the slot budget and the tracking start too — same audience, same page, one request. */
   getSetStatus(channelName: string): Observable<EmoteSetStatus> {
     return this.http.get<EmoteSetStatus>(`/api/channels/${channelName}/emotes/active-set`);
-  }
-
-  /** Exact-name collisions in the channel's active 7TV set — while one exists, chat usage of the
-   *  name is counted onto a single one of the emotes, distorting the usage numbers. Same audience
-   *  as getSetStatus: fixing a collision happens on 7TV, which editors can do too. */
-  getDuplicateNames(channelName: string): Observable<DuplicateEmoteName[]> {
-    return this.http.get<DuplicateEmoteName[]>(
-      `/api/channels/${channelName}/emotes/duplicate-names`,
-    );
   }
 
   /** The import dialog's own picture of the target set — no time range, no usage numbers — so it

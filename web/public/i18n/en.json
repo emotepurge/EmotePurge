@@ -199,15 +199,6 @@
       "queued": "Resync requested …",
       "completed": "Resync finished."
     },
-    "duplicateNames": {
-      "notice": {
-        "one": "One emote name is used more than once in the active 7TV set.",
-        "other": "{{ count }} emote names are used more than once in the active 7TV set."
-      },
-      "show": "Show details",
-      "hide": "Hide details",
-      "explanation": "Chat usage of a duplicated name only counts towards one of the emotes — the stats of the others stay empty. To fix this, rename or remove one of the emotes on 7TV."
-    },
     "activity": {
       "title": "Activity log",
       "refresh": "Refresh",
@@ -559,6 +550,15 @@
   },
   "usageStats": {
     "title": "Emote usage",
+    "duplicateNames": {
+      "notice": {
+        "one": "One emote name is used more than once in the active 7TV set.",
+        "other": "{{ count }} emote names are used more than once in the active 7TV set."
+      },
+      "show": "Show details",
+      "hide": "Hide details",
+      "explanation": "Chat usage of a duplicated name only counts towards one of the emotes — the stats of the others stay empty. To fix this, rename or remove one of the emotes on 7TV."
+    },
     "reloadTitle": "Reload usage data",
     "refresh": "Refresh",
     "dateRangeTo": "to",

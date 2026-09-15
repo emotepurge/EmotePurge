@@ -9,7 +9,6 @@ import {
   mockAuthMe,
   mockChannelPermissions,
   mockChannelStatus,
-  mockDuplicateEmoteNames,
   mockMyChannels,
   mockUsageChannelSeries,
   mockUsageDaily,
@@ -62,7 +61,6 @@ async function openAtlas(
   ]);
   await mockChannelPermissions(page, 'sensitron');
   await mockChannelStatus(page, 'sensitron');
-  await mockDuplicateEmoteNames(page, 'sensitron');
   await mockActiveEmoteSet(page, 'sensitron', 'set-1', {
     capacity: 1000,
     occupiedSlots: 10,
@@ -538,7 +536,6 @@ test.describe('a channel without an active 7TV emote set', () => {
     ]);
     await mockChannelPermissions(page, 'sensitron');
     await mockChannelStatus(page, 'sensitron');
-    await mockDuplicateEmoteNames(page, 'sensitron');
     // Empty set id *and* a reason: exactly the state issue #32 describes.
     await mockActiveEmoteSet(page, 'sensitron', '', {
       capacity: null,
@@ -582,7 +579,6 @@ test.describe('a channel without an active 7TV emote set', () => {
     ]);
     await mockChannelPermissions(page, 'sensitron');
     await mockChannelStatus(page, 'sensitron');
-    await mockDuplicateEmoteNames(page, 'sensitron');
     // Empty for now: loadTotals runs unconditionally, independent of the set status, so a stray
     // real emote here would make the grid render straight away and the reason-branch would never
     // even be reached — the same reason the "names the missing emote set" test above mocks `[]`.
@@ -667,7 +663,6 @@ test.describe('a channel without an active 7TV emote set', () => {
     ]);
     await mockChannelPermissions(page, 'sensitron');
     await mockChannelStatus(page, 'sensitron');
-    await mockDuplicateEmoteNames(page, 'sensitron');
     await mockUsageTotals(page, 'sensitron', []);
 
     const activeSetRequests = { count: 0 };
@@ -763,7 +758,6 @@ test.describe('waiting for the first 7TV sync', () => {
     ]);
     await mockChannelPermissions(page, 'sensitron');
     await mockChannelStatus(page, 'sensitron');
-    await mockDuplicateEmoteNames(page, 'sensitron');
     // Empty on purpose: loadTotals runs independently of the set status, so a set of emotes here
     // would render the sheet straight away and the awaiting branch would never show.
     await mockUsageTotals(page, 'sensitron', []);

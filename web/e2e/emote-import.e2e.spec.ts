@@ -11,7 +11,6 @@ import {
   mockChannelPermissions,
   mockChannelScopedResync,
   mockChannelStatus,
-  mockDuplicateEmoteNames,
   mockEmoteList,
   mockMyChannels,
   mockSetWarning,
@@ -101,7 +100,6 @@ async function mockWorkspace(
 ): Promise<void> {
   await mockChannelPermissions(page, channelName);
   await mockChannelStatus(page, channelName);
-  await mockDuplicateEmoteNames(page, channelName);
   await mockActiveEmoteSet(page, channelName, activeEmoteSetId, {
     capacity: 1000,
     occupiedSlots: 3,

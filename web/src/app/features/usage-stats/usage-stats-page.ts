@@ -1,6 +1,7 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Dialog } from '@angular/cdk/dialog';
 import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
+import { NgOptimizedImage } from '@angular/common';
 import {
   Component,
   DestroyRef,
@@ -20,6 +21,7 @@ import { Subscription, catchError, first, merge, of, switchMap, timer } from 'rx
 import { ChannelService } from '../../core/channels/channel.service';
 import { botsExcludedCaptionKey } from '../../core/emotes/bots-excluded-caption';
 import { sharedChatSeparatedCaptionKey } from '../../core/emotes/shared-chat-separated-caption';
+import { DuplicateEmoteName } from '../../core/emotes/duplicate-emote-name.model';
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
 import { sevenTvSyncFailureKey } from '../../core/emotes/seven-tv-sync-failure';
@@ -217,6 +219,7 @@ function sortableLastUsed(lastUsedDate: string | null): number {
   imports: [
     Button,
     EmptyState,
+    NgOptimizedImage,
     NoticeBanner,
     ScrollingModule,
     EmoteSprite,
@@ -350,6 +353,25 @@ export class UsageStatsPage {
     () => this.setStatus()?.syncFailureReason ?? null,
   );
   protected readonly syncFailureKey = sevenTvSyncFailureKey;
+
+  /**
+   * Exact-name collisions in the channel's active 7TV set (issue #45). Guarded on
+   * `setStatusChannel() === channelName()`, the same check `importScopeCurrent` uses for the
+   * identical reason: `setStatus()` keeps the previous channel's answer on screen until the new
+   * one's request lands (see `setStatusChannel`'s own comment), so reading `setStatus()` alone here
+   * would flash the outgoing channel's collisions under the incoming channel's heading for exactly
+   * that window.
+   */
+  protected readonly duplicateNames = computed<DuplicateEmoteName[]>(() =>
+    this.setStatusChannel() === this.channelName() ? (this.setStatus()?.duplicateNames ?? []) : [],
+  );
+  /** Collapsed by default on every mount and every channel switch — see the constructor effect that
+   *  resets it, keyed on channelName() alone so a range change or a silent reload never collapses a
+   *  list the user just opened. */
+  protected readonly duplicatesExpanded = signal(false);
+  protected readonly duplicateNoticeKey = computed(() =>
+    pluralKey(this.duplicateNames().length, 'usageStats.duplicateNames.notice'),
+  );
 
   // The selected range reaches back further than we have been counting, so its leading part is
   // silently empty. Saying so is the difference between "this emote is dead" and "we weren't here".
@@ -806,6 +828,15 @@ export class UsageStatsPage {
   constructor() {
     effect(() => {
       this.load(this.channelName(), this.from(), this.to(), this.rangeResolved());
+    });
+
+    // Keyed on channelName() alone, deliberately separate from load()'s effect above: that one also
+    // reruns on a bare range correction, and an expanded collision list the user just opened must
+    // not collapse under them just because "all time" resolved against the tracking start a moment
+    // later. A genuine channel switch is the only thing that should re-collapse it.
+    effect(() => {
+      this.channelName();
+      this.duplicatesExpanded.set(false);
     });
 
     // A selection made in a desktop window would otherwise survive invisibly into the touch mode and

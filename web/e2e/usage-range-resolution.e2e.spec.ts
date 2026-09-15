@@ -7,7 +7,6 @@ import {
   mockAuthMe,
   mockChannelPermissions,
   mockChannelStatus,
-  mockDuplicateEmoteNames,
   mockMyChannels,
   mockUsageChannelSeries,
   mockUsageTotals,
@@ -76,7 +75,6 @@ async function mockWorkspace(page: Page): Promise<void> {
   ]);
   await mockChannelPermissions(page, 'sensitron');
   await mockChannelStatus(page, 'sensitron');
-  await mockDuplicateEmoteNames(page, 'sensitron');
   await mockUsageTotals(page, 'sensitron', EMOTES);
   await mockUsageChannelSeries(page, 'sensitron', { e1: [[2, 900]] });
 }
