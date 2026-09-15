@@ -29,3 +29,10 @@ dotnet_diagnostic.CA1822.severity = none
 # Style recommendations from the ASP.NET Core and regex analyzers, respectively.
 dotnet_diagnostic.ASP0015.severity = none
 dotnet_diagnostic.SYSLIB1045.severity = none
+
+# CA1861 ("prefer static readonly fields over constant arrays") is a micro-optimization with the
+# same reasoning as CA1859/CA1822 above — but only inside test assertions, where a literal array
+# passed straight into Assert.Equal(...)/(...).Should().BeEquivalentTo(...) is the point, not a
+# hot path. Scoped to tests/** only, so the rule stays active for src/**.
+[tests/**/*.cs]
+dotnet_diagnostic.CA1861.severity = none
