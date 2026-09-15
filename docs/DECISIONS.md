@@ -10,6 +10,53 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — Images are pushed by a BuildKit container builder, not by the Docker daemon
+
+**Betrifft:** `.github/workflows/publish.yml`
+
+The first publish run after the move to the `emotepurge` organization pushed the worker fine and
+failed on the api twice in a row, both times with `ERROR: failed to build: unknown blob` at the end
+of the push phase — the second attempt ran alone, so a race with the worker job is ruled out.
+
+**Why it failed.** `publish` had no `docker/setup-buildx-action`, so `build-push-action` used the
+runner's default builder with the `docker` driver (classic overlay2 image store). That driver
+builds with BuildKit but hands the push to the Docker daemon (`pushing … with docker` in the log),
+and the daemon uses the legacy `docker/distribution` registry client. The literal string
+`unknown blob` is that client's `ErrBlobUnknown`, which it returns only when a blob HEAD/GET answers
+404; a rejected manifest PUT would read `manifest blob unknown: blob unknown to registry` instead.
+The client HEADs every blob straight after its upload PUT succeeds (`httpBlobUpload.Commit`), and
+the daemon classifies `ErrBlobUnknown` as not retryable. So GHCR accepted an upload into the
+brand-new `emotepurge-api` package and then denied knowing the blob a moment later, and the daemon
+gave up on the spot. The same HEAD-after-upload ran for every freshly built layer in every earlier
+run against the long-existing `sensitron` packages and never came back 404 there; what is new is
+the package that did not exist before the push.
+
+**Refuted along the way.** Neither image contains a layer twice (14 distinct diff IDs in the api,
+11 in the worker, one empty layer each), and no attestation was involved: the `docker` driver with
+the classic store cannot produce one, and the run logs show none.
+
+**What changes.** `publish` sets up a `docker-container` builder first. BuildKit then pushes with
+containerd's pusher, which takes the upload's 201 as final and never re-checks the blob — the
+failing request no longer exists on this path. `provenance: false` is set at the same time: on a
+public repo the action would otherwise attach a `mode=max` provenance attestation, turning every
+tag from a plain image manifest into an image index (checked locally against a throwaway
+registry: default settings push an index with a second, attestation manifest; `provenance: false`
+pushes a single manifest). One difference remains and is accepted: BuildKit writes OCI media
+types (`application/vnd.oci.image.manifest.v1+json`) where the daemon wrote Docker schema 2. Docker
+Engine has pulled OCI images for years; the first production pull after this change is still the
+proof. Publishing attestations stays a separate decision.
+
+**Rejected.** A rerun (it already failed deterministically), a one-time manual bootstrap push
+(it would be done outside CI with a personal token, and every future new package would hit the
+same trap), and lowering the daemon's upload concurrency (fewer parallel uploads leave the
+non-retried HEAD after each upload exactly where it is).
+
+**What stays uncertain.** GHCR's side is inferred, not observed: the daemon's push is not traced
+into the build record, so which blob got the 404 (a layer or the image config) and why only the api
+package was affected cannot be read from the logs.
+
+---
+
 ### 2026-09-15 — Repository moved to the `emotepurge` GitHub organization (#154)
 
 **Betrifft:** `.github/workflows/sonarcloud.yml`, `docker-compose.prod.yml`, `docs/Architectur.md`, `SECURITY.md`, `.github/ISSUE_TEMPLATE/config.yml`, `web/src/app/shared/branding/links.ts`, `web/e2e/landing.e2e.spec.ts`
