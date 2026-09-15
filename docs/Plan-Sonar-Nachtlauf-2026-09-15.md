@@ -145,7 +145,10 @@ neben einem Task-Befund steht:
       `npm --prefix web run format:check` sauber; Ausgaben ebenfalls ins Scratch-Verzeichnis.
 - [ ] `npm --prefix web run e2e`; Laufzeit notieren (~1,5 min ist normal); Ausgabe ins
       Scratch-Verzeichnis.
-- [ ] `git rev-parse HEAD` = `3646d5b…` bestätigen; sonst Blocker melden und abbrechen.
+- [ ] `git merge-base --is-ancestor 3646d5b HEAD` muss mit Exit 0 enden (der Worktree steht auf
+      dem Plan-Branch, HEAD ist also ein Plan-Commit auf `main` nach PR #192, nicht `3646d5b` selbst);
+      sonst Blocker melden und abbrechen. Zeilenangaben beziehen sich auf `3646d5b` — PR #192 hat
+      nur `.editorconfig`, `sonarcloud.yml` und `DECISIONS.md` geändert, keine Quelldatei der Tasks.
 - [ ] **Stopp-Regel:** Ist eines der Gates oben nicht grün — `dotnet test` (Testcontainers), Vitest,
       Lint, Format oder der Build mit Warnungen ≠ 0 — **endet der Lauf hier**, vor der ersten
       Änderung und vor dem ersten Commit, und meldet die roten Tests/Meldungen wörtlich in der
