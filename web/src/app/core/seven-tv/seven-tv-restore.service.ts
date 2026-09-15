@@ -196,8 +196,7 @@ export class SevenTvRestoreService {
     const current = this.run;
     if (
       this.syncReport() === 'pending' ||
-      current === null ||
-      current.result === null ||
+      !current?.result ||
       current.result.doneIds.length === 0
     ) {
       return;

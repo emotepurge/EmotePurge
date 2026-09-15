@@ -253,8 +253,7 @@ export class SevenTvImportService {
     const current = this.run();
     if (
       this.syncReport() === 'pending' ||
-      current === null ||
-      current.result === null ||
+      !current?.result ||
       current.result.doneKeys.length === 0
     ) {
       return;

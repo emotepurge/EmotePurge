@@ -24,7 +24,7 @@ export function readEnvelope(text: string): ReadEnvelopeResult {
   }
 
   const envelope = parsed as Partial<ExportEnvelope<unknown>> | null;
-  if (!envelope || envelope.source !== 'emotepurge') {
+  if (envelope?.source !== 'emotepurge') {
     return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
   }
   // `kind` is untrusted input — a non-string (missing, number, object, …) can never match a known

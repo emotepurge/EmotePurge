@@ -10,13 +10,12 @@ import {
   RunQueueEmote,
   RunQueueItem,
   RunResult,
-  RUN_DELAY_MS,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
 /** Kept under its historical name — the engine's constant is the same value. */
-export const DELETE_DELAY_MS = RUN_DELAY_MS;
+export { RUN_DELAY_MS as DELETE_DELAY_MS } from './seven-tv-run-engine';
 // Exported for the restore service, which reports its run with the identical policy.
 export const MAX_AUTOMATIC_SYNC_RETRIES = 2;
 // Multiplied by the attempt number, so the two automatic attempts land at 2s and 4s. Kept short on
@@ -163,8 +162,7 @@ export class SevenTvDeleteService {
     const current = this.run;
     if (
       this.syncReport() === 'pending' ||
-      current === null ||
-      current.result === null ||
+      !current?.result ||
       current.result.doneIds.length === 0
     ) {
       return;
