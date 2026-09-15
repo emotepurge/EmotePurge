@@ -65,11 +65,27 @@ class HostPage {
   readonly withImport = signal(true);
 }
 
+// Keyed by the type rather than hand-listed, so a new ResyncTriggerState member (other than
+// 'idle', handled separately below) fails this file to compile until it is added here too.
+const SPOKEN_STATES = {
+  pending: true,
+  succeeded: true,
+  cooldown: true,
+  failed: true,
+} satisfies Record<Exclude<ResyncTriggerState, 'idle'>, true>;
+
 describe('resyncNoticeKey', () => {
-  it('has nothing to say while idle, and names the family and state otherwise', () => {
+  it('has nothing to say while idle, regardless of family', () => {
     expect(resyncNoticeKey('idle', 'import')).toBeNull();
-    expect(resyncNoticeKey('pending', 'import')).toBe('import.resync.pending');
-    expect(resyncNoticeKey('cooldown', 'restore')).toBe('restore.resync.cooldown');
+    expect(resyncNoticeKey('idle', 'restore')).toBeNull();
+  });
+
+  it.each(
+    Object.keys(SPOKEN_STATES).flatMap((state) =>
+      (['import', 'restore'] as const).map((family) => [state, family] as const),
+    ),
+  )('names the family and state for %s/%s', (state, family) => {
+    expect(resyncNoticeKey(state as ResyncTriggerState, family)).toBe(`${family}.resync.${state}`);
   });
 });
 
