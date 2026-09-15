@@ -94,6 +94,11 @@ public class HarnessCommandLineTests
     [InlineData("harness", "foo", "--report-only", "sub\\dir.jsonl")]
     [InlineData("harness", "foo", "--report-only", ".")]
     [InlineData("harness", "foo", "--report-only", "..")]
+    // P3-2 of the #119 review round: ':' (a Windows drive letter/ADS marker) and the two catch-all
+    // checks (Path.IsPathRooted, Path.GetFileName(v) != v) alongside the explicit separator checks.
+    [InlineData("harness", "foo", "--report-only", "na:me.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "/abs.jsonl")]
+    [InlineData("harness", "foo", "--report-only", "C:\\abs.jsonl")]
     [InlineData("harness", "foo", "--report-only", "report.json")]
     [InlineData("harness", "foo", "--report-only", "report.txt")]
     [InlineData("harness", "foo", "--report-only", "-report.jsonl")]

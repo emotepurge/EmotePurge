@@ -27,6 +27,14 @@ public class HarnessRunnerTests : IDisposable
     private static readonly DateOnly Day2 = new(2026, 9, 3);
     private static readonly DateOnly Day3 = new(2026, 9, 4);
 
+    // A read-side mirror of HarnessReportFile's private ValueListJsonConverterFactory, at the class
+    // end (Worker has no InternalsVisibleTo to this test project): System.Text.Json cannot
+    // deserialize ValueList<T> on its own — it satisfies none of the recognized collection shapes —
+    // and .report.json is full of it (GateIneligibleReasons, KHistogram, the day-ratio lists, and
+    // now Warnings).
+    private static readonly JsonSerializerOptions ReadReportOptions =
+        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Converters = { new ValueListJsonConverterFactory() } };
+
     private readonly string _directory =
         Path.Combine(Path.GetTempPath(), "emotepurge-harness-run-" + Guid.NewGuid().ToString("N"));
 
@@ -967,6 +975,25 @@ public class HarnessRunnerTests : IDisposable
             File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.report.json"))));
     }
 
+    // P2-1 of the #119 review round: ReplayFinalReport.Recomputation must be invisible on the wire
+    // for every ordinary run, not merely null in memory — ReportOptions carries no
+    // DefaultIgnoreCondition, so without [JsonIgnore(Condition = WhenWritingNull)] a null property
+    // still serializes as a literal "recomputation": null, moving bytes an unrelated run never had
+    // before this feature existed.
+    [Fact]
+    public async Task ANormalRun_WritesNoRecomputationKeyToTheReportJson()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var reportJson = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+        Assert.DoesNotContain("recomputation", reportJson, StringComparison.Ordinal);
+    }
+
     // #119: report-only recompute of an existing, complete run. No test here touches the archive
     // substitute except to assert it was never called — that is the one property this feature exists
     // for — and none of them run through RunAsync a second time; every recompute goes through
@@ -997,7 +1024,9 @@ public class HarnessRunnerTests : IDisposable
 
         Assert.Equal(0, await Recompute(fileName));
 
-        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        // Every call, not just ReadDayAsync — a stronger claim than "the one method we expected
+        // wasn't called".
+        Assert.Empty(_archive.ReceivedCalls());
         Assert.Equal(jsonlBefore, File.ReadAllBytes(jsonlPath));
         Assert.Equal(reportJsonBefore, File.ReadAllBytes(reportJsonPath));
         Assert.Equal(reportMdBefore, File.ReadAllBytes(reportMdPath));
@@ -1022,6 +1051,56 @@ public class HarnessRunnerTests : IDisposable
         Assert.Equal("inherited", recomputedReport.Recomputation.DiagnosticSource);
         Assert.Empty(recomputedReport.Recomputation.Warnings);
         Assert.Null(originalReport.Recomputation);
+    }
+
+    // P2-2 of the #119 review round: an inherited diagnostic=true original run carries its verdict
+    // through unchanged.
+    [Fact]
+    public async Task ReportOnly_WithAnInheritedDiagnosticRun_KeepsTheDiagnosticRunReason()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3, diagnostic: true));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        var originalReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+        Assert.True(originalReport.Run.Diagnostic);
+        Assert.Contains(ReplayGateIneligibleReasons.DiagnosticRun, originalReport.Gate.GateIneligibleReasons);
+
+        Assert.Equal(0, await Recompute(fileName));
+
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+        Assert.True(recomputedReport.Run.Diagnostic);
+        Assert.Equal("inherited", recomputedReport.Recomputation!.DiagnosticSource);
+        Assert.Contains(ReplayGateIneligibleReasons.DiagnosticRun, recomputedReport.Gate.GateIneligibleReasons);
+    }
+
+    // P2-2: with no original report.json to inherit from (missing, unparsable, or otherwise
+    // unreadable), the recompute must default to true (no gate verdict) — the fail-closed direction —
+    // never to false, which would silently manufacture a binding verdict nobody asked for.
+    [Fact]
+    public async Task ReportOnly_WithNoOriginalReportToInheritFrom_DefaultsDiagnosticToTrueAndIsNotGateEligible()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        File.Delete(Assert.Single(Directory.GetFiles(_directory, "*.report.json")));
+
+        Assert.Equal(0, await Recompute(fileName));
+
+        var recomputedReport = ReadReport(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json")));
+        Assert.True(recomputedReport.Run.Diagnostic);
+        Assert.Equal("defaulted", recomputedReport.Recomputation!.DiagnosticSource);
+        Assert.False(recomputedReport.Gate.GateEligible);
+        Assert.Contains(ReplayGateIneligibleReasons.DiagnosticRun, recomputedReport.Gate.GateIneligibleReasons);
     }
 
     [Fact]
@@ -1052,6 +1131,14 @@ public class HarnessRunnerTests : IDisposable
         var markdown = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.md")));
         Assert.Contains(recomputedReport.Recomputation.OriginalInputHash, markdown, StringComparison.Ordinal);
         Assert.Contains(recomputedReport.Recomputation.CurrentInputHash, markdown, StringComparison.Ordinal);
+
+        // P3-4: the warning has to be seen before a reader could reach the first metric table, not
+        // buried below it.
+        var warningIndex = markdown.IndexOf('⚠');
+        var metricsTableIndex = markdown.IndexOf("## Präregistrierte Kennzahlen", StringComparison.Ordinal);
+        Assert.True(warningIndex >= 0, "Expected a warning marker in the recompute Markdown.");
+        Assert.True(metricsTableIndex >= 0, "Expected the pre-registered metrics table in the recompute Markdown.");
+        Assert.True(warningIndex < metricsTableIndex, "Expected the warning banner before the first metric table.");
     }
 
     [Fact]
@@ -1093,11 +1180,14 @@ public class HarnessRunnerTests : IDisposable
 
         Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
         Assert.Empty(Directory.GetFiles(_directory));
-        await _archive.DidNotReceiveWithAnyArgs().ReadDayAsync(default!, default, default, default!, default);
+        Assert.Empty(_archive.ReceivedCalls());
     }
 
+    // P3-1 of the #119 review round: a renamed channel (#34/#44) must stay recomputable — the header
+    // identifies the run by ChannelId, not by name, exactly like FindFrozenWindow's own resume match
+    // ("The channel name is not part of the match", just above in this file).
     [Fact]
-    public async Task ReportOnly_WithAMismatchedChannelName_RefusesAndWritesNothing()
+    public async Task ReportOnly_WithARenamedChannel_SameIdDifferentName_IsAccepted()
     {
         RespondWith(async (day, onMessage) =>
         {
@@ -1107,12 +1197,17 @@ public class HarnessRunnerTests : IDisposable
         Assert.Equal(0, await Run(3));
 
         var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
-        var filesBefore = ListFiles();
 
-        var exitCode = await Recompute(fileName, channelName: "someone_else");
+        // Same channel row (same Id as the header names), looked up under its new login.
+        const string RenamedChannelName = "renamed_channel";
+        var renamedChannel = NewChannel();
+        renamedChannel.ChannelName = RenamedChannelName;
+        _channels.GetByNameAsync(RenamedChannelName, Arg.Any<CancellationToken>()).Returns(renamedChannel);
 
-        Assert.Equal(HarnessRunner.ExitPreconditionViolated, exitCode);
-        Assert.Equal(filesBefore, ListFiles());
+        Assert.Equal(0, await Recompute(fileName, channelName: RenamedChannelName));
+
+        Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.json"));
+        Assert.Single(Directory.GetFiles(_directory, "*.recompute-*.report.md"));
     }
 
     [Fact]
@@ -1311,38 +1406,9 @@ public class HarnessRunnerTests : IDisposable
 
     private string[] ListFiles() => [.. Directory.GetFiles(_directory).OrderBy(f => f, StringComparer.Ordinal)];
 
-    // A read-side mirror of HarnessReportFile's private ValueListJsonConverterFactory (Worker has no
-    // InternalsVisibleTo to this test project): System.Text.Json cannot deserialize ValueList<T> on
-    // its own — it satisfies none of the recognized collection shapes — and .report.json is full of
-    // it (GateIneligibleReasons, KHistogram, the day-ratio lists, and now Warnings).
-    private static readonly JsonSerializerOptions ReadReportOptions =
-        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Converters = { new ValueListJsonConverterFactory() } };
-
     private static ReplayFinalReport ReadReport(string path) =>
         JsonSerializer.Deserialize<ReplayFinalReport>(File.ReadAllText(path), ReadReportOptions)
         ?? throw new InvalidOperationException($"'{path}' did not deserialize to a report.");
-
-    private sealed class ValueListJsonConverterFactory : JsonConverterFactory
-    {
-        public override bool CanConvert(Type typeToConvert) =>
-            typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(ValueList<>);
-
-        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
-        {
-            var itemType = typeToConvert.GetGenericArguments()[0];
-            var converterType = typeof(ValueListConverter<>).MakeGenericType(itemType);
-            return (JsonConverter)Activator.CreateInstance(converterType)!;
-        }
-
-        private sealed class ValueListConverter<T> : JsonConverter<ValueList<T>>
-        {
-            public override ValueList<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-                new(JsonSerializer.Deserialize<List<T>>(ref reader, options) ?? []);
-
-            public override void Write(Utf8JsonWriter writer, ValueList<T> value, JsonSerializerOptions options) =>
-                JsonSerializer.Serialize(writer, (IReadOnlyList<T>)value, options);
-        }
-    }
 
     private void RespondWith(
         Func<DateOnly, Func<ChatLogMessage, ValueTask>, Task<ChatLogDayResult>> respond,
@@ -1427,5 +1493,27 @@ public class HarnessRunnerTests : IDisposable
         public DateTimeOffset Now { get; set; } = now;
 
         public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class ValueListJsonConverterFactory : JsonConverterFactory
+    {
+        public override bool CanConvert(Type typeToConvert) =>
+            typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(ValueList<>);
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            var itemType = typeToConvert.GetGenericArguments()[0];
+            var converterType = typeof(ValueListConverter<>).MakeGenericType(itemType);
+            return (JsonConverter)Activator.CreateInstance(converterType)!;
+        }
+
+        private sealed class ValueListConverter<T> : JsonConverter<ValueList<T>>
+        {
+            public override ValueList<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+                new(JsonSerializer.Deserialize<List<T>>(ref reader, options) ?? []);
+
+            public override void Write(Utf8JsonWriter writer, ValueList<T> value, JsonSerializerOptions options) =>
+                JsonSerializer.Serialize(writer, (IReadOnlyList<T>)value, options);
+        }
     }
 }

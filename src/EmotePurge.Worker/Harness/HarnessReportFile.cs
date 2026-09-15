@@ -335,12 +335,14 @@ public sealed class HarnessReportFile
 
     /// <summary>
     /// The final report already sitting at <see cref="ReportJsonPath"/>, or <c>null</c> if it does
-    /// not exist or cannot be parsed. The one caller is a report-only recompute (issue #119), which
+    /// not exist, cannot be read, or cannot be parsed — the same tolerance <see cref="TryReadHeader"/>
+    /// gives a foreign or damaged file. The one caller is a report-only recompute (issue #119), which
     /// reads <c>Run.Diagnostic</c> off it: that flag lives only in a closed report, never in the
     /// header or the identity (Plan-Entscheidung 7, D4), so a recompute has nowhere else to inherit
     /// it from. Deliberately tolerant — a damaged or half-written <c>.report.json</c> must not block
-    /// a recompute that only actually needs the <c>.jsonl</c> beside it; the caller falls back to a
-    /// documented default instead.
+    /// a recompute that only actually needs the <c>.jsonl</c> beside it; the caller falls back to the
+    /// fail-closed default instead (D4's spirit: a missing, unparsable or unreadable original never
+    /// silently upgrades a diagnostic run into a binding one — see <c>HarnessRunner.ExecuteRecomputeAsync</c>).
     /// </summary>
     public ReplayFinalReport? TryReadExistingReport()
     {
@@ -353,7 +355,7 @@ public sealed class HarnessReportFile
         {
             return JsonSerializer.Deserialize<ReplayFinalReport>(File.ReadAllText(ReportJsonPath), ReportOptions);
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             return null;
         }

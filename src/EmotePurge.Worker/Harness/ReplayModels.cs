@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Text.Json.Serialization;
 
 namespace EmotePurge.Worker.Harness;
 
@@ -426,10 +427,15 @@ public sealed record ReplayRunInfo(
 /// <para>
 /// <see cref="Recomputation"/> defaults to <c>null</c> and stays <c>null</c> for every ordinary run
 /// — <see cref="ReplayFidelityCalculator.Compute"/> never sets it, it is filled in only by
-/// <c>HarnessRunner.RecomputeReportAsync</c> (issue #119) after <c>Compute</c> returns. Purely
-/// additive to the JSON shape, the same treatment the #97 tie-count fields got, and for the same
-/// reason it needs no <c>HarnessRunner.AlgorithmVersion</c> bump: it changes nothing about how a
-/// day is counted, only what a report says about how it was produced.
+/// <c>HarnessRunner.RecomputeReportAsync</c> (issue #119) after <c>Compute</c> returns. The
+/// <see cref="JsonIgnoreAttribute"/> is load-bearing, not decoration: <c>ReportOptions</c> (unlike
+/// <c>LineOptions</c>) carries no <c>DefaultIgnoreCondition</c>, so without it every ordinary run's
+/// <c>.report.json</c> would gain a literal <c>"recomputation": null</c> property — bytes an
+/// unrelated run did not have before this feature existed. With it, an ordinary report's bytes are
+/// unchanged, which is the actual claim behind "purely additive to the JSON shape", the same
+/// treatment the #97 tie-count fields got and for the same reason it needs no
+/// <c>HarnessRunner.AlgorithmVersion</c> bump: it changes nothing about how a day is counted, only
+/// what a report says about how it was produced.
 /// </para>
 /// </summary>
 public sealed record ReplayFinalReport(
@@ -437,7 +443,7 @@ public sealed record ReplayFinalReport(
     ReplayGateMetrics Gate,
     ReplayPlausibility Plausibility,
     ReplayDiagnostics Diagnostics,
-    HarnessRecomputation? Recomputation = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] HarnessRecomputation? Recomputation = null);
 
 /// <summary>
 /// Present exactly when the <see cref="ReplayFinalReport"/> carrying it came from a report-only
@@ -454,10 +460,13 @@ public sealed record ReplayFinalReport(
 /// </para>
 /// <para>
 /// <see cref="DiagnosticSource"/> is <c>"inherited"</c> when the original run's
-/// <c>&lt;stem&gt;.report.json</c> still exists and named its <c>Run.Diagnostic</c> flag, and
-/// <c>"defaulted"</c> when it does not (the diagnostic flag is never part of
-/// <c>HarnessRunIdentity</c> or the header — see the remark on <see cref="ReplayRunInfo.Diagnostic"/>
-/// — so a header-only recompute has no other source for it and falls back to <c>false</c>).
+/// <c>&lt;stem&gt;.report.json</c> exists and is readable, so its own <c>Run.Diagnostic</c> flag can
+/// be reused, and <c>"defaulted"</c> when it does not — missing, unparsable or otherwise unreadable
+/// are all the same case (the diagnostic flag is never part of <c>HarnessRunIdentity</c> or the
+/// header — see the remark on <see cref="ReplayRunInfo.Diagnostic"/> — so a header-only recompute has
+/// no other source for it). A defaulted flag falls back to <c>true</c>, not <c>false</c>: the same
+/// fail-closed spirit as D4 — a missing original must never silently turn a diagnostic run into a
+/// binding verdict just because nothing was left to say otherwise.
 /// </para>
 /// <para>
 /// <see cref="Warnings"/> carries machine-readable codes rather than prose, so a caller can branch

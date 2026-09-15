@@ -45,7 +45,12 @@ public abstract record HarnessCommandLineResult
     public sealed record RunHarness(string ChannelName, int? Days, bool Diagnostic, string? ReportOnlyFile = null)
         : HarnessCommandLineResult;
 
-    /// <summary>Anything else. <see cref="Message"/> is the single German line for stderr.</summary>
+    /// <summary>
+    /// Anything else. <see cref="Message"/> is the single line for stderr — German for every
+    /// pre-existing rejection, English for the ones added by <c>--report-only</c> (issue #119, see
+    /// the remark on <see cref="ReportOnlyOption"/>): the language is per call site, not a promise of
+    /// this type.
+    /// </summary>
     public sealed record Invalid(string Message) : HarnessCommandLineResult;
 }
 
@@ -194,8 +199,8 @@ public static class HarnessCommandLine
                 {
                     return Invalid(
                         $"'{value}' is not a valid '{ReportOnlyOption}' file name: it must be a plain file "
-                        + $"name inside the harness output directory — no '/' or '\\', not '.' or '..', not "
-                        + $"starting with '-', ending in '.jsonl'. {ReportOnlyUsage}");
+                        + $"name inside the harness output directory — no '/', '\\' or ':', not '.' or '..', "
+                        + $"not rooted, not starting with '-', ending in '.jsonl'. {ReportOnlyUsage}");
                 }
 
                 reportOnlyFile = value;
@@ -221,17 +226,24 @@ public static class HarnessCommandLine
 
     /// <summary>
     /// Whether <paramref name="value"/> is safe to use as a bare file name under
-    /// <c>Harness:OutputDirectory</c>: no directory separator (so it cannot address another
-    /// directory), not exactly <c>.</c> or <c>..</c> (the two special path segments), not starting
-    /// with <c>-</c> (so it can never be mistaken for a flag by a later parse), and ending in
-    /// <c>.jsonl</c> (so it can only ever name a harness protocol file, never an arbitrary path the
-    /// process happens to be able to read).
+    /// <c>Harness:OutputDirectory</c>: no directory separator and no <c>:</c> (a drive letter or an
+    /// NTFS alternate-data-stream marker on Windows, so it cannot address another directory or
+    /// stream), not exactly <c>.</c> or <c>..</c> (the two special path segments), not rooted and not
+    /// changed by <see cref="Path.GetFileName(string)"/> (the two catch-all checks — belt and braces
+    /// alongside the explicit character checks above, since a same-string comparison against
+    /// <c>Path.GetFileName</c> also rejects anything the separator/rooted checks might have missed
+    /// for a platform this runs on), not starting with <c>-</c> (so it can never be mistaken for a
+    /// flag by a later parse), and ending in <c>.jsonl</c> (so it can only ever name a harness
+    /// protocol file, never an arbitrary path the process happens to be able to read).
     /// </summary>
     private static bool IsValidReportOnlyFileName(string value) =>
         !string.IsNullOrWhiteSpace(value)
         && !value.StartsWith('-')
         && !value.Contains('/', StringComparison.Ordinal)
         && !value.Contains('\\', StringComparison.Ordinal)
+        && !value.Contains(':', StringComparison.Ordinal)
         && value is not ("." or "..")
+        && !Path.IsPathRooted(value)
+        && Path.GetFileName(value) == value
         && value.EndsWith(".jsonl", StringComparison.Ordinal);
 }

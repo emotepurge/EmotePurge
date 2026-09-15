@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using EmotePurge.Core.ChatLogArchive;
-using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using Microsoft.Extensions.Logging;
 
@@ -518,17 +517,10 @@ public sealed class HarnessRunner(
 
         var identity = header.Identity;
 
-        // Cheap and DB-free, so it runs before the channel lookup — same ordering principle as the
-        // fail-closed precondition in ExecuteAsync.
-        var normalizedChannelName = ChannelName.Normalize(channelName);
-        if (!string.Equals(identity.ChannelName, normalizedChannelName, StringComparison.Ordinal))
-        {
-            logger.LogError(
-                "Report-only file '{File}' was written for channel '{HeaderChannel}', not '{RequestedChannel}'; refusing to recompute a different channel's run.",
-                sourceFile.Path, identity.ChannelName, normalizedChannelName);
-            return ExitPreconditionViolated;
-        }
-
+        // The channel NAME is deliberately not compared — a rename (#34/#44) keeps the id and must
+        // not make a run unrecomputable, exactly the reasoning FindFrozenWindow already applies when
+        // matching a resume candidate by id alone. The id is what the header actually identifies the
+        // run by (HarnessRunIdentity.ChannelId, not ChannelName), so that is the only thing checked.
         var channel = await channelService.GetByNameAsync(channelName, ct);
         if (channel is null || !string.Equals(channel.Id, identity.ChannelId, StringComparison.Ordinal))
         {
@@ -613,12 +605,16 @@ public sealed class HarnessRunner(
         var resumePoint = allDays.Count == 0 ? (DateOnly?)null : allDays[^1].Day;
 
         var originalReport = sourceFile.TryReadExistingReport();
-        var diagnostic = originalReport?.Run.Diagnostic ?? false;
+        // Fail-closed, in D4's spirit: with no readable original to inherit Run.Diagnostic from, the
+        // recompute defaults to true (no gate verdict) rather than false (a binding one) — a missing,
+        // unparsable or otherwise unreadable .report.json must never silently upgrade a diagnostic
+        // run into a binding verdict just because nothing was left to say it was one.
+        var diagnostic = originalReport?.Run.Diagnostic ?? true;
         var diagnosticSource = originalReport is not null ? "inherited" : "defaulted";
         if (originalReport is null)
         {
             logger.LogInformation(
-                "'{File}' has no closed '{JsonPath}' to inherit the diagnostic flag from; the recompute defaults it to false.",
+                "'{File}' has no readable '{JsonPath}' to inherit the diagnostic flag from; the recompute defaults it to true (no gate verdict), per the D4 fail-closed rule.",
                 sourceFile.Path, sourceFile.ReportJsonPath);
         }
 
@@ -792,12 +788,11 @@ public sealed class HarnessRunner(
     /// recomputed, from which file, with zero archive requests, and (prominently, if either
     /// mismatches) how the current live snapshot and bot-split cutover compare to the ones the
     /// original run used — followed by the same body <see cref="BuildMarkdown"/> renders for an
-    /// ordinary run. The body is reused rather than duplicated: <paramref name="header"/>'s own
-    /// <c>LoadedAtUtc</c> is passed as that call's "loaded at" so the row keeps naming the
-    /// <i>original</i> run's snapshot time rather than pretending the recompute took a fresh one at
-    /// the same moment it ran, and <c>distinctChatters</c> is passed <c>null</c> for the same reason
-    /// <see cref="ExecuteAsync"/> passes it <c>null</c> on a resumed run — the window-wide chatter
-    /// set is never persisted, so a recompute cannot have it either.
+    /// ordinary run, with three rows adjusted so the body does not itself contradict the banner:
+    /// the "loaded at" row shows both the original run's snapshot time and this recompute's, the
+    /// "Input-Hash" row is labelled as the original's and gets a second row for the current one, and
+    /// the "distinct chatters" fallback text names a recompute rather than a resume (the window-wide
+    /// chatter set is never persisted, so a recompute cannot have it either, same as a resumed run).
     /// </summary>
     private static string BuildRecomputeMarkdown(
         HarnessRunIdentity identity,
@@ -837,12 +832,15 @@ public sealed class HarnessRunner(
         }
 
         text.Append(Invariant(
-            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? "übernommen aus dem ursprünglichen Bericht" : "keiner vorhanden, auf 'bindend' zurückgefallen")}.\n\n"));
+            $"Herkunft des Diagnose-Kennzeichens: {(recomputation.DiagnosticSource == "inherited" ? "übernommen aus dem ursprünglichen Bericht" : "keiner vorhanden, fail-closed auf 'Diagnose' (kein Gate-Urteil) zurückgefallen")}.\n\n"));
         text.Append("---\n\n");
 
         text.Append(BuildMarkdown(
             identity, report, days, liveRows, header.LoadedAtUtc, recomputedAtUtc, elapsed, bytes, rateLimitedDays,
-            distinctChatters: null));
+            distinctChatters: null,
+            unavailableDistinctChattersLabel: "nicht verfügbar (Neuberechnung)",
+            recomputeLoadedAtUtc: recomputedAtUtc,
+            currentInputHash: recomputation.CurrentInputHash));
 
         return text.ToString();
     }
@@ -862,7 +860,13 @@ public sealed class HarnessRunner(
         TimeSpan elapsed,
         long bytes,
         int rateLimitedDays,
-        int? distinctChatters)
+        int? distinctChatters,
+        // The four parameters below default to the ordinary-run rendering, so ExecuteAsync's call
+        // site (positional, ten arguments) is untouched and an ordinary run's Markdown does not move
+        // a single byte. BuildRecomputeMarkdown is the only caller that ever supplies them.
+        string unavailableDistinctChattersLabel = "nicht verfügbar (wiederaufgenommen)",
+        DateTime? recomputeLoadedAtUtc = null,
+        string? currentInputHash = null)
     {
         var gate = report.Gate;
         var diagnostics = report.Diagnostics;
@@ -886,16 +890,22 @@ public sealed class HarnessRunner(
         Row(text, "Human-only-Tage im Fenster", Invariant($"{diagnostics.HumanOnlyDays}"));
         Row(text, "Tage mit Log / ohne Log", Invariant($"{diagnostics.LogDays} / {diagnostics.NoLogDays}"));
         Row(text, "Bot-IDs", identity.BotAccountIds.Count == 0 ? "keine" : string.Join(", ", identity.BotAccountIds.Select(id => "`" + id + "`")));
-        Row(text, "Ladezeitpunkt der Vergleichsdaten (UTC)", Invariant($"{loadedAtUtc:yyyy-MM-dd HH:mm:ss}"));
+        Row(text, "Ladezeitpunkt der Vergleichsdaten (UTC)", recomputeLoadedAtUtc is { } recomputeLoaded
+            ? Invariant($"ursprünglicher Lauf: {loadedAtUtc:yyyy-MM-dd HH:mm:ss} · diese Neuberechnung: {recomputeLoaded:yyyy-MM-dd HH:mm:ss}")
+            : Invariant($"{loadedAtUtc:yyyy-MM-dd HH:mm:ss}"));
         Row(text, "Bericht erzeugt (UTC)", Invariant($"{generatedAtUtc:yyyy-MM-dd HH:mm:ss}"));
         Row(text, "Laufzeit dieses Laufs", Invariant($"{elapsed:hh\\:mm\\:ss}"));
         Row(text, "Übertragene Bytes (alle Läufe dieser Datei)", Invariant($"{bytes}"));
         Row(text, "HTTP 429", Invariant($"{rateLimitedDays}"));
         Row(text, "Distinkte Chatter im Fenster", distinctChatters is { } count
             ? Invariant($"{count}")
-            : "nicht verfügbar (wiederaufgenommen)");
+            : unavailableDistinctChattersLabel);
         Row(text, "Algorithmus-Version", "`" + identity.AlgorithmVersion + "`");
-        Row(text, "Input-Hash", "`" + identity.InputHash + "`");
+        Row(text, currentInputHash is null ? "Input-Hash" : "Input-Hash (ursprünglicher Lauf)", "`" + identity.InputHash + "`");
+        if (currentInputHash is { } current)
+        {
+            Row(text, "Input-Hash (aktuell, diese Neuberechnung)", "`" + current + "`");
+        }
         Row(text, "Lauf vollständig", report.Run.RunComplete ? "ja" : "nein");
         Row(text, "Gate-tauglich", gate.GateEligible
             ? "ja"
