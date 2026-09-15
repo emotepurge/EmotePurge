@@ -46,7 +46,7 @@ Erwartet Postgres/Redis erreichbar über die in `appsettings.json` hinterlegten 
 ### Frontend (Angular) lokal ausführen
 
 ```
-npm --prefix web install     # einmalig, oder via .devcontainer postCreateCommand
+npm --prefix web install     # einmalig
 npm --prefix web start       # ng serve mit Dev-Proxy (web/proxy.conf.json, /api -> :5151)
 ```
 
@@ -130,10 +130,6 @@ docker compose down                # -v zum Löschen des Postgres-Volumes
 ```
 
 Konfiguration über `.env` am Repo-Root (Vorlage: `.env.example`). Der `api`-Build enthält eine `web-build`-Stage (Node), die `web/` baut und das Ergebnis nach `wwwroot/` kopiert — die Angular-App wird direkt von der Api unter `http://localhost:8080/` mitausgeliefert, kein eigener Frontend-Service/Port nötig. Produktion läuft über `docker-compose.prod.yml` (GHCR-Images, s. Architectur.md Abschnitt 6b).
-
-### Dev Container Debugging (VS Code)
-
-"Reopen in Container" startet einen SDK-Container plus `postgres`/`redis` im selben Compose-Netzwerk (`api`/`worker` aus `docker-compose.yml` werden dabei **nicht** gestartet). Danach F5 mit Launch-Config `Api`, `Worker` oder Compound `Api + Worker` — läuft direkt über den .NET-Debugger, nicht als vorgebautes Image.
 
 ### Backup
 

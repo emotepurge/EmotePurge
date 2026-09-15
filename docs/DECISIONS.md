@@ -10,6 +10,29 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — Remove the unused Dev Container setup (#85)
+
+**Betrifft:** `.devcontainer/` · `CLAUDE.md` · `docs/Architectur.md`
+
+**Why.** The Dev Container setup was never actually used: the operator works on the devbox with
+`dotnet run` plus `docker compose up postgres redis`, or with the LAN profile for mobile testing —
+never through "Reopen in Container". An unused setup rots silently: the 2026-08-01 structure review
+already found it carrying a Node version that had diverged from the rest of the toolchain, and its
+existence misleads contributors into a path nobody maintains or verifies. This supersedes the
+undated entry "Dev Containers statt Debugger-Attach an einen laufenden Produktions-Container" further
+down this log — that historical entry is left unedited.
+
+**What changed.** `.devcontainer/` (`devcontainer.json`, `devcontainer-lock.json`,
+`docker-compose.yml`, `Dockerfile`) is deleted. `CLAUDE.md` drops the `.devcontainer`
+postCreateCommand mention and the "Dev Container Debugging (VS Code)" section. `docs/Architectur.md`
+section 7 is rewritten to describe local VS Code debugging without the container — the
+`.vscode/launch.json`/`tasks.json` configs stay, since they never depended on the container: `Api`
+already fell back to the `localhost` connection strings from `appsettings.json` outside the
+container, and its `http://0.0.0.0:8080` bind (mismatched with the local Twitch OAuth redirect on
+port 5151) was already true on the host, not something the container introduced.
+
+---
+
 ### 2026-09-15 — UI audit harness: a fifth viewport (480 px, fine pointer) closes the gap below `tablet` (#111)
 
 **Betrifft:** `web/e2e/audit/ui-audit.audit.ts` · `docs/UI-Designsprache.md`
