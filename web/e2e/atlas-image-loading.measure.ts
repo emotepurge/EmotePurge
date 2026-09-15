@@ -30,11 +30,11 @@ import {
  *   docker exec emotepurge-dev-postgres psql -U emotepurge -d emotepurge -t -A -c \
  *     "select json_agg(row_to_json(t)) from (select e.\"SevenTvEmoteId\" as sid, e.\"Name\" as name,
  *      e.\"ImageUrl\" as url from \"Emotes\" e join \"Channels\" c on c.\"Id\"=e.\"ChannelId\"
- *      where c.\"ChannelName\"='<channel>' and e.\"ImageUrl\" is not null) t;" > /tmp/emotes.json
+ *      where c.\"ChannelName\"='<channel>' and e.\"ImageUrl\" is not null) t;" > test-results/webp-measure/emotes.json
  *
  * Run (one variant, one pacing — repeat and compare medians, never a single run):
  *
- *   MEASURE_EMOTES=/tmp/emotes.json MEASURE_LABEL=before MEASURE_PAUSE=1200 \
+ *   MEASURE_EMOTES=test-results/webp-measure/emotes.json MEASURE_LABEL=before MEASURE_PAUSE=1200 \
  *     npx playwright test --config playwright.measure.config.ts
  *
  * Timings come from CDP rather than from the page: cdn.7tv.app sends no `Timing-Allow-Origin`, so
@@ -50,7 +50,7 @@ import {
  * result as unusable and re-run rather than trusting its percentiles.
  */
 
-const OUT_DIR = process.env['MEASURE_OUT'] ?? '/tmp/webp-measure';
+const OUT_DIR = process.env['MEASURE_OUT'] ?? 'test-results/webp-measure';
 const EMOTES_FILE = process.env['MEASURE_EMOTES'] ?? `${OUT_DIR}/emotes.json`;
 
 if (!fs.existsSync(EMOTES_FILE)) {
@@ -263,19 +263,19 @@ test('atlas image loading under scrolling', async ({ page, context }) => {
       n: ttfbs.length,
       p50: percentile(ttfbs, 0.5),
       p90: percentile(ttfbs, 0.9),
-      max: ttfbs[ttfbs.length - 1] ?? -1,
+      max: ttfbs.at(-1) ?? -1,
     },
     queueing: {
       p50: percentile(queued, 0.5),
       p90: percentile(queued, 0.9),
-      max: queued[queued.length - 1] ?? -1,
+      max: queued.at(-1) ?? -1,
     },
     cellLatency: {
       n: cellLatency.length,
       p50: percentile(cellLatency, 0.5),
       p90: percentile(cellLatency, 0.9),
       p99: percentile(cellLatency, 0.99),
-      max: cellLatency[cellLatency.length - 1] ?? -1,
+      max: cellLatency.at(-1) ?? -1,
       over2s: cellLatency.filter((value) => value > 2000).length,
       over5s: cellLatency.filter((value) => value > 5000).length,
     },
