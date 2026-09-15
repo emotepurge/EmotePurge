@@ -17,6 +17,11 @@ namespace EmotePurge.Api.Endpoints;
 /// </summary>
 public static class AdminEndpoints
 {
+    // The partition kind shared by most of the policies described below (RateLimitRejection's
+    // ResolveUserKey): the authenticated Twitch user, falling back to the remote IP. Kept as one
+    // named constant so the five policies that share it cannot spell it differently by accident.
+    private const string PerUserPartition = "twitch-user";
+
     // Enough to act on without turning a support page into a 500-name wall. Every list that uses it
     // ships its untruncated total alongside.
     private const int DeficitListLimit = 50;
@@ -458,10 +463,10 @@ public static class AdminEndpoints
     // matches Program.cs's AddRateLimiter registration.
     private static IReadOnlyList<RateLimitPolicyDescriptor> RateLimitPolicyDescriptors(RateLimitingOptions options) =>
     [
-        RateLimitPolicyDescriptor.TokenBucket(RateLimitPolicyNames.InteractiveRead, options.InteractiveRead, "twitch-user"),
+        RateLimitPolicyDescriptor.TokenBucket(RateLimitPolicyNames.InteractiveRead, options.InteractiveRead, PerUserPartition),
         RateLimitPolicyDescriptor.TokenBucket(RateLimitPolicyNames.Voting, options.Voting, "twitch-user+vote-session"),
-        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.Bookkeeping, options.Bookkeeping, "twitch-user"),
-        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.ChannelResync, options.ChannelResync, "twitch-user"),
+        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.Bookkeeping, options.Bookkeeping, PerUserPartition),
+        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.ChannelResync, options.ChannelResync, PerUserPartition),
         // The one anonymous policy: PartitionPerUser falls back to the remote IP when there is no
         // authenticated Twitch user, which for this route is every caller (RateLimitRejection.cs).
         RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.PublicHealth, options.PublicHealth, "remote-ip"),
@@ -471,11 +476,11 @@ public static class AdminEndpoints
         // it does not have. What this list must not do is omit a policy that *is* registered, which
         // is what happened until now: a route was guarded by a limiter that the admin snapshot, built
         // solely from this list, showed no trace of (AK 15).
-        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.ForeignEmoteLookup, options.ForeignEmoteLookup, "twitch-user"),
+        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.ForeignEmoteLookup, options.ForeignEmoteLookup, PerUserPartition),
         // The 7TV leaderboard's per-user half (spec 2026-09-13, E16), same reasoning as
         // ForeignEmoteLookup above: the leaderboard's own window budget across all users is not an
         // ASP.NET policy either and stays out of this list for the same reason.
-        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.SevenTvLeaderboard, options.SevenTvLeaderboard, "twitch-user"),
+        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.SevenTvLeaderboard, options.SevenTvLeaderboard, PerUserPartition),
     ];
 
     /// <summary>

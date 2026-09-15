@@ -106,6 +106,11 @@ public sealed class HarnessRunner(
     /// </summary>
     private const int MaxResumeAgeInDays = 7;
 
+    // The one date format this report ever writes for a standalone date — both the day boundary
+    // parsed from configuration and every rendered day in the Markdown below use it, so the two
+    // sides can never spell it differently.
+    private const string IsoDateFormat = "yyyy-MM-dd";
+
     /// <summary>
     /// Runs once and returns the process exit code. Nothing escapes as an exception: the operator of
     /// a one-shot container gets a German line and a defined code, never a stack trace with an
@@ -212,7 +217,7 @@ public sealed class HarnessRunner(
                 "'Harness:SharedChatCutover' fehlt oder ist leer; der Diagnoselauf misst ohne Stichtag und weist kein Gate-Urteil aus.");
         }
         else if (!DateOnly.TryParseExact(
-            options.SharedChatCutover, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedCutover))
+            options.SharedChatCutover, IsoDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsedCutover))
         {
             logger.LogError(
                 "'Harness:SharedChatCutover' = '{Wert}' ist kein Datum der Form 'yyyy-MM-dd' (der Tag nach dem Prod-Deploy, nicht der Deploy-Tag selbst); ein Tippfehler darf nie still als 'kein Stichtag' durchgehen.",
@@ -819,7 +824,7 @@ public sealed class HarnessRunner(
     // culture renders that as MM/dd/yyyy, which read as an ordinary (if odd) US date in a German
     // log line until Task 8's live verification (#69) actually compared it against the day the
     // archive itself had answered for.
-    private static string Iso(DateOnly value) => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private static string Iso(DateOnly value) => value.ToString(IsoDateFormat, CultureInfo.InvariantCulture);
 
     /// <summary>"none" rather than a dash — the recompute's warning block reads two of these side by
     /// side and a missing value is a fact worth naming, not a blank.</summary>
@@ -932,8 +937,8 @@ public sealed class HarnessRunner(
         text.Append("## Lauf\n\n| Feld | Wert |\n| --- | --- |\n");
         Row(text, "Kanal", Invariant($"{identity.ChannelName} (`{identity.ChannelId}`, Twitch-ID `{identity.TwitchChannelId}`)"));
         Row(text, "Fenster", Invariant($"{identity.WindowFrom:yyyy-MM-dd} bis {identity.WindowTo:yyyy-MM-dd} ({report.Run.WindowDays} Tage)"));
-        Row(text, "Bot-Split-Stichtag", identity.BotSplitCutover?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "keiner (kein Bot je gesehen)");
-        Row(text, "Shared-Chat-Stichtag", identity.SharedChatCutover?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "keiner (Diagnoselauf)");
+        Row(text, "Bot-Split-Stichtag", identity.BotSplitCutover?.ToString(IsoDateFormat, CultureInfo.InvariantCulture) ?? "keiner (kein Bot je gesehen)");
+        Row(text, "Shared-Chat-Stichtag", identity.SharedChatCutover?.ToString(IsoDateFormat, CultureInfo.InvariantCulture) ?? "keiner (Diagnoselauf)");
         Row(text, "Lauf-Modus", report.Run.Diagnostic ? "Diagnose" : "bindend");
         Row(text, "Human-only-Tage im Fenster", Invariant($"{diagnostics.HumanOnlyDays}"));
         Row(text, "Tage mit Log / ohne Log", Invariant($"{diagnostics.LogDays} / {diagnostics.NoLogDays}"));
@@ -1020,10 +1025,10 @@ public sealed class HarnessRunner(
         Row(text, "Median des Tagesverhältnisses", Ratio(diagnostics.DayRatioMedian));
         Row(text, "Tage mit vermuteter Live-Lücke", diagnostics.LiveGapDays.Count == 0
             ? "keine"
-            : string.Join(", ", diagnostics.LiveGapDays.Select(d => d.Day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))));
+            : string.Join(", ", diagnostics.LiveGapDays.Select(d => d.Day.ToString(IsoDateFormat, CultureInfo.InvariantCulture))));
         Row(text, "Tage mit fraglicher Abdeckung", diagnostics.CoverageQuestionableDays.Count == 0
             ? "keine"
-            : string.Join(", ", diagnostics.CoverageQuestionableDays.Select(d => d.Day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))));
+            : string.Join(", ", diagnostics.CoverageQuestionableDays.Select(d => d.Day.ToString(IsoDateFormat, CultureInfo.InvariantCulture))));
 
         // Two day cards, not one: the human column stays UseCount alone (the target contract the
         // gate measures), and the shared-chat column is its own SharedChatUseCount sum, so the three
