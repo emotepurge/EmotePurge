@@ -1,5 +1,15 @@
-import { Component, computed, effect, input, linkedSignal, signal } from '@angular/core';
+import {
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  linkedSignal,
+  output,
+  signal,
+} from '@angular/core';
 
+import { ReducedMotionService } from '../../core/motion/reduced-motion.service';
 import { EmoteSprite } from './emote-sprite';
 import { animatedEmoteUrl } from './emote-url';
 
@@ -35,6 +45,10 @@ import { animatedEmoteUrl } from './emote-url';
  * emote is now underneath it. Because the comparison is a computed rather than something an effect
  * writes, a url change clears it synchronously in the same tick — the still reappears immediately,
  * with nothing to wait on.
+ *
+ * **Under `prefers-reduced-motion: reduce` the still is all there is.** The dwell timer never starts,
+ * so the animated variant is never requested, and a preference switched on while an animation is
+ * showing withdraws it at once. Decided here rather than at each call site, so no surface can forget it.
  */
 @Component({
   selector: 'app-emote-sprite-animated',
@@ -53,7 +67,7 @@ import { animatedEmoteUrl } from './emote-url';
           [size]="size()"
           [spriteClass]="spriteClass() + ' absolute inset-0'"
           [dimmed]="dimmed()"
-          (settledUrl)="revealedAnimatedUrl.set($event)"
+          (settledUrl)="onOverlaySettled($event)"
         />
       }
     </span>
@@ -79,11 +93,19 @@ export class EmoteSpriteAnimated {
    */
   readonly dwellMs = input(200);
 
+  /** Fires the animated url once the animation has painted over the still. A caller with a still of
+   *  its own underneath (the import grid) hides that still at the same moment. */
+  readonly animationShown = output<string>();
+
+  private readonly reducedMotion = inject(ReducedMotionService);
+
   protected readonly animated = computed(() => animatedEmoteUrl(this.url()));
 
   private readonly upgradedUrl = signal<string | null>(null);
 
-  protected readonly upgraded = computed(() => this.upgradedUrl() === this.animated());
+  protected readonly upgraded = computed(
+    () => !this.reducedMotion.prefersReducedMotion() && this.upgradedUrl() === this.animated(),
+  );
 
   /**
    * See the class comment: which animated url, if any, has actually painted over the still.
@@ -101,7 +123,12 @@ export class EmoteSpriteAnimated {
   });
 
   /** The still hides only once the overlay currently shown has itself settled — see class comment. */
-  protected readonly stillHidden = computed(() => this.revealedAnimatedUrl() === this.animated());
+  protected readonly stillHidden = computed(
+    // Gated on `upgraded` as well: when the overlay is withdrawn without the url changing (reduced
+    // motion switched on mid-animation), the reveal marker still names this url, and the still would
+    // stay hidden over nothing.
+    () => this.upgraded() && this.revealedAnimatedUrl() === this.animated(),
+  );
 
   constructor() {
     effect((onCleanup) => {
@@ -111,11 +138,25 @@ export class EmoteSpriteAnimated {
       if (target === this.url()) {
         return;
       }
+      // See the class comment: under reduced motion there is no animation to earn. Forgetting the
+      // earned upgrade makes switching the preference off again go through dwell and reveal anew.
+      if (this.reducedMotion.prefersReducedMotion()) {
+        this.upgradedUrl.set(null);
+        this.revealedAnimatedUrl.set(null);
+        return;
+      }
 
       const handle = setTimeout(() => this.upgradedUrl.set(target), this.dwellMs());
       // Runs before the next effect pass and on destroy, so an emote the pointer left behind never
       // fires its request.
       onCleanup(() => clearTimeout(handle));
     });
+  }
+
+  protected onOverlaySettled(url: string): void {
+    this.revealedAnimatedUrl.set(url);
+    if (url === this.animated()) {
+      this.animationShown.emit(url);
+    }
   }
 }

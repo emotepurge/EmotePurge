@@ -15,6 +15,7 @@ import { LeaderboardStep } from './leaderboard-step';
 
 const DE_TRANSLATIONS = {
   import: {
+    clearSelection: 'Auswahl aufheben',
     foreignChannel: {
       retry: 'Erneut versuchen',
       selectedCount: '{{ count }} ausgewählt',
@@ -182,6 +183,21 @@ describe('LeaderboardStep', () => {
     expect(grid()).not.toBe(firstGrid);
     expect(grid()['selection'].selectedKeys()).toEqual([]);
     expect(host.textContent).toContain('0 ausgewählt');
+    expect(component.result()).toBeNull();
+  });
+
+  it('locks "Continue" again once the grid\'s clear-selection button empties the pick', () => {
+    expectRequest('TRENDING_DAILY').flush(response());
+    fixture.detectChanges();
+
+    component['onSelectionChange']([row('e1', 'catJAM')]);
+    fixture.detectChanges();
+    expect(component.result()).not.toBeNull();
+
+    // The same method the grid's button calls.
+    grid()['clearSelection']();
+    fixture.detectChanges();
+
     expect(component.result()).toBeNull();
   });
 

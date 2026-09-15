@@ -10,6 +10,87 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-14 — Animated emotes in the import grid: marker from the url, one playing cell, reduced motion decided in `EmoteSpriteAnimated` (#167)
+
+**Betrifft:** `web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
+`web/src/app/shared/emotes/emote-sprite-animated.ts` · `web/src/app/shared/emotes/emote-url.ts` ·
+`web/src/app/core/motion/reduced-motion.service.ts` · `docs/UI-Designsprache.md` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+**The animated marker is derived from the url, not carried as a field.** Both import sources already
+encode 7TV's `flags.animated` into `imageUrl` (`4x_static.webp` against `4x.webp`), the marker
+`animatedEmoteUrl` relies on. A DTO field would restate that fact and could drift from the url the
+sprite loads. An unrecognised url counts as a still: a marker promising an animation that does not
+play is the worse error.
+
+**One playing key per grid, and one `EmoteSpriteAnimated` for it — never one per cell.** The component
+starts its dwell on mount, so per-cell instances in the virtualised grid would start a timer for every
+recycled row and fetch animations nobody pointed at. The playing key is derived from a pointer key and
+a focus key, pointer first, each ended only by its own events; keys are 7TV ids, so a recycled row view
+cannot inherit one. **A scroll clears the pointer key:** a cell recycled under a resting pointer fires
+no mouseleave, so its key would otherwise survive and play the cell as soon as it rendered again. The
+focus key survives a scroll, so a cell that Tab scrolls into view still plays. **Either key is cleared
+once its cell leaves the viewport's rendered range**: virtualisation removes a
+focused cell without a blur, and in Chrome and Firefox a click focuses the cell, so neither pointer nor
+focus events can end playback on their own. A click deliberately stays focus playback: telling it apart
+would take the `:focus-visible` heuristic, and the range check already ends it. The playing cell keeps
+its still underneath and hides it on `animationShown`, because a freshly mounted sprite stays
+invisible until it has loaded.
+
+**`prefers-reduced-motion: reduce` is honoured inside `EmoteSpriteAnimated`, not per call site.** The
+dwell timer never starts; a preference switched on mid-animation withdraws the animation and forgets the
+earned upgrade, so switching it off again goes through dwell and reveal anew. This deliberately changes
+the sidecar, inspector row, drilldown dialog and ballot too. The live media-query signal is a new
+`ReducedMotionService`, shaped like `PointerModeService`.
+
+---
+
+### 2026-09-14 — The import grid's clear-selection button is its own §7.3 case, not an extension of §8.7, and gets its own i18n key (#166)
+
+**Betrifft:** `web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
+`docs/UI-Designsprache.md` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+`ForeignEmoteGrid` gained a clear-selection button next to its "N selected" count, modelled on
+`MassDeletePanel`'s: the same neutral variant, shown only while something is marked, no count in the
+label.
+
+**§8.7 stays scoped to pages with a dock.** Its ordering rule places neutral exits relative to a page
+header, a dock and a destructive action, and the import dialog step has none of the three. The button
+is documented in §7.3, which already governs the dialog's grid and steps.
+
+**New key `import.clearSelection` rather than `massDelete.clearSelection`.** The dialog keys its texts
+per namespace (`import.foreignChannel.*`, `import.leaderboard.*`), and a shared key would reword this
+button whenever the atlas's wording changes.
+
+**Focus moves to the grid group when the button removes itself**, instead of falling to `<body>`
+inside the modal (WCAG 2.4.3, the defect §8.4 describes for the pager). The group is the stable element
+next to the button and names what was just cleared.
+
+---
+
+### 2026-09-14 — `LanguageService.lang` flips only once the locale has loaded, not synchronously with the switch (#169)
+
+**Betrifft:** `web/src/app/core/i18n/language.service.ts`
+
+Boot awaits only the active locale (`app.config.ts`); the other one is fetched lazily on the first
+switch. `setLang` used to flip the `lang` signal and call `TranslocoService.setActiveLang` before
+that fetch resolved, so a `computed()` calling `translate()` off `lang()` (audit rows, the
+leaderboard-sort label in the import confirm dialog) re-ran against a missing table and kept the raw
+key: nothing it reads changes when the table arrives.
+
+`setLang` now sets `<html lang>` and the stored preference immediately, but flips the `lang` signal
+and calls `setActiveLang` only after `TranslocoService.load(lang)` resolves. **The contract:** once
+`lang()` reads a language, its translation table is loaded — which also means the signal no longer
+changes synchronously inside `setLang`. A load that resolves or fails after a later `setLang` has
+superseded it is ignored.
+
+A failed load reverts `<html lang>` and the stored preference to the language still rendered;
+`lang()` and Transloco's active language never moved. Keeping the failed language stored would make
+the next boot pick it again, where the initializer swallows the repeat failure and every label
+renders as its raw key.
+
+---
+
 ### 2026-09-14 — Sorting by score is allowed where the ranking *is* the content: the 2026-09-10 ban narrows to the wording, and the leaderboard's stock is a per-process promise (#148)
 
 **Betrifft:** `web/src/app/shared/seven-tv/leaderboard-step.ts` ·

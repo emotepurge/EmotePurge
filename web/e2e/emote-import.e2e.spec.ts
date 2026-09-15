@@ -441,6 +441,19 @@ test.describe('push flow: the 7TV leaderboard source (#148)', () => {
     // The default list loads without any sort switch — the third source's whole point (E7):
     // reachable without first knowing which channel the emotes live in.
     await expect(sourceDialog.getByRole('group', { name: 'Emote-Auswahl' })).toBeVisible();
+    // #166: the clear-selection button is not there with nothing marked.
+    await expect(sourceDialog.getByRole('button', { name: 'Auswahl aufheben' })).toHaveCount(0);
+
+    await sourceDialog.getByRole('button', { name: /^LBOne/ }).click();
+    await sourceDialog.getByRole('button', { name: /^LBTwo/ }).click();
+    await expect(sourceDialog.getByRole('button', { name: 'Weiter' })).toBeEnabled();
+
+    // #166: clicking it empties the grid's selection and locks "Weiter" again — proof the button
+    // does not just clear visually but actually goes through ForeignEmoteGrid.selectionChange, the
+    // one thing this step's result() reacts to.
+    await sourceDialog.getByRole('button', { name: 'Auswahl aufheben' }).click();
+    await expect(sourceDialog.getByRole('button', { name: 'Weiter' })).toBeDisabled();
+    await expect(sourceDialog.getByRole('button', { name: 'Auswahl aufheben' })).toHaveCount(0);
 
     await sourceDialog.getByRole('button', { name: /^LBOne/ }).click();
     await sourceDialog.getByRole('button', { name: /^LBTwo/ }).click();
@@ -956,6 +969,309 @@ test.describe('import dialog: shell contract', () => {
     const controlIndex = dialogText.indexOf('Datei auswählen');
     expect(sortsIndex).toBeGreaterThan(-1);
     expect(controlIndex).toBeGreaterThan(sortsIndex);
+  });
+});
+
+/**
+ * The import grid marks animated emotes and plays exactly one of them — the cell the pointer rests
+ * on. The acceptance criterion is about requests, not pixels ("scrolling without dwelling triggers no
+ * animated-variant request"), so the CDN is intercepted and every url it is asked for is recorded.
+ * Nothing reaches cdn.7tv.app itself.
+ *
+ * What a request looks like at this cell size (64 px, DPR 1): an animated emote's still is fetched as
+ * `2x_static.webp` and its animation as `2x.webp`; a still emote's own picture is `2x.webp` too (the
+ * loader rewrites the stored `4x.webp` down). So "no animation request" is asserted per animated id,
+ * and "a still triggers nothing" as no further request for that id.
+ */
+test.describe('import dialog: animated emotes in the grid', () => {
+  const PNG_1X1 = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  // Every other emote animated, and enough rows that scrolling recycles row views well beyond the
+  // viewport's buffer — the situation a per-cell animated sprite would have fired requests in.
+  const FOREIGN_EMOTES = Array.from({ length: 400 }, (_, index) => {
+    const animated = index % 2 === 0;
+    const id = `${animated ? 'anim' : 'still'}-${index}`;
+    const name = `${animated ? 'Anim' : 'Still'}${index}`;
+    return {
+      sevenTvEmoteId: id,
+      name,
+      defaultName: name,
+      imageUrl: `https://cdn.7tv.app/emote/${id}/${animated ? '4x_static' : '4x'}.webp`,
+      topAllTime: null,
+      trending: null,
+    };
+  });
+
+  async function openGrid(page: Page) {
+    const cdnRequests: string[] = [];
+    await page.route('https://cdn.7tv.app/**', (route) => {
+      cdnRequests.push(route.request().url());
+      return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1X1 });
+    });
+
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await page.route('**/api/seventv/channels/handofblood/emotes*', (route) =>
+      route.fulfill({
+        json: {
+          channelName: 'handofblood',
+          sevenTvUserId: '7tv-user-1',
+          emoteSetId: 'set-source',
+          totalCount: FOREIGN_EMOTES.length,
+          truncated: false,
+          emotes: FOREIGN_EMOTES,
+        },
+      }),
+    );
+    // The dwell is a setTimeout. install() alone still lets time flow in real time, which is fine for
+    // loading and for single hovers; the scroll phases pause it.
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const dialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
+    await dialog.getByLabel('Kanalname').fill('handofblood');
+    await dialog.getByRole('button', { name: 'Set laden' }).click();
+    const grid = dialog.getByRole('group', { name: 'Emote-Auswahl' });
+    await expect(grid).toBeVisible();
+
+    const viewport = dialog.locator('cdk-virtual-scroll-viewport');
+    return {
+      dialog,
+      grid,
+      viewport,
+      cdnRequests,
+      animationRequests: () =>
+        cdnRequests.filter((url) => /\/emote\/anim-\d+\/2x\.webp$/.test(url)),
+      requestsFor: (id: string) => cdnRequests.filter((url) => url.includes(`/emote/${id}/`)),
+      // Stops real time, so nothing but runFor can complete a dwell from here on.
+      pauseClock: async () => {
+        const now = await page.evaluate(() => Date.now());
+        await page.clock.pauseAt(now + 1000);
+      },
+      // Sets scrollTop and advances the paused clock frame by frame until the viewport has rendered
+      // for the new offset: the CDK renders on animation frames, which a paused clock holds back.
+      // Bounded under the 200 ms dwell, so a hover the scroll caused can never complete one here.
+      scrollTo: async (top: number, rendered: () => Promise<boolean>) => {
+        await viewport.evaluate((element, value) => {
+          element.scrollTop = value;
+        }, top);
+        await expect(viewport).toHaveJSProperty('scrollTop', top);
+        let elapsed = 0;
+        while (!(await rendered())) {
+          if (elapsed + 16 > 150) {
+            throw new Error(
+              `scrollTop ${top} not rendered after ${elapsed} ms of fake time; a dwell could complete`,
+            );
+          }
+          await page.clock.runFor(16);
+          elapsed += 16;
+        }
+      },
+      // Moves the pointer straight onto an animated cell lying fully inside the viewport. Not hover():
+      // that scrolls a clipped cell into view, and the scroll would end the hover it just started.
+      restOnVisibleAnimatedCell: async (except: string) => {
+        const area = (await viewport.boundingBox())!;
+        const cells = await grid
+          .getByRole('button', { name: /^Anim\d+, animiert$/ })
+          .evaluateAll((elements) =>
+            elements.map((element) => {
+              const rect = element.getBoundingClientRect();
+              return { label: element.getAttribute('aria-label') ?? '', rect: rect.toJSON() };
+            }),
+          );
+        const pick = cells.find(
+          ({ label, rect }) =>
+            !label.startsWith(`${except},`) &&
+            rect.top >= area.y &&
+            rect.bottom <= area.y + area.height,
+        );
+        expect(pick).toBeDefined();
+        await page.mouse.move(
+          pick!.rect.x + pick!.rect.width / 2,
+          pick!.rect.y + pick!.rect.height / 2,
+        );
+        return `anim-${/^Anim(\d+),/.exec(pick!.label)![1]}`;
+      },
+      renderedAnimatedIndices: () =>
+        grid
+          .getByRole('button', { name: /^Anim\d+, animiert$/ })
+          .evaluateAll((cells) =>
+            cells.map((cell) =>
+              Number(/^Anim(\d+),/.exec(cell.getAttribute('aria-label') ?? '')![1]),
+            ),
+          ),
+    };
+  }
+
+  test('marks animated cells, and fetches an animation only for the cell the pointer rests on', async ({
+    page,
+  }) => {
+    const {
+      dialog,
+      grid,
+      viewport,
+      cdnRequests,
+      animationRequests,
+      requestsFor,
+      pauseClock,
+      scrollTo,
+      renderedAnimatedIndices,
+      restOnVisibleAnimatedCell,
+    } = await openGrid(page);
+
+    // (a) The corner marker is aria-hidden; what marks the cell for everyone is its name.
+    const animatedCell = grid.getByRole('button', { name: 'Anim0, animiert', exact: true });
+    const stillCell = grid.getByRole('button', { name: 'Still1', exact: true });
+    await expect(animatedCell).toBeVisible();
+    await expect(stillCell).toBeVisible();
+    await expect.poll(() => requestsFor('still-1').length).toBeGreaterThan(0);
+    await expect.poll(() => requestsFor('anim-0').length).toBeGreaterThan(0);
+    // Long past the dwell, with no cell hovered. A request fired here would show up in the flush for
+    // (c) below.
+    await page.clock.runFor(1000);
+
+    // (d) A still has nothing to play: resting on it costs no request.
+    const stillRequestsBefore = requestsFor('still-1').length;
+    await stillCell.hover();
+    await page.clock.runFor(1000);
+
+    // (c) Resting on an animated cell fetches exactly its animation. Also the flush for (d): a stray
+    // request from the still hover would have arrived by the time this one does.
+    await animatedCell.hover();
+    await page.clock.runFor(300);
+    await expect.poll(animationRequests).toEqual(['https://cdn.7tv.app/emote/anim-0/2x.webp']);
+    expect(requestsFor('still-1')).toHaveLength(stillRequestsBefore);
+
+    // (b) Scroll with the pointer resting over the grid, in the gutter between its first two columns:
+    // no cell passes under it, so every cell the scroll renders is one nobody pointed at.
+    await dialog.locator('#app-dialog-title').hover();
+    await page.clock.runFor(50);
+    await pauseClock();
+    const initiallyRendered = Math.max(...(await renderedAnimatedIndices()));
+    const box = await viewport.boundingBox();
+    expect(box).not.toBeNull();
+    const [firstColumn, secondColumn] = await grid
+      .getByRole('button')
+      .evaluateAll((cells) =>
+        cells.slice(0, 2).map((each) => each.getBoundingClientRect().toJSON()),
+      );
+    expect(secondColumn.top).toBe(firstColumn.top);
+    expect(secondColumn.left - firstColumn.right).toBeGreaterThanOrEqual(2);
+    await page.mouse.move((firstColumn.right + secondColumn.left) / 2, box!.y + box!.height / 2);
+    const maxScroll = await viewport.evaluate(
+      (element) => element.scrollHeight - element.clientHeight,
+    );
+    let firstRendered = Math.min(...(await renderedAnimatedIndices()));
+    let previousTop = 0;
+    for (let step = 1; step <= 4; step++) {
+      const top = Math.min(step * 320, maxScroll);
+      if (top === previousTop) {
+        break;
+      }
+      const before = firstRendered;
+      await scrollTo(top, async () => {
+        const indices = await renderedAnimatedIndices();
+        if (indices.length > 0) {
+          firstRendered = Math.min(...indices);
+        }
+        return firstRendered > before;
+      });
+      previousTop = top;
+    }
+    // The scroll really rendered cells past what was on screen at the start.
+    expect(firstRendered).toBeGreaterThan(initiallyRendered);
+    await dialog.locator('#app-dialog-title').hover();
+    // Long past any dwell: a timer left behind by a cell the scroll went past would fire now.
+    await page.clock.runFor(2000);
+
+    // Their stills were fetched, so the rendered cells were real.
+    await expect
+      .poll(() =>
+        cdnRequests.some((url) => {
+          const match = /\/emote\/anim-(\d+)\/\dx_static\.webp$/.exec(url);
+          return match !== null && Number(match[1]) >= firstRendered;
+        }),
+      )
+      .toBe(true);
+
+    // Flush for (b), same as above: rest on a cell that is now on screen and wait for its animation.
+    // Had the scroll fired any, they would be in the list alongside it.
+    const laterId = await restOnVisibleAnimatedCell('Anim0');
+    await page.clock.runFor(300);
+    await expect
+      .poll(animationRequests)
+      .toEqual([
+        'https://cdn.7tv.app/emote/anim-0/2x.webp',
+        `https://cdn.7tv.app/emote/${laterId}/2x.webp`,
+      ]);
+  });
+
+  // A cell recycled under a resting pointer fires no mouseleave. If the pointer then ends up over a
+  // gap, nothing else replaces the hover either — the cell must not play once it renders again.
+  // During a real wheel scroll the browser defers its hover update, so the viewport recycles the cell
+  // first. A paused clock would reverse that order, so each scroll here renders its new range in the
+  // same task, through Angular's dev-mode globals, before the browser can update hover.
+  test('a cell scrolled away under a resting pointer does not play when it renders again', async ({
+    page,
+  }) => {
+    const { grid, viewport, animationRequests, pauseClock, restOnVisibleAnimatedCell } =
+      await openGrid(page);
+    const scrollAndRender = (top: number) =>
+      viewport.evaluate((element, value) => {
+        const ng = (
+          window as unknown as {
+            ng: { getComponent<T>(host: Element): T; applyChanges(component: unknown): void };
+          }
+        ).ng;
+        element.scrollTop = value;
+        ng.getComponent<{ checkViewportSize(): void }>(element).checkViewportSize();
+        ng.applyChanges(ng.getComponent(element.closest('app-foreign-emote-grid')!));
+      }, top);
+    const target = grid.getByRole('button', { name: 'Anim0, animiert', exact: true });
+    await expect(target).toBeVisible();
+    await pauseClock();
+
+    // Rest the pointer 2 px above the bottom edge of the cell. Scrolling by whole rows plus 3 px then
+    // leaves it in the gap below a cell, whichever row that is.
+    const cell = (await target.boundingBox())!;
+    const pitch = await grid
+      .getByRole('button')
+      .evaluateAll(
+        (cells, top) =>
+          Math.min(
+            ...cells
+              .map((each) => each.getBoundingClientRect().top)
+              .filter((each) => each > top + 1),
+          ) - top,
+        cell.y,
+      );
+    expect(pitch - cell.height).toBeGreaterThanOrEqual(2);
+    await page.mouse.move(cell.x + cell.width / 2, cell.y + cell.height - 2);
+    await page.clock.runFor(50);
+
+    await scrollAndRender(10 * pitch + 3);
+    await expect(target).toHaveCount(0);
+    await page.clock.runFor(50);
+    await scrollAndRender(3);
+    await expect(target).toHaveCount(1);
+    // Long past the dwell, the pointer still resting in the gap.
+    await page.clock.runFor(1000);
+
+    // Flush: a stray request for Anim0 would have arrived by the time the one for this cell does.
+    const flushId = await restOnVisibleAnimatedCell('Anim0');
+    await page.clock.runFor(300);
+    await expect.poll(animationRequests).toEqual([`https://cdn.7tv.app/emote/${flushId}/2x.webp`]);
   });
 });
 

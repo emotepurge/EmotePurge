@@ -236,6 +236,36 @@ public class SevenTvApiClientLeaderboardSearchTests
     }
 
     /// <summary>
+    /// A malformed body behind HTTP 200 (spec 2026-09-13, E15) must not lose the search-bucket
+    /// header sample: the headers already exist on the response before parsing fails.
+    /// </summary>
+    [Fact]
+    public async Task MalformedJsonBody_IsReportedAsUnavailable_ButKeepsTheSearchHeaderSample()
+    {
+        var telemetry = new RecordingRateLimitTelemetry();
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{not valid json", Encoding.UTF8, "application/json"),
+        };
+        response.Headers.TryAddWithoutValidation("x-ratelimit-search-limit", "100");
+        response.Headers.TryAddWithoutValidation("x-ratelimit-search-remaining", "42");
+        response.Headers.TryAddWithoutValidation("x-ratelimit-search-reset", "58");
+        var client = CreateClient(response, telemetry);
+
+        var result = await client.SearchEmotesAsync(SevenTvLeaderboardSort.TrendingDaily, page: 1);
+
+        Assert.Equal(SevenTvEmoteSearchLookupStatus.Unavailable, result.Status);
+        Assert.Null(result.Page);
+        Assert.Equal("100", result.RateLimitLimit);
+        Assert.Equal("42", result.RateLimitRemaining);
+        Assert.Equal("58", result.RateLimitReset);
+
+        var observation = Assert.Single(telemetry.Observations);
+        Assert.Equal(200, observation.StatusCode);
+        Assert.Equal(RateLimitCallSources.SevenTvLeaderboard, observation.CallSource);
+    }
+
+    /// <summary>
     /// AK 13: exactly one observation per upstream request, under the new call source — and,
     /// crucially, none under <see cref="RateLimitCallSources.SevenTvForeignPreview"/> or
     /// <see cref="RateLimitCallSources.SevenTvRest"/>. Wires the REAL

@@ -1,7 +1,9 @@
+import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { signal } from '@angular/core';
 
 import { LanguageService } from '../../core/i18n/language.service';
@@ -11,6 +13,8 @@ import { ForeignEmoteGrid } from './foreign-emote-grid';
 // Only the keys this component translates.
 const DE_TRANSLATIONS = {
   import: {
+    clearSelection: 'Auswahl aufheben',
+    animated: 'animiert',
     foreignChannel: {
       empty: 'Das aktive 7TV-Set dieses Kanals hat keine Emotes.',
       truncated: 'Nur ein Teil des Sets konnte geladen werden ({{ loaded }} von {{ totalCount }}).',
@@ -176,6 +180,64 @@ describe('ForeignEmoteGrid', () => {
     expect(emitted.at(-1)).toEqual([]);
   });
 
+  it('clears the whole selection and emits an empty array', () => {
+    // The emission is the point: host steps see the selection only through selectionChange.
+    const a = row({ sevenTvEmoteId: 'a' });
+    const b = row({ sevenTvEmoteId: 'b' });
+    render([a, b]);
+
+    const emitted: ForeignEmoteRow[][] = [];
+    component.selectionChange.subscribe((rows) => emitted.push(rows));
+
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    component['onCellClick'](b, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+
+    component['clearSelection']();
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+    expect(emitted.at(-1)).toEqual([]);
+  });
+
+  it('shows the clear-selection button only while at least one emote is selected', () => {
+    const a = row({ sevenTvEmoteId: 'a' });
+    render([a]);
+    const clearButton = () =>
+      Array.from(host.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Auswahl aufheben',
+      );
+
+    expect(clearButton()).toBeUndefined();
+
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+    expect(clearButton()).not.toBeUndefined();
+
+    clearButton()?.click();
+    fixture.detectChanges();
+    expect(clearButton()).toBeUndefined();
+    expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+
+  // The button unmounts on its own click; focus must not fall to <body> inside the modal.
+  it('moves focus to the grid when the clear-selection button removes itself', () => {
+    const a = row({ sevenTvEmoteId: 'a' });
+    render([a]);
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+    const clearButton = () =>
+      Array.from(host.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Auswahl aufheben',
+      );
+
+    clearButton()!.focus();
+    clearButton()!.click();
+    fixture.detectChanges();
+
+    expect(clearButton()).toBeUndefined();
+    expect(document.activeElement).toBe(host.querySelector('[role="group"]'));
+  });
+
   it('selects a contiguous range on a shift-click, only the selected rows appear in toAdd', () => {
     const rows = ['a', 'b', 'c', 'd', 'e'].map((id) => row({ sevenTvEmoteId: id }));
     render(rows);
@@ -218,14 +280,341 @@ describe('ForeignEmoteGrid', () => {
   // The visible name line under each sprite prints the alias alone (64 px truncates most names);
   // this label is what the tile carries as its accessible name AND as its mouse tooltip, so it is
   // where the divergence between alias and global default name is actually readable. The line
-  // itself is markup and, per rule 12, not the subject of a test — the virtual viewport renders no
-  // cells under jsdom anyway.
+  // itself is markup and, per rule 12, not the subject of a test.
   it('labels a cell with the set alias, and additionally the default name when it differs', () => {
     const aliased = row({ name: 'PogChamp2', defaultName: 'PogChamp' });
     const plain = row({ sevenTvEmoteId: 'e2', name: 'catJAM', defaultName: 'catJAM' });
 
     expect(component['cellLabel'](aliased)).toBe('PogChamp2 (PogChamp)');
     expect(component['cellLabel'](plain)).toBe('catJAM');
+  });
+
+  // The play marker in the corner is aria-hidden, so the label is the only place a screen reader
+  // learns that an emote is animated.
+  it('says "animated" in the label of an animated emote, and only there', () => {
+    const animated = row({ imageUrl: 'https://cdn.7tv.app/e1/4x_static.webp' });
+    const still = row({ sevenTvEmoteId: 'e2', imageUrl: 'https://cdn.7tv.app/e2/4x.webp' });
+
+    expect(component['cellLabel'](animated)).toBe('catJAM, animiert');
+    expect(component['cellLabel'](still)).toBe('catJAM');
+  });
+
+  it('puts "animated" after the names and before the active score', () => {
+    render([row()]);
+    component['sortMode'].set('topAllTime');
+    fixture.detectChanges();
+
+    expect(
+      component['cellLabel'](
+        row({
+          name: 'PogChamp2',
+          defaultName: 'PogChamp',
+          imageUrl: 'https://cdn.7tv.app/e1/4x_static.webp',
+          topAllTime: 12400,
+        }),
+      ),
+    ).toBe('PogChamp2 (PogChamp), animiert, 7TV-Score (gesamt): 12,4k');
+  });
+
+  describe('rendered cells', () => {
+    const animatedA = row({
+      sevenTvEmoteId: 'a',
+      name: 'AnimA',
+      defaultName: 'AnimA',
+      imageUrl: 'https://cdn.7tv.app/emote/a/4x_static.webp',
+    });
+    const animatedB = row({
+      sevenTvEmoteId: 'b',
+      name: 'AnimB',
+      defaultName: 'AnimB',
+      imageUrl: 'https://cdn.7tv.app/emote/b/4x_static.webp',
+    });
+    const still = row({
+      sevenTvEmoteId: 's',
+      name: 'Still',
+      defaultName: 'Still',
+      imageUrl: 'https://cdn.7tv.app/emote/s/4x.webp',
+    });
+
+    function cells(): HTMLButtonElement[] {
+      return [...host.querySelectorAll<HTMLButtonElement>('[role="group"] button[aria-pressed]')];
+    }
+
+    function cell(name: string): HTMLButtonElement {
+      const found = cells().find((candidate) => candidate.getAttribute('aria-label') === name);
+      if (!found) {
+        throw new Error(`no rendered cell named ${name}`);
+      }
+      return found;
+    }
+
+    function grid(): HTMLElement {
+      return host.querySelector<HTMLElement>('[role="group"]')!;
+    }
+
+    function sources(): string[] {
+      return [...host.querySelectorAll('img')].map((img) => img.getAttribute('src') ?? '');
+    }
+
+    // An animated emote's still is a `_static` url; any other variant of its id is the animation.
+    function requestsAnimation(id: string): boolean {
+      return sources().some((src) => new RegExp(`/emote/${id}/\\dx\\.webp$`).test(src));
+    }
+
+    function fire(target: EventTarget, type: string): void {
+      target.dispatchEvent(new Event(type));
+      fixture.detectChanges();
+    }
+
+    function advance(ms: number): void {
+      vi.advanceTimersByTime(ms);
+      fixture.detectChanges();
+    }
+
+    // jsdom has no layout: the viewport measures 0 px and renders the rows its buffer covers, one
+    // cell each, on an animation frame. Let real frames pass before faking the dwell timers.
+    beforeEach(async () => {
+      render([animatedA, animatedB, still]);
+      for (let attempt = 0; attempt < 50 && cells().length < 3; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await fixture.whenStable();
+      }
+      expect(cells()).toHaveLength(3);
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => vi.useRealTimers());
+
+    // The play marker in the corner is aria-hidden; the name is what marks the cell.
+    it('names animated cells as animated, and only those', () => {
+      expect(cells().map((candidate) => candidate.getAttribute('aria-label'))).toEqual([
+        'AnimA, animiert',
+        'AnimB, animiert',
+        'Still',
+      ]);
+    });
+
+    it('fetches no animation while no cell is hovered', () => {
+      advance(1000);
+
+      expect(requestsAnimation('a') || requestsAnimation('b')).toBe(false);
+    });
+
+    it('fetches the animation of the hovered animated cell after the dwell, and of no other', () => {
+      fire(cell('AnimA, animiert'), 'mouseenter');
+      advance(199);
+      expect(requestsAnimation('a')).toBe(false);
+
+      advance(1);
+      expect(requestsAnimation('a')).toBe(true);
+      expect(requestsAnimation('b')).toBe(false);
+    });
+
+    it('moves playback with the pointer rather than adding a second one', () => {
+      fire(cell('AnimA, animiert'), 'mouseenter');
+      advance(200);
+      fire(cell('AnimB, animiert'), 'mouseenter');
+      advance(200);
+
+      expect(requestsAnimation('a')).toBe(false);
+      expect(requestsAnimation('b')).toBe(true);
+    });
+
+    it('requests nothing for a hovered still', () => {
+      const before = sources();
+
+      fire(cell('Still'), 'mouseenter');
+      advance(1000);
+
+      expect(sources()).toEqual(before);
+    });
+
+    it('stops once the pointer or the focus leaves the cell', () => {
+      const a = cell('AnimA, animiert');
+      fire(a, 'mouseenter');
+      advance(200);
+      fire(a, 'mouseleave');
+      expect(requestsAnimation('a')).toBe(false);
+
+      a.focus();
+      advance(200);
+      expect(requestsAnimation('a')).toBe(true);
+      a.blur();
+      fixture.detectChanges();
+      expect(requestsAnimation('a')).toBe(false);
+    });
+
+    it('does not stop a cell when a different cell loses focus', () => {
+      fire(cell('AnimA, animiert'), 'mouseenter');
+      fire(cell('AnimB, animiert'), 'blur');
+      advance(200);
+
+      expect(requestsAnimation('a')).toBe(true);
+    });
+
+    it('stops what the pointer started when the pointer leaves the grid, not what focus started', () => {
+      fire(cell('AnimA, animiert'), 'mouseenter');
+      advance(200);
+      fire(grid(), 'mouseleave');
+      expect(requestsAnimation('a')).toBe(false);
+
+      cell('AnimA, animiert').focus();
+      advance(200);
+      fire(grid(), 'mouseleave');
+      expect(requestsAnimation('a')).toBe(true);
+    });
+
+    // A cell recycled under a resting pointer fires no mouseleave; without this its hover would
+    // survive and fetch the animation as soon as the cell rendered again.
+    it('stops pointer playback when the viewport scrolls, but keeps a cell keyboard focus holds', () => {
+      const viewport = fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
+        .nativeElement as HTMLElement;
+
+      fire(cell('AnimA, animiert'), 'mouseenter');
+      fire(viewport, 'scroll');
+      advance(1000);
+      expect(requestsAnimation('a')).toBe(false);
+
+      cell('AnimA, animiert').focus();
+      advance(200);
+      fire(viewport, 'scroll');
+      expect(requestsAnimation('a')).toBe(true);
+    });
+
+    // A click focuses the cell in Chrome and Firefox, so focus holds it once the pointer moves on.
+    it('keeps a clicked cell playing after the pointer leaves it, until focus leaves', () => {
+      const a = cell('AnimA, animiert');
+      fire(a, 'mouseenter');
+      a.focus();
+      a.click();
+      advance(200);
+      expect(requestsAnimation('a')).toBe(true);
+
+      fire(a, 'mouseleave');
+      expect(requestsAnimation('a')).toBe(true);
+      fire(grid(), 'mouseleave');
+      expect(requestsAnimation('a')).toBe(true);
+
+      a.blur();
+      fixture.detectChanges();
+      expect(requestsAnimation('a')).toBe(false);
+    });
+
+    it('lets the pointer take over from a focused cell and hands playback back when it leaves', () => {
+      cell('AnimA, animiert').focus();
+      advance(200);
+      expect(requestsAnimation('a')).toBe(true);
+
+      const b = cell('AnimB, animiert');
+      fire(b, 'mouseenter');
+      advance(200);
+      expect(requestsAnimation('a')).toBe(false);
+      expect(requestsAnimation('b')).toBe(true);
+
+      fire(b, 'mouseleave');
+      expect(requestsAnimation('b')).toBe(false);
+      advance(199);
+      expect(requestsAnimation('a')).toBe(false);
+      advance(1);
+      expect(requestsAnimation('a')).toBe(true);
+    });
+
+    it('hands playback back to the focused cell when the viewport scrolls', () => {
+      const viewport = fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
+        .nativeElement as HTMLElement;
+      cell('AnimA, animiert').focus();
+      fire(cell('AnimB, animiert'), 'mouseenter');
+      advance(200);
+      expect(requestsAnimation('b')).toBe(true);
+
+      fire(viewport, 'scroll');
+      advance(200);
+      expect(cells()).toHaveLength(3);
+      expect(requestsAnimation('b')).toBe(false);
+      expect(requestsAnimation('a')).toBe(true);
+    });
+
+    it('keeps playing the cell the pointer rests on when that cell loses focus', () => {
+      const a = cell('AnimA, animiert');
+      fire(a, 'mouseenter');
+      a.focus();
+      advance(200);
+
+      a.blur();
+      fixture.detectChanges();
+      advance(200);
+      expect(requestsAnimation('a')).toBe(true);
+    });
+
+    // A click focuses the cell in Chrome and Firefox, and virtualisation removes a focused cell
+    // without a blur. Neither may leave its key behind to play the cell when it renders again.
+    it('stops a clicked cell once it leaves the rendered rows, and does not play it when it renders again', async () => {
+      const many = Array.from({ length: 30 }, (_, i) =>
+        row({
+          sevenTvEmoteId: `r${i}`,
+          name: `Row${i}`,
+          defaultName: `Row${i}`,
+          imageUrl: `https://cdn.7tv.app/emote/r${i}/4x_static.webp`,
+        }),
+      );
+      const viewportDebug = fixture.debugElement.query(By.directive(CdkVirtualScrollViewport));
+      const viewport = viewportDebug.componentInstance as CdkVirtualScrollViewport;
+      let scrollOffset = 0;
+      vi.spyOn(viewport, 'measureScrollOffset').mockImplementation(() => scrollOffset);
+      // jsdom has no layout, so a scroll is the offset the viewport measures plus a scroll event.
+      // The CDK recomputes its range on a real animation frame, which fake timers do not reach, so
+      // checkViewportSize() runs that recomputation instead. It re-renders after a microtask.
+      const scrollTo = async (offset: number) => {
+        scrollOffset = offset;
+        fire(viewportDebug.nativeElement, 'scroll');
+        viewport.checkViewportSize();
+        await Promise.resolve();
+        advance(16);
+      };
+      const isRendered = () =>
+        cells().some((each) => each.getAttribute('aria-label') === 'Row0, animiert');
+
+      render(many);
+      advance(16);
+      const first = cell('Row0, animiert');
+      fire(first, 'mouseenter');
+      first.focus();
+      first.click();
+      fixture.detectChanges();
+      advance(200);
+      expect(requestsAnimation('r0')).toBe(true);
+
+      // Still rendered: focus keeps it playing through the scroll.
+      await scrollTo(40);
+      expect(isRendered()).toBe(true);
+      expect(requestsAnimation('r0')).toBe(true);
+
+      await scrollTo(2000);
+      expect(isRendered()).toBe(false);
+
+      await scrollTo(0);
+      expect(isRendered()).toBe(true);
+      advance(1000);
+      expect(requestsAnimation('r0')).toBe(false);
+    });
+
+    it('hides the cell still only once the hovered animation has painted', () => {
+      fire(cell('AnimA, animiert'), 'mouseenter');
+      advance(200);
+      expect(component['stillHidden'](animatedA)).toBe(false);
+
+      const overlay = [...host.querySelectorAll('img')].find((img) =>
+        /\/emote\/a\/\dx\.webp$/.test(img.getAttribute('src') ?? ''),
+      )!;
+      fire(overlay, 'load');
+      fixture.detectChanges();
+      expect(component['stillHidden'](animatedA)).toBe(true);
+
+      // Coming back to the cell has to earn the reveal again.
+      fire(cell('AnimB, animiert'), 'mouseenter');
+      fire(cell('AnimA, animiert'), 'mouseenter');
+      expect(component['stillHidden'](animatedA)).toBe(false);
+    });
   });
 
   it('names the active score in the cell label — an aria-label replaces the tile text', () => {

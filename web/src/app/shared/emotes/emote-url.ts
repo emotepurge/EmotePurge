@@ -23,3 +23,14 @@ export function animatedEmoteUrl(url: string): string {
     ? `${url.slice(0, -STILL_SUFFIX.length)}${ANIMATED_SUFFIX}`
     : url;
 }
+
+/**
+ * Whether a stored emote url belongs to an animated emote — the same `_static` marker
+ * `animatedEmoteUrl` upgrades, read as a flag. Lets a surface that draws many emotes at once mark
+ * the animated ones without an extra field on its DTO (the import grid, whose two sources both
+ * encode the flag into the url this way). An empty or unrecognised url counts as a still: marking
+ * something animated that then has no animation to play is the worse mistake.
+ */
+export function isAnimatedEmoteUrl(url: string): boolean {
+  return url.endsWith(STILL_SUFFIX);
+}

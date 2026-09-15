@@ -1,4 +1,5 @@
-import { ScrollingModule } from '@angular/cdk/scrolling';
+import { ListRange } from '@angular/cdk/collections';
+import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
 import {
   Component,
   ElementRef,
@@ -6,6 +7,7 @@ import {
   effect,
   inject,
   input,
+  linkedSignal,
   output,
   signal,
   viewChild,
@@ -17,6 +19,9 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { ListSelection } from '../selection/list-selection';
 import { EmoteSprite } from '../emotes/emote-sprite';
+import { EmoteSpriteAnimated } from '../emotes/emote-sprite-animated';
+import { isAnimatedEmoteUrl } from '../emotes/emote-url';
+import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 
 /** Sprite edge and gutter in px — same numbers as the usage atlas (`ATLAS_CELL_PX`/`ATLAS_GAP_PX` in
@@ -31,6 +36,8 @@ const GAP_PX = 4;
 const LABEL_PX = 16;
 const TILE_PX = CELL_PX + LABEL_PX;
 const ROW_PX = TILE_PX + GAP_PX;
+/** EmoteSprite's own default, restated so the cell's still can add one class to it. */
+const SPRITE_CLASS = 'h-full w-full object-contain p-1';
 
 /**
  * Which 7TV score field the grid is currently sorted by, or `'none'` for the set's own order.
@@ -129,7 +136,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
  */
 @Component({
   selector: 'app-foreign-emote-grid',
-  imports: [EmoteSprite, NoticeBanner, ScrollingModule, TranslocoPipe],
+  imports: [Button, EmoteSprite, EmoteSpriteAnimated, NoticeBanner, ScrollingModule, TranslocoPipe],
   template: `
     @if (truncated()) {
       <app-notice-banner variant="warning">
@@ -161,9 +168,17 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
             </select>
           </div>
         }
-        <span class="text-xs text-fg-muted">
-          {{ 'import.foreignChannel.selectedCount' | transloco: selectedCountParams() }}
-        </span>
+        <!-- Count and clear grouped tightly (§7). -->
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-fg-muted">
+            {{ 'import.foreignChannel.selectedCount' | transloco: selectedCountParams() }}
+          </span>
+          @if (selection.selectedKeys().length > 0) {
+            <button type="button" appButton="neutral" (click)="clearSelection()">
+              {{ 'import.clearSelection' | transloco }}
+            </button>
+          }
+        </div>
       </div>
 
       <!-- The hint belongs to the TILES, not to the sort row: it explains the number printed on
@@ -180,10 +195,13 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
           </p>
         }
 
+        <!-- tabindex -1: where focus goes when the clear button unmounts itself. -->
         <div
           #gridContainer
           role="group"
+          tabindex="-1"
           [attr.aria-label]="'import.foreignChannel.grid.ariaLabel' | transloco"
+          (mouseleave)="onGridLeave()"
         >
           <cdk-virtual-scroll-viewport
             [itemSize]="rowPx"
@@ -206,11 +224,42 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
                     [title]="cellLabel(emote)"
                     (click)="onCellClick(emote, $event)"
                     (mousedown)="$event.shiftKey && $event.preventDefault()"
+                    (mouseenter)="onCellEnter(emote)"
+                    (focus)="onCellFocus(emote)"
+                    (mouseleave)="onCellLeave(emote)"
+                    (blur)="onCellBlur(emote)"
                   >
                     <span
                       class="app-sprite-cell relative block h-16 w-16 transition-shadow hover:inset-ring-1 hover:inset-ring-border-strong"
                     >
-                      <app-emote-sprite [url]="emote.imageUrl" [size]="cellPx" />
+                      <!-- The still stays mounted under the animation and hides once that has painted. -->
+                      <app-emote-sprite
+                        [url]="emote.imageUrl"
+                        [size]="cellPx"
+                        [spriteClass]="stillHidden(emote) ? hiddenSpriteClass : spriteClass"
+                      />
+                      @if (playsAnimation(emote)) {
+                        <span class="absolute inset-0">
+                          <app-emote-sprite-animated
+                            [url]="emote.imageUrl"
+                            [size]="cellPx"
+                            (animationShown)="revealedKey.set(emote.sevenTvEmoteId)"
+                          />
+                        </span>
+                      }
+                      @if (isAnimated(emote)) {
+                        <!-- Decorative: the accessible name already says animated. -->
+                        <span
+                          class="pointer-events-none absolute top-0 right-0 flex h-3 w-3 items-center justify-center"
+                          [style.background-color]="'var(--ep-sprite-scrim)'"
+                          [style.color]="'var(--ep-sprite-scrim-fg)'"
+                          aria-hidden="true"
+                        >
+                          <svg class="h-2 w-2" viewBox="0 0 8 8" aria-hidden="true">
+                            <path d="M2 1v6l5-3z" fill="currentColor" />
+                          </svg>
+                        </span>
+                      }
                       @if (effectiveSortMode() !== 'none') {
                         <span
                           class="absolute bottom-0 left-0 px-1 font-mono text-[9px] leading-[1.4] font-medium"
@@ -285,7 +334,10 @@ export class ForeignEmoteGrid {
   private readonly transloco = inject(TranslocoService);
 
   private readonly gridContainerRef = viewChild<ElementRef<HTMLElement>>('gridContainer');
+  private readonly viewport = viewChild(CdkVirtualScrollViewport);
   private readonly containerWidth = signal(0);
+  /** The rows the viewport currently renders, mirrored from `renderedRangeStream`. */
+  private readonly renderedRange = signal<ListRange>({ start: 0, end: 0 });
 
   /** Never pre-selected (spec P5'/AK16) — see {@link ForeignEmoteSortMode}. Only meaningful without
    *  a `forcedSortMode`; see {@link effectiveSortMode}. */
@@ -380,6 +432,26 @@ export class ForeignEmoteGrid {
 
   protected readonly cellPx = CELL_PX;
   protected readonly rowPx = ROW_PX;
+  protected readonly spriteClass = SPRITE_CLASS;
+  protected readonly hiddenSpriteClass = `${SPRITE_CLASS} invisible`;
+
+  /** The cell the pointer rests on and the focused cell, by 7TV id, each ended only by its own events. */
+  private readonly pointerKey = signal<string | null>(null);
+  private readonly focusKey = signal<string | null>(null);
+  /** The one cell that may play, pointer first. One per grid because `EmoteSpriteAnimated` starts its
+   *  dwell on mount, in every cell it is rendered in. */
+  protected readonly playingKey = computed(() => this.pointerKey() ?? this.focusKey());
+
+  /**
+   * Which playing cell's animation has painted, so its still can hide (see `stillHidden`).
+   * Reset whenever the playing key changes, including the hand-back from pointer to focus — the same
+   * race `EmoteSpriteAnimated.revealedAnimatedUrl` guards against: coming back to a cell must not hide
+   * its still before the new animation has painted.
+   */
+  protected readonly revealedKey = linkedSignal<string | null, string | null>({
+    source: this.playingKey,
+    computation: () => null,
+  });
 
   constructor() {
     // Same pattern as `usage-stats-page.ts`'s sheet-width effect: the column count follows the
@@ -397,6 +469,32 @@ export class ForeignEmoteGrid {
       observer.observe(element);
       onCleanup(() => observer.disconnect());
     });
+
+    effect((onCleanup) => {
+      const viewport = this.viewport();
+      if (!viewport) {
+        return;
+      }
+      const subscription = viewport.elementScrolled().subscribe(() => this.onViewportScroll());
+      this.renderedRange.set(viewport.getRenderedRange());
+      subscription.add(
+        viewport.renderedRangeStream.subscribe((range) => this.renderedRange.set(range)),
+      );
+      onCleanup(() => subscription.unsubscribe());
+    });
+
+    // Either key outlives its cell otherwise: virtualisation removes a focused cell without a blur,
+    // and a click focuses the cell in Chrome and Firefox. The cell would then play again when it
+    // renders with no hover and no focus on it. Checked against the rendered range, not the scroll
+    // event, because the range can change after the last scroll event has been handled.
+    for (const key of [this.pointerKey, this.focusKey]) {
+      effect(() => {
+        const value = key();
+        if (value !== null && !this.isRendered(value)) {
+          key.set(null);
+        }
+      });
+    }
   }
 
   protected onSortChange(event: Event): void {
@@ -406,6 +504,58 @@ export class ForeignEmoteGrid {
   protected onCellClick(emote: ForeignEmoteRow, event: MouseEvent): void {
     this.selection.onRowClick(emote, event);
     this.selectionChange.emit(this.selection.selectedItems());
+  }
+
+  /** Must emit: host steps see the selection only through selectionChange. */
+  protected clearSelection(): void {
+    // The clicked button unmounts with the selection; focus must not fall to <body> (WCAG 2.4.3).
+    this.gridContainerRef()?.nativeElement.focus({ preventScroll: true });
+    this.selection.clear();
+    this.selectionChange.emit([]);
+  }
+
+  protected onCellEnter(emote: ForeignEmoteRow): void {
+    this.pointerKey.set(emote.sevenTvEmoteId);
+  }
+
+  /** Only if the pointer key is still this cell's: events from another cell must not end it. */
+  protected onCellLeave(emote: ForeignEmoteRow): void {
+    if (this.pointerKey() === emote.sevenTvEmoteId) {
+      this.pointerKey.set(null);
+    }
+  }
+
+  protected onCellFocus(emote: ForeignEmoteRow): void {
+    this.focusKey.set(emote.sevenTvEmoteId);
+  }
+
+  /** Ends focus playback only: a clicked cell keeps its pointer key until the pointer leaves. */
+  protected onCellBlur(emote: ForeignEmoteRow): void {
+    if (this.focusKey() === emote.sevenTvEmoteId) {
+      this.focusKey.set(null);
+    }
+  }
+
+  /** Hands playback back to the focused cell, if any. */
+  protected onGridLeave(): void {
+    this.pointerKey.set(null);
+  }
+
+  /** Both import sources encode 7TV's animated flag into the url (`4x_static.webp`), so the marker
+   *  needs no field of its own. */
+  protected isAnimated(emote: ForeignEmoteRow): boolean {
+    return isAnimatedEmoteUrl(emote.imageUrl);
+  }
+
+  /** Whether this cell mounts the animated sprite: the playing one, and only if it has an animation.
+   *  A hovered still mounts nothing and requests nothing. */
+  protected playsAnimation(emote: ForeignEmoteRow): boolean {
+    return this.playingKey() === emote.sevenTvEmoteId && this.isAnimated(emote);
+  }
+
+  /** The cell's own still hides only once its animation has painted over it. */
+  protected stillHidden(emote: ForeignEmoteRow): boolean {
+    return this.playsAnimation(emote) && this.revealedKey() === emote.sevenTvEmoteId;
   }
 
   protected trackRowIndex(index: number): number {
@@ -425,10 +575,16 @@ export class ForeignEmoteGrid {
    * number its meaning without inventing a unit for it. The number itself is the same compact text
    * the tile shows; only the *missing* case differs, because the tile's dash is a typographic
    * placeholder and reads as nothing at all when spoken.
+   *
+   * "Animated" sits between the names and the score, for the same reason: the play marker in the
+   * corner is `aria-hidden`, so this is the only place a screen reader learns it.
    */
   protected cellLabel(emote: ForeignEmoteRow): string {
-    const names =
+    const aliased =
       emote.name === emote.defaultName ? emote.name : `${emote.name} (${emote.defaultName})`;
+    const names = this.isAnimated(emote)
+      ? `${aliased}, ${this.transloco.translate('import.animated')}`
+      : aliased;
     const active = this.activeSortOption();
     if (active === null) {
       return names;
@@ -445,6 +601,27 @@ export class ForeignEmoteGrid {
     return value >= 1000
       ? `${(value / 1000).toLocaleString(locale, { maximumFractionDigits: 1 })}k`
       : value.toLocaleString(locale);
+  }
+
+  /**
+   * A cell recycled under a resting pointer fires no mouseleave, so a scroll clears the pointer key.
+   * The focus key survives it: Tab scrolls a partly hidden cell into view, and that cell should play.
+   * Focus leaving the cell ends it through blur, the cell leaving the rendered range through the
+   * range check in the constructor.
+   */
+  private onViewportScroll(): void {
+    this.pointerKey.set(null);
+  }
+
+  /** Whether the cell for this key is among the rows the viewport renders. */
+  private isRendered(key: string): boolean {
+    const index = this.sortedEmotes().findIndex((emote) => emote.sevenTvEmoteId === key);
+    if (index < 0) {
+      return false;
+    }
+    const rowIndex = Math.floor(index / this.columns());
+    const { start, end } = this.renderedRange();
+    return rowIndex >= start && rowIndex < end;
   }
 
   /** The score as it is announced: the tile's own text, except that the typographic dash it uses
