@@ -6,7 +6,7 @@ Repo: sensitron/EmotePurge
 Status: APPROVED (2026-09-05, Betreiber)
 Review: 3 Runden adversarial (Opus-Subagent, ohne Gesprächskontext); 24 + 14 + 10 Befunde eingearbeitet, Endnote 8/10; die 10 Befunde der letzten Runde wurden ohne erneute Prüfung eingearbeitet.
 Mode: Startup
-Issue: https://github.com/sensitron/EmotePurge/issues/38
+Issue: https://github.com/emotepurge/EmotePurge/issues/38
 
 ## Problem Statement
 

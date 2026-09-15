@@ -1,6 +1,6 @@
 # Plan #70 — Run-Engine: Zeilen-Key, `abortOn`-Hook, Run-Arbiter
 
-Umsetzungsplan für Issue [#70](https://github.com/sensitron/EmotePurge/issues/70) (Kind K1 von #38).
+Umsetzungsplan für Issue [#70](https://github.com/emotepurge/EmotePurge/issues/70) (Kind K1 von #38).
 Erstellt 2026-09-05 auf `feat/emote-import-38` gegen den Code-Stand `06b474d`. Quellen: Issue-Text,
 `docs/designs/Emote-Import-38-2026-09-05.md` (Abschnitte „Constraints" und „Ausführung"),
 `CLAUDE.md`, `web/.claude/CLAUDE.md`, der betroffene Code.

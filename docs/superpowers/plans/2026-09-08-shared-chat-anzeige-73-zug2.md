@@ -1,6 +1,6 @@
 # Shared Chat, Zug 2: die Anzeige — Implementierungsplan
 
-**Datum:** 2026-09-08 · **Issue:** [#73](https://github.com/sensitron/EmotePurge/issues/73) ·
+**Datum:** 2026-09-08 · **Issue:** [#73](https://github.com/emotepurge/EmotePurge/issues/73) ·
 **Vorgänger:** Zug 1 (PR #96, gemergt und auf Prod) ·
 **Spec:** [`docs/superpowers/specs/2026-09-06-shared-chat-zaehlung-73-design.md`](../specs/2026-09-06-shared-chat-zaehlung-73-design.md) ·
 **Plan Zug 1:** [`docs/superpowers/plans/2026-09-06-shared-chat-zaehlung-73.md`](2026-09-06-shared-chat-zaehlung-73.md) ·
@@ -17,7 +17,7 @@ geteiltem Chat nicht mehr mitzählt. Beides gehört in dasselbe Auslieferungspak
 ohne die Erklärung wäre genau der unerklärte Sturz, den D5 verhindert.
 
 Zug 2 ist laut Spec D1 **taktneutral**: Er ändert die Zählung nicht, berührt den Harness-Rechenkern
-nicht und setzt die 30-Tage-Uhr aus [#69](https://github.com/sensitron/EmotePurge/issues/69) nicht
+nicht und setzt die 30-Tage-Uhr aus [#69](https://github.com/emotepurge/EmotePurge/issues/69) nicht
 zurück. Die Freeze-Liste aus Zug 1 gilt unverändert weiter.
 
 ## Entscheidungen dieses Plans
