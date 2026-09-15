@@ -30,7 +30,7 @@ import {
 } from '../support/mocks';
 
 // ---------------------------------------------------------------------------
-// UI/UX-audit harness: screenshots every route in 3 viewports, both locales
+// UI/UX-audit harness: screenshots every route in 5 viewports, both locales
 // and edge states (empty/error/long names), plus JSON metrics on horizontal
 // overflow and touch-target sizes. Not part of the regular e2e suite — run on
 // demand via playwright.audit.config.ts. Output: web/.audit-out/ (gitignored).
@@ -46,6 +46,21 @@ const VIEWPORTS = [
   // a state no phone ever produces -- 360px with a mouse. Everything from `tablet` up keeps a fine
   // pointer on purpose: those are real trackpad/mouse widths, not just "not mobile".
   { name: 'mobile', width: 360, height: 800, pointerCoarse: true },
+  // `narrow` closes a real gap, not a hypothetical one: a fine pointer below 768px is a state real
+  // users produce every day -- a desktop window at 200% browser zoom, a window snapped to half the
+  // screen, a laptop with DevTools docked to one side -- none of which switch the OS pointer to
+  // touch. Before this entry, every fine-pointer-only surface (`@if (!isCoarse() ...)`, gated by
+  // PointerModeService the same way the mobile-vs-coarse fix above is) was measured only at 768px
+  // and up, so nothing here ever caught an overflow anywhere below that width. That is exactly the
+  // gap #91 fell into: the header button group in `usage-stats-grid` overflowed at a measured 503px
+  // window, a plain desktop browser at less than half a 1080p screen, and the harness had no
+  // viewport in that range to catch it. 480 sits below Tailwind's `sm` breakpoint (640), so this
+  // measures the unprefixed, mobile-first layout under a mouse -- the same layout `mobile` sees,
+  // minus the touch affordances -- rather than re-measuring `sm:` rules `tablet` already covers.
+  // 480 is only a single sample of that whole sub-768px range, though: an overflow that starts
+  // somewhere between 480 and 768 still passes here unnoticed. This viewport narrows the blind
+  // spot, it does not close it.
+  { name: 'narrow', width: 480, height: 800, pointerCoarse: false },
   { name: 'tablet', width: 768, height: 1024, pointerCoarse: false },
   // Two desktop cases, because one cannot cover both ends of the lg range.
   // `desktop-narrow` is lg at its tightest: 1024 is exactly Tailwind's lg breakpoint, so both atlas
@@ -1187,6 +1202,13 @@ async function collectContrastViolations(page: Page) {
  * `collectMetrics()` in the test body -- see that call site for why the first check alone is not
  * enough. `hint` is appended to the failure message so each call site can name what it is actually
  * ruling out, instead of both failures reading as a generic "expected true got false".
+ *
+ * Asserts both `(pointer: coarse)` and `(pointer: fine)`, not just the one matching `vp.pointerCoarse`
+ * -- a known Chromium behaviour leaves pointer matching neither after `Emulation.setTouchEmulationEnabled({enabled:
+ * false})` runs on a context that previously had touch emulation on (documented above
+ * `emulateViewportMedia()`), and a single `coarse` assertion cannot tell that state apart from a
+ * genuine fine-pointer emulation: both make `matches(pointer: coarse)` false. Checking `fine` too
+ * closes that hole for every fine-pointer viewport, `narrow` included.
  */
 async function assertEmulatedState(
   page: Page,
@@ -1196,6 +1218,7 @@ async function assertEmulatedState(
 ): Promise<void> {
   const actual = await page.evaluate(() => ({
     coarse: matchMedia('(pointer: coarse)').matches,
+    fine: matchMedia('(pointer: fine)').matches,
     dark: matchMedia('(prefers-color-scheme: dark)').matches,
   }));
   expect(
@@ -1203,6 +1226,13 @@ async function assertEmulatedState(
     `pointer emulation is not in effect for viewport "${vp.name}": expected ` +
       `matchMedia('(pointer: coarse)').matches === ${vp.pointerCoarse}, got ${actual.coarse}. ${hint}`,
   ).toBe(vp.pointerCoarse);
+  expect(
+    actual.fine,
+    `pointer emulation is not in effect for viewport "${vp.name}": expected ` +
+      `matchMedia('(pointer: fine)').matches === ${!vp.pointerCoarse}, got ${actual.fine} (neither ` +
+      `coarse nor fine matching means touch emulation was toggled off after being on -- see the ` +
+      `Chromium caveat documented above emulateViewportMedia()). ${hint}`,
+  ).toBe(!vp.pointerCoarse);
   expect(
     actual.dark,
     `colour-scheme emulation is not in effect for viewport "${vp.name}" [${theme}]: expected ` +
@@ -1284,8 +1314,15 @@ for (const theme of THEMES) {
     for (const sc of SCENARIOS) {
       test(`${sc.slug} @ ${vp.name} [${theme}]`, async ({ page }, testInfo) => {
         const locale = testInfo.project.name;
-        // English pass only in mobile (worst-case overflow) + desktop to keep the matrix sane.
-        test.skip(locale === 'en' && vp.name === 'tablet', 'en only in mobile+desktop');
+        // English pass only in mobile (worst-case overflow) + both desktop widths, to keep the
+        // matrix sane. That is: this skips exactly `tablet` and `narrow`, not "everything but
+        // mobile+desktop" -- `desktop-narrow` was never skipped and still runs in en. `tablet` and
+        // `narrow` stay de-only for the same reason: German strings are the longer ones, so de is
+        // the stricter overflow test at the widths this skip removes from en.
+        test.skip(
+          locale === 'en' && (vp.name === 'tablet' || vp.name === 'narrow'),
+          'en only in mobile+desktop-narrow+desktop',
+        );
         test.skip(theme === 'light' && vp.name !== 'desktop', 'light only at the widest viewport');
         test.skip(
           Boolean(sc.requiresFinePointer) && vp.pointerCoarse,

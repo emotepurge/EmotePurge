@@ -10,6 +10,57 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — UI audit harness: a fifth viewport (480 px, fine pointer) closes the gap below `tablet` (#111)
+
+**Betrifft:** `web/e2e/audit/ui-audit.audit.ts` · `docs/UI-Designsprache.md`
+
+**Why.** #91's PR #110 shipped a harness run that reported 426 byte-identical metric files and zero
+regressions, yet an independent second opinion (Codex Sol) reviewing the same diff found two overflow
+P2 findings — one of them the header button group in `usage-stats-grid`. A later re-measurement
+(real pixels, Archivo woff2, 14 px, `px-3`, `nowrap`) pinned that overflow to a measured 503 px
+browser window; that number is the author's own follow-up measurement, not something Codex's review
+itself reported. The harness could not have caught either finding: its narrowest fine-pointer
+viewport was `tablet` at 768 px, and every surface
+gated on `!isCoarse()` (`core/pointer/pointer-mode.service.ts`, the 7TV mass-delete write paths) was
+therefore never measured with a mouse below that width. A green run only ever meant "no overflow at
+768/1024/1536", not "no overflow below 768" — for fine-pointer-only surfaces it meant nothing at all
+under 768 px, because they render on no viewport that narrow. A fine pointer under 768 px is not a
+hypothetical state: a desktop window at 200 % zoom, a window snapped to half a screen, DevTools docked
+to one side all produce it without switching the OS pointer to touch.
+
+**What changed.** `VIEWPORTS` in `web/e2e/audit/ui-audit.audit.ts` gains `narrow` (480×800,
+`pointerCoarse: false`), between `mobile` and `tablet`. 480 sits below Tailwind's `sm` breakpoint
+(640), so it measures the unprefixed, mobile-first layout under a mouse rather than re-measuring
+`sm:` rules `tablet` already covers.
+
+`narrow` runs for **every** scenario, not only ones flagged `requiresFinePointer`: the motivating
+regression sat in a page header (`usage-stats-grid`) that carries no such flag, so restricting the new
+viewport to flagged scenarios would have reproduced the exact blind spot this entry closes.
+
+`narrow` runs `de`-only and `dark`-only, the same trade the harness already makes for `tablet` and for
+`light`: German strings are the longer ones, so `de` is the stricter overflow test, and layout breaks
+are theme-independent while contrast is checked in every state regardless via the axe gate. That
+keeps `narrow` to one additional state per scenario — nine states per scenario before, ten now, an
+11 % increase — not a full extra viewport's worth.
+
+`assertEmulatedState()` is strengthened to also assert `matchMedia('(pointer: fine)').matches`, not
+only `(pointer: coarse)`. A known Chromium behaviour leaves a context matching *neither* query after
+`Emulation.setTouchEmulationEnabled({enabled: false})` runs on a context that previously had touch
+emulation on — a single-sided `coarse` assertion cannot tell that broken state apart from a genuine
+fine-pointer emulation, since both make `(pointer: coarse)` false. Both call sites (right after the
+CDP calls, and again immediately before `collectMetrics()`) now check both queries.
+
+`docs/UI-Designsprache.md` §12 is updated to match: the viewport list, the "dark covers all N
+viewports" line, the pointer-emulation sentence's viewport count, and a new bullet for `narrow`
+analogous to the existing "Two desktop cases" bullet. `CLAUDE.md` is unchanged — nothing here alters a
+command, a convention, or a Fertig-Gate.
+
+**Expected fallout.** The new viewport is expected to surface existing overflow/touch-target
+violations at widths nothing has looked at before now; these get triaged individually as findings,
+not treated as a reason to weaken the gate.
+
+---
+
 ### 2026-09-15 — `duplicate-names` retired: the collision banner moves to the usage-stats page, riding along on `active-set` (#45)
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` ·
