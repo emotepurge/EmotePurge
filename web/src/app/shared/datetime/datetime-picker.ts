@@ -114,6 +114,12 @@ const WEEKDAY_LABEL_KEYS = [
               <span>{{ labelKey | transloco }}</span>
             }
           </div>
+          <!-- aria-current="date" marks today only, its defined ARIA meaning. No state attribute
+               for the selected day: aria-selected is only valid on grid/option roles (out of scope
+               here), aria-pressed implies a toggle and clicking the selected day again does not
+               un-select it. The trigger shows the chosen value, but does not itself convey which
+               grid cell is selected — that needs aria-selected on gridcells, i.e. the grid-role
+               rebuild this component does not yet have. -->
           <div class="grid grid-cols-7 gap-1">
             @for (day of calendarDays(); track day.date.getTime()) {
               <button
@@ -121,6 +127,8 @@ const WEEKDAY_LABEL_KEYS = [
                 [disabled]="day.isDisabled"
                 class="rounded p-1 text-xs transition"
                 [class]="dayClass(day)"
+                [attr.aria-label]="dayAriaLabel(day)"
+                [attr.aria-current]="day.isToday ? 'date' : null"
                 (click)="selectDay(day)"
               >
                 {{ day.dayOfMonth }}
@@ -185,6 +193,14 @@ export class DateTimePicker {
       month: 'long',
       year: 'numeric',
     }),
+  );
+
+  // Full weekday + day + month + year so a screen reader hears an unambiguous date, not just the
+  // bare visible number — the 42-cell grid repeats day numbers across neighbouring months. Kept as
+  // a computed `Intl.DateTimeFormat` (rather than formatting inline per day) so it re-derives once
+  // per language switch instead of once per grid cell.
+  protected readonly dayLabelFormatter = computed(
+    () => new Intl.DateTimeFormat(toLocale(this.languageService.lang()), { dateStyle: 'full' }),
   );
 
   protected readonly calendarDays = computed<CalendarDay[]>(() => {
@@ -269,6 +285,10 @@ export class DateTimePicker {
 
   protected clear(): void {
     this.value.set('');
+  }
+
+  protected dayAriaLabel(day: CalendarDay): string {
+    return this.dayLabelFormatter().format(day.date);
   }
 
   /**
