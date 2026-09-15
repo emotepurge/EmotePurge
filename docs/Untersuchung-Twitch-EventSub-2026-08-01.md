@@ -39,6 +39,18 @@ ersatzlos. Das erzwingt aber Webhook- oder Conduit-Transport (WebSocket ist per 
 User-Token beschränkt), einen Client-Credentials-Flow, den es im Repo an keiner Stelle gibt, und
 eine OAuth-Zustimmung pro Kanal.
 
+**Korrektur 2026-09-15 (#125):** Die ersten beiden Hürden aus diesem Absatz sind überholt. Der
+Client-Credentials-Flow existiert seit dem 2026-08-03 (`2faba66`: `TwitchAuthClient.cs`,
+`TwitchAppTokenProvider.cs`), der Worker nutzt ihn bereits (`TwitchLivePollWorker.cs`,
+`TwitchConnectionWatchdog.cs`) — der hier als teuerster Einzelposten gebuchte Blocker ist erledigt
+(s. Korrektur zu Abschnitt 4.3). Und „Conduit" bedeutet nicht zwingend Webhook: ein Conduit kann
+seine Shards auch per WebSocket betreiben (`Get Conduit Shards` liefert `"method": "websocket"` mit
+eigener `session_id`), dann entfällt der öffentliche HTTPS-Endpunkt ganz (s. Korrektur zu
+Abschnitt 4.4). Pfad 2 kostet damit weniger, als dieser Absatz nahelegt. Was unverändert bleibt:
+die **Zustimmung pro Kanal** — die eigentliche Produktfrage aus Abschnitt 5.3 und 7 — sowie zwei
+in #125 offen gelassene Punkte (Prüfzeitpunkt von `user:bot`, `session_reconnect` auf
+Conduit-Shards). Die Empfehlung in Abschnitt 7 ändert sich dadurch nicht.
+
 **Was diese Untersuchung trotzdem verändert:** Der Eintrag „Bekannte offene Grenzen" in
 [CLAUDE.md](../CLAUDE.md) nennt nur das Rate-Limit (20 JOINs/10 s). Das **Bestandslimit von 100
 gleichzeitig gejointen Kanälen pro Account** fehlt dort — es ist die härtere Decke, und die
@@ -190,6 +202,13 @@ Daraus folgen **genau zwei** nutzbare Kombinationen. **Belegt.**
 | Join-Rate-Limit | 20 / 10 s (wie IRC) | entfällt |
 | Neue Infrastruktur | keine | öffentlicher HTTPS-Endpunkt, HMAC, Dedup, Client-Credentials-Flow |
 
+**Korrektur 2026-09-15 (#125):** Die Zeilen „Transport" und „Neue Infrastruktur" für Pfad 2 gelten
+nur für den Webhook-Zweig. Ein Conduit braucht dagegen keinen öffentlichen HTTPS-Endpunkt, wenn
+seine Shards per WebSocket statt per Webhook laufen (`Get Conduit Shards` liefert dokumentiert
+`"method": "websocket"` mit eigener `session_id`, s. Abschnitt 3.3) — die HMAC-Prüfung eingehender
+Webhooks entfällt dann ebenso. Der Client-Credentials-Flow, den beide Transporte zur Verwaltung brauchen, existiert
+seit dem 2026-08-03 (s. Korrektur zu Abschnitt 4.3). Details: #125.
+
 **Anonymer Lesepfad: existiert nicht.** Belege: die `condition` verlangt zwingend `user_id`; es gibt
 keinen dokumentierten Token-Typ ohne Nutzerbezug für diesen Subscription-Type. **Belegt.**
 
@@ -211,7 +230,8 @@ be from the broadcaster who owns the chat room." **Belegt.**
 App-Token-Kontext. Zwei dokumentierte Unterschiede: beide befreien vom Concurrent-Join-Limit; für
 die Einordnung als Chat Bot in der Chatter-Liste genügt Mod-Status **nicht**. Mod-Status ersetzt
 also nur die `channel:bot`-Komponente — `user:bot` + `user:read:chat` vom Bot-Account braucht es
-weiterhin, und der App-Token-Pfad braucht weiterhin Webhook/Conduit. **Belegt.**
+weiterhin, und der App-Token-Pfad braucht weiterhin Webhook/Conduit — Letzteres nicht zwingend mit
+öffentlichem Endpunkt, s. Korrektur 2026-09-15 (#125) zur Tabelle oben. **Belegt.**
 
 ### 3.3 Transport-Details
 
@@ -266,6 +286,15 @@ allows developers to recover from full outages **without needing to recreate eve
 Das ist genau die Klasse von Problem, die uns aus dem Worker-Reconnect-Bug und dem
 7TV-EventAPI-Transport bekannt ist: Bei reinem WebSocket disabled jeder Abbruch *alle*
 Subscriptions.
+
+**Korrektur 2026-09-15 (#125):** Dieses Dokument hat Conduits an mehreren Stellen implizit als
+Webhook-Sache behandelt (s. Tabelle in 3.2, Abschnitt 4.4). Das ist zu eng: `Get Conduit Shards`
+gibt pro Shard ein `transport`-Objekt zurück, dessen `"method"` auch `"websocket"` sein kann, mit
+eigener `session_id` wie bei einer normalen WebSocket-Session. Ein Conduit erzwingt also **keinen**
+öffentlichen HTTPS-Endpunkt — nur der Webhook-*Zweig* eines Conduits tut das. Die drei
+nginx-Hürden aus 4.4 und die HMAC-Prüfung entfallen damit für den WebSocket-Zweig; ob Nachrichten
+dort dedupliziert werden müssen, ist davon nicht berührt. Unbelegt bleibt laut #125, ob Twitch `session_reconnect` auch für Conduit-Shards
+ankündigt — auf der Conduit-Doku-Seite kommt der Begriff nicht vor.
 
 ### 3.4 Skalierung — die Rechnung
 
@@ -426,12 +455,17 @@ Abschnitt 3.4 und 3.5.
   die EventSub-Payload als reine `record`s in `Core/Twitch/`.
 - **Infrastructure:** Erweiterung von `ITwitchHelixClient` um `CreateEventSubSubscriptionAsync` /
   `DeleteEventSubSubscriptionAsync` — passt exakt ins bestehende Muster (typisierter `HttpClient`,
-  `Client-Id`-Header schon gesetzt). **Neu und heute nirgends vorhanden: ein
+  `Client-Id`-Header schon gesetzt). ~~**Neu und heute nirgends vorhanden: ein
   Client-Credentials-Flow.** Grep über `src/` nach `client_credentials`/`AppAccessToken` liefert
-  null Treffer; die einzigen Grant-Types sind `authorization_code` und `refresh_token`. Das ist
+  null Treffer; die einzigen Grant-Types sind `authorization_code` und `refresh_token`.~~ Das ist
   bereits einmal aufgeschlagen: Am 2026-07-27 wurde eine Helix-„Get Streams"-Vorabprüfung im
   Watchdog u. a. genau deshalb verworfen ([DECISIONS.md](DECISIONS.md), Eintrag
   „`TwitchConnectionWatchdog`: Cooldown…").
+  **Korrektur 2026-09-15 (#125):** Der durchgestrichene Satz stimmt seit dem 2026-08-03 nicht mehr.
+  `ITwitchAuthClient.GetAppAccessTokenAsync` (`2faba66`) implementiert `grant_type=client_credentials`
+  in `TwitchAuthClient.cs`, gecacht per Single-Flight in `TwitchAppTokenProvider.cs`; der Worker
+  ruft ihn bereits in `TwitchLivePollWorker.cs` und `TwitchConnectionWatchdog.cs` auf. Der 2026-07-27
+  verworfene Blocker existiert also nicht mehr — dieser Punkt spricht nicht länger gegen Pfad 2.
 - **Worker:** neuer Hosted Service `TwitchEventSubWorker` nach dem Vorbild von `SevenTvEventWorker`,
   plus `TwitchEventSubClient` / `TwitchEventSubRegistry` / `TwitchEventSubBackoffPolicy` unter
   `Worker/Twitch/`. Die reinen Policies bekommen Tests im container-freien
@@ -468,6 +502,11 @@ gekostet hat.
 
 ### 4.4 Webhook-Topologie gegen unsere nginx-Konfiguration
 
+**Korrektur 2026-09-15 (#125):** Dieser ganze Abschnitt gilt nur, wenn Conduit-Shards per Webhook
+laufen. Sie können stattdessen per WebSocket laufen (s. Korrektur in 3.3) — dann entfällt jede
+nginx-Berührung, weil es keinen eingehenden Endpunkt gibt. Als Belastbarkeitsprobe für den
+Webhook-Zweig bleibt der Abschnitt trotzdem gültig.
+
 Aus der damaligen `VPS-Reverse-Proxy.md` (inzwischen nach `infra-docs` ausgelagert, s. DECISIONS 2026-09-10): **genau eine** `location /` →
 `proxy_pass http://127.0.0.1:4300/`. Ein `POST /api/twitch/eventsub/webhook` wäre also **ohne jede
 nginx-Änderung erreichbar**, TLS terminiert, `X-Forwarded-*` gesetzt. Das eingehende
@@ -489,7 +528,10 @@ Drei konkrete Stolpersteine, alle belegbar:
 3. Die HMAC-Prüfung braucht den **rohen** Body ⇒ `EnableBuffering()` vor dem Model-Binding. Eine
    App-seitige Sonderbehandlung, die es im Projekt bisher nirgends gibt.
 
-**Der eigentliche Blocker ist aber nicht nginx, sondern der Client-Credentials-Flow aus 4.3.**
+~~**Der eigentliche Blocker ist aber nicht nginx, sondern der Client-Credentials-Flow aus 4.3.**~~
+**Korrektur 2026-09-15 (#125):** Der Client-Credentials-Flow existiert inzwischen (s. Korrektur zu
+4.3), und der WebSocket-Zweig eines Conduits braucht diesen ganzen Abschnitt gar nicht erst. Ein
+Für den *Webhook*-Zweig bleiben die drei Stolpersteine oben unverändert bestehen.
 
 ---
 
@@ -505,7 +547,7 @@ Drei konkrete Stolpersteine, alle belegbar:
 | **Sauberere Payload** | Geparste `fragments` statt Positions-Offsets. Für uns **irrelevant** (nur `text` wird gebraucht). |
 | **Weg von TwitchLib.Client** | Real: die Reconnect-Pathologie der Library hat uns zwei Produktionsausfälle gekostet (2026-07-26 45+ min, 2026-07-27) und `ReconnectPolicy` existiert nur, um sie zu behandeln. |
 | **Skalierung** | **Nur auf Pfad 2** (App-Token + `channel:bot`). Auf Pfad 1: kein Gewinn, s. 3.4. |
-| **Conduit-Resilienz** | Real und attraktiv: Subscriptions überleben einen Totalausfall bis 72 h. Aber nur auf Pfad 2. |
+| **Conduit-Resilienz** | Real und attraktiv: Subscriptions überleben einen Totalausfall bis 72 h. Aber nur auf Pfad 2. **Korrektur 2026-09-15 (#125):** günstiger als unten in 5.2 dargestellt — der Webhook-Aufwand aus 4.4 entfällt beim WebSocket-Zweig eines Conduits vollständig, s. Korrektur zu 3.3. |
 
 ### 5.2 Risiken und Kosten
 
@@ -514,7 +556,7 @@ Drei konkrete Stolpersteine, alle belegbar:
 | **Auth-Zwang** | **Der Killer.** Der anonyme Betrieb endet definitiv. Es gibt keinen Zwischenweg. |
 | **Bot-Account-Betrieb** | Neuer Dauerbetriebs-Gegenstand: Account, Token, Refresh, Ausfallmodus „Token revoked" ⇒ *alle* Channels tot. Heute gibt es keinen einzigen Ausfallmodus dieser Art. |
 | **Token im Worker** | Der Worker hat heute **keine** Twitch-Konfiguration. Es bräuchte Speicherform, Verschlüsselungsschlüssel und Refresh — die vorhandene Mechanik hängt an `User`-Entitäten in der Api. |
-| **Neuer Client-Credentials-Flow** (nur Pfad 2) | Existiert im Repo nirgends; wurde 2026-07-27 schon einmal als zu teuer verworfen. |
+| **Neuer Client-Credentials-Flow** (nur Pfad 2) | ~~Existiert im Repo nirgends; wurde 2026-07-27 schon einmal als zu teuer verworfen.~~ **Korrektur 2026-09-15 (#125):** existiert seit dem 2026-08-03 (`2faba66`, s. Korrektur zu 4.3) und ist bereits im Einsatz — entfällt als Kostenpunkt. |
 | **Concurrent-Join-Limit 100** | Auf Pfad 1 **schlechter als heute vermutet**, weil wir es bisher nicht auf dem Schirm hatten. Auf Pfad 2 entfällt es. |
 | **Reconnect-Komplexität** | Zwei-Socket-Übergang bei `session_reconnect`; Subscriptions per HTTP statt per Frame ⇒ neue Fehlerklassen (401 mitten in der Konvergenz, 429 auf Helix). |
 | **Migrationsaufwand** | ~4 Wellen, s. 7. Nicht klein, aber durch das 7TV-Muster gedeckelt. |
@@ -585,6 +627,12 @@ Eine Welle 5 „App-Token + Conduits" wäre nochmals ein eigenständiges Projekt
 bestehenden Nutzer**, weil `TwitchUserTokenService.ScopesDrifted` das so vorsieht), Conduit-/
 Shard-Verwaltung, Webhook-Endpunkt inkl. nginx-Änderung. Das würde ich nicht in einem Zug mit 0–4
 denken.
+
+**Korrektur 2026-09-15 (#125):** Zwei der hier gebuchten Posten sind kleiner als dargestellt. Der
+Client-Credentials-Flow existiert bereits (s. Korrektur zu 4.3) — er ist kein Aufwand mehr. Und
+„Webhook-Endpunkt inkl. nginx-Änderung" ist nur nötig, wenn die Conduit-Shards per Webhook laufen;
+per WebSocket (s. Korrektur zu 3.3) entfällt dieser Posten ganz. Offen bleiben aus dieser Liste
+weiterhin die Scope-Drift/Re-Login-Frage und die Conduit-/Shard-Verwaltung selbst.
 
 ---
 
