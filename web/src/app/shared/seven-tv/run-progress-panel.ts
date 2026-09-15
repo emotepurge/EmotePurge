@@ -14,7 +14,10 @@ import { NoticeBanner } from '../ui/notice-banner';
   selector: 'app-run-progress-panel',
   imports: [Button, NoticeBanner, TranslocoPipe],
   template: `
-    <div class="rounded-md bg-surface-inset px-4 py-3" role="status">
+    <!-- role="status" is implicitly aria-atomic="true" (docs/UI-Designsprache.md §4.5): every change
+         to the progress text would re-read the whole region, the progressbar's name and value
+         included. Non-atomic, only the changed text is announced. -->
+    <div class="rounded-md bg-surface-inset px-4 py-3" role="status" aria-atomic="false">
       <div class="mb-2 flex items-center justify-between text-sm">
         <span>{{
           labelPrefix() + '.progress' | transloco: { finished: finished(), total: total() }
@@ -31,7 +34,14 @@ import { NoticeBanner } from '../ui/notice-banner';
       </div>
       <!-- The track is one step further from the surface than the panel it sits in, so it stays
            visible whichever direction "further" means in the current mode. -->
-      <div class="h-2 w-full overflow-hidden rounded-full bg-surface-inset-hover">
+      <div
+        class="h-2 w-full overflow-hidden rounded-full bg-surface-inset-hover"
+        role="progressbar"
+        [attr.aria-valuenow]="finished()"
+        aria-valuemin="0"
+        [attr.aria-valuemax]="progressValueMax()"
+        [attr.aria-label]="labelPrefix() + '.progressBarLabel' | transloco"
+      >
         <div class="h-full bg-accent transition-all" [style.width.%]="progressPercent()"></div>
       </div>
 
@@ -123,6 +133,10 @@ export class RunProgressPanel {
   protected readonly progressPercent = computed(() =>
     this.total() === 0 ? 0 : (this.finished() / this.total()) * 100,
   );
+  // Raw counts, not a percentage, so aria-valuenow/valuemax are never rounded: rounding would
+  // report 100 at 199/200 (early completion) and 0 at 1/201 (false zero). `Math.max(1, …)` only
+  // keeps min <= max for an empty queue; hosts never render the bar for one.
+  protected readonly progressValueMax = computed(() => Math.max(1, this.total()));
   protected readonly failedItems = computed(() =>
     this.items().filter((item) => item.status === 'failed'),
   );

@@ -817,6 +817,7 @@
   "restore": {
     "button": "Restore emotes",
     "progress": "{{ finished }} / {{ total }} processed",
+    "progressBarLabel": "Restore progress",
     "deleteFailedFallback": "Restore failed",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "confirmTitle": {
@@ -898,6 +899,7 @@
     "deleteButton": "Delete ({{ count }})",
     "clearSelection": "Clear selection",
     "progress": "{{ finished }} / {{ total }} processed",
+    "progressBarLabel": "Delete progress",
     "deleteFailedFallback": "Delete failed",
     "confirmTitle": {
       "one": "Delete {{ count }} emote from 7TV?",
@@ -1047,6 +1049,7 @@
       "execute": "Copy"
     },
     "progress": "{{ finished }} / {{ total }} processed",
+    "progressBarLabel": "Copy progress",
     "deleteFailedFallback": "Copy failed",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {

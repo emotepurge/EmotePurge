@@ -5,6 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppLang, LanguageService } from '../../core/i18n/language.service';
+import { toLocale } from '../../core/i18n/locale';
 import { DateTimePicker } from './datetime-picker';
 
 // Only the keys this component translates — not the full app translation file.
@@ -61,6 +62,54 @@ function dayIndex<T extends { date: Date }>(days: readonly T[], date: Date): num
   return index;
 }
 
+/** Same formatting the component uses for a day button's `aria-label` — built independently here
+ *  (not imported) so this stays a black-box check of the accessible name a screen reader would
+ *  actually announce, not a mirror of the implementation. */
+function fullDateLabel(date: Date, lang: AppLang): string {
+  return new Intl.DateTimeFormat(toLocale(lang), { dateStyle: 'full' }).format(date);
+}
+
+/** The accname precedence this suite relies on for an accessible name: `aria-labelledby` (joining
+ *  the referenced elements' text, space-separated) beats `aria-label`, which beats plain
+ *  `textContent`. A local copy — not shared infrastructure — so this spec stays a black-box check
+ *  of what a screen reader would actually announce, not a mirror of one specific attribute. */
+function accessibleName(el: Element): string {
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const text = labelledBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => el.ownerDocument.getElementById(id)?.textContent ?? '')
+      .join(' ')
+      .trim();
+    if (text) {
+      return text;
+    }
+  }
+  const label = el.getAttribute('aria-label')?.trim();
+  if (label) {
+    return label;
+  }
+  return (el.textContent ?? '').trim();
+}
+
+/** Resolves a day button by its accessible name — the semantic locator #89 was missing, which is
+ *  why it had to drop this kind of test. Throws with the available names so a failure names what
+ *  was actually rendered instead of just "not found". */
+function dayButtonNamed(
+  fixture: ComponentFixture<DateTimePicker>,
+  name: string,
+): HTMLButtonElement {
+  const rootElement = fixture.nativeElement as HTMLElement;
+  const candidates = Array.from(rootElement.querySelectorAll<HTMLButtonElement>('button'));
+  const found = candidates.find((button) => accessibleName(button) === name);
+  if (!found) {
+    const available = candidates.map((button) => accessibleName(button));
+    throw new Error(`no day button named "${name}" — available: ${available.join(', ')}`);
+  }
+  return found;
+}
+
 /**
  * Walks forward, in real months, from `from` until it finds one whose 1st falls on `weekday`
  * (`Date#getDay()` convention: 0 = Sunday, 1 = Monday, …). Used to pin the grid's Monday-start and
@@ -110,6 +159,7 @@ describe('DateTimePicker', () => {
     // so Angular's rendering pipeline is untouched; this just pins what `new Date()` returns.
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(FIXED_NOW);
+    languageServiceFake.lang.set('de');
 
     await TestBed.configureTestingModule({
       imports: [
@@ -129,7 +179,9 @@ describe('DateTimePicker', () => {
     vi.useRealTimers();
   });
 
-  function render(options: { value?: string; max?: string } = {}): {
+  // `open` defaults to closed, matching the component's own initial state; pass true for any test
+  // that needs the day grid in the DOM (the panel body is behind `@if (isOpen())`).
+  function render(options: { value?: string; max?: string; open?: boolean } = {}): {
     fixture: ComponentFixture<DateTimePicker>;
     component: DateTimePicker;
   } {
@@ -141,6 +193,10 @@ describe('DateTimePicker', () => {
       fixture.componentRef.setInput('max', options.max);
     }
     fixture.detectChanges();
+    if (options.open) {
+      fixture.componentInstance['togglePanel']();
+      fixture.detectChanges();
+    }
 
     return { fixture, component: fixture.componentInstance };
   }
@@ -270,6 +326,74 @@ describe('DateTimePicker', () => {
       component['setTime']('07:05');
 
       expect(component.value()).toBe(dtl(now, 7, 5));
+    });
+  });
+
+  describe('day button accessible names (#180)', () => {
+    it('selects a day located by its accessible name — the semantic locator #89 had to drop', () => {
+      const { fixture, component } = render({ open: true });
+      const now = new Date();
+      const to = new Date(now.getFullYear(), now.getMonth(), 20);
+
+      dayButtonNamed(fixture, fullDateLabel(to, 'de')).click();
+      fixture.detectChanges();
+
+      expect(component.value()).toBe(dtl(to, now.getHours(), now.getMinutes()));
+    });
+
+    it('gives a neighbouring-month day a distinct accessible name from the same day number in the current month', () => {
+      const { fixture, component } = render({ open: true });
+      const days = component['calendarDays']();
+
+      // Trailing overflow always exists: leadingBlank (0-6) plus a month's length (28-31) never
+      // reaches 42 cells, so the grid's last cell is always a next-month day (day number
+      // 42 - leadingBlank - monthLength, i.e. 5..14 — 12 for the fixed June 2026), and the current
+      // month always contains a day with that same low number.
+      const trailing = days[days.length - 1];
+      expect(trailing.inCurrentMonth).toBe(false);
+
+      const currentMonthMatch = days.find(
+        (day) => day.inCurrentMonth && day.dayOfMonth === trailing.dayOfMonth,
+      );
+      expect(currentMonthMatch).toBeDefined();
+
+      const trailingButton = dayButtonNamed(fixture, fullDateLabel(trailing.date, 'de'));
+      const currentMonthButton = dayButtonNamed(
+        fixture,
+        fullDateLabel(currentMonthMatch!.date, 'de'),
+      );
+
+      expect(accessibleName(trailingButton)).not.toBe(accessibleName(currentMonthButton));
+    });
+
+    it('marks today with aria-current="date" and leaves other days without it', () => {
+      const { fixture, component } = render({ open: true });
+      const days = component['calendarDays']();
+      const today = days.find((day) => day.isToday);
+      const other = days.find((day) => !day.isToday);
+      if (!today || !other) {
+        throw new Error('expected both a today cell and a non-today cell in the grid');
+      }
+
+      const todayButton = dayButtonNamed(fixture, fullDateLabel(today.date, 'de'));
+      const otherButton = dayButtonNamed(fixture, fullDateLabel(other.date, 'de'));
+
+      expect(todayButton.getAttribute('aria-current')).toBe('date');
+      expect(otherButton.hasAttribute('aria-current')).toBe(false);
+    });
+
+    // Fake LanguageService exposes `lang` as a plain signal, so flipping it here is cheap.
+    it('follows a language switch', () => {
+      const { fixture } = render({ open: true });
+      const now = new Date();
+      const day = new Date(now.getFullYear(), now.getMonth(), 20);
+
+      expect(dayButtonNamed(fixture, fullDateLabel(day, 'de'))).toBeTruthy();
+
+      languageServiceFake.lang.set('en');
+      fixture.detectChanges();
+
+      expect(dayButtonNamed(fixture, fullDateLabel(day, 'en'))).toBeTruthy();
     });
   });
 });
