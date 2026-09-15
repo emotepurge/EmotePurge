@@ -1,6 +1,6 @@
 # Bot-Erkennung in der Usage-Analytics — Entwurf
 
-**Datum:** 2026-09-01 · **Issue:** [#31](https://github.com/sensitron/EmotePurge/issues/31) · **Status:** entworfen, noch nicht geplant
+**Datum:** 2026-09-01 · **Issue:** [#31](https://github.com/emotepurge/EmotePurge/issues/31) · **Status:** entworfen, noch nicht geplant
 
 ## Warum jetzt
 
@@ -179,7 +179,7 @@ Bot-Trenndatum. `/api/channels/{name}/active-set` ist dafür der richtige Ort un
 Request** — der Endpunkt trägt laut seinem eigenen Kommentar bereits Slot-Budget und
 `TrackedSince` „for exactly that reason: both are for the same audience, and both pages
 already fetch this". Das Trenndatum ist dieselbe Art Aussage und hat dieselbe Zielgruppe.
-Dass kein Request hinzukommt, ist zusätzlich für [#45](https://github.com/sensitron/EmotePurge/issues/45) relevant.
+Dass kein Request hinzukommt, ist zusätzlich für [#45](https://github.com/emotepurge/EmotePurge/issues/45) relevant.
 
 Zwei Auflagen an die Umsetzung:
 

@@ -1,6 +1,6 @@
 # Export-Dialog nach Zweck sortieren — Entwurf
 
-**Datum:** 2026-09-09 · **Issue:** [#141](https://github.com/sensitron/EmotePurge/issues/141) · **Status:** entworfen, noch nicht geplant · **Vorgeschichte:** [#80 Aktionszeile](../../designs/Aktionszeile-80-2026-09-06.md), #92 (Verb „Übertragen…")
+**Datum:** 2026-09-09 · **Issue:** [#141](https://github.com/emotepurge/EmotePurge/issues/141) · **Status:** entworfen, noch nicht geplant · **Vorgeschichte:** [#80 Aktionszeile](../../designs/Aktionszeile-80-2026-09-06.md), #92 (Verb „Übertragen…")
 
 ## Warum jetzt
 

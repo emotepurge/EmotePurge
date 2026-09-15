@@ -1,6 +1,6 @@
 # Plan #72 — Import-UI: In Kanal kopieren, Ziel-Picker, Bestätigungsdialog, Datei-Weg
 
-Umsetzungsplan für Issue [#72](https://github.com/sensitron/EmotePurge/issues/72) (Kind K3 von #38).
+Umsetzungsplan für Issue [#72](https://github.com/emotepurge/EmotePurge/issues/72) (Kind K3 von #38).
 Erstellt 2026-09-05 auf `feat/import-ui-72` (Worktree `/home/dev/projects/EmotePurge-import-ui`) gegen
 den Code-Stand `ac239d7` (= lokal `main`, enthält #70 und #71). Quellen: Issue-Text,
 [`docs/designs/Emote-Import-38-2026-09-05.md`](../designs/Emote-Import-38-2026-09-05.md) (verbindlich),

@@ -45,7 +45,7 @@ services:
       - emotepurge-network
 
   api:
-    image: ghcr.io/sensitron/emotepurge-api:latest
+    image: ghcr.io/emotepurge/emotepurge-api:latest
     container_name: emotepurge-api
     restart: unless-stopped
     # S2-21: the VPS hosts a second, unrelated app — without limits a runaway container
@@ -83,7 +83,7 @@ services:
         condition: service_healthy
 
   worker:
-    image: ghcr.io/sensitron/emotepurge-worker:latest
+    image: ghcr.io/emotepurge/emotepurge-worker:latest
     container_name: emotepurge-worker
     restart: unless-stopped
     # #122: Docker's default for stop is 10 s until SIGKILL. The .NET `ShutdownTimeout` of the
@@ -128,7 +128,7 @@ services:
   # `docker compose -f docker-compose.prod.yml --profile harness run --rm harness <channel> --report-only <file>` —
   # after a prior `pull harness` (otherwise `:latest` quietly keeps running the old one).
   harness:
-    image: ghcr.io/sensitron/emotepurge-worker:latest
+    image: ghcr.io/emotepurge/emotepurge-worker:latest
     profiles: ["harness"]
     restart: "no"
     # `docker compose run` appends its arguments to the entrypoint, not to command — a

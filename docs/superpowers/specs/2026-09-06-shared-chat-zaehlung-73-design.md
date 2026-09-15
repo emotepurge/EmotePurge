@@ -1,6 +1,6 @@
 # Shared Chat in der Nutzungszählung — Entwurf
 
-**Datum:** 2026-09-06 · **Issue:** [#73](https://github.com/sensitron/EmotePurge/issues/73) · **Status:** entworfen, nach Opus-Review und Codex-Adversarial-Review (Sol) überarbeitet, noch nicht geplant · **Geschwisterfall:** [Bot-Erkennung #31](2026-09-01-bot-erkennung-usage-analytics-design.md)
+**Datum:** 2026-09-06 · **Issue:** [#73](https://github.com/emotepurge/EmotePurge/issues/73) · **Status:** entworfen, nach Opus-Review und Codex-Adversarial-Review (Sol) überarbeitet, noch nicht geplant · **Geschwisterfall:** [Bot-Erkennung #31](2026-09-01-bot-erkennung-usage-analytics-design.md)
 
 ## Warum jetzt
 
@@ -26,7 +26,7 @@ Drei von sechs Harness-Kandidaten sind substanziell betroffen; in einem davon st
 sechs Nachrichten aus fremden Räumen.
 
 **Termindruck, und zwar ein konkreter.** #73 ist der einzige offene Posten, der den Termin der
-„Scharfschaltung" von [#69](https://github.com/sensitron/EmotePurge/issues/69) (Genauigkeits-Harness
+„Scharfschaltung" von [#69](https://github.com/emotepurge/EmotePurge/issues/69) (Genauigkeits-Harness
 für den Chat-Log-Backfill) bestimmt. Der Harness misst Replay-Zählung gegen Live-Zählung; heute
 zählen **beide** Seiten Shared Chat mit, und zwar gleich falsch. Ändert man nur eine Seite, misst
 der bindende 30-Tage-Lauf die eigene Änderung statt der Genauigkeit. Ändert man beide, gilt der

@@ -17,7 +17,7 @@ Tailwind, Vitest, Playwright.
 **Spec:** [`docs/superpowers/specs/2026-09-09-export-nach-zweck-design.md`](../specs/2026-09-09-export-nach-zweck-design.md) — der Plan
 argumentiert aus ihr; **beide zusammen lesen.** Die Entscheidungen heißen dort E1–E7.
 
-**Issue:** [#141](https://github.com/sensitron/EmotePurge/issues/141)
+**Issue:** [#141](https://github.com/emotepurge/EmotePurge/issues/141)
 
 ## Globale Randbedingungen
 

@@ -6,7 +6,7 @@ Repo: sensitron/EmotePurge
 Status: APPROVED
 Mode: Startup
 Supersedes: dev-main-design-20260905-125337.md (anderes Thema, #38; Verkettung nur formal)
-Issue: https://github.com/sensitron/EmotePurge/issues/69
+Issue: https://github.com/emotepurge/EmotePurge/issues/69
 
 ## Problem Statement
 

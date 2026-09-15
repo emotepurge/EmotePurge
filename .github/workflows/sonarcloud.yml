@@ -128,8 +128,8 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: >
           ./.sonar/scanner/dotnet-sonarscanner begin
-          /k:"sensitron_EmotePurge"
-          /o:"sensitron"
+          /k:"emotepurge_EmotePurge"
+          /o:"emotepurge"
           /d:sonar.host.url="https://sonarcloud.io"
           /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
           /d:sonar.javascript.lcov.reportPaths="web/coverage/web/lcov.info"
@@ -193,7 +193,7 @@ jobs:
         run: node scripts/sonar-to-sarif.mjs
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: sensitron_EmotePurge
+          SONAR_PROJECT_KEY: emotepurge_EmotePurge
 
       # Since sonar.qualitygate.wait, the "end" step already waits for SonarCloud's evaluation; the
       # script's own wait in scripts/sonar-to-sarif.mjs (it polls the ceTaskId from report-task.txt)

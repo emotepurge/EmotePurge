@@ -4,7 +4,7 @@
 
 **Status:** nach Review überarbeitet; Grundlage für einen noch zu schreibenden Implementierungsplan
 
-**Issues:** [#33](https://github.com/sensitron/EmotePurge/issues/33), [#35](https://github.com/sensitron/EmotePurge/issues/35)
+**Issues:** [#33](https://github.com/emotepurge/EmotePurge/issues/33), [#35](https://github.com/emotepurge/EmotePurge/issues/35)
 
 **Betrifft:** lokale HTTP-Policies, Angular-Reload-Pfade, den Cache für moderierte Twitch-Channels und das Admin-Monitoring
 

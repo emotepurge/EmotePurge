@@ -10,7 +10,7 @@ means a change to `main` followed by a deploy.
 
 Please use GitHub's private vulnerability reporting rather than a public issue:
 
-[github.com/sensitron/EmotePurge/security/advisories/new](https://github.com/sensitron/EmotePurge/security/advisories/new)
+[github.com/emotepurge/EmotePurge/security/advisories/new](https://github.com/emotepurge/EmotePurge/security/advisories/new)
 
 This keeps the report private between you and the maintainer while a fix is worked out.
 

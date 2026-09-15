@@ -9,4 +9,4 @@
  * offer as reassurance (numbers, reviews, screenshots) does not exist and must not be invented;
  * the source does exist.
  */
-export const SOURCE_URL = 'https://github.com/sensitron/EmotePurge';
+export const SOURCE_URL = 'https://github.com/emotepurge/EmotePurge';

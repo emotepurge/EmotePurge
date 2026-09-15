@@ -10,6 +10,31 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-15 — Repository moved to the `emotepurge` GitHub organization (#154)
+
+**Betrifft:** `.github/workflows/sonarcloud.yml`, `docker-compose.prod.yml`, `docs/Architectur.md`, `SECURITY.md`, `.github/ISSUE_TEMPLATE/config.yml`, `web/src/app/shared/branding/links.ts`, `web/e2e/landing.e2e.spec.ts`
+
+The repository moved from the personal `sensitron` account to the dedicated `emotepurge`
+GitHub organization. The org name is deliberately all-lowercase: `.github/workflows/publish.yml`
+interpolates `github.repository_owner` straight into the GHCR tag, and GHCR rejects uppercase path
+segments — an org spelled `EmotePurge` would break every image push. Production images now live
+under `ghcr.io/emotepurge/emotepurge-{api,worker}` instead of `ghcr.io/sensitron/...`; GHCR
+packages are scoped to the account, not the repo, so the old packages do not move automatically
+and are retired once the org-namespaced images run in production.
+
+SonarCloud does not support moving a project between GitHub organizations, so this is a new Sonar
+org bound to a new project (`emotepurge_EmotePurge`), not a migration — the old project's analysis
+history and any manually set issue states (False Positive/Won't Fix) are lost. The quality gate
+itself is unaffected, since it measures `new_coverage` against the target branch, not history.
+
+Links to `github.com/sensitron/EmotePurge` point at `github.com/emotepurge/EmotePurge` from here
+on; in historical entries only the URL changes, the surrounding text stays as written. Old URLs
+keep working via GitHub's repository redirects —
+which is exactly why a repository must never again be created at the old `sensitron/EmotePurge`
+path: that would permanently delete those redirects.
+
+---
+
 ### 2026-09-15 — Dock outcome notices are announced from a page-level region that outlives the dock (#134)
 
 **Betrifft:** `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` · `web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/voting/vote-session-detail-page.html` · `web/e2e/emote-import.e2e.spec.ts` · `docs/UI-Designsprache.md`
@@ -2105,7 +2130,7 @@ Vollsync ohnehin herstellt. Keine Konfigurierbarkeit.
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteSetStatusServiceTests.cs` ·
 `docs/Architectur.md` (§5) · `docs/UI-Designsprache.md` (§2.5)
 
-**Der Fall.** Zug 1 von [#73](https://github.com/sensitron/EmotePurge/issues/73) hat seit dem
+**Der Fall.** Zug 1 von [#73](https://github.com/emotepurge/EmotePurge/issues/73) hat seit dem
 2026-09-07 drei getrennte Spalten geschrieben (`UseCount`, `BotUseCount`, `SharedChatUseCount`),
 den Lesepfad der Oberfläche aber übergangsweise weiter `UseCount + SharedChatUseCount` summieren
 und filtern lassen (Entscheidung D5) — damit beim Deploy keine angezeigte Zahl unerklärt fällt.
@@ -2160,7 +2185,7 @@ nichts nachzuziehen.
 **Zug 2 ist taktneutral.** Er ändert die Zählung nicht, berührt den Harness-Rechenkern nicht
 (einzige Ausnahme: ein veralteter Docstring-Absatz in `ReplayFidelityCalculator`, keine Zeile
 Logik, kein `AlgorithmVersion`-Bump), setzt keinen neuen Stichtag und lässt die 30-Tage-Uhr aus
-[#69](https://github.com/sensitron/EmotePurge/issues/69) ungestört weiterlaufen. Die Freeze-Liste
+[#69](https://github.com/emotepurge/EmotePurge/issues/69) ungestört weiterlaufen. Die Freeze-Liste
 aus Zug 1 bleibt bis zum Ende des bindenden Laufs in Kraft.
 
 **Der Marker-Test ist umgedreht, nicht gelöscht.**
@@ -2217,7 +2242,7 @@ Dock-Gating-Regel bleibt unangetastet.
 **Die stumme Variante war die Alternative und ist verworfen.** Ein reiner Abgleich ohne Hinweis
 hätte die Sackgasse ebenso beseitigt. Er hätte aber eine Auswahl lautlos schrumpfen lassen: aus zwölf
 markierten Emotes werden elf, während der Nutzer wegsieht, und niemand sagt ihm warum. Das ist
-dieselbe Sorte stiller Lüge, gegen die [#80](https://github.com/sensitron/EmotePurge/issues/80)
+dieselbe Sorte stiller Lüge, gegen die [#80](https://github.com/emotepurge/EmotePurge/issues/80)
 angetreten ist, nur mit umgekehrtem Vorzeichen.
 
 **Muster, nicht Neuerfindung.** Es gibt keinen Toast-Service (festgehalten in
@@ -2884,7 +2909,7 @@ präregistrierten Kennzahlen und zwei Spalten in der Tagestabelle).
 aller beteiligten Kanäle in jeden dieser Chats. Bisher zählt unser Worker jede empfangene
 Nachricht unterschiedslos als Nutzung des gejointen Kanals — ein Emote bekommt damit Nutzung, weil
 ein *fremder* Chat es benutzt hat, und wer danach löscht, entscheidet auf Basis fremder Zahlen
-(Issue [#73](https://github.com/sensitron/EmotePurge/issues/73)). Gemessen am 2026-09-06
+(Issue [#73](https://github.com/emotepurge/EmotePurge/issues/73)). Gemessen am 2026-09-06
 (Harness-Probeläufe, Prod, 7 Tage je Kanal): `brudivoeller_tv` 84 %, `ronnyberger` 66 % gespiegelter
 Nachrichtenanteil an allen Nachrichten.
 
