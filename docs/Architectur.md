@@ -297,13 +297,13 @@ For local development/tests: `docker compose up -d --build` builds `api`/`worker
 
 ### 6b. Production (`docker-compose.prod.yml` + `.github/workflows/publish.yml`)
 
-Runs on a VPS next to an existing, independent app, imported as a Portainer stack (`docker-compose.prod.yml` is the file that lives on GitHub for that purpose). On every push to `main` (after a green `test` and `test-web` job) `.github/workflows/publish.yml` builds both images and pushes them to `ghcr.io/sensitron/emotepurge-{api,worker}:latest` (additionally tagged with the commit SHA); a redeploy of the Portainer stack pulls `:latest` again.
+Runs on a VPS next to an existing, independent app, imported as a Portainer stack (`docker-compose.prod.yml` is the file that lives on GitHub for that purpose). On every push to `main` (after a green `test` and `test-web` job) `.github/workflows/publish.yml` builds both images and pushes them to `ghcr.io/emotepurge/emotepurge-{api,worker}:latest` (additionally tagged with the commit SHA); a redeploy of the Portainer stack pulls `:latest` again.
 
 **Differences local vs. production:**
 
 | Aspect | Local (`docker-compose.yml`) | Production (`docker-compose.prod.yml`) |
 | :--- | :--- | :--- |
-| `api`/`worker` images | `build:` from the local repo state | `image: ghcr.io/sensitron/emotepurge-{api,worker}:latest`, built by CI |
+| `api`/`worker` images | `build:` from the local repo state | `image: ghcr.io/emotepurge/emotepurge-{api,worker}:latest`, built by CI |
 | Host port `api` | `127.0.0.1:8080:8080` | `127.0.0.1:4300:8080` — port 8080 on the VPS is already taken by the other app |
 | Host port `postgres` | `127.0.0.1:5432:5432` | `127.0.0.1:5433:5432` — likewise, its own isolated Postgres instance instead of sharing the other app's |
 | Host port `redis` | `127.0.0.1:6379:6379` | `127.0.0.1:6380:6379` |
@@ -315,7 +315,7 @@ Deliberately **not** different: `redis` runs in both files with `--maxmemory 256
 
 Configuration is done in both cases through a `.env` file at the repo root (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`) — template in `.env.example`, `.env` itself is git-ignored.
 
-`docker-compose.prod.yml` also carries the `harness` service from 6a, here on the same worker image (`ghcr.io/sensitron/emotepurge-worker:latest`) instead of a second image, likewise reachable only via `--profile harness run --rm harness <channel> [--days <n>] [--diagnostic]` (or `--report-only <file>`, #119) — never through the normal stack redeploy.
+`docker-compose.prod.yml` also carries the `harness` service from 6a, here on the same worker image (`ghcr.io/emotepurge/emotepurge-worker:latest`) instead of a second image, likewise reachable only via `--profile harness run --rm harness <channel> [--days <n>] [--diagnostic]` (or `--report-only <file>`, #119) — never through the normal stack redeploy.
 
 ## 7. Local development & debugging
 

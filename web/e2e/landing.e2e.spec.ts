@@ -59,7 +59,7 @@ test.describe('landing', () => {
     // The one reassurance on this page a visitor can verify in a single click. A dead or private
     // link would discredit the two claims standing next to it.
     const source = page.getByRole('link', { name: 'Auf GitHub ansehen' });
-    await expect(source).toHaveAttribute('href', 'https://github.com/sensitron/EmotePurge');
+    await expect(source).toHaveAttribute('href', 'https://github.com/emotepurge/EmotePurge');
     await expect(source).toHaveAttribute('rel', 'noopener');
   });
 
