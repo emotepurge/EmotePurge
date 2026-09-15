@@ -94,6 +94,10 @@ interface Harness {
   resolve(user: AuthUser | null): void;
   trigger(): HTMLButtonElement;
   panel(): HTMLElement | null;
+  /** Resolves the panel's accessible name the way assistive tech would: an `aria-labelledby`
+   *  reference (resolved against the DOM, not just compared as an id string) wins over
+   *  `aria-label` when both are present. */
+  panelAccessibleName(): string | null;
   outside(): HTMLButtonElement;
   button(label: string): HTMLButtonElement;
   hasButton(label: string): boolean;
@@ -162,6 +166,21 @@ describe('AccountMenu', () => {
       },
       trigger: () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!,
       panel: () => host.querySelector<HTMLElement>('[role="dialog"]'),
+      panelAccessibleName: () => {
+        const panelEl = host.querySelector<HTMLElement>('[role="dialog"]');
+        if (!panelEl) {
+          return null;
+        }
+        const labelledBy = panelEl.getAttribute('aria-labelledby');
+        if (labelledBy) {
+          return labelledBy
+            .split(/\s+/)
+            .map((id) => host.querySelector(`#${id}`)?.textContent?.trim() ?? '')
+            .join(' ')
+            .trim();
+        }
+        return panelEl.getAttribute('aria-label');
+      },
       outside: () => host.querySelector<HTMLButtonElement>('#outside')!,
       button: (label) => {
         const found = buttons().find((candidate) => candidate.textContent?.trim() === label);
@@ -314,12 +333,25 @@ describe('AccountMenu', () => {
       expect(menu.trigger().getAttribute('aria-label')).toBe('Konto-Menü von Sensitron');
     });
 
-    it('keeps the generic settings label once resolved logged-out', () => {
+    it('keeps the generic settings label once resolved logged-out, and the panel it opens holds no account-only rows', () => {
       const menu = render();
       menu.resolve(null);
 
       expect(menu.trigger().getAttribute('aria-label')).toBe('Einstellungen');
-      expect(menu.hasButton('Logout')).toBe(false); // logged-out root holds only display-preferences
+
+      // The assertions above never opened the panel, so they proved nothing about its contents —
+      // open it and look at what actually rendered.
+      menu.trigger().click();
+      menu.detect();
+
+      expect(menu.panel()).not.toBeNull();
+      // account-menu.ts's logged-out branch renders only `<app-display-preferences />`: no Logout
+      // row, and no row into a preferences subview either — display-preferences puts its theme and
+      // language pickers directly in the root panel as role="radio" segmented controls, which
+      // hasButton (a plain <button> text match) correctly does not see.
+      expect(menu.hasButton('Logout')).toBe(false);
+      expect(menu.hasButton('Einstellungen')).toBe(false);
+      expect(menu.panelAccessibleName()).toBe('Einstellungen');
     });
 
     it("keeps the trigger's and panel's accessible name in sync with a language switched from inside the panel itself", () => {

@@ -122,7 +122,13 @@ describe('DeleteConfirmDialog', () => {
    */
   function render(options: RenderOptions = {}): Harness {
     const emotes = signal(['Kappa', 'PogU']);
-    const warning = signal<EmoteSetWarning | null>(options.warning ?? OWN_SET);
+    // Default only when the option is absent — `options.warning ?? OWN_SET` would also default an
+    // explicit `warning: null`, which is exactly the pending state the host passes while the
+    // ownership check is still running (mass-delete-panel.ts) and the confirm-lock tests below
+    // exist to exercise.
+    const warning = signal<EmoteSetWarning | null>(
+      options.warning === undefined ? OWN_SET : options.warning,
+    );
     const warningLoading = signal(options.warningLoading ?? false);
 
     dialogData = { emotes, warning, warningLoading };
