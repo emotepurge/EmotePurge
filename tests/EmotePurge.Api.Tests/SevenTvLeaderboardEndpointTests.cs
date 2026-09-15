@@ -40,7 +40,7 @@ public class SevenTvLeaderboardEndpointTests : IClassFixture<ApiFactory>
     [InlineData(SevenTvLeaderboardSortWireCode.TopAllTimeWireCode)]
     public async Task LoggedInCaller_Gets200_WithSortByEcho(string wireCode)
     {
-        SevenTvLeaderboardSortWireCode.TryParse(wireCode, out var sort);
+        Assert.True(SevenTvLeaderboardSortWireCode.TryParse(wireCode, out var sort));
         var response = new SevenTvLeaderboardResponse(
             wireCode, 705, true,
             [new ForeignEmoteRow("e1", "Name", "Name", "https://cdn.7tv.app/emote/e1/4x_static.webp", 500, 12)]);

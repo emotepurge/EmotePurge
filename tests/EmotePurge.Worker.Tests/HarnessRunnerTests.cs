@@ -371,7 +371,7 @@ public class HarnessRunnerTests : IDisposable
             return CompleteDay(1);
         });
 
-        Assert.Equal(4, await Run(3, cts.Token));
+        Assert.Equal(4, await Run(3, ct: cts.Token));
 
         var lines = File.ReadAllLines(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
         Assert.Equal(1, lines.Count(l => l.Contains("\"kind\":\"day\"")));
@@ -1525,10 +1525,10 @@ public class HarnessRunnerTests : IDisposable
     // handful of tests about the precondition itself override it explicitly.
     private Task<int> Run(
         int days,
-        CancellationToken ct = default,
         int maxMegabytes = 200,
         string? sharedChatCutover = "2026-09-01",
-        bool diagnostic = false)
+        bool diagnostic = false,
+        CancellationToken ct = default)
     {
         var runner = new HarnessRunner(
             _channels,
@@ -1551,7 +1551,7 @@ public class HarnessRunnerTests : IDisposable
     // The Harness:SharedChatCutover config passed here is deliberately irrelevant to every
     // RecomputeReportAsync test above except the one that says so explicitly — a recompute takes
     // its cutovers from the header, not from this options instance.
-    private Task<int> Recompute(string reportOnlyFileName, CancellationToken ct = default, string? channelName = null)
+    private Task<int> Recompute(string reportOnlyFileName, string? channelName = null, CancellationToken ct = default)
     {
         var runner = new HarnessRunner(
             _channels,
