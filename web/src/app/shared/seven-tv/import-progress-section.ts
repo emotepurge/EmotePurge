@@ -6,6 +6,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
+import { resyncNoticeKey } from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
 
 /**
@@ -31,9 +32,14 @@ import { RunProgressPanel } from './run-progress-panel';
          0 — a transient notice (design doc §4.5), not a persistent one, so it never sits attached to
          a *later*, unrelated run's details with nothing to clear it. See that signal's doc for why
          it also has to be what keeps the dock (and this section) mounted for a fully-refused
-         (all-duplicates) run, which leaves no run/queue behind of its own. -->
+         (all-duplicates) run, which leaves no run/queue behind of its own.
+
+         Every notice in this section is aria-hidden: its announcement comes from the host page's
+         permanently mounted DockOutcomeAnnouncer, not from here. This section lives in the dock,
+         which can mount in the same pass that sets the notice, and a status region created
+         together with its text announces nothing (docs/UI-Designsprache.md §4.5). -->
     @if (importService.duplicateNoticePending() && importService.skippedDuplicates() > 0) {
-      <p class="text-sm text-fg-secondary" role="status">
+      <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{ skippedDuplicatesKey() | transloco: { count: importService.skippedDuplicates() } }}
       </p>
     }
@@ -41,7 +47,7 @@ import { RunProgressPanel } from './run-progress-panel';
          still went through, so a duplicate may have slipped in undetected. A quiet notice, not an
          alarm: the run is still expected to succeed, this only says the guard could not run. -->
     @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
-      <p class="text-sm text-fg-secondary" role="status">
+      <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{ 'import.duplicateCheckUnavailable' | transloco }}
       </p>
     }
@@ -67,8 +73,11 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ 'import.summary.insufficientPrivileges' | transloco }}
                 </app-notice-banner>
               }
+              <!-- aria-hidden for the same reason as the duplicate notices above. -->
               @if (resyncNoticeKey(); as noticeKey) {
-                <span class="text-xs text-fg-muted" role="status">{{ noticeKey | transloco }}</span>
+                <span aria-hidden="true" class="text-xs text-fg-muted">
+                  {{ noticeKey | transloco }}
+                </span>
               }
               <a
                 appButton="outline"
@@ -95,19 +104,8 @@ export class ImportProgressSection {
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
   );
 
-  /** Same pattern as `MassDeletePanel.resyncNoticeKey` — only the key family differs. */
-  protected readonly resyncNoticeKey = computed(() => {
-    switch (this.importService.resyncTrigger()) {
-      case 'pending':
-        return 'import.resync.pending';
-      case 'succeeded':
-        return 'import.resync.succeeded';
-      case 'cooldown':
-        return 'import.resync.cooldown';
-      case 'failed':
-        return 'import.resync.failed';
-      default:
-        return null;
-    }
-  });
+  /** Same key the page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
+  protected readonly resyncNoticeKey = computed(() =>
+    resyncNoticeKey(this.importService.resyncTrigger(), 'import'),
+  );
 }

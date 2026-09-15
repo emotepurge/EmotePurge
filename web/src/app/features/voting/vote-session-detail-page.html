@@ -144,6 +144,12 @@
     </app-notice-banner>
   }
 
+  <!-- The screen-reader voice for the restore notices the mass-delete panel below shows (they are
+       aria-hidden there). Permanent, outside the panel's gate, so the region already stands before
+       any notice exists (docs/UI-Designsprache.md §4.5). No import section on this page, so no
+       import outcomes either. -->
+  <app-dock-outcome-announcer />
+
   <!-- Gated like the cell selection that feeds it — without delete power the panel could only
        ever show an empty selection. -->
   @if (canSelectForDelete() && !isCoarse() && activeEmoteSetId(); as setId) {

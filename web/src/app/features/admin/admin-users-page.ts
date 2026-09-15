@@ -98,11 +98,28 @@ const EMPTY_PAGE: PagedResult<AdminUser> = {
                       ) | transloco
                     }}
                   </app-state-dot>
+                  <!-- A role="status" region that enters the DOM together with its content
+                       announces nothing to most screen reader/browser pairings — only a mutation
+                       *inside* an already-mounted region is announced. So the sr-only region below
+                       is permanent (one per row) and only its text comes and goes via @if; the
+                       visible twin stays an @if (it must not occupy layout space when there is
+                       nothing to say) and is aria-hidden so the message is not spoken twice
+                       (docs/UI-Designsprache.md §4.5). -->
+                  <span role="status" class="sr-only">
+                    @if (roleCacheFeedback(); as feedback) {
+                      @if (feedback.twitchUserId === row.twitchUserId) {
+                        {{
+                          'admin.users.roleCache.cleared'
+                            | transloco: { count: feedback.removedEntries }
+                        }}
+                      }
+                    }
+                  </span>
                   @if (roleCacheFeedback(); as feedback) {
                     @if (feedback.twitchUserId === row.twitchUserId) {
                       <!-- Transient inline confirmation: dropping cache entries changes nothing this
                            row displays, so the removed count is the only observable outcome. -->
-                      <span role="status" class="text-xs text-success-fg">
+                      <span aria-hidden="true" class="text-xs text-success-fg">
                         {{
                           'admin.users.roleCache.cleared'
                             | transloco: { count: feedback.removedEntries }

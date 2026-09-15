@@ -454,3 +454,136 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
     expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
   });
 });
+
+/**
+ * #134: on the usage-stats page this panel lives in the action dock, which can mount in the same
+ * change-detection pass that sets a notice — a status region created together with its text
+ * announces nothing. So the panel's resync and duplicate-check notices are shown but aria-hidden,
+ * and the host page's permanently mounted DockOutcomeAnnouncer speaks them instead
+ * (docs/UI-Designsprache.md §4.5). Pinned here: the panel's own status regions (RunProgressPanel is
+ * one) never announce these notices, so nothing is spoken twice.
+ */
+function announcedByStatusRegions(root: HTMLElement): string {
+  return Array.from(root.querySelectorAll('[role="status"]'))
+    .map((region) => {
+      const copy = region.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
+      return copy.textContent?.trim() ?? '';
+    })
+    .join(' ')
+    .trim();
+}
+
+describe('MassDeletePanel — resync and duplicate-check notices are shown, not announced (#134)', () => {
+  const STATUS_REGION_TRANSLATIONS = {
+    ...DE_TRANSLATIONS,
+    restore: {
+      duplicateCheckUnavailable:
+        'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+      resync: {
+        pending: 'Synchronisierung wird angestoßen…',
+        succeeded: 'Synchronisierung angestoßen — die Liste aktualisiert sich gleich.',
+        cooldown:
+          'Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.',
+        failed:
+          'Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.',
+      },
+    },
+  };
+
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let resyncTrigger: WritableSignal<'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed'>;
+  let duplicateCheckAvailable: WritableSignal<boolean>;
+  let duplicateNoticePending: WritableSignal<boolean>;
+
+  beforeEach(async () => {
+    resyncTrigger = signal('idle');
+    duplicateCheckAvailable = signal(true);
+    duplicateNoticePending = signal(false);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: STATUS_REGION_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
+        {
+          provide: SevenTvDeleteService,
+          useValue: {
+            isRunning: signal(false),
+            queue: signal([]),
+            syncReport: signal('idle'),
+            rateLimitPauseSeconds: signal(0),
+            lastRun: signal(null),
+          } as unknown as SevenTvDeleteService,
+        },
+        {
+          provide: SevenTvRestoreService,
+          useValue: {
+            isRunning: signal(false),
+            // A non-empty queue, not running: the resync notice sits in the run-actions slot,
+            // which RunProgressPanel only projects once the restore run has settled
+            // (!isRunning() && total() > 0) — matching how resyncTrigger is only ever written from
+            // onRunComplete in the real service.
+            queue: signal([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]),
+            syncReport: signal('idle'),
+            rateLimitPauseSeconds: signal(0),
+            resyncTrigger,
+            skippedDuplicates: signal(0),
+            duplicateCheckAvailable,
+            duplicateNoticePending,
+          } as unknown as SevenTvRestoreService,
+        },
+        {
+          provide: SevenTvRunArbiter,
+          useValue: {
+            activeRun: signal<SevenTvRunKind | null>(null),
+          } as unknown as SevenTvRunArbiter,
+        },
+        {
+          provide: SevenTvTokenService,
+          useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
+        },
+        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
+      ],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+  });
+
+  it('shows the resync notice aria-hidden, so no status region of the panel speaks it', () => {
+    resyncTrigger.set('pending');
+    fixture.detectChanges();
+
+    const text = 'Synchronisierung wird angestoßen…';
+    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
+      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
+    ).find((element) => element.textContent?.trim() === text);
+    expect(notice).toBeDefined();
+    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
+  });
+
+  it('shows the duplicate-check-unavailable notice aria-hidden, so no status region of the panel speaks it', () => {
+    duplicateCheckAvailable.set(false);
+    duplicateNoticePending.set(true);
+    fixture.detectChanges();
+
+    const text =
+      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.';
+    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
+      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
+    ).find((element) => element.textContent?.trim() === text);
+    expect(notice).toBeDefined();
+    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
+  });
+});

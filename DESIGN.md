@@ -230,8 +230,16 @@ The ramp carries the whole interface. In dark it is glass, in light it is paper 
 `amber`, `red`, `blue`) and therefore do **not** stand in the frontmatter — approximations would
 otherwise stand there next to the real source. Every tone has up to five roles: `wash` (tinted
 surface), `fg` (text on it), `solid` (filled surface), `solid-hover`, `dot` (meaning-bearing small
-graphic, which owes 3:1 rather than 4.5:1). Light mode sets `warning-dot` as the only tone two
-steps darker, because amber has no reserve on a light ground.
+graphic, which owes 3:1 rather than 4.5:1). Amber alone was moved off the shared 700/600 pattern,
+because unlike the other tones its 700/600 steps failed on the page itself, not only on a
+secondary surface: light mode sets both `warning-fg` and `warning-dot` a step darker than their
+peers — `amber-800` instead of the `700` step every other tone's `fg` uses (amber-700 measured
+only 4.40:1 on the page and 4.09:1 on surface-inset, both under the 4.5:1 text gate; amber-800
+clears both at 6.21:1 / 5.76:1), and `amber-700` instead of the `600` step every other tone's `dot`
+uses (amber-600 only reaches 2.6:1 against surface-inset, under the 3:1 graphic gate; amber-700
+clears it at 4.1:1). `success-fg` (emerald-700) clears the page at 4.70:1 and only fails on
+`surface-inset` (4.36:1) and `surface-inset-hover` (3.94:1); `success-dot` (emerald-600) measures
+2.97:1 on `surface-inset`, under its 3:1 gate — open: not yet moved.
 
 ### Named Rules
 
