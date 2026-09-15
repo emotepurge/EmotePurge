@@ -56,12 +56,12 @@ materialization is restricted to colliding rows only.
 That does **not** mean an uncollided channel (the overwhelming majority) pays nothing extra: it still
 runs one `GROUP BY` aggregate query over the channel's active rows on every `active-set` call — there
 is no `(ChannelId, Name)` index backing it — and `active-set` is called far more often than a page-open:
-the `awaitSync` probes, the 60 s sync-failure recheck, the `usageFlushed` probes, and the
-mass-delete/restore/import panels all call it too. What makes this acceptable is narrower than "no
-extra cost": in the no-collision case zero *rows* are ever materialized — the subquery only returns
-names, never the rows themselves — and this is the same access pattern the existing `OccupiedSlots`
-count already runs on every one of those same calls. This is a new column read off a query path that
-was already being paid for, not a new query shape.
+the 60 s sync-failure recheck, the `usageFlushed` probes, and the mass-delete/restore/import panels all
+call it too (the `awaitSync` probes only once the set id exists, since the query sits inside the
+first-sync gate). What makes this acceptable is narrower than "no extra cost": in the no-collision case
+zero emote *rows* are materialized, and the aggregate scans the same `ChannelId`-prefixed rows the
+existing `OccupiedSlots` count already scans on every one of those calls. It is one more query per
+call, not a heavier access path.
 
 **Request budget.** Opening a channel workspace's `InteractiveRead` permit cost drops from 5 requests
 (permissions, duplicate-names, active-set, totals, series) to 4 (permissions, active-set, totals,
