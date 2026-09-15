@@ -126,7 +126,7 @@ import { Popover } from '../../shared/ui/popover';
                        target smaller than the standard allows. -->
                   <button
                     type="button"
-                    class="inline-flex min-h-6 items-center rounded-md px-0.5 transition hover:opacity-80"
+                    class="inline-flex min-h-6 items-center rounded-md px-0.5 transition hover:bg-surface-inset"
                     aria-haspopup="dialog"
                     [attr.aria-expanded]="liveHintOpen()"
                     (click)="liveHintOpen.set(!liveHintOpen())"
