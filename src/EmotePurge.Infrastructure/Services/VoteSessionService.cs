@@ -34,33 +34,14 @@ public class VoteSessionService(AppDbContext db) : IVoteSessionService
             return (CreateVoteSessionResult.VipsNotSupported, null);
         }
 
-        if (startedAt is { } requestedStartedAt)
+        if (ValidateStartedAt(startedAt) is { } startedAtError)
         {
-            if (requestedStartedAt > DateTime.UtcNow)
-            {
-                return (CreateVoteSessionResult.StartedAtInFuture, null);
-            }
-
-            if (requestedStartedAt < DateTime.UtcNow.AddDays(-VoteSessionLimits.MaxBackdateDays))
-            {
-                return (CreateVoteSessionResult.StartedAtTooFarBack, null);
-            }
+            return (startedAtError, null);
         }
 
-        // null = dynamic "all emotes" session. An explicit empty list is rejected rather than
-        // silently reinterpreted as "all" — the caller clearly meant to curate and lost the list.
-        List<string>? ballotEmoteIds = null;
-        if (emoteIds is not null)
+        if (!TryNormalizeBallotEmoteIds(emoteIds, out var ballotEmoteIds))
         {
-            ballotEmoteIds = emoteIds
-                .Select(id => id.Trim())
-                .Where(id => id.Length > 0)
-                .Distinct()
-                .ToList();
-            if (ballotEmoteIds.Count == 0)
-            {
-                return (CreateVoteSessionResult.EmoteIdsEmpty, null);
-            }
+            return (CreateVoteSessionResult.EmoteIdsEmpty, null);
         }
 
         var channel = await db.LoadChannelAsync(channelName, cancellationToken);
@@ -69,16 +50,10 @@ public class VoteSessionService(AppDbContext db) : IVoteSessionService
             return (CreateVoteSessionResult.ChannelNotFound, null);
         }
 
-        if (ballotEmoteIds is not null)
+        if (ballotEmoteIds is not null
+            && !await AllEmoteIdsEligibleAsync(ballotEmoteIds, channel.Id, cancellationToken))
         {
-            // All-or-nothing: one unknown, foreign or already-archived id rejects the whole create
-            // instead of silently shrinking the ballot the manager thought they submitted.
-            var eligibleCount = await db.Emotes.CountAsync(
-                e => ballotEmoteIds.Contains(e.Id) && e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
-            if (eligibleCount != ballotEmoteIds.Count)
-            {
-                return (CreateVoteSessionResult.EmoteIdsInvalid, null);
-            }
+            return (CreateVoteSessionResult.EmoteIdsInvalid, null);
         }
 
         var session = new VoteSession
@@ -176,26 +151,9 @@ public class VoteSessionService(AppDbContext db) : IVoteSessionService
             return (VoteCastResult.SessionEnded, null);
         }
 
-        // Archived emotes are never votable — in a subset session they stay visible in the results
-        // (badged), but their voting is closed.
-        var emoteExists = await db.Emotes.AnyAsync(
-            e => e.Id == emoteId && e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
-        if (!emoteExists)
+        if (!await IsEmoteVotableAsync(channel.Id, sessionId, emoteId, cancellationToken))
         {
             return (VoteCastResult.EmoteNotEligible, null);
-        }
-
-        // A session with membership rows is a fixed ballot; one without covers the whole channel set.
-        var sessionHasBallot = await db.VoteSessionEmotes.AnyAsync(
-            se => se.VoteSessionId == sessionId, cancellationToken);
-        if (sessionHasBallot)
-        {
-            var isOnBallot = await db.VoteSessionEmotes.AnyAsync(
-                se => se.VoteSessionId == sessionId && se.EmoteId == emoteId, cancellationToken);
-            if (!isOnBallot)
-            {
-                return (VoteCastResult.EmoteNotEligible, null);
-            }
         }
 
         var vote = await db.Votes.SingleOrDefaultAsync(
@@ -295,5 +253,82 @@ public class VoteSessionService(AppDbContext db) : IVoteSessionService
         db.VoteSessions.Remove(session);
         await db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    /// <summary>Null when <paramref name="startedAt"/> is unset or within the allowed backdating window.</summary>
+    private static CreateVoteSessionResult? ValidateStartedAt(DateTime? startedAt)
+    {
+        if (startedAt is not { } requestedStartedAt)
+        {
+            return null;
+        }
+
+        if (requestedStartedAt > DateTime.UtcNow)
+        {
+            return CreateVoteSessionResult.StartedAtInFuture;
+        }
+
+        if (requestedStartedAt < DateTime.UtcNow.AddDays(-VoteSessionLimits.MaxBackdateDays))
+        {
+            return CreateVoteSessionResult.StartedAtTooFarBack;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// null = dynamic "all emotes" session. An explicit empty list is rejected (returns false) rather
+    /// than silently reinterpreted as "all" — the caller clearly meant to curate and lost the list.
+    /// </summary>
+    private static bool TryNormalizeBallotEmoteIds(IReadOnlyList<string>? emoteIds, out List<string>? ballotEmoteIds)
+    {
+        if (emoteIds is null)
+        {
+            ballotEmoteIds = null;
+            return true;
+        }
+
+        ballotEmoteIds = emoteIds
+            .Select(id => id.Trim())
+            .Where(id => id.Length > 0)
+            .Distinct()
+            .ToList();
+        return ballotEmoteIds.Count > 0;
+    }
+
+    /// <summary>
+    /// All-or-nothing: one unknown, foreign or already-archived id rejects the whole create instead
+    /// of silently shrinking the ballot the manager thought they submitted.
+    /// </summary>
+    private async Task<bool> AllEmoteIdsEligibleAsync(List<string> ballotEmoteIds, string channelId, CancellationToken cancellationToken)
+    {
+        var eligibleCount = await db.Emotes.CountAsync(
+            e => ballotEmoteIds.Contains(e.Id) && e.ChannelId == channelId && !e.IsArchived, cancellationToken);
+        return eligibleCount == ballotEmoteIds.Count;
+    }
+
+    /// <summary>
+    /// Archived emotes are never votable — in a subset session they stay visible in the results
+    /// (badged), but their voting is closed. A session with membership rows is a fixed ballot; one
+    /// without covers the whole channel set.
+    /// </summary>
+    private async Task<bool> IsEmoteVotableAsync(string channelId, long sessionId, string emoteId, CancellationToken cancellationToken)
+    {
+        var emoteExists = await db.Emotes.AnyAsync(
+            e => e.Id == emoteId && e.ChannelId == channelId && !e.IsArchived, cancellationToken);
+        if (!emoteExists)
+        {
+            return false;
+        }
+
+        var sessionHasBallot = await db.VoteSessionEmotes.AnyAsync(
+            se => se.VoteSessionId == sessionId, cancellationToken);
+        if (!sessionHasBallot)
+        {
+            return true;
+        }
+
+        return await db.VoteSessionEmotes.AnyAsync(
+            se => se.VoteSessionId == sessionId && se.EmoteId == emoteId, cancellationToken);
     }
 }

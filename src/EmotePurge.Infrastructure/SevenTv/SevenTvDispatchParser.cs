@@ -81,29 +81,7 @@ public static class SevenTvDispatchParser
                     continue;
                 }
 
-                string? oldSetId = null;
-                string? newSetId = null;
-                var found = false;
-
-                foreach (var innerChange in inner.EnumerateArray())
-                {
-                    if (HasKey(innerChange, "emote_set_id"))
-                    {
-                        oldSetId = GetNonEmptyString(innerChange, "old_value");
-                        newSetId = GetNonEmptyString(innerChange, ValueKey);
-                        found = true;
-                        break;
-                    }
-
-                    if (HasKey(innerChange, "emote_set"))
-                    {
-                        oldSetId = GetNonEmptyObjectId(innerChange, "old_value");
-                        newSetId = GetNonEmptyObjectId(innerChange, ValueKey);
-                        found = true;
-                    }
-                }
-
-                if (found)
+                if (TryFindEmoteSetIdChange(inner, out var oldSetId, out var newSetId))
                 {
                     return new SevenTvUserSetChange(sevenTvUserId, oldSetId, newSetId);
                 }
@@ -116,6 +94,36 @@ public static class SevenTvDispatchParser
             logger.LogWarning(ex, "Unerwartete user.update-Dispatch-Form übersprungen: {Body}", Truncate(body));
             return null;
         }
+    }
+
+    // The inner change list of one "connections" entry: emote_set_id (plain old/new set id strings)
+    // takes priority and stops the scan immediately; emote_set (old/new as full objects) is the
+    // fallback and keeps scanning, so a later emote_set_id entry still overrides it — same priority
+    // as the original inline loop, just named.
+    private static bool TryFindEmoteSetIdChange(JsonElement inner, out string? oldSetId, out string? newSetId)
+    {
+        oldSetId = null;
+        newSetId = null;
+        var found = false;
+
+        foreach (var innerChange in inner.EnumerateArray())
+        {
+            if (HasKey(innerChange, "emote_set_id"))
+            {
+                oldSetId = GetNonEmptyString(innerChange, "old_value");
+                newSetId = GetNonEmptyString(innerChange, ValueKey);
+                return true;
+            }
+
+            if (HasKey(innerChange, "emote_set"))
+            {
+                oldSetId = GetNonEmptyObjectId(innerChange, "old_value");
+                newSetId = GetNonEmptyObjectId(innerChange, ValueKey);
+                found = true;
+            }
+        }
+
+        return found;
     }
 
     private static void TryMapEmoteChange(JsonElement change, string valueProperty, List<SevenTvEmote> into, ILogger logger)

@@ -78,11 +78,11 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
         var candidateEmotes = subsetEmoteIds.Count == 0
             ? await db.Emotes
                 .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
-                .Select(e => new { e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived })
+                .Select(e => new CandidateEmote(e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived))
                 .ToListAsync(cancellationToken)
             : await db.Emotes
                 .Where(e => e.ChannelId == channel.Id && subsetEmoteIds.Contains(e.Id))
-                .Select(e => new { e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived })
+                .Select(e => new CandidateEmote(e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived))
                 .ToListAsync(cancellationToken);
 
         var myVotesByEmoteId = viewerTwitchUserId is null
@@ -109,13 +109,11 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
             : await db.Votes
                 .Where(v => v.VoteSessionId == sessionId)
                 .GroupBy(v => v.EmoteId)
-                .Select(g => new
-                {
-                    EmoteId = g.Key,
-                    Keep = g.Count(v => v.Type == VoteType.Keep),
-                    Delete = g.Count(v => v.Type == VoteType.Delete)
-                })
-                .ToDictionaryAsync(g => g.EmoteId, cancellationToken);
+                .Select(g => new VoteTallyRow(
+                    g.Key,
+                    g.Count(v => v.Type == VoteType.Keep),
+                    g.Count(v => v.Type == VoteType.Delete)))
+                .ToDictionaryAsync(t => t.EmoteId, cancellationToken);
 
         var voterCount = await db.Votes
             .Where(v => v.VoteSessionId == sessionId)
@@ -124,20 +122,7 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
             .CountAsync(cancellationToken);
 
         var rows = candidateEmotes.Select(e =>
-        {
-            var tally = voteTallies.GetValueOrDefault(e.Id);
-            // null = withheld (running secret ballot, non-manager), not "nobody voted for it".
-            int? keep = includeTallies ? tally?.Keep ?? 0 : null;
-            int? delete = includeTallies ? tally?.Delete ?? 0 : null;
-            var myVote = myVotesByEmoteId.TryGetValue(e.Id, out var voteType) ? voteType : (VoteType?)null;
-
-            // null = withheld (non-manager) or not computed: GetUsageTotalsAsync excludes archived
-            // emotes, and reporting a fabricated 0 for an archived ballot member would just be wrong.
-            int? useCount = includeRawUsage && !e.IsArchived ? usageByEmoteId.GetValueOrDefault(e.Id, 0) : null;
-
-            return new VoteSessionResultDto(
-                e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, useCount, keep, delete, keep - delete, e.IsArchived, myVote);
-        });
+            BuildResultRow(e, includeTallies, includeRawUsage, voteTallies, myVotesByEmoteId, usageByEmoteId));
 
         // With the tallies withheld, the score ordering is the leak: the position of a row would spell
         // out its ranking just as precisely as the numbers did. Name order carries no such signal — and
@@ -185,4 +170,33 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
 
         return new PagedResult<MyVoteSessionDto>(items, page, pageSize, totalCount);
     }
+
+    /// <summary>Assembles one result row from a candidate emote plus the tallies/votes/usage looked up for it.</summary>
+    private static VoteSessionResultDto BuildResultRow(
+        CandidateEmote emote,
+        bool includeTallies,
+        bool includeRawUsage,
+        IReadOnlyDictionary<string, VoteTallyRow> voteTallies,
+        IReadOnlyDictionary<string, VoteType> myVotesByEmoteId,
+        IReadOnlyDictionary<string, int> usageByEmoteId)
+    {
+        var tally = voteTallies.GetValueOrDefault(emote.Id);
+        // null = withheld (running secret ballot, non-manager), not "nobody voted for it".
+        int? keep = includeTallies ? tally?.Keep ?? 0 : null;
+        int? delete = includeTallies ? tally?.Delete ?? 0 : null;
+        var myVote = myVotesByEmoteId.TryGetValue(emote.Id, out var voteType) ? voteType : (VoteType?)null;
+
+        // null = withheld (non-manager) or not computed: GetUsageTotalsAsync excludes archived
+        // emotes, and reporting a fabricated 0 for an archived ballot member would just be wrong.
+        int? useCount = includeRawUsage && !emote.IsArchived ? usageByEmoteId.GetValueOrDefault(emote.Id, 0) : null;
+
+        return new VoteSessionResultDto(
+            emote.Id, emote.Name, emote.SevenTvEmoteId, emote.ImageUrl, useCount, keep, delete, keep - delete, emote.IsArchived, myVote);
+    }
+
+    /// <summary>A candidate ballot row, projected by name instead of an anonymous type so <see cref="BuildResultRow"/> can take it as a parameter.</summary>
+    private sealed record CandidateEmote(string Id, string Name, string SevenTvEmoteId, string ImageUrl, bool IsArchived);
+
+    /// <summary>One emote's Keep/Delete tally, projected by name for the same reason as <see cref="CandidateEmote"/>.</summary>
+    private sealed record VoteTallyRow(string EmoteId, int Keep, int Delete);
 }

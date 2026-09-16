@@ -158,12 +158,15 @@ export class VoteSessionListPage {
       return;
     }
 
-    const roles =
-      this.selectedAudience() === 'subs'
-        ? AllowedRoles.Subs
-        : this.selectedAudience() === 'mods'
-          ? AllowedRoles.Mods | AllowedRoles.Broadcaster
-          : AllowedRoles.Everyone;
+    const audience = this.selectedAudience();
+    let roles: AllowedRoles;
+    if (audience === 'subs') {
+      roles = AllowedRoles.Subs;
+    } else if (audience === 'mods') {
+      roles = AllowedRoles.Mods | AllowedRoles.Broadcaster;
+    } else {
+      roles = AllowedRoles.Everyone;
+    }
 
     const startedAtLocal = this.customStartedAt();
     const startedAt = startedAtLocal ? new Date(startedAtLocal).toISOString() : undefined;

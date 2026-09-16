@@ -86,11 +86,11 @@ export class ThemeService {
       if (!tag) {
         continue;
       }
-      tag.media = isExplicit
-        ? mode === theme
-          ? 'all'
-          : 'not all'
-        : `(prefers-color-scheme: ${mode})`;
+      if (!isExplicit) {
+        tag.media = `(prefers-color-scheme: ${mode})`;
+        continue;
+      }
+      tag.media = mode === theme ? 'all' : 'not all';
     }
   }
 }

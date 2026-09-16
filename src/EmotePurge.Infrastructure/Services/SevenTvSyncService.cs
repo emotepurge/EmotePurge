@@ -41,59 +41,12 @@ public class SevenTvSyncService(
             return null;
         }
 
-        // The bot joins a channel's chat as soon as it is added, well before this method ever runs
-        // successfully — and if the very first 7TV call after a worker restart fails (timeout,
-        // outage), the match cache for this channel stays empty. OnMessageReceived bails out
-        // silently on an empty set with no retry of its own, so the channel would count nothing
-        // until the periodic resync happens to succeed. Warming the cache from Postgres here, right
-        // after the row gate (so channel.ChannelName is the re-read, current login) and before
-        // either 7TV call below, closes that gap: both calls can hang for up to 10s (see the
-        // client timeout), and a warm-up that only ran after such a timeout would lose exactly
-        // those seconds in the loudest moment — right after boot. The condition is "cache empty for
-        // this channel", not "process just started" — that keeps the existing asymmetry intact: a
-        // cache a previous successful sync already filled is never touched by a failed one, here or
-        // below (RecordFailedAttemptAsync).
-        if (emoteMatchCache.GetChannelEmotes(channel.ChannelName).Count == 0)
-        {
-            await RefreshMatchCacheAsync(channel, cancellationToken);
+        await WarmMatchCacheIfEmptyAsync(channel, cancellationToken);
 
-            var warmedCount = emoteMatchCache.GetChannelEmotes(channel.ChannelName).Count;
-            if (warmedCount > 0)
-            {
-                logger.LogInformation(
-                    "Match-Cache für {Channel} aus Postgres vorgewärmt ({Count} Namen) — 7TV-Sync folgt.",
-                    channel.ChannelName, warmedCount);
-            }
-        }
-
-        var twitchUserId = channel.TwitchChannelId;
+        var twitchUserId = await ResolveTwitchUserIdAsync(channel, normalized, cancellationToken);
         if (twitchUserId is null)
         {
-            // channel.ChannelName, not `normalized`: this runs after the row gate re-read the row,
-            // so asking 7TV about the caller's name would ask about a login the rename has already
-            // retired. Same root cause as the propagation issue #60 fixes for the callers.
-            var resolved = await sevenTvApiClient.ResolveTwitchUserIdAsync(channel.ChannelName, cancellationToken);
-            if (resolved.Status != SevenTvLookupStatus.Ok || resolved.TwitchUserId is null)
-            {
-                await RecordFailedAttemptAsync(channel, resolved.Status, cancellationToken);
-                return null;
-            }
-
-            twitchUserId = resolved.TwitchUserId;
-
-            // A rename leaves this exact shape: a second row under the new name, still without its
-            // own TwitchChannelId, resolving to the Twitch account the original row already holds.
-            // Writing it here via the backfill below would collide with the unique index on
-            // Channel.TwitchChannelId — so this row is left untouched. Reconciling the duplicate
-            // (folding it into the original, or vice versa) is not this method's job.
-            var existingOwner = await db.LoadChannelByTwitchIdAsync(twitchUserId, cancellationToken);
-            if (existingOwner is not null && existingOwner.Id != channel.Id)
-            {
-                logger.LogWarning(
-                    "SyncChannelAsync: {Channel} ({ChannelId}) löst dieselbe Twitch-ID {TwitchId} auf wie bereits getrackter Channel {ExistingChannel} ({ExistingChannelId}) — vermutlich ein Rename-Duplikat, Sync übersprungen.",
-                    normalized, channel.Id, twitchUserId, existingOwner.ChannelName, existingOwner.Id);
-                return null;
-            }
+            return null;
         }
 
         var channelState = await sevenTvApiClient.GetChannelStateForTwitchUserAsync(twitchUserId, cancellationToken);
@@ -117,25 +70,11 @@ public class SevenTvSyncService(
             return null;
         }
 
-        // A successful response with an empty emote list is indistinguishable from a real set wipe,
-        // but the consequences are wildly asymmetric: ReconcileAsync would archive every emote of
-        // the channel and RefreshMatchCacheAsync would install an empty dictionary, so chat
-        // matching stops entirely until the next successful sync (up to 60s — thousands of lost
-        // matches at HandOfBlood's message rate). Known triggers: a set change in progress, a
-        // partial 7TV outage, an owner briefly emptying the set. Treated as implausible and
-        // skipped; the next tick recovers on its own.
-        if (emoteSet.Emotes.Count == 0)
+        var implausibleWipeResult = await TryGuardAgainstImplausibleWipeAsync(
+            channel, normalized, emoteSet, channelState.State, cancellationToken);
+        if (implausibleWipeResult is not null)
         {
-            var knownActiveEmotes = await db.Emotes
-                .CountAsync(e => e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
-            if (knownActiveEmotes > 0)
-            {
-                logger.LogWarning(
-                    "7TV meldet 0 aktive Emotes für {Channel}, obwohl bisher {Count} bekannt waren — Sync übersprungen.",
-                    normalized, knownActiveEmotes);
-                return SevenTvSyncResult.Create(
-                    channel.ChannelName, emoteSet.Id, channelState.State.SevenTvUserId, hasChanges: false);
-            }
+            return implausibleWipeResult;
         }
 
         // Read before the assignment below: a switched active set is a content change of its own,
@@ -323,6 +262,111 @@ public class SevenTvSyncService(
             gate.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// The bot joins a channel's chat as soon as it is added, well before <see cref="SyncChannelAsync"/>
+    /// ever runs successfully — and if the very first 7TV call after a worker restart fails (timeout,
+    /// outage), the match cache for this channel stays empty. OnMessageReceived bails out silently on
+    /// an empty set with no retry of its own, so the channel would count nothing until the periodic
+    /// resync happens to succeed. Warming the cache from Postgres here, right after the row gate (so
+    /// <c>channel.ChannelName</c> is the re-read, current login) and before either 7TV call, closes
+    /// that gap: both calls can hang for up to 10s (see the client timeout), and a warm-up that only
+    /// ran after such a timeout would lose exactly those seconds in the loudest moment — right after
+    /// boot. The condition is "cache empty for this channel", not "process just started" — that keeps
+    /// the existing asymmetry intact: a cache a previous successful sync already filled is never
+    /// touched by a failed one, here or in <see cref="RecordFailedAttemptAsync(Channel, string?, CancellationToken)"/>.
+    /// </summary>
+    private async Task WarmMatchCacheIfEmptyAsync(Channel channel, CancellationToken cancellationToken)
+    {
+        if (emoteMatchCache.GetChannelEmotes(channel.ChannelName).Count != 0)
+        {
+            return;
+        }
+
+        await RefreshMatchCacheAsync(channel, cancellationToken);
+
+        var warmedCount = emoteMatchCache.GetChannelEmotes(channel.ChannelName).Count;
+        if (warmedCount > 0)
+        {
+            logger.LogInformation(
+                "Match-Cache für {Channel} aus Postgres vorgewärmt ({Count} Namen) — 7TV-Sync folgt.",
+                channel.ChannelName, warmedCount);
+        }
+    }
+
+    /// <summary>
+    /// The channel's already-known Twitch id, or a freshly resolved one. Null means the caller must
+    /// abort the sync — either the resolution itself failed (recorded via
+    /// <see cref="RecordFailedAttemptAsync(Channel, SevenTvLookupStatus, CancellationToken)"/>) or the
+    /// resolved id belongs to a different, already-tracked row (a rename duplicate — logged, not
+    /// recorded as a failure, since nothing about this attempt actually failed).
+    /// </summary>
+    private async Task<string?> ResolveTwitchUserIdAsync(Channel channel, string normalized, CancellationToken cancellationToken)
+    {
+        if (channel.TwitchChannelId is { } knownTwitchUserId)
+        {
+            return knownTwitchUserId;
+        }
+
+        // channel.ChannelName, not `normalized`: this runs after the row gate re-read the row, so
+        // asking 7TV about the caller's name would ask about a login the rename has already retired.
+        // Same root cause as the propagation issue #60 fixes for the callers.
+        var resolved = await sevenTvApiClient.ResolveTwitchUserIdAsync(channel.ChannelName, cancellationToken);
+        if (resolved.Status != SevenTvLookupStatus.Ok || resolved.TwitchUserId is null)
+        {
+            await RecordFailedAttemptAsync(channel, resolved.Status, cancellationToken);
+            return null;
+        }
+
+        var twitchUserId = resolved.TwitchUserId;
+
+        // A rename leaves this exact shape: a second row under the new name, still without its own
+        // TwitchChannelId, resolving to the Twitch account the original row already holds. Writing it
+        // here via the backfill below would collide with the unique index on Channel.TwitchChannelId —
+        // so this row is left untouched. Reconciling the duplicate (folding it into the original, or
+        // vice versa) is not this method's job.
+        var existingOwner = await db.LoadChannelByTwitchIdAsync(twitchUserId, cancellationToken);
+        if (existingOwner is not null && existingOwner.Id != channel.Id)
+        {
+            logger.LogWarning(
+                "SyncChannelAsync: {Channel} ({ChannelId}) löst dieselbe Twitch-ID {TwitchId} auf wie bereits getrackter Channel {ExistingChannel} ({ExistingChannelId}) — vermutlich ein Rename-Duplikat, Sync übersprungen.",
+                normalized, channel.Id, twitchUserId, existingOwner.ChannelName, existingOwner.Id);
+            return null;
+        }
+
+        return twitchUserId;
+    }
+
+    /// <summary>
+    /// A successful response with an empty emote list is indistinguishable from a real set wipe, but
+    /// the consequences are wildly asymmetric: ReconcileAsync would archive every emote of the channel
+    /// and RefreshMatchCacheAsync would install an empty dictionary, so chat matching stops entirely
+    /// until the next successful sync (up to 60s — thousands of lost matches at HandOfBlood's message
+    /// rate). Known triggers: a set change in progress, a partial 7TV outage, an owner briefly emptying
+    /// the set. Treated as implausible and skipped; the next tick recovers on its own.
+    /// <para>Returns the result to return immediately when the wipe looks implausible, or null when
+    /// the caller should continue the normal sync.</para>
+    /// </summary>
+    private async Task<SevenTvSyncResult?> TryGuardAgainstImplausibleWipeAsync(
+        Channel channel, string normalized, SevenTvEmoteSet emoteSet, SevenTvChannelState state, CancellationToken cancellationToken)
+    {
+        if (emoteSet.Emotes.Count != 0)
+        {
+            return null;
+        }
+
+        var knownActiveEmotes = await db.Emotes
+            .CountAsync(e => e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
+        if (knownActiveEmotes == 0)
+        {
+            return null;
+        }
+
+        logger.LogWarning(
+            "7TV meldet 0 aktive Emotes für {Channel}, obwohl bisher {Count} bekannt waren — Sync übersprungen.",
+            normalized, knownActiveEmotes);
+        return SevenTvSyncResult.Create(channel.ChannelName, emoteSet.Id, state.SevenTvUserId, hasChanges: false);
     }
 
     /// <summary>

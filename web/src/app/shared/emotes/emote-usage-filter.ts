@@ -16,8 +16,8 @@ function globToRegExp(pattern: string): RegExp {
   const trimmed = pattern.trim();
   const escaped = trimmed
     .replace(/[.+^${}()|[\]\\]/g, String.raw`\$&`)
-    .replaceAll(/\*/g, '.*')
-    .replaceAll(/\?/g, '.');
+    .replaceAll('*', '.*')
+    .replaceAll('?', '.');
 
   // With ~1,000 emotes per channel, the expected default is a plain substring search ("peepo"
   // should match "peepoHappy", "peepoSad", ...) — fully anchoring every query made that

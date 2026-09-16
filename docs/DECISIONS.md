@@ -10,6 +10,148 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-16 — `csharpsquid:S3776` filtered for `src/EmotePurge.Api/Endpoints/*.cs`
+
+**Betrifft:** `.github/workflows/sonarcloud.yml` · `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` · `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs` · `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs`
+
+Sonar's Cognitive Complexity rule flagged the four `Map<X>Endpoints(this WebApplication app)`
+registration methods: `EmoteEndpoints.MapEmoteEndpoints` (CC 49), `VoteSessionEndpoints.MapVoteSessionEndpoints`
+(38), `ChannelEndpoints.MapChannelEndpoints` (29), `AdminEndpoints.MapAdminEndpoints` (24). All four
+are exactly the shape CLAUDE.md Rule 6 prescribes: Minimal API, no controllers, one
+`Map<X>Endpoints` extension method per domain, registered via `MapGroup`, handlers as lambdas.
+Sonar's complexity metric counts every nested lambda as nesting, so the score climbs with the
+number of routes a domain has, not with actual branching or decision logic — none of the four
+methods contains meaningfully nested conditionals; they are flat sequences of `.MapGet`/`.MapPost`/
+`.MapDelete` calls, each followed by a handler lambda and a chain of `.RequireAuthorization`/
+`.AddEndpointFilter`/`.Produces` calls.
+
+**Decision: filter the rule for this path, don't split the methods.** Splitting each registration
+method into several helpers to lower the CC score would scatter one domain's route table across
+multiple places and cost exactly the overview Rule 6's "one method per domain" convention exists to
+provide — trading a real, deliberate readability property for a metric that measures the convention
+itself, not a defect. `sonar.issue.ignore.multicriteria` (see the `e1`–`e3` comments in
+`sonarcloud.yml` for the mechanism) gained a fourth entry, `e4`, filtering `csharpsquid:S3776` for
+`src/EmotePurge.Api/Endpoints/*.cs`.
+
+**The filter is file-grained, not method-grained, because the Sonar API offers nothing narrower.**
+`ignore.multicriteria`'s `resourceKey` matches file paths/globs; it has no parameter for scoping to
+a single method or symbol. The four `Endpoints/*.cs` files also contain genuine private helpers
+(`PublishChannelSyncedAsync`, `ToSummaryDto`, `PublishVoteChangedAsync`, `Ceilings`,
+`RateLimitPolicyDescriptors` and its nested `RateLimitPolicyDescriptor` factory methods) — these are
+incidentally exempted from S3776 too, as a side effect of the file-level filter rather than by
+intent. None of them come close to the CC threshold today, so nothing is currently hidden by this;
+the price is that a future genuinely-complex helper landing in one of these four files would no
+longer be caught by this rule. Anyone adding non-trivial decision logic to an endpoints file should
+pull it into its own tested class in `Infrastructure` (Rule 11) rather than rely on this filter to
+wave it through.
+
+**The scope is deliberately narrow in the other direction too.** The filter targets only
+`src/EmotePurge.Api/Endpoints/*.cs`, the file group these four registration methods live in — not
+the whole `Api` project. Handler bodies, `Auth/` filters, `Validation/` classes and every other
+layer keep S3776 fully active, exactly as it should for logic that is not this construction.
+
+---
+
+### 2026-09-16 — `ForwardedHeaders` trust was never actually configured, correcting the 2026-07-26 entry
+
+**Betrifft:** `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Endpoints/AuthEndpoints.cs` · `tests/EmotePurge.Api.Tests/ForwardedHeadersTrustTests.cs` · `docs/Architectur.md` · `docs/Operations.md` · `docs/Review-2026-07-29.md`
+
+The 2026-07-26 entry further down, "`ForwardedHeadersMiddleware` mit explizit geleertem
+`KnownIPNetworks`/`KnownProxies` ergänzt", describes a fix that never took effect. The code it
+introduced read:
+
+```csharp
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    KnownIPNetworks = { },
+    KnownProxies = { }
+});
+```
+
+`Property = { }` inside an object initializer is a *collection initializer*, not an assignment —
+both properties are `{ get; }`-only, so the expression calls `Add` for zero elements and leaves the
+defaults (`[::1]`, `127.0.0.0/8`) exactly where they were. Measured on the running instance:
+`KnownProxies.Count = 1`, `KnownIPNetworks.Count = 1`. In production nginx reaches the API through
+the Docker bridge gateway (`172.18.0.1`), which is in neither list, so the middleware discarded
+every `X-Forwarded-Proto` and `X-Forwarded-For` silently, without a log line. Reproduced against a
+dev container with the same NAT topology: even with `X-Forwarded-Proto: https` set, the `Set-Cookie`
+came back without `secure`. The old entry stays as written, unedited, per this log's rule against
+rewriting history; this entry is the correction.
+
+**`X-Forwarded-For` was affected just as much, and that half went unnoticed entirely.** The
+2026-07-26 entry only ever reasons about `IsHttps`, but `RateLimitRejection.ResolveUserKey` falls
+back to `Connection.RemoteIpAddress` for anonymous requests — which in production is constantly the
+bridge gateway. Every anonymous caller therefore shared a single rate-limit partition, including the
+`PublicHealth` policy's 30 permits, which could push the Uptime Kuma monitor into `429` and report a
+healthy app as down. Note that `docs/DECISIONS.md`'s Cloudflare entry of 2026-08-29 ("App-seitig war
+also nichts zu ändern") is unaffected and still reads correctly: the proxy chain in front was never
+the problem, the trust list inside the app was.
+
+**The fix widens the trust list instead of emptying it.** `KnownIPNetworks.Add(IPNetwork.Parse(
+"172.16.0.0/12"))`, and the loopback defaults stay. A genuine `Clear()` — what the 2026-07-26 entry
+believed it was doing — is fail-open: it trusts whatever any sender claims, and its safety rests
+entirely on the port binding staying `127.0.0.1`, an invariant living in a different file that
+nobody checks when editing it. Trusting a network keeps the middleware checking. The gateway address
+itself is not stable enough to pin (Docker assigns it per network), but Docker's default address
+pool is, and `172.16.0.0/12` covers every bridge network Compose creates here. The loopback defaults
+are kept deliberately rather than replaced: local `dotnet run` behind the Vite dev proxy arrives
+from `127.0.0.1`, and clearing them first would have broken that path for no gain.
+
+**The OAuth state cookie goes hard `Secure = true`** (`AuthEndpoints.cs`), instead of
+`Request.IsHttps`. It is the CSRF defence of the entire login flow and was simply overlooked when
+S2-10 gave the session cookie `CookieSecurePolicy.Always` on 2026-07-30 — the reasoning in that
+cookie's comment applied to this one word for word. Local HTTP login is unaffected: browsers treat
+`http://localhost` as a trustworthy origin and store `Secure` cookies there, which the session
+cookie has been demonstrating in daily use ever since S2-10.
+
+**Both halves are now asserted in `tests/EmotePurge.Api.Tests`,** because this is precisely the
+configuration that stayed broken for seven weeks while looking correct. The forwarded-header cases
+are the load-bearing ones and they are not written the obvious way: they go through
+`TestServer.SendAsync(Action<HttpContext>, CancellationToken)`, which runs before the pipeline and
+lets the test set `Connection.RemoteIpAddress`. Through `HttpClient` that address is `null` and
+therefore never trusted, so a naively written test would be green against the broken configuration
+too and would have let this exact bug through again. Verified by reverting the fix: with it, three
+tests pass; without it, `ForwardedHeaders_FromDockerBridgeGateway_AreApplied` and
+`OAuthStateCookie_IsSecure_OverPlainHttp` both fail. The third case — forwarded headers from an
+address outside every trusted range are ignored — passes either way by construction; it is there to
+catch a future `Clear()`, not this bug.
+
+Three documentation sites repeated the wrong claim and are corrected in the same change:
+`docs/Architectur.md` ("trusts it with empty `KnownIPNetworks`/`KnownProxies`"), `docs/Operations.md`
+("trusts forwarded headers from any sender" — its warning against exposing the container port beyond
+loopback stays, it was right for other reasons), and the check command in `docs/Review-2026-07-29.md`
+(S2-10 and open question 1), which was `curl -sI`: `-I` sends `HEAD`, the route is a `MapGet`, and
+`MapFallback("/api/{**rest}")` catches it — the answer is a `Set-Cookie`-free 404 that reads as an
+all-clear. The working form is `curl -sS -o /dev/null -D - https://emotepurge.app/api/auth/twitch/login | grep -i set-cookie`
+(no `-L`: following the redirect to Twitch would replace the headers under inspection).
+
+### 2026-09-16 — `web-build` stage runs `npm ci --ignore-scripts` (docker:S6505)
+
+**Betrifft:** `src/EmotePurge.Api/Dockerfile`
+
+Sonar flagged the `web-build` stage's `npm ci` for running without `--ignore-scripts`: any
+transitive dependency's `preinstall`/`postinstall` lifecycle script executes with full privileges
+during the image build, the standard supply-chain vector. The flag isn't a blind toggle here —
+`web/package.json` itself has no `postinstall`/`prepare`, but five dependencies do carry an
+install script (`hasInstallScript: true` in `package-lock.json`): `esbuild`, `@parcel/watcher`,
+`lmdb`, `msgpackr-extract`, and `fsevents` (macOS-only, `os: ["darwin"]`, never installs on the
+Linux build image anyway). All four of the remaining ones fetch or build a native binary — exactly
+the kind of postinstall that can turn `--ignore-scripts` from a hardening measure into a broken
+build.
+
+Verified empirically, not assumed: `docker build -f src/EmotePurge.Api/Dockerfile --target
+web-build` with `--ignore-scripts` added completed cleanly (`npm ci` ~7 s, `ng build
+--configuration production` ~8 s, no missing-binary errors), and the full multi-stage build
+afterwards produced the final image without changes elsewhere. None of the four scripts turned out
+load-bearing for a non-watch, non-dev `ng build --configuration production`: `esbuild`'s installer
+resolves its platform binary from `@esbuild/linux-x64` even without the postinstall step running,
+`lmdb`'s persistent build cache and `@parcel/watcher`'s file-watching are development/`ng
+serve`-only paths this stage never exercises, and `msgpackr-extract` is `lmdb`'s serializer and
+inherits the same non-use. If a future dependency bump makes one of them load-bearing, the build
+fails loudly at `npm run build` (missing native binding) rather than silently misbehaving — that
+failure mode is the safety net, not a risk accepted in silence.
+
 ### 2026-09-16 — `Program.cs` drops the explicit `public partial class Program;`, revising the 2026-08-02 test-project entry
 
 **Betrifft:** `src/EmotePurge.Api/Program.cs` · `docs/Review-2026-07-29-Umsetzung.md`

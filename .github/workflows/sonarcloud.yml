@@ -144,6 +144,23 @@ jobs:
       # live-region support across screen readers than an explicit role="status". The price: for
       # these files the rule's other checks (e.g. preferring <button>/<a> over role="button"/"link")
       # are lost too, since ignore.multicriteria filters by rule key, not by which role triggered it.
+      #
+      # multicriteria e4 filters csharpsquid:S3776 ("Cognitive Complexity") for
+      # src/EmotePurge.Api/Endpoints/*.cs. The four Map<X>Endpoints registration methods there
+      # (EmoteEndpoints, VoteSessionEndpoints, ChannelEndpoints, AdminEndpoints — CC 49/38/29/24)
+      # are exactly CLAUDE.md Rule 6's shape: Minimal API, no controllers, one
+      # Map<X>Endpoints(this WebApplication app) per domain, handlers as lambdas. Sonar counts
+      # every lambda as nesting, so the metric climbs with the route count, not with actual
+      # decision logic — splitting the methods to satisfy it would scatter one domain's route
+      # table across several helper methods and destroy the overview the convention exists to
+      # give. The price: this also exempts the real private helpers that already sit in the same
+      # files (e.g. PublishChannelSyncedAsync, ToSummaryDto, Ceilings) from S3776, because
+      # ignore.multicriteria's resourceKey only supports file globs, not per-method scoping —
+      # there is no narrower form the Sonar API offers (see the e1 comment above on the
+      # undocumented, file-grained nature of this mechanism). Anyone adding genuinely complex
+      # decision logic to one of these files should pull it into a tested, non-endpoint class
+      # instead of relying on this line to cover it. Handler bodies and services elsewhere are
+      # untouched — S3776 still applies there.
       - name: Sonar Scanner begin
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -157,13 +174,15 @@ jobs:
           /d:sonar.exclusions="**/Migrations/**,src/EmotePurge.Api/wwwroot/**,web/dist/**,**/node_modules/**,docs/superpowers/prototypes/**"
           /d:sonar.coverage.exclusions="web/e2e/**,**/Migrations/**,scripts/**,src/EmotePurge.Worker/TwitchChatManager.cs,src/EmotePurge.Worker/TwitchConnectionWatchdog.cs"
           /d:sonar.qualitygate.wait=true
-          /d:sonar.issue.ignore.multicriteria=e1,e2,e3
+          /d:sonar.issue.ignore.multicriteria=e1,e2,e3,e4
           /d:sonar.issue.ignore.multicriteria.e1.ruleKey="javascript:S4036"
           /d:sonar.issue.ignore.multicriteria.e1.resourceKey="scripts/**/*.mjs"
           /d:sonar.issue.ignore.multicriteria.e2.ruleKey="csharpsquid:S2325"
           /d:sonar.issue.ignore.multicriteria.e2.resourceKey="**/*"
           /d:sonar.issue.ignore.multicriteria.e3.ruleKey="Web:S6819"
           /d:sonar.issue.ignore.multicriteria.e3.resourceKey="web/src/**/*.html"
+          /d:sonar.issue.ignore.multicriteria.e4.ruleKey="csharpsquid:S3776"
+          /d:sonar.issue.ignore.multicriteria.e4.resourceKey="src/EmotePurge.Api/Endpoints/*.cs"
 
       # --no-incremental is mandatory, not style: MSBuild otherwise skips already-built projects
       # incrementally (e.g. from a previous cache restore), and the Sonar-Scanner-MSBuild hook sees

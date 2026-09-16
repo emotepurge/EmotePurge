@@ -1,6 +1,7 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.Twitch;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -22,38 +23,7 @@ public class ChannelService(
         var lookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
         if (lookup.Status == TwitchUserLookupStatus.NotFound)
         {
-            // Twitch was reachable and knows no account under this login — but only a join that
-            // would *create* a row is refused for it. That is what the rejection was for: a typo
-            // becoming a permanent, never-syncing row. On a channel we already track it would buy
-            // nothing and cost something real, because Helix answers the same way for a deleted
-            // account and for a banned one, and a ban can be lifted. Refusing here would let a
-            // temporary state block a moderator from rejoining a channel whose whole history we
-            // hold — the same restraint that keeps the reconciliation from ever leaving or purging
-            // a channel Twitch stopped knowing.
-            //
-            // Deliberately not folded into the Unavailable path below even though the two now agree
-            // in this one case: the whole point of the three-state lookup is that "no such account"
-            // and "we could not ask" stay distinct, and only one of them can refuse a join at all.
-            //
-            // The lookup is by name, and that is not a shortcut: this branch has no identity, so
-            // there is no id to look up by.
-            var knownChannel = await db.LoadChannelAsync(normalized, cancellationToken);
-            if (knownChannel is null)
-            {
-                // Nothing is written — not even an audit entry, because nothing happened.
-                logger.LogInformation(
-                    "Join für {ChannelName} abgelehnt: Twitch kennt diesen Login nicht und wir führen keine Zeile dazu.",
-                    normalized);
-                return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelNotOnTwitch);
-            }
-
-            // No rename: there is nothing to rename onto. The stored TwitchChannelId stays exactly
-            // as it is — it remains the best information we have about this channel, and clearing it
-            // would throw away the one field that survives a login change.
-            logger.LogInformation(
-                "Twitch kennt den Login {ChannelName} gerade nicht (gesperrt oder gelöscht) — Join läuft auf die bestehende Zeile weiter, die gespeicherte Twitch-ID bleibt unverändert.",
-                normalized);
-            return await CompleteJoinAsync(knownChannel, actor, isNewRow: false, renamedFrom: null, cancellationToken);
+            return await HandleUnknownTwitchLoginAsync(normalized, actor, cancellationToken);
         }
 
         // Null for Unavailable, and that is the whole contract of that status: without an identity
@@ -68,87 +38,7 @@ public class ChannelService(
         // spelling instead of silently storing the caller's.
         var targetName = identity is null ? normalized : ChannelName.Normalize(identity.Login);
 
-        Channel? channel = null;
-        string? renamedFrom = null;
-
-        if (identity is not null)
-        {
-            // Twitch ids are opaque digit strings — never normalized, always compared ordinally.
-            var rowWithId = await db.LoadChannelByTwitchIdAsync(identity.Id, cancellationToken);
-            if (rowWithId is not null)
-            {
-                channel = rowWithId;
-            }
-
-            if (rowWithId is not null && !string.Equals(rowWithId.ChannelName, targetName, StringComparison.Ordinal))
-            {
-                var occupant = await db.LoadChannelAsync(targetName, cancellationToken);
-                if (occupant is null)
-                {
-                    // The channel was renamed on Twitch since we last looked, and this join is the
-                    // moment we find out. Also the only route for an *inactive* row: the periodic
-                    // reconciliation scans active channels only, so nothing else would ever bring it
-                    // back under its real name.
-                    renamedFrom = rowWithId.ChannelName;
-                    rowWithId.ChannelName = targetName;
-                    // The rename is its own tracking gap — the IRC join pointed at a name that no
-                    // longer answered — independent of whether the row was also inactive.
-                    rowWithId.TrackingResumedAt = DateTime.UtcNow;
-                    db.AddAuditEntry(
-                        actor,
-                        AuditActions.ChannelRename,
-                        channelName: targetName,
-                        details: new { twitchChannelId = identity.Id, oldLogin = renamedFrom, newLogin = targetName });
-                }
-                else
-                {
-                    // A second row already sits on the new name — the duplicate a rename leaves
-                    // behind. Renaming into it would violate IX_Channels_ChannelName and turn this
-                    // join into a 500; merging the two is the reconciliation's job, which refuses
-                    // rather than guesses when emote histories are involved. So the join proceeds on
-                    // the occupant, exactly as it did before identities were resolved here.
-                    logger.LogWarning(
-                        "Kanal {ChannelName} (Twitch-ID {TwitchChannelId}) heißt auf Twitch jetzt {NewChannelName}, aber dieser Name gehört bereits einer anderen Zeile — Join läuft auf die bestehende Zeile, die Zusammenführung übernimmt der periodische Abgleich.",
-                        rowWithId.ChannelName, identity.Id, targetName);
-                    channel = occupant;
-                }
-            }
-        }
-
-        var isNewRow = false;
-        if (channel is null)
-        {
-            channel = await db.LoadChannelAsync(targetName, cancellationToken);
-            if (channel is null)
-            {
-                // A new row gets the id straight away, so this channel's first rename is already
-                // followable — that is the point of asking Helix before writing.
-                channel = new Channel { ChannelName = targetName, TwitchChannelId = identity?.Id, IsBotActive = true };
-                db.Channels.Add(channel);
-                isNewRow = true;
-            }
-            else if (identity is not null && channel.TwitchChannelId is null)
-            {
-                // Free backfill on a row that predates this: reached only when no row holds the id,
-                // so the unique index on TwitchChannelId cannot object. Not audited and no
-                // TrackingResumedAt — nothing about the channel changed, we merely wrote down what it
-                // always was.
-                channel.TwitchChannelId = identity.Id;
-            }
-            else if (identity is not null
-                     && !string.Equals(channel.TwitchChannelId, identity.Id, StringComparison.Ordinal))
-            {
-                // The row under this name claims a different Twitch id than Helix does — the mirror
-                // image of the occupant case above, reached when the id's own row does not exist (or
-                // no longer does). Nothing is written: overwriting the stored id would fuse two
-                // genuinely different channels, and the periodic reconciliation resolves the pair
-                // from its own side. Logged only so the state is diagnosable while it lasts; it is
-                // not an error, and a join in this state behaves exactly as it did before.
-                logger.LogInformation(
-                    "Kanal {ChannelName} trägt die Twitch-ID {StoredTwitchChannelId}, Helix nennt für diesen Login aber {TwitchChannelId} — Join läuft unverändert auf der bestehenden Zeile, die Auflösung übernimmt der periodische Abgleich.",
-                    channel.ChannelName, channel.TwitchChannelId, identity.Id);
-            }
-        }
+        var (channel, isNewRow, renamedFrom) = await ResolveJoinTargetAsync(identity, targetName, actor, cancellationToken);
 
         return await CompleteJoinAsync(channel, actor, isNewRow, renamedFrom, cancellationToken);
     }
@@ -259,6 +149,161 @@ public class ChannelService(
         await redisPublisher.PublishAsync(BotCommands.Channel, $"{BotCommands.ResyncPrefix}{normalized}", cancellationToken);
 
         return ChannelResyncResult.Triggered;
+    }
+
+    /// <summary>
+    /// Twitch was reachable and knows no account under this login — but only a join that would
+    /// *create* a row is refused for it. That is what the rejection was for: a typo becoming a
+    /// permanent, never-syncing row. On a channel we already track it would buy nothing and cost
+    /// something real, because Helix answers the same way for a deleted account and for a banned
+    /// one, and a ban can be lifted. Refusing here would let a temporary state block a moderator from
+    /// rejoining a channel whose whole history we hold — the same restraint that keeps the
+    /// reconciliation from ever leaving or purging a channel Twitch stopped knowing.
+    /// <para>
+    /// Deliberately not folded into the Unavailable path even though the two now agree in this one
+    /// case: the whole point of the three-state lookup is that "no such account" and "we could not
+    /// ask" stay distinct, and only one of them can refuse a join at all.
+    /// </para>
+    /// <para>
+    /// The lookup is by name, and that is not a shortcut: this branch has no identity, so there is no
+    /// id to look up by.
+    /// </para>
+    /// </summary>
+    private async Task<ChannelJoinResult> HandleUnknownTwitchLoginAsync(string normalized, AuditActor actor, CancellationToken cancellationToken)
+    {
+        var knownChannel = await db.LoadChannelAsync(normalized, cancellationToken);
+        if (knownChannel is null)
+        {
+            // Nothing is written — not even an audit entry, because nothing happened.
+            logger.LogInformation(
+                "Join für {ChannelName} abgelehnt: Twitch kennt diesen Login nicht und wir führen keine Zeile dazu.",
+                normalized);
+            return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelNotOnTwitch);
+        }
+
+        // No rename: there is nothing to rename onto. The stored TwitchChannelId stays exactly as it
+        // is — it remains the best information we have about this channel, and clearing it would
+        // throw away the one field that survives a login change.
+        logger.LogInformation(
+            "Twitch kennt den Login {ChannelName} gerade nicht (gesperrt oder gelöscht) — Join läuft auf die bestehende Zeile weiter, die gespeicherte Twitch-ID bleibt unverändert.",
+            normalized);
+        return await CompleteJoinAsync(knownChannel, actor, isNewRow: false, renamedFrom: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Decides which row a join with a resolved identity (or none, for Unavailable) lands on: the row
+    /// already holding the Twitch id if there is one, otherwise the row already holding the target
+    /// name, otherwise a freshly created row.
+    /// </summary>
+    private async Task<(Channel Channel, bool IsNewRow, string? RenamedFrom)> ResolveJoinTargetAsync(
+        TwitchUserIdentity? identity, string targetName, AuditActor actor, CancellationToken cancellationToken)
+    {
+        Channel? channel = null;
+        string? renamedFrom = null;
+        if (identity is not null)
+        {
+            (channel, renamedFrom) = await ResolveChannelByIdentityAsync(identity, targetName, actor, cancellationToken);
+        }
+
+        if (channel is not null)
+        {
+            return (channel, false, renamedFrom);
+        }
+
+        var (resolvedChannel, isNewRow) = await ResolveOrCreateChannelByNameAsync(identity, targetName, cancellationToken);
+        return (resolvedChannel, isNewRow, renamedFrom);
+    }
+
+    /// <summary>
+    /// The id-first half of <see cref="ResolveJoinTargetAsync"/>: follows the row Helix's identity
+    /// already points at, handling the rename it may reveal along the way. Returns a null channel when
+    /// no row holds this Twitch id yet, so the caller falls back to matching by name.
+    /// </summary>
+    private async Task<(Channel? Channel, string? RenamedFrom)> ResolveChannelByIdentityAsync(
+        TwitchUserIdentity identity, string targetName, AuditActor actor, CancellationToken cancellationToken)
+    {
+        // Twitch ids are opaque digit strings — never normalized, always compared ordinally.
+        var rowWithId = await db.LoadChannelByTwitchIdAsync(identity.Id, cancellationToken);
+        if (rowWithId is null)
+        {
+            return (null, null);
+        }
+
+        if (string.Equals(rowWithId.ChannelName, targetName, StringComparison.Ordinal))
+        {
+            return (rowWithId, null);
+        }
+
+        var occupant = await db.LoadChannelAsync(targetName, cancellationToken);
+        if (occupant is null)
+        {
+            // The channel was renamed on Twitch since we last looked, and this join is the moment we
+            // find out. Also the only route for an *inactive* row: the periodic reconciliation scans
+            // active channels only, so nothing else would ever bring it back under its real name.
+            var renamedFrom = rowWithId.ChannelName;
+            rowWithId.ChannelName = targetName;
+            // The rename is its own tracking gap — the IRC join pointed at a name that no longer
+            // answered — independent of whether the row was also inactive.
+            rowWithId.TrackingResumedAt = DateTime.UtcNow;
+            db.AddAuditEntry(
+                actor,
+                AuditActions.ChannelRename,
+                channelName: targetName,
+                details: new { twitchChannelId = identity.Id, oldLogin = renamedFrom, newLogin = targetName });
+            return (rowWithId, renamedFrom);
+        }
+
+        // A second row already sits on the new name — the duplicate a rename leaves behind. Renaming
+        // into it would violate IX_Channels_ChannelName and turn this join into a 500; merging the two
+        // is the reconciliation's job, which refuses rather than guesses when emote histories are
+        // involved. So the join proceeds on the occupant, exactly as it did before identities were
+        // resolved here.
+        logger.LogWarning(
+            "Kanal {ChannelName} (Twitch-ID {TwitchChannelId}) heißt auf Twitch jetzt {NewChannelName}, aber dieser Name gehört bereits einer anderen Zeile — Join läuft auf die bestehende Zeile, die Zusammenführung übernimmt der periodische Abgleich.",
+            rowWithId.ChannelName, identity.Id, targetName);
+        return (occupant, null);
+    }
+
+    /// <summary>
+    /// The name-fallback half of <see cref="ResolveJoinTargetAsync"/>, reached whenever the identity
+    /// path found no row to join (no identity at all, or no row holding that Twitch id yet).
+    /// </summary>
+    private async Task<(Channel Channel, bool IsNewRow)> ResolveOrCreateChannelByNameAsync(
+        TwitchUserIdentity? identity, string targetName, CancellationToken cancellationToken)
+    {
+        var channel = await db.LoadChannelAsync(targetName, cancellationToken);
+        if (channel is null)
+        {
+            // A new row gets the id straight away, so this channel's first rename is already
+            // followable — that is the point of asking Helix before writing.
+            channel = new Channel { ChannelName = targetName, TwitchChannelId = identity?.Id, IsBotActive = true };
+            db.Channels.Add(channel);
+            return (channel, true);
+        }
+
+        if (identity is not null && channel.TwitchChannelId is null)
+        {
+            // Free backfill on a row that predates this: reached only when no row holds the id, so
+            // the unique index on TwitchChannelId cannot object. Not audited and no
+            // TrackingResumedAt — nothing about the channel changed, we merely wrote down what it
+            // always was.
+            channel.TwitchChannelId = identity.Id;
+        }
+        else if (identity is not null
+                 && !string.Equals(channel.TwitchChannelId, identity.Id, StringComparison.Ordinal))
+        {
+            // The row under this name claims a different Twitch id than Helix does — the mirror image
+            // of the occupant case in ResolveChannelByIdentityAsync, reached when the id's own row
+            // does not exist (or no longer does). Nothing is written: overwriting the stored id would
+            // fuse two genuinely different channels, and the periodic reconciliation resolves the pair
+            // from its own side. Logged only so the state is diagnosable while it lasts; it is not an
+            // error, and a join in this state behaves exactly as it did before.
+            logger.LogInformation(
+                "Kanal {ChannelName} trägt die Twitch-ID {StoredTwitchChannelId}, Helix nennt für diesen Login aber {TwitchChannelId} — Join läuft unverändert auf der bestehenden Zeile, die Auflösung übernimmt der periodische Abgleich.",
+                channel.ChannelName, channel.TwitchChannelId, identity.Id);
+        }
+
+        return (channel, false);
     }
 
     /// <summary>

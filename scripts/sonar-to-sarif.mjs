@@ -70,7 +70,9 @@ function readEnv() {
 }
 
 function authHeaders(token) {
-  return token ? { Authorization: `Basic ${Buffer.from(`${token}:`).toString("base64")}` } : {};
+  if (!token) return {};
+  const credentials = Buffer.from(`${token}:`).toString("base64");
+  return { Authorization: `Basic ${credentials}` };
 }
 
 async function httpJson(url, options, context) {
@@ -239,18 +241,60 @@ async function fetchRuleMetadata(env, ruleKeys) {
   return metadata;
 }
 
+// Strips trailing spaces/tabs that immediately precede a newline. Written as a manual linear
+// scan instead of `.replace(/[ \t]+\n/g, "\n")` (javascript:S8786): that regex is quadratic on
+// input containing a long run of spaces/tabs that is NOT immediately followed by a newline — at
+// every position within the run the engine greedily consumes to the end of the run, fails to
+// find "\n", and backtracks one character at a time before giving up and advancing by one
+// position, which is O(run length) work repeated at every position in the run. Measured live
+// (scripts, not shipped in the export): 4k/16k/64k-char adversarial runs took ~11/177/2841 ms
+// with the regex and ~0.1/0.2/0.3 ms with this scan — including the harder case of a long run
+// followed by more non-whitespace text on the same line, where naive alternatives (e.g. an
+// atomic-group emulation, or per-line `String#replace` with a `$`-anchored pattern) stay
+// quadratic for the same reason. A trailing run with no following newline at all (the very end
+// of the string, no final line break) is deliberately left untouched here — the final `.trim()`
+// in htmlToPlainText below removes it either way, so behaviour is unchanged for every real input.
+function stripTrailingSpaceBeforeNewlines(text) {
+  let result = "";
+  let index = 0;
+  while (index < text.length) {
+    const newlineIndex = text.indexOf("\n", index);
+    const hasNewline = newlineIndex !== -1;
+    const lineEnd = hasNewline ? newlineIndex : text.length;
+    let contentEnd = lineEnd;
+    while (contentEnd > index && (text[contentEnd - 1] === " " || text[contentEnd - 1] === "\t")) {
+      contentEnd -= 1;
+    }
+    result += text.slice(index, contentEnd);
+    if (hasNewline) result += "\n";
+    index = lineEnd + 1;
+  }
+  return result;
+}
+
 function htmlToPlainText(html) {
   if (!html) return null;
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replaceAll(/&amp;/g, "&")
-    .replaceAll(/&lt;/g, "<")
-    .replaceAll(/&gt;/g, ">")
-    .replaceAll(/&quot;/g, '"')
-    .replaceAll(/&#39;/g, "'")
-    .replace(/[ \t]+\n/g, "\n")
+  return stripTrailingSpaceBeforeNewlines(
+    html
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
+      // `[^<>]+` instead of `[^>]+` (javascript:S8786): the latter is quadratic on a long run of
+      // unmatched "<" (e.g. mangled/partial markup) — greedy match to end of string, backtrack
+      // one char at a time looking for ">", fail, advance one position, repeat. Excluding "<"
+      // from the tag-content class too makes a "<" inside an unterminated run fail the whole
+      // attempt immediately (no backtracking possible) instead of being swallowed as content, so
+      // each position costs O(1) instead of O(remaining length). Measured live: a 64k-char run of
+      // unmatched "<" took ~2.36s with the old pattern, ~0.3ms with this one, same output on
+      // every well-formed-HTML input. This only differs from the original on malformed HTML that
+      // has a literal (unescaped) "<" before a tag's closing ">" — not something SonarCloud's own
+      // rule descriptions produce, since valid HTML must escape a stray "<" as "&lt;" already.
+      .replace(/<[^<>]+>/g, "")
+      .replaceAll("&amp;", "&")
+      .replaceAll("&lt;", "<")
+      .replaceAll("&gt;", ">")
+      .replaceAll("&quot;", '"')
+      .replaceAll("&#39;", "'"),
+  )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -455,51 +499,35 @@ function buildMarkdownSummary({ issues, results, skippedNoFile, sarifOutput, war
   ].join("\n");
 }
 
-async function main() {
-  const env = readEnv();
+// Explicit comparator: the default sort is lexicographic, which is what these rule keys want,
+// but naming it keeps the intent readable and satisfies javascript:S2871 — and, being a plain
+// if/return chain rather than a nested ternary, javascript:S3358.
+function compareLexicographically(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
-  await waitForComputeEngineTask(env);
-
-  console.log(`Loading open SonarCloud findings for project "${env.sonarProjectKey}"...`);
-  const issues = await fetchAllSonarIssues(env);
-  console.log(`${issues.length} open findings loaded.`);
-
-  env.organization = issues[0]?.organization;
-
-  // Explicit comparator: the default sort is lexicographic, which is what these rule keys want,
-  // but saying so keeps the intent readable and satisfies javascript:S2871.
-  const uniqueRuleKeys = [...new Set(issues.map((issue) => issue.rule))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  console.log(`Loading rule metadata for ${uniqueRuleKeys.length} unique rules...`);
-  const ruleMetadata = uniqueRuleKeys.length > 0 ? await fetchRuleMetadata(env, uniqueRuleKeys) : new Map();
-  const rulesMissingMetadata = uniqueRuleKeys.filter((key) => !ruleMetadata.has(key) || !ruleMetadata.get(key)?.name);
-  if (rulesMissingMetadata.length > 0) {
-    console.warn(
-      `Warning: ${rulesMissingMetadata.length} rule(s) without a name from the rules API, degrading to rule ID: ` +
-        rulesMissingMetadata.join(", "),
-    );
-  }
-
-  const securitySeverityByRule = buildSecuritySeverityByRule(issues);
-  const ruleEntries = buildRuleEntries(
-    uniqueRuleKeys,
-    ruleMetadata,
-    env.sonarHostUrl,
-    env.organization ?? "unknown",
-    securitySeverityByRule,
-  );
-  const ruleIndexByKey = new Map(uniqueRuleKeys.map((key, index) => [key, index]));
-
+// Builds one SARIF result per finding (see buildResult), counting findings that resolve to no
+// file path at all instead of failing on them.
+function buildResults(issues, projectKey, ruleIndexByKey) {
   let skippedNoFile = 0;
   const results = [];
   for (const issue of issues) {
-    const result = buildResult(issue, env.sonarProjectKey, ruleIndexByKey);
+    const result = buildResult(issue, projectKey, ruleIndexByKey);
     if (result === null) {
       skippedNoFile += 1;
       continue;
     }
     results.push(result);
   }
+  return { results, skippedNoFile };
+}
 
+// The three GitHub limits that are knowable before the SARIF file is written: total rules, total
+// results (hard vs. soft), and per-rule tag count. The file-size limit (only knowable after
+// writing) is handled separately by fileSizeWarning.
+function collectPreWriteWarnings(ruleEntries, results) {
   const warnings = [];
   if (ruleEntries.length > GITHUB_LIMITS.maxRulesPerRun) {
     warnings.push(
@@ -525,6 +553,75 @@ async function main() {
       );
     }
   }
+  return warnings;
+}
+
+function fileSizeWarning(fileStats) {
+  if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes) {
+    return `File is ${fileStats.size} bytes, exceeding GitHub's 10 MB upload limit — the upload would be rejected.`;
+  }
+  if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes * 0.8) {
+    return `File is approaching GitHub's 10 MB upload limit at ${fileStats.size} bytes.`;
+  }
+  return null;
+}
+
+function printCountsSection(label, counts) {
+  console.log(label);
+  console.log(formatCountsTable(counts) || "  (none)");
+}
+
+function printWarnings(warnings) {
+  if (warnings.length === 0) return;
+  console.log("\nWarnings:");
+  for (const warning of warnings) console.log(`  - ${warning}`);
+}
+
+async function writeGithubStepSummaryIfConfigured({ issues, results, skippedNoFile, sarifOutput, warnings }) {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) return;
+  await appendFile(
+    summaryPath,
+    buildMarkdownSummary({ issues, results, skippedNoFile, sarifOutput, warnings }),
+  );
+  console.log(`\nSummary additionally written to GITHUB_STEP_SUMMARY (${summaryPath}).`);
+}
+
+async function main() {
+  const env = readEnv();
+
+  await waitForComputeEngineTask(env);
+
+  console.log(`Loading open SonarCloud findings for project "${env.sonarProjectKey}"...`);
+  const issues = await fetchAllSonarIssues(env);
+  console.log(`${issues.length} open findings loaded.`);
+
+  env.organization = issues[0]?.organization;
+
+  const uniqueRuleKeys = [...new Set(issues.map((issue) => issue.rule))].sort(compareLexicographically);
+  console.log(`Loading rule metadata for ${uniqueRuleKeys.length} unique rules...`);
+  const ruleMetadata = uniqueRuleKeys.length > 0 ? await fetchRuleMetadata(env, uniqueRuleKeys) : new Map();
+  const rulesMissingMetadata = uniqueRuleKeys.filter((key) => !ruleMetadata.has(key) || !ruleMetadata.get(key)?.name);
+  if (rulesMissingMetadata.length > 0) {
+    console.warn(
+      `Warning: ${rulesMissingMetadata.length} rule(s) without a name from the rules API, degrading to rule ID: ` +
+        rulesMissingMetadata.join(", "),
+    );
+  }
+
+  const securitySeverityByRule = buildSecuritySeverityByRule(issues);
+  const ruleEntries = buildRuleEntries(
+    uniqueRuleKeys,
+    ruleMetadata,
+    env.sonarHostUrl,
+    env.organization ?? "unknown",
+    securitySeverityByRule,
+  );
+  const ruleIndexByKey = new Map(uniqueRuleKeys.map((key, index) => [key, index]));
+
+  const { results, skippedNoFile } = buildResults(issues, env.sonarProjectKey, ruleIndexByKey);
+
+  const warnings = collectPreWriteWarnings(ruleEntries, results);
 
   const sarif = {
     $schema: "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
@@ -548,15 +645,8 @@ async function main() {
   const fileStats = await stat(env.sarifOutput);
   console.log(`SARIF file written: ${env.sarifOutput} (${fileStats.size} bytes).`);
 
-  if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes) {
-    warnings.push(
-      `File is ${fileStats.size} bytes, exceeding GitHub's 10 MB upload limit — the upload would be rejected.`,
-    );
-  } else if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes * 0.8) {
-    warnings.push(
-      `File is approaching GitHub's 10 MB upload limit at ${fileStats.size} bytes.`,
-    );
-  }
+  const sizeWarning = fileSizeWarning(fileStats);
+  if (sizeWarning) warnings.push(sizeWarning);
 
   const byType = groupCount(issues, (issue) => issue.type);
   const bySeverity = groupCount(issues, (issue) => issue.severity);
@@ -566,26 +656,19 @@ async function main() {
   console.log(`Findings total: ${issues.length}`);
   console.log(`SARIF results written: ${results.length}`);
   console.log(`Skipped (no file path): ${skippedNoFile}`);
-  console.log("By type:");
-  console.log(formatCountsTable(byType) || "  (none)");
-  console.log("By severity:");
-  console.log(formatCountsTable(bySeverity) || "  (none)");
-  console.log("By language:");
-  console.log(formatCountsTable(byLanguage) || "  (none)");
+  printCountsSection("By type:", byType);
+  printCountsSection("By severity:", bySeverity);
+  printCountsSection("By language:", byLanguage);
   console.log(`Output path: ${env.sarifOutput}`);
-  if (warnings.length > 0) {
-    console.log("\nWarnings:");
-    for (const warning of warnings) console.log(`  - ${warning}`);
-  }
+  printWarnings(warnings);
 
-  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-  if (summaryPath) {
-    await appendFile(
-      summaryPath,
-      buildMarkdownSummary({ issues, results, skippedNoFile, sarifOutput: env.sarifOutput, warnings }),
-    );
-    console.log(`\nSummary additionally written to GITHUB_STEP_SUMMARY (${summaryPath}).`);
-  }
+  await writeGithubStepSummaryIfConfigured({
+    issues,
+    results,
+    skippedNoFile,
+    sarifOutput: env.sarifOutput,
+    warnings,
+  });
 }
 
 // `file://${process.argv[1]}` is NOT the canonical form of import.meta.url once the path
