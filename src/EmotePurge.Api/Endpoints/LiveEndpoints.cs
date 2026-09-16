@@ -190,8 +190,12 @@ public static class LiveEndpoints
                     new { errorCode = ApiErrorCodes.LiveStreamUnavailable },
                     statusCode: StatusCodes.Status503ServiceUnavailable),
                 LiveEventSubscribeStatus.QuotaExhausted => QuotaExhaustedResult(httpContext),
-                _ => throw new ArgumentOutOfRangeException(
-                    nameof(result), result.Status, "Unbekannter Live-Event-Subscribe-Status.")
+                // result is a local variable, not a method parameter — ArgumentOutOfRangeException
+                // would misrepresent this as a caller error. LiveEventSubscribeStatus has no enum
+                // validation of its own, so this branch is genuinely reachable (an unhandled member
+                // added later, say), which rules out UnreachableException too.
+                _ => throw new InvalidOperationException(
+                    $"Unexpected {nameof(LiveEventSubscribeStatus)} value: {result.Status}.")
             };
         }
 
