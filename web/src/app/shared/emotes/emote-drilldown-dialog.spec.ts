@@ -168,15 +168,15 @@ describe('EmoteDrilldownDialog', () => {
       expect(component['myVoteKey']()).toBe('usageStats.drilldown.myVoteNone');
     });
 
-    it('reports none for a secret ballot, where myVote is withheld as null just like "did not vote"', () => {
+    it("still reports the viewer's own vote on a secret ballot — only the tallies are withheld, not myVote", () => {
       render(
         data({
-          vote: { keepVotes: null, deleteVotes: null, score: null, myVote: null },
+          vote: { keepVotes: null, deleteVotes: null, score: null, myVote: VoteType.Keep },
         }),
         of(series()),
       );
 
-      expect(component['myVoteKey']()).toBe('usageStats.drilldown.myVoteNone');
+      expect(component['myVoteKey']()).toBe('usageStats.drilldown.myVoteKeep');
     });
   });
 

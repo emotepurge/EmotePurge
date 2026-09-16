@@ -123,12 +123,12 @@ describe('ForeignEmoteSetService', () => {
       httpMock
         .expectOne('/api/seventv/channels/handofblood/emotes')
         .flush(
-          { code: 'foreign_channel_seventv_unavailable' },
+          { errorCode: 'foreign_channel_seventv_unavailable' },
           { status: 503, statusText: 'Service Unavailable' },
         );
 
       expect(error?.status).toBe(503);
-      expect(error?.error).toEqual({ code: 'foreign_channel_seventv_unavailable' });
+      expect(error?.error).toEqual({ errorCode: 'foreign_channel_seventv_unavailable' });
     });
   });
 });

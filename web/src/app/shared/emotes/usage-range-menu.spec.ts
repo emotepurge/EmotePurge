@@ -68,6 +68,14 @@ interface Harness {
   detect: () => void;
 }
 
+/** A rough accessible-name computation: visible text content with `aria-hidden` descendants (the
+ *  checkmark on a checked option) stripped out first, same as assistive tech would read it. */
+function accessibleName(element: HTMLElement): string {
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('[aria-hidden="true"]').forEach((node) => node.remove());
+  return clone.textContent?.trim() ?? '';
+}
+
 describe('UsageRangeMenu', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
@@ -104,11 +112,10 @@ describe('UsageRangeMenu', () => {
       radiogroup: () => host.querySelector<HTMLElement>('[role="radiogroup"]'),
       radios,
       radio: (label) => {
-        // The label lives in the option's first <span>; a checked option has a second, checkmark
-        // <span> right after it, which a plain textContent comparison would fold into the string.
-        const found = radios().find(
-          (candidate) => candidate.querySelector('span')?.textContent?.trim() === label,
-        );
+        // Accessible name of the role=radio element itself, not a lookup into its markup: a
+        // checked option renders a second, checkmark <span aria-hidden="true">, which the
+        // accessible-name computation excludes the same way assistive tech does.
+        const found = radios().find((candidate) => accessibleName(candidate) === label);
         if (!found) {
           throw new Error(`no radio labelled "${label}"`);
         }
@@ -224,6 +231,15 @@ describe('UsageRangeMenu', () => {
 
       expect(menu.host.changes).toEqual([{ min: null, max: null }]);
       expect(menu.dialog()).toBeNull(); // "all" does close, unlike "custom"
+
+      // The stickiness must not survive the close — reopening shows "all" selected and no custom
+      // fields, proving select() actually cleared it rather than the panel merely being closed.
+      menu.trigger().click();
+      menu.detect();
+
+      expect(menu.radio('alle').getAttribute('aria-checked')).toBe('true');
+      expect(menu.minInput()).toBeNull();
+      expect(menu.maxInput()).toBeNull();
     });
   });
 
@@ -291,7 +307,14 @@ describe('UsageRangeMenu', () => {
       menu.trigger().click();
       menu.detect();
 
-      commit(menu.minInput()!, 'not-a-number');
+      // A real <input type="number"> sanitizes an unparseable string to '' before the (change)
+      // handler ever sees it — that only re-exercises the empty-field case above and never reaches
+      // parseBound's Number.isNaN guard. Switching the input's type first stops jsdom (like a real
+      // browser) from sanitizing it away, so the handler receives the same raw string a laxer input
+      // source (paste, some mobile keyboards) can still produce.
+      const input = menu.minInput()!;
+      input.type = 'text';
+      commit(input, 'not-a-number');
       menu.detect();
 
       expect(menu.host.changes).toEqual([{ min: null, max: 20 }]);
