@@ -473,11 +473,11 @@ function parseLcov(lcovText) {
 // base) to a repo-relative POSIX path, so backend and frontend coverage data — and the `git diff`
 // output — all key into the same namespace.
 function normalizeToRepoRelativePosix(rawPath, repoRoot) {
-  const slashed = rawPath.replaceAll(/\\/g, "/");
+  const slashed = rawPath.replaceAll("\\", "/");
   const looksAbsolute =
     path.isAbsolute(rawPath) || /^[A-Za-z]:\//.test(slashed);
   if (looksAbsolute) {
-    return path.relative(repoRoot, rawPath).replaceAll(/\\/g, "/");
+    return path.relative(repoRoot, rawPath).replaceAll("\\", "/");
   }
   const withoutDotSlash = slashed.replace(/^\.\//, "");
   // lcov entries are sometimes relative to the Angular project (web/) rather than the repo root —

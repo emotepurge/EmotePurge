@@ -70,7 +70,9 @@ function readEnv() {
 }
 
 function authHeaders(token) {
-  return token ? { Authorization: `Basic ${Buffer.from(`${token}:`).toString("base64")}` } : {};
+  if (!token) return {};
+  const credentials = Buffer.from(`${token}:`).toString("base64");
+  return { Authorization: `Basic ${credentials}` };
 }
 
 async function httpJson(url, options, context) {
@@ -245,11 +247,11 @@ function htmlToPlainText(html) {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
     .replace(/<[^>]+>/g, "")
-    .replaceAll(/&amp;/g, "&")
-    .replaceAll(/&lt;/g, "<")
-    .replaceAll(/&gt;/g, ">")
-    .replaceAll(/&quot;/g, '"')
-    .replaceAll(/&#39;/g, "'")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -455,6 +457,15 @@ function buildMarkdownSummary({ issues, results, skippedNoFile, sarifOutput, war
   ].join("\n");
 }
 
+// Explicit comparator: the default sort is lexicographic, which is what these rule keys want,
+// but naming it keeps the intent readable and satisfies javascript:S2871 — and, being a plain
+// if/return chain rather than a nested ternary, javascript:S3358.
+function compareLexicographically(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 async function main() {
   const env = readEnv();
 
@@ -466,9 +477,7 @@ async function main() {
 
   env.organization = issues[0]?.organization;
 
-  // Explicit comparator: the default sort is lexicographic, which is what these rule keys want,
-  // but saying so keeps the intent readable and satisfies javascript:S2871.
-  const uniqueRuleKeys = [...new Set(issues.map((issue) => issue.rule))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const uniqueRuleKeys = [...new Set(issues.map((issue) => issue.rule))].sort(compareLexicographically);
   console.log(`Loading rule metadata for ${uniqueRuleKeys.length} unique rules...`);
   const ruleMetadata = uniqueRuleKeys.length > 0 ? await fetchRuleMetadata(env, uniqueRuleKeys) : new Map();
   const rulesMissingMetadata = uniqueRuleKeys.filter((key) => !ruleMetadata.has(key) || !ruleMetadata.get(key)?.name);
