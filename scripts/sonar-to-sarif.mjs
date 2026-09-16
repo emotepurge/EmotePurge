@@ -508,6 +508,85 @@ function compareLexicographically(a, b) {
   return 0;
 }
 
+// Builds one SARIF result per finding (see buildResult), counting findings that resolve to no
+// file path at all instead of failing on them.
+function buildResults(issues, projectKey, ruleIndexByKey) {
+  let skippedNoFile = 0;
+  const results = [];
+  for (const issue of issues) {
+    const result = buildResult(issue, projectKey, ruleIndexByKey);
+    if (result === null) {
+      skippedNoFile += 1;
+      continue;
+    }
+    results.push(result);
+  }
+  return { results, skippedNoFile };
+}
+
+// The three GitHub limits that are knowable before the SARIF file is written: total rules, total
+// results (hard vs. soft), and per-rule tag count. The file-size limit (only knowable after
+// writing) is handled separately by fileSizeWarning.
+function collectPreWriteWarnings(ruleEntries, results) {
+  const warnings = [];
+  if (ruleEntries.length > GITHUB_LIMITS.maxRulesPerRun) {
+    warnings.push(
+      `${ruleEntries.length} rules exceed GitHub's hard limit of ${GITHUB_LIMITS.maxRulesPerRun} rules per run.`,
+    );
+  }
+  if (results.length > GITHUB_LIMITS.maxResultsPerRunHard) {
+    warnings.push(
+      `${results.length} results exceed GitHub's hard limit of ${GITHUB_LIMITS.maxResultsPerRunHard} results ` +
+        `per run — the upload would be rejected by GitHub.`,
+    );
+  } else if (results.length > GITHUB_LIMITS.maxResultsPerRunDisplayed) {
+    warnings.push(
+      `${results.length} results exceed GitHub's soft limit of ${GITHUB_LIMITS.maxResultsPerRunDisplayed} — ` +
+        `only the top ${GITHUB_LIMITS.maxResultsPerRunDisplayed} by severity will be shown as prioritized.`,
+    );
+  }
+  for (const rule of ruleEntries) {
+    if (rule.properties.tags.length > GITHUB_LIMITS.maxTagsPerRule) {
+      warnings.push(
+        `Rule ${rule.id} has ${rule.properties.tags.length} tags, GitHub only shows the first 10 of these ` +
+          `(hard limit ${GITHUB_LIMITS.maxTagsPerRule}).`,
+      );
+    }
+  }
+  return warnings;
+}
+
+function fileSizeWarning(fileStats) {
+  if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes) {
+    return `File is ${fileStats.size} bytes, exceeding GitHub's 10 MB upload limit — the upload would be rejected.`;
+  }
+  if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes * 0.8) {
+    return `File is approaching GitHub's 10 MB upload limit at ${fileStats.size} bytes.`;
+  }
+  return null;
+}
+
+function printCountsSection(label, counts) {
+  console.log(label);
+  console.log(formatCountsTable(counts) || "  (none)");
+}
+
+function printWarnings(warnings) {
+  if (warnings.length === 0) return;
+  console.log("\nWarnings:");
+  for (const warning of warnings) console.log(`  - ${warning}`);
+}
+
+async function writeGithubStepSummaryIfConfigured({ issues, results, skippedNoFile, sarifOutput, warnings }) {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) return;
+  await appendFile(
+    summaryPath,
+    buildMarkdownSummary({ issues, results, skippedNoFile, sarifOutput, warnings }),
+  );
+  console.log(`\nSummary additionally written to GITHUB_STEP_SUMMARY (${summaryPath}).`);
+}
+
 async function main() {
   const env = readEnv();
 
@@ -540,42 +619,9 @@ async function main() {
   );
   const ruleIndexByKey = new Map(uniqueRuleKeys.map((key, index) => [key, index]));
 
-  let skippedNoFile = 0;
-  const results = [];
-  for (const issue of issues) {
-    const result = buildResult(issue, env.sonarProjectKey, ruleIndexByKey);
-    if (result === null) {
-      skippedNoFile += 1;
-      continue;
-    }
-    results.push(result);
-  }
+  const { results, skippedNoFile } = buildResults(issues, env.sonarProjectKey, ruleIndexByKey);
 
-  const warnings = [];
-  if (ruleEntries.length > GITHUB_LIMITS.maxRulesPerRun) {
-    warnings.push(
-      `${ruleEntries.length} rules exceed GitHub's hard limit of ${GITHUB_LIMITS.maxRulesPerRun} rules per run.`,
-    );
-  }
-  if (results.length > GITHUB_LIMITS.maxResultsPerRunHard) {
-    warnings.push(
-      `${results.length} results exceed GitHub's hard limit of ${GITHUB_LIMITS.maxResultsPerRunHard} results ` +
-        `per run — the upload would be rejected by GitHub.`,
-    );
-  } else if (results.length > GITHUB_LIMITS.maxResultsPerRunDisplayed) {
-    warnings.push(
-      `${results.length} results exceed GitHub's soft limit of ${GITHUB_LIMITS.maxResultsPerRunDisplayed} — ` +
-        `only the top ${GITHUB_LIMITS.maxResultsPerRunDisplayed} by severity will be shown as prioritized.`,
-    );
-  }
-  for (const rule of ruleEntries) {
-    if (rule.properties.tags.length > GITHUB_LIMITS.maxTagsPerRule) {
-      warnings.push(
-        `Rule ${rule.id} has ${rule.properties.tags.length} tags, GitHub only shows the first 10 of these ` +
-          `(hard limit ${GITHUB_LIMITS.maxTagsPerRule}).`,
-      );
-    }
-  }
+  const warnings = collectPreWriteWarnings(ruleEntries, results);
 
   const sarif = {
     $schema: "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
@@ -599,15 +645,8 @@ async function main() {
   const fileStats = await stat(env.sarifOutput);
   console.log(`SARIF file written: ${env.sarifOutput} (${fileStats.size} bytes).`);
 
-  if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes) {
-    warnings.push(
-      `File is ${fileStats.size} bytes, exceeding GitHub's 10 MB upload limit — the upload would be rejected.`,
-    );
-  } else if (fileStats.size > GITHUB_LIMITS.maxFileSizeBytes * 0.8) {
-    warnings.push(
-      `File is approaching GitHub's 10 MB upload limit at ${fileStats.size} bytes.`,
-    );
-  }
+  const sizeWarning = fileSizeWarning(fileStats);
+  if (sizeWarning) warnings.push(sizeWarning);
 
   const byType = groupCount(issues, (issue) => issue.type);
   const bySeverity = groupCount(issues, (issue) => issue.severity);
@@ -617,26 +656,19 @@ async function main() {
   console.log(`Findings total: ${issues.length}`);
   console.log(`SARIF results written: ${results.length}`);
   console.log(`Skipped (no file path): ${skippedNoFile}`);
-  console.log("By type:");
-  console.log(formatCountsTable(byType) || "  (none)");
-  console.log("By severity:");
-  console.log(formatCountsTable(bySeverity) || "  (none)");
-  console.log("By language:");
-  console.log(formatCountsTable(byLanguage) || "  (none)");
+  printCountsSection("By type:", byType);
+  printCountsSection("By severity:", bySeverity);
+  printCountsSection("By language:", byLanguage);
   console.log(`Output path: ${env.sarifOutput}`);
-  if (warnings.length > 0) {
-    console.log("\nWarnings:");
-    for (const warning of warnings) console.log(`  - ${warning}`);
-  }
+  printWarnings(warnings);
 
-  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-  if (summaryPath) {
-    await appendFile(
-      summaryPath,
-      buildMarkdownSummary({ issues, results, skippedNoFile, sarifOutput: env.sarifOutput, warnings }),
-    );
-    console.log(`\nSummary additionally written to GITHUB_STEP_SUMMARY (${summaryPath}).`);
-  }
+  await writeGithubStepSummaryIfConfigured({
+    issues,
+    results,
+    skippedNoFile,
+    sarifOutput: env.sarifOutput,
+    warnings,
+  });
 }
 
 // `file://${process.argv[1]}` is NOT the canonical form of import.meta.url once the path
