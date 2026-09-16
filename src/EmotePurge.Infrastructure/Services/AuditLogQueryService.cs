@@ -119,92 +119,23 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     /// The precedence between kinds is fixed, because a payload could carry more than one known key.
     /// <c>login</c> is recognized and deliberately dropped: user-scoped actions already carry the
     /// target's login in their details, and rendering it would produce "by sensitron · handofblood"
-    /// with nothing saying which of the two names is the target.
+    /// with nothing saying which of the two names is the target. The import kind is checked first
+    /// (<see cref="TryProjectImportDetail"/>) and that order is load-bearing: an emotes.syncImported
+    /// payload carries emoteCount too, and if the bare EmoteCount kind matched first it would win the
+    /// precedence and silently drop the one thing that row can't be reconstructed from otherwise —
+    /// where the emotes came from (R1 in the #71 import plan).
     /// </para>
     /// </summary>
     private static AuditLogDetail? ProjectDetail(string? detailsJson)
     {
-        if (string.IsNullOrWhiteSpace(detailsJson))
+        if (!TryParseDetailsObject(detailsJson, out var root))
         {
             return null;
         }
 
-        JsonElement root;
-        try
+        if (TryProjectImportDetail(root, out var importDetail))
         {
-            using var document = JsonDocument.Parse(detailsJson);
-            root = document.RootElement.Clone();
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        // Checked ahead of the bare EmoteCount case below, and that order is load-bearing: an
-        // emotes.syncImported payload carries emoteCount too, and if EmoteCount matched first it
-        // would win the precedence and silently drop the one thing that row can't be reconstructed
-        // from otherwise — where the emotes came from (R1 in the #71 import plan). Degrades to the
-        // branches below (rather than returning null outright) when sourceKind is present but
-        // unrecognized, or when emoteCount itself is missing or non-numeric.
-        if (root.TryGetProperty(SourceKindProperty, out var sourceKindElement)
-            && sourceKindElement.ValueKind == JsonValueKind.String)
-        {
-            var sourceKind = sourceKindElement.GetString();
-
-            // Checked ahead of the channel/file branch below (F1 Station 5): a network-wide 7TV
-            // ranking has no source channel to fall through to, so it needs its own kind rather than
-            // sharing the source-name check that follows. Degrades to the bare EmoteCount branch —
-            // not a throw — when leaderboardSort is missing or outside the allowlist, which also
-            // doubles as this feature's rollback behavior: if this PR were ever reverted, rows
-            // already written with "seventv-leaderboard" would simply read back as a plain count
-            // instead of the endpoint crashing on a Kind it no longer recognizes.
-            if (sourceKind == LeaderboardSourceKind
-                && TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var leaderboardCount)
-                && root.TryGetProperty(LeaderboardSortProperty, out var leaderboardSortElement)
-                && leaderboardSortElement.ValueKind == JsonValueKind.String
-                && SevenTvLeaderboardSortWireCode.TryParse(leaderboardSortElement.GetString(), out _))
-            {
-                return new AuditLogDetail(
-                    AuditLogDetail.Kinds.ImportedFromLeaderboard, leaderboardCount, leaderboardSortElement.GetString());
-            }
-
-            if (sourceKind is ChannelSourceKind or ForeignChannelSourceKind or FileSourceKind
-                && TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var importedCount))
-            {
-                string? source = null;
-                if (root.TryGetProperty(SourceChannelNameProperty, out var sourceChannelNameElement)
-                    && sourceChannelNameElement.ValueKind == JsonValueKind.String
-                    && sourceChannelNameElement.GetString() is { Length: > 0 } sourceChannelName)
-                {
-                    source = sourceChannelName.Length > MaxDetailTextLength
-                        ? sourceChannelName[..MaxDetailTextLength]
-                        : sourceChannelName;
-                }
-
-                // sourceKind decides the kind, never the mere presence of a name: a file import that
-                // somehow carries a source channel is still a file import, and reading the name
-                // instead would file it under a channel origin it never had. A stray name is
-                // dropped rather than shown.
-                if (sourceKind == FileSourceKind)
-                {
-                    return new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromFile, importedCount, null);
-                }
-
-                // A channel origin that cannot name its channel falls through to the bare count
-                // below instead of claiming an origin. The endpoint rejects that combination, so
-                // this only covers rows that got in around it; saying "N emotes" is honest, while
-                // both import kinds would not be. Holds for the foreign kind as well — it is
-                // name-carrying for exactly the same reason.
-                if (source is not null)
-                {
-                    return new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromChannel, importedCount, source);
-                }
-            }
+            return importDetail;
         }
 
         if (TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var emoteCount))
@@ -217,17 +148,136 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             return new AuditLogDetail(AuditLogDetail.Kinds.RemovedEntries, removedEntries, null);
         }
 
-        if (root.TryGetProperty(AuditLogDetail.Kinds.Title, out var title)
-            && title.ValueKind == JsonValueKind.String
-            && title.GetString() is { Length: > 0 } text)
+        return TryProjectTitleDetail(root, out var titleDetail) ? titleDetail : null;
+    }
+
+    /// <summary>Parses a details payload into an object root, degrading to false on any malformed shape.</summary>
+    private static bool TryParseDetailsObject(string? detailsJson, out JsonElement root)
+    {
+        root = default;
+        if (string.IsNullOrWhiteSpace(detailsJson))
         {
-            return new AuditLogDetail(
-                AuditLogDetail.Kinds.Title,
-                null,
-                text.Length > MaxDetailTextLength ? text[..MaxDetailTextLength] : text);
+            return false;
         }
 
-        return null;
+        try
+        {
+            using var document = JsonDocument.Parse(detailsJson);
+            root = document.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return root.ValueKind == JsonValueKind.Object;
+    }
+
+    /// <summary>
+    /// The emotes.syncImported shapes (channel/file/leaderboard origin). Degrades to false — not a
+    /// throw — when <c>sourceKind</c> is missing, unrecognized, or its companion fields don't check
+    /// out; the caller then falls through to the plainer kinds below.
+    /// </summary>
+    private static bool TryProjectImportDetail(JsonElement root, out AuditLogDetail? detail)
+    {
+        detail = null;
+        if (!root.TryGetProperty(SourceKindProperty, out var sourceKindElement)
+            || sourceKindElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var sourceKind = sourceKindElement.GetString();
+        return TryProjectLeaderboardDetail(root, sourceKind, out detail)
+            || TryProjectChannelOrFileDetail(root, sourceKind, out detail);
+    }
+
+    /// <summary>
+    /// Checked ahead of <see cref="TryProjectChannelOrFileDetail"/> (F1 Station 5): a network-wide 7TV
+    /// ranking has no source channel to fall through to, so it needs its own kind rather than sharing
+    /// the source-name check there. Degrades to false — not a throw — when leaderboardSort is missing
+    /// or outside the allowlist, which also doubles as this feature's rollback behavior: if this PR
+    /// were ever reverted, rows already written with "seventv-leaderboard" would simply read back as a
+    /// plain count instead of the endpoint crashing on a Kind it no longer recognizes.
+    /// </summary>
+    private static bool TryProjectLeaderboardDetail(JsonElement root, string? sourceKind, out AuditLogDetail? detail)
+    {
+        detail = null;
+        if (sourceKind != LeaderboardSourceKind
+            || !TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var leaderboardCount)
+            || !root.TryGetProperty(LeaderboardSortProperty, out var sortElement)
+            || sortElement.ValueKind != JsonValueKind.String
+            || !SevenTvLeaderboardSortWireCode.TryParse(sortElement.GetString(), out _))
+        {
+            return false;
+        }
+
+        detail = new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromLeaderboard, leaderboardCount, sortElement.GetString());
+        return true;
+    }
+
+    private static bool TryProjectChannelOrFileDetail(JsonElement root, string? sourceKind, out AuditLogDetail? detail)
+    {
+        detail = null;
+        if (sourceKind is not (ChannelSourceKind or ForeignChannelSourceKind or FileSourceKind)
+            || !TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var importedCount))
+        {
+            return false;
+        }
+
+        // sourceKind decides the kind, never the mere presence of a name: a file import that somehow
+        // carries a source channel is still a file import, and reading the name instead would file it
+        // under a channel origin it never had. A stray name is dropped rather than shown.
+        if (sourceKind == FileSourceKind)
+        {
+            detail = new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromFile, importedCount, null);
+            return true;
+        }
+
+        // A channel origin that cannot name its channel falls through (returns false) to the bare
+        // count kind instead of claiming an origin. The endpoint rejects that combination, so this
+        // only covers rows that got in around it; saying "N emotes" is honest, while both import kinds
+        // would not be. Holds for the foreign kind as well — it is name-carrying for exactly the same
+        // reason.
+        var source = ReadSourceChannelName(root);
+        if (source is null)
+        {
+            return false;
+        }
+
+        detail = new AuditLogDetail(AuditLogDetail.Kinds.ImportedFromChannel, importedCount, source);
+        return true;
+    }
+
+    private static string? ReadSourceChannelName(JsonElement root)
+    {
+        if (!root.TryGetProperty(SourceChannelNameProperty, out var sourceChannelNameElement)
+            || sourceChannelNameElement.ValueKind != JsonValueKind.String
+            || sourceChannelNameElement.GetString() is not { Length: > 0 } sourceChannelName)
+        {
+            return null;
+        }
+
+        return sourceChannelName.Length > MaxDetailTextLength
+            ? sourceChannelName[..MaxDetailTextLength]
+            : sourceChannelName;
+    }
+
+    private static bool TryProjectTitleDetail(JsonElement root, out AuditLogDetail? detail)
+    {
+        detail = null;
+        if (!root.TryGetProperty(AuditLogDetail.Kinds.Title, out var title)
+            || title.ValueKind != JsonValueKind.String
+            || title.GetString() is not { Length: > 0 } text)
+        {
+            return false;
+        }
+
+        detail = new AuditLogDetail(
+            AuditLogDetail.Kinds.Title,
+            null,
+            text.Length > MaxDetailTextLength ? text[..MaxDetailTextLength] : text);
+        return true;
     }
 
     private static bool TryReadCount(JsonElement root, string propertyName, out long value)
