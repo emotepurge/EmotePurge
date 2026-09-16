@@ -10,6 +10,80 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-16 — `ForwardedHeaders` trust was never actually configured, correcting the 2026-07-26 entry
+
+**Betrifft:** `src/EmotePurge.Api/Program.cs` · `src/EmotePurge.Api/Endpoints/AuthEndpoints.cs` · `tests/EmotePurge.Api.Tests/ForwardedHeadersTrustTests.cs` · `docs/Architectur.md` · `docs/Operations.md` · `docs/Review-2026-07-29.md`
+
+The 2026-07-26 entry further down, "`ForwardedHeadersMiddleware` mit explizit geleertem
+`KnownIPNetworks`/`KnownProxies` ergänzt", describes a fix that never took effect. The code it
+introduced read:
+
+```csharp
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    KnownIPNetworks = { },
+    KnownProxies = { }
+});
+```
+
+`Property = { }` inside an object initializer is a *collection initializer*, not an assignment —
+both properties are `{ get; }`-only, so the expression calls `Add` for zero elements and leaves the
+defaults (`[::1]`, `127.0.0.0/8`) exactly where they were. Measured on the running instance:
+`KnownProxies.Count = 1`, `KnownIPNetworks.Count = 1`. In production nginx reaches the API through
+the Docker bridge gateway (`172.18.0.1`), which is in neither list, so the middleware discarded
+every `X-Forwarded-Proto` and `X-Forwarded-For` silently, without a log line. Reproduced against a
+dev container with the same NAT topology: even with `X-Forwarded-Proto: https` set, the `Set-Cookie`
+came back without `secure`. The old entry stays as written, unedited, per this log's rule against
+rewriting history; this entry is the correction.
+
+**`X-Forwarded-For` was affected just as much, and that half went unnoticed entirely.** The
+2026-07-26 entry only ever reasons about `IsHttps`, but `RateLimitRejection.ResolveUserKey` falls
+back to `Connection.RemoteIpAddress` for anonymous requests — which in production is constantly the
+bridge gateway. Every anonymous caller therefore shared a single rate-limit partition, including the
+`PublicHealth` policy's 30 permits, which could push the Uptime Kuma monitor into `429` and report a
+healthy app as down. Note that `docs/DECISIONS.md`'s Cloudflare entry of 2026-08-29 ("App-seitig war
+also nichts zu ändern") is unaffected and still reads correctly: the proxy chain in front was never
+the problem, the trust list inside the app was.
+
+**The fix widens the trust list instead of emptying it.** `KnownIPNetworks.Add(IPNetwork.Parse(
+"172.16.0.0/12"))`, and the loopback defaults stay. A genuine `Clear()` — what the 2026-07-26 entry
+believed it was doing — is fail-open: it trusts whatever any sender claims, and its safety rests
+entirely on the port binding staying `127.0.0.1`, an invariant living in a different file that
+nobody checks when editing it. Trusting a network keeps the middleware checking. The gateway address
+itself is not stable enough to pin (Docker assigns it per network), but Docker's default address
+pool is, and `172.16.0.0/12` covers every bridge network Compose creates here. The loopback defaults
+are kept deliberately rather than replaced: local `dotnet run` behind the Vite dev proxy arrives
+from `127.0.0.1`, and clearing them first would have broken that path for no gain.
+
+**The OAuth state cookie goes hard `Secure = true`** (`AuthEndpoints.cs`), instead of
+`Request.IsHttps`. It is the CSRF defence of the entire login flow and was simply overlooked when
+S2-10 gave the session cookie `CookieSecurePolicy.Always` on 2026-07-30 — the reasoning in that
+cookie's comment applied to this one word for word. Local HTTP login is unaffected: browsers treat
+`http://localhost` as a trustworthy origin and store `Secure` cookies there, which the session
+cookie has been demonstrating in daily use ever since S2-10.
+
+**Both halves are now asserted in `tests/EmotePurge.Api.Tests`,** because this is precisely the
+configuration that stayed broken for seven weeks while looking correct. The forwarded-header cases
+are the load-bearing ones and they are not written the obvious way: they go through
+`TestServer.SendAsync(Action<HttpContext>, CancellationToken)`, which runs before the pipeline and
+lets the test set `Connection.RemoteIpAddress`. Through `HttpClient` that address is `null` and
+therefore never trusted, so a naively written test would be green against the broken configuration
+too and would have let this exact bug through again. Verified by reverting the fix: with it, three
+tests pass; without it, `ForwardedHeaders_FromDockerBridgeGateway_AreApplied` and
+`OAuthStateCookie_IsSecure_OverPlainHttp` both fail. The third case — forwarded headers from an
+address outside every trusted range are ignored — passes either way by construction; it is there to
+catch a future `Clear()`, not this bug.
+
+Three documentation sites repeated the wrong claim and are corrected in the same change:
+`docs/Architectur.md` ("trusts it with empty `KnownIPNetworks`/`KnownProxies`"), `docs/Operations.md`
+("trusts forwarded headers from any sender" — its warning against exposing the container port beyond
+loopback stays, it was right for other reasons), and the check command in `docs/Review-2026-07-29.md`
+(S2-10 and open question 1), which was `curl -sI`: `-I` sends `HEAD`, the route is a `MapGet`, and
+`MapFallback("/api/{**rest}")` catches it — the answer is a `Set-Cookie`-free 404 that reads as an
+all-clear. The working form is `curl -sS -o /dev/null -D - https://emotepurge.app/api/auth/twitch/login | grep -i set-cookie`
+(no `-L`: following the redirect to Twitch would replace the headers under inspection).
+
 ### 2026-09-16 — `web-build` stage runs `npm ci --ignore-scripts` (docker:S6505)
 
 **Betrifft:** `src/EmotePurge.Api/Dockerfile`

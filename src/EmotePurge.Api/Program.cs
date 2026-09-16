@@ -212,16 +212,29 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     await context.Response.WriteAsJsonAsync(new { errorCode = ApiErrorCodes.UnexpectedError });
 }));
 
-// Hinter einem host-level Reverse Proxy (TLS-Termination) erreicht die Verbindung den Container
-// über die Docker-Bridge-Gateway-IP, nicht über Loopback — Default-Trust von ForwardedHeadersMiddleware
-// (nur Loopback) würde X-Forwarded-Proto sonst ignorieren. Sicher, weil der Container ausschließlich
-// über einen 127.0.0.1-gebundenen Host-Port erreichbar ist (einzig möglicher Absender ist der lokale Proxy).
-app.UseForwardedHeaders(new ForwardedHeadersOptions
+// Behind a host-level reverse proxy (TLS termination) the connection reaches the container through
+// the Docker bridge gateway address, not through loopback, so the middleware's default trust list
+// (loopback only) would drop X-Forwarded-Proto and X-Forwarded-For even though the proxy sets both.
+//
+// This block used to read `KnownIPNetworks = { }, KnownProxies = { }` and was believed to clear both
+// lists. It does not: both properties are get-only collections, so that is a collection initializer
+// adding zero elements — the loopback defaults stayed in place and every forwarded header was
+// silently discarded from 2026-07-26 until 2026-09-16 (see the DECISIONS entry of that date).
+//
+// The fix deliberately widens the trust list instead of emptying it. Emptying it means trusting any
+// sender, which is only ever as safe as the port binding; adding the network keeps the middleware
+// checking. The gateway address itself is not stable enough to pin (Docker assigns it per network),
+// Docker's default address pool is: 172.16.0.0/12 covers every bridge network Compose creates here.
+// The loopback defaults stay on purpose — local `dotnet run` behind the Vite dev proxy arrives from
+// 127.0.0.1, and dropping them would break that path.
+var forwardedHeadersOptions = new ForwardedHeadersOptions
 {
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
-    KnownIPNetworks = { },
-    KnownProxies = { }
-});
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+};
+// Fully qualified on purpose: the obsolete Microsoft.AspNetCore.HttpOverrides.IPNetwork is in scope
+// through the using above and makes the bare name ambiguous. KnownIPNetworks wants the BCL type.
+forwardedHeadersOptions.KnownIPNetworks.Add(System.Net.IPNetwork.Parse("172.16.0.0/12"));
+app.UseForwardedHeaders(forwardedHeadersOptions);
 
 // Deliberately no UseHttpsRedirection(): Kestrel only listens on http://+:8080 inside the container
 // and no ASPNETCORE_HTTPS_PORT is set, so it was a no-op that merely suggested protection it never
