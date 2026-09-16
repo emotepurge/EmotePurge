@@ -55,4 +55,19 @@ describe('importTargetOptions', () => {
   it('returns an empty list for an empty channel set', () => {
     expect(importTargetOptions(result([]), 'me')).toEqual([]);
   });
+
+  it('keeps insertion order for two channels with the same name (stable sort on a tie)', () => {
+    const options = importTargetOptions(
+      result([
+        channel({ channelName: 'sameuser', isBroadcaster: true, isTracked: true }),
+        channel({ channelName: 'sameuser', isSevenTvEditor: true, isTracked: false }),
+      ]),
+      'me',
+    );
+
+    expect(options).toEqual([
+      { channelName: 'sameuser', disabled: false },
+      { channelName: 'sameuser', disabled: true },
+    ]);
+  });
 });

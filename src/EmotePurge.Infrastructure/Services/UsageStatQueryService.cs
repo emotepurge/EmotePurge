@@ -7,6 +7,8 @@ namespace EmotePurge.Infrastructure.Services;
 
 public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
 {
+    private const string FromMustPrecedeToMessage = "'from' must be less than or equal to 'to'.";
+
     public async Task<IReadOnlyList<EmoteUsageDto>> GetUsageStatsAsync(string channelName, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
@@ -26,7 +28,7 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
     {
         if (from > to)
         {
-            throw new ArgumentException("'from' must be less than or equal to 'to'.", nameof(from));
+            throw new ArgumentException(FromMustPrecedeToMessage, nameof(from));
         }
 
         var normalized = ChannelName.Normalize(channelName);
@@ -106,7 +108,7 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
     {
         if (from > to)
         {
-            throw new ArgumentException("'from' must be less than or equal to 'to'.", nameof(from));
+            throw new ArgumentException(FromMustPrecedeToMessage, nameof(from));
         }
 
         var normalized = ChannelName.Normalize(channelName);
@@ -173,7 +175,7 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
     {
         if (from > to)
         {
-            throw new ArgumentException("'from' must be less than or equal to 'to'.", nameof(from));
+            throw new ArgumentException(FromMustPrecedeToMessage, nameof(from));
         }
 
         var normalized = ChannelName.Normalize(channelName);
@@ -238,7 +240,7 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
     {
         if (from > to)
         {
-            throw new ArgumentException("'from' must be less than or equal to 'to'.", nameof(from));
+            throw new ArgumentException(FromMustPrecedeToMessage, nameof(from));
         }
 
         if (emoteIds.Count == 0)

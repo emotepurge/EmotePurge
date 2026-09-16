@@ -278,6 +278,20 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetUsageContextAsync_Throws_WhenFromIsAfterTo()
+    {
+        // The guard runs before any DB access, so no seed is needed here.
+        await using var db = fixture.CreateDbContext();
+
+        var service = new UsageStatQueryService(db);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.GetUsageContextAsync("irrelevant-channel", new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
+
+        Assert.Equal("from", exception.ParamName);
+    }
+
+    [Fact]
     public async Task GetTotalsByEmoteIdsAsync_ReturnsOnlyTheRequestedIds()
     {
         await using var db = fixture.CreateDbContext();
@@ -319,6 +333,20 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var totals = await service.GetTotalsByEmoteIdsAsync([], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
 
         Assert.Empty(totals);
+    }
+
+    [Fact]
+    public async Task GetTotalsByEmoteIdsAsync_Throws_WhenFromIsAfterTo()
+    {
+        // The guard runs before any DB access, so no seed is needed here.
+        await using var db = fixture.CreateDbContext();
+
+        var service = new UsageStatQueryService(db);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.GetTotalsByEmoteIdsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
+
+        Assert.Equal("from", exception.ParamName);
     }
 
     [Fact]
@@ -524,6 +552,20 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetDailySeriesAsync_Throws_WhenFromIsAfterTo()
+    {
+        // The guard runs before any DB access, so no seed is needed here.
+        await using var db = fixture.CreateDbContext();
+
+        var service = new UsageStatQueryService(db);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.GetDailySeriesAsync("irrelevant-channel", "irrelevant-id", new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
+
+        Assert.Equal("from", exception.ParamName);
+    }
+
+    [Fact]
     public async Task GetChannelSeriesAsync_ReturnsOffsetsFromRangeStart_PerEmote_Ascending()
     {
         await using var db = fixture.CreateDbContext();
@@ -665,6 +707,20 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
 
         Assert.Empty(series.Emotes);
         Assert.Empty(series.LiveDays);
+    }
+
+    [Fact]
+    public async Task GetChannelSeriesAsync_Throws_WhenFromIsAfterTo()
+    {
+        // The guard runs before any DB access, so no seed is needed here.
+        await using var db = fixture.CreateDbContext();
+
+        var service = new UsageStatQueryService(db);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.GetChannelSeriesAsync("irrelevant-channel", new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
+
+        Assert.Equal("from", exception.ParamName);
     }
 
     [Fact]

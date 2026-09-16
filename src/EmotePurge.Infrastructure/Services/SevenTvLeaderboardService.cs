@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.SevenTv;
@@ -230,8 +231,8 @@ public sealed class SevenTvLeaderboardService(
                     SevenTvLeaderboardFillOutcome.RateLimited(result.RetryAfter)),
                 SevenTvEmoteSearchLookupStatus.Unavailable => PageAttempt.Failed(
                     SevenTvLeaderboardStatus.SevenTvUnavailable, SevenTvLeaderboardFillOutcome.Unavailable()),
-                _ => throw new ArgumentOutOfRangeException(
-                    nameof(result), result.Status, "Unknown SevenTvEmoteSearchLookupStatus.")
+                _ => throw new UnreachableException(
+                    $"Unexpected {nameof(SevenTvEmoteSearchLookupStatus)} value: {result.Status}.")
             };
         }
         finally

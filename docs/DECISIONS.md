@@ -10,6 +10,27 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-16 — `Program.cs` drops the explicit `public partial class Program;`, revising the 2026-08-02 test-project entry
+
+**Betrifft:** `src/EmotePurge.Api/Program.cs` · `docs/Review-2026-07-29-Umsetzung.md`
+
+Commit `fa634e8` removed the hand-written `public partial class Program;` together with its
+explanatory comment (Sonar/ASP0027, "remove the redundant partial class declaration"). The
+2026-08-02 entry below, "Ein drittes Testprojekt für die Api", names that line as one of two
+deliberate concessions to testability in production code — that claim no longer holds. The old
+entry stays as written, unedited, per this log's own rule against rewriting history; this entry
+is the correction instead.
+
+In .NET 10, the web SDK's source generator emits the public `Program` class itself even without
+an explicit declaration, so ASP0027 flags the hand-written line as redundant rather than
+necessary. `WebApplicationFactory<Program>` in `tests/EmotePurge.Api.Tests` still resolves the
+type without it — those tests are unchanged and green, which is the evidence the removal is safe.
+`InternalsVisibleTo Include="EmotePurge.Api.Tests"` in `src/EmotePurge.Api/EmotePurge.Api.csproj`
+is untouched and remains; of the two concessions the 2026-08-02 entry described, only this one
+still stands.
+
+---
+
 ### 2026-09-15 — Four rule filters against the "comprehensive" profile's noise
 
 **Betrifft:** `.github/workflows/sonarcloud.yml`, `.editorconfig`

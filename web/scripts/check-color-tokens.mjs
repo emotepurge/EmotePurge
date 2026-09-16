@@ -33,7 +33,7 @@ const PREFIXES =
 // absolutes (text-white, border-black). Optional variant prefixes (hover:, sm:, disabled:) sit in
 // front and are matched by the leading boundary, not enumerated.
 const VIOLATION = new RegExp(
-  `\\b(?:${PREFIXES})-(?:${PALETTES})-\\d{2,3}\\b|\\b(?:${PREFIXES})-(?:white|black)\\b`,
+  String.raw`\b(?:${PREFIXES})-(?:${PALETTES})-\d{2,3}\b|\b(?:${PREFIXES})-(?:white|black)\b`,
   'g',
 );
 

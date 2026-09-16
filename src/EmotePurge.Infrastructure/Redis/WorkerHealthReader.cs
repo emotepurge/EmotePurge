@@ -35,7 +35,7 @@ public class WorkerHealthReader(IConnectionMultiplexer connectionMultiplexer, IL
             return null;
         }
 
-        return JsonSerializer.Deserialize<WorkerHealthSnapshot>((string)value!, JsonSerializerOptions.Web);
+        return JsonSerializer.Deserialize<WorkerHealthSnapshot>(value.ToString(), JsonSerializerOptions.Web);
     }
 }
 
@@ -63,7 +63,7 @@ public class WorkerRosterReader(IConnectionMultiplexer connectionMultiplexer, IL
             return null;
         }
 
-        return JsonSerializer.Deserialize<WorkerRosterSnapshot>((string)value!, JsonSerializerOptions.Web);
+        return JsonSerializer.Deserialize<WorkerRosterSnapshot>(value.ToString(), JsonSerializerOptions.Web);
     }
 }
 

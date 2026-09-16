@@ -41,7 +41,7 @@ async Task RunWorkerAsync()
 
     var host = builder.Build();
     await EnsureSchemaIsCurrentAsync(host);
-    host.Run();
+    await host.RunAsync();
 }
 
 async Task<int> RunHarnessAsync(HarnessCommandLineResult.RunHarness request)

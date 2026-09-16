@@ -401,7 +401,7 @@ export class ImportConfirmDialog {
   // check failed, which is the amber case below, not a confirmed foreign set (delete dialog's rule).
   protected readonly sharedSetWarning = computed<EmoteSetWarning | null>(() => {
     const warning = this.ready()?.warning;
-    if (!warning || !warning.available) {
+    if (!warning?.available) {
       return null;
     }
     const flagged =

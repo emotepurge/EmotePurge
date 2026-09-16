@@ -444,7 +444,7 @@ describe('SevenTvDeleteService', () => {
 
     service.resetIfChannelChanged('sensitron');
 
-    expect(service.queue().length).toBe(1);
+    expect(service.queue()).toHaveLength(1);
     expect(service.syncReport()).toBe('succeeded');
   });
 
@@ -454,7 +454,7 @@ describe('SevenTvDeleteService', () => {
     service.resetIfChannelChanged('other-channel');
 
     expect(service.isRunning()).toBe(true);
-    expect(service.queue().length).toBe(2);
+    expect(service.queue()).toHaveLength(2);
 
     // Drain the run so afterEach's httpMock.verify() stays green.
     httpMock.expectOne(GQL_ENDPOINT).flush({});
@@ -507,7 +507,7 @@ describe('SevenTvDeleteService', () => {
 
     service.startDelete('set-2', 'other-channel', [EMOTES[0]]);
 
-    expect(service.queue().length).toBe(firstQueueLength);
+    expect(service.queue()).toHaveLength(firstQueueLength);
 
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);

@@ -115,7 +115,7 @@ export class DeleteConfirmDialog {
   // foreign; conflating the two produced a guaranteed false alarm on every network hiccup.
   protected readonly hasSharedSetWarning = computed<EmoteSetWarning | null>(() => {
     const w = this.data.warning();
-    if (!w || !w.available) {
+    if (!w?.available) {
       return null;
     }
     const flagged =

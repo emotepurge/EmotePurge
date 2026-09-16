@@ -110,7 +110,7 @@ export class VoteSessionService {
   takeGuardResults(channelName: string, sessionId: number): VoteSessionResults | null {
     const stash = this.guardResultsStash;
     this.guardResultsStash = null;
-    if (!stash || stash.channelName !== channelName || stash.sessionId !== sessionId) {
+    if (stash?.channelName !== channelName || stash.sessionId !== sessionId) {
       return null;
     }
     return stash.results;

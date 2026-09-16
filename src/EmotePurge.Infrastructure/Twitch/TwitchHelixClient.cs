@@ -9,6 +9,8 @@ namespace EmotePurge.Infrastructure.Twitch;
 
 public class TwitchHelixClient(HttpClient httpClient, ILogger<TwitchHelixClient> logger) : ITwitchHelixClient
 {
+    private const string BearerScheme = "Bearer";
+
     private const int MaxModeratedChannelPages = 10;
     private const int MaxStreamsLoginsPerRequest = 100;
     private const int MaxUsersParametersPerRequest = 100;
@@ -18,7 +20,7 @@ public class TwitchHelixClient(HttpClient httpClient, ILogger<TwitchHelixClient>
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, "users");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, accessToken);
 
             var response = await httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
@@ -64,7 +66,7 @@ public class TwitchHelixClient(HttpClient httpClient, ILogger<TwitchHelixClient>
                 }
 
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, accessToken);
 
                 var response = await httpClient.SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -119,7 +121,7 @@ public class TwitchHelixClient(HttpClient httpClient, ILogger<TwitchHelixClient>
         {
             using var request = new HttpRequestMessage(
                 HttpMethod.Get, $"subscriptions/user?broadcaster_id={broadcasterTwitchId}&user_id={userTwitchId}");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, accessToken);
 
             var response = await httpClient.SendAsync(request, cancellationToken);
             if (response.StatusCode == HttpStatusCode.NotFound)
@@ -159,7 +161,7 @@ public class TwitchHelixClient(HttpClient httpClient, ILogger<TwitchHelixClient>
                 var url = "streams?first=100&" + string.Join('&', batch.Select(login => $"user_login={Uri.EscapeDataString(login)}"));
 
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, accessToken);
 
                 var response = await httpClient.SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -214,7 +216,7 @@ public class TwitchHelixClient(HttpClient httpClient, ILogger<TwitchHelixClient>
                 var url = "users?" + string.Join('&', batch.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value)}"));
 
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                request.Headers.Authorization = new AuthenticationHeaderValue(BearerScheme, accessToken);
 
                 var response = await httpClient.SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)

@@ -37,7 +37,6 @@ import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.servic
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
-import { VoteSessionSummary } from '../../core/voting/vote-session.model';
 import {
   CreateVoteSessionDialogData,
   openCreateVoteSessionDialog,
@@ -818,7 +817,7 @@ export class UsageStatsPage {
   /** Occupied slots after the pending selection would be deleted — the dock's one number. */
   protected readonly projectedSlots = computed(() => {
     const status = this.setStatus();
-    if (!status || status.capacity === null) {
+    if (status?.capacity == null) {
       return null;
     }
     return {

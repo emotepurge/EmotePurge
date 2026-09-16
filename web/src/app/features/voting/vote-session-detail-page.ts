@@ -741,8 +741,8 @@ export class VoteSessionDetailPage {
     );
   }
 
-  private load(options: { freeze: boolean } = { freeze: true }): void {
-    this.loadResults(options);
+  private load({ freeze = true }: { freeze?: boolean } = {}): void {
+    this.loadResults({ freeze });
     this.loadActiveEmoteSetId();
   }
 

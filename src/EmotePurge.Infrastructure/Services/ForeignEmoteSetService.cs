@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
@@ -120,8 +121,8 @@ public class ForeignEmoteSetService(
             case SevenTvPreviewLookupStatus.Ok:
                 break;
             default:
-                throw new ArgumentOutOfRangeException(
-                    nameof(previewResult), previewResult.Status, "Unbekannter SevenTvPreviewLookupStatus.");
+                throw new UnreachableException(
+                    $"Unexpected {nameof(SevenTvPreviewLookupStatus)} value: {previewResult.Status}.");
         }
 
         var preview = previewResult.Preview!;

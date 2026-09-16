@@ -29,5 +29,16 @@ export function importTargetOptions(
     .filter((channel) => channel.isBroadcaster || channel.isSevenTvEditor)
     .filter((channel) => normalizeChannelName(channel.channelName) !== current)
     .map((channel) => ({ channelName: channel.channelName, disabled: !channel.isTracked }))
-    .sort((a, b) => (a.channelName < b.channelName ? -1 : a.channelName > b.channelName ? 1 : 0));
+    .sort(compareChannelNames);
+}
+
+/** Ordinal (code-unit) comparison — these are login names, not locale-sensitive display text. */
+function compareChannelNames(a: ImportTargetOption, b: ImportTargetOption): number {
+  if (a.channelName < b.channelName) {
+    return -1;
+  }
+  if (a.channelName > b.channelName) {
+    return 1;
+  }
+  return 0;
 }

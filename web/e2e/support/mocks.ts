@@ -377,6 +377,7 @@ export async function mockAuditLog(
 ): Promise<void> {
   const pageSize = 25;
   const pageNumbers = Object.keys(entriesByPage).map(Number);
+  const sortedPageNumbers = [...pageNumbers].sort((a, b) => a - b);
   const highestPage = pageNumbers.length > 0 ? Math.max(...pageNumbers) : 1;
   const effectiveTotal =
     totalCount ??
@@ -403,8 +404,7 @@ export async function mockAuditLog(
     const actor = params.get('actor')?.trim().toLowerCase() || null;
 
     if (action || channel || actor) {
-      const filtered = pageNumbers
-        .sort((a, b) => a - b)
+      const filtered = sortedPageNumbers
         .flatMap((pageNumber) => entriesByPage[pageNumber])
         .map(withDefaults)
         .filter(
@@ -445,6 +445,7 @@ export async function mockChannelAuditLog(
 ): Promise<void> {
   const pageSize = 25;
   const pageNumbers = Object.keys(entriesByPage).map(Number);
+  const sortedPageNumbers = [...pageNumbers].sort((a, b) => a - b);
   const highestPage = pageNumbers.length > 0 ? Math.max(...pageNumbers) : 1;
   const effectiveTotal =
     highestPage > 1
@@ -473,8 +474,7 @@ export async function mockChannelAuditLog(
     const actor = params.get('actor')?.trim().toLowerCase() || null;
 
     if (action || actor) {
-      const filtered = pageNumbers
-        .sort((a, b) => a - b)
+      const filtered = sortedPageNumbers
         .flatMap((pageNumber) => entriesByPage[pageNumber])
         .map(withDefaults)
         .filter(
@@ -669,7 +669,7 @@ export async function mockUsageDaily(
       to: url.searchParams.get('to') ?? '2026-07-28',
       totalUseCount: days.reduce((sum, day) => sum + day.useCount, 0),
       firstUsedDate: days[0]?.date ?? null,
-      lastUsedDate: days[days.length - 1]?.date ?? null,
+      lastUsedDate: days.at(-1)?.date ?? null,
       days,
       liveDays,
     });

@@ -15,6 +15,10 @@ public class SevenTvApiClient(
     IForeignUpstreamRequestBudget foreignRequestBudget,
     ILogger<SevenTvApiClient> logger) : ISevenTvApiClient
 {
+    // 7TV's own spelling of the Twitch platform on a Connection object — matched against exactly,
+    // never derived, so the five call sites that filter on it cannot drift apart.
+    private const string TwitchPlatform = "TWITCH";
+
     private const string GqlUsersQuery =
         "query($q: String!) { users(query: $q) { id username connections { platform username id } } }";
 
@@ -134,7 +138,7 @@ public class SevenTvApiClient(
 
             var match = dto.Data.Users
                 .SelectMany(u => u.Connections)
-                .FirstOrDefault(c => c.Platform == "TWITCH" &&
+                .FirstOrDefault(c => c.Platform == TwitchPlatform &&
                     string.Equals(c.Username, normalized, StringComparison.OrdinalIgnoreCase));
 
             if (match is null)
@@ -240,7 +244,7 @@ public class SevenTvApiClient(
     {
         try
         {
-            var payload = new { query = GqlUserByConnectionQuery, variables = new { p = "TWITCH", id = twitchUserId } };
+            var payload = new { query = GqlUserByConnectionQuery, variables = new { p = TwitchPlatform, id = twitchUserId } };
             var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
             response.EnsureSuccessStatusCode();
 
@@ -274,7 +278,7 @@ public class SevenTvApiClient(
             // still be null (account exists, no active set), which is a legitimate Ok — only the
             // connection itself being absent means NoSevenTvAccount.
             var twitchConnection = user.Connections
-                .FirstOrDefault(c => c.Platform == "TWITCH" && c.Id == twitchUserId);
+                .FirstOrDefault(c => c.Platform == TwitchPlatform && c.Id == twitchUserId);
             if (twitchConnection is null)
             {
                 logger.LogInformation("Kein 7TV-Account für Twitch-ID {Id}.", twitchUserId);
@@ -350,7 +354,7 @@ public class SevenTvApiClient(
 
             var result = grants
                 .SelectMany(g => g.User?.Connections ?? [])
-                .Where(c => c.Platform == "TWITCH")
+                .Where(c => c.Platform == TwitchPlatform)
                 .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
                 .ToList();
             return SevenTvEditorGrantsResult.Ok(result);
@@ -748,12 +752,9 @@ public class SevenTvApiClient(
                     return null;
                 }
 
-                foreach (var entry in entryPage.Items)
+                foreach (var entry in entryPage.Items.Where(entry => entry.Emote is not null && entry.AddedAt is not null))
                 {
-                    if (entry.Emote is not null && entry.AddedAt is not null)
-                    {
-                        result[entry.Emote.Id] = entry.AddedAt.Value.UtcDateTime;
-                    }
+                    result[entry.Emote!.Id] = entry.AddedAt!.Value.UtcDateTime;
                 }
 
                 if (page >= entryPage.PageCount)
@@ -796,7 +797,7 @@ public class SevenTvApiClient(
         }
 
         var ownConnection = (dto.User?.Connections ?? []).FirstOrDefault(c =>
-            c.Platform == "TWITCH" && c.Id == twitchUserId && IsUsableSevenTvId(c.EmoteSetId));
+            c.Platform == TwitchPlatform && c.Id == twitchUserId && IsUsableSevenTvId(c.EmoteSetId));
 
         return ownConnection?.EmoteSetId;
     }
@@ -920,10 +921,16 @@ public class SevenTvApiClient(
     // Emote.flags and its animated member as non-null, so no captured payload omits them. It falls to
     // 4x.webp on purpose, because that rendition exists for every emote — on an animated one it
     // simply carries all frames — whereas the other guess would render nothing at all.
-    private static string BuildForeignImageUrl(string emoteId, bool animated) =>
-        emoteId.Length == 0
-            ? string.Empty
-            : $"https://cdn.7tv.app/emote/{emoteId}/{(animated ? "4x_static.webp" : "4x.webp")}";
+    private static string BuildForeignImageUrl(string emoteId, bool animated)
+    {
+        if (emoteId.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var fileName = animated ? "4x_static.webp" : "4x.webp";
+        return $"https://cdn.7tv.app/emote/{emoteId}/{fileName}";
+    }
 
     private static SevenTvEmoteSetPreviewItem MapSearchItem(SevenTvGqlLeaderboardSearchItemDto dto) =>
         new(

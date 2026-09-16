@@ -21,6 +21,13 @@ namespace EmotePurge.Api.RateLimiting;
 internal static class RateLimitRejection
 {
     /// <summary>
+    /// The fallback value whenever a policy name, partition key, or resolved user key is not
+    /// available — never a null or empty string, so a log line or decision always has something to
+    /// print.
+    /// </summary>
+    private const string Unknown = "unknown";
+
+    /// <summary>
     /// Category of the rejection log. A constant with a stable, explicit name rather than
     /// <c>ILogger&lt;Program&gt;</c>, because log aggregation alerts on it (module E) and a category
     /// derived from a type would move the moment the type does.
@@ -166,8 +173,8 @@ internal static class RateLimitRejection
     public static async ValueTask OnRejectedAsync(OnRejectedContext context, CancellationToken cancellationToken)
     {
         var httpContext = context.HttpContext;
-        var policyName = httpContext.Items[PolicyItemKey] as string ?? "unknown";
-        var partitionKey = httpContext.Items[PartitionItemKey] as string ?? "unknown";
+        var policyName = httpContext.Items[PolicyItemKey] as string ?? Unknown;
+        var partitionKey = httpContext.Items[PartitionItemKey] as string ?? Unknown;
 
         // FixedWindowRateLimiter reports the wait to the next window boundary on a failed lease. On
         // .NET 10 that value is the whole window rather than the remainder — an over-estimate, and
@@ -237,7 +244,7 @@ internal static class RateLimitRejection
             Accepted: !rejected,
             httpContext.Request.Method,
             routeTemplate,
-            httpContext.Items[PartitionItemKey] as string ?? "unknown",
+            httpContext.Items[PartitionItemKey] as string ?? Unknown,
             rejected ? httpContext.Items[RetryAfterItemKey] as int? : null);
     }
 
@@ -248,7 +255,7 @@ internal static class RateLimitRejection
     private static string ResolveUserKey(HttpContext httpContext)
         => httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier)
             ?? httpContext.Connection.RemoteIpAddress?.ToString()
-            ?? "unknown";
+            ?? Unknown;
 
     /// <summary>
     /// Leaves behind everything <see cref="OnRejectedAsync"/> cannot derive on its own: the

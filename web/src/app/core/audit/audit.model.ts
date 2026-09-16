@@ -45,9 +45,13 @@ export type AuditDetailKind =
  * here: the underlying column is free-form, and a client-side filter would be one more place to
  * forget when a new write path adds a key. An unknown `kind` renders nothing — that is a display
  * decision, not a safety one.
+ *
+ * `kind` is typed `AuditDetailKind | (string & {})` rather than plain `AuditDetailKind | string`:
+ * the intersection keeps editor autocomplete offering the known literals while still widening to
+ * any string, which a bare union with `string` would swallow.
  */
 export interface AuditLogDetail {
-  kind: AuditDetailKind | string;
+  kind: AuditDetailKind | (string & {});
   count: number | null;
   text: string | null;
 }
@@ -58,12 +62,15 @@ export interface AuditLogDetail {
  * `actorLogin` and `channelName` are snapshots taken when the action happened, not live joins — a
  * renamed account or a purged channel still shows what was true at the time, which is the point of
  * an audit log.
+ *
+ * `action` is typed `AuditAction | (string & {})` for the same reason as `AuditLogDetail.kind`:
+ * the intersection keeps the known literals autocompleting without narrowing away a future value.
  */
 export interface AuditLogEntry {
   id: number;
   occurredAtUtc: string;
   actorLogin: string;
-  action: AuditAction | string;
+  action: AuditAction | (string & {});
   channelName: string | null;
   targetType: string | null;
   targetId: string | null;

@@ -11,7 +11,7 @@ import {
   withInMemoryScrolling,
   withRouterConfig,
 } from '@angular/router';
-import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 
@@ -37,7 +37,7 @@ export const appConfig: ApplicationConfig = {
       // back at the top instead of keeping the previous page's scroll offset.
       withInMemoryScrolling({ anchorScrolling: 'enabled', scrollPositionRestoration: 'enabled' }),
     ),
-    provideHttpClient(withFetch(), withInterceptors([apiAuthInterceptor])),
+    provideHttpClient(withInterceptors([apiAuthInterceptor])),
     provideTransloco({
       config: {
         availableLangs: [...SUPPORTED_LANGS],

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
@@ -63,8 +64,8 @@ public static class SevenTvEndpoints
                     or ForeignEmoteSetLookupStatus.ProviderBudgetExhausted => Results.Json(
                     new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
                     statusCode: StatusCodes.Status503ServiceUnavailable),
-                _ => throw new ArgumentOutOfRangeException(
-                    nameof(result), result.Status, "Unbekannter ForeignEmoteSetLookupStatus.")
+                _ => throw new UnreachableException(
+                    $"Unexpected {nameof(ForeignEmoteSetLookupStatus)} value: {result.Status}.")
             };
         });
 
@@ -107,8 +108,8 @@ public static class SevenTvEndpoints
                     or SevenTvLeaderboardStatus.BudgetRefused => Results.Json(
                     new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
                     statusCode: StatusCodes.Status503ServiceUnavailable),
-                _ => throw new ArgumentOutOfRangeException(
-                    nameof(result), result.Status, "Unknown SevenTvLeaderboardStatus.")
+                _ => throw new UnreachableException(
+                    $"Unexpected {nameof(SevenTvLeaderboardStatus)} value: {result.Status}.")
             };
         });
     }

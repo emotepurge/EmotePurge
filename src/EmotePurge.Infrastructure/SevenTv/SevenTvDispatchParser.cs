@@ -15,6 +15,10 @@ public static class SevenTvDispatchParser
     // itself) and carry no emote payload.
     private const string EmotesKey = "emotes";
 
+    // The JSON property carrying a change entry's new value, on both the outer ChangeMap entries
+    // (pushed/updated) and the nested ones inside a connections change.
+    private const string ValueKey = "value";
+
     public static SevenTvEmoteSetDelta ParseEmoteSetUpdate(JsonElement body, ILogger logger)
     {
         var pushed = new List<SevenTvEmote>();
@@ -27,7 +31,7 @@ public static class SevenTvDispatchParser
         {
             foreach (var change in pushedArray.EnumerateArray())
             {
-                TryMapEmoteChange(change, "value", pushed, logger);
+                TryMapEmoteChange(change, ValueKey, pushed, logger);
             }
         }
 
@@ -35,7 +39,7 @@ public static class SevenTvDispatchParser
         {
             foreach (var change in updatedArray.EnumerateArray())
             {
-                TryMapEmoteChange(change, "value", updated, logger);
+                TryMapEmoteChange(change, ValueKey, updated, logger);
             }
         }
 
@@ -71,7 +75,7 @@ public static class SevenTvDispatchParser
             foreach (var change in updatedArray.EnumerateArray())
             {
                 if (!HasKey(change, "connections") ||
-                    !change.TryGetProperty("value", out var inner) ||
+                    !change.TryGetProperty(ValueKey, out var inner) ||
                     inner.ValueKind != JsonValueKind.Array)
                 {
                     continue;
@@ -86,7 +90,7 @@ public static class SevenTvDispatchParser
                     if (HasKey(innerChange, "emote_set_id"))
                     {
                         oldSetId = GetNonEmptyString(innerChange, "old_value");
-                        newSetId = GetNonEmptyString(innerChange, "value");
+                        newSetId = GetNonEmptyString(innerChange, ValueKey);
                         found = true;
                         break;
                     }
@@ -94,7 +98,7 @@ public static class SevenTvDispatchParser
                     if (HasKey(innerChange, "emote_set"))
                     {
                         oldSetId = GetNonEmptyObjectId(innerChange, "old_value");
-                        newSetId = GetNonEmptyObjectId(innerChange, "value");
+                        newSetId = GetNonEmptyObjectId(innerChange, ValueKey);
                         found = true;
                     }
                 }

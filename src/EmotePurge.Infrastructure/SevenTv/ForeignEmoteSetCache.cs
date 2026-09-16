@@ -34,7 +34,7 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
                 return null;
             }
 
-            return JsonSerializer.Deserialize<ForeignEmoteSet>((string)value!, JsonSerializerOptions.Web);
+            return JsonSerializer.Deserialize<ForeignEmoteSet>(value.ToString(), JsonSerializerOptions.Web);
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException or JsonException)
         {

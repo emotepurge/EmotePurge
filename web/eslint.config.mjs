@@ -1,4 +1,5 @@
 // @ts-check
+import { defineConfig } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 import angular from 'angular-eslint';
 
@@ -12,7 +13,7 @@ import angular from 'angular-eslint';
  * a red lint run always means "you broke a documented rule" and never "the linter
  * has an opinion nobody agreed to".
  */
-export default tseslint.config(
+export default defineConfig(
   {
     ignores: ['.angular/', 'dist/', 'coverage/', 'test-results/', '.audit-out/'],
   },

@@ -245,11 +245,11 @@ function htmlToPlainText(html) {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
     .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replaceAll(/&amp;/g, "&")
+    .replaceAll(/&lt;/g, "<")
+    .replaceAll(/&gt;/g, ">")
+    .replaceAll(/&quot;/g, '"')
+    .replaceAll(/&#39;/g, "'")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -594,10 +594,12 @@ async function main() {
 // pathToFileURL() builds the same URL Node itself used for import.meta.url.
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirectRun) {
-  main().catch((error) => {
+  try {
+    await main();
+  } catch (error) {
     console.error(`Aborted with error: ${error.message}`);
     process.exitCode = 1;
-  });
+  }
 }
 
 export {

@@ -328,10 +328,4 @@ await using (var migrationScope = app.Services.CreateAsyncScope())
         .EnsureNoPendingMigrationsAsync();
 }
 
-app.Run();
-
-// Top-level statements compile into an internal Program class, which WebApplicationFactory<T>
-// cannot reach. Declaring the partial publicly is the documented way to make the real pipeline —
-// middleware order, filter registration and all — testable from tests/EmotePurge.Api.Tests without
-// duplicating any of it there.
-public partial class Program;
+await app.RunAsync();
