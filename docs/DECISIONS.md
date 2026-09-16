@@ -10,6 +10,32 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-16 — `web-build` stage runs `npm ci --ignore-scripts` (docker:S6505)
+
+**Betrifft:** `src/EmotePurge.Api/Dockerfile`
+
+Sonar flagged the `web-build` stage's `npm ci` for running without `--ignore-scripts`: any
+transitive dependency's `preinstall`/`postinstall` lifecycle script executes with full privileges
+during the image build, the standard supply-chain vector. The flag isn't a blind toggle here —
+`web/package.json` itself has no `postinstall`/`prepare`, but five dependencies do carry an
+install script (`hasInstallScript: true` in `package-lock.json`): `esbuild`, `@parcel/watcher`,
+`lmdb`, `msgpackr-extract`, and `fsevents` (macOS-only, `os: ["darwin"]`, never installs on the
+Linux build image anyway). All four of the remaining ones fetch or build a native binary — exactly
+the kind of postinstall that can turn `--ignore-scripts` from a hardening measure into a broken
+build.
+
+Verified empirically, not assumed: `docker build -f src/EmotePurge.Api/Dockerfile --target
+web-build` with `--ignore-scripts` added completed cleanly (`npm ci` ~7 s, `ng build
+--configuration production` ~8 s, no missing-binary errors), and the full multi-stage build
+afterwards produced the final image without changes elsewhere. None of the four scripts turned out
+load-bearing for a non-watch, non-dev `ng build --configuration production`: `esbuild`'s installer
+resolves its platform binary from `@esbuild/linux-x64` even without the postinstall step running,
+`lmdb`'s persistent build cache and `@parcel/watcher`'s file-watching are development/`ng
+serve`-only paths this stage never exercises, and `msgpackr-extract` is `lmdb`'s serializer and
+inherits the same non-use. If a future dependency bump makes one of them load-bearing, the build
+fails loudly at `npm run build` (missing native binding) rather than silently misbehaving — that
+failure mode is the safety net, not a risk accepted in silence.
+
 ### 2026-09-16 — `Program.cs` drops the explicit `public partial class Program;`, revising the 2026-08-02 test-project entry
 
 **Betrifft:** `src/EmotePurge.Api/Program.cs` · `docs/Review-2026-07-29-Umsetzung.md`
