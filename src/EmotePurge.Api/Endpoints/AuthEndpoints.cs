@@ -33,7 +33,18 @@ public static class AuthEndpoints
             {
                 HttpOnly = true,
                 SameSite = SameSiteMode.Lax,
-                Secure = httpContext.Request.IsHttps,
+
+                // Hard true, not Request.IsHttps — the same fail-closed reasoning the session cookie
+                // got in S2-10 (CookieSecurePolicy.Always, Program.cs). IsHttps only ever becomes
+                // true here because ForwardedHeadersMiddleware saw an X-Forwarded-Proto the app
+                // cannot guarantee: a replaced reverse proxy, a new vhost missing
+                // `proxy_set_header X-Forwarded-Proto`, or — as was the case until 2026-09-16 — a
+                // middleware that silently distrusts the proxy would hand out the OAuth state
+                // cookie without Secure, which is the CSRF defence of the whole login flow.
+                // Browsers treat http://localhost as a trustworthy origin and store Secure cookies
+                // there, so plain-HTTP local development is unaffected; this cookie was simply
+                // overlooked when the session cookie was hardened.
+                Secure = true,
                 Expires = DateTimeOffset.UtcNow.AddMinutes(5)
             });
 
