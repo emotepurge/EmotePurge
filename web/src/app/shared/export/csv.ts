@@ -46,7 +46,7 @@ function encodeCell(value: string | number | null | undefined): string {
   // formula in Excel/LibreOffice (CSV injection). A leading apostrophe forces text mode.
   let cell = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
   if (/[",\r\n]/.test(cell) || cell !== cell.trim()) {
-    cell = `"${cell.replaceAll(/"/g, '""')}"`;
+    cell = `"${cell.replaceAll('"', '""')}"`;
   }
   return cell;
 }
