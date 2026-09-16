@@ -491,30 +491,7 @@ public class SevenTvEventClient(
                 // Collapse bursts into one convergence pass.
             }
 
-            var desired = registry.BuildDesiredSubscriptions().ToHashSet();
-
-            var toRemove = sessionActive.Where(s => !desired.Contains(s)).ToList();
-            foreach (var subscription in toRemove)
-            {
-                await SendFrameAsync(socket, op: 36, subscription, ct);
-                sessionActive.Remove(subscription);
-                await Task.Delay(FrameSpacing, ct);
-            }
-
-            var toAdd = desired.Where(s => !sessionActive.Contains(s)).ToList();
-            foreach (var subscription in toAdd)
-            {
-                await SendFrameAsync(socket, op: 35, subscription, ct);
-                sessionActive.Add(subscription);
-                await Task.Delay(FrameSpacing, ct);
-            }
-
-            if (toAdd.Count > 0 || toRemove.Count > 0)
-            {
-                logger.LogInformation(
-                    "7TV-Subscriptions konvergiert: {Added} abonniert, {Removed} abbestellt, {Total} aktiv.",
-                    toAdd.Count, toRemove.Count, sessionActive.Count);
-            }
+            await ConvergeSubscriptionsAsync(socket, sessionActive, ct);
 
             // Gap-filling after the first convergence of a session: dispatches missed between the
             // sessions are unrecoverable (no resume/replay), so every desired channel gets one full
@@ -522,24 +499,65 @@ public class SevenTvEventClient(
             if (!gapFillPending)
             {
                 gapFillPending = true;
-                if (_firstSession)
-                {
-                    _firstSession = false;
-                }
-                else
-                {
-                    var channels = registry.DesiredChannels;
-                    foreach (var channelName in channels)
-                    {
-                        await ResyncChannelAsync(channelName, adoptResult: true, ct);
-                    }
-
-                    // Visible on purpose: during the first live TTL reconnect this ran silently
-                    // and was indistinguishable from not having run at all.
-                    logger.LogInformation("Gap-Filling nach Reconnect abgeschlossen: {Count} Channels voll resynct.", channels.Count);
-                }
+                await RunGapFillAsync(ct);
             }
         }
+    }
+
+    // One convergence pass: diff the session's actually-subscribed set against the registry's
+    // current desired state, unsubscribe what is no longer desired, subscribe what is newly
+    // desired, and log only when either happened. sessionActive is mutated in place — it is the
+    // send pump's own running record of what this socket holds, shared with the loop in
+    // SendPumpAsync across every pass of the session.
+    private async Task ConvergeSubscriptionsAsync(
+        ClientWebSocket socket, HashSet<SevenTvSubscription> sessionActive, CancellationToken ct)
+    {
+        var desired = registry.BuildDesiredSubscriptions().ToHashSet();
+
+        var toRemove = sessionActive.Where(s => !desired.Contains(s)).ToList();
+        foreach (var subscription in toRemove)
+        {
+            await SendFrameAsync(socket, op: 36, subscription, ct);
+            sessionActive.Remove(subscription);
+            await Task.Delay(FrameSpacing, ct);
+        }
+
+        var toAdd = desired.Where(s => !sessionActive.Contains(s)).ToList();
+        foreach (var subscription in toAdd)
+        {
+            await SendFrameAsync(socket, op: 35, subscription, ct);
+            sessionActive.Add(subscription);
+            await Task.Delay(FrameSpacing, ct);
+        }
+
+        if (toAdd.Count > 0 || toRemove.Count > 0)
+        {
+            logger.LogInformation(
+                "7TV-Subscriptions konvergiert: {Added} abonniert, {Removed} abbestellt, {Total} aktiv.",
+                toAdd.Count, toRemove.Count, sessionActive.Count);
+        }
+    }
+
+    // The gap-fill decision itself: the process's first session skips it (boot recovery just fully
+    // synced every channel), every later session's first convergence resyncs every desired channel
+    // to cover whatever dispatches were missed while no session was open.
+    private async Task RunGapFillAsync(CancellationToken ct)
+    {
+        if (_firstSession)
+        {
+            _firstSession = false;
+            return;
+        }
+
+        var channels = registry.DesiredChannels;
+        foreach (var channelName in channels)
+        {
+            await ResyncChannelAsync(channelName, adoptResult: true, ct);
+        }
+
+        // Visible on purpose: during the first live TTL reconnect this ran silently
+        // and was indistinguishable from not having run at all.
+        logger.LogInformation("Gap-Filling nach Reconnect abgeschlossen: {Count} Channels voll resynct.", channels.Count);
     }
 
     private async Task SendFrameAsync(ClientWebSocket socket, int op, SevenTvSubscription subscription, CancellationToken ct)
