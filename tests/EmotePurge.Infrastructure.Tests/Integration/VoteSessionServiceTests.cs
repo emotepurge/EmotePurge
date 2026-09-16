@@ -107,6 +107,72 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task CreateAsync_WithNoAllowedRoles_ReturnsRolesEmpty_AndWritesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "rolesempty1");
+        var service = new VoteSessionService(db);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(channel.ChannelName, "Ohne Rollen", (AllowedRoles)0), Actor);
+
+        Assert.Equal(CreateVoteSessionResult.RolesEmpty, result);
+        Assert.Null(session);
+        Assert.Empty(await LoadAuditEntriesAsync(db, "rolesempty1"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithVipsAmongAllowedRoles_ReturnsVipsNotSupported_AndWritesNothing()
+    {
+        // Twitch has no self-report endpoint for VIP status, so a voter cannot prove their own — see
+        // the decision log. VIPs combined with another role must still be rejected.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "vipsnotsupported1");
+        var service = new VoteSessionService(db);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(channel.ChannelName, "Mit VIPs", AllowedRoles.Everyone | AllowedRoles.VIPs), Actor);
+
+        Assert.Equal(CreateVoteSessionResult.VipsNotSupported, result);
+        Assert.Null(session);
+        Assert.Empty(await LoadAuditEntriesAsync(db, "vipsnotsupported1"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithStartedAtInTheFuture_ReturnsStartedAtInFuture_AndWritesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "startedatfuture1");
+        var service = new VoteSessionService(db);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(channel.ChannelName, "Zukunft", AllowedRoles.Everyone, StartedAt: DateTime.UtcNow.AddDays(1)),
+            Actor);
+
+        Assert.Equal(CreateVoteSessionResult.StartedAtInFuture, result);
+        Assert.Null(session);
+        Assert.Empty(await LoadAuditEntriesAsync(db, "startedatfuture1"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithStartedAtBeyondMaxBackdateDays_ReturnsStartedAtTooFarBack_AndWritesNothing()
+    {
+        // Comfortably past the MaxBackdateDays boundary (not just over it) so the assertion doesn't
+        // depend on the exact millisecond the test happens to run at.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "startedattoofarback1");
+        var service = new VoteSessionService(db);
+        var wayTooFarBack = DateTime.UtcNow.AddDays(-(VoteSessionLimits.MaxBackdateDays + 30));
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(channel.ChannelName, "Uralt", AllowedRoles.Everyone, StartedAt: wayTooFarBack), Actor);
+
+        Assert.Equal(CreateVoteSessionResult.StartedAtTooFarBack, result);
+        Assert.Null(session);
+        Assert.Empty(await LoadAuditEntriesAsync(db, "startedattoofarback1"));
+    }
+
+    [Fact]
     public async Task CreateAsync_WithEmoteIds_PersistsDedupedBallotRows()
     {
         await using var db = fixture.CreateDbContext();
