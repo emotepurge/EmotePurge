@@ -35,15 +35,20 @@ code in `src/EmotePurge.Api/`:
   `DELETE /api/live/connections/{id}`, the moment it closes an `EventSource` on purpose, instead of
   waiting on the proxy. A reverse proxy in front of `/api/` must pass the `DELETE` method through
   like any other verb — ordinary configurations already do this without extra setup.
-- **`X-Forwarded-Proto` and `X-Forwarded-For` must be set.** The auth cookie uses
-  `CookieSecurePolicy.Always`, the OAuth state cookie in `Endpoints/AuthEndpoints.cs` uses
-  `Secure = Request.IsHttps`. Dropping `X-Forwarded-Proto` makes login fail visibly — the
-  intended failure mode, chosen over silently issuing a session cookie without `Secure`.
-- **Do not expose the container port beyond loopback.** `app.UseForwardedHeaders` runs with
-  empty `KnownProxies` and `KnownIPNetworks`, i.e. it trusts forwarded headers from any sender.
-  That is only sound while the local proxy is the only party able to reach the port; in
-  `docker-compose.prod.yml` it is published as `127.0.0.1:<port>:8080`. Binding it to
-  `0.0.0.0` turns blind trust into a spoofable one.
+- **`X-Forwarded-Proto` and `X-Forwarded-For` must be set.** Both cookies are `Secure`
+  unconditionally — the auth cookie through `CookieSecurePolicy.Always`, the OAuth state cookie in
+  `Endpoints/AuthEndpoints.cs` through a hard `Secure = true` since 2026-09-16 — so neither depends
+  on the proxy any more. `X-Forwarded-For` still matters on its own: the rate limiter partitions
+  anonymous requests by remote address, and without the header every anonymous caller shares one
+  bucket, which is enough to push a monitoring probe into `429`.
+- **The proxy must reach the container from `127.0.0.0/8`, `[::1]` or `172.16.0.0/12`.**
+  `app.UseForwardedHeaders` trusts those two and nothing else: the loopback defaults plus Docker's
+  default address pool, which covers the bridge gateway a host-native proxy arrives from. A proxy
+  placed outside both ranges has its forwarded headers dropped without a log line. The trust list is
+  deliberately not empty — an empty one trusts any sender, see the DECISIONS entry of 2026-09-16.
+- **Do not expose the container port beyond loopback.** In `docker-compose.prod.yml` it is published
+  as `127.0.0.1:<port>:8080`. Binding it to `0.0.0.0` would put a spoofable path in front of the
+  trusted-network check rather than behind it.
 
 Three smaller points. Responses under `/api` carry `Cache-Control: no-store` (`Program.cs`) as
 per-user, cookie-authenticated data — do not cache those paths at the proxy. Enable HTTP/2
