@@ -367,15 +367,19 @@ function emptyFileCoverage() {
 //     (sl, offset, path) — offset/path are the IL offset and branch index OpenCover itself uses
 //     to distinguish sibling branches at the same line (e.g. the two arms of an `if`), so this
 //     mirrors OpenCover's own notion of "distinct branch" rather than inventing one.
-function parseOpenCoverXml(xmlText) {
+function collectFilePathsByUid(xmlText) {
   const pathByFileUid = new Map();
   for (const tag of xmlText.match(/<File\b[^>]*\/?>/g) ?? []) {
     const uid = extractAttr(tag, "uid");
     const fullPath = extractAttr(tag, "fullPath");
     if (uid && fullPath) pathByFileUid.set(uid, fullPath);
   }
+  return pathByFileUid;
+}
 
-  const linesByFileUid = new Map(); // fileUid -> Map<line, covered>
+// fileUid -> Map<line, covered>
+function collectLinesByFileUid(xmlText) {
+  const linesByFileUid = new Map();
   for (const tag of xmlText.match(/<SequencePoint\b[^>]*\/>/g) ?? []) {
     const fileid = extractAttr(tag, "fileid");
     const startLine = extractAttr(tag, "sl");
@@ -387,8 +391,12 @@ function parseOpenCoverXml(xmlText) {
     const lineMap = linesByFileUid.get(fileid);
     lineMap.set(line, (lineMap.get(line) ?? false) || covered);
   }
+  return linesByFileUid;
+}
 
-  const branchesByFileUid = new Map(); // fileUid -> Map<"sl:offset:path", covered>
+// fileUid -> Map<"sl:offset:path", covered>
+function collectBranchesByFileUid(xmlText) {
+  const branchesByFileUid = new Map();
   for (const tag of xmlText.match(/<BranchPoint\b[^>]*\/>/g) ?? []) {
     const fileid = extractAttr(tag, "fileid");
     const startLine = extractAttr(tag, "sl");
@@ -404,6 +412,13 @@ function parseOpenCoverXml(xmlText) {
     const branchMap = branchesByFileUid.get(fileid);
     branchMap.set(key, (branchMap.get(key) ?? false) || covered);
   }
+  return branchesByFileUid;
+}
+
+function parseOpenCoverXml(xmlText) {
+  const pathByFileUid = collectFilePathsByUid(xmlText);
+  const linesByFileUid = collectLinesByFileUid(xmlText);
+  const branchesByFileUid = collectBranchesByFileUid(xmlText);
 
   const result = new Map(); // fullPath -> { lines, branches }
   const allFileUids = new Set([
@@ -427,6 +442,25 @@ function parseOpenCoverXml(xmlText) {
 // or the literal "-" for "never reached at all"), end_of_record closes the block. A branch is
 // identified within a file by (line, block, branch) — the triple lcov itself uses to tell two
 // branches at the same line apart (e.g. the two arms of a ternary).
+// Parses one "DA:<line>,<hits>" payload (without the "DA:" prefix). Returns null when the line
+// number isn't a finite number, so the caller can skip it without its own nested branch.
+function parseDaPayload(payload) {
+  const [lineNoText, hitsText] = payload.split(",");
+  const lineNo = Number(lineNoText);
+  if (!Number.isFinite(lineNo)) return null;
+  return { lineNo, hits: Number(hitsText) };
+}
+
+// Parses one "BRDA:<line>,<block>,<branch>,<taken>" payload (without the "BRDA:" prefix).
+// `taken` is either a hit count or the literal "-" for "never reached at all".
+function parseBrdaPayload(payload) {
+  const [lineNoText, blockText, branchText, takenText] = payload.split(",");
+  return {
+    key: `${lineNoText}:${blockText}:${branchText}`,
+    covered: takenText !== "-" && Number(takenText) > 0,
+  };
+}
+
 function parseLcov(lcovText) {
   const result = new Map();
   let currentPath = null;
@@ -439,20 +473,15 @@ function parseLcov(lcovText) {
       currentLines = new Map();
       currentBranches = new Map();
     } else if (line.startsWith("DA:") && currentLines) {
-      const [lineNoText, hitsText] = line.slice(3).split(",");
-      const lineNo = Number(lineNoText);
-      const hits = Number(hitsText);
-      if (Number.isFinite(lineNo))
+      const parsed = parseDaPayload(line.slice(3));
+      if (parsed) {
         currentLines.set(
-          lineNo,
-          (currentLines.get(lineNo) ?? false) || hits > 0,
+          parsed.lineNo,
+          (currentLines.get(parsed.lineNo) ?? false) || parsed.hits > 0,
         );
+      }
     } else if (line.startsWith("BRDA:") && currentBranches) {
-      const [lineNoText, blockText, branchText, takenText] = line
-        .slice(5)
-        .split(",");
-      const key = `${lineNoText}:${blockText}:${branchText}`;
-      const covered = takenText !== "-" && Number(takenText) > 0;
+      const { key, covered } = parseBrdaPayload(line.slice(5));
       currentBranches.set(key, (currentBranches.get(key) ?? false) || covered);
     } else if (line === "end_of_record") {
       if (currentPath && currentLines) {
@@ -492,6 +521,20 @@ function normalizeToRepoRelativePosix(rawPath, repoRoot) {
   return withoutDotSlash;
 }
 
+// Merges one file's { lines, branches } coverage into `target`, OR-ing each line/branch's
+// covered flag rather than overwriting it — never losing a "covered" seen in an earlier report.
+function orMergeFileCoverage(target, source) {
+  for (const [line, covered] of source.lines) {
+    target.lines.set(line, (target.lines.get(line) ?? false) || covered);
+  }
+  for (const [branchKey, covered] of source.branches) {
+    target.branches.set(
+      branchKey,
+      (target.branches.get(branchKey) ?? false) || covered,
+    );
+  }
+}
+
 // Merges a raw (path -> { lines, branches }) report into the accumulator, keyed by repo-relative
 // POSIX path. Multiple reports can legitimately cover the same file (e.g. a Core class exercised
 // by more than one test project) — lines and branches are each OR-ed together, never overwritten.
@@ -500,16 +543,7 @@ function mergeCoverageReport(accumulator, rawReport, repoRoot) {
     const normalizedPath = normalizeToRepoRelativePosix(rawPath, repoRoot);
     if (!accumulator.has(normalizedPath))
       accumulator.set(normalizedPath, emptyFileCoverage());
-    const target = accumulator.get(normalizedPath);
-    for (const [line, covered] of fileCoverage.lines) {
-      target.lines.set(line, (target.lines.get(line) ?? false) || covered);
-    }
-    for (const [branchKey, covered] of fileCoverage.branches) {
-      target.branches.set(
-        branchKey,
-        (target.branches.get(branchKey) ?? false) || covered,
-      );
-    }
+    orMergeFileCoverage(accumulator.get(normalizedPath), fileCoverage);
   }
 }
 
@@ -689,6 +723,163 @@ function printFileTable(measured) {
   }
 }
 
+// Runs the requested test suites (or logs and does nothing if --skip-tests was passed) before
+// evaluation. Pulled out of main() as its own step: "get fresh coverage data on disk" is a
+// distinct concern from everything that reads and evaluates it afterwards.
+function runTestsIfRequested({ skipTests, runBackend, runFrontend }, repoRoot) {
+  if (skipTests) {
+    console.log(
+      "--skip-tests set — evaluating only existing coverage reports, without re-running tests.",
+    );
+    return;
+  }
+  if (runBackend) runBackendTests(repoRoot);
+  if (runFrontend) runFrontendTests(repoRoot);
+}
+
+// Loads backend/frontend coverage per the runBackend/runFrontend flags, throwing the same
+// "no report found" errors main() used to throw inline if a requested side produced nothing.
+function loadCoverageOrThrow({ runBackend, runFrontend, repoRoot }) {
+  let backendCoverage = new Map();
+  let frontendCoverage = new Map();
+
+  if (runBackend) {
+    const backend = loadBackendCoverage(repoRoot);
+    if (backend.reportCount === 0) {
+      throw new Error(
+        `No OpenCover report found (pattern **/${OPENCOVER_GLOB_MARKER}/**/${OPENCOVER_REPORT_FILENAME}). ` +
+          'Has dotnet test been run before with --collect:"XPlat Code Coverage;Format=opencover"? ' +
+          "Without --skip-tests this should have happened automatically — check the output above for errors.",
+      );
+    }
+    backendCoverage = backend.coverage;
+  }
+  if (runFrontend) {
+    const frontend = loadFrontendCoverage(repoRoot);
+    if (frontend.reportCount === 0) {
+      throw new Error(
+        `No lcov report found at ${LCOV_REPORT_PATH}. Has ` +
+          '"npm --prefix web test -- --watch=false --coverage --coverage-reporters=lcov" been run before? ' +
+          "Without --skip-tests this should have happened automatically — check the output above for errors.",
+      );
+    }
+    frontendCoverage = frontend.coverage;
+  }
+
+  return { backendCoverage, frontendCoverage };
+}
+
+function cloneFileCoverage(fileCoverage) {
+  return {
+    lines: new Map(fileCoverage.lines),
+    branches: new Map(fileCoverage.branches),
+  };
+}
+
+// OR-merge rather than overwrite: backend and frontend paths practically never collide (.cs vs
+// .ts), but a plain `.set()` would silently drop one side's data for a key that DID exist in
+// both, exactly the kind of quiet loss this script's whole point is to avoid.
+function combineBackendAndFrontendCoverage(backendCoverage, frontendCoverage) {
+  const combined = new Map();
+  for (const [filePath, fileCoverage] of backendCoverage) {
+    combined.set(filePath, cloneFileCoverage(fileCoverage));
+  }
+  for (const [filePath, fileCoverage] of frontendCoverage) {
+    if (!combined.has(filePath)) {
+      combined.set(filePath, cloneFileCoverage(fileCoverage));
+      continue;
+    }
+    orMergeFileCoverage(combined.get(filePath), fileCoverage);
+  }
+  return combined;
+}
+
+function computeCoverageTotals(measured) {
+  const totalCoveredLines = measured.reduce(
+    (sum, row) => sum + row.coveredLines,
+    0,
+  );
+  const totalLines = measured.reduce((sum, row) => sum + row.totalLines, 0);
+  const totalCoveredBranches = measured.reduce(
+    (sum, row) => sum + row.coveredBranches,
+    0,
+  );
+  const totalBranches = measured.reduce(
+    (sum, row) => sum + row.totalBranches,
+    0,
+  );
+  const totalCovered = totalCoveredLines + totalCoveredBranches;
+  const totalUnits = totalLines + totalBranches;
+  const overallPercent =
+    totalUnits > 0 ? (totalCovered / totalUnits) * 100 : null;
+  return {
+    totalCoveredLines,
+    totalLines,
+    totalCoveredBranches,
+    totalBranches,
+    totalCovered,
+    totalUnits,
+    overallPercent,
+  };
+}
+
+// Prints the "Overall verdict" section and returns the process exit code main() should set (1,
+// or undefined to leave the default 0 in place) — this is the tail of main() moved into its own
+// function, not a fragment that needs to keep affecting statements after it.
+function printOverallVerdict(measured, unmeasured) {
+  const totals = computeCoverageTotals(measured);
+  const incomplete = unmeasured.length > 0;
+
+  console.log("\n=== Overall verdict ===");
+  if (totals.overallPercent === null) {
+    console.log(
+      "None of the relevant files have coverage data — overall percentage cannot be computed.",
+    );
+    return 1;
+  }
+
+  console.log(
+    `Overall percentage across ${measured.length} measured file(s): ${totals.totalCovered}/${totals.totalUnits} ` +
+      `(${totals.totalCoveredLines}/${totals.totalLines} lines, ${totals.totalCoveredBranches}/${totals.totalBranches} branches) ` +
+      `= ${formatPercent(totals.overallPercent)}.`,
+  );
+  if (incomplete) {
+    console.log(
+      `Additionally ${unmeasured.length} unmeasured file(s) — the overall percentage says nothing about these.`,
+    );
+  }
+
+  const belowThreshold =
+    totals.overallPercent < NEW_CODE_COVERAGE_THRESHOLD_PERCENT;
+
+  // An incomplete picture (changed, potentially coverable files with zero data) overrides a
+  // clean verdict either way: a passing percentage computed only over the files that DID report
+  // data says nothing about the ones that didn't, so this can never resolve to a plain "✓"/exit 0.
+  if (incomplete) {
+    const relation = belowThreshold ? "below" : "above";
+    console.log(
+      `\n⚠ Percentage ${formatPercent(totals.overallPercent)} is ${relation} the ${NEW_CODE_COVERAGE_THRESHOLD_PERCENT}% threshold, ` +
+        `BUT ${unmeasured.length} file(s) have no coverage data — verdict incomplete. Check these files by ` +
+        "hand (when in doubt: did any test even import them?) before treating this branch as covered.",
+    );
+  } else if (belowThreshold) {
+    console.log(
+      `\n⚠ WARNING: ${formatPercent(totals.overallPercent)} is below the ${NEW_CODE_COVERAGE_THRESHOLD_PERCENT}% threshold. ` +
+        "That's a clear signal that SonarCloud's Quality Gate might reject this branch — but this direction, too, " +
+        "is only a file-granular approximation, not a guarantee: Sonar only counts actually new/" +
+        "changed lines, not the whole file, and can in individual cases turn out more favorable than this number.",
+    );
+  } else {
+    console.log(
+      `\n✓ ${formatPercent(totals.overallPercent)} is above the ${NEW_CODE_COVERAGE_THRESHOLD_PERCENT}% threshold — but this is ` +
+        "a file-granular approximation, not a guarantee: SonarCloud measures line-accurately on actually new/changed " +
+        "lines and can judge more strictly than this number for small changes in large, old files.",
+    );
+  }
+
+  return belowThreshold || incomplete ? 1 : undefined;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -701,14 +892,10 @@ async function main() {
 
   const repoRoot = resolveRepoRoot();
 
-  if (!args.skipTests) {
-    if (runBackend) runBackendTests(repoRoot);
-    if (runFrontend) runFrontendTests(repoRoot);
-  } else {
-    console.log(
-      "--skip-tests set — evaluating only existing coverage reports, without re-running tests.",
-    );
-  }
+  runTestsIfRequested(
+    { skipTests: args.skipTests, runBackend, runFrontend },
+    repoRoot,
+  );
 
   console.log("");
   console.log(
@@ -725,65 +912,15 @@ async function main() {
       "(.cs/.ts, no .spec.ts, not excluded).",
   );
 
-  let backendCoverage = new Map();
-  let backendReportCount = 0;
-  let frontendCoverage = new Map();
-  let frontendReportCount = 0;
-
-  if (runBackend) {
-    const backend = loadBackendCoverage(repoRoot);
-    backendCoverage = backend.coverage;
-    backendReportCount = backend.reportCount;
-    if (backendReportCount === 0) {
-      throw new Error(
-        `No OpenCover report found (pattern **/${OPENCOVER_GLOB_MARKER}/**/${OPENCOVER_REPORT_FILENAME}). ` +
-          'Has dotnet test been run before with --collect:"XPlat Code Coverage;Format=opencover"? ' +
-          "Without --skip-tests this should have happened automatically — check the output above for errors.",
-      );
-    }
-  }
-  if (runFrontend) {
-    const frontend = loadFrontendCoverage(repoRoot);
-    frontendCoverage = frontend.coverage;
-    frontendReportCount = frontend.reportCount;
-    if (frontendReportCount === 0) {
-      throw new Error(
-        `No lcov report found at ${LCOV_REPORT_PATH}. Has ` +
-          '"npm --prefix web test -- --watch=false --coverage --coverage-reporters=lcov" been run before? ' +
-          "Without --skip-tests this should have happened automatically — check the output above for errors.",
-      );
-    }
-  }
-
-  // OR-merge rather than overwrite: backend and frontend paths practically never collide (.cs
-  // vs .ts), but a plain `.set()` would silently drop one side's data for a key that DID exist
-  // in both, exactly the kind of quiet loss this script's whole point is to avoid.
-  const combinedCoverage = new Map();
-  for (const [filePath, fileCoverage] of backendCoverage) {
-    combinedCoverage.set(filePath, {
-      lines: new Map(fileCoverage.lines),
-      branches: new Map(fileCoverage.branches),
-    });
-  }
-  for (const [filePath, fileCoverage] of frontendCoverage) {
-    if (!combinedCoverage.has(filePath)) {
-      combinedCoverage.set(filePath, {
-        lines: new Map(fileCoverage.lines),
-        branches: new Map(fileCoverage.branches),
-      });
-      continue;
-    }
-    const target = combinedCoverage.get(filePath);
-    for (const [line, covered] of fileCoverage.lines) {
-      target.lines.set(line, (target.lines.get(line) ?? false) || covered);
-    }
-    for (const [branchKey, covered] of fileCoverage.branches) {
-      target.branches.set(
-        branchKey,
-        (target.branches.get(branchKey) ?? false) || covered,
-      );
-    }
-  }
+  const { backendCoverage, frontendCoverage } = loadCoverageOrThrow({
+    runBackend,
+    runFrontend,
+    repoRoot,
+  });
+  const combinedCoverage = combineBackendAndFrontendCoverage(
+    backendCoverage,
+    frontendCoverage,
+  );
 
   const { measured, unmeasured } = buildFileReport(
     relevantFiles,
@@ -809,75 +946,8 @@ async function main() {
     return;
   }
 
-  const totalCoveredLines = measured.reduce(
-    (sum, row) => sum + row.coveredLines,
-    0,
-  );
-  const totalLines = measured.reduce((sum, row) => sum + row.totalLines, 0);
-  const totalCoveredBranches = measured.reduce(
-    (sum, row) => sum + row.coveredBranches,
-    0,
-  );
-  const totalBranches = measured.reduce(
-    (sum, row) => sum + row.totalBranches,
-    0,
-  );
-  const totalCovered = totalCoveredLines + totalCoveredBranches;
-  const totalUnits = totalLines + totalBranches;
-  const overallPercent =
-    totalUnits > 0 ? (totalCovered / totalUnits) * 100 : null;
-  const incomplete = unmeasured.length > 0;
-
-  console.log("\n=== Overall verdict ===");
-  if (overallPercent === null) {
-    console.log(
-      "None of the relevant files have coverage data — overall percentage cannot be computed.",
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  console.log(
-    `Overall percentage across ${measured.length} measured file(s): ${totalCovered}/${totalUnits} ` +
-      `(${totalCoveredLines}/${totalLines} lines, ${totalCoveredBranches}/${totalBranches} branches) ` +
-      `= ${formatPercent(overallPercent)}.`,
-  );
-  if (incomplete) {
-    console.log(
-      `Additionally ${unmeasured.length} unmeasured file(s) — the overall percentage says nothing about these.`,
-    );
-  }
-
-  const belowThreshold = overallPercent < NEW_CODE_COVERAGE_THRESHOLD_PERCENT;
-
-  // An incomplete picture (changed, potentially coverable files with zero data) overrides a
-  // clean verdict either way: a passing percentage computed only over the files that DID report
-  // data says nothing about the ones that didn't, so this can never resolve to a plain "✓"/exit 0.
-  if (incomplete) {
-    const relation = belowThreshold ? "below" : "above";
-    console.log(
-      `\n⚠ Percentage ${formatPercent(overallPercent)} is ${relation} the ${NEW_CODE_COVERAGE_THRESHOLD_PERCENT}% threshold, ` +
-        `BUT ${unmeasured.length} file(s) have no coverage data — verdict incomplete. Check these files by ` +
-        "hand (when in doubt: did any test even import them?) before treating this branch as covered.",
-    );
-  } else if (belowThreshold) {
-    console.log(
-      `\n⚠ WARNING: ${formatPercent(overallPercent)} is below the ${NEW_CODE_COVERAGE_THRESHOLD_PERCENT}% threshold. ` +
-        "That's a clear signal that SonarCloud's Quality Gate might reject this branch — but this direction, too, " +
-        "is only a file-granular approximation, not a guarantee: Sonar only counts actually new/" +
-        "changed lines, not the whole file, and can in individual cases turn out more favorable than this number.",
-    );
-  } else {
-    console.log(
-      `\n✓ ${formatPercent(overallPercent)} is above the ${NEW_CODE_COVERAGE_THRESHOLD_PERCENT}% threshold — but this is ` +
-        "a file-granular approximation, not a guarantee: SonarCloud measures line-accurately on actually new/changed " +
-        "lines and can judge more strictly than this number for small changes in large, old files.",
-    );
-  }
-
-  if (belowThreshold || incomplete) {
-    process.exitCode = 1;
-  }
+  const exitCode = printOverallVerdict(measured, unmeasured);
+  if (exitCode !== undefined) process.exitCode = exitCode;
 }
 
 // `file://${process.argv[1]}` is NOT the canonical form of import.meta.url once the path
