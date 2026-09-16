@@ -27,6 +27,7 @@ import {
  * Input: a JSON array of `{sid, name, url}` with real 7TV urls, so the CDN sees production-shaped
  * requests. Generate it from a dev database that has a large tracked channel:
  *
+ *   mkdir -p test-results/webp-measure && \
  *   docker exec emotepurge-dev-postgres psql -U emotepurge -d emotepurge -t -A -c \
  *     "select json_agg(row_to_json(t)) from (select e.\"SevenTvEmoteId\" as sid, e.\"Name\" as name,
  *      e.\"ImageUrl\" as url from \"Emotes\" e join \"Channels\" c on c.\"Id\"=e.\"ChannelId\"
