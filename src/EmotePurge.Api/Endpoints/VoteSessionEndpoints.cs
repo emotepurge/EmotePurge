@@ -35,8 +35,10 @@ public static class VoteSessionEndpoints
             // Pure translation — the rules themselves live in VoteSessionService, which is the tested
             // layer and the one every non-HTTP caller goes through.
             var (result, session) = await voteSessionService.CreateAsync(
-                channelName, request.Title, request.AllowedVoterRoles, actor, request.StartedAt, request.EmoteIds,
-                request.HideResultsUntilEnd, ct);
+                new VoteSessionCreateRequest(
+                    channelName, request.Title, request.AllowedVoterRoles, request.StartedAt, request.EmoteIds,
+                    request.HideResultsUntilEnd),
+                actor, ct);
 
             return result switch
             {

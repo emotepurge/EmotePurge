@@ -12,39 +12,38 @@ public class VoteSessionService(AppDbContext db) : IVoteSessionService
     private const string VoteSessionTargetType = "voteSession";
 
     public async Task<(CreateVoteSessionResult Result, VoteSession? Session)> CreateAsync(
-        string channelName, string title, AllowedRoles allowedVoterRoles, AuditActor actor, DateTime? startedAt = null,
-        IReadOnlyList<string>? emoteIds = null, bool hideResultsUntilEnd = false, CancellationToken cancellationToken = default)
+        VoteSessionCreateRequest request, AuditActor actor, CancellationToken cancellationToken = default)
     {
         // Validated here rather than in the endpoint: this is the layer that has tests, and it is the
         // one every future caller goes through. The endpoint only maps these results to error codes.
-        if (string.IsNullOrWhiteSpace(title))
+        if (string.IsNullOrWhiteSpace(request.Title))
         {
             return (CreateVoteSessionResult.TitleEmpty, null);
         }
 
-        if (allowedVoterRoles == 0)
+        if (request.AllowedVoterRoles == 0)
         {
             return (CreateVoteSessionResult.RolesEmpty, null);
         }
 
         // Not a design choice: Twitch has no self-report endpoint for VIP status, so a voter cannot
         // prove their own (see the decision log).
-        if (allowedVoterRoles.HasFlag(AllowedRoles.VIPs))
+        if (request.AllowedVoterRoles.HasFlag(AllowedRoles.VIPs))
         {
             return (CreateVoteSessionResult.VipsNotSupported, null);
         }
 
-        if (ValidateStartedAt(startedAt) is { } startedAtError)
+        if (ValidateStartedAt(request.StartedAt) is { } startedAtError)
         {
             return (startedAtError, null);
         }
 
-        if (!TryNormalizeBallotEmoteIds(emoteIds, out var ballotEmoteIds))
+        if (!TryNormalizeBallotEmoteIds(request.EmoteIds, out var ballotEmoteIds))
         {
             return (CreateVoteSessionResult.EmoteIdsEmpty, null);
         }
 
-        var channel = await db.LoadChannelAsync(channelName, cancellationToken);
+        var channel = await db.LoadChannelAsync(request.ChannelName, cancellationToken);
         if (channel is null)
         {
             return (CreateVoteSessionResult.ChannelNotFound, null);
@@ -59,10 +58,10 @@ public class VoteSessionService(AppDbContext db) : IVoteSessionService
         var session = new VoteSession
         {
             ChannelId = channel.Id,
-            Title = title.Trim(),
-            AllowedVoterRoles = allowedVoterRoles,
-            HideResultsUntilEnd = hideResultsUntilEnd,
-            StartedAt = startedAt ?? DateTime.UtcNow
+            Title = request.Title.Trim(),
+            AllowedVoterRoles = request.AllowedVoterRoles,
+            HideResultsUntilEnd = request.HideResultsUntilEnd,
+            StartedAt = request.StartedAt ?? DateTime.UtcNow
         };
         // The only audited write in this file that cannot be a single SaveChanges: VoteSession.Id is
         // database-generated, so the audit entry's TargetId does not exist until the insert has run.
