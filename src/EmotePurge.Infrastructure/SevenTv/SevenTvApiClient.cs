@@ -375,55 +375,13 @@ public class SevenTvApiClient(
 
             for (var page = 1; page <= MaxSetEntryPages; page++)
             {
-                // One permit per page, taken here rather than once around the whole lookup (E5b): a
-                // single preview walks up to ten pages, and a budget charged per *resolution* would
-                // license ten times the documented rate. The permit is taken before the request is
-                // built, so a refusal really does mean "no request was made".
-                if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+                var fetch = await FetchClassifiedPreviewPageAsync(emoteSetId, page, cancellationToken);
+                if (fetch.Failure is { } failure)
                 {
-                    logger.LogWarning(
-                        "Providerweites 7TV-Budget erschöpft — Vorschau-Abruf für Set {SetId} bei Seite {Page} abgebrochen.",
-                        emoteSetId, page);
-                    return SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.BudgetExhausted);
+                    return failure;
                 }
 
-                var pageResult = await FetchPreviewPageAsync(emoteSetId, page, cancellationToken);
-
-                // The single most expensive mistake in the whole spec (section 5/AK7): 7TV answers an
-                // overload — HTTP 429 outright, or HTTP 200 with a GraphQL error carrying
-                // extensions.status == 429 — which without this check is indistinguishable from a set
-                // that genuinely has zero entries. The second is explicitly not an error (see the
-                // state table), so both forms of a confirmed 429 are checked before the "no usable
-                // data" branch below, not folded into it. FetchPreviewPageAsync tells the two forms
-                // apart itself; from here on they are one outcome.
-                if (pageResult.Status == V4PageStatus.RateLimited)
-                {
-                    logger.LogWarning(
-                        "7TV meldet Überlast (429) beim Vorschau-Abruf für Set {SetId}, Seite {Page}.",
-                        emoteSetId, page);
-                    return SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.RateLimited, pageResult.RetryAfter);
-                }
-
-                var pageDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet?.Emotes;
-                if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
-                {
-                    // A parse failure says so and carries the exception; everything else keeps the GraphQL hint.
-                    if (pageResult.ParseException is { } parseException)
-                    {
-                        logger.LogWarning(parseException,
-                            "7TV preview fetch for set {SetId} returned an unparseable response body, page {Page}.",
-                            emoteSetId, page);
-                    }
-                    else
-                    {
-                        logger.LogWarning(
-                            "7TV-Vorschau-Abruf für Set {SetId} lieferte keine verwertbaren Daten (GraphQL-Fehlerantwort?), Seite {Page}.",
-                            emoteSetId, page);
-                    }
-
-                    return SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.Unavailable);
-                }
-
+                var pageDto = fetch.PageDto!;
                 totalCount = pageDto.TotalCount;
                 items.AddRange(pageDto.Items.Select(MapPreviewItem));
 
@@ -513,6 +471,65 @@ public class SevenTvApiClient(
             // JsonException stays in the guard defensively; FetchV4PageAsync handles a parse failure.
             return SevenTvEmoteSearchPageResult.Failed(SevenTvEmoteSearchLookupStatus.Unavailable, null, null, null);
         }
+    }
+
+    // One loop iteration of GetEmoteSetPreviewAsync, split out along its own business seam: obtain
+    // one preview page, or determine — and already log — why it cannot be obtained (exhausted
+    // budget, a confirmed 429 in either of its two disguises, or an unparseable/GraphQL-error
+    // response). Charges one budget permit per page rather than once per resolution (E5b): a single
+    // preview walks up to ten pages, and a permit charged per *resolution* would license ten times
+    // the documented rate. The permit is taken before the request is built, so a refusal really does
+    // mean "no request was made".
+    private async Task<PreviewPageFetch> FetchClassifiedPreviewPageAsync(
+        string emoteSetId, int page, CancellationToken cancellationToken)
+    {
+        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning(
+                "Providerweites 7TV-Budget erschöpft — Vorschau-Abruf für Set {SetId} bei Seite {Page} abgebrochen.",
+                emoteSetId, page);
+            return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.BudgetExhausted));
+        }
+
+        var pageResult = await FetchPreviewPageAsync(emoteSetId, page, cancellationToken);
+
+        // The single most expensive mistake in the whole spec (section 5/AK7): 7TV answers an
+        // overload — HTTP 429 outright, or HTTP 200 with a GraphQL error carrying
+        // extensions.status == 429 — which without this check is indistinguishable from a set that
+        // genuinely has zero entries. The second is explicitly not an error (see the state table), so
+        // both forms of a confirmed 429 are checked before the "no usable data" branch below, not
+        // folded into it. FetchPreviewPageAsync tells the two forms apart itself; from here on they
+        // are one outcome.
+        if (pageResult.Status == V4PageStatus.RateLimited)
+        {
+            logger.LogWarning(
+                "7TV meldet Überlast (429) beim Vorschau-Abruf für Set {SetId}, Seite {Page}.",
+                emoteSetId, page);
+            return PreviewPageFetch.Failed(
+                SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.RateLimited, pageResult.RetryAfter));
+        }
+
+        var pageDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet?.Emotes;
+        if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
+        {
+            // A parse failure says so and carries the exception; everything else keeps the GraphQL hint.
+            if (pageResult.ParseException is { } parseException)
+            {
+                logger.LogWarning(parseException,
+                    "7TV preview fetch for set {SetId} returned an unparseable response body, page {Page}.",
+                    emoteSetId, page);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "7TV-Vorschau-Abruf für Set {SetId} lieferte keine verwertbaren Daten (GraphQL-Fehlerantwort?), Seite {Page}.",
+                    emoteSetId, page);
+            }
+
+            return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.Unavailable));
+        }
+
+        return PreviewPageFetch.Success(pageDto);
     }
 
     // The shared v4 GraphQL page-fetch behind both FetchPreviewPageAsync and SearchEmotesAsync
@@ -967,4 +984,14 @@ public class SevenTvApiClient(
     // leaderboard call source (BuildSearchHeaderSample) — see SevenTvEmoteSearchPageResult for why
     // it has to survive into every outcome, not just Ok.
     private readonly record struct V4HeaderSample(string? Limit, string? Remaining, string? Reset);
+
+    // Outcome of FetchClassifiedPreviewPageAsync: exactly one of the two is set. PageDto is the page
+    // ready to fold into GetEmoteSetPreviewAsync's accumulated preview; Failure is the already-built
+    // result that method returns as-is, since the reason (and its log line) was decided here.
+    private readonly record struct PreviewPageFetch(SevenTvGqlEmoteSetPreviewPageDto? PageDto, SevenTvEmoteSetPreviewResult? Failure)
+    {
+        public static PreviewPageFetch Success(SevenTvGqlEmoteSetPreviewPageDto pageDto) => new(pageDto, null);
+
+        public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, failure);
+    }
 }
