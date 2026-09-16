@@ -10,6 +10,35 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-16 — `IVoteSessionService.CreateAsync`'s `S107` finding fixed with a request record, not a filter
+
+**Betrifft:** `src/EmotePurge.Core/Services/IVoteSessionService.cs` · `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` · `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs`
+
+`CreateAsync` had grown to 8 parameters (channel, title, allowed roles, actor, started-at, emote
+ids, hide-results flag, cancellation token) — one over Sonar's `csharpsquid:S107` threshold.
+
+**Decision: group everything that describes the session being created into a new
+`VoteSessionCreateRequest` sealed record in `EmotePurge.Core.Services`, colocated with
+`IVoteSessionService` the way `VoteSessionSummaryDto` and friends already sit next to
+`IVoteSessionQueryService`.** `ChannelName`, `Title`, `AllowedVoterRoles`, `StartedAt`, `EmoteIds`
+and `HideResultsUntilEnd` moved into the record, in their original order, with their original
+default values preserved as record defaults — the short test call shapes
+(`CreateAsync(new VoteSessionCreateRequest(channel, "   ", AllowedRoles.Everyone), Actor)`) stay
+readable. `AuditActor actor` and `CancellationToken cancellationToken` stayed as trailing method
+parameters: they are execution context, not part of what the session *is* — the same actor
+threading pattern every other `IVoteSessionService`/`IChannelService` method already uses, and
+collapsing it into the record would have made a request type double as an audit-plumbing type for
+no reason. The new record's name deliberately differs from `VoteSessionEndpoints.cs`'s existing
+internal `CreateVoteSessionRequest` (the Api-layer JSON binding DTO for the same endpoint) — reusing
+that name would have made the two easy to swap by accident in the one file that maps between them.
+
+This is a local fix, not a convention. The other open `S107` findings do not share the shape: four
+sit in the harness, frozen until the binding measurement run on 2026-10-08, and the one in
+`ChatLogArchiveClient` is a private helper without an actor-like context parameter. Each gets decided
+on its own when it is touched.
+
+---
+
 ### 2026-09-16 — `csharpsquid:S3776` filtered for `src/EmotePurge.Api/Endpoints/*.cs`
 
 **Betrifft:** `.github/workflows/sonarcloud.yml` · `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` · `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs` · `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs`

@@ -79,7 +79,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var service = new VoteSessionService(db);
 
         var (result, session) = await service.CreateAsync(
-            channel.ChannelName, "Sommer-Purge", AllowedRoles.Everyone, Actor);
+            new VoteSessionCreateRequest(channel.ChannelName, "Sommer-Purge", AllowedRoles.Everyone), Actor);
 
         Assert.Equal(CreateVoteSessionResult.Success, result);
         var entry = Assert.Single(await LoadAuditEntriesAsync(db, "votesessionaudit1"));
@@ -99,7 +99,8 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "votesessionaudit2");
         var service = new VoteSessionService(db);
 
-        var (result, _) = await service.CreateAsync(channel.ChannelName, "   ", AllowedRoles.Everyone, Actor);
+        var (result, _) = await service.CreateAsync(
+            new VoteSessionCreateRequest(channel.ChannelName, "   ", AllowedRoles.Everyone), Actor);
 
         Assert.Equal(CreateVoteSessionResult.TitleEmpty, result);
         Assert.Empty(await LoadAuditEntriesAsync(db, "votesessionaudit2"));
@@ -116,8 +117,10 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
 
         // Duplicate and whitespace-padded ids collapse to one clean row each.
         var (result, session) = await service.CreateAsync(
-            channel.ChannelName, "Kuratiert", AllowedRoles.Everyone, Actor,
-            emoteIds: [emoteA.Id, $" {emoteA.Id} ", emoteB.Id]);
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Kuratiert", AllowedRoles.Everyone,
+                EmoteIds: [emoteA.Id, $" {emoteA.Id} ", emoteB.Id]),
+            Actor);
 
         Assert.Equal(CreateVoteSessionResult.Success, result);
         var ballot = await db.VoteSessionEmotes.Where(se => se.VoteSessionId == session!.Id).ToListAsync();
@@ -134,8 +137,9 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var service = new VoteSessionService(db);
 
         var (_, hidden) = await service.CreateAsync(
-            channel.ChannelName, "Geheim", AllowedRoles.Everyone, Actor, hideResultsUntilEnd: true);
-        var (_, open) = await service.CreateAsync(channel.ChannelName, "Offen", AllowedRoles.Everyone, Actor);
+            new VoteSessionCreateRequest(channel.ChannelName, "Geheim", AllowedRoles.Everyone, HideResultsUntilEnd: true), Actor);
+        var (_, open) = await service.CreateAsync(
+            new VoteSessionCreateRequest(channel.ChannelName, "Offen", AllowedRoles.Everyone), Actor);
 
         Assert.True(hidden!.HideResultsUntilEnd);
         // Not passing the flag must keep producing the sessions every existing caller creates today.
@@ -156,7 +160,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
 
         // An explicit empty ballot (here: whitespace-only ids) is an error, not "all emotes".
         var (result, session) = await service.CreateAsync(
-            channel.ChannelName, "Leer", AllowedRoles.Everyone, Actor, emoteIds: ["   ", ""]);
+            new VoteSessionCreateRequest(channel.ChannelName, "Leer", AllowedRoles.Everyone, EmoteIds: ["   ", ""]), Actor);
 
         Assert.Equal(CreateVoteSessionResult.EmoteIdsEmpty, result);
         Assert.Null(session);
@@ -177,15 +181,17 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var service = new VoteSessionService(db);
 
         var (foreignResult, _) = await service.CreateAsync(
-            channel.ChannelName, "Fremd", AllowedRoles.Everyone, Actor, emoteIds: [own.Id, foreign.Id]);
+            new VoteSessionCreateRequest(channel.ChannelName, "Fremd", AllowedRoles.Everyone, EmoteIds: [own.Id, foreign.Id]), Actor);
         Assert.Equal(CreateVoteSessionResult.EmoteIdsInvalid, foreignResult);
 
         var (unknownResult, _) = await service.CreateAsync(
-            channel.ChannelName, "Unbekannt", AllowedRoles.Everyone, Actor, emoteIds: [own.Id, Guid.NewGuid().ToString()]);
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Unbekannt", AllowedRoles.Everyone, EmoteIds: [own.Id, Guid.NewGuid().ToString()]),
+            Actor);
         Assert.Equal(CreateVoteSessionResult.EmoteIdsInvalid, unknownResult);
 
         var (archivedResult, _) = await service.CreateAsync(
-            channel.ChannelName, "Archiviert", AllowedRoles.Everyone, Actor, emoteIds: [own.Id, archived.Id]);
+            new VoteSessionCreateRequest(channel.ChannelName, "Archiviert", AllowedRoles.Everyone, EmoteIds: [own.Id, archived.Id]), Actor);
         Assert.Equal(CreateVoteSessionResult.EmoteIdsInvalid, archivedResult);
 
         Assert.Empty(await LoadAuditEntriesAsync(db, "ballotcreate3"));
@@ -201,7 +207,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var voter = await SeedUserAsync(db, "ballotcast1-voter");
         var service = new VoteSessionService(db);
         var (_, session) = await service.CreateAsync(
-            channel.ChannelName, "Kuratiert", AllowedRoles.Everyone, Actor, emoteIds: [onBallot.Id]);
+            new VoteSessionCreateRequest(channel.ChannelName, "Kuratiert", AllowedRoles.Everyone, EmoteIds: [onBallot.Id]), Actor);
 
         var (onResult, vote) = await service.CastVoteAsync(channel.ChannelName, session!.Id, onBallot.Id, voter.Id, VoteType.Keep);
         Assert.Equal(VoteCastResult.Success, onResult);
@@ -221,7 +227,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var voter = await SeedUserAsync(db, "ballotcast2-voter");
         var service = new VoteSessionService(db);
         var (_, session) = await service.CreateAsync(
-            channel.ChannelName, "Kuratiert", AllowedRoles.Everyone, Actor, emoteIds: [emote.Id]);
+            new VoteSessionCreateRequest(channel.ChannelName, "Kuratiert", AllowedRoles.Everyone, EmoteIds: [emote.Id]), Actor);
 
         // Archived mid-session: stays visible in the results (badged), but voting on it is closed.
         emote.IsArchived = true;
@@ -239,7 +245,8 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(db, channel.Id, "AnyEmote");
         var voter = await SeedUserAsync(db, "ballotcast3-voter");
         var service = new VoteSessionService(db);
-        var (_, session) = await service.CreateAsync(channel.ChannelName, "Alle", AllowedRoles.Everyone, Actor);
+        var (_, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(channel.ChannelName, "Alle", AllowedRoles.Everyone), Actor);
 
         var (result, vote) = await service.CastVoteAsync(channel.ChannelName, session!.Id, emote.Id, voter.Id, VoteType.Keep);
 
