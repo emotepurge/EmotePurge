@@ -107,9 +107,6 @@ public class ChatLogArchiveClient(
         var bodyCt = bodyTimeoutCts.Token;
 
         var httpStatusCode = (int)response.StatusCode;
-        var messageCount = 0;
-        var nonPrivmsgLines = 0;
-        var malformedLines = 0;
 
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
@@ -139,62 +136,14 @@ public class ChatLogArchiveClient(
             countingStream = new CountingHashStream(rawStream, hash);
             using var reader = new StreamReader(countingStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
 
-            while (true)
+            var scan = await ScanLinesAsync(
+                reader, countingStream, maxBytes, onMessage, twitchChannelId, day, httpStatusCode, bodyCt, ct);
+            if (scan.Failure is { } failure)
             {
-                string? line;
-                try
-                {
-                    line = await reader.ReadLineAsync(bodyCt);
-                }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-                {
-                    logger.LogWarning(
-                        "Log-Archiv-Abruf für Kanal {ChannelId}, Tag {Day} wegen Body-Timeout ({Timeout}) abgebrochen.",
-                        twitchChannelId, day, options.BodyTimeout);
-                    return new ChatLogDayResult(
-                        ChatLogDayStatus.BodyTimeout, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode);
-                }
-                // A read failure mid-body (dropped connection, reset stream) is the transport's
-                // fault. This catch deliberately covers only the read call above, not the parsing/
-                // callback code below it (Fixrunde 1 finding): an exception the harness's onMessage
-                // callback throws is the caller's error, not a transport failure, and must reach the
-                // caller unchanged instead of being reported as a false TransportFailure.
-                catch (Exception ex) when (ex is HttpRequestException or IOException)
-                {
-                    logger.LogWarning(ex, "Log-Archiv-Übertragung für Kanal {ChannelId}, Tag {Day} mitten im Body abgebrochen.", twitchChannelId, day);
-                    return new ChatLogDayResult(
-                        ChatLogDayStatus.TransportFailure, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode);
-                }
-
-                if (line is null)
-                {
-                    break;
-                }
-
-                if (countingStream.BytesRead > maxBytes)
-                {
-                    logger.LogWarning(
-                        "Log-Archiv-Abruf für Kanal {ChannelId}, Tag {Day} über die Byte-Obergrenze ({MaxBytes}) hinaus abgebrochen, Antwort verworfen.",
-                        twitchChannelId, day, maxBytes);
-                    return new ChatLogDayResult(
-                        ChatLogDayStatus.ByteCapExceeded, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode);
-                }
-
-                if (JustlogRawLineParser.TryParse(line, out var message, out var ircCommand))
-                {
-                    messageCount++;
-                    await onMessage(message);
-                }
-                else if (ircCommand is not null)
-                {
-                    nonPrivmsgLines++;
-                }
-                else
-                {
-                    malformedLines++;
-                }
+                return failure;
             }
 
+            var (messageCount, nonPrivmsgLines, malformedLines) = (scan.MessageCount, scan.NonPrivmsgLines, scan.MalformedLines);
             var totalLines = messageCount + nonPrivmsgLines + malformedLines;
             if (totalLines > 0 && malformedLines / (double)totalLines > MalformedLineRatioThreshold)
             {
@@ -217,6 +166,74 @@ public class ChatLogArchiveClient(
             if (countingStream is not null)
             {
                 await countingStream.DisposeAsync();
+            }
+        }
+    }
+
+    // Reads and classifies every remaining line of the body: PRIVMSGs go to onMessage, every other
+    // recognized command and every unreadable line are only counted. Runs until EOF (line is null,
+    // the normal end) or a fatal reason to stop reading further — a body-read timeout, a mid-body
+    // transport failure, or the byte cap — each of which already carries the counts gathered so far
+    // into the ChatLogDayResult it returns as Failure. The narrow try/catch around only the read
+    // call is deliberate (Fixrunde 1 finding): an exception onMessage itself throws is the caller's
+    // error, not a transport failure, and must propagate unchanged instead of being reported as one.
+    private async Task<LineScanOutcome> ScanLinesAsync(
+        StreamReader reader, CountingHashStream countingStream, long maxBytes,
+        Func<ChatLogMessage, ValueTask> onMessage, string twitchChannelId, DateOnly day, int httpStatusCode,
+        CancellationToken bodyCt, CancellationToken ct)
+    {
+        var messageCount = 0;
+        var nonPrivmsgLines = 0;
+        var malformedLines = 0;
+
+        while (true)
+        {
+            string? line;
+            try
+            {
+                line = await reader.ReadLineAsync(bodyCt);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "Log-Archiv-Abruf für Kanal {ChannelId}, Tag {Day} wegen Body-Timeout ({Timeout}) abgebrochen.",
+                    twitchChannelId, day, options.BodyTimeout);
+                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
+                    ChatLogDayStatus.BodyTimeout, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException)
+            {
+                logger.LogWarning(ex, "Log-Archiv-Übertragung für Kanal {ChannelId}, Tag {Day} mitten im Body abgebrochen.", twitchChannelId, day);
+                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
+                    ChatLogDayStatus.TransportFailure, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
+            }
+
+            if (line is null)
+            {
+                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, null);
+            }
+
+            if (countingStream.BytesRead > maxBytes)
+            {
+                logger.LogWarning(
+                    "Log-Archiv-Abruf für Kanal {ChannelId}, Tag {Day} über die Byte-Obergrenze ({MaxBytes}) hinaus abgebrochen, Antwort verworfen.",
+                    twitchChannelId, day, maxBytes);
+                return new LineScanOutcome(messageCount, nonPrivmsgLines, malformedLines, new ChatLogDayResult(
+                    ChatLogDayStatus.ByteCapExceeded, countingStream.BytesRead, null, messageCount, nonPrivmsgLines, malformedLines, httpStatusCode));
+            }
+
+            if (JustlogRawLineParser.TryParse(line, out var message, out var ircCommand))
+            {
+                messageCount++;
+                await onMessage(message);
+            }
+            else if (ircCommand is not null)
+            {
+                nonPrivmsgLines++;
+            }
+            else
+            {
+                malformedLines++;
             }
         }
     }
@@ -305,4 +322,9 @@ public class ChatLogArchiveClient(
             base.Dispose(disposing);
         }
     }
+
+    // Outcome of ScanLinesAsync: the line/command counts gathered up to whatever point scanning
+    // stopped at, plus — only when scanning stopped for a fatal reason rather than reaching EOF —
+    // the already-built ChatLogDayResult ReadBodyAsync returns as-is.
+    private readonly record struct LineScanOutcome(int MessageCount, int NonPrivmsgLines, int MalformedLines, ChatLogDayResult? Failure);
 }
