@@ -60,15 +60,40 @@ public static class JustlogRawLineParser
         message = null!;
         ircCommand = null;
 
-        if (string.IsNullOrEmpty(line) || line[0] != '@')
+        if (TryParseEnvelope(line) is not { } envelope)
         {
             return false;
+        }
+
+        if (!string.Equals(envelope.Command, "PRIVMSG", StringComparison.Ordinal))
+        {
+            ircCommand = envelope.Command;
+            return false;
+        }
+
+        if (!TryExtractTrailing(envelope.ParamsAndTrailing, out var trailingText))
+        {
+            return false;
+        }
+
+        return TryBuildMessage(envelope.Tags, trailingText, out message);
+    }
+
+    // The IRCv3 envelope shared by every recognized command: `@tags :prefix COMMAND params`, split
+    // into the parsed tags, the command name, and whatever followed it. Null for anything that is
+    // not even that much of a well-formed line — the caller cannot yet know a command name to
+    // report as ircCommand at that point, which is why every one of these guards leaves it unset.
+    private static (Dictionary<string, string> Tags, string Command, string? ParamsAndTrailing)? TryParseEnvelope(string line)
+    {
+        if (string.IsNullOrEmpty(line) || line[0] != '@')
+        {
+            return null;
         }
 
         var tagsEnd = line.IndexOf(' ', 1);
         if (tagsEnd < 0)
         {
-            return false;
+            return null;
         }
 
         var tags = ParseTags(line[1..tagsEnd]);
@@ -76,13 +101,13 @@ public static class JustlogRawLineParser
 
         if (afterTags.Length == 0 || afterTags[0] != ':')
         {
-            return false;
+            return null;
         }
 
         var prefixEnd = afterTags.IndexOf(' ');
         if (prefixEnd < 0)
         {
-            return false;
+            return null;
         }
 
         var afterPrefix = afterTags[(prefixEnd + 1)..];
@@ -90,21 +115,16 @@ public static class JustlogRawLineParser
         var command = commandEnd < 0 ? afterPrefix : afterPrefix[..commandEnd];
         var paramsAndTrailing = commandEnd < 0 ? null : afterPrefix[(commandEnd + 1)..];
 
-        if (command.Length == 0)
-        {
-            return false;
-        }
+        return command.Length == 0 ? null : (tags, command, paramsAndTrailing);
+    }
 
-        if (!string.Equals(command, "PRIVMSG", StringComparison.Ordinal))
-        {
-            ircCommand = command;
-            return false;
-        }
-
-        if (!TryExtractTrailing(paramsAndTrailing, out var trailingText))
-        {
-            return false;
-        }
+    // The PRIVMSG-specific tail: validate tmi-sent-ts (the one tag whose absence or unparsability
+    // makes the whole line unusable, not just one field of it) and, only once that holds, read the
+    // remaining tags and build the message. A missing/empty user-id or badges tag is not treated as
+    // an error here either — see the class remarks.
+    private static bool TryBuildMessage(Dictionary<string, string> tags, string trailingText, out ChatLogMessage message)
+    {
+        message = null!;
 
         if (!tags.TryGetValue("tmi-sent-ts", out var sentAtRaw) ||
             !long.TryParse(sentAtRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sentAtEpochMs) ||
