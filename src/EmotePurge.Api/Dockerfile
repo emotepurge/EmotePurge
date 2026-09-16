@@ -33,11 +33,10 @@ WORKDIR /app
 RUN groupadd --system appgroup && useradd --system --gid appgroup --no-create-home appuser
 COPY --from=build /app/publish .
 COPY --from=web-build /web/dist/web/browser ./wwwroot
-RUN chown -R appuser:appgroup /app
 # Mount point for the Data Protection key ring (DataProtection__KeyPath). appuser has --no-create-home,
 # so without an explicitly owned directory there is nowhere writable to persist keys to, and every
 # restart would silently invalidate all auth cookies.
-RUN mkdir -p /keys && chown appuser:appgroup /keys
+RUN mkdir -p /keys && chown -R appuser:appgroup /app /keys
 USER appuser
 # S3-35: GET /api/health answers 503 while the worker pipeline is down/stale, so `curl -f` fails
 # and the container shows unhealthy in `docker ps`/Portainer. start-period covers the S3-34
