@@ -674,25 +674,25 @@ export class AdminMonitoringPage {
 
   /** Capped at 100 so a future over-limit state can't overflow the bar out of its track. */
   protected readonly utilizationPercent = computed(() => {
-    const sevenTv = this.health()?.sevenTv;
-    if (!sevenTv?.desiredSubscriptionCount || !sevenTv.subscriptionLimit) {
-      return 0;
-    }
-    return Math.min(100, (sevenTv.desiredSubscriptionCount / sevenTv.subscriptionLimit) * 100);
+    const raw = this.rawUtilizationPercent();
+    return raw === null ? 0 : Math.min(100, raw);
   });
 
   /**
-   * Uncapped share of the subscription limit, null when 7TV never reported one (older worker
-   * snapshot): without a denominator there is no utilization to grade, and a green bar would claim
-   * a health we cannot know. The tone must see values past 100, so this is deliberately not the
-   * capped `utilizationPercent` above.
+   * Uncapped share of the subscription limit, null when there is nothing to divide: either 7TV
+   * never reported a count (older worker snapshot — `null`, not `0`) or the limit itself is 0. The
+   * two are checked separately on purpose: `desiredSubscriptionCount: 0` is a real, known value (no
+   * subscriptions desired) and must grade as 0 % utilization, not read as "unknown" the way a
+   * `!desiredSubscriptionCount` falsy check would. The tone must see values past 100, so this is
+   * deliberately not the capped `utilizationPercent` above.
    */
   private readonly rawUtilizationPercent = computed<number | null>(() => {
     const sevenTv = this.health()?.sevenTv;
-    if (!sevenTv?.desiredSubscriptionCount || !sevenTv.subscriptionLimit) {
+    const desired = sevenTv?.desiredSubscriptionCount;
+    if (desired === null || desired === undefined || !sevenTv || !sevenTv.subscriptionLimit) {
       return null;
     }
-    return (sevenTv.desiredSubscriptionCount / sevenTv.subscriptionLimit) * 100;
+    return (desired / sevenTv.subscriptionLimit) * 100;
   });
 
   protected readonly subscriptionTone = computed<UtilizationTone | null>(() => {
@@ -735,7 +735,10 @@ export class AdminMonitoringPage {
     const sevenTv = this.health()?.sevenTv;
     const channels = sevenTv?.desiredChannelCount;
     const intervalSeconds = sevenTv?.resyncIntervalSeconds;
-    if (!channels || !intervalSeconds) {
+    // `channels: 0` is a real, known value (no channels tracked, so a real 0/s rate) and must not
+    // be read as "not reported" the way a `!channels` falsy check would; `intervalSeconds` is the
+    // divisor and still needs the zero/missing guard to avoid a division by zero.
+    if (channels === null || channels === undefined || !intervalSeconds) {
       return null;
     }
     return {

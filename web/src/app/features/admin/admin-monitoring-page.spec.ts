@@ -149,9 +149,16 @@ describe('AdminMonitoringPage', () => {
 
   describe('subscription utilization — null vs. zero denominator guard', () => {
     it('grades no utilization at all (null) when 7TV never reported a subscription count, while the bar still renders at 0 rather than blank', () => {
-      render(of(health({ sevenTv: { desiredSubscriptionCount: 0 } })));
+      render(of(health({ sevenTv: { desiredSubscriptionCount: null } })));
 
       expect(component['rawUtilizationPercent']()).toBeNull();
+      expect(component['utilizationPercent']()).toBe(0);
+    });
+
+    it('grades a real 0 % utilization — not "unknown" — when 7TV reports zero desired subscriptions', () => {
+      render(of(health({ sevenTv: { desiredSubscriptionCount: 0 } })));
+
+      expect(component['rawUtilizationPercent']()).toBe(0);
       expect(component['utilizationPercent']()).toBe(0);
     });
 
@@ -213,10 +220,20 @@ describe('AdminMonitoringPage', () => {
   });
 
   describe('restRequestRate — no denominator, no rate stated', () => {
-    it('is null when the channel count is zero', () => {
-      render(of(health({ sevenTv: { desiredChannelCount: 0 } })));
+    it('is null when the channel count was never reported', () => {
+      render(of(health({ sevenTv: { desiredChannelCount: null } })));
 
       expect(component['restRequestRate']()).toBeNull();
+    });
+
+    it('states a real 0/s rate — not null — when 7TV reports zero tracked channels', () => {
+      render(of(health({ sevenTv: { desiredChannelCount: 0, resyncIntervalSeconds: 300 } })));
+
+      expect(component['restRequestRate']()).toEqual({
+        requests: 0,
+        seconds: 300,
+        perSecond: '0.00',
+      });
     });
 
     it('is null when the resync interval is missing', () => {
