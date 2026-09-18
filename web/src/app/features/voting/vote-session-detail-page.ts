@@ -180,6 +180,13 @@ export class VoteSessionDetailPage {
   // handoff for, so a reload (vote, SSE, refresh) never re-attempts one, but a direct navigation
   // to a *different* session — same reused component, changed inputs — does.
   private guardHandoffKey: string | null = null;
+  // See applyResults(): the "channelName:sessionId" the current *selection* belongs to. Deliberately
+  // its own field rather than a reuse of guardHandoffKey above — that one is written from a
+  // narrower branch (only on the very first loadResults() call for a given key) and going through
+  // it would leave a channel/session switch that hits the stashed-guard-results branch without a
+  // selection reset. The two must never be conflated (Konzept "Auswahl überlebt Suche und Filter",
+  // Abschnitt 3).
+  private selectionContextKey: string | null = null;
   protected readonly skeletonCells = Array.from({ length: 10 }, (_, i) => i);
   protected readonly activeEmoteSetId = signal<string | null>(null);
   protected readonly errorMessage = signal<string | null>(null);
@@ -784,16 +791,27 @@ export class VoteSessionDetailPage {
     if (options.freeze) {
       this.orderedEmoteIds.set(results.emotes.map((emote) => emote.emoteId));
     }
-    // No selection.clear() here on purpose: ListSelection keys by emote id, so the freshly
-    // deserialized objects this assigns resolve back to the same selection. Clearing would
-    // throw away a 50-emote selection on every single vote, since vote() reloads through here.
 
-    // #133: reconcile against unfiltered `results.emotes`, not usageFilter's filtered view —
-    // retainVisible() would wrongly drop rows a filter (not a reload) pushed out; same choice as
-    // usage-stats-page.ts's #94 fix (see DECISIONS.md for both). Fixed-ballot sessions keep
-    // archived members listed and thus selected; dynamic sessions drop them from `results.emotes`
-    // and get pruned here. Silent by design: this page only reads selection.selectedItems(),
-    // which already excludes a dead key.
+    // Bestandsfehler, closed by this Konzept (Abschnitt 3): this component is reused across a
+    // direct navigation between sessions (see guardHandoffKey above), and now that selectedItems()
+    // resolves against the unfiltered universe (orderedEmotes()) rather than the filtered display
+    // list, an emote id that happens to also exist in the new session/channel would stay selected
+    // AND stay resolvable — reachable by the delete run it feeds. A context switch must clear the
+    // selection outright; only a reload of the *same* session (a vote, its SSE echo, a manual
+    // refresh) may reconcile instead.
+    const contextKey = `${this.channelName()}:${this.sessionId()}`;
+    if (this.selectionContextKey !== contextKey) {
+      this.selectionContextKey = contextKey;
+      this.selection.clear();
+      return;
+    }
+
+    // #133: reconcile against unfiltered `results.emotes`, not usageFilter's filtered view — a
+    // filter change must never drop a row here, only a reload that actually removed it can. Same
+    // choice as usage-stats-page.ts's #94 fix (see DECISIONS.md for both). Fixed-ballot sessions
+    // keep archived members listed and thus selected; dynamic sessions drop them from
+    // `results.emotes` and get pruned here. Silent by design: this page only reads
+    // selection.selectedItems(), which already excludes a dead key.
     this.selection.retainAmong(results.emotes);
   }
 

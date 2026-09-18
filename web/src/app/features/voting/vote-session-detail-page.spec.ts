@@ -297,3 +297,130 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
     expect(component['selection'].selectedKeys()).toEqual(['a']);
   });
 });
+
+/**
+ * The Bestandsfehler this Konzept closes (Abschnitt 3, Codex Befund 2): the page is reused across
+ * a direct navigation between sessions (see `guardHandoffKey`'s own comment), and now that
+ * `selectedItems()` resolves against the unfiltered universe (`orderedEmotes()`) rather than the
+ * filtered display list, an emote id that happens to exist in BOTH sessions would otherwise stay
+ * selected AND stay resolvable to the delete run — worse than before this Konzept, which only
+ * accidentally guarded against it by resolving against the filtered view. `applyResults()` now
+ * keys on `channelName:sessionId` (`selectionContextKey`, deliberately its own field, not a reuse
+ * of `guardHandoffKey`) and clears the selection outright on a mismatch.
+ */
+describe('VoteSessionDetailPage — the selection is scoped to channel:session (Konzept "Auswahl überlebt Suche und Filter" §3)', () => {
+  let fixture: ComponentFixture<VoteSessionDetailPage>;
+  let component: VoteSessionDetailPage;
+  let httpMock: HttpTestingController;
+
+  const CHANNEL = 'sensitron';
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(VoteSessionDetailPage, {
+      set: { template: '<div #sheet></div>' },
+    });
+
+    fixture = TestBed.createComponent(VoteSessionDetailPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Initial mount, both required inputs set together before the first `detectChanges()` — same
+   *  requirement the other describe block's own `beforeEach` follows. */
+  function mount(sessionId: string, initial: VoteSessionResults): void {
+    fixture.componentRef.setInput('channelName', CHANNEL);
+    fixture.componentRef.setInput('sessionId', sessionId);
+    fixture.detectChanges();
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/vote-sessions/${sessionId}/results`, initial);
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/permissions`, {
+      canManage: true,
+      canViewUsageStats: true,
+      isGlobalAdmin: false,
+      isTracked: true,
+      isBotActive: true,
+    });
+  }
+
+  /** Navigates the SAME component instance to a different session — the direct-navigation case
+   *  (component reused, only the `sessionId` input changes) that `guardHandoffKey` and
+   *  `selectionContextKey` both exist for. */
+  function navigateTo(sessionId: string, next: VoteSessionResults): void {
+    fixture.componentRef.setInput('sessionId', sessionId);
+    fixture.detectChanges();
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/vote-sessions/${sessionId}/results`, next);
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+  }
+
+  it('clears the selection on navigation to a different session, even when the same emote id is marked in both', () => {
+    const a = resultEmote('a');
+
+    mount('7', results([a], { sessionId: 7 }));
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    // Session 8 happens to carry the very same emote id — under the pre-Konzept resolution
+    // (against the filtered display list) this could still leak through a coincidence; under
+    // selectedItems() resolving against orderedEmotes() it would now reach the delete run outright
+    // if the switch did not clear the selection.
+    navigateTo('8', results([a], { sessionId: 8 }));
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+
+  it('keeps the selection across a reload of the SAME session', () => {
+    const a = resultEmote('a');
+    const b = resultEmote('b');
+
+    mount('7', results([a, b], { sessionId: 7 }));
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: CHANNEL });
+    vi.advanceTimersByTime(VOTE_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+    flushByPath(
+      httpMock,
+      `/api/channels/${CHANNEL}/vote-sessions/7/results`,
+      results([a, b], { sessionId: 7 }),
+    );
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+  });
+});
