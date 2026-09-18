@@ -270,6 +270,20 @@ describe('ListSelection', () => {
     expect(selection.selectedKeys().sort()).toEqual(['a', 'b']);
   });
 
+  it('resetAnchor() clears only the shift anchor, leaving the selection itself untouched', () => {
+    const { selection, byId } = setup('a', 'b', 'c', 'd', 'e');
+    selection.onRowClick(byId('a'), click());
+    selection.onRowClick(byId('c'), click(true)); // a, b, c selected, anchor 'c'
+
+    selection.resetAnchor();
+
+    expect(selection.selectedKeys().sort()).toEqual(['a', 'b', 'c']);
+    // The anchor is gone — a further shift-click degrades to a plain toggle instead of ranging
+    // from 'c'.
+    selection.onRowClick(byId('e'), click(true));
+    expect(selection.selectedKeys().sort()).toEqual(['a', 'b', 'c', 'e']);
+  });
+
   it('adds a whole group without dropping what was already selected', () => {
     const { selection, byId } = setup('a', 'b', 'c', 'd');
 

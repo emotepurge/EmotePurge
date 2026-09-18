@@ -157,6 +157,19 @@ export class ListSelection<T> {
   }
 
   /**
+   * Resets only the shift-click anchor, leaving `selectedKeys` untouched — what a sort-key change
+   * calls (see `UsageStatsPage.setSortKey`). The anchor is a position in the *old* order, and
+   * carrying it into a differently-ordered list would let the next shift-click sweep up rows the
+   * user never saw next to each other; but a re-sort says nothing about which rows are still
+   * wanted; a whole-selection `clear()` would be answering a question nobody asked (Konzept
+   * "Auswahl überlebt Suche und Filter" 2.3). Use `clear()` instead wherever the selection itself,
+   * not just the anchor, must go.
+   */
+  resetAnchor(): void {
+    this.anchorKey = null;
+  }
+
+  /**
    * Prunes the selection against an explicitly given set of still-valid items, returning how many
    * keys were dropped. This is now the only pruning mechanism (the former `retainVisible()`, which
    * pruned against the *filtered* display list on every filter keystroke, is gone — a filter change
