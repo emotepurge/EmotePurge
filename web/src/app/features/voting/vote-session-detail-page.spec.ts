@@ -235,10 +235,12 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
   });
 
   it('a selected row only hidden by the usage filter (not removed from the session) survives a reload untouched', () => {
-    // This is the case that decides retainAmong(results.emotes) over retainVisible()/emotes():
-    // 'c' starts above the min-usage filter, gets selected, and the reload lowers its count below
-    // that same filter — dropping it out of emotes() (the filtered view) while it is still part of
-    // the reloaded, unfiltered ballot.
+    // This is the case that decides retainAmong(results.emotes) over emotes(): 'c' starts above
+    // the min-usage filter, gets selected, and the reload lowers its count below that same filter
+    // — dropping it out of emotes() (the filtered view) while it is still part of the reloaded,
+    // unfiltered ballot. A filter change itself never touches the selection at all any more
+    // (Konzept "Auswahl überlebt Suche und Filter"), so setRange() below only narrows emotes() for
+    // the assertion at the end, it does not exercise any pruning of its own.
     const a = resultEmote('a', { totalUseCount: 10 });
     const c = resultEmote('c', { totalUseCount: 10 });
 
@@ -258,6 +260,29 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
     // ...yet the selection is untouched: 'c' was never actually removed from the ballot, only
     // filtered out of the current view.
     expect(component['selection'].selectedKeys()).toEqual(['c']);
+  });
+
+  it('a name filter that hides a marked row leaves selectedKeys whole, raising only hiddenSelectedCount', () => {
+    const a = resultEmote('a');
+    const b = resultEmote('b');
+    const c = resultEmote('c');
+
+    mount(results([a, b, c]));
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+
+    // Narrows emotes() to just 'b' — both marked rows drop out of view, exactly the case #133/S2-16
+    // used to prune for.
+    component['usageFilter'].setNameFilter('EmoteB');
+
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    expect(component['selection'].hiddenSelectedCount()).toBe(2);
+    expect(
+      component['selectedForDelete']()
+        .map((row) => row.emoteId)
+        .sort(),
+    ).toEqual(['a', 'c']);
   });
 
   it('a silent reload that loses nothing selected leaves the selection alone', () => {

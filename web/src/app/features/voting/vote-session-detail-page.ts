@@ -296,16 +296,23 @@ export class VoteSessionDetailPage {
     return ordered;
   });
 
-  // Prune, don't clear (S2-16): narrowing a filter keeps the still-visible part of the selection,
-  // while anything filtered out is dropped so the delete path never holds an off-screen emote.
-  protected readonly usageFilter = new EmoteUsageFilter<VoteSessionResult>(() =>
-    this.selection.retainVisible(),
-  );
+  // Survives search and filter (supersedes S2-16, 2026-09-18): a filter change narrows what is on
+  // screen, never what is selected — the filter's onChange hook is gone entirely.
+  protected readonly usageFilter = new EmoteUsageFilter<VoteSessionResult>();
 
   protected readonly emotes = computed(() => this.usageFilter.apply(this.orderedEmotes()));
 
   protected readonly rows = computed(() => chunkIntoRows(this.emotes(), this.columns()));
-  protected readonly selection = new ListSelection(this.emotes, (emote) => emote.emoteId);
+
+  // Display list is emotes() (filtered — the basis for shift ranges and visibility); universe is
+  // the unfiltered orderedEmotes() (Konzept "Auswahl überlebt Suche und Filter" 1 and 3) —
+  // selectedItems() resolves against the latter, so a filter change can no longer make a
+  // marked-but-hidden row unresolvable to the delete run that reads it.
+  protected readonly selection = new ListSelection(
+    this.emotes,
+    (emote) => emote.emoteId,
+    this.orderedEmotes,
+  );
 
   protected readonly emoteCountKey = computed(() =>
     pluralKey(this.orderedEmotes().length, 'emoteCount'),
