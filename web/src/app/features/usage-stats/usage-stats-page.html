@@ -356,7 +356,7 @@
     <app-slot-budget-bar
       [capacity]="status.capacity"
       [occupied]="status.occupiedSlots"
-      [pendingRemoval]="selection.selectedKeys().length"
+      [pendingRemoval]="selection.selectedItems().length"
     />
   }
 
@@ -845,7 +845,7 @@
       @if (activeEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span class="font-mono text-base font-semibold text-accent-fg">{{
-            selection.selectedKeys().length
+            selection.selectedItems().length
           }}</span>
           <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
             {{ 'usageStats.dock.marked' | transloco }}
@@ -903,12 +903,12 @@
                 appButton="primary"
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
-                [disabled]="selection.selectedKeys().length === 0"
+                [disabled]="selection.selectedItems().length === 0"
                 (click)="openCreateVoteSession()"
               >
                 {{
                   'usageStats.createVoteSession'
-                    | transloco: { count: selection.selectedKeys().length }
+                    | transloco: { count: selection.selectedItems().length }
                 }}
               </button>
             }

@@ -410,11 +410,10 @@ export class UsageStatsPage {
   protected readonly selectionPrunedFeedback = signal<{ key: string; count: number } | null>(null);
   private selectionPrunedFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  // Prune, don't clear (S2-16): narrowing a filter keeps the still-visible part of the selection,
-  // while anything filtered out is dropped so the delete path never holds an off-screen emote.
-  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotal>(() =>
-    this.selection.retainVisible(),
-  );
+  // Survives search and filter (supersedes S2-16, 2026-09-18): a filter change narrows what is on
+  // screen, never what is selected — the filter lost its onChange hook entirely, there is nothing
+  // left for it to call. What used to be pruned here now only shows up as selection.hiddenSelectedCount().
+  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotal>();
 
   protected readonly filteredEmotes = computed(() => this.usageFilter.apply(this.emotes()));
 
@@ -539,7 +538,15 @@ export class UsageStatsPage {
     pluralKey(this.atlasOrder().length, 'emoteCount'),
   );
 
-  protected readonly selection = new ListSelection(this.atlasOrder, (emote) => emote.emoteId);
+  // Display list is atlasOrder() (filtered, sorted, banded — the basis for shift ranges and
+  // visibility); universe is the unfiltered emotes() (Konzept "Auswahl überlebt Suche und Filter"
+  // 1) — selectedItems() resolves against the latter, so a filter change can no longer make a
+  // marked-but-hidden row unresolvable to the delete/export/vote-session run that reads it.
+  protected readonly selection = new ListSelection(
+    this.atlasOrder,
+    (emote) => emote.emoteId,
+    this.emotes,
+  );
 
   /**
    * The cell the inspector is describing, held by id rather than by object: a refetch hands out
@@ -724,9 +731,12 @@ export class UsageStatsPage {
   protected readonly activeIndex = signal(0);
 
   // Resolved items, not selection.selectedKeys(): the delete engine needs sevenTvEmoteId and the
-  // display name, which only the loaded row carries. Safe because every path that removes a row
-  // from the atlas while keeping the page open (filter change, reload, finished delete) clears the
-  // selection — so nothing selected can be missing here.
+  // display name, which only the loaded row carries. selectedItems() resolves against the
+  // unfiltered universe (emotes()), not the filtered atlasOrder(), so a row a name/usage filter is
+  // currently hiding still resolves here and stays part of the run — a filter change no longer
+  // clears or prunes the selection at all (Konzept "Auswahl überlebt Suche und Filter"). What
+  // cannot resolve is a key that was actually removed from emotes() (reload, finished delete),
+  // which retainAmong()/clear() already keep out of selectedKeys() before this ever reads it.
   protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
     this.selection.selectedItems().map((emote) => ({
       emoteId: emote.emoteId,
@@ -782,14 +792,15 @@ export class UsageStatsPage {
 
   /**
    * Count of the grid selection that would actually be captured by the dock's copy shortcut —
-   * built on `selection.selectedItems()`, NOT the raw `selection.selectedKeys()`. A silent totals
-   * reload (the `usageFlushed`/`channel.synced` live-event path or the sync-recheck poll, both via
-   * `loadTotals(..., { preserveSelection: true })`) can drop rows out of `atlasOrder()` — e.g. an
-   * emote deleted externally, which the totals query filters via `!e.IsArchived` — without ever
-   * touching the raw key set, since `preserveSelection` only skips `selection.clear()`; it does not
-   * reconcile the keys against the new rows. `selectedKeys()` stays at the old size regardless.
-   * Gating the shortcut and its label on the raw key count would let `importShortcutLocked` report
-   * "unlocked" with zero resolvable rows, so a click runs into `openImportTarget`'s
+   * built on `selection.selectedItems()`, the one source every displayed count now reads from
+   * (Konzept "Auswahl überlebt Suche und Filter" 1, "eine Zahl je Knopf, aus einer Quelle"), NOT
+   * the raw `selection.selectedKeys()`. A key that a reload actually dropped from the unfiltered
+   * `emotes()` universe (an emote deleted externally, which the totals query filters via
+   * `!e.IsArchived`) does not resolve here even before `retainAmong()`/`clear()` catch up and prune
+   * `selectedKeys()` itself — so this count can briefly run ahead of a stale key set, never behind
+   * it. A name/usage filter hiding a marked row, by contrast, no longer touches either number at
+   * all. Gating the shortcut and its label on the raw key count would let `importShortcutLocked`
+   * report "unlocked" with zero resolvable rows, so a click runs into `openImportTarget`'s
    * `captured.selection.length === 0` guard and silently does nothing — no dialog, no feedback. If
    * only some rows survive, the label would announce more emotes than the run actually copies.
    */
@@ -814,14 +825,15 @@ export class UsageStatsPage {
     }),
   );
 
-  /** Occupied slots after the pending selection would be deleted — the dock's one number. */
+  /** Occupied slots after the pending selection would be deleted — the dock's one number.
+   *  `selectedItems().length`, like every other displayed count (Konzept 1). */
   protected readonly projectedSlots = computed(() => {
     const status = this.setStatus();
     if (status?.capacity == null) {
       return null;
     }
     return {
-      projected: Math.max(status.occupiedSlots - this.selection.selectedKeys().length, 0),
+      projected: Math.max(status.occupiedSlots - this.selection.selectedItems().length, 0),
       capacity: status.capacity,
     };
   });
@@ -1001,11 +1013,11 @@ export class UsageStatsPage {
     // Every key change starts at "most first" again. Carrying an ascending order over to a
     // different column silently answers a question nobody asked twice.
     this.sortDirection.set('desc');
-    // A different sort key reorders the whole grid, and the selection carries shift-range anchors
-    // into that new order — keeping it would let the next shift-click sweep up rows the user never
-    // saw next to each other. Flipping the direction alone reverses a list they are still looking
-    // at, so that keeps the selection (see setSortDirection, which does not clear).
-    this.selection.clear();
+    // A different sort key reorders the whole grid, and a shift-range anchor is a position in the
+    // OLD order — keeping it would let the next shift-click sweep up rows the user never saw next
+    // to each other. The selection itself survives, though (Konzept 2.3, the operator's decision):
+    // the reorder says nothing about which rows are still wanted, only the anchor is stale.
+    this.selection.resetAnchor();
   }
 
   /** Keeps the selection on purpose: reversing a list the user is still looking at does not move
@@ -1315,7 +1327,11 @@ export class UsageStatsPage {
         emoteSetId: captured.emoteSetId,
         from: captured.from,
         to: captured.to,
-        filtered: captured.filtered,
+        // The filter describes the VISIBLE list, not the content of a selection (Konzept "Auswahl
+        // überlebt Suche und Filter" 2.6): a selection built across several searches can hold rows
+        // the current filter would hide, so `filtered` would be actively misleading about what the
+        // "selection" scope's rows actually are. Only the "visible" scope inherits the filter state.
+        filtered: choice.scope === 'selection' ? false : captured.filtered,
         rows,
         scope: choice.scope,
         trendFor: (row) => this.trendFor(row),
