@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { EmoteUsageFilter } from './emote-usage-filter';
 
@@ -42,18 +42,18 @@ describe('EmoteUsageFilter', () => {
     expect(filter.isAnyActive()).toBe(true);
   });
 
-  it('reset() clears every filter and notifies the host once', () => {
-    const onChange = vi.fn();
-    const filter = new EmoteUsageFilter<Row>(onChange);
+  it('reset() clears every filter', () => {
+    // No onChange hook any more (Konzept "Auswahl überlebt Suche und Filter" 2026-09-18): a filter
+    // change, reset() included, never touches a host's selection — the filter lost that job
+    // entirely, it does not just stop announcing it.
+    const filter = new EmoteUsageFilter<Row>();
     filter.setMinCount('1');
     filter.setNameFilter('cat');
-    onChange.mockClear();
 
     filter.reset();
 
     expect(filter.isAnyActive()).toBe(false);
     expect(filter.apply(ROWS)).toEqual(ROWS);
-    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
   it('setRange() drives the 0/0 range that "never used" means, and clears back to unbounded', () => {
