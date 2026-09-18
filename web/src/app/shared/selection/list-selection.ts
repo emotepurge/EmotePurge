@@ -14,13 +14,26 @@ import { computed, signal } from '@angular/core';
  * direction moves every row to a different position — both used to silently desynchronize the
  * rendered selection state from what the delete path actually submitted.
  *
- * Two deliberately separate views on the selection:
- *  - `selectedKeys` is authoritative. It does not depend on the item still being present in
- *    `items()`, so it stays complete across refetch, re-sort and filtering. Anything that must
- *    not miss a selected entry (counting, deciding what gets deleted) belongs here.
- *  - `selectedItems` resolves those keys back against the current `items()`, for consumers that
- *    need more than the key (preview names in the delete confirmation). It can only ever return
- *    rows that are currently visible, which makes it a display convenience, not the source of truth.
+ * Two sources, not one: `items` is the *display list* (filtered, sorted, in atlas order — the
+ * basis for shift ranges, keyboard navigation and visibility), `universe` is the *unfiltered*
+ * backing set selection resolves against. `universe` is an optional third constructor parameter
+ * that defaults to `items` — that default is exactly what keeps `ForeignEmoteGrid`
+ * (`shared/seven-tv/foreign-emote-grid.ts`), which has no filter and passes only two arguments,
+ * unchanged: for it, display list and universe are the same list, as they always were.
+ *
+ * Three views on the selection, all derived from the same key set so their counts never disagree:
+ *  - `selectedKeys` is authoritative. It changes only through user gestures and through
+ *    `retainAmong(universe)`, never through a filter change, so it stays complete across refetch,
+ *    re-sort and filtering. Anything that must not miss a selected entry (counting, deciding what
+ *    gets deleted) belongs here.
+ *  - `selectedItems` resolves those keys against `universe` (not the display list), for consumers
+ *    that need more than the key (preview names in the delete confirmation, the delete/export/vote
+ *    run itself). It is complete as long as `selectedKeys ⊆ keys(universe)` holds — a key missing
+ *    from `universe` simply does not resolve and is left out of every run, the conservative
+ *    direction.
+ *  - `isVisible(item)`/`hiddenSelectedCount` split that same key set by whether the key is also in
+ *    the *display* list — `isVisible` per item, `hiddenSelectedCount` as the total marked-but-not-
+ *    shown count, e.g. for a dock notice ("n hidden by the current filter").
  *
  * Backed by a signal (not @angular/cdk/collections' SelectionModel) — a computed() elsewhere that
  * reads the selection needs an actual signal read to know when to recompute; a plain mutable
@@ -38,16 +51,41 @@ export class ListSelection<T> {
 
   readonly selectedItems = computed<T[]>(() => {
     const keys = this.selectedKeySet();
-    return this.items().filter((item) => keys.has(this.keyFn(item)));
+    return this.universe().filter((item) => keys.has(this.keyFn(item)));
+  });
+
+  readonly hiddenSelectedCount = computed(() => {
+    const keys = this.selectedKeySet();
+    if (keys.size === 0) {
+      return 0;
+    }
+    const visibleKeys = new Set(this.items().map((item) => this.keyFn(item)));
+    let hidden = 0;
+    for (const key of keys) {
+      if (!visibleKeys.has(key)) {
+        hidden++;
+      }
+    }
+    return hidden;
   });
 
   constructor(
     private readonly items: () => readonly T[],
     private readonly keyFn: (item: T) => string,
+    // Regel 14: a computed() reading mutable state instead of a signal never reacts to it, so the
+    // universe is a signal-returning function like `items`, not a plain array — defaulting it to
+    // `items` itself (rather than e.g. `() => items()`) keeps identity-equal reads for the
+    // filter-less callers that never pass a third argument.
+    private readonly universe: () => readonly T[] = items,
   ) {}
 
   isSelected(item: T): boolean {
     return this.selectedKeySet().has(this.keyFn(item));
+  }
+
+  isVisible(item: T): boolean {
+    const key = this.keyFn(item);
+    return this.items().some((candidate) => this.keyFn(candidate) === key);
   }
 
   onRowClick(item: T, event: MouseEvent): void {
@@ -118,22 +156,14 @@ export class ListSelection<T> {
     this.anchorKey = null;
   }
 
-  // Filter changes prune instead of clearing (S2-16): what stays visible stays selected, while a
-  // key that is filtered out of items() must not linger — selectedKeys is authoritative for the
-  // delete path, and an invisible-but-selected emote would be deleted without being on screen.
-  // Delegates to retainAmong() over items() itself, so there is exactly one pruning mechanism.
-  retainVisible(): number {
-    return this.retainAmong(this.items());
-  }
-
   /**
    * Prunes the selection against an explicitly given set of still-valid items, returning how many
-   * keys were dropped. Deliberately distinct from retainVisible(): that one prunes against
-   * `items()`, the *filtered* view — right for a filter change, wrong for a data reload, where a
-   * row that merely fell out of the current filter window (not out of the dataset) must survive.
-   * Callers that need "prune against the true, unfiltered set" (e.g. a silent refetch reconciling
-   * the selection against emotes that were actually removed from the backing set) pass that set
-   * here instead of relying on items().
+   * keys were dropped. This is now the only pruning mechanism (the former `retainVisible()`, which
+   * pruned against the *filtered* display list on every filter keystroke, is gone — a filter change
+   * must not touch `selectedKeys` at all, see the class doc). Callers reconcile against the
+   * *unfiltered* universe: a silent reload of the same context (live event, sync poll) drops keys
+   * that were actually removed from the backing set, while a row that merely fell out of the
+   * current filter window survives because it is still in what gets passed here.
    */
   retainAmong(items: readonly T[]): number {
     const valid = new Set(items.map((item) => this.keyFn(item)));

@@ -25,6 +25,18 @@ function setup(...ids: string[]) {
   return { items, selection, byId };
 }
 
+// Display list and universe as two independent signals, the way a filtered page (usage-stats,
+// voting) constructs a ListSelection — as opposed to setup() above, which mirrors the
+// filter-less ForeignEmoteGrid default where they are the same list.
+function setupWithUniverse(displayIds: string[], universeIds: string[]) {
+  const items = signal(rows(...displayIds));
+  const universe = signal(rows(...universeIds));
+  const selection = new ListSelection<Row>(items, (row) => row.id, universe);
+  const byId = (id: string): Row =>
+    universe().find((row) => row.id === id) ?? items().find((row) => row.id === id)!;
+  return { items, universe, selection, byId };
+}
+
 describe('ListSelection', () => {
   it('starts with nothing selected', () => {
     const { selection, byId } = setup('a', 'b', 'c');
@@ -129,35 +141,76 @@ describe('ListSelection', () => {
     expect(selection.selectedKeys()).toEqual(['e']);
   });
 
-  it('retainVisible() keeps visible selections and drops filtered-out ones', () => {
-    const { items, selection, byId } = setup('a', 'b', 'c', 'd');
+  it('a display-list shrink (a filter change) leaves selectedKeys untouched, raises hiddenSelectedCount, and selectedItems stays complete', () => {
+    // The successor to the old retainVisible() cases: a filter change must no longer prune
+    // anything — it only affects how much of the (unchanged) selection is currently on screen.
+    const { items, selection, byId } = setupWithUniverse(
+      ['a', 'b', 'c', 'd'],
+      ['a', 'b', 'c', 'd'],
+    );
     selection.onRowClick(byId('a'), click());
     selection.onRowClick(byId('c'), click(true)); // a, b, c selected
 
-    // A filter change hides 'a' and 'b'.
+    // A filter narrows the display list to just 'c' and 'd'.
     items.set(rows('c', 'd'));
-    selection.retainVisible();
 
-    // The invisible rows are gone from the authoritative key set — nothing off-screen can reach
-    // the delete path — while the still-visible 'c' survives the filter change (S2-16).
-    expect(selection.selectedKeys()).toEqual(['c']);
-
-    // The anchor ('c') is still visible, so shift-click ranges keep working from it.
-    selection.onRowClick(byId('d'), click(true));
-    expect(selection.selectedKeys().sort()).toEqual(['c', 'd']);
+    expect(selection.selectedKeys().sort()).toEqual(['a', 'b', 'c']);
+    expect(selection.hiddenSelectedCount()).toBe(2);
+    expect(
+      selection
+        .selectedItems()
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(['a', 'b', 'c']);
   });
 
-  it('retainVisible() resets the anchor when the anchored row was filtered out', () => {
-    const { items, selection, byId } = setup('a', 'b', 'c', 'd');
+  it('the shift anchor is untouched by the display list shrinking and growing again, and a later shift-click ranges over the now-visible order', () => {
+    const { items, selection, byId } = setupWithUniverse(
+      ['a', 'b', 'c', 'd'],
+      ['a', 'b', 'c', 'd'],
+    );
+    selection.onRowClick(byId('a'), click()); // anchor = 'a'
+
+    // A filter narrows the display list, then widens again with a different order — a plain
+    // items() change, with no retainAmong() call, exactly as the pages will do once they stop
+    // calling retainVisible() on every keystroke (Konzept 2.4).
+    items.set(rows('c', 'd'));
+    items.set(rows('d', 'c', 'b', 'a'));
+
+    selection.onRowClick(byId('c'), click(true));
+
+    // The anchor was never reset, and the range resolves against the current (re-sorted) order:
+    // 'a' sits last now, so the range from 'a' to 'c' is c-b-a, not a-b-c.
+    expect(selection.selectedKeys().sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('selectedItems resolves against the universe, not the display list', () => {
+    const { items, selection, byId } = setupWithUniverse(
+      ['a', 'b', 'c', 'd'],
+      ['a', 'b', 'c', 'd'],
+    );
     selection.onRowClick(byId('a'), click());
+    selection.onRowClick(byId('b'), click());
 
-    items.set(rows('b', 'c', 'd'));
-    selection.retainVisible();
+    // Both selected rows are filtered out of the display list — under the old contract
+    // (resolving against items()) selectedItems() would have silently gone empty here.
+    items.set(rows('c', 'd'));
 
-    expect(selection.selectedKeys()).toEqual([]);
-    // Anchor was reset — a shift-click has nothing to range from and degrades to a toggle.
-    selection.onRowClick(byId('d'), click(true));
-    expect(selection.selectedKeys()).toEqual(['d']);
+    expect(
+      selection
+        .selectedItems()
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(['a', 'b']);
+  });
+
+  it('without a universe argument, selectedItems resolves against items() and hiddenSelectedCount is always 0 (the default ForeignEmoteGrid relies on)', () => {
+    const { selection, byId } = setup('a', 'b', 'c');
+    selection.onRowClick(byId('a'), click());
+    selection.onRowClick(byId('b'), click());
+
+    expect(selection.selectedItems()).toEqual([byId('a'), byId('b')]);
+    expect(selection.hiddenSelectedCount()).toBe(0);
   });
 
   it('retainAmong() prunes against an explicitly given set, not items(), and returns the removed count', () => {
@@ -199,10 +252,10 @@ describe('ListSelection', () => {
   });
 
   it('a merely filtered-out (but still loaded) row survives retainAmong() against the unfiltered set', () => {
-    // This is the case that decides retainVisible() vs. retainAmong(): items() is the FILTERED view
-    // (see the class doc), so pruning a silent reload's selection against it would wrongly treat a
-    // row that only fell out of the current filter window as if it had been deleted from the
-    // backing set (#94). retainAmong() against the true, unfiltered set must not drop it.
+    // items() is the FILTERED display view (see the class doc), so pruning a silent reload's
+    // selection against it would wrongly treat a row that only fell out of the current filter
+    // window as if it had been deleted from the backing set (#94). retainAmong() takes the true,
+    // unfiltered set explicitly instead, and must not drop it.
     const { items, selection, byId } = setup('a', 'b', 'c', 'd');
     selection.onRowClick(byId('a'), click());
     selection.onRowClick(byId('b'), click());
@@ -215,18 +268,6 @@ describe('ListSelection', () => {
 
     expect(removed).toBe(0);
     expect(selection.selectedKeys().sort()).toEqual(['a', 'b']);
-  });
-
-  it('retainVisible() keeps delegating to retainAmong() over items() and returns the removed count', () => {
-    const { items, selection, byId } = setup('a', 'b', 'c', 'd');
-    selection.onRowClick(byId('a'), click());
-    selection.onRowClick(byId('c'), click(true)); // a, b, c selected
-
-    items.set(rows('c', 'd'));
-    const removed = selection.retainVisible();
-
-    expect(removed).toBe(2);
-    expect(selection.selectedKeys()).toEqual(['c']);
   });
 
   it('adds a whole group without dropping what was already selected', () => {
