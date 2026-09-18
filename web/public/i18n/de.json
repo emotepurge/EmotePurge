@@ -731,7 +731,7 @@
       "hiddenBadge": "Verdeckt",
       "create": "Erstellen",
       "noSessions": "Noch keine Abstimmungen für diesen Channel.",
-      "noSessionsManagerHint": "Erstelle oben die erste Abstimmung — die Community stimmt dann pro Emote über Behalten oder Löschen ab.",
+      "noSessionsManagerHint": "Erstelle unten die erste Abstimmung — die Community stimmt dann pro Emote über Behalten oder Löschen ab.",
       "noSessionsVoterHint": "Sobald das Mod-Team eine Abstimmung startet, erscheint sie hier.",
       "statusActive": "Aktiv",
       "statusEnded": "Beendet",

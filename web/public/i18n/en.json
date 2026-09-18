@@ -731,7 +731,7 @@
       "hiddenBadge": "Hidden",
       "create": "Create",
       "noSessions": "No voting sessions for this channel yet.",
-      "noSessionsManagerHint": "Create the first session above — the community then votes keep-or-delete per emote.",
+      "noSessionsManagerHint": "Create the first session below — the community then votes keep-or-delete per emote.",
       "noSessionsVoterHint": "As soon as the mod team starts a session, it shows up here.",
       "statusActive": "Active",
       "statusEnded": "Ended",
