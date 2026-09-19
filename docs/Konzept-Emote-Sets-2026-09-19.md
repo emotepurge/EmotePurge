@@ -1261,9 +1261,12 @@ er *dorthin* wollte. Der Betreiber hat den Einwand angenommen. Neuer Vertrag:
   HTTP 200, und der Lauf bricht sichtbar ab (`seven-tv-import.service.ts:56-75`,
   `seven-tv-run-engine.ts:95`). Ein Set, das im Picker steht und sich nicht beschreiben lässt, ist
   damit ein sichtbarer Fehlschlag, kein stiller.
-- **Zwei Klassen im Picker.** *Getrackte Ziele* — Sets, die `ActiveEmoteSetId` eines Kanals aus
-  `listMine()` sind — stehen oben, beschriftet mit dem Kanal, und sind mit einem Klick wählbar; das
-  ist der heutige Weg, nur um die Set-Ebene ergänzt. *Ungetrackte Ziele* stehen darunter, als
+- **Zwei Klassen im Picker.** *Getrackte Ziele* — **alle** Sets der Kanäle aus `listMine()`, nicht
+  nur deren `ActiveEmoteSetId` — stehen oben, unter ihrem Kanal gruppiert; das aktive Set trägt die
+  Beschriftung „aktiv" und ist vorausgewählt, damit der heutige Ein-Klick-Weg „in Kanal X"
+  unverändert bleibt (Aufklappen und Vorauswahl in 7.5, Baustein 2). Die frühere Formulierung
+  „Sets, die `ActiveEmoteSetId` eines Kanals sind" stammt aus einer Fassung vor dem Set-Picker und
+  hätte genau die Einschränkung festgeschrieben, die dieses Konzept aufhebt. *Ungetrackte Ziele* stehen darunter, als
   „nicht getrackt" gekennzeichnet, und lösen beim Wählen eine **Bestätigung** aus, die **Besitzer
   (7TV-Anzeigename des Set-Eigentümers) und Setnamen** nennt: „In das Set ‚Halloween' von
   ‚HandOfBlood' kopieren?" Ohne Bestätigung kein Lauf. Kein zweiter Bestätigungsschritt für
