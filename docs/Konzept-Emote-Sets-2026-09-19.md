@@ -78,6 +78,15 @@ Lauf, Alias-Abweichung). Die drei Produktfragen hat der Betreiber entschieden (7
 zu stehen. Eine Behauptung des Reviews ist am Code enger als formuliert (Alias und Chat-Zählung,
 5.2). Die Tabelle steht im Überarbeitungs-Abschnitt (siebte Runde).
 
+**Achte Fassung (2026-09-20).** Eine Korrektur, kein Review: der Ziel-Picker zog seine Kandidaten
+aus `editableEmoteSetIds`, einem Feld, das nur mit 7TV-Anmeldung lesbar ist — daraus folgten der
+Token-Prompt **vor** dem Picker, die Abweichung von A16/R2 und Sonde 7. Unnötig: die
+Editor-Beziehung fragt EmotePurge längst serverseitig ohne Nutzer-Token ab (`editor_of`), sie hängt
+bei 7TV am Account, und die Set-Liste eines Accounts ist öffentlich (7.3). Der Betreiber hat die
+Token-Entscheidung **zurückgenommen** (R2 gilt unverändert), den DECISIONS-Entwurf 2 näher an den
+ursprünglichen Eintrag gerückt (10) und Sonde 7 durch eine benannte Annahme ersetzt; vor Schritt 4
+steht kein Tor mehr (13).
+
 Nichts hiervon wird vor dem bindenden Harness-Lauf am **2026-10-08** deployt (Abschnitt 12) — ohne
 Ausnahme; der Bedarf vor dem 2026-10-01 wird ohne Deploy gedeckt (12.4). Kein DECISIONS-Eintrag in
 diesem Papier — die kommen mit den Commits, die Vertrag und Topologie ändern (Regel 3, Abschnitt 10).
@@ -250,7 +259,12 @@ formuliert, steht das in der Spalte.
 | D7 | **[high]** Rückmelde-Body über Deploy und Retry hinweg unsicher | **Trifft zu.** `DeleteRunInfo`/`RestoreRunInfo` halten keine Set-ID (`seven-tv-delete.service.ts:79-83`, `seven-tv-restore.service.ts:62-66`); ein altes Bundle postet `{ emoteIds }` | 6.5 Vertrag 3 / 7.1: beide Bodies für eine Übergangszeit, Laufdatensatz trägt die Set-ID |
 | D8 | **[high]** Das Voting-Upsert verliert den Worker-first-Wettlauf | **Trifft zu.** `ON CONFLICT DO NOTHING` schützt nur die Api-Seite; der Worker liest `existing` (`:442-444`), staged `Add` (`:539`) und scheitert bei `SaveChangesAsync` (`:108`) am Unique-Index, `RefreshMatchCacheAsync` (`:109`) läuft nicht | 8: Worker wird konfliktverträglich (Nachlesen und einmal wiederholen), Test mit erzwungener Verschränkung |
 | D9 | **[medium]** Export weder set-identifizierbar noch nullbar | **Trifft zu.** `buildUsageExportPurposeDownload` lässt `emoteSetId` für `usage-csv`/`usage-json` weg (`usage-export-purposes.ts:93-101`); `UsageExportRow.totalUseCount: number` (`usage-export.ts:29-30`) | 6.1: Set in Dateiname und Metadaten, `null`-Serialisierung festgelegt; 6.5 korrigiert „Export unberührt" |
-| D10 | **[medium]** Produktentscheidungen an den Plan delegiert | **Trifft zu.** | Vom Betreiber entschieden: Token **vor** dem Ziel-Picker (7.3), Kollisionen **draußen** aus der Warteschlange (7.5), Alias-Abweichung **übersprungen, aber sichtbar** (7.5); Umbenennung auf 7TV ausdrücklich nicht in #200 |
+| D10 | **[medium]** Produktentscheidungen an den Plan delegiert | **Trifft zu.** | Vom Betreiber entschieden: Token **vor** dem Ziel-Picker (7.3 — in der achten Fassung zurückgenommen), Kollisionen **draußen** aus der Warteschlange (7.5), Alias-Abweichung **übersprungen, aber sichtbar** (7.5); Umbenennung auf 7TV ausdrücklich nicht in #200 |
+
+**Achte Runde (2026-09-20) — kein Review, eine Korrektur des Betreibers.** Die Herleitung des
+Ziel-Pickers über `editableEmoteSetIds` (D10) war unnötig, `editor_of` liefert dieselbe Beziehung
+serverseitig (Kopf, 7.3). Eingearbeitet: 7.3, 7.4, 7.5 (Baustein 1, Schnittstellen), 10 (Eintrag 2
+ohne R2-Revision), 11 (Messpunkt 7 gestrichen), 13 (kein Tor vor Schritt 4).
 
 Unverändert geblieben: `UsageStat.EmoteSetId` als Träger der Zuordnung; `Emote` eine Zeile pro
 Kanal; nicht-aktive Sets nur auf Abruf, keine zusätzlichen Subscriptions, keine
@@ -1213,48 +1227,40 @@ einen mit einem Wegwerfkanal. Die technischen Befunde dazu — die Zielvorschau 
 **gewählten** Set kommen, die Vorprüfung vergleicht nur IDs, die Preview-Abfrage holt keine
 Kapazität — stehen in 7.5; sie waren nie an der Vorabscheibe aufgehängt und gelten unverändert.
 
-Die erste Fassung wollte **alle** Sets aus `editableEmoteSetIds` gleichberechtigt anbieten. Codex
-hat dagegen den Fall des Editors gehalten, der mehrere Broadcaster betreut und hunderte Emotes ins
-falsche, ungetrackte Kundenset kopiert — **autorisiert, aber ungewollt** (B5). 7TVs Rechteprüfung
-verhindert genau das nicht: sie prüft, ob der Akteur schreiben *darf*, nicht, ob er *dorthin*
-wollte. Der Betreiber hat den Einwand angenommen. Neuer Vertrag:
+Die erste Fassung wollte **alle** Sets, in die 7TV den Nutzer schreiben lässt, gleichberechtigt
+anbieten. Codex hat dagegen den Fall des Editors gehalten, der mehrere Broadcaster betreut und
+hunderte Emotes ins falsche, ungetrackte Kundenset kopiert — **autorisiert, aber ungewollt** (B5).
+7TVs Rechteprüfung verhindert genau das nicht: sie prüft, ob der Akteur schreiben *darf*, nicht, ob
+er *dorthin* wollte. Der Betreiber hat den Einwand angenommen. Neuer Vertrag:
 
-- **Kandidaten** sind weiterhin die Sets aus `editableEmoteSetIds` des 7TV-Accounts des eingeloggten
-  Nutzers — aber **nicht serverseitig aufgelöst**, wie die zweite Fassung wollte. Gemessen am
-  2026-09-19 (11.1): das Feld verlangt eine 7TV-Anmeldung; unauthentifiziert antwortet 7TV mit
-  `LOGIN_REQUIRED` (`extensions.code`, `status: 401`, `path: ["users","userByConnection",
-  "editableEmoteSetIds"]`) und **nullt dabei das ganze Elternobjekt**. Die Liste ist also nur dort
-  lesbar, wo der 7TV-Token des Nutzers liegt — **im Browser**, genau wie die Mutationen; das
-  Backend sieht den Token nie (DECISIONS 2026-09-09) und kann diesen Endpunkt nicht anbieten. Folge
-  für den Picker: die Set-**Listen** kommen aus dem Set-Listen-Endpunkt je Kanal (6.1, 7.5
-  Baustein 1, öffentliche Daten, kein Token) bzw. für ungetrackte Sets aus dem Einzelabruf je Set
-  (11.1); die **Schreibbarkeit** — `editableEmoteSetIds` — kommt aus einer Browser-Abfrage mit Token.
-- **Der Token wird vor dem Öffnen des Ziel-Pickers abgefragt (Entscheidung des Betreibers, siebte
-  Fassung; Codex D10).** Ist keiner gespeichert (`tokenService.hasToken()`), kommt der Token-Prompt
-  **vor** dem Picker; wird er abgelehnt, öffnet der Picker nicht — ein Lauf könnte ohne Token
-  ohnehin nicht starten (`seven-tv-run-engine.ts:249-252`). Mit dem Token liest der Picker
-  `editableEmoteSetIds` und bietet **nur beschreibbare Sets** an: getrackte Sets außerhalb der Liste
-  stehen deaktiviert mit Beschriftung („kein Schreibrecht"), wie heute ungetrackte Kanäle
-  (`import-target-options.ts:7-9`); die ungetrackte Klasse besteht aus dem Rest der Liste. Das
-  **weicht bewusst von A16/R2 ab** (`import-flow.ts:37-41`, DECISIONS 2026-09-06 „Token-Prompt nach
-  der Bestätigung", #72 K3), und der Kommentar dort verbietet ausdrücklich, den Import an Delete und
-  Restore „anzugleichen". Die Begründung von R2 war, dass Picker und Vorschau reine Lesezugriffe
-  sind und ein Schreibgeheimnis nicht verlangt werden soll, bevor der Nutzer gesehen hat, was
-  passiert. Sie trägt hier nicht mehr, aus drei Gründen: erstens hängt die **Liste der Angebote**
-  selbst am Token — ein Picker, der ungetrackte Ziele erst nach einer zweiten Anmeldung zeigen oder
-  Sets anbieten müsste, in die 7TV den Nutzer gar nicht schreiben lässt, wäre eine schlechtere
-  Reihenfolge als ein früherer Prompt; zweitens bleibt die Bestätigung mit Vorschau **zwischen**
-  Token und Lauf stehen, der Nutzer sieht also weiterhin, was passiert, bevor etwas geschrieben
-  wird — nur das Geheimnis liegt schon in der Sitzung; drittens gilt der Token je Browser-Sitzung
-  (`sessionStorage`, `seven-tv-token.service.ts:3,10`), der Prompt erscheint also einmal, nicht je
-  Übertragung. Delete und Restore fragen den Token ohnehin zuerst (`import-flow.ts:37-38`); die
-  Übertragen-Tür rückt damit zu ihnen. **Begrenzt auf diese Tür:** Datei-, Fremdkanal- und
-  Bestenlisten-Import öffnen keinen Ziel-Picker (sie zielen auf das Set der Seite, 7.5 Baustein 2)
-  und behalten R2 unverändert. Der DECISIONS-Eintrag 2 revidiert R2 für die Übertragen-Tür
-  ausdrücklich, und der Kommentar in `import-flow.ts` wird nachgezogen. **Nicht gemessen** ist,
-  ob `editableEmoteSetIds` für einen Editor auch die Sets der Broadcaster enthält, für die er
-  `editor_of` ist — HandOfBloods Mod-Team besteht aus Editoren; Sonde 7 (Abschnitt 11) klärt das,
-  mit Token, also durch den Betreiber.
+- **Kandidaten kommen serverseitig, ohne Nutzer-Token (achte Fassung).** Die siebte Fassung zog
+  sie aus `editableEmoteSetIds`, das eine 7TV-Anmeldung verlangt (11.1), und baute darauf den
+  Token-Prompt vor dem Picker und Sonde 7. Beides ist entfallen, weil EmotePurge die
+  Editor-Beziehung längst abfragt: `GetEditorOfChannelsAsync` stellt eine gewöhnliche
+  GraphQL-Anfrage auf `editor_of` des 7TV-Users und bildet jede Zuweisung auf Twitch-Login und
+  Twitch-ID ab (`SevenTvApiClient.cs:57-58,323-360`, `SevenTvEditorGrant`);
+  `SevenTvEditorService.GetEditorGrantsAsync` cacht das (`SevenTvEditorService.cs:14-40`), und
+  `MyChannelsService` (`:52`) teilt sich den Cache mit dem Autorisierungspfad. Editor-Rechte hängen
+  bei 7TV am **Account**, nicht am Set. Die Angebotsliste ist deshalb: der **eigene** Account plus
+  alle Accounts aus `editor_of`, je Account die **öffentliche** Set-Liste (11.1 — der v4-Aufruf
+  mit `platformId`, genau die Twitch-ID, die der Grant trägt; ein Account ohne Twitch-Verbindung
+  fällt heraus, `SevenTvApiClient.cs:357`), persönliche Sets ausgefiltert (`flags: 4`, Kapazität 5,
+  11.1). Wie viele Endpunkte das sind, entscheidet der Plan; fest steht, dass der Browser dafür
+  keinen Token braucht.
+- **Zurückgenommen: der Token vor dem Ziel-Picker.** Die siebte Fassung hatte entschieden, den
+  7TV-Token vor dem Öffnen des Pickers abzufragen, und das als bewusste Abweichung von A16/R2
+  (`import-flow.ts:34-41`, DECISIONS 2026-09-06 „Token-Prompt nach der Bestätigung", #72 K3)
+  begründet — ausschließlich damit, dass die **Liste der Angebote** an einem angemeldeten Feld
+  hing. Das tut sie nicht mehr; der Betreiber hat die Entscheidung zurückgenommen. Der Token wird
+  wieder erst vor dem Lauf fällig, genau wie heute — **keine Abweichung von A16/R2**, kein
+  nachzuziehender Kommentar in `import-flow.ts`, kein R2-Absatz im DECISIONS-Eintrag 2.
+- **Benannte Annahme statt Messung (Entscheidung des Betreibers).** Ob 7TV Editor-Rechte feiner
+  abstuft — Emotes verwalten gegen Sets verwalten —, wird **nicht gemessen**; die frühere Sonde 7
+  ist gestrichen. Das gesamte heutige 7TV-Management setzt schon voraus, dass ein Editor Sets
+  bearbeiten darf; fehlt das Recht, antwortet 7TV auf die Mutation mit `LACKING_PRIVILEGES` über
+  HTTP 200, und der Lauf bricht sichtbar ab (`seven-tv-import.service.ts:56-75`,
+  `seven-tv-run-engine.ts:95`). Ein Set, das im Picker steht und sich nicht beschreiben lässt, ist
+  damit ein sichtbarer Fehlschlag, kein stiller.
 - **Zwei Klassen im Picker.** *Getrackte Ziele* — Sets, die `ActiveEmoteSetId` eines Kanals aus
   `listMine()` sind — stehen oben, beschriftet mit dem Kanal, und sind mit einem Klick wählbar; das
   ist der heutige Weg, nur um die Set-Ebene ergänzt. *Ungetrackte Ziele* stehen darunter, als
@@ -1267,18 +1273,16 @@ wollte. Der Betreiber hat den Einwand angenommen. Neuer Vertrag:
   Setnamen nennen; der Fallback „Set-ID statt Name" aus der zweiten Fassung ist nicht mehr nötig.
 
 Das **lockert DECISIONS 2026-09-09** („Fremd ist die Quelle, nie das Ziel … das Zielset bleibt ein
-getrackter Kanal aus `listMine()`", Zeilen 1914 f.) — aber kleiner als in der ersten Fassung
-gedacht, und der Eintrag (Abschnitt 10) beschreibt genau diese abgeschwächte Form: das Ziel darf ein
-ungetracktes Set sein, **wenn** der Nutzer es nach Ansage von Besitzer und Name bestätigt hat; die
-Vorgabe bleibt das getrackte Ziel. Begründung für die Lockerung selbst unverändert: Die
-Schreibrechte hat immer 7TV geprüft — `ADD`/`REMOVE` antworten bei fehlendem Recht mit HTTP 200 und
-`extensions.code = LACKING_PRIVILEGES`, was der Lauf abfängt und abbricht
-(`seven-tv-import.service.ts:56-75`, `seven-tv-run-engine.ts:95`). Unsere eigenen Filter
-(`UsageStatsAccessAuthorizationFilter`, `EmoteEndpoints.cs:28`) sichern nur den Lesezugriff auf die
-Chat-Statistik und sind kanal-skopiert. `editableEmoteSetIds` ist damit die **autoritativere**
-Quelle als unsere Herleitung über Kanalrollen: sie ist genau die Liste, gegen die 7TV die Mutation
-prüft. Was sie nicht ist: ein Ersatz für die Frage „meinst du wirklich dieses?" — die stellt der
-Picker.
+getrackter Kanal aus `listMine()`", Zeilen 1914 f.) — kleiner als in der ersten Fassung gedacht,
+und seit der achten Fassung näher am ursprünglichen Eintrag, als die siebte es war: das Ziel darf
+ein Set eines Accounts sein, **dessen Editor der Nutzer nachweislich ist** — nachgewiesen über
+dieselbe `editor_of`-Abfrage, aus der `listMine()` seine Editor-Kanäle bezieht —, nach Bestätigung
+mit Besitzer und Setname; die Vorgabe bleibt das getrackte Ziel. Gelockert wird also nur die
+Bedingung „getrackt", nicht die Bedingung „Editor". Der Eintrag (Abschnitt 10) beschreibt genau
+diese Form. Die Schreibrechte selbst hat immer 7TV geprüft (`LACKING_PRIVILEGES`, oben); unsere
+eigenen Filter (`UsageStatsAccessAuthorizationFilter`, `EmoteEndpoints.cs:28`) sichern nur den
+Lesezugriff auf die Chat-Statistik und sind kanal-skopiert. Die Angebotsliste ist keine
+Rechteprüfung und kein Ersatz für die Frage „meinst du wirklich dieses?" — die stellt der Picker.
 
 Für ein ungetracktes Ziel liefert unsere Datenbank nichts: belegte Slots, Kapazität und die Liste
 schon vorhandener Emotes (`already-present-filter.ts`) kommen dann aus dem Live-Abruf des Zielsets —
@@ -1324,11 +1328,12 @@ verwerfen, und der Vorgang wäre spurlos. Also zwei Wege, nach Zielklasse:
   den Zero-Knowledge-Grundsatz (DECISIONS 2026-07-25, 2026-09-09). Was öffentlich lesbar ist und
   reicht: der **Besitzer** des Sets (`emoteSet { owner { id } }`, 11.1) muss der 7TV-User des Akteurs
   sein oder einer, für den der Akteur `editor_of` ist — dieselbe Abfrage, die `isSevenTvEditor`
-  heute speist (`GqlEditorOfQuery`, `SevenTvApiClient.cs:57-58`). Das ist eine Prüfung auf
-  **Besitzer-Ebene**, nicht auf Set-Ebene; ob 7TV Editor-Rechte je Set einschränken kann, ist offen,
-  und wenn ja, hätte die Mutation vorher schon `LACKING_PRIVILEGES` geliefert und der Lauf wäre
-  abgebrochen (`seven-tv-run-engine.ts:95`) — die Papierspur bleibt dann leer, weil nichts
-  passiert ist. Nicht Besitzer und nicht Editor → 403, kein Eintrag. Das ist die einzige Stelle, an
+  heute speist (`GqlEditorOfQuery`, `SevenTvApiClient.cs:57-58`) und seit der achten Fassung auch
+  die Angebotsliste des Pickers (7.3). Das ist eine Prüfung auf **Besitzer-Ebene**, nicht auf
+  Set-Ebene; dass 7TV Editor-Rechte nicht je Set einschränkt, ist die benannte Annahme aus 7.3 —
+  träfe sie nicht zu, hätte die Mutation vorher schon `LACKING_PRIVILEGES` geliefert und der Lauf
+  wäre abgebrochen (`seven-tv-run-engine.ts:95`), die Papierspur bliebe leer, weil nichts passiert
+  ist. Nicht Besitzer und nicht Editor → 403, kein Eintrag. Das ist die einzige Stelle, an
   der EmotePurge für ein ungetracktes Set selbst eine Rechtefrage stellt, und sie stellt sie nur,
   um keine falsche Papierspur zu schreiben.
 - Er **protokolliert Akteur, Ziel-Set-ID und den aufgelösten Besitzer**: `ChannelName = null`
@@ -1345,7 +1350,8 @@ verwerfen, und der Vorgang wäre spurlos. Also zwei Wege, nach Zielklasse:
 - `AuditLogQueryService.ProjectDetail` (`:129`, Vokabular `:20-25`) muss die neuen Felder lesen —
   die Warnung dazu steht wörtlich am Endpunkt (`EmoteEndpoints.cs:144-145`): eine Vokabel, die dort
   nicht ankommt, verliert ihre Herkunft still. Api-Test für die neue Route (Regel 11): 401 ohne
-  Session, 403 für ein Set außerhalb der eigenen `editableEmoteSetIds`, 204 sonst.
+  Session, 403 für ein Set, dessen Besitzer weder der Akteur noch einer seiner `editor_of`-Accounts
+  ist, 204 sonst.
 - Dieselbe Form (`TargetType`/`TargetId` + Details) für die Papier-Einträge aus 7.1.
 
 ### 7.5 Der Ziel-Set-Picker im Einzelnen — Bausteine, und die Stelle, an der eine naive Umsetzung gefährlich wird
@@ -1369,15 +1375,13 @@ Alles lesend, alles additiv:
   Name, Kapazität, `isActive` (Vergleich mit `Channel.ActiveEmoteSetId`), `isPersonal`. Aufgelöst
   über `Channel.TwitchChannelId` (`Channel.cs:6`) mit der Abfrage aus 11.1. Hinter denselben Filtern
   wie `/emotes` (`EmoteEndpoints.cs:24-28`): wer den Picker öffnet, hat eine Rolle im Zielkanal,
-  sonst stünde der Kanal nicht in `listMine()`. Der Auftrag der dritten Fassung sprach von einem
-  Endpunkt für „die Sets des angemeldeten Nutzers"; das ist **bewusst anders** gebaut, aus zwei
-  Gründen. Erstens liefert 7TV die Liste der *editierbaren* Sets nur mit Anmeldung (11.1,
-  `LOGIN_REQUIRED`) — ein Backend-Endpunkt dafür ist unmöglich. Zweitens braucht ein auf getrackte
-  Kanäle beschränkter Picker gar nicht die Sets des Nutzers, sondern die Sets **des Kanal-Besitzers**,
-  und die sind öffentlich. Für HandOfBloods Mod-Team, das aus Editoren besteht und nicht aus dem
-  Broadcaster, ist das der einzige Weg ohne Token: die eigenen v3-`emote_sets` eines Editors
-  enthalten die Sets des Broadcasters nicht (Abschnitt 11, Fremdset-Sonde). Ob der einzelne Editor
-  in ein bestimmtes Set des Besitzers schreiben darf, prüft 7TV bei der Mutation
+  sonst stünde der Kanal nicht in `listMine()`. Der Endpunkt ist je **Kanal** geschnitten, nicht
+  je Nutzer: die getrackte Klasse des Pickers braucht die Sets **des Kanal-Besitzers**, und die sind
+  öffentlich — die eigenen v3-`emote_sets` eines Editors enthalten die Sets des Broadcasters nicht
+  (Abschnitt 11, Fremdset-Sonde), und HandOfBloods Mod-Team besteht aus Editoren. Die account-weite
+  Angebotsliste samt ungetrackter Klasse steht in 7.3 (achte Fassung) und liest dieselbe öffentliche
+  Set-Abfrage über die `editor_of`-Accounts. Ob der einzelne Editor in ein bestimmtes Set des
+  Besitzers schreiben darf, prüft 7TV bei der Mutation
   (`LACKING_PRIVILEGES` → Abbruch, `seven-tv-run-engine.ts:95`), wie heute. Kein Cache über die
   Sitzung hinaus: der Picker lädt die Liste beim Wählen eines Kanals, wenige Requests je Dialog.
   Regel 4/5/11: Interface in `Core/Services`, Implementierung in `Infrastructure/Services`, Test —
@@ -1608,8 +1612,8 @@ Rest des Vorhabens:**
   von Anfang an so geschnitten wird, dass `emoteSetId` der Schlüssel ist und `channelName` das Attribut der
   getrackten Klasse: heute Pflicht, später `string | null` — eine Typverbreiterung an drei
   Aufrufstellen (`import-flow.ts:94`, `seven-tv-import.service.ts:296-301`,
-  `usage-stats-page.ts:1494-1514`), kein Umbau. Die zweite Klasse hängt darunter mit eigener
-  Datenquelle (Browser, Token). **Keine Kollision**, aber eine Form, die jetzt zu wählen ist.
+  `usage-stats-page.ts:1494-1514`), kein Umbau. Die zweite Klasse hängt darunter, aus derselben
+  serverseitigen Angebotsliste (7.3). **Keine Kollision**, aber eine Form, die jetzt zu wählen ist.
 - *Baustein 3 → Bedarfsabruf aus 6.x.* Der Lesepfad nach Set-ID mit Set-ID als Cache-Schlüssel hinter dem
   Härtungs-Dekorator **ist** der Pfad, den 6.4 fordert. Was er **nicht** beantwortet: die TTL-Frage aus 6.4/11.4 — der Dialog
   lädt einmal, die Nutzungsseite bei jedem `usage.flushed`; die 60 s reichen hier und sagen über
@@ -1621,11 +1625,10 @@ Rest des Vorhabens:**
   daneben. Das Feld ist nullbar (7.4 sagt, warum).
 - *Baustein 1 → 6.1.* Derselbe Endpunkt; 6.1 liest ihn, statt einen zweiten zu bauen. `isPersonal`
   kommt dazu, was 6.1 nicht vorgesehen hatte und brauchen wird.
-- *Eine echte Spannung, beim Schreiben gefunden — in der siebten Fassung aufgelöst:* 7.4 verließ
-  sich darauf, `editableEmoteSetIds` serverseitig prüfen zu können. Das geht nicht (11.1). 7.4 ist
-  auf eine Besitzer-Prüfung umgestellt, und die Frage, wie ungetrackte Ziele vor der Bestätigung
-  aufgelistet werden, hat der Betreiber entschieden: Token vor dem Picker, beide Klassen auf
-  `editableEmoteSetIds` gefiltert (7.3). Offen bleibt nur die Messung aus Sonde 7.
+- *Eine echte Spannung, beim Schreiben gefunden — in der achten Fassung endgültig aufgelöst:* 7.4
+  verließ sich darauf, `editableEmoteSetIds` serverseitig prüfen zu können. Das geht nicht (11.1);
+  die siebte Fassung stellte 7.4 auf eine Besitzer-Prüfung um, die achte den Picker auf dieselbe
+  Quelle — beide lesen `editor_of` (7.3, 7.4); nichts daran ist offen.
 
 ---
 
@@ -1792,12 +1795,15 @@ Regel 3: im selben Commit wie die Änderung. Mindestens drei, weil drei Verträg
    heraus** (J/K): revidiert den Satz „das Zielset bleibt ein getrackter Kanal aus `listMine()`"
    aus dem Eintrag vom 2026-09-09 (#147) **in der abgeschwächten Form**: getrackte Ziele bleiben die
    Vorgabe, ungetrackte sind wählbar, wenn der Nutzer sie nach Ansage von Besitzer und Setnamen
-   bestätigt hat (7.3). Begründung (Rechteprüfung lag immer bei 7TV; `editableEmoteSetIds` ist die
-   Liste, gegen die 7TV prüft; sie beantwortet aber nicht „wohin wolltest du" — und sie ist nur mit
-   7TV-Anmeldung lesbar, also im Browser, 11.1). **Revidiert R2 aus dem Eintrag vom 2026-09-06
-   (#72) für die Übertragen-Tür:** der Token wird vor dem Ziel-Picker abgefragt, damit nur
-   beschreibbare Sets angeboten werden; die drei anderen Türen behalten R2 (7.3). **Revidiert die
-   informative Vorschau desselben Eintrags:** Namenskollisionen (gleicher Name, andere ID) bleiben
+   bestätigt hat (7.3) — genauer: ein Set eines Accounts, **dessen Editor der Nutzer nachweislich
+   ist**, nachgewiesen über dieselbe `editor_of`-Abfrage, die schon `listMine()` und die
+   Autorisierung speist. Das ist näher am ursprünglichen Eintrag, als die siebte Fassung es war:
+   gelockert wird nur „getrackt", nicht „Editor"; die Rechteprüfung am Schreibvorgang lag immer bei
+   7TV (`LACKING_PRIVILEGES`), und die Angebotsliste beantwortet nicht „wohin wolltest du" — das
+   tut die Bestätigung. **R2 aus dem Eintrag vom 2026-09-06 (#72) bleibt unberührt:** der Token
+   wird wie heute erst vor dem Lauf abgefragt (die siebte Fassung hatte hier eine Revision
+   vorgesehen, die achte hat sie zurückgenommen, 7.3). **Revidiert die informative Vorschau des
+   Eintrags vom 2026-09-06:** Namenskollisionen (gleicher Name, andere ID) bleiben
    draußen aus der Warteschlange und erscheinen als eigene Gruppe; Alias-Abweichungen (gleiche ID,
    anderer Alias) werden weiter übersprungen, aber als eigene Gruppe gezeigt; keine Umbenennung auf
    7TV, Ausblick unter #201 (7.5). Audit-Vertrag aus 7.4 in beiden Wegen: Zielkanal plus
@@ -1853,11 +1859,9 @@ Platzhalter: `<TWITCH-ID>` (numerische Twitch-User-ID), `<SET-ID>`.
 - **`editableEmoteSetIds` verlangt eine Anmeldung.** Unauthentifiziert antwortet 7TV mit
   `LOGIN_REQUIRED you are not logged in`, `extensions.code = "LOGIN_REQUIRED"`, `status: 401`,
   `path: ["users","userByConnection","editableEmoteSetIds"]` — und der Fehler **nullt das ganze
-  Elternobjekt**, die übrigen Felder kommen dann gar nicht mehr. Das ist eine Architekturaussage,
-  keine Randnotiz: die Liste der editierbaren Sets ist nur dort abfragbar, wo der 7TV-Token des
-  Nutzers liegt, also **im Browser**, genau wie die Mutationen — das Backend sieht den Token nie
-  (DECISIONS 2026-09-09). Ein Backend-Endpunkt kann `editableEmoteSetIds` nicht liefern (Folgen in
-  7.3 und 7.4).
+  Elternobjekt**, die übrigen Felder kommen dann gar nicht mehr. Das Feld ist damit nur im Browser
+  lesbar (das Backend sieht den Token nie, DECISIONS 2026-09-09) — und seit der achten Fassung
+  braucht es niemand mehr: Picker und Besitzer-Prüfung lesen `editor_of` serverseitig (7.3, 7.4).
 - **Die Sets eines Users samt Name, Kapazität und Besitzer kommen ohne Anmeldung, in einem
   Request** (Analyzer: `complexity: 11, depth: 6`, Antwort vollständig):
 
@@ -1879,16 +1883,16 @@ curl -s https://7tv.io/v3/users/twitch/<TWITCH-ID> | jq '{active: .emote_set_id,
   kennzeichnen (7.5 Baustein 2, 6.1); ob v4 am `EmoteSet` ein entsprechendes Feld trägt, ist eine
   Introspektion, die noch aussteht.
 
-Für ein **fremdes** Set aus `editableEmoteSetIds` (Hauptrunde, 7.3/7.4) bleibt der Einzelaufruf je
-Set — Besitzer inklusive, ohne Anmeldung:
+Für ein **einzelnes** Set (Besitzer-Prüfung, 7.4) gibt es den Einzelaufruf — Besitzer inklusive,
+ohne Anmeldung:
 
 ```
 curl -s https://7tv.io/v4/gql -H 'Content-Type: application/json' -d '{"query":"query($id: Id!) { emoteSets { emoteSet(id: $id) { id name capacity owner { id mainConnection { platformDisplayName } } } } }","variables":{"id":"<SET-ID>"}}'
 ```
 
-Folgen: 6.1 und der Ziel-Set-Picker (7.3, 7.5) lesen die Set-Liste **je Kanal** über dessen
-Twitch-ID — ein Request, kein Token; 7.2 dieselbe Abfrage für den fremden Kanal; 7.3 liest
-`editableEmoteSetIds` im Browser; 7.4 prüft den Besitzer statt der Liste.
+Folgen: 6.1 und der Ziel-Set-Picker (7.3, 7.5) lesen die Set-Liste **je Account** über dessen
+Twitch-ID — ein Request, kein Token; für die `editor_of`-Accounts ist das die Twitch-ID aus dem
+Grant (7.3); 7.2 dieselbe Abfrage für den fremden Kanal; 7.4 prüft den Besitzer.
 
 **2. Wie groß ist die Schnittmenge zwischen Haupt- und Saison-Set? Gemessen: rund die Hälfte.**
 Am 2026-09-19 **direkt an HandOfBlood** gemessen (Twitch `49140130`, über die v3-GQL-Suche
@@ -2090,17 +2094,6 @@ reaktiviert die Zeilen und löscht das Datum (`SevenTvSyncService.cs:523`), die 
 Viertens unterscheidet sie einen Wechsel nicht von einer Massenlöschung auf 7TV. Genau deshalb ist
 sie Gegenprobe zu einer bestätigten Liste und nicht deren Quelle. Beides gehört so in den
 DECISIONS-Eintrag.
-
-**7. Enthält `editableEmoteSetIds` eines Editors die Sets seiner Broadcaster? Offen — nur mit
-Token messbar, also durch den Betreiber.** Der Ziel-Picker bietet nach 7.3 nur Sets aus dieser
-Liste an; HandOfBloods Mod-Team besteht aus Editoren, nicht aus dem Broadcaster. Gemessen ist
-bisher nur, dass das Feld ohne Anmeldung `LOGIN_REQUIRED` liefert (11.1). Die Sonde ist dieselbe
-Abfrage wie in 11.1 mit `Authorization: Bearer <7TV-TOKEN>` eines Accounts, der `editor_of` eines
-anderen Accounts ist, und dem Feld `editableEmoteSetIds` statt `emoteSets`; erwartet ist, dass die
-Set-IDs des Broadcasters enthalten sind. Der Token bleibt beim Betreiber — er gehört in keine
-Session und in kein Repo. Fällt die Messung negativ aus, kann der Picker die getrackte Klasse nicht
-nach Schreibbarkeit filtern und muss dort wie heute 7TV bei der Mutation entscheiden lassen; die
-ungetrackte Klasse wäre dann für Editoren leer.
 
 ---
 
@@ -2436,11 +2429,10 @@ Hauptset-IDs mit der ID-Sonde aus 11.2 messen und in die Zuordnungsliste eintrag
 den Wegwerfkanal purgen. Er läuft parallel zu allem Folgenden und berührt Prod nur als Nutzer der
 ausgelieferten Oberfläche.
 
-1. **Sonden (Abschnitt 11, Punkte 4, 5, 6, 7).** Punkte 1 und 2 sind gemessen (11.1, 11.2). Offen:
+1. **Sonden (Abschnitt 11, Punkte 4, 5, 6).** Punkte 1 und 2 sind gemessen (11.1, 11.2). Offen:
    Punkt 4 (TTL), Punkt 5 (`REMOVE`-Verhalten bei Duplikat, braucht ein eigenes Testset), Punkt 6
-   (Gegenprobe, führt der Betreiber aus), Punkt 7 (`editableEmoteSetIds` eines Editors, braucht
-   einen Token, führt der Betreiber aus — **vor** Schritt 4, weil der Picker davon abhängt). Aus
-   Sonde 1 nachzuholen, zehn Sekunden mit der Twitch-ID aus der Admin-Kanalseite: dass HandOfBloods
+   (Gegenprobe, führt der Betreiber aus). **Vor Schritt 4 steht kein Tor mehr:** die Sonde 7 der
+   siebten Fassung ist gestrichen, der Picker hängt an keiner Messung (7.3). Aus Sonde 1 nachzuholen, zehn Sekunden mit der Twitch-ID aus der Admin-Kanalseite: dass HandOfBloods
    eigene Set-Liste sein Halloween-Set mit Namen enthält — für den Picker (Schritt 4).
 2. **Zuordnungsliste, Gegenprobe 11.6 gegen Prod und die beiden Purges — unmittelbar vor der
    Migration.** Der Betreiber bestätigt die Liste aus 4.3 (HandOfBlood: alte und neue Set-ID,
@@ -2460,20 +2452,19 @@ ausgelieferten Oberfläche.
 4. **Ziel-Set-Picker (J/K, 7.3–7.5) + DECISIONS-Eintrag 2.** In dieser inneren Reihenfolge, weil
    jeder Teil den vorigen braucht und der erste allein schon prüfbar ist:
    - *Backend:* Set-Listen-Endpunkt je Kanal mit `isActive`/`isPersonal` (6.1, 7.5 Baustein 1);
-     `capacity` in Preview-Abfrage, Record und `ForeignEmoteSet`; Lesepfad `?emoteSetId=` hinter dem
+     Angebotsliste des Pickers aus eigenem Account plus `editor_of`-Accounts mit je öffentlicher
+     Set-Liste (7.3; Zuschnitt der Endpunkte entscheidet der Plan); `capacity` in Preview-Abfrage, Record und `ForeignEmoteSet`; Lesepfad `?emoteSetId=` hinter dem
      Dekorator mit Set-ID als zweitem Schlüsselraum. `SyncImportedRequest.TargetEmoteSetId` nullbar,
      `TargetType`/`TargetId`, `ProjectDetail` (7.4, 7.5 Baustein 4). Tests nach Regel 11.
-   - *Frontend, getrackte Klasse (7.5 Bausteine 2 und 3):* Token-Prompt **vor** dem Picker (7.3),
-     `ImportTargetChoice.emoteSetId` als Schlüssel, `channelName` als Attribut der getrackten
-     Klasse; Picker mit Sets je Kanal, gefiltert auf `editableEmoteSetIds`, eigener Kanal ohne sein
-     aktives Set, persönliche und nicht beschreibbare Sets deaktiviert; `loadImportTarget` mit
+   - *Frontend, getrackte Klasse (7.5 Bausteine 2 und 3):* `ImportTargetChoice.emoteSetId` als
+     Schlüssel, `channelName` als Attribut der getrackten Klasse; Picker mit Sets je Kanal, eigener
+     Kanal ohne sein aktives Set, persönliche Sets deaktiviert; `loadImportTarget` mit
      Set-Ziel und `truncated ⇒ failed`; Setname im Dialogkopf; Kollisionsvorschau und
      Slot-Projektion auf dem gewählten Set, **Kollisionen aus `toAdd` heraus und als Gruppe**,
-     **Alias-Abweichungen als eigene Gruppe** (7.5); Kommentar in `import-flow.ts` zu R2
-     nachgezogen. Specs nach Regel 12 (Preview mit drei Gruppen, Projektion ohne Kollisionen), E2E
+     **Alias-Abweichungen als eigene Gruppe** (7.5). Specs nach Regel 12 (Preview mit drei Gruppen, Projektion ohne Kollisionen), E2E
      für „gleicher Kanal, anderes Set" mit gemockter Set-Liste und Set-Vorschau.
-   - *Frontend, ungetrackte Klasse (7.3, 7.4):* Rest von `editableEmoteSetIds`, Einzelabruf je
-     fremdem Set für Name und Besitzer, Bestätigung, `channelName` nullbar; der set-zentrierte
+   - *Frontend, ungetrackte Klasse (7.3, 7.4):* Rest der serverseitigen Angebotsliste (Name und
+     Besitzer kommen mit ihr), Bestätigung, `channelName` nullbar; der set-zentrierte
      Audit-Endpunkt mit Besitzer-Prüfung, Api-Test für die neue Route (Regel 11).
    - *Live-Verifikation an der Dev-Box (Regel 16):* Testkanal mit zwei Sets: Import ins nicht-aktive,
      Dialogzahlen gegen 7TV, Audit-Eintrag mit Set-ID und `targetIsActiveSetOfChannel: false`; ein
