@@ -1227,6 +1227,29 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
       expect(component['selection'].selectedKeys()).toHaveLength(1);
       expect(component['dockMarkedCount']()).toBe(0);
     });
+
+    it('re-announces a bulk gesture even when it lands back on the same total the last one left behind', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
+
+      component['markAll']();
+      expect(component['dockMarkedCount']()).toBe(2);
+
+      // A single deselect is not a bulk gesture — it must retire the announcement even though the
+      // selection stays non-empty, unlike the fully-emptied case above.
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(1);
+      expect(component['dockMarkedCount']()).toBe(0);
+
+      // "Mark all" again re-adds the same row and lands on the same total (2) the first press
+      // already announced. `role="status"` only reacts to a DOM mutation, so if this stayed masked
+      // at "the same number as before" nothing would be spoken for a gesture that really happened —
+      // a screen-reader user marking everything twice in a row would hear it only the first time.
+      component['markAll']();
+      expect(component['selection'].selectedKeys()).toHaveLength(2);
+      expect(component['dockMarkedCount']()).toBe(2);
+    });
   });
 
   it('marking a band, changing the filter, marking again and clearing the filter unions both groups', () => {

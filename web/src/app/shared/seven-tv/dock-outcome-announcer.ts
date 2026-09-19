@@ -79,11 +79,14 @@ export function markedCountNoticeKey(count: number): string {
  * 2026-09-19): mirroring the dock's live marked count here meant an individual mark or unmark — which
  * already announces itself through its own cell's `aria-pressed` — spoke a *second* time, one
  * paragraph per click. So the host only updates it after a bulk-mark gesture (`markAll()`,
- * `selectBand()`), with the selection size the gesture left behind, and holds it there until the
- * selection empties or the dock's marked-count row itself leaves the screen, at which point the host
- * passes 0 — see `UsageStatsPage.dockMarkedCount`'s own comment for the exact gates. It is passed 0
- * the same way `hiddenSelectedCount` is whenever there is nothing to say, so the `@if` in the template
- * below behaves identically for both; only *when* the host updates the number differs.
+ * `selectBand()`), with the selection size the gesture left behind, and passes 0 whenever anything
+ * *other* than a bulk gesture has touched the selection since — an individual mark/unmark, a filter-
+ * driven prune, a delete — not only once the selection has fully emptied (Codex P2, follow-up
+ * 2026-09-19: a plain "did it reach zero" check missed exactly the case where a single deselect
+ * leaves the selection non-empty, which then masked a second bulk gesture that happened to land back
+ * on the same total). See `UsageStatsPage.dockMarkedCount`'s own comment for the exact gates. It is
+ * passed 0 the same way `hiddenSelectedCount` is whenever there is nothing to say, so the `@if` in
+ * the template below behaves identically for both; only *when* the host updates the number differs.
  */
 @Component({
   selector: 'app-dock-outcome-announcer',
@@ -126,10 +129,10 @@ export class DockOutcomeAnnouncer {
   readonly withImport = input(false);
   /** The selection size a bulk-mark gesture ("mark all", per-band "mark all") left behind, or 0
    *  while there is nothing to announce — either because the dock's marked-count row is not on
-   *  screen at all, or because the selection has since emptied. NOT the live selection count: an
-   *  individual click never updates this (see `dockMarkedCount` on `UsageStatsPage` for exactly
-   *  when it does), because that click already announces itself through its own cell's
-   *  `aria-pressed`. */
+   *  screen at all, or because a non-bulk change (an individual click, a prune, a clear) has touched
+   *  the selection since. NOT the live selection count: an individual click never updates this (see
+   *  `dockMarkedCount` on `UsageStatsPage` for exactly when it does), because that click already
+   *  announces itself through its own cell's `aria-pressed`. */
   readonly markedCount = input(0);
   /** How many marked rows the host page's filter currently hides, or 0 when the dock does not show
    *  that line at all — the host mirrors its own template gates into this number. */

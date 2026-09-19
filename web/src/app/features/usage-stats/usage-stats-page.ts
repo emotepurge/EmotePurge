@@ -912,32 +912,37 @@ export class UsageStatsPage {
    * `aria-pressed` flip — spoke a *second* time here, one paragraph per click; ten keyboard marks
    * became ten status paragraphs (Opus review). Only a bulk-mark gesture (the toolbar's "mark all",
    * the per-band one) has no cell of its own to announce through, so only those two write
-   * `bulkMarkAnnouncement` (see `markAll()`/`selectBand()`) — the number is the selection size
-   * *after* the gesture, not a running total.
+   * `bulkMarkAnnouncement`/`bulkMarkSnapshot` (see `markAll()`/`selectBand()`) — the number is the
+   * selection size *after* the gesture, not a running total.
    *
    * 0 whenever the row itself is not on screen, same gates as `dockHiddenSelectedCount` above, plus
-   * one more: 0 whenever the selection is empty, regardless of what `bulkMarkAnnouncement` last held.
-   * Without that, a bulk mark followed by unmarking everything by hand (no further bulk gesture in
-   * between) would sit silent as required, but a *single* subsequent click that marks one row back
-   * would resurrect the stale bulk count instead of staying silent for what is, on its own, just
-   * another individual mark. The constructor's own effect keeps `bulkMarkAnnouncement` itself at 0
-   * across that same empty stretch, so this is a belt-and-braces read, not the only place this is
-   * enforced.
-   *
-   * Known, accepted gap (documented rather than worked around): `role="status"` only reacts to a
-   * *change* of its content, so two bulk gestures in a row that happen to leave the same total
-   * marked (e.g. "mark all" pressed twice with nothing else in between) announce only the first —
-   * the second writes the same number, the paragraph's text does not change, and nothing is spoken
-   * for it. That is the same limitation §4.5 already accepts for every other standing message in
-   * this region, not a defect specific to this one.
+   * two more: 0 whenever the selection is empty, and 0 whenever the live selection no longer matches
+   * `bulkMarkSnapshot` — the exact key set the last bulk gesture left behind. The second condition is
+   * the one a plain "did it reach zero" check misses (Codex P2, follow-up 2026-09-19): unmarking a
+   * *single* row after a bulk mark leaves the selection non-empty, so the old code kept showing the
+   * stale total, and a second "mark all" that happened to land back on the very same number then
+   * wrote that number again — an unchanged `role="status"` paragraph announces nothing for a mutation
+   * that did not touch its text, so a real second bulk gesture went unheard. Any non-bulk change
+   * (an individual click, `retainAmong()`'s pruning, `clear()`) now retires the row instead — the
+   * `@if` in `DockOutcomeAnnouncer` unmounts it — so the *next* bulk gesture always remounts it fresh,
+   * a genuine DOM mutation, even when the number it carries repeats. `matchesBulkMarkSnapshot()`
+   * holds the one place this comparison happens; nothing else re-derives it.
    */
   private readonly bulkMarkAnnouncement = signal(0);
+
+  /** Selection key snapshot the last bulk-mark gesture (`markAll()`/`selectBand()`) left behind, or
+   *  `null` before either has ever fired — see `dockMarkedCount`'s comment for what this guards
+   *  against. A plain field, not a signal: it is only ever read from inside `dockMarkedCount`, which
+   *  already re-evaluates on every `selection.selectedKeys()` change (a bulk gesture is itself one
+   *  such change), so nothing is lost by not tracking it separately. */
+  private bulkMarkSnapshot: ReadonlySet<string> | null = null;
 
   protected readonly dockMarkedCount = computed(() =>
     !this.isCoarse() &&
     this.dockVisible() &&
     this.activeEmoteSetId() !== null &&
-    this.selection.selectedItems().length > 0
+    this.selection.selectedItems().length > 0 &&
+    this.matchesBulkMarkSnapshot()
       ? this.bulkMarkAnnouncement()
       : 0,
   );
@@ -991,19 +996,6 @@ export class UsageStatsPage {
     effect(() => {
       if (this.isCoarse()) {
         this.selection.clear();
-      }
-    });
-
-    // Keeps `bulkMarkAnnouncement` (see `dockMarkedCount`'s own comment) from resurrecting a stale
-    // bulk-gesture count once the selection it described is actually gone. `markAll()`/`selectBand()`
-    // are the only writers of that signal and both write eagerly, so this only ever has to fire the
-    // other direction — every path that can empty the selection (an individual unmark down to zero,
-    // `selection.clear()` after a delete, `retainAmong()` pruning the last surviving key) runs
-    // through the same signal this reads, so one effect covers all of them instead of threading a
-    // reset through each call site by hand.
-    effect(() => {
-      if (this.selection.selectedItems().length === 0) {
-        this.bulkMarkAnnouncement.set(0);
       }
     });
 
@@ -1238,10 +1230,8 @@ export class UsageStatsPage {
     if (band) {
       this.selection.selectMany(band.items);
       // A bulk gesture, unlike an individual click, has no cell of its own to announce through —
-      // see `dockMarkedCount`'s comment for why only these two writers exist. Read after
-      // `selectMany()` above, not the band's own item count: the two can differ once some of the
-      // band was already marked before this press (additive, per `ListSelection.selectMany`).
-      this.bulkMarkAnnouncement.set(this.selection.selectedItems().length);
+      // see `dockMarkedCount`'s comment for why only these two writers exist.
+      this.recordBulkMarkAnnouncement();
     }
   }
 
@@ -1251,7 +1241,7 @@ export class UsageStatsPage {
     this.selection.selectMany(this.atlasOrder());
     // See `selectBand()`'s comment just above for why this writes here and `dockMarkedCount`'s own
     // comment for why the announcer needs it at all.
-    this.bulkMarkAnnouncement.set(this.selection.selectedItems().length);
+    this.recordBulkMarkAnnouncement();
   }
 
   protected fillPercent(emote: EmoteUsageTotal): number {
@@ -1566,6 +1556,31 @@ export class UsageStatsPage {
   protected onReloadRequested(): void {
     this.selection.clear();
     this.refresh();
+  }
+
+  /** The single writer of `bulkMarkAnnouncement`/`bulkMarkSnapshot` (see `markAll()`/`selectBand()`,
+   *  the only two callers) — keeps the pair in lock-step so `dockMarkedCount` never reads one from
+   *  before this gesture and the other from after it. Snapshotted *after* `selectMany()` has run,
+   *  same reasoning as the comment at each call site: an additive gesture over an already-partially-
+   *  marked band/view leaves a different total than the gesture's own item count. */
+  private recordBulkMarkAnnouncement(): void {
+    this.bulkMarkAnnouncement.set(this.selection.selectedItems().length);
+    this.bulkMarkSnapshot = new Set(this.selection.selectedKeys());
+  }
+
+  /** Whether the live selection still is exactly what the last bulk-mark gesture left behind — see
+   *  `dockMarkedCount`'s comment for what this guards against. `false` before either `markAll()` or
+   *  `selectBand()` has ever fired (`bulkMarkSnapshot` still `null`). Content equality, not identity
+   *  or a revision counter: `selection.selectedKeys()` is a fresh array on every read, and a no-op
+   *  `retainAmong()` call (a routine reload that prunes nothing) must not falsely count as the kind
+   *  of change this exists to detect, or the row would flicker off on every silent refresh. */
+  private matchesBulkMarkSnapshot(): boolean {
+    const snapshot = this.bulkMarkSnapshot;
+    if (snapshot === null) {
+      return false;
+    }
+    const current = this.selection.selectedKeys();
+    return current.length === snapshot.size && current.every((key) => snapshot.has(key));
   }
 
   /**
