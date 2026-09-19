@@ -853,17 +853,22 @@
   </div>
 </div>
 
-<!-- The screen-reader voice for what the dock below reports: the marked-count row, the duplicate
-     and resync notices of a restore and of an import, and the standing "n davon durch den Filter
-     ausgeblendet" line. Outside the dock's @if, !isCoarse() included, because the dock mounts and
-     unmounts with its content — a fully refused run is what mounts it, and a bulk mark (the
-     toolbar's "mark all", the per-band one) can take it from unmounted to a double-digit count in
-     one gesture — and a status region created in the same pass as its text announces nothing
-     (docs/UI-Designsprache.md §4.5). That is just as true of a line inside an already-mounted dock
-     whose own @if creates it together with its sentence, which is why the marked count and the
-     hidden-by-filter count are spoken here too. Everything the dock shows is aria-hidden for that
-     reason, and dockMarkedCount()/dockHiddenSelectedCount() mirror those lines' own gates so this
-     region never says something the dock does not show. -->
+<!-- The screen-reader voice for what the dock below reports: a bulk-mark gesture's outcome, the
+     duplicate and resync notices of a restore and of an import, and the standing "n davon durch den
+     Filter ausgeblendet" line. Outside the dock's @if, !isCoarse() included, because the dock mounts
+     and unmounts with its content — a fully refused run is what mounts it, and a status region
+     created in the same pass as its text announces nothing (docs/UI-Designsprache.md §4.5). That is
+     just as true of a line inside an already-mounted dock whose own @if creates it together with its
+     sentence, which is why the hidden-by-filter count is spoken here too, continuously.
+
+     The marked-count row is spoken differently (Opus review, 2026-09-19): reading dockMarkedCount()
+     is NOT the same live number the dock's visible row shows any more, only the size the selection
+     was left at by the last "mark all"/per-band "mark all" — an individual mark or unmark already
+     announces itself via its own cell's aria-pressed, so mirroring the live count here too spoke
+     every one of those a second time. The visible row is therefore reachable again (not aria-hidden,
+     see its own comment below): it is the only place that always names the live count, this region
+     only ever names the outcome of a bulk gesture. dockHiddenSelectedCount() still mirrors its
+     line's own gates exactly, unchanged. -->
 <app-dock-outcome-announcer
   [withImport]="true"
   [markedCount]="dockMarkedCount()"
@@ -884,17 +889,19 @@
            not around the whole bar. -->
       @if (activeEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <!-- Spoken by the permanently mounted app-dock-outcome-announcer above instead
-               (dockMarkedCount(), docs/UI-Designsprache.md §4.5) — aria-hidden here so the count
-               is not read twice. Both spans only, never `projectedSlots()` below: that line is
-               not spoken by the announcer and stays in the accessibility tree. -->
-          <span aria-hidden="true" class="font-mono text-base font-semibold text-accent-fg">{{
+          <!-- Reachable in the accessibility tree again (Opus review, 2026-09-19 — was aria-hidden
+               before): the permanently mounted app-dock-outcome-announcer above no longer mirrors
+               this number continuously, only a bulk-mark gesture's outcome, so this live count is
+               now the only place that says what is marked *right now* for someone navigating the
+               dock by hand. Hiding it would have destroyed information instead of avoiding a double
+               reading — the double-reading risk that motivated aria-hidden in the first place is
+               gone along with the continuous mirroring (§4.5's "visible twin" contract is about two
+               surfaces announcing the same thing at the same moment, not a number read only when
+               navigated to, so this is not that contract's exception, just outside its scope now). -->
+          <span class="font-mono text-base font-semibold text-accent-fg">{{
             selection.selectedItems().length
           }}</span>
-          <span
-            aria-hidden="true"
-            class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase"
-          >
+          <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
             {{ 'usageStats.dock.marked' | transloco }}
           </span>
           @if (projectedSlots(); as slots) {

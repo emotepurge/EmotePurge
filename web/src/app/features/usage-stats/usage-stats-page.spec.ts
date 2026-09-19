@@ -1157,22 +1157,76 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
    * take it from unmounted to a double-digit count with nothing announced — the same defect
    * `dockHiddenSelectedCount` above exists to close, now for the count it sits next to
    * (docs/UI-Designsprache.md §4.5).
+   *
+   * Opus review (2026-09-19) narrowed this further: an individual mark or unmark already announces
+   * itself through its own cell's `aria-pressed`, so mirroring the live selection count here too
+   * spoke every one of those a second time. Only `markAll()`/`selectBand()` write
+   * `dockMarkedCount()` now — see the tests below for the two failure modes that guarded against:
+   * an individual click must never move it, and it must not resurrect a stale bulk count once the
+   * selection it described has actually emptied.
    */
-  it('hands the announcer the marked count only while the dock row that shows it is on screen', () => {
-    const a = emote('a', 'PeepoA');
-    const b = emote('b', 'PeepoB');
-    mount([a, b]);
+  describe('dockMarkedCount (bulk gestures only)', () => {
+    it('is fed only by a bulk mark, and clears once the dock row it feeds is off screen', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
 
-    expect(component['dockMarkedCount']()).toBe(0);
+      expect(component['dockMarkedCount']()).toBe(0);
 
-    component['markAll']();
-    expect(component['dockMarkedCount']()).toBe(2);
+      component['markAll']();
+      expect(component['dockMarkedCount']()).toBe(2);
 
-    // No active 7TV set means no marking half of the dock, so no row — and therefore nothing to
-    // speak, even though the selection itself is untouched.
-    component['setStatus'].set(null);
-    expect(component['selection'].selectedKeys()).toHaveLength(2);
-    expect(component['dockMarkedCount']()).toBe(0);
+      // No active 7TV set means no marking half of the dock, so no row — and therefore nothing to
+      // speak, even though the selection itself is untouched.
+      component['setStatus'].set(null);
+      expect(component['selection'].selectedKeys()).toHaveLength(2);
+      expect(component['dockMarkedCount']()).toBe(0);
+    });
+
+    it('does not move for an individual click, only for the bulk gestures', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
+
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(1);
+      // An individual mark already announces itself via its own cell — this region must stay
+      // silent for it, unlike the pre-review behaviour that mirrored the live count here too.
+      expect(component['dockMarkedCount']()).toBe(0);
+
+      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(2);
+      expect(component['dockMarkedCount']()).toBe(0);
+    });
+
+    it('does not resurrect a stale bulk count once the selection it described has fully emptied', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
+
+      component['markAll']();
+      expect(component['dockMarkedCount']()).toBe(2);
+
+      // Unmarked by hand, down to nothing — no further bulk gesture in between.
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(0);
+      expect(component['dockMarkedCount']()).toBe(0);
+
+      // Lets the constructor's reset effect (see dockMarkedCount's own comment) actually run before
+      // the next click — effects are scheduled, not synchronous with the signal write that woke
+      // them, and detectChanges() is this file's established way to flush them (see the reload-in-
+      // flight test above).
+      fixture.detectChanges();
+
+      // A single individual click marks one row again. Without that effect having reset the stored
+      // bulk count back to 0 while the selection was empty, this would read 2 again — the stale
+      // "mark all" outcome — instead of staying silent for what is, on its own, just another
+      // individual mark.
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(1);
+      expect(component['dockMarkedCount']()).toBe(0);
+    });
   });
 
   it('marking a band, changing the filter, marking again and clearing the filter unions both groups', () => {

@@ -907,14 +907,38 @@ export class UsageStatsPage {
    * The dock's own marked-count row (`usageStats.dock.marked`, next to `selection.selectedItems()
    * .length`) is created by the same `@if (activeEmoteSetId(); as setId)` that fills it — the exact
    * case §4.5 describes for `dockHiddenSelectedCount` above: appearing content does not announce
-   * itself, and a bulk mark (the toolbar's "mark all", the per-band one) can take the dock from
-   * unmounted to a double-digit count in one gesture with nothing spoken. 0 whenever that row is
-   * not on screen, mirroring `dockHiddenSelectedCount`'s own gates exactly, so `DockOutcomeAnnouncer`
-   * never says a number the dock itself does not show.
+   * itself. This used to feed the announcer the raw, continuously live `selection.selectedItems()
+   * .length`, which meant an individual mark or unmark — already announced by its own cell's
+   * `aria-pressed` flip — spoke a *second* time here, one paragraph per click; ten keyboard marks
+   * became ten status paragraphs (Opus review). Only a bulk-mark gesture (the toolbar's "mark all",
+   * the per-band one) has no cell of its own to announce through, so only those two write
+   * `bulkMarkAnnouncement` (see `markAll()`/`selectBand()`) — the number is the selection size
+   * *after* the gesture, not a running total.
+   *
+   * 0 whenever the row itself is not on screen, same gates as `dockHiddenSelectedCount` above, plus
+   * one more: 0 whenever the selection is empty, regardless of what `bulkMarkAnnouncement` last held.
+   * Without that, a bulk mark followed by unmarking everything by hand (no further bulk gesture in
+   * between) would sit silent as required, but a *single* subsequent click that marks one row back
+   * would resurrect the stale bulk count instead of staying silent for what is, on its own, just
+   * another individual mark. The constructor's own effect keeps `bulkMarkAnnouncement` itself at 0
+   * across that same empty stretch, so this is a belt-and-braces read, not the only place this is
+   * enforced.
+   *
+   * Known, accepted gap (documented rather than worked around): `role="status"` only reacts to a
+   * *change* of its content, so two bulk gestures in a row that happen to leave the same total
+   * marked (e.g. "mark all" pressed twice with nothing else in between) announce only the first —
+   * the second writes the same number, the paragraph's text does not change, and nothing is spoken
+   * for it. That is the same limitation §4.5 already accepts for every other standing message in
+   * this region, not a defect specific to this one.
    */
+  private readonly bulkMarkAnnouncement = signal(0);
+
   protected readonly dockMarkedCount = computed(() =>
-    !this.isCoarse() && this.dockVisible() && this.activeEmoteSetId() !== null
-      ? this.selection.selectedItems().length
+    !this.isCoarse() &&
+    this.dockVisible() &&
+    this.activeEmoteSetId() !== null &&
+    this.selection.selectedItems().length > 0
+      ? this.bulkMarkAnnouncement()
       : 0,
   );
 
@@ -967,6 +991,19 @@ export class UsageStatsPage {
     effect(() => {
       if (this.isCoarse()) {
         this.selection.clear();
+      }
+    });
+
+    // Keeps `bulkMarkAnnouncement` (see `dockMarkedCount`'s own comment) from resurrecting a stale
+    // bulk-gesture count once the selection it described is actually gone. `markAll()`/`selectBand()`
+    // are the only writers of that signal and both write eagerly, so this only ever has to fire the
+    // other direction — every path that can empty the selection (an individual unmark down to zero,
+    // `selection.clear()` after a delete, `retainAmong()` pruning the last surviving key) runs
+    // through the same signal this reads, so one effect covers all of them instead of threading a
+    // reset through each call site by hand.
+    effect(() => {
+      if (this.selection.selectedItems().length === 0) {
+        this.bulkMarkAnnouncement.set(0);
       }
     });
 
@@ -1200,6 +1237,11 @@ export class UsageStatsPage {
     const band = this.bands().find((candidate) => candidate.key === key);
     if (band) {
       this.selection.selectMany(band.items);
+      // A bulk gesture, unlike an individual click, has no cell of its own to announce through —
+      // see `dockMarkedCount`'s comment for why only these two writers exist. Read after
+      // `selectMany()` above, not the band's own item count: the two can differ once some of the
+      // band was already marked before this press (additive, per `ListSelection.selectMany`).
+      this.bulkMarkAnnouncement.set(this.selection.selectedItems().length);
     }
   }
 
@@ -1207,6 +1249,9 @@ export class UsageStatsPage {
    *  filtered/sorted/banded view, exactly what `atlasOrder()` returns and the sheet is showing. */
   protected markAll(): void {
     this.selection.selectMany(this.atlasOrder());
+    // See `selectBand()`'s comment just above for why this writes here and `dockMarkedCount`'s own
+    // comment for why the announcer needs it at all.
+    this.bulkMarkAnnouncement.set(this.selection.selectedItems().length);
   }
 
   protected fillPercent(emote: EmoteUsageTotal): number {

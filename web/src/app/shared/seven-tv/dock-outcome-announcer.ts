@@ -25,20 +25,25 @@ export function hiddenByFilterNoticeKey(count: number): string {
   return pluralKey(count, 'usageStats.dock.hiddenByFilter');
 }
 
-/** Translation key for announcing the dock's marked-count row (`usageStats.dock.marked`) — a
- *  sibling of `hiddenByFilterNoticeKey` above, spoken rather than shown twice for the same reason:
- *  the row is created by the same `@if` that fills it (docs/UI-Designsprache.md §4.5), which a bulk
- *  mark ("mark all", per-band "mark all") can take from unmounted to a double-digit count in one
- *  gesture with nothing announced. */
+/** Translation key for announcing the outcome of a bulk-mark gesture ("mark all" in the toolbar, the
+ *  per-band one) — the row it names (`usageStats.dock.marked`) is created by the same `@if` that
+ *  fills it (docs/UI-Designsprache.md §4.5), which such a gesture can take from unmounted to a
+ *  double-digit count in one press with nothing announced. Unlike `hiddenByFilterNoticeKey` above,
+ *  the count passed in here is not a continuous mirror of what the row shows — the host
+ *  (`UsageStatsPage.dockMarkedCount`) only updates it after `markAll()`/`selectBand()`, never after
+ *  an individual click, which already announces itself through its own cell's `aria-pressed`. */
 export function markedCountNoticeKey(count: number): string {
   return pluralKey(count, 'usageStats.dock.markedAnnounced');
 }
 
 /**
  * The screen-reader voice for what the usage-stats action dock *shows* — the duplicate notices and
- * the resync acknowledgement of a restore and of an import (#134, #149), plus the standing marked-
- * count row and the "n of them hidden by the filter" line above them. Those visible notices stay
- * inside the dock and are `aria-hidden`; this component carries their text instead.
+ * the resync acknowledgement of a restore and of an import (#134, #149), the "n of them hidden by
+ * the filter" line, and a bulk-mark gesture's outcome. The hidden-by-filter line and the duplicate/
+ * resync notices stay inside the dock and are `aria-hidden`; this component carries their text
+ * instead. The dock's marked-count row is the one exception since the 2026-09-19 Opus review: it is
+ * reachable in the accessibility tree itself again (see its own comment in `usage-stats-page.html`),
+ * because this component no longer mirrors it continuously — see `markedCount` below.
  *
  * Why it cannot sit in the dock next to them (docs/UI-Designsprache.md §4.5): the dock mounts and
  * unmounts with its own content (`actionDockHasContent`), and a fully refused run is one of the
@@ -62,15 +67,23 @@ export function markedCountNoticeKey(count: number): string {
  * `withImport`: the import section only exists on the usage-stats page. The voting-results page
  * mounts the mass-delete panel alone and must not speak for an import run it does not show.
  *
- * `markedCount`/`hiddenSelectedCount` are the two messages here that are **not** run outcomes but
- * standing conditions: how many rows are marked, and how many of those a filter currently hides.
- * Neither self-clears the way a run outcome does (docs/UI-Designsprache.md §4.4, persisting state —
- * §4.5's 4000-ms pattern would be exactly wrong for either). Both still belong in this region rather
- * than in one of their own: each is a line the dock shows, each appears in the same change-detection
- * pass as its own `@if`, and a second live region speaking beside this one is the failure mode §4.5
- * names. The host page passes 0 whenever the corresponding line is not on screen, so spoken and
- * shown stay the same set of statements; the voting-results page, which has no dock, never passes
- * either at all.
+ * `hiddenSelectedCount` is not a run outcome but a standing condition: how many marked rows a filter
+ * currently hides. It does not self-clear the way a run outcome does (docs/UI-Designsprache.md §4.4,
+ * persisting state — §4.5's 4000-ms pattern would be exactly wrong for it). It still belongs in this
+ * region rather than in one of its own: it is a line the dock shows, it appears in the same
+ * change-detection pass as its own `@if`, and a second live region speaking beside this one is the
+ * failure mode §4.5 names. The host page passes 0 whenever the line is not on screen, so spoken and
+ * shown stay the same set of statements; the voting-results page, which has no dock, never passes it.
+ *
+ * `markedCount` looks the same shape but is not a continuous mirror of anything (Opus review,
+ * 2026-09-19): mirroring the dock's live marked count here meant an individual mark or unmark — which
+ * already announces itself through its own cell's `aria-pressed` — spoke a *second* time, one
+ * paragraph per click. So the host only updates it after a bulk-mark gesture (`markAll()`,
+ * `selectBand()`), with the selection size the gesture left behind, and holds it there until the
+ * selection empties or the dock's marked-count row itself leaves the screen, at which point the host
+ * passes 0 — see `UsageStatsPage.dockMarkedCount`'s own comment for the exact gates. It is passed 0
+ * the same way `hiddenSelectedCount` is whenever there is nothing to say, so the `@if` in the template
+ * below behaves identically for both; only *when* the host updates the number differs.
  */
 @Component({
   selector: 'app-dock-outcome-announcer',
@@ -111,9 +124,12 @@ export function markedCountNoticeKey(count: number): string {
 })
 export class DockOutcomeAnnouncer {
   readonly withImport = input(false);
-  /** How many rows are currently marked, or 0 when the dock's marked-count row is not on screen at
-   *  all — the host mirrors its own template gates into this number (see `dockMarkedCount` on
-   *  `UsageStatsPage`), same convention as `hiddenSelectedCount` below. */
+  /** The selection size a bulk-mark gesture ("mark all", per-band "mark all") left behind, or 0
+   *  while there is nothing to announce — either because the dock's marked-count row is not on
+   *  screen at all, or because the selection has since emptied. NOT the live selection count: an
+   *  individual click never updates this (see `dockMarkedCount` on `UsageStatsPage` for exactly
+   *  when it does), because that click already announces itself through its own cell's
+   *  `aria-pressed`. */
   readonly markedCount = input(0);
   /** How many marked rows the host page's filter currently hides, or 0 when the dock does not show
    *  that line at all — the host mirrors its own template gates into this number. */

@@ -236,7 +236,15 @@ describe('DockOutcomeAnnouncer', () => {
    * The dock's marked-count row (2026-09-19, docs/DECISIONS.md). Same defect as the hidden-by-
    * filter line below and the same fix: the visible row is created by the same `@if` that fills
    * it, so a bulk mark ("mark all") can take it from unmounted to a double-digit count with
-   * nothing announced — this region is its only voice (§4.5).
+   * nothing announced — this region is its only voice for that gesture (§4.5).
+   *
+   * This component itself only ever renders whatever `markedCount` it is handed — it has no notion
+   * of "bulk gesture" vs. "individual click" of its own, that distinction is entirely the host's
+   * job (`UsageStatsPage.dockMarkedCount`, updated only from `markAll()`/`selectBand()` since the
+   * 2026-09-19 Opus review, see its own comment). So the tests below still exercise this component
+   * the same way as before that review — feeding it a bare number and checking what it announces —
+   * they just no longer stand for "the live selection count" the way they used to; they stand for
+   * "whatever number the host last decided was worth a bulk-mark announcement".
    */
   describe('marked-count row', () => {
     it('says nothing while nothing is marked', () => {
