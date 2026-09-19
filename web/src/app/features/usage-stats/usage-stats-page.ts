@@ -280,7 +280,8 @@ export class UsageStatsPage {
 
   // The route guard admits 7TV editors (canViewUsageStats), but creating a vote session is a
   // management action (ChannelManagementAuthorizationFilter on the endpoint) — the button only
-  // shows where the click can succeed. Same pattern as VoteSessionListPage's create form.
+  // shows where the click can succeed. Same pattern as VoteSessionListPage's own header link,
+  // gated behind the identical canManage computed.
   private readonly permissionsResource = rxResource({
     params: () => this.channelName(),
     stream: ({ params }) => this.channelService.getPermissions(params),

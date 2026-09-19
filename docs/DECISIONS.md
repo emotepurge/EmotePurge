@@ -168,8 +168,14 @@ class of defect, but older than this branch and deliberately not taken along her
 
 **Betrifft:** `web/src/app/features/voting/vote-session-list-page.html` ·
 `web/src/app/features/voting/vote-session-list-page.ts` ·
-`web/src/app/features/voting/vote-session-list-page.spec.ts` · `web/public/i18n/de.json` ·
-`web/public/i18n/en.json` · `web/e2e/touch-mobile.e2e.spec.ts`
+`web/src/app/features/voting/vote-session-list-page.spec.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
+`web/src/app/features/admin/admin-channels-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/shared/voting/vote-audience-badge.ts` · `web/src/app/core/voting/vote-audience.ts` ·
+`web/src/app/core/voting/vote-audience.spec.ts` · `web/public/i18n/de.json` ·
+`web/public/i18n/en.json` · `web/e2e/touch-mobile.e2e.spec.ts` · `docs/Architectur.md` ·
+`docs/UI-Designsprache.md`
 
 The voting tab used to carry an inline create form, and that form could only ever produce one kind
 of ballot: the whole emote set, dynamically. The curated ballot — the one assembled by marking cells
@@ -177,8 +183,13 @@ on the usage page — was reachable only through a sentence of body text underne
 (`voting.list.wholeSetHintLink`, "Nur bestimmte Emotes zur Wahl stellen?"). The hierarchy was
 inverted: the prominent, zero-friction path produced the result nobody wants, and the wanted path
 was a link saying "do it somewhere else". For HandOfBlood's ~900 emotes a whole-set ballot is not a
-feature, it is a wall of cells; and for a 40-emote channel the whole set is already reachable by the
-bands' "alle markieren" in the atlas, so nothing is actually lost by not offering it separately.
+feature, it is a wall of cells; For a small channel it would be defensible, and that is where the
+honest accounting belongs: there is no one-click path to the whole set in the atlas either —
+`selectBand` is offered on the `dead` band alone and deliberately so ("offering it on the heavy band
+would be a loaded gun with no purpose"), and even marking every cell by hand produces fixed
+`VoteSessionEmote` rows, not the dynamic ballot `emoteIds: null` creates. So something real is given
+up, and it deserves its name: the ballot that grows with the set. It goes because a cleanup vote is a
+decision about the emotes that exist when it is called, not a standing referendum.
 
 **The form is gone. The API contract is not.** `emoteIds: null` still means "whole set, dynamic
 ballot" in `CreateVoteSessionRequest`, `VoteSessionCreateRequest` and
@@ -204,6 +215,13 @@ only, and a coarse pointer gets a sentence naming where the capability lives
 alternative — keeping the whole-set form alive on mobile only — would have left two tabs with the
 same name doing different things. If touch selection ever lands in the atlas, this decision is the
 one to revisit.
+
+**One consequence, named rather than discovered.** The dock on the usage page does not render
+without an active 7TV set (`usage-stats-page.ts`, `activeEmoteSetId()` null after a failed sync).
+The old inline form did not care about the set, so a channel in that state could still open a vote;
+now it cannot, and the header link leads to a page whose dock is absent. That is accepted — a ballot
+assembled from a set we could not read would be built on stale data — but it is the first thing to
+revisit if the entry point ever feels like a dead end.
 
 **Why now, with no users.** Nobody has run a voting session yet. That is the argument for changing
 it today rather than later: no one has learned the current pattern, so the change costs nothing in
