@@ -208,7 +208,13 @@ test.describe('emote atlas', () => {
   test('marks the whole never-used band in one go, and only that band', async ({ page }) => {
     await openAtlas(page);
 
-    await page.getByRole('button', { name: 'alle markieren' }).click();
+    // Scoped to the atlas group: the toolbar's own mark-all button carries the same bare-verb
+    // label (docs/UI-Designsprache.md §8.7 — both use a bare verb because each has a count stated
+    // right beside it), so an unscoped lookup by name now matches two buttons.
+    await page
+      .getByRole('group', { name: 'Emote-Bogen' })
+      .getByRole('button', { name: 'alle markieren' })
+      .click();
 
     await expect(page.getByRole('button', { name: 'Löschen (3)' })).toBeVisible();
     await expect(cell(page, 'Copium')).toHaveAttribute('aria-pressed', 'true');

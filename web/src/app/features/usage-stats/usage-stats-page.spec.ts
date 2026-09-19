@@ -1094,7 +1094,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     expect(component['markAllDisabled']()).toBe(false);
   });
 
-  it('does not stay disabled forever just because a filter narrowed the view to already-marked rows', () => {
+  it('is correctly disabled, not a false positive, once a filter narrows the view down to already-marked rows', () => {
     const a = emote('a', 'PeepoA');
     const b = emote('b', 'PeepoB');
     mount([a, b]);
@@ -1109,22 +1109,23 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
   });
 
   /**
-   * Codex P2: `load()` sets `isLoading` before `loadTotals()`'s response writes `emotes.set(...)`
-   * — a range change or the refresh button therefore leaves `atlasOrder()` (and the selection)
-   * still describing the OUTGOING query for the whole in-flight window. Both mark controls read
-   * `markingSuspendedByLoad()` for exactly this window, so a press in it cannot mark rows the sheet
-   * is about to replace, nor survive `loadTotals()`'s reconciliation as a false positive against a
-   * filter that no longer applies. `markAllDisabled` is the toolbar control; `selectBand`'s
-   * template button binds `markingSuspendedByLoad()` directly (asserted here, since the method
-   * itself — like `markAll()` — carries no guard of its own, only the template's `[disabled]` does).
+   * Codex/Opus review: `load()` sets `isLoading` before `loadTotals()`'s response writes
+   * `emotes.set(...)` — a range change or the refresh button therefore leaves `atlasOrder()` (and
+   * the selection) still describing the OUTGOING query for the whole in-flight window. `showMarkAll`
+   * used to stay true through that window (it only checked `atlasOrder().length > 0`), which is
+   * exactly the "sync pending" bug fix 3 of the same review closed — the toolbar control now
+   * requires `sheetShowsRows()`, which folds `!isLoading()` in, so the button leaves the DOM for the
+   * same window that used to need a separate `markingSuspendedByLoad()` gate on `markAllDisabled`
+   * (removed as dead weight once this subsumed it — see `markAllDisabled`'s own comment). The
+   * template-level absence of the button is asserted against the real template in the dedicated
+   * describe block below; this only pins the computed signal `showMarkAll` reads to reach it.
    */
-  it('suspends both mark-all and the per-band select-all while a reload is in flight, re-enabling once it lands', () => {
+  it('hides the toolbar control while a reload is in flight, even though the outgoing atlasOrder() is still non-empty', () => {
     const a = emote('a', 'PeepoA');
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    expect(component['markingSuspendedByLoad']()).toBe(false);
-    expect(component['markAllDisabled']()).toBe(false);
+    expect(component['showMarkAll']()).toBe(true);
 
     // Off the 'all' preset first — otherwise the "all time" correction effect (see its own comment
     // in usage-stats-page.ts) would snap `from` straight back the moment it changes below, since
@@ -1140,16 +1141,15 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     fixture.detectChanges();
 
     expect(component['isLoading']()).toBe(true);
-    expect(component['markingSuspendedByLoad']()).toBe(true);
-    // Neither view is empty nor fully marked — without the loading gate this would read false.
+    // The outgoing view is still non-empty — without sheetShowsRows() folding in isLoading(), this
+    // would still read true.
     expect(component['atlasOrder']().length).toBeGreaterThan(0);
-    expect(component['markAllDisabled']()).toBe(true);
+    expect(component['showMarkAll']()).toBe(false);
 
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
 
     expect(component['isLoading']()).toBe(false);
-    expect(component['markingSuspendedByLoad']()).toBe(false);
-    expect(component['markAllDisabled']()).toBe(false);
+    expect(component['showMarkAll']()).toBe(true);
   });
 
   /**

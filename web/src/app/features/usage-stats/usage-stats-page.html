@@ -214,12 +214,18 @@
         </button>
       }
       <!-- Scope is the current filtered view (`atlasOrder()`), not the channel's whole set
-           (`emotes()`) — with no filter active the two coincide and the count says so. Fine-pointer
-           only, like every other selection surface (2.5), and gone once the view is empty
-           (`showMarkAll`). Disabled once the view is already fully marked, mirroring the per-band
-           button's own additive-only selectMany() rather than a toggle (Konzept "Auswahl überlebt
-           Suche und Filter" — a group action must never silently deselect). The label carries the
-           count because, unlike the band button, no heading beside it already states one. -->
+           (`emotes()`) — with no filter active the two coincide. Fine-pointer only, like every
+           other selection surface (2.5), and gone whenever the sheet is not actually showing that
+           view (`showMarkAll`/`sheetShowsRows` — still loading, the awaiting-sync banner in its
+           place, or nothing matches). Disabled once the view is already fully marked, mirroring the
+           per-band button's own additive-only selectMany() rather than a toggle (Konzept "Auswahl
+           überlebt Suche und Filter" — a group action must never silently deselect). A bare verb,
+           same as the band button (`usageStats.bands.selectAll`) and for the same reason: the count
+           this button would act on is already stated right next to it, here by the emote-count
+           line at the end of this same row (`emoteCountKey()` below), there by the band heading —
+           neither button needs to say it twice (corrects docs/DECISIONS.md 2026-09-19, "mark all"
+           on the usage toolbar, and docs/UI-Designsprache.md §8.7, which both used to argue the
+           opposite). -->
       @if (showMarkAll()) {
         <button
           type="button"
@@ -228,7 +234,7 @@
           [disabled]="markAllDisabled()"
           (click)="markAll()"
         >
-          {{ 'usageStats.markAll' | transloco: { count: atlasOrder().length } }}
+          {{ 'usageStats.markAll' | transloco }}
         </button>
       }
       <p
@@ -557,14 +563,14 @@
                    definition, so "all of them" is a sentence a moderator actually means. Offering
                    it on the heavy band would be a loaded gun with no purpose. -->
                 @if (row.band === 'dead' && !isCoarse()) {
-                  <!-- Shares markingSuspendedByLoad() with the toolbar's mark-all button (its own
-                       comment has the reasoning): disabled while a reload is in flight, since
-                       atlasOrder()/the band's own items still describe the outgoing query until
-                       loadTotals() writes the response. -->
+                  <!-- No [disabled] here (Codex/Opus review): this row only ever renders in the
+                       grid's own @else branch, which isLoading() never reaches (see sheetShowsRows)
+                       — a loading-window guard on this button could never fire, so binding one was
+                       dead markup. A reload in flight simply removes this whole row instead, along
+                       with the rest of the outgoing sheet. -->
                   <button
                     type="button"
-                    class="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium text-accent-fg transition hover:bg-surface-inset disabled:cursor-not-allowed disabled:bg-transparent disabled:text-fg-disabled disabled:hover:bg-transparent"
-                    [disabled]="markingSuspendedByLoad()"
+                    class="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium text-accent-fg transition hover:bg-surface-inset"
                     (click)="selectBand('dead')"
                   >
                     {{ 'usageStats.bands.selectAll' | transloco }}

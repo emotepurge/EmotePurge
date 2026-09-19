@@ -684,7 +684,7 @@
     "noActiveEmotesHint": "Das aktive 7TV-Emote-Set dieses Channels enthält derzeit keine Emotes.",
     "noMatches": "Keine Emotes passen zu den aktuellen Filtern.",
     "resetFilters": "Filter zurücksetzen",
-    "markAll": "alle {{count}} markieren",
+    "markAll": "alle markieren",
     "createVoteSession": "Zur Abstimmung stellen ({{count}})",
     "selectionPruned": {
       "one": "Ein ausgewähltes Emote ist nicht mehr im Set und wurde aus der Auswahl entfernt.",

@@ -684,7 +684,7 @@
     "noActiveEmotesHint": "This channel's active 7TV emote set currently holds no emotes.",
     "noMatches": "No emotes match the current filters.",
     "resetFilters": "Reset filters",
-    "markAll": "mark all {{count}}",
+    "markAll": "mark all",
     "createVoteSession": "Put up for vote ({{count}})",
     "selectionPruned": {
       "one": "One selected emote is no longer in the set and was removed from the selection.",

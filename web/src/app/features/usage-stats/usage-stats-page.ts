@@ -824,33 +824,44 @@ export class UsageStatsPage {
       !this.importScopeCurrent(),
   );
 
-  /** Whether the toolbar's mark-all control exists at all — a fine pointer (no write path off a
-   *  phone, same reasoning as everywhere else selection appears) and a non-empty current view.
-   *  Scope is `atlasOrder()`, not `emotes()`: the button marks what the sheet is showing, filtered,
-   *  sorted and banded, not the channel's whole universe underneath an active filter. */
-  protected readonly showMarkAll = computed(() => !this.isCoarse() && this.atlasOrder().length > 0);
+  /** Whether the sheet is actually showing the rows `atlasOrder()` describes — the same condition
+   *  that picks the grid `@else` branch in the template (`usage-stats-page.html`'s
+   *  `isLoading()`/`isAwaitingSync()`/`atlasOrder().length === 0` chain), pulled out as one named
+   *  source rather than re-derived at the one other place that needs it (`showMarkAll` below). While
+   *  `isLoading()` is true, `atlasOrder()` can still be non-empty — it still describes the OUTGOING
+   *  query until `loadTotals()`'s response lands (see that method's own comment) — which is exactly
+   *  the state this excludes. */
+  protected readonly sheetShowsRows = computed(
+    () => !this.isLoading() && !this.isAwaitingSync() && this.atlasOrder().length > 0,
+  );
 
-  /** Shared by `markAllDisabled` below and the per-band select-all button in the template
-   *  (`selectBand('dead')`): true for the whole window between `load()` setting `isLoading` and
-   *  `loadTotals()`'s response finally calling `emotes.set(...)` (see both methods' own comments).
-   *  Until that write lands, `atlasOrder()` and `selection.isSelected()` still describe the
-   *  OUTGOING query, not the one the skeleton is standing in for — a mark pressed in that window
-   *  acts on rows the sheet is about to replace. `loadTotals()`'s own reconciliation afterwards
-   *  only prunes the marked set against the new response's unfiltered `emotes`, never against
-   *  whatever filter/band view was on screen at press time, so a row that no longer matches the
-   *  current filter can still ride the mark into the dock and from there into a delete or vote
-   *  dialog — disabling the trigger is simpler than trying to undo that after the fact. */
-  protected readonly markingSuspendedByLoad = computed(() => this.isLoading());
+  /** Whether the toolbar's mark-all control exists at all — a fine pointer (no write path off a
+   *  phone, same reasoning as everywhere else selection appears) and the sheet actually showing a
+   *  non-empty current view (`sheetShowsRows`). Scope is `atlasOrder()`, not `emotes()`: the button
+   *  marks what the sheet is showing, filtered, sorted and banded, not the channel's whole universe
+   *  underneath an active filter.
+   *
+   *  Codex/Opus review: this used to read `atlasOrder().length > 0` alone, which stayed true while
+   *  the sheet itself showed the "sync pending" banner in place of the grid (`emotes()` — and with
+   *  it `atlasOrder()` — is filled by the totals endpoint independently of the 7TV set status). The
+   *  toolbar button was therefore live over rows nobody could see, and a press marked them into a
+   *  dock with zero visible feedback (the dock mounts off `activeEmoteSetId`, which is exactly what
+   *  is missing while the banner shows). Requiring `sheetShowsRows()` closes that window; it also
+   *  makes the loading case redundant here, see `markAllDisabled` below. */
+  protected readonly showMarkAll = computed(() => !this.isCoarse() && this.sheetShowsRows());
 
   /** Disabled once every row the sheet currently shows is already marked — a press that could not
    *  add anything is not a control worth pressing. Vacuously true on an empty view, which never
-   *  matters in practice: `showMarkAll()` already hides the button there. Also disabled during
-   *  `markingSuspendedByLoad()` (see its own comment) — a reload in flight must not let this act
-   *  on the outgoing query's rows. */
-  protected readonly markAllDisabled = computed(
-    () =>
-      this.markingSuspendedByLoad() ||
-      this.atlasOrder().every((emote) => this.selection.isSelected(emote)),
+   *  matters in practice: `showMarkAll()` already hides the button there.
+   *
+   *  No loading gate here any more (Codex/Opus review): `showMarkAll()` now requires
+   *  `sheetShowsRows()`, which is already false for the whole window `isLoading()` covers, so the
+   *  button cannot be on screen while a reload is in flight in the first place — a second gate here
+   *  for the same case would just be two locks on one door. The per-band select-all button in the
+   *  template loses the same dead binding for the same reason, only more directly: it sits inside
+   *  the grid `@else` branch itself, which `isLoading()` never reaches at all. */
+  protected readonly markAllDisabled = computed(() =>
+    this.atlasOrder().every((emote) => this.selection.isSelected(emote)),
   );
 
   /**
