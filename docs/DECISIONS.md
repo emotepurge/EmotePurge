@@ -249,10 +249,14 @@ instruction is now a permanent row inside the page header (`voting.list.createEn
 under the heading/button row rather than placed after the header, and gated exactly like the header
 link — manager-only, hidden on a coarse pointer — so it stands whether the list is empty or not.
 
-**What that sentence does and does not say.** It names only the precondition: that emotes have to be
-marked first, before the button leads anywhere useful. It deliberately does not name the
-destination, because the button does that already ("Put emotes up for vote", linking to the usage
-page) and a hint repeating it back adds nothing. The old hint's second sentence ("the session then appears here")
+**What that sentence does and does not say.** It names only what the button cannot: that a ballot is
+made of emotes the manager marks. It deliberately does not name the destination, because the button
+does that already ("Put emotes up for vote", linking to the usage page) and a hint repeating it back
+adds nothing. It does not assert an order either. Earlier drafts said "mark them there first", and
+both words were wrong from where the sentence is actually read: the reader has not gone anywhere
+yet, so "there" pointed at a place they were not, and the first step in front of them is the click,
+not the marking.
+The old hint's second sentence ("the session then appears here")
 is not carried along: it only ever explained why the list was empty, which is not a fact worth
 stating permanently. `noSessionsManagerHint` is retired outright, not renamed; a manager's empty
 state now shows the same plain `noSessions` title a voter sees, and only the `[description]` differs
