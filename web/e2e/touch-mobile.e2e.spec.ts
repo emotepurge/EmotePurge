@@ -201,14 +201,21 @@ test.describe('touch: reading and voting only', () => {
   // file guards does not reach it directly — but the destination it would link to (the usage-stats
   // atlas's marking + dock) is itself `!isCoarse()`-gated, so a mod on a phone has nowhere to land.
   // The page stays reachable, so this is not broken navigation but a question its destination
-  // cannot answer here (docs/UI-Designsprache.md §8.7, vote-session-list-page.html's header).
+  // cannot answer here (docs/UI-Designsprache.md §2.5/§8.7, vote-session-list-page.html's header).
+  //
+  // The empty state's own how-to used to double this note for the same manager on the same
+  // pointer — that was the defect, not a second, independent concern: a manager on coarse would
+  // read the header say "create on desktop" and then, one paragraph down, a step-by-step list
+  // starting with "mark emotes on the usage page", which is exactly as unreachable there as the
+  // link above it. The how-to is fine-pointer-only for the same reason the header note exists at
+  // all, so this case now asserts it does *not* render on coarse, not that it does.
   test('the header entry point trades the create link for a desktop-only note on a coarse pointer', async ({
     page,
   }) => {
     await mockVoteSessionList(page, 'sensitron', []);
     await page.goto('/channels/sensitron/vote-sessions');
 
-    await expect(page.getByRole('heading', { name: 'Abstimmungen' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Votings' })).toBeVisible();
     // Counted before it is asserted hidden: toBeHidden() also passes for an element that is not in
     // the DOM at all, so on its own it would greenlight the link being deleted outright. The pair
     // says what is meant — still rendered, and `pointer-coarse:hidden` is what takes it out of
@@ -217,7 +224,7 @@ test.describe('touch: reading and voting only', () => {
       'a[href="/channels/sensitron/usage-stats"].pointer-coarse\\:hidden',
     );
     await expect(entryLink).toHaveCount(1);
-    await expect(entryLink).toHaveText('Abstimmung erstellen');
+    await expect(entryLink).toHaveText('Emotes zur Abstimmung stellen');
     await expect(entryLink).toBeHidden();
     // The replacement is the reverse pair (`hidden pointer-coarse:inline`); asserting the literal
     // German also fails if the key is missing from de.json, since Transloco renders the key path.
@@ -225,12 +232,12 @@ test.describe('touch: reading and voting only', () => {
       page.getByText('Abstimmungen erstellst du am Rechner, auf der Nutzungsseite.'),
     ).toBeVisible();
 
-    // The empty state's own how-to is a separate concern from the header note above (§8.7's header
-    // vs. flow split) — a manager gets both, not one instead of the other.
-    await expect(
-      page.getByText(
-        'Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“. Die Abstimmung erscheint danach hier.',
-      ),
-    ).toBeVisible();
+    // Same pair as the header link above (rendered, then asserted hidden): the empty state's
+    // manager how-to must not repeat the header's note to a reader who cannot act on it either way.
+    const managerHint = page.getByText(
+      'Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“. Die Abstimmung erscheint danach hier.',
+    );
+    await expect(managerHint).toHaveCount(1);
+    await expect(managerHint).toBeHidden();
   });
 });

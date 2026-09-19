@@ -720,8 +720,8 @@
   },
   "voting": {
     "list": {
-      "title": "Abstimmungen",
-      "createEntryButton": "Abstimmung erstellen",
+      "title": "Votings",
+      "createEntryButton": "Emotes zur Abstimmung stellen",
       "createEntryDesktopOnly": "Abstimmungen erstellst du am Rechner, auf der Nutzungsseite.",
       "titlePlaceholder": "Titel, z.B. Monats-Aufräumaktion Juli",
       "titleRequired": "Titel darf nicht leer sein.",
