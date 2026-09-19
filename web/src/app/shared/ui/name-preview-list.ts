@@ -37,7 +37,17 @@ const PREVIEW_CAP = 50;
 export class NamePreviewList {
   readonly names = input.required<readonly string[]>();
 
-  protected readonly preview = computed(() => this.names().slice(0, PREVIEW_CAP));
+  /** `null` shows every name — the delete-confirm dialog's hidden-by-filter block (Konzept
+   *  "Auswahl überlebt Suche und Filter" 2.1) is the reason: those names are the safety-relevant
+   *  part of that dialog and must never fall behind the "n weitere" tail before an irreversible
+   *  action. The `-mx-6 max-h-48 overflow-y-auto` wrapper already scrolls rather than growing the
+   *  dialog, so lifting the cap does not need any layout change of its own. */
+  readonly cap = input<number | null>(PREVIEW_CAP);
+
+  protected readonly preview = computed(() => {
+    const cap = this.cap();
+    return cap === null ? this.names() : this.names().slice(0, cap);
+  });
   protected readonly remaining = computed(() => this.names().length - this.preview().length);
   protected readonly andMoreKey = computed(() => pluralKey(this.remaining(), 'common.andMore'));
 }
