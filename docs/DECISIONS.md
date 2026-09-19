@@ -18,7 +18,9 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/shared/seven-tv/delete-confirm-dialog.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.html` ·
-`web/src/app/features/voting/vote-session-detail-page.ts` · `web/e2e/usage-atlas.e2e.spec.ts`
+`web/src/app/features/voting/vote-session-detail-page.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`web/src/app/shared/export/export-dialog.ts` · `web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-trigger-gate.ts`
 
 **Supersedes the S2-16 half of the 2026-07-30 entry** ("Filterwechsel beschneiden die Auswahl statt
 sie zu löschen"). HandOfBlood's mod team reported that searching resets a running selection — which
@@ -86,6 +88,36 @@ moves while typing narrows and re-widens the sheet, the hidden-by-filter seconda
 names the right count while a mark is off-screen, and both marks are back and pressed once the search
 is cleared. Full design and the seven-question analysis behind these decisions:
 `docs/Konzept-Auswahl-ueberlebt-Filter-2026-09-18.md`.
+
+**Nachtrag (2026-09-19, one level up the same mistake).** A live check found the header row still
+broken the same way `retainVisible()` was: with the filter hiding all 357 emotes and 2 marked, the
+dock correctly offered "Übertragen (2)"/"Zur Abstimmung stellen (2)"/"Löschen (2)", but the header's
+"Exportieren"/"Übertragen" buttons stayed disabled, because both read `atlasOrder().length === 0`
+alone — the visible list, not the union of visible and selected the rest of this change already
+established. Fixed the same way: `usage-stats-page.ts` gets `exportButtonDisabled`/
+`transferButtonDisabled`, disabled only when the visible list **and** the selection are both empty;
+`transferButtonDisabled` keeps its other two locks (an active 7TV run, a stale `importScopeCurrent`)
+exactly as before. `app-import-trigger`'s own lock was already correct and needed no change — it
+never depended on `atlasOrder()` in the first place (`import-trigger-gate.ts`).
+
+Once the visible and the selected scope stopped being the same set, the "Auswahl"/"sichtbare Liste"
+picker in both `ExportDialog` and `ImportTargetDialog` could offer a scope with zero rows — a filter
+narrowing the visible list to nothing while a selection survives it, which is exactly the state the
+header fix above makes reachable. Both dialogs now disable a zero-row scope's radio and refuse to
+submit it: `ExportDialog`'s default (usually "visible") now falls back to "selection" when visible is
+empty; `ImportTargetDialog` already defaulted to "selection" whenever one exists (R12), so it only
+needed the disabled radio and the submit guard. Deliberately excluded from the submit guard: a
+caller-forced scope (the dock's copy shortcut always forces `'selection'`) — that path is already
+guarded upstream, at the shortcut's own lock and a defensive check in `openImportTarget`, and
+`import-target-dialog.spec.ts` deliberately exercises a forced scope with `selectionCount: 0` to prove
+the scope itself never silently falls back; the new guard must not turn that into a disabled submit.
+
+Checked for the same mistake elsewhere and found none: the voting-detail page's own export button
+reads `emotes().length === 0`, but its export dialog is handed `selectionCount: null` (that page
+offers no selection export scope at all, per 2.6), so there is no second set for it to have missed.
+The other `atlasOrder().length === 0` reads left on the page (the "no matches" empty-grid state, the
+distinct-from-this comment in `import-trigger-gate.ts`) describe visibility, not an action lock, and
+are unaffected.
 
 ---
 
