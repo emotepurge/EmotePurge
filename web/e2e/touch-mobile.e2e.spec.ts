@@ -242,10 +242,10 @@ test.describe('touch: reading and voting only', () => {
 
     // Same pair as the header link above (rendered, then asserted hidden): the permanent
     // create-entry hint must not repeat the header's note to a reader who cannot act on it either
-    // way. Its own sentence is one line shorter than it used to be — the old second sentence ("the
-    // session appears here afterwards") was retired along with the empty-state-only placement.
+    // way. Its own sentence is shorter than it used to be — it no longer names the destination
+    // either (the button right above it already does), only the precondition of marking first.
     const createEntryHint = page.getByText(
-      'Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“.',
+      'Markiere dort zuerst die Emotes, über die abgestimmt werden soll.',
       { exact: true },
     );
     await expect(createEntryHint).toHaveCount(1);

@@ -259,6 +259,14 @@ voter sees — only the `[description]` differs (`null` for a manager, `noSessio
 voter), same as before. The voter path (`noSessionsVoterHint`) is untouched — it never pointed at a
 capability that could disappear on it.
 
+**Shortened once more (2026-09-19, same day again):** the sentence quoted above still named where
+the button leads ("on the usage page"), which is the button's own label unchanged — the button
+already says "Put emotes up for vote" and links to that page, so the hint repeated it back rather
+than adding information. `createEntryHint` now says only what the button cannot: that marking has
+to happen first, before the button does anything useful. It reads "there" off the button directly
+above it — sound only because the two share the same two gates (`canManage()`, hidden on a coarse
+pointer) and the hint never renders without the button also being present.
+
 **Creating a voting session is desk work, decided rather than inherited.** The curated ballot is
 assembled by marking cells in the usage atlas, and that selection does not exist on a coarse pointer
 (`@if (!isCoarse())` in `usage-stats-page.html`). Removing the form therefore removes the last way
