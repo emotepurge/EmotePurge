@@ -155,8 +155,11 @@ describe('VoteSessionListPage — the create entry point is a manager-only lock'
     ).length;
     expect(occurrences).toBe(1);
     expect(fixture.nativeElement.textContent).toContain('voting.list.noSessions');
-    // The old two-sentence hint is retired outright, not renamed — nothing should reference its key.
-    expect(fixture.nativeElement.textContent).not.toContain('voting.list.noSessionsManagerHint');
+    // `toContain('voting.list.noSessions')` alone does not pin this down: that key path is a plain
+    // string prefix of `voting.list.noSessionsVoterHint`'s own key path, so it would stay green even
+    // if the voter's description leaked into a manager's empty state instead of staying `null`. This
+    // is the assertion that actually nails the fall-through in the template's ternary.
+    expect(fixture.nativeElement.textContent).not.toContain('voting.list.noSessionsVoterHint');
   });
 
   it('shows only the plain empty notice to a voter, never the manager how-to', async () => {
