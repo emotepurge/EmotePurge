@@ -43,11 +43,21 @@ export interface DeleteConfirmDialogData {
            above is fine because those names are on screen already, but a target the current
            filter is hiding must stay identifiable by name right up to this irreversible action —
            reducing it to a bare number here would be exactly the S2-16 safety gap this dialog
-           exists to close. role="status" so it is findable by role and text like the notices
-           below, even though — like those — it does not announce its own first mount. -->
+           exists to close.
+
+           Deliberately a plain paragraph, not a live region. The dialog moves focus into itself
+           and is read out as a whole on open, so there is nothing here for a role="status" to add:
+           the block is created together with the dialog and could never announce its own arrival
+           (docs/UI-Designsprache.md §4.5), and the one thing it could still fire on — the count
+           changing under an open dialog — would read this sentence alone while the uncapped name
+           list beside it and the total in the title changed silently, i.e. a fragment of the
+           change. It would also make a second status region next to the amber
+           "ownershipCheckUnavailable" banner in the same dialog, which §4.5 names as its own
+           source of error. Its place in the reading order between the two lists is what carries
+           it. -->
       @if (data.hiddenEmotes().length > 0) {
         <div class="flex flex-col gap-2">
-          <p role="status" class="text-sm text-fg-secondary">
+          <p class="text-sm text-fg-secondary">
             {{ hiddenByFilterKey() | transloco: { count: data.hiddenEmotes().length } }}
           </p>
           <app-name-preview-list [names]="data.hiddenEmotes()" [cap]="null" />

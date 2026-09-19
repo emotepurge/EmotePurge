@@ -148,6 +148,17 @@ reason: the spoken and the shown wording cannot drift apart. The reset button st
 `aria-hidden` span — a focusable element inside a hidden subtree is a defect of its own (axe
 `aria-hidden-focus`).
 
+**In `DeleteConfirmDialog` the hidden-block's `role="status"` is dropped instead, without
+replacement.** It achieves nothing there: the dialog pulls focus into itself and is read out as a
+whole on open, the block is created together with it and could never announce its own arrival anyway.
+The one event it could still fire on — the count changing under an open dialog — would read this one
+sentence while the uncapped name list beside it and the total in the title changed silently, i.e. a
+fragment of the change. On top of that it would be a second status region next to the same dialog's
+amber `ownershipCheckUnavailable` banner. It is a plain paragraph now, carried by its place in the
+reading order between the two lists. That the voting-detail page has no dock changes nothing here —
+per the Konzept it gets this information through exactly this dialog, and the dialog is read out in
+full on open.
+
 Untouched and still open is `run-progress-panel.ts`, the one known instance §4.5 names — the same
 class of defect, but older than this branch and deliberately not taken along here.
 

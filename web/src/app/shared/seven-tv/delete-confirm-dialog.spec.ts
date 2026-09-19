@@ -289,20 +289,13 @@ describe('DeleteConfirmDialog', () => {
     it('is absent when nothing is hidden', () => {
       const dialog = render();
 
-      expect(dialog.roleElements('status')).toHaveLength(0);
       expect(dialog.text()).not.toContain('durch den aktuellen Filter ausgeblendet');
     });
 
-    it('names every hidden target, findable by role and then by text, once something is hidden', () => {
+    it('names every hidden target once something is hidden', () => {
       const dialog = render({ hiddenEmotes: ['Foo', 'Bar', 'Baz'] });
 
-      // role="status" carries no accessible name of its own — find it by role first, then read
-      // its text, not the other way round.
-      const statuses = dialog.roleElements('status');
-      expect(statuses).toHaveLength(1);
-      expect(statuses[0].textContent).toContain(
-        '3 davon sind durch den aktuellen Filter ausgeblendet.',
-      );
+      expect(dialog.text()).toContain('3 davon sind durch den aktuellen Filter ausgeblendet.');
       // The three names are listed next to the notice, not merely counted.
       expect(dialog.text()).toContain('Foo');
       expect(dialog.text()).toContain('Bar');
@@ -312,9 +305,25 @@ describe('DeleteConfirmDialog', () => {
     it('uses the singular wording for exactly one hidden target', () => {
       const dialog = render({ hiddenEmotes: ['Foo'] });
 
-      expect(dialog.roleElements('status')[0].textContent).toContain(
-        '1 davon ist durch den aktuellen Filter ausgeblendet.',
-      );
+      expect(dialog.text()).toContain('1 davon ist durch den aktuellen Filter ausgeblendet.');
+    });
+
+    /**
+     * The block is created with the dialog, which moves focus into itself and is read out whole on
+     * open — a live region there could never announce its own arrival (docs/UI-Designsprache.md
+     * §4.5) and would only add a second status region next to the amber "could not check" banner.
+     * The remaining `role="status"` in this dialog therefore belongs to that banner alone.
+     */
+    it('is a plain paragraph, not a live region — the amber finding stays the only status region', () => {
+      const dialog = render({
+        hiddenEmotes: ['Foo'],
+        warning: CHECK_FAILED_LOOKS_ALARMING,
+      });
+
+      const statuses = dialog.roleElements('status');
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0].textContent).toContain('Wir konnten gerade nicht prüfen');
+      expect(statuses[0].textContent).not.toContain('durch den aktuellen Filter ausgeblendet');
     });
 
     it('counts the title over every marked emote, hidden ones included', () => {

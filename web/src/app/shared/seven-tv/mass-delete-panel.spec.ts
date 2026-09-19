@@ -1237,8 +1237,9 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
     );
     expect(hiddenListed).toEqual(HIDDEN_NAMES);
 
-    const status = host.querySelector('[role="status"]');
-    expect(status?.textContent).toContain('3 davon sind durch den aktuellen Filter ausgeblendet.');
+    // Introduced by the paragraph above the hidden list — deliberately not a live region, see
+    // DeleteConfirmDialog's own template comment and its spec.
+    expect(host.textContent).toContain('3 davon sind durch den aktuellen Filter ausgeblendet.');
   });
 
   it('renders no hidden-by-filter block at all when nothing is hidden', () => {
@@ -1249,6 +1250,6 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
     const host: HTMLElement = dialogFixture.nativeElement;
 
     expect(host.querySelectorAll('ul')).toHaveLength(1);
-    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect(host.textContent).not.toContain('durch den aktuellen Filter ausgeblendet');
   });
 });
