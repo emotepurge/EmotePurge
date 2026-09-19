@@ -239,6 +239,26 @@ and the empty state separately spells out the two-step flow. The empty state's h
 manager-only as well; a voter sees only that nothing is running yet, because the instruction would
 describe a door they cannot open.
 
+**Correction (2026-09-19, same day, after this entry had already shipped on `main`):** the paragraph
+above was inconsistent with its own opening sentence. It correctly says a manager with three sessions
+running needs the way to the fourth just as much as one with none — and then hands that manager's
+how-to to the empty state anyway, which by construction stops rendering the moment a session exists.
+The reported defect was exactly this: the explanation disappeared for the manager who would need it
+a second time, the one already past the empty list. The fix is not a second entry point but the same
+one, relocated: the instruction sentence ("mark emotes on the usage page and choose 'put up for
+vote'") is now a permanent row inside the page header itself (`voting.list.createEntryHint`), nested
+under the heading/button row rather than merely placed after the header — the first cut left the
+hint a sibling of the header in the page's own flex column, equidistant from the heading above and
+the list below and, once an error banner could land between them, no longer even "right under the
+header" in practice (second correction, same day). It is gated the same way the header link is
+(manager-only, hidden on a coarse pointer) — visible whether the list is empty or not. The old hint's
+second sentence ("the session then appears here") is not carried along: it only ever explained why
+the list was empty, which is not a fact that needs stating permanently. `noSessionsManagerHint` is
+retired outright, not renamed; a manager's empty state now shows the same plain `noSessions` title a
+voter sees — only the `[description]` differs (`null` for a manager, `noSessionsVoterHint` for a
+voter), same as before. The voter path (`noSessionsVoterHint`) is untouched — it never pointed at a
+capability that could disappear on it.
+
 **Creating a voting session is desk work, decided rather than inherited.** The curated ballot is
 assembled by marking cells in the usage atlas, and that selection does not exist on a coarse pointer
 (`@if (!isCoarse())` in `usage-stats-page.html`). Removing the form therefore removes the last way
@@ -266,7 +286,8 @@ and `create` were removed. `titlePlaceholder`, `titleRequired`, `audience*`, `st
 and `hideResults*` look like form leftovers but are read by `create-vote-session-dialog.ts` on the
 usage page, which is now the only creation surface — they stay. `noSessionsManagerHint` was
 rewritten to name the flow, reusing the dock's own verb "Zur Abstimmung stellen" per the 2026-09-14
-one-verb rule.
+one-verb rule. **Superseded by the same-day correction above:** `noSessionsManagerHint` did not
+survive the move — it is retired, and its surviving sentence lives on as `createEntryHint`.
 
 ---
 

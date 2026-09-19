@@ -203,12 +203,13 @@ test.describe('touch: reading and voting only', () => {
   // The page stays reachable, so this is not broken navigation but a question its destination
   // cannot answer here (docs/UI-Designsprache.md §2.5/§8.7, vote-session-list-page.html's header).
   //
-  // The empty state's own how-to used to double this note for the same manager on the same
-  // pointer — that was the defect, not a second, independent concern: a manager on coarse would
-  // read the header say "create on desktop" and then, one paragraph down, a step-by-step list
-  // starting with "mark emotes on the usage page", which is exactly as unreachable there as the
-  // link above it. The how-to is fine-pointer-only for the same reason the header note exists at
-  // all, so this case now asserts it does *not* render on coarse, not that it does.
+  // The permanent create-entry hint above the list (moved out of the empty state, 2026-09-19
+  // correction, since it needs to survive a non-empty list too) used to double this note for the
+  // same manager on the same pointer — that was the defect, not a second, independent concern: a
+  // manager on coarse would read the header say "create on desktop" and then, one line down, "mark
+  // emotes on the usage page", which is exactly as unreachable there as the link above it. The hint
+  // is fine-pointer-only for the same reason the header note exists at all, so this case now
+  // asserts it does *not* render on coarse, not that it does.
   test('the header entry point trades the create link for a desktop-only note on a coarse pointer', async ({
     page,
   }) => {
@@ -232,12 +233,14 @@ test.describe('touch: reading and voting only', () => {
       page.getByText('Abstimmungen erstellst du am Rechner, auf der Nutzungsseite.'),
     ).toBeVisible();
 
-    // Same pair as the header link above (rendered, then asserted hidden): the empty state's
-    // manager how-to must not repeat the header's note to a reader who cannot act on it either way.
-    const managerHint = page.getByText(
-      'Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“. Die Abstimmung erscheint danach hier.',
+    // Same pair as the header link above (rendered, then asserted hidden): the permanent
+    // create-entry hint must not repeat the header's note to a reader who cannot act on it either
+    // way. Its own sentence is one line shorter than it used to be — the old second sentence ("the
+    // session appears here afterwards") was retired along with the empty-state-only placement.
+    const createEntryHint = page.getByText(
+      'Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“.',
     );
-    await expect(managerHint).toHaveCount(1);
-    await expect(managerHint).toBeHidden();
+    await expect(createEntryHint).toHaveCount(1);
+    await expect(createEntryHint).toBeHidden();
   });
 });
