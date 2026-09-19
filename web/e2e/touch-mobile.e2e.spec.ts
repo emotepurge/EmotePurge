@@ -203,16 +203,24 @@ test.describe('touch: reading and voting only', () => {
   // The page stays reachable, so this is not broken navigation but a question its destination
   // cannot answer here (docs/UI-Designsprache.md §2.5/§8.7, vote-session-list-page.html's header).
   //
-  // The empty state's own how-to used to double this note for the same manager on the same
-  // pointer — that was the defect, not a second, independent concern: a manager on coarse would
-  // read the header say "create on desktop" and then, one paragraph down, a step-by-step list
-  // starting with "mark emotes on the usage page", which is exactly as unreachable there as the
-  // link above it. The how-to is fine-pointer-only for the same reason the header note exists at
-  // all, so this case now asserts it does *not* render on coarse, not that it does.
+  // The permanent create-entry hint in the header (moved out of the empty state, 2026-09-19
+  // correction, since it needs to survive a non-empty list too) used to double this note for the
+  // same manager on the same pointer — that was the defect, not a second, independent concern: a
+  // manager on coarse would read the header say "create on desktop" and then, one line down, "mark
+  // emotes on the usage page", which is exactly as unreachable there as the link above it. The hint
+  // is fine-pointer-only for the same reason the header note exists at all, so this case now
+  // asserts it does *not* render on coarse, not that it does.
+  //
+  // The fixture below seeds one session on purpose: the hint's whole load-bearing case is that it
+  // survives a non-empty list (it used to live only inside the empty state), so a fixture that never
+  // leaves that state would let this case pass against either placement. The wording assertion also
+  // takes `{ exact: true }` — the shortened one-sentence hint is a plain string prefix of the old
+  // two-sentence `noSessionsManagerHint` it replaced, so a substring match here would stay green
+  // against the retired copy too.
   test('the header entry point trades the create link for a desktop-only note on a coarse pointer', async ({
     page,
   }) => {
-    await mockVoteSessionList(page, 'sensitron', []);
+    await mockVoteSessionList(page, 'sensitron', [{ id: 1, title: 'Aufräumen im August' }]);
     await page.goto('/channels/sensitron/vote-sessions');
 
     await expect(page.getByRole('heading', { name: 'Votings' })).toBeVisible();
@@ -232,12 +240,16 @@ test.describe('touch: reading and voting only', () => {
       page.getByText('Abstimmungen erstellst du am Rechner, auf der Nutzungsseite.'),
     ).toBeVisible();
 
-    // Same pair as the header link above (rendered, then asserted hidden): the empty state's
-    // manager how-to must not repeat the header's note to a reader who cannot act on it either way.
-    const managerHint = page.getByText(
-      'Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“. Die Abstimmung erscheint danach hier.',
+    // Same pair as the header link above (rendered, then asserted hidden): the permanent
+    // create-entry hint must not repeat the header's note to a reader who cannot act on it either
+    // way. Its own sentence is shorter than it used to be — it no longer names the destination
+    // either (the button right above it already does) or an order relative to it, only the
+    // precondition of marking.
+    const createEntryHint = page.getByText(
+      'Markiere die Emotes, über die abgestimmt werden soll.',
+      { exact: true },
     );
-    await expect(managerHint).toHaveCount(1);
-    await expect(managerHint).toBeHidden();
+    await expect(createEntryHint).toHaveCount(1);
+    await expect(createEntryHint).toBeHidden();
   });
 });

@@ -12,22 +12,56 @@
        wholeSetHint link — a `pointer-coarse:hidden`/`hidden pointer-coarse:inline` pair (Pointer
        ModeService: "purely visual hiding" prefers the CSS variant over the signal). The sentence
        that takes the button's place on coarse plays the same role the removed form's own
-       desktop-only hint used to play next to it — just relocated here. -->
-  <header class="flex flex-wrap items-center justify-between gap-3">
-    <h2 class="text-lg font-semibold">{{ 'voting.list.title' | transloco }}</h2>
+       desktop-only hint used to play next to it — just relocated here.
+
+       The manager how-to (`createEntryHint`, below) is a second row of this same header, not a
+       sibling of it — nested inside `<header>` rather than merely placed next to it in the page's
+       gap-8 flex column, which used to leave it exactly as far from the heading/button row above as
+       from the list below (design doc §2.5/§8.7 — correction, 2026-09-19). It is deliberately not a
+       third item of the flex-wrap row above (title/button/hint side by side was considered and
+       rejected): it explains the whole row, not one item of it, so it stands underneath as its own
+       line. -->
+  <header class="flex flex-col gap-3">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h2 class="text-lg font-semibold">{{ 'voting.list.title' | transloco }}</h2>
+      @if (canManage()) {
+        <div class="flex flex-wrap items-center gap-2">
+          <a
+            appButton="primary"
+            [routerLink]="['/channels', channelName(), 'usage-stats']"
+            class="pointer-coarse:hidden"
+          >
+            {{ 'voting.list.createEntryButton' | transloco }}
+          </a>
+          <span class="hidden text-sm text-fg-muted pointer-coarse:inline">
+            {{ 'voting.list.createEntryDesktopOnly' | transloco }}
+          </span>
+        </div>
+      }
+    </div>
+
+    <!-- The manager how-to is a permanent line now, not a child of the empty state (design doc
+         §2.5/§8.7 — correction, 2026-09-19): it explains the heading/button row right above it, and
+         "how do I start one" stays a live question for a manager who already has three sessions
+         running just as much as for one who has none. The old second sentence ("the session appears
+         here afterwards") only ever explained why the list was empty, so it is dropped rather than
+         moved — it would say nothing once the list is not.
+
+         Shortened again (2026-09-19, same day): the sentence used to also say where the button leads
+         ("on the usage page"), which only repeated the button's own destination back to a reader who
+         had just read the button. What the button cannot say is the precondition — that marking has
+         to happen first — so that is now the whole sentence.
+
+         Same two gates as the link it explains: manager-only (canManage), and hidden on a coarse
+         pointer with the same `pointer-coarse:hidden` CSS variant rather than disabled. The header
+         already gives a coarse reader the one sentence that applies to them
+         (`createEntryDesktopOnly`), so this line would only repeat "create on desktop" to someone
+         who cannot act on it either way — the exact defect §2.5 warns against ("what points into
+         the void on coarse is explained", not explained twice). -->
     @if (canManage()) {
-      <div class="flex flex-wrap items-center gap-2">
-        <a
-          appButton="primary"
-          [routerLink]="['/channels', channelName(), 'usage-stats']"
-          class="pointer-coarse:hidden"
-        >
-          {{ 'voting.list.createEntryButton' | transloco }}
-        </a>
-        <span class="hidden text-sm text-fg-muted pointer-coarse:inline">
-          {{ 'voting.list.createEntryDesktopOnly' | transloco }}
-        </span>
-      </div>
+      <p class="max-w-prose text-sm text-fg-muted pointer-coarse:hidden">
+        {{ 'voting.list.createEntryHint' | transloco }}
+      </p>
     }
   </header>
 
@@ -38,22 +72,14 @@
   @if (isLoading()) {
     <app-skeleton-rows [count]="4" />
   } @else if (sessions().length === 0 && !errorMessage()) {
-    <!-- The manager how-to duplicates the header's fine-pointer-only entry point (§2.5): on coarse,
-         the header already gives way to a sentence naming where creation happens, so this hint would
-         say it a second time to the same reader for a door they cannot open from here — hidden via
-         the same `pointer-coarse:hidden` CSS variant, not passed through app-empty-state's plain
-         [description] string (which cannot carry a class). A voter's hint is unaffected by pointer
-         type: it never pointed at a capability the coarse gate removes. -->
+    <!-- The manager how-to used to project into this empty state as a child paragraph — moved into
+         the page header above (§2.5/§8.7 — correction, 2026-09-19), since it is needed most exactly
+         when this branch stops rendering: once a session exists. A manager's empty state is now the
+         same plain title a voter gets; only the description differs, same as before. -->
     <app-empty-state
       [title]="'voting.list.noSessions' | transloco"
       [description]="canManage() ? null : ('voting.list.noSessionsVoterHint' | transloco)"
-    >
-      @if (canManage()) {
-        <p class="max-w-prose text-sm text-fg-muted pointer-coarse:hidden">
-          {{ 'voting.list.noSessionsManagerHint' | transloco }}
-        </p>
-      }
-    </app-empty-state>
+    />
   } @else {
     <!-- Hairline-divided rows, no card per session — same reasoning as the overview: every row is
          the same kind of thing, so a rule separates them better than a stack of rectangles does.
