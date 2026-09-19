@@ -812,6 +812,13 @@ export class UsageStatsPage {
     () => this.selection.selectedItems().length,
   );
 
+  /** Wording for the dock's hidden-by-filter secondary line (Konzept "Auswahl überlebt Suche und
+   *  Filter" 2.2) — only ever read from the template behind `selection.hiddenSelectedCount() > 0`,
+   *  so the "no permanent control" rule (Frontend-Zurückhaltung) lives in the `@if`, not here. */
+  protected readonly hiddenSelectedFilterKey = computed(() =>
+    pluralKey(this.selection.hiddenSelectedCount(), 'usageStats.dock.hiddenByFilter'),
+  );
+
   /**
    * Whether the dock's copy shortcut (Designsprache §8.7, an allowance on revocation rather than a
    * requirement) is disabled.

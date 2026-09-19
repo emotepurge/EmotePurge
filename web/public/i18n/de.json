@@ -641,7 +641,11 @@
     },
     "dock": {
       "marked": "markiert",
-      "projected": "→ {{projected}} von {{capacity}} Slots nach dem Löschen"
+      "projected": "→ {{projected}} von {{capacity}} Slots nach dem Löschen",
+      "hiddenByFilter": {
+        "one": "1 davon durch den Filter ausgeblendet",
+        "other": "{{count}} davon durch den Filter ausgeblendet"
+      }
     },
     "liveDaysInRange": {
       "one": "Im gewählten Zeitraum war der Stream an einem Tag live.",

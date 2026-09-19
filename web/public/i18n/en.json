@@ -641,7 +641,11 @@
     },
     "dock": {
       "marked": "marked",
-      "projected": "→ {{projected}} of {{capacity}} slots after deleting"
+      "projected": "→ {{projected}} of {{capacity}} slots after deleting",
+      "hiddenByFilter": {
+        "one": "1 of them hidden by the filter",
+        "other": "{{count}} of them hidden by the filter"
+      }
     },
     "liveDaysInRange": {
       "one": "In the selected range the stream was live on one day.",

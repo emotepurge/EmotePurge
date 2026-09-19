@@ -859,6 +859,20 @@
             </span>
           }
         </div>
+        <!-- Konzept "Auswahl überlebt Suche und Filter" 2.2: the main count above is the total,
+             marked-but-hidden included — this line only names how many of those the filter is
+             currently hiding, with the way back right next to it. No control when there is
+             nothing hidden (Frontend-Zurückhaltung): the whole row is gated on the count itself. -->
+        @if (selection.hiddenSelectedCount(); as hiddenSelectedCount) {
+          <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted" role="status">
+            <span>
+              {{ hiddenSelectedFilterKey() | transloco: { count: hiddenSelectedCount } }}
+            </span>
+            <button type="button" appButton="outline" (click)="usageFilter.reset()">
+              {{ 'usageStats.resetFilters' | transloco }}
+            </button>
+          </div>
+        }
         <app-mass-delete-panel
           [setId]="setId"
           [channelName]="channelName()"

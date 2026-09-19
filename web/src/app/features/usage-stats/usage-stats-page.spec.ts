@@ -1012,6 +1012,26 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 
+  it('the dock hidden-by-filter row is gated on hiddenSelectedCount and resetting the filter clears it (2.2)', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    // Nothing hidden yet — the template gates the whole row on this, no permanent control
+    // (Frontend-Zurückhaltung).
+    expect(component['selection'].hiddenSelectedCount()).toBe(0);
+
+    component['usageFilter'].setNameFilter('PeepoB');
+    expect(component['selection'].hiddenSelectedCount()).toBe(1);
+    expect(component['hiddenSelectedFilterKey']()).toBe('usageStats.dock.hiddenByFilter.one');
+
+    // The dock's "Filter zurücksetzen" button calls exactly this — the way back the Konzept
+    // requires next to the count (2.2).
+    component['usageFilter'].reset();
+    expect(component['selection'].hiddenSelectedCount()).toBe(0);
+  });
+
   it('marking a band, changing the filter, marking again and clearing the filter unions both groups', () => {
     const dead1 = emote('d1', 'Dead1', 0);
     const dead2 = emote('d2', 'Dead2', 0);
