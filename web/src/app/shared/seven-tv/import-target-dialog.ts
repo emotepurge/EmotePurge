@@ -62,6 +62,7 @@ type TargetSelection = { channelName: string } | null;
                 type="radio"
                 class="h-4 w-4 accent-accent-solid"
                 name="import-scope"
+                [disabled]="data.visibleCount === 0"
                 [checked]="scope() === 'visible'"
                 (change)="scope.set('visible')"
               />
@@ -160,7 +161,7 @@ type TargetSelection = { channelName: string } | null;
         type="button"
         appButton="primary"
         buttonSize="lg"
-        [disabled]="target() === null"
+        [disabled]="target() === null || emptyScopeChosen()"
         (click)="submit()"
       >
         {{ 'import.target.submit' | transloco }}
@@ -181,6 +182,24 @@ export class ImportTargetDialog {
   // away from, so the value set here is also the value the dialog closes with.
   protected readonly scope = signal<ExportScope>(
     this.data.forcedScope ?? (this.data.selectionCount > 0 ? 'selection' : 'visible'),
+  );
+
+  // Row count of whichever scope is actually in force — Konzept "Auswahl überlebt Suche und
+  // Filter" nachtrag (2026-09-19): a filter can leave `visibleCount` at 0 while `selectionCount`
+  // survives it, and the default above already prefers 'selection' whenever it is non-empty, so
+  // this mostly matters for the disabled 'visible' radio and for emptyScopeChosen below.
+  protected readonly scopeRowCount = computed(() =>
+    this.scope() === 'selection' ? this.data.selectionCount : this.data.visibleCount,
+  );
+
+  // Blocks a submit that would start a copy run over zero rows. Deliberately excludes a
+  // caller-forced scope: the dock shortcut that forces 'selection' is already guarded upstream at
+  // two layers (its own button locks at selectionCount === 0 — see import-shortcut.ts — and
+  // openImportTarget's defensive check mirrors that), and import-target-dialog.spec.ts exercises
+  // forcedScope with selectionCount 0 on purpose to prove the scope itself does not silently fall
+  // back — this must not turn that state into a disabled submit.
+  protected readonly emptyScopeChosen = computed(
+    () => this.data.forcedScope === undefined && this.scopeRowCount() === 0,
   );
 
   // No pre-selected target: "Weiter" stays disabled until the user picks one, and the radio itself

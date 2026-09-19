@@ -59,11 +59,16 @@ import { UsageStatsPage } from './usage-stats-page';
  * imports, so this spy sits at the same seam `file-download.spec.ts` already uses (`URL
  * .createObjectURL`, `document.createElement('a')`) rather than mocking the module. What each
  * purpose *serializes* is `usage-export-purposes.spec.ts`'s job; this only pins which download a
- * given dialog choice produces (filename shape + MIME type) and that a cancel produces none.
+ * given dialog choice produces (filename shape + MIME type) and that a cancel produces none. The
+ * `blob` field is the one exception — the "Auswahl" scope's `filtered` flag (Konzept "Auswahl
+ * überlebt Suche und Filter" 2.6) is a decision `usage-stats-page.ts`'s `openExport()` itself makes
+ * (not `usage-export-purposes.ts`, which only serializes whatever `filtered` it is handed), so
+ * pinning it needs the actual JSON body, not just the filename/MIME shape.
  */
 interface CapturedDownload {
   filename: string;
   mimeType: string;
+  blob: Blob;
 }
 
 /** Spies on the same two seams `downloadFile` touches — restore via `vi.restoreAllMocks()` in
@@ -74,7 +79,7 @@ function captureDownloads(): CapturedDownload[] {
     Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
   }
   vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
-    downloads.push({ filename: '', mimeType: (blob as Blob).type });
+    downloads.push({ filename: '', mimeType: (blob as Blob).type, blob: blob as Blob });
     return 'blob:test';
   });
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
@@ -583,7 +588,9 @@ describe('UsageStatsPage — duplicateNames() channel guard and expand-state res
  * #94: a silent reload (`preserveSelection: true`) must reconcile the selection against the
  * emotes it actually loaded, not leave a since-deleted emote's key sitting in `selectedKeys()`
  * forever — and it must not overcorrect by dropping a row that only fell out of the *filtered*
- * view, which is a completely different, already-solved case (`retainVisible()`, S2-16).
+ * view, which is a different case entirely and, since the 2026-09-18 "Auswahl überlebt Suche und
+ * Filter" Konzept, not this class's problem at all any more: a filter change never touches the
+ * selection, full stop.
  *
  * Separate `describe`/`beforeEach` from the block above, matching this spec's own established
  * choice to duplicate mount choreography per scenario rather than share it (see the file doc) —
@@ -716,18 +723,19 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
   });
 
   it('a merely filtered-out but still-loaded emote survives a silent reload and shows no feedback', () => {
-    // This is the case that decides retainAmong(emotes) over retainVisible()/atlasOrder(): 'c'
-    // starts above the min-usage filter, gets selected, and the reload lowers its count below that
-    // same filter — so it drops out of atlasOrder() (the filtered view) while still being part of
-    // the reloaded, unfiltered set. Reconciling against atlasOrder() would wrongly report it as
-    // "gone" (#94); reconciling against the raw reload payload must not.
+    // This is the case that decides retainAmong(emotes) over atlasOrder(): 'c' starts above the
+    // min-usage filter, gets selected, and the reload lowers its count below that same filter — so
+    // it drops out of atlasOrder() (the filtered view) while still being part of the reloaded,
+    // unfiltered set. Reconciling against atlasOrder() would wrongly report it as "gone" (#94);
+    // reconciling against the raw reload payload must not.
     const a = emote('a', 'PeepoA', 10);
     const c = emote('c', 'PeepoC', 10);
 
     mount([a, c]);
 
-    // A min-usage filter of 5 — both emotes currently clear it, so retainVisible() (fired by the
-    // filter change itself, unrelated to the reload below) does not touch the selection made next.
+    // A min-usage filter of 5 — a filter change never touches the selection at all any more
+    // (Konzept "Auswahl überlebt Suche und Filter"), so this is only here to narrow atlasOrder()
+    // for the reload assertion below, not to exercise any pruning of its own.
     component['usageFilter'].setRange(5, null);
     component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
     expect(component['selection'].selectedKeys()).toEqual(['c']);
@@ -744,6 +752,446 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     // from the set, only filtered out of the current view.
     expect(component['selection'].selectedKeys()).toEqual(['c']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
+  });
+});
+
+/**
+ * The 2026-09-19 correction to the "Auswahl überlebt Suche und Filter" Konzept: a live test found
+ * that clearing the selection on a date-range change punished exactly the workflow the whole
+ * Konzept exists for — narrowing or widening the range to check whether a marked-dead emote is
+ * still dead. `rangePreset` is pinned to `'custom'` throughout so `rangeResolved` is trivially true
+ * from the first tick (see its own comment in usage-stats-page.ts) and every request in a test fires
+ * in one `fixture.detectChanges()` instead of the two-tick "all time" placeholder dance the other
+ * describe blocks in this file have to choreograph — the case under test here is the
+ * `previousTotalsChannel` comparison in `loadTotals`, not that placeholder resolution.
+ */
+describe('UsageStatsPage — a date-range change or refresh retains the selection, a channel switch clears it (2026-09-19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    component['rangePreset'].set('custom');
+    component['from'].set('2026-01-01');
+    component['to'].set('2026-01-31');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Mounts channel 'a' with the given totals under the fixed 2026-01-01..2026-01-31 range set in
+   *  beforeEach — all four requests `load()` fires are already pending after the constructor's
+   *  first tick, since a `'custom'` preset never waits on trackedSince to resolve the range. */
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-01-31',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('keeps a selection whose emotes are all still present after a date-range change', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
+    // Same channel as totalsChannel() named after mount() — no active-set request this time (see
+    // requestedSetStatusFor's channel-keyed guard), only a fresh totals/series round trip.
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selectionPrunedFeedback']()).toBeNull();
+  });
+
+  it('prunes a selected emote missing from the new range, with the existing #94 notice', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
+    // 'b' has no usage at all in the narrower window and drops out of the response entirely — a
+    // data-driven removal like any other, reconciled (not treated as a context switch) and
+    // surfaced through the same #94 notice a silent reload would show.
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selectionPrunedFeedback']()).toEqual({
+      key: 'usageStats.selectionPruned.one',
+      count: 1,
+    });
+  });
+
+  it('the refresh button retains the selection like a date-range change, not like a channel switch', () => {
+    const a = emote('a', 'PeepoA');
+    mount([a]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    component['refresh']();
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+  });
+
+  it('clears the selection outright on a channel switch, even when the new channel reuses the same emote id', () => {
+    const a = emote('a', 'PeepoA');
+    mount([a]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/b/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/b/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-b', trackedSince: '2026-01-01T00:00:00Z' }));
+    // Channel b happens to reuse the id 'a' for a wholly unrelated emote — a coincidence the
+    // Konzept's invariant is formal and blind to (Abschnitt 1), which is exactly why a channel
+    // switch is a hard clear() rather than a retainAmong() reconciliation.
+    flushByPath(httpMock, '/api/channels/b/usage-stats/totals', [emote('a', 'UnrelatedEmote')]);
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+});
+
+/**
+ * The core behaviour of the 2026-09-18 "Auswahl überlebt Suche und Filter" Konzept: a filter
+ * change must never touch `selectedKeys` — the old `retainVisible()` (S2-16) is gone without a
+ * replacement, on purpose. What used to prune the selection now only shows up as
+ * `hiddenSelectedCount()`, and every consumer downstream (the delete path, a band's "select all",
+ * a sort-key change) keeps reading the full, unfiltered selection regardless of what the filter
+ * currently hides.
+ */
+describe('UsageStatsPage — the selection survives filter and sort-key changes (2026-09-18)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('a name filter that hides marked rows leaves selectedKeys and the delete path whole, only hiddenSelectedCount rises', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    const c = emote('c', 'PeepoC');
+    mount([a, b, c]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+
+    // Narrows atlasOrder() to just 'b' — both marked rows drop out of view.
+    component['usageFilter'].setNameFilter('PeepoB');
+
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    expect(component['selection'].hiddenSelectedCount()).toBe(2);
+    expect(
+      component['selectedForDelete']()
+        .map((row) => row.emoteId)
+        .sort(),
+    ).toEqual(['a', 'c']);
+    // Both marked rows are filtered out of the current view — DeletableEmote.hidden must say so
+    // for each (Konzept "Auswahl überlebt Suche und Filter" 2.1), feeding the delete-confirm
+    // dialog's hidden-by-filter block.
+    expect(component['selectedForDelete']().every((row) => row.hidden)).toBe(true);
+    expect(component['selectionPrunedFeedback']()).toBeNull();
+  });
+
+  it('the dock hidden-by-filter row is gated on hiddenSelectedCount and resetting the filter clears it (2.2)', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    // Nothing hidden yet — the template gates the whole row on this, no permanent control
+    // (Frontend-Zurückhaltung).
+    expect(component['selection'].hiddenSelectedCount()).toBe(0);
+
+    component['usageFilter'].setNameFilter('PeepoB');
+    expect(component['selection'].hiddenSelectedCount()).toBe(1);
+    expect(component['hiddenSelectedFilterKey']()).toBe('usageStats.dock.hiddenByFilter.one');
+
+    // The dock's "Filter zurücksetzen" button calls exactly this — the way back the Konzept
+    // requires next to the count (2.2).
+    component['usageFilter'].reset();
+    expect(component['selection'].hiddenSelectedCount()).toBe(0);
+  });
+
+  /**
+   * The dock row is created by the same `@if` that fills it, so it cannot announce itself
+   * (docs/UI-Designsprache.md §4.5). Its text is `aria-hidden` and spoken by the permanently
+   * mounted `DockOutcomeAnnouncer` instead — which must say exactly what the dock shows, so this
+   * number mirrors that row's own gates rather than being the raw count.
+   */
+  it('hands the announcer the hidden count only while the dock row that shows it is on screen', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['dockHiddenSelectedCount']()).toBe(0);
+
+    component['usageFilter'].setNameFilter('PeepoB');
+    expect(component['dockHiddenSelectedCount']()).toBe(1);
+
+    // No active 7TV set means no marking half of the dock, so no row — and therefore nothing to
+    // speak, even though the selection is still hidden behind the filter.
+    component['setStatus'].set(null);
+    expect(component['selection'].hiddenSelectedCount()).toBe(1);
+    expect(component['dockHiddenSelectedCount']()).toBe(0);
+  });
+
+  it('marking a band, changing the filter, marking again and clearing the filter unions both groups', () => {
+    const dead1 = emote('d1', 'Dead1', 0);
+    const dead2 = emote('d2', 'Dead2', 0);
+    const heavy = emote('h1', 'Heavy1', 500);
+    mount([dead1, dead2, heavy]);
+
+    // "select all" on the dead band while nothing is filtered.
+    component['selectBand']('dead');
+    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2']);
+
+    // Narrows to the heavy emote (an unrelated band) and marks it too — the filter change above
+    // must not have dropped 'd1'/'d2' for this to still be additive.
+    component['usageFilter'].setNameFilter('Heavy1');
+    component['selection'].onRowClick(heavy, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2', 'h1']);
+
+    component['usageFilter'].reset();
+
+    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2', 'h1']);
+  });
+
+  it('a sort-key change keeps the selection and only resets the shift anchor', () => {
+    const a = emote('a', 'PeepoA', 5);
+    const b = emote('b', 'PeepoB', 10);
+    const c = emote('c', 'PeepoC', 15);
+    mount([a, b, c]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent); // anchor 'a'
+
+    component['setSortKey']('lastUsed');
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    // The anchor is gone — a further shift-click degrades to a plain toggle instead of ranging
+    // from 'a' in the (now differently ordered) list.
+    component['selection'].onRowClick(c, { shiftKey: true } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+  });
+});
+
+/**
+ * The header "Exportieren"/"Übertragen" locks used to read `atlasOrder().length === 0` alone —
+ * the same mistake `retainVisible()` made one level down, fixed by S2-16's own nachtrag: once the
+ * selection survives a filter, an empty *visible* list no longer means an empty *selection*, and
+ * the two buttons must ask about the union of both, not the visible list on its own (see
+ * `exportButtonDisabled`/`transferButtonDisabled` in usage-stats-page.ts for the full reasoning).
+ */
+describe('UsageStatsPage — header export/transfer locks ask about the union, not just what is visible (nachtrag 2026-09-19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('neither button is locked once a filter hides every row but a selection survives underneath it', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['usageFilter'].setNameFilter('does-not-match-anything');
+
+    expect(component['atlasOrder']()).toHaveLength(0);
+    expect(component['selection'].selectedItems()).toHaveLength(1);
+    // The transfer button's other two locks stay at their default "open" state here — this case
+    // is only about the empty-scope half both buttons share.
+    expect(component['arbiter'].activeRun()).toBeNull();
+    expect(component['importScopeCurrent']()).toBe(true);
+
+    expect(component['exportButtonDisabled']()).toBe(false);
+    expect(component['transferButtonDisabled']()).toBe(false);
+  });
+
+  it('locks both buttons when the visible list AND the selection are both empty', () => {
+    mount([]);
+
+    expect(component['atlasOrder']()).toHaveLength(0);
+    expect(component['selection'].selectedItems()).toHaveLength(0);
+
+    expect(component['exportButtonDisabled']()).toBe(true);
+    expect(component['transferButtonDisabled']()).toBe(true);
   });
 });
 
@@ -1091,6 +1539,36 @@ describe('UsageStatsPage — openExport() (#141)', () => {
     // The filename embeds from/to verbatim (usageExportFilename) — proves the download describes
     // the range the rows actually came from, not '2026-03-01'/'2026-03-31' set above.
     expect(downloads[0].filename).toBe(`emotepurge_a_usage_${loadedFrom}_${loadedTo}.csv`);
+  });
+
+  it('the "selection" export scope ignores an active filter and reports filtered = false, unlike "visible" (Konzept 2.6)', async () => {
+    const a = emote('a', 'PeepoA', 50);
+    const b = emote('b', 'PeepoB', 5);
+    mountWithActiveSet([a, b]);
+
+    // Narrows atlasOrder() to just 'a' — 'b' stays marked regardless (Konzept "Auswahl überlebt
+    // Suche und Filter"), which is exactly what this exercises for the export path: the selection
+    // scope must carry 'b' through even though the filter is currently hiding it.
+    component['usageFilter'].setMinCount('10');
+    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+
+    openSpy.mockReturnValue({ closed: of({ optionId: 'usage-json', scope: 'selection' }) });
+    component['openExport']();
+    expect(downloads).toHaveLength(1);
+    const selectionEnvelope = JSON.parse(await downloads[0].blob.text());
+    expect(selectionEnvelope.meta.filtered).toBe(false);
+    expect(selectionEnvelope.rows.map((row: { emoteName: string }) => row.emoteName)).toEqual([
+      'PeepoB',
+    ]);
+
+    openSpy.mockReturnValue({ closed: of({ optionId: 'usage-json', scope: 'visible' }) });
+    component['openExport']();
+    expect(downloads).toHaveLength(2);
+    const visibleEnvelope = JSON.parse(await downloads[1].blob.text());
+    expect(visibleEnvelope.meta.filtered).toBe(true);
+    expect(visibleEnvelope.rows.map((row: { emoteName: string }) => row.emoteName)).toEqual([
+      'PeepoA',
+    ]);
   });
 });
 

@@ -105,7 +105,10 @@ import {
   packAtlasRows,
 } from '../../shared/grid/atlas-grid';
 import { actionDockHasContent } from '../../shared/seven-tv/action-dock';
-import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
+import {
+  DockOutcomeAnnouncer,
+  hiddenByFilterNoticeKey,
+} from '../../shared/seven-tv/dock-outcome-announcer';
 import { ImportFlowDeps, startImportFlow } from '../../shared/seven-tv/import-flow';
 import { ImportProgressSection } from '../../shared/seven-tv/import-progress-section';
 import { importScopeIsCurrent } from '../../shared/seven-tv/import-scope';
@@ -410,11 +413,10 @@ export class UsageStatsPage {
   protected readonly selectionPrunedFeedback = signal<{ key: string; count: number } | null>(null);
   private selectionPrunedFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  // Prune, don't clear (S2-16): narrowing a filter keeps the still-visible part of the selection,
-  // while anything filtered out is dropped so the delete path never holds an off-screen emote.
-  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotal>(() =>
-    this.selection.retainVisible(),
-  );
+  // Survives search and filter (supersedes S2-16, 2026-09-18): a filter change narrows what is on
+  // screen, never what is selected — the filter lost its onChange hook entirely, there is nothing
+  // left for it to call. What used to be pruned here now only shows up as selection.hiddenSelectedCount().
+  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotal>();
 
   protected readonly filteredEmotes = computed(() => this.usageFilter.apply(this.emotes()));
 
@@ -539,7 +541,15 @@ export class UsageStatsPage {
     pluralKey(this.atlasOrder().length, 'emoteCount'),
   );
 
-  protected readonly selection = new ListSelection(this.atlasOrder, (emote) => emote.emoteId);
+  // Display list is atlasOrder() (filtered, sorted, banded — the basis for shift ranges and
+  // visibility); universe is the unfiltered emotes() (Konzept "Auswahl überlebt Suche und Filter"
+  // 1) — selectedItems() resolves against the latter, so a filter change can no longer make a
+  // marked-but-hidden row unresolvable to the delete/export/vote-session run that reads it.
+  protected readonly selection = new ListSelection(
+    this.atlasOrder,
+    (emote) => emote.emoteId,
+    this.emotes,
+  );
 
   /**
    * The cell the inspector is describing, held by id rather than by object: a refetch hands out
@@ -724,14 +734,21 @@ export class UsageStatsPage {
   protected readonly activeIndex = signal(0);
 
   // Resolved items, not selection.selectedKeys(): the delete engine needs sevenTvEmoteId and the
-  // display name, which only the loaded row carries. Safe because every path that removes a row
-  // from the atlas while keeping the page open (filter change, reload, finished delete) clears the
-  // selection — so nothing selected can be missing here.
+  // display name, which only the loaded row carries. selectedItems() resolves against the
+  // unfiltered universe (emotes()), not the filtered atlasOrder(), so a row a name/usage filter is
+  // currently hiding still resolves here and stays part of the run — a filter change no longer
+  // clears or prunes the selection at all (Konzept "Auswahl überlebt Suche und Filter"). What
+  // cannot resolve is a key that was actually removed from emotes() (reload, finished delete),
+  // which retainAmong()/clear() already keep out of selectedKeys() before this ever reads it.
   protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
     this.selection.selectedItems().map((emote) => ({
       emoteId: emote.emoteId,
       sevenTvEmoteId: emote.sevenTvEmoteId,
       name: emote.emoteName,
+      // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
+      // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
+      // hiddenSelectedCount is built from, so the two numbers can never disagree.
+      hidden: !this.selection.isVisible(emote),
     })),
   );
 
@@ -781,20 +798,68 @@ export class UsageStatsPage {
   );
 
   /**
+   * Whether the header "Exportieren" button is disabled — Konzept "Auswahl überlebt Suche und
+   * Filter" nachtrag (2026-09-19). Disabled only when there is nothing at all to act on: the
+   * visible list AND the selection both empty. Used to disable on `atlasOrder().length === 0`
+   * alone, which meant a filter that hid every row locked this out even while a selection built
+   * across several searches survived underneath it — the exact bug this nachtrag fixes, one level
+   * above the same mistake in `retainVisible()`. The dialog itself (`ExportDialog`) is what then
+   * keeps a genuinely empty scope from being chosen or submitted once it opens.
+   */
+  protected readonly exportButtonDisabled = computed(
+    () => this.atlasOrder().length === 0 && this.selection.selectedItems().length === 0,
+  );
+
+  /**
+   * Whether the header "Übertragen" button is disabled — same empty-scope reasoning as
+   * `exportButtonDisabled` above, plus the two locks the push shares with `app-import-trigger`
+   * (see the template comment above both buttons): any of the three 7TV-writing runs active, or
+   * the set status/rows still belonging to the previous channel (`importScopeCurrent`).
+   */
+  protected readonly transferButtonDisabled = computed(
+    () =>
+      (this.atlasOrder().length === 0 && this.selection.selectedItems().length === 0) ||
+      this.arbiter.activeRun() !== null ||
+      !this.importScopeCurrent(),
+  );
+
+  /**
    * Count of the grid selection that would actually be captured by the dock's copy shortcut —
-   * built on `selection.selectedItems()`, NOT the raw `selection.selectedKeys()`. A silent totals
-   * reload (the `usageFlushed`/`channel.synced` live-event path or the sync-recheck poll, both via
-   * `loadTotals(..., { preserveSelection: true })`) can drop rows out of `atlasOrder()` — e.g. an
-   * emote deleted externally, which the totals query filters via `!e.IsArchived` — without ever
-   * touching the raw key set, since `preserveSelection` only skips `selection.clear()`; it does not
-   * reconcile the keys against the new rows. `selectedKeys()` stays at the old size regardless.
-   * Gating the shortcut and its label on the raw key count would let `importShortcutLocked` report
-   * "unlocked" with zero resolvable rows, so a click runs into `openImportTarget`'s
+   * built on `selection.selectedItems()`, the one source every displayed count now reads from
+   * (Konzept "Auswahl überlebt Suche und Filter" 1, "eine Zahl je Knopf, aus einer Quelle"), NOT
+   * the raw `selection.selectedKeys()`. A key that a reload actually dropped from the unfiltered
+   * `emotes()` universe (an emote deleted externally, which the totals query filters via
+   * `!e.IsArchived`) does not resolve here even before `retainAmong()`/`clear()` catch up and prune
+   * `selectedKeys()` itself — so this count can briefly run ahead of a stale key set, never behind
+   * it. A name/usage filter hiding a marked row, by contrast, no longer touches either number at
+   * all. Gating the shortcut and its label on the raw key count would let `importShortcutLocked`
+   * report "unlocked" with zero resolvable rows, so a click runs into `openImportTarget`'s
    * `captured.selection.length === 0` guard and silently does nothing — no dialog, no feedback. If
    * only some rows survive, the label would announce more emotes than the run actually copies.
    */
   protected readonly importShortcutSelectionCount = computed(
     () => this.selection.selectedItems().length,
+  );
+
+  /** Wording for the dock's hidden-by-filter secondary line (Konzept "Auswahl überlebt Suche und
+   *  Filter" 2.2) — only ever read from the template behind `selection.hiddenSelectedCount() > 0`,
+   *  so the "no permanent control" rule (Frontend-Zurückhaltung) lives in the `@if`, not here.
+   *  The key comes from the same helper the announcer uses, so the shown and the spoken sentence
+   *  cannot drift apart. */
+  protected readonly hiddenSelectedFilterKey = computed(() =>
+    hiddenByFilterNoticeKey(this.selection.hiddenSelectedCount()),
+  );
+
+  /**
+   * The same number again, but 0 whenever the dock's hidden-by-filter line is not on screen —
+   * what `DockOutcomeAnnouncer` speaks (docs/UI-Designsprache.md §4.5). The visible line is
+   * `aria-hidden`, so this is the only voice it has, and it must say exactly what is shown: the
+   * line lives behind the dock's `!isCoarse()` gate and behind the marking half's active-set gate,
+   * and a selection is only reachable with a fine pointer in the first place. `dockVisible()` is
+   * implied by an active set plus a non-zero marked count and is therefore not repeated here.
+   */
+  protected readonly dockHiddenSelectedCount = computed(() =>
+    !this.isCoarse() && this.activeEmoteSetId() !== null ? this.selection.hiddenSelectedCount() : 0,
   );
 
   /**
@@ -814,14 +879,15 @@ export class UsageStatsPage {
     }),
   );
 
-  /** Occupied slots after the pending selection would be deleted — the dock's one number. */
+  /** Occupied slots after the pending selection would be deleted — the dock's one number.
+   *  `selectedItems().length`, like every other displayed count (Konzept 1). */
   protected readonly projectedSlots = computed(() => {
     const status = this.setStatus();
     if (status?.capacity == null) {
       return null;
     }
     return {
-      projected: Math.max(status.occupiedSlots - this.selection.selectedKeys().length, 0),
+      projected: Math.max(status.occupiedSlots - this.selection.selectedItems().length, 0),
       capacity: status.capacity,
     };
   });
@@ -1001,11 +1067,11 @@ export class UsageStatsPage {
     // Every key change starts at "most first" again. Carrying an ascending order over to a
     // different column silently answers a question nobody asked twice.
     this.sortDirection.set('desc');
-    // A different sort key reorders the whole grid, and the selection carries shift-range anchors
-    // into that new order — keeping it would let the next shift-click sweep up rows the user never
-    // saw next to each other. Flipping the direction alone reverses a list they are still looking
-    // at, so that keeps the selection (see setSortDirection, which does not clear).
-    this.selection.clear();
+    // A different sort key reorders the whole grid, and a shift-range anchor is a position in the
+    // OLD order — keeping it would let the next shift-click sweep up rows the user never saw next
+    // to each other. The selection itself survives, though (Konzept 2.3, the operator's decision):
+    // the reorder says nothing about which rows are still wanted, only the anchor is stale.
+    this.selection.resetAnchor();
   }
 
   /** Keeps the selection on purpose: reversing a list the user is still looking at does not move
@@ -1277,9 +1343,10 @@ export class UsageStatsPage {
    * choice to that module.
    */
   protected openExport(): void {
-    // Falls back to the live signals only in the state atlasOrder().length === 0 already rules out
-    // for the button that calls this (see the template): before the very first totals response,
-    // totalsChannel()/totalsRange() are still null and there are no rows to mislabel anyway.
+    // Falls back to the live signals only in the state exportButtonDisabled() already rules out:
+    // before the very first totals response both atlasOrder() and the selection are empty, since
+    // selectedItems() resolves against emotes(), which starts as []. totalsChannel()/totalsRange()
+    // are still null in that state, and there are no rows to mislabel anyway.
     const range = this.totalsRange();
     const captured: CapturedExportScope = {
       channelName: this.totalsChannel() ?? this.channelName(),
@@ -1315,7 +1382,11 @@ export class UsageStatsPage {
         emoteSetId: captured.emoteSetId,
         from: captured.from,
         to: captured.to,
-        filtered: captured.filtered,
+        // The filter describes the VISIBLE list, not the content of a selection (Konzept "Auswahl
+        // überlebt Suche und Filter" 2.6): a selection built across several searches can hold rows
+        // the current filter would hide, so `filtered` would be actively misleading about what the
+        // "selection" scope's rows actually are. Only the "visible" scope inherits the filter state.
+        filtered: choice.scope === 'selection' ? false : captured.filtered,
         rows,
         scope: choice.scope,
         trendFor: (row) => this.trendFor(row),
@@ -1474,9 +1545,15 @@ export class UsageStatsPage {
     this.errorMessage.set(null);
     // A selection-pruned notice (#94) names emotes from the *previous* channel/range's selection —
     // this method is the constructor effect's only entry point, so it runs on every channel switch
-    // and every date-range change, and `loadTotals` below already clears the selection outright on
-    // both (see its non-`preserveSelection` branch). A standing notice would otherwise misattribute
-    // itself to whatever channel happens to be on screen when its timeout fires (#94 follow-up P3).
+    // and every date-range change. A channel switch clears the selection outright in `loadTotals`
+    // below (see its non-`preserveSelection` branch), which would otherwise misattribute a standing
+    // notice to whatever channel happens to be on screen when its timeout fires (#94 follow-up P3).
+    // A date-range change or the refresh button does NOT clear since the Konzept "Auswahl überlebt
+    // Suche und Filter" (überarbeitet 2026-09-19): a narrower or wider range is exactly how a user
+    // checks whether a marked emote is still dead, and `loadTotals` reconciles against the new
+    // payload instead — resetting the notice here first still matters, because that reconciliation
+    // may leave nothing pruned (the old notice would otherwise linger for a range it no longer
+    // describes) or produce its own fresh one.
     // The two callers that must NOT lose a just-set notice — the live-reload subscription and the
     // sync-failure recheck poll — both call `loadTotals(..., { preserveSelection: true })` directly
     // and never go through this method, so they are unaffected.
@@ -1622,10 +1699,13 @@ export class UsageStatsPage {
   }
 
   /**
-   * `preserveSelection` and `silent` are what separates a user-triggered load from a pushed one:
-   * a live update must not throw away a half-built delete selection, and must not flash the
-   * skeleton over numbers the user is currently reading. Both default to the loud behaviour, so
-   * every existing caller (initial load, refresh button, sync poll) is unchanged.
+   * `preserveSelection` and `silent` are what separates a *pushed* load (live reload, sync-failure
+   * recheck) from everything else: a pushed update must not throw away a half-built delete
+   * selection, and must not flash the skeleton over numbers the user is currently reading. Neither
+   * flag distinguishes a channel switch from a date-range change/refresh among the *user-triggered*
+   * callers (initial load, range change, refresh button) that leave both unset — see the
+   * `previousTotalsChannel` comparison below for that, and Konzept "Auswahl überlebt Suche und
+   * Filter" (überarbeitet 2026-09-19) Abschnitt 2.3 for why it needs to exist at all.
    */
   private loadTotals(
     channelName: string,
@@ -1638,26 +1718,40 @@ export class UsageStatsPage {
       .pipe(this.latestTotals)
       .subscribe({
         next: (emotes) => {
+          // Read before totalsChannel is overwritten below: this is the last channel whose totals
+          // actually landed, which is exactly what tells a same-channel reload (date-range change,
+          // refresh button — retain) apart from a genuine channel switch (clear) once
+          // `preserveSelection` is off. `null` on the very first load for this component instance
+          // always takes the channel-switch branch, which is correct: there is nothing to retain yet.
+          const previousTotalsChannel = this.totalsChannel();
           this.emotes.set(emotes);
           // Written next to the rows themselves, never before: until this line runs, the grid still
           // shows the previous channel's emotes (see totalsChannel's declaration).
           this.totalsChannel.set(channelName);
           this.totalsRange.set({ from, to });
-          if (options.preserveSelection) {
+          if (options.preserveSelection || previousTotalsChannel === channelName) {
             // Reconciles against the freshly loaded, UNFILTERED `emotes` — not atlasOrder()/
             // retainVisible(), which read the filtered view and would wrongly drop a row that
             // merely fell outside the current min/max-usage or name filter this reload changed the
             // numbers under (#94). `emotes` is the response payload itself, not the signal, so the
             // reconciliation cannot read a half-updated view no matter where the set() calls land.
+            //
+            // The `previousTotalsChannel === channelName` arm is what makes a date-range change and
+            // the refresh button reconcile too, not just a pushed reload: both are a different SIGHT
+            // of the same channel, not a different context, and changing the range is precisely how
+            // a mod checks whether a marked-dead emote is still dead under a wider or narrower
+            // window (live-test finding, 2026-09-19 — the Konzept originally kept these on `clear()`
+            // and was corrected after this feedback). An emote the narrower range does not return is
+            // pruned here like any other data-driven removal, with the existing #94 notice.
             const removedCount = this.selection.retainAmong(emotes);
             if (removedCount > 0) {
               this.showSelectionPrunedFeedback(removedCount);
             }
           } else {
-            // Kept even though a keyed selection survives a plain refetch: load() also runs on a
-            // channel or date-range change, where the existing selection was made against different
-            // numbers (an emote with "0x in 7 days" may be heavily used over 30 days). Carrying it
-            // over would be its own deliberate feature, not a by-product of the keying.
+            // A genuine channel switch: different emotes, different grounding set entirely — nothing
+            // in the old selection can even resolve against the new payload in a meaningful sense
+            // (see the Konzept, same section: an id collision across channels is coincidence, not
+            // continuity), so it is not a pruning case but a hard reset.
             this.selection.clear();
           }
           if (!options.silent) {

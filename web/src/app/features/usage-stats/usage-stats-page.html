@@ -69,12 +69,13 @@
     <h2 class="text-lg font-semibold">{{ 'usageStats.title' | transloco }}</h2>
     <div class="flex flex-wrap items-center gap-2">
       <!-- Header action, mirroring the voting-detail page: export is a command, not a filter.
-           The export dialog itself states that it exports the currently filtered list. -->
+           The export dialog itself states that it exports the currently filtered list.
+           See exportButtonDisabled for the lock. -->
       <button
         type="button"
         appButton="neutral"
         class="disabled:cursor-not-allowed"
-        [disabled]="atlasOrder().length === 0"
+        [disabled]="exportButtonDisabled()"
         [attr.aria-label]="'export.buttonAriaLabel' | transloco"
         (click)="openExport()"
       >
@@ -99,17 +100,17 @@
            new set status does, and loading is over by then. See importScopeIsCurrent. The trigger
            takes that boolean as an input rather than recomputing it, so its lock stays a pure
            function (import-trigger-gate.ts).
-           NOT shared is `atlasOrder().length === 0`: the push sends what the grid holds and has
-           nothing to send while it is empty, whereas every import source brings its own rows and
-           needs no row in the grid at all. -->
+           NOT shared is the empty-scope half of transferButtonDisabled (`atlasOrder().length ===
+           0 && selection.selectedItems().length === 0`, Konzept "Auswahl überlebt Suche und
+           Filter" nachtrag, 2026-09-19): the push sends either the visible grid or the marked
+           selection and has nothing to send only once both are empty, whereas every import source
+           brings its own rows and needs neither a visible row nor a selection to exist. -->
       @if (!isCoarse() && activeEmoteSetId(); as activeSetId) {
         <button
           type="button"
           appButton="neutral"
           class="disabled:cursor-not-allowed"
-          [disabled]="
-            atlasOrder().length === 0 || arbiter.activeRun() !== null || !importScopeCurrent()
-          "
+          [disabled]="transferButtonDisabled()"
           (click)="openImportTarget()"
         >
           {{ 'import.copyButton' | transloco }}
@@ -356,7 +357,7 @@
     <app-slot-budget-bar
       [capacity]="status.capacity"
       [occupied]="status.occupiedSlots"
-      [pendingRemoval]="selection.selectedKeys().length"
+      [pendingRemoval]="selection.selectedItems().length"
     />
   }
 
@@ -823,12 +824,16 @@
   </div>
 </div>
 
-<!-- The screen-reader voice for what the dock below reports (duplicate and resync notices of a
-     restore and of an import). Outside the dock's @if, !isCoarse() included, because the dock mounts
-     and unmounts with its content — a fully refused run is what mounts it — and a status region
-     created in the same pass as its text announces nothing (docs/UI-Designsprache.md §4.5). The
-     notices inside the dock are aria-hidden for that reason. -->
-<app-dock-outcome-announcer [withImport]="true" />
+<!-- The screen-reader voice for what the dock below reports: the duplicate and resync notices of a
+     restore and of an import, and the standing "n davon durch den Filter ausgeblendet" line.
+     Outside the dock's @if, !isCoarse() included, because the dock mounts and unmounts with its
+     content — a fully refused run is what mounts it — and a status region created in the same pass
+     as its text announces nothing (docs/UI-Designsprache.md §4.5). That is just as true of a line
+     inside an already-mounted dock whose own @if creates it together with its sentence, which is
+     why the hidden-by-filter count is spoken here too. Everything the dock shows is aria-hidden
+     for that reason, and dockHiddenSelectedCount() mirrors that line's own gates so this region
+     never says something the dock does not show. -->
+<app-dock-outcome-announcer [withImport]="true" [hiddenSelectedCount]="dockHiddenSelectedCount()" />
 
 <!-- The action bar. It exists only while there is something to act on, which is what allows the
      surface above it to be nothing but emotes. Kept mounted through a settled run as well, because
@@ -845,7 +850,7 @@
       @if (activeEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span class="font-mono text-base font-semibold text-accent-fg">{{
-            selection.selectedKeys().length
+            selection.selectedItems().length
           }}</span>
           <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
             {{ 'usageStats.dock.marked' | transloco }}
@@ -859,6 +864,28 @@
             </span>
           }
         </div>
+        <!-- Konzept "Auswahl überlebt Suche und Filter" 2.2: the main count above is the total,
+             marked-but-hidden included — this line only names how many of those the filter is
+             currently hiding, with the way back right next to it. No control when there is
+             nothing hidden (Frontend-Zurückhaltung): the whole row is gated on the count itself.
+
+             Deliberately not a live region of its own (docs/UI-Designsprache.md §4.5): this row
+             is created by the same @if that fills it, so a role="status" here would announce
+             nothing on most screen reader/browser pairings. The sentence is spoken by the
+             permanently mounted app-dock-outcome-announcer above instead and is therefore
+             aria-hidden here, so it is not read twice. The button is NOT inside that aria-hidden
+             span — hiding a focusable control is its own defect (axe aria-hidden-focus); it keeps
+             the same label as the filter bar's own reset. -->
+        @if (selection.hiddenSelectedCount(); as hiddenSelectedCount) {
+          <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+            <span aria-hidden="true">
+              {{ hiddenSelectedFilterKey() | transloco: { count: hiddenSelectedCount } }}
+            </span>
+            <button type="button" appButton="outline" (click)="usageFilter.reset()">
+              {{ 'usageStats.resetFilters' | transloco }}
+            </button>
+          </div>
+        }
         <app-mass-delete-panel
           [setId]="setId"
           [channelName]="channelName()"
@@ -903,12 +930,12 @@
                 appButton="primary"
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
-                [disabled]="selection.selectedKeys().length === 0"
+                [disabled]="selection.selectedItems().length === 0"
                 (click)="openCreateVoteSession()"
               >
                 {{
                   'usageStats.createVoteSession'
-                    | transloco: { count: selection.selectedKeys().length }
+                    | transloco: { count: selection.selectedItems().length }
                 }}
               </button>
             }

@@ -1,4 +1,4 @@
-import { Dialog } from '@angular/cdk/dialog';
+import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
 import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
@@ -14,6 +14,7 @@ import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { CSV_MIME } from '../export/csv';
 import { JSON_MIME } from '../export/export-envelope';
+import { DeleteConfirmDialog, DeleteConfirmDialogData } from './delete-confirm-dialog';
 import { DeletableEmote, MassDeletePanel } from './mass-delete-panel';
 
 /**
@@ -78,8 +79,8 @@ const CLEAR_LABEL = 'Auswahl aufheben';
 const VOTE_LABEL = 'Zur Abstimmung stellen';
 
 const EMOTES: DeletableEmote[] = [
-  { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' },
-  { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW' },
+  { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', hidden: false },
+  { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', hidden: false },
 ];
 
 @Component({
@@ -1088,5 +1089,167 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     const button = await render(EMOTES);
 
     expect(button.disabled).toBe(false);
+  });
+});
+
+/**
+ * Konzept "Auswahl überlebt Suche und Filter" 2.1/6: the split into a visible and a hidden name
+ * list is this panel's job, not the dialog's — `DeleteConfirmDialog`'s own spec only ever hands it
+ * pre-split fixtures, so a wiring mistake here (e.g. handing the dialog the raw, unsplit selection)
+ * would pass every dialog-only test. 60 visible plus 3 hidden is deliberately past
+ * `NamePreviewList`'s 50-name cap, to prove the hidden block is unaffected by it. Captures the real
+ * `DIALOG_DATA` object `openConfirm()` hands to `Dialog.open(...)` and renders the real
+ * `DeleteConfirmDialog` off it, rather than asserting on the panel's private signals directly.
+ */
+describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm dialog uncapped', () => {
+  const HIDDEN_NAMES = ['HiddenOne', 'HiddenTwo', 'HiddenThree'];
+
+  function buildEmotes(): DeletableEmote[] {
+    const visible: DeletableEmote[] = Array.from({ length: 60 }, (_, index) => ({
+      emoteId: `v${index}`,
+      sevenTvEmoteId: `7tv-v${index}`,
+      name: `Visible${index}`,
+      hidden: false,
+    }));
+    const hidden: DeletableEmote[] = HIDDEN_NAMES.map((name, index) => ({
+      emoteId: `h${index}`,
+      sevenTvEmoteId: `7tv-h${index}`,
+      name,
+      hidden: true,
+    }));
+    return [...visible, ...hidden];
+  }
+
+  // Only the keys DeleteConfirmDialog itself translates, same reasoning as its own spec's
+  // DE_TRANSLATIONS — plus massDelete.deleteButton/clearSelection for the panel's own buttons.
+  const TRANSLATIONS = {
+    common: { cancel: 'Abbrechen' },
+    massDelete: {
+      deleteButton: 'Löschen ({{ count }})',
+      clearSelection: 'Auswahl aufheben',
+      confirmTitle: {
+        one: '{{ count }} Emote von 7TV löschen?',
+        other: '{{ count }} Emotes von 7TV löschen?',
+      },
+      startDelete: 'Löschen starten',
+      checkingSharedSets: 'Prüfe geteilte Sets…',
+      irreversibleNotice:
+        'Das kann nicht rückgängig gemacht werden. Löschen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.',
+      undetectableChannelsNotice:
+        'Hinweis: Fremde Channels, die weder von uns getrackt werden noch von dir moderiert werden, aber ebenfalls dieses Set nutzen, können wir grundsätzlich nicht erkennen.',
+      hiddenByFilter: {
+        one: '1 davon ist durch den aktuellen Filter ausgeblendet.',
+        other: '{{count}} davon sind durch den aktuellen Filter ausgeblendet.',
+      },
+    },
+  };
+
+  let openSpy: ReturnType<typeof vi.fn>;
+  // DIALOG_DATA is resolved once per injector (see delete-confirm-dialog.spec.ts's own render()
+  // comment) — this indirection lets a test capture what openConfirm() actually built before the
+  // dialog component that reads it is created.
+  let dialogData: DeleteConfirmDialogData;
+
+  beforeEach(async () => {
+    openSpy = vi.fn();
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        DeleteConfirmDialog,
+        TranslocoTestingModule.forRoot({
+          langs: { de: TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        {
+          provide: EmoteAdminService,
+          useValue: {
+            getSetWarning: () =>
+              of({
+                available: true,
+                isOwnSet: true,
+                otherTrackedChannelsSharingSet: [],
+                otherModeratedChannelsSharingSet: [],
+              }),
+          } as unknown as EmoteAdminService,
+        },
+        {
+          provide: SevenTvDeleteService,
+          useValue: fakeDeleteService() as unknown as SevenTvDeleteService,
+        },
+        {
+          provide: SevenTvRestoreService,
+          useValue: fakeRestoreService() as unknown as SevenTvRestoreService,
+        },
+        { provide: SevenTvRunArbiter, useValue: fakeRunArbiter() as unknown as SevenTvRunArbiter },
+        {
+          provide: SevenTvTokenService,
+          useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
+        },
+        { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
+        // Only needed once DeleteConfirmDialog itself is instantiated below — resolved lazily via
+        // the factory so each test can shape `dialogData` first, same pattern as
+        // delete-confirm-dialog.spec.ts's own render().
+        { provide: DIALOG_DATA, useFactory: () => dialogData },
+        { provide: DialogRef, useValue: { close: vi.fn() } as unknown as DialogRef<boolean> },
+      ],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+  });
+
+  /** Mounts the panel, triggers openConfirm() and returns what it handed to Dialog.open(...). */
+  function captureDialogData(selectedEmotes: DeletableEmote[]): DeleteConfirmDialogData {
+    const fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    fixture.detectChanges();
+
+    openSpy.mockReturnValue({ closed: of(undefined) });
+    fixture.componentInstance['openConfirm']();
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const [component, config] = openSpy.mock.calls[0] as [unknown, { data: unknown }];
+    expect(component).toBe(DeleteConfirmDialog);
+    return config.data as DeleteConfirmDialogData;
+  }
+
+  it('lists exactly the hidden names in their own uncapped block, even though the visible list hits its 50-name cap', () => {
+    dialogData = captureDialogData(buildEmotes());
+    expect(dialogData.emotes()).toHaveLength(60);
+    expect(dialogData.hiddenEmotes()).toEqual(HIDDEN_NAMES);
+
+    const dialogFixture = TestBed.createComponent(DeleteConfirmDialog);
+    dialogFixture.detectChanges();
+    const host: HTMLElement = dialogFixture.nativeElement;
+
+    const lists = host.querySelectorAll('ul');
+    expect(lists).toHaveLength(2);
+    // The visible list: 50 capped names plus its own "and 10 more" row.
+    expect(lists[0].querySelectorAll('li')).toHaveLength(51);
+    // The hidden block: uncapped, all three named, unaffected by that cap.
+    const hiddenListed = Array.from(lists[1].querySelectorAll('li')).map((li) =>
+      li.textContent?.trim(),
+    );
+    expect(hiddenListed).toEqual(HIDDEN_NAMES);
+
+    // Introduced by the paragraph above the hidden list — deliberately not a live region, see
+    // DeleteConfirmDialog's own template comment and its spec.
+    expect(host.textContent).toContain('3 davon sind durch den aktuellen Filter ausgeblendet.');
+  });
+
+  it('renders no hidden-by-filter block at all when nothing is hidden', () => {
+    dialogData = captureDialogData(EMOTES);
+
+    const dialogFixture = TestBed.createComponent(DeleteConfirmDialog);
+    dialogFixture.detectChanges();
+    const host: HTMLElement = dialogFixture.nativeElement;
+
+    expect(host.querySelectorAll('ul')).toHaveLength(1);
+    expect(host.textContent).not.toContain('durch den aktuellen Filter ausgeblendet');
   });
 });

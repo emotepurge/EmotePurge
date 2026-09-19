@@ -35,6 +35,12 @@ export interface DeletableEmote {
   emoteId: string;
   sevenTvEmoteId: string;
   name: string;
+  /** Whether the host page's current filter hides this emote right now (`!selection.isVisible`).
+   *  Required, not optional (Konzept "Auswahl überlebt Suche und Filter" 2.1, Codex befund 3b):
+   *  this panel has no filter/visibility knowledge of its own and must never silently assume
+   *  "everything is visible" — the delete-confirm dialog's hidden-by-filter block depends on every
+   *  host page actually supplying it. */
+  hidden: boolean;
 }
 
 /**
@@ -224,8 +230,19 @@ export class MassDeletePanel {
 
   private readonly setWarning = signal<EmoteSetWarning | null>(null);
   private readonly warningLoading = signal(false);
-  private readonly selectedEmoteNames = computed(() =>
-    this.selectedEmotes().map((emote) => emote.name),
+  // Split by `hidden` for the delete-confirm dialog (Konzept "Auswahl überlebt Suche und Filter"
+  // 2.1): the visible names keep today's capped preview, the hidden ones get their own, uncapped
+  // block, because a filtered-out delete target must stay identifiable by name right up to the
+  // irreversible action rather than collapsing into "n weitere".
+  private readonly visibleSelectedEmoteNames = computed(() =>
+    this.selectedEmotes()
+      .filter((emote) => !emote.hidden)
+      .map((emote) => emote.name),
+  );
+  private readonly hiddenSelectedEmoteNames = computed(() =>
+    this.selectedEmotes()
+      .filter((emote) => emote.hidden)
+      .map((emote) => emote.name),
   );
 
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next
@@ -461,7 +478,8 @@ export class MassDeletePanel {
     this.loadSetWarning();
 
     const data: DeleteConfirmDialogData = {
-      emotes: this.selectedEmoteNames,
+      emotes: this.visibleSelectedEmoteNames,
+      hiddenEmotes: this.hiddenSelectedEmoteNames,
       warning: this.setWarning.asReadonly(),
       warningLoading: this.warningLoading.asReadonly(),
     };

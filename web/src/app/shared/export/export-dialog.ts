@@ -92,6 +92,7 @@ export const FORMAT_EXPORT_OPTIONS: readonly ExportDialogOption[] = [
                 type="radio"
                 class="h-4 w-4 accent-accent-solid"
                 name="export-scope"
+                [disabled]="data.rowCount === 0"
                 [checked]="scope() === 'visible'"
                 (change)="scope.set('visible')"
               />
@@ -159,7 +160,14 @@ export const FORMAT_EXPORT_OPTIONS: readonly ExportDialogOption[] = [
       >
         {{ 'common.cancel' | transloco }}
       </button>
-      <button dialog-actions type="button" appButton="primary" buttonSize="lg" (click)="submit()">
+      <button
+        dialog-actions
+        type="button"
+        appButton="primary"
+        buttonSize="lg"
+        [disabled]="exportRowCount() === 0"
+        (click)="submit()"
+      >
         {{ 'export.submit' | transloco }}
       </button>
     </app-dialog-shell>
@@ -171,12 +179,25 @@ export class ExportDialog {
 
   // Defaults to the visible list even when a selection exists: the selection also drives
   // mass-delete and vote-session creation, and an export must never silently narrow to it.
-  protected readonly scope = signal<ExportScope>('visible');
+  // Exception (Konzept "Auswahl überlebt Suche und Filter" nachtrag, 2026-09-19): a filter can
+  // leave the visible list empty while the selection survives it, and defaulting to an empty
+  // scope would preselect a radio this dialog then has to disable on the very same render. The
+  // rule stays "prefer visible" — this only breaks the tie when visible has nothing to offer.
+  protected readonly scope = signal<ExportScope>(
+    this.data.rowCount === 0 && this.data.selectionCount !== null && this.data.selectionCount > 0
+      ? 'selection'
+      : 'visible',
+  );
   // options[0] is the preselection (E1) — no second default concept lives here. This keeps "CSV
   // first" for the two callers that pass FORMAT_EXPORT_OPTIONS without the dialog knowing what a
   // "format" is.
   protected readonly optionId = signal<string>(this.data.options[0].id);
 
+  // Doubles as the submit button's lock (see the template): a scope resolving to zero rows would
+  // write an empty file, and the "visible" radio being disabled at rowCount === 0 only stops that
+  // scope from being *chosen* going forward — this also covers the state right after render, before
+  // any click has happened, and the null-selectionCount branch this dialog already treats as
+  // unreachable.
   protected readonly exportRowCount = computed(() => {
     if (this.scope() !== 'selection') {
       return this.data.rowCount;

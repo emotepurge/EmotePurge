@@ -10,6 +10,160 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-19 — The selection survives search and filter changes; the safety moves to the point of action (supersedes S2-16)
+
+**Betrifft:** `web/src/app/shared/selection/list-selection.ts` ·
+`web/src/app/shared/emotes/emote-usage-filter.ts` · `web/src/app/shared/ui/name-preview-list.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/delete-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`web/src/app/shared/export/export-dialog.ts` · `web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-trigger-gate.ts`
+
+**Supersedes the S2-16 half of the 2026-07-30 entry** ("Filterwechsel beschneiden die Auswahl statt
+sie zu löschen"). HandOfBlood's mod team reported that searching resets a running selection — which
+is exactly what S2-16 built: every keystroke in the name filter pruned every key no longer on
+screen. The 2026-07-30 reasoning was that `selectedKeys` is authoritative for the delete path and an
+invisible-but-selected emote must never reach it. That conflated two different things: *state* (what
+is marked) and *safety* (never delete what the user has not seen). Pruning the state was one way to
+get the safety, and it was the wrong one — it also destroyed the state users were deliberately
+building across several searches.
+
+**New contract.** `ListSelection` now keeps two sources: the display list (filtered, ordered — for
+ranges, keyboard navigation and visibility) and an optional unfiltered universe (for resolution;
+defaults to the display list, which keeps the filter-less third consumer, `ForeignEmoteGrid`,
+unchanged). `selectedKeys` changes only through user gestures and through `retainAmong(universe)` on
+a data reload of the *same* context — never through a filter change; `retainVisible()` is gone, and
+so is `EmoteUsageFilter`'s `onChange` hook that used to drive it. Invariant: `selectedKeys ⊆
+keys(universe)`, enforced at every path that writes the universe. Because the invariant is formal and
+blind to a context switch that happens to reuse an emote id, every genuine context switch (channel,
+vote session) still clears outright — that rule sits next to the invariant, not inside it.
+`selectedItems` resolves against the universe and is the single source for every displayed count and
+every run (dock, delete/transfer/vote/export buttons alike). Newly derived: `isVisible(item)` and
+`hiddenSelectedCount`, from the same key set `selectedItems` uses, so the numbers can never disagree.
+
+**A date range is deliberately not a context switch.** A live test on 2026-09-19 found that clearing
+the selection on a range change or on the refresh button punished exactly the workflow this whole
+change exists for — narrowing or widening the range to check whether a marked-dead emote is still
+dead. A range is the same channel under a different window, same as a filter is the same emotes under
+a different view. `usage-stats-page.ts`'s `loadTotals` now tells a range change/refresh apart from an
+actual channel switch by comparing the incoming channel against `totalsChannel()` (the channel the
+last landed totals belong to): equal reconciles via `retainAmong(payload)` with the existing #94
+prune notice for anything the narrower window drops; different clears outright, because a different
+channel is a different grounding set regardless of any coincidental emote-id overlap.
+
+**The vote-session detail page did not clear on a context switch before this change**, and this
+change made the gap worse: `VoteSessionDetailPage` is reused across a direct navigation between
+sessions, but `applyResults()` reconciled the selection unconditionally via
+`retainAmong(results.emotes)` and never cleared — so an emote id that happened to also exist in the
+new session or channel stayed marked, and, once `selectedItems` started resolving against the
+universe instead of the filtered display list, stayed resolvable to the delete run too, not merely
+visually marked. `applyResults()` now keys on `channelName:sessionId` and clears on a mismatch; a
+reload of the same session still reconciles as before.
+
+**The safety moves into the delete confirmation.** `DeletableEmote` gets a required `hidden` flag,
+set by all three consumers of the contract (the two host pages and `MassDeletePanel` itself, which
+splits its selection into a visible and a hidden name list before opening the dialog) from
+`selection.isVisible()` — required, not optional, so the compiler forces both sides to supply it
+rather than the panel silently assuming everything is visible. `NamePreviewList` gets an optional
+`cap` input (default 50, `null` = uncapped). `DeleteConfirmDialog` shows the visible names capped as
+before and, only when something is hidden, a separate **uncapped** block naming every one of them: the
+50-name preview cap would otherwise reduce an off-screen delete target to a bare number right before
+an irreversible action. No opt-in and no second confirmation step — "Löschen (40)" deletes forty; a
+"keep only visible" control was deliberately not built (it would break "one count, one source" and
+the exact workflow the mod team wants). The dialog title keeps counting the whole selection, hidden
+targets included. The usage-stats dock mirrors the same information for its own page: a secondary
+line under the "n marked" count states how many of those the current filter hides, next to the
+existing "Filter zurücksetzen" action, and renders nothing at all when nothing is hidden — the
+voting-detail page has no dock, so it relies on the dialog's block alone. Everything else that
+already cleared the selection (touch mode, a finished run, the silent-reload reconciliation and its
+#94/#133 notice) stays unchanged; a sort-key change now resets only the shift anchor instead of the
+whole selection.
+
+**Verification.** The literal mod-team report — mark cells, type into the name search, keep typing,
+clear the search — is now a Playwright case in `usage-atlas.e2e.spec.ts`: the dock's count never
+moves while typing narrows and re-widens the sheet, the hidden-by-filter secondary line appears and
+names the right count while a mark is off-screen, and both marks are back and pressed once the search
+is cleared. Full design and the seven-question analysis behind these decisions:
+`docs/Konzept-Auswahl-ueberlebt-Filter-2026-09-18.md`.
+
+**Nachtrag (2026-09-19, one level up the same mistake).** A live check found the header row still
+broken the same way `retainVisible()` was: with the filter hiding all 357 emotes and 2 marked, the
+dock correctly offered "Übertragen (2)"/"Zur Abstimmung stellen (2)"/"Löschen (2)", but the header's
+"Exportieren"/"Übertragen" buttons stayed disabled, because both read `atlasOrder().length === 0`
+alone — the visible list, not the union of visible and selected the rest of this change already
+established. Fixed the same way: `usage-stats-page.ts` gets `exportButtonDisabled`/
+`transferButtonDisabled`, disabled only when the visible list **and** the selection are both empty;
+`transferButtonDisabled` keeps its other two locks (an active 7TV run, a stale `importScopeCurrent`)
+exactly as before. `app-import-trigger`'s own lock was already correct and needed no change — it
+never depended on `atlasOrder()` in the first place (`import-trigger-gate.ts`).
+
+Once the visible and the selected scope stopped being the same set, the "Auswahl"/"sichtbare Liste"
+picker in both `ExportDialog` and `ImportTargetDialog` could offer a scope with zero rows — a filter
+narrowing the visible list to nothing while a selection survives it, which is exactly the state the
+header fix above makes reachable. Both dialogs now disable a zero-row scope's radio and refuse to
+submit it: `ExportDialog`'s default (usually "visible") now falls back to "selection" when visible is
+empty; `ImportTargetDialog` already defaulted to "selection" whenever one exists (R12), so it only
+needed the disabled radio and the submit guard. Deliberately excluded from the submit guard: a
+caller-forced scope (the dock's copy shortcut always forces `'selection'`) — that path is already
+guarded upstream, at the shortcut's own lock and a defensive check in `openImportTarget`, and
+`import-target-dialog.spec.ts` deliberately exercises a forced scope with `selectionCount: 0` to prove
+the scope itself never silently falls back; the new guard must not turn that into a disabled submit.
+
+Checked for the same mistake elsewhere and found none: the voting-detail page's own export button
+reads `emotes().length === 0`, but its export dialog is handed `selectionCount: null` (that page
+offers no selection export scope at all, per 2.6), so there is no second set for it to have missed.
+The other `atlasOrder().length === 0` reads left on the page (the "no matches" empty-grid state, the
+distinct-from-this comment in `import-trigger-gate.ts`) describe visibility, not an action lock, and
+are unaffected.
+
+**Nachtrag (2026-09-19, where the new hidden-by-filter messages are announced).** An independent second
+opinion (Codex Sol, P2) found on the new dock secondary line exactly the defect design language §4.5
+warns about: it carried `role="status"` but was created in the same change-detection pass as its own
+text — a live region that mounts together with its content announces **nothing** on most screen
+reader/browser pairings. The implementer had read §4.4 as an argument *against* a permanently mounted
+twin; it is the argument *for* one.
+
+Upstream of that sits the question that comes before choosing a pattern: **"n of your marks are
+currently hidden" is a persisting state, not an acknowledgement.** §4.5's transient pattern (4000 ms,
+then the message clears itself) would therefore be wrong here — it would withdraw a statement that
+still holds for as long as the filter stands. The right one is §4.4's fourth bullet (precedent:
+`create-vote-session-dialog.ts`, #132): the same permanently mounted `sr-only role="status"` twin,
+but **without** self-clearing; the visible line stays for as long as it applies and carries
+`aria-hidden="true"` so the sentence is not read twice. The visible half does not change through
+this — it was already bound to a `computed()`, never to a timer.
+
+**The line is spoken by `DockOutcomeAnnouncer`, not by a third region.** The announcer already stands
+permanently outside every dock gate (`!isCoarse()` included), is already built as a multi-message
+region with `aria-atomic="false"`, and §4.5 itself names several simultaneously speaking regions as
+its own source of error. The line comes first there — the same place it holds in the dock, above the
+mass-delete panel. The page passes the number through as `dockHiddenSelectedCount()`: identical to
+`selection.hiddenSelectedCount()`, but 0 as soon as the dock does not show that line at all (no
+active 7TV set, coarse pointer) — the announcer says exactly what is on screen and nothing beyond it.
+The translation key comes from `hiddenByFilterNoticeKey()` next to `resyncNoticeKey()`, for the same
+reason: the spoken and the shown wording cannot drift apart. The reset button stays **outside** the
+`aria-hidden` span — a focusable element inside a hidden subtree is a defect of its own (axe
+`aria-hidden-focus`).
+
+**In `DeleteConfirmDialog` the hidden-block's `role="status"` is dropped instead, without
+replacement.** It achieves nothing there: the dialog pulls focus into itself and is read out as a
+whole on open, the block is created together with it and could never announce its own arrival anyway.
+The one event it could still fire on — the count changing under an open dialog — would read this one
+sentence while the uncapped name list beside it and the total in the title changed silently, i.e. a
+fragment of the change. On top of that it would be a second status region next to the same dialog's
+amber `ownershipCheckUnavailable` banner. It is a plain paragraph now, carried by its place in the
+reading order between the two lists. That the voting-detail page has no dock changes nothing here —
+per the Konzept it gets this information through exactly this dialog, and the dialog is read out in
+full on open.
+
+Untouched and still open is `run-progress-panel.ts`, the one known instance §4.5 names — the same
+class of defect, but older than this branch and deliberately not taken along here.
+
+---
+
 ### 2026-09-16 — `IVoteSessionService.CreateAsync`'s `S107` finding fixed with a request record, not a filter
 
 **Betrifft:** `src/EmotePurge.Core/Services/IVoteSessionService.cs` · `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` · `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs`
@@ -6943,6 +7097,10 @@ Restrisiko, bewusst akzeptiert: bei N getrackten Channels mit hoher 7TV-Aktivit�
 **Befund des UI/UX-Audits vom 2026-07-30:** Vote-Session-, My-Votings- und Channel-Karten sahen wie klickbare Karten aus, reagierten aber nur auf einen ~24 px hohen Titel-Link bzw. einen kleinen „Öffnen"-Button — inkonsistent zu den vollflächig klickbaren Emote-Karten. Jetzt gilt für alle Listen-Karten das **Stretched-Link-Pattern** (Heydon Pickerings „Inclusive Components: Cards", auch Bootstrap `.stretched-link`): Der Titel- bzw. „Öffnen"-Link bleibt der einzige echte Link (Screenreader hören weiter nur den kurzen Namen), ein `::after`-Pseudoelement der neuen globalen Utility-Klasse `.app-card-link` dehnt seine Klickfläche über die ganze Karte. **Vertrag der Klasse:** Kartencontainer ist `relative`, jede Sekundäraktion in der Karte (Link kopieren, Beenden, Löschen, Bot reaktivieren) liegt per `relative z-10` über dem Overlay und bleibt separat klick- und fokussierbar. Bewusst **nicht** gewählt: die ganze Karte in ein `<a>` wrappen (ungültig bei verschachtelten Buttons, unbrauchbar langer Accessible Name) oder ein JS-Klick-Handler auf der Karte (müsste Textauswahl erkennen, hilft Tastaturnutzern nicht). Karten zeigen Hover-Feedback (`hover:bg-slate-800/70`), damit die Klickbarkeit sichtbar ist; auf der Overview ist „Öffnen" dafür vom `<button (click)>` zum `<a routerLink>` geworden (e2e-Selektor entsprechend `getByRole('link')`). Die Sekundäraktionen der Vote-Session-Karten sind zugleich von 20-px-Textlinks auf echte Buttons ≥ 32 px angehoben, „Löschen" rechts abgesetzt.
 
 ### 2026-07-30 — `SegmentedControl` als erster `shared/ui/`-Baustein; Filterwechsel beschneiden die Auswahl statt sie zu löschen (S2-16)
+
+> **Superseded on 2026-09-19** (the S2-16 half only — the `SegmentedControl` half stands): pruning
+> the selection on every filter change was reverted, and the safety it was protecting moved to the
+> delete-confirmation dialog instead — see the 2026-09-19 entry above.
 
 **Betrifft:** `web/src/app/shared/ui/segmented-control.ts` · `web/src/app/shared/selection/list-selection.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/voting/vote-session-detail-page.ts`
 

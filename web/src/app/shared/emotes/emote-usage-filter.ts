@@ -49,9 +49,6 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
     return query.trim() === '' ? null : globToRegExp(query);
   });
 
-  /** Called after every filter change — hosts typically use this to clear stale selections. */
-  constructor(private readonly onChange: () => void = () => {}) {}
-
   apply(items: readonly T[], now: Date = new Date()): T[] {
     const min = this.minCount();
     const max = this.maxCount();
@@ -69,18 +66,15 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
   setMinCount(value: string): void {
     const parsed = value.trim() === '' ? null : Number(value);
     this.minCount.set(parsed === null || Number.isNaN(parsed) ? null : parsed);
-    this.onChange();
   }
 
   setMaxCount(value: string): void {
     const parsed = value.trim() === '' ? null : Number(value);
     this.maxCount.set(parsed === null || Number.isNaN(parsed) ? null : parsed);
-    this.onChange();
   }
 
   setNameFilter(value: string): void {
     this.nameFilter.set(value);
-    this.onChange();
   }
 
   /**
@@ -94,7 +88,6 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
   setRange(min: number | null, max: number | null): void {
     this.minCount.set(min);
     this.maxCount.set(max);
-    this.onChange();
   }
 
   /**
@@ -105,7 +98,6 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
    */
   toggleHideObserved(): void {
     this.hideObserved.update((active) => !active);
-    this.onChange();
   }
 
   /** True whenever any filter would exclude items — the empty state uses this to offer a reset. */
@@ -123,6 +115,5 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
     this.maxCount.set(null);
     this.nameFilter.set('');
     this.hideObserved.set(false);
-    this.onChange();
   }
 }
