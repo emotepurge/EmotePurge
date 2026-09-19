@@ -201,15 +201,14 @@ of ballot: the whole emote set, dynamically. The curated ballot — the one asse
 on the usage page — was reachable only through a sentence of body text underneath the form
 (`voting.list.wholeSetHintLink`, "Nur bestimmte Emotes zur Wahl stellen?"). The hierarchy was
 inverted: the prominent, zero-friction path produced the result nobody wants, and the wanted path
-was a link saying "do it somewhere else". For HandOfBlood's ~900 emotes a whole-set ballot is not a
-feature, it is a wall of cells. For a small channel it would be defensible, and that is where the honest accounting belongs. The
-whole set is in fact reachable in one click — the same branch adds a mark-all control to the usage
-toolbar whose scope is the current filtered view, and with no filter active that view is the whole
-set. What it produces, though, is a fixed ballot of `VoteSessionEmote` rows, not the dynamic one
-`emoteIds: null` creates. So what is given up is narrower than "voting over everything", and it
-deserves its exact name: the ballot that keeps growing with the set after it has been called. It
-goes because a cleanup vote is a decision about the emotes that exist when it is called, not a
-standing referendum.
+was a link saying "do it somewhere else". For HandOfBlood's ~900 emotes a whole-set ballot is not a feature, it is a wall of cells. For a
+small channel it would be defensible, and that is where the honest accounting belongs. The whole set
+is in fact reachable in one click — the same branch adds a mark-all control to the usage toolbar
+whose scope is the current filtered view, and with no filter active that view is the whole set. What
+it produces, though, is a fixed ballot of `VoteSessionEmote` rows, not the dynamic
+one `emoteIds: null` creates. So what is given up is narrower than "voting over everything", and it deserves its
+exact name: the ballot that keeps growing with the set after it has been called. It goes because a
+cleanup vote is a decision about the emotes that exist when it is called, not a standing referendum.
 
 **The form is gone. The API contract is not.** `emoteIds: null` still means "whole set, dynamic
 ballot" in `CreateVoteSessionRequest`, `VoteSessionCreateRequest` and
