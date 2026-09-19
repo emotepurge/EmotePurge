@@ -196,33 +196,41 @@ test.describe('touch: reading and voting only', () => {
     await expect(page.locator('#app-dialog-title')).toHaveText('catJAM');
   });
 
-  // Creating a session survives on a coarse pointer on purpose: it writes to our own database, not
-  // to 7TV, so the contract this file guards does not reach it — and it is the errand a mod runs
-  // from the couch. What cannot survive beside it is the link offering a curated ballot: that
-  // ballot is assembled from a selection on the usage-stats page, and the dock carrying it is
-  // `!isCoarse()`-gated. The page stays reachable, so this is not broken navigation but a question
-  // its destination cannot answer here.
-  test('the create form keeps its whole-set hint and trades the link for where curation lives', async ({
+  // The create entry point in the page header survives on a coarse pointer only as a sentence, not
+  // as the link: creating a session writes to our own database, not to 7TV, so the contract this
+  // file guards does not reach it directly — but the destination it would link to (the usage-stats
+  // atlas's marking + dock) is itself `!isCoarse()`-gated, so a mod on a phone has nowhere to land.
+  // The page stays reachable, so this is not broken navigation but a question its destination
+  // cannot answer here (docs/UI-Designsprache.md §8.7, vote-session-list-page.html's header).
+  test('the header entry point trades the create link for a desktop-only note on a coarse pointer', async ({
     page,
   }) => {
     await mockVoteSessionList(page, 'sensitron', []);
     await page.goto('/channels/sensitron/vote-sessions');
 
-    await expect(page.getByRole('heading', { name: 'Neue Abstimmung erstellen' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Abstimmungen' })).toBeVisible();
     // Counted before it is asserted hidden: toBeHidden() also passes for an element that is not in
     // the DOM at all, so on its own it would greenlight the link being deleted outright. The pair
     // says what is meant — still rendered, and `pointer-coarse:hidden` is what takes it out of
     // sight and out of the accessibility tree.
-    const curationLink = page.locator(
+    const entryLink = page.locator(
       'a[href="/channels/sensitron/usage-stats"].pointer-coarse\\:hidden',
     );
-    await expect(curationLink).toHaveCount(1);
-    await expect(curationLink).toHaveText('Nur bestimmte Emotes zur Wahl stellen?');
-    await expect(curationLink).toBeHidden();
+    await expect(entryLink).toHaveCount(1);
+    await expect(entryLink).toHaveText('Abstimmung erstellen');
+    await expect(entryLink).toBeHidden();
     // The replacement is the reverse pair (`hidden pointer-coarse:inline`); asserting the literal
     // German also fails if the key is missing from de.json, since Transloco renders the key path.
     await expect(
-      page.getByText('Eine Vorauswahl einzelner Emotes triffst du am Rechner.'),
+      page.getByText('Abstimmungen erstellst du am Rechner, auf der Nutzungsseite.'),
+    ).toBeVisible();
+
+    // The empty state's own how-to is a separate concern from the header note above (§8.7's header
+    // vs. flow split) — a manager gets both, not one instead of the other.
+    await expect(
+      page.getByText(
+        'Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“. Die Abstimmung erscheint danach hier.',
+      ),
     ).toBeVisible();
   });
 });
