@@ -261,6 +261,45 @@ describe('ExportDialog', () => {
     });
   });
 
+  // Konzept "Auswahl überlebt Suche und Filter" nachtrag (2026-09-19): once the selection survives
+  // a filter, the visible list and the selection are independent, and a filter narrowing the
+  // visible list to zero must not leave an empty, submittable "sichtbare Liste (0)" scope behind.
+  describe('empty-scope guard (nachtrag 2026-09-19)', () => {
+    it('preselects "selection" and disables the "visible" radio when the visible list is empty but the selection is not', () => {
+      const dialog = render(defaultData({ rowCount: 0, selectionCount: 5 }));
+
+      const [visible, selection] = dialog.scopeInputs();
+      expect(visible.disabled).toBe(true);
+      expect(visible.checked).toBe(false);
+      expect(selection.disabled).toBe(false);
+      expect(selection.checked).toBe(true);
+      expect(dialog.rowCountText()).toBe('5 Zeilen');
+    });
+
+    it('submits the selection scope in that state, never the empty visible one', () => {
+      const dialog = render(defaultData({ rowCount: 0, selectionCount: 5 }));
+
+      dialog.button(SUBMIT).click();
+
+      expect(closed).toEqual([{ optionId: 'csv', scope: 'selection' }]);
+    });
+
+    it('still prefers "visible" as the default once both scopes have rows', () => {
+      const dialog = render(defaultData({ rowCount: 10, selectionCount: 5 }));
+
+      const [visible, selection] = dialog.scopeInputs();
+      expect(visible.disabled).toBe(false);
+      expect(visible.checked).toBe(true);
+      expect(selection.checked).toBe(false);
+    });
+
+    it('disables submit outright when the resolved scope has zero rows (defensive — the header button and the default above already keep this state out of reach)', () => {
+      const dialog = render(defaultData({ rowCount: 0, selectionCount: 0 }));
+
+      expect(dialog.button(SUBMIT).disabled).toBe(true);
+    });
+  });
+
   describe('submit / cancel', () => {
     it('closes with the chosen optionId and scope on submit', () => {
       const dialog = render(defaultData({ options: MIXED_OPTIONS, selectionCount: 4 }));

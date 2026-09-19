@@ -288,6 +288,39 @@ describe('ImportTargetDialog', () => {
     });
   });
 
+  // Konzept "Auswahl überlebt Suche und Filter" nachtrag (2026-09-19): the same empty-scope guard
+  // as ExportDialog's, for the push's own scope radiogroup.
+  describe('empty-scope guard (nachtrag 2026-09-19)', () => {
+    it('disables the "visible" radio when the visible list is empty but a selection survives it — "selection" is already the default (R12)', async () => {
+      const dialog = render(defaultData({ visibleCount: 0, selectionCount: 5 }));
+      await resolve(dialog, 0, channelsResult());
+
+      expect(dialog.scopeInput('visible').disabled).toBe(true);
+      expect(dialog.scopeInput('visible').checked).toBe(false);
+      expect(dialog.scopeInput('selection').checked).toBe(true);
+    });
+
+    it('disables "Weiter" when the resolved scope has zero rows, even with a target chosen (defensive — the header button already keeps this state out of reach)', async () => {
+      const dialog = render(defaultData({ visibleCount: 0, selectionCount: 0 }));
+      await resolve(dialog, 0, channelsResult({ channels: [channel({ isBroadcaster: true })] }));
+
+      dialog.channelInput('chan')?.click();
+      dialog.detect();
+
+      expect(dialog.button(SUBMIT).disabled).toBe(true);
+    });
+
+    it('does not extend that lock to a caller-forced scope — the dock shortcut is already guarded upstream instead', async () => {
+      const dialog = render(defaultData({ selectionCount: 0, forcedScope: 'selection' }));
+      await resolve(dialog, 0, channelsResult({ channels: [channel({ isBroadcaster: true })] }));
+
+      dialog.channelInput('chan')?.click();
+      dialog.detect();
+
+      expect(dialog.button(SUBMIT).disabled).toBe(false);
+    });
+  });
+
   describe('post-load notice — exclusive, ranked reauthRequired > loadFailed > listIncomplete (§7.2)', () => {
     it('shows only the reauth warning, and hides the channel radiogroup and the "none" placeholder', async () => {
       const dialog = render();
