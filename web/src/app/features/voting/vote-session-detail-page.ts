@@ -334,6 +334,10 @@ export class VoteSessionDetailPage {
       emoteId: emote.emoteId,
       sevenTvEmoteId: emote.sevenTvEmoteId,
       name: emote.emoteName,
+      // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
+      // Suche und Filter" 2.1/3) — this page has no dock counter of its own, so the dialog is the
+      // only place this ever surfaces.
+      hidden: !this.selection.isVisible(emote),
     })),
   );
 

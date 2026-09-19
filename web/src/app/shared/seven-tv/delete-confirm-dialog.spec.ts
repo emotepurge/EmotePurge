@@ -32,6 +32,10 @@ const DE_TRANSLATIONS = {
       'Das kann nicht rückgängig gemacht werden. Löschen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.',
     undetectableChannelsNotice:
       'Hinweis: Fremde Channels, die weder von uns getrackt werden noch von dir moderiert werden, aber ebenfalls dieses Set nutzen, können wir grundsätzlich nicht erkennen.',
+    hiddenByFilter: {
+      one: '1 davon ist durch den aktuellen Filter ausgeblendet.',
+      other: '{{count}} davon sind durch den aktuellen Filter ausgeblendet.',
+    },
   },
 };
 
@@ -67,12 +71,14 @@ const CHECK_FAILED_LOOKS_ALARMING: EmoteSetWarning = {
 interface RenderOptions {
   warning?: EmoteSetWarning | null;
   warningLoading?: boolean;
+  hiddenEmotes?: string[];
 }
 
 interface Harness {
   fixture: ComponentFixture<DeleteConfirmDialog>;
   warning: WritableSignal<EmoteSetWarning | null>;
   warningLoading: WritableSignal<boolean>;
+  hiddenEmotes: WritableSignal<string[]>;
   detect(): void;
   text(): string;
   button(label: string): HTMLButtonElement;
@@ -130,8 +136,9 @@ describe('DeleteConfirmDialog', () => {
       options.warning === undefined ? OWN_SET : options.warning,
     );
     const warningLoading = signal(options.warningLoading ?? false);
+    const hiddenEmotes = signal(options.hiddenEmotes ?? []);
 
-    dialogData = { emotes, warning, warningLoading };
+    dialogData = { emotes, hiddenEmotes, warning, warningLoading };
 
     const fixture = TestBed.createComponent(DeleteConfirmDialog);
     fixture.detectChanges();
@@ -145,6 +152,7 @@ describe('DeleteConfirmDialog', () => {
       fixture,
       warning,
       warningLoading,
+      hiddenEmotes,
       detect: () => fixture.detectChanges(),
       text: () => host.textContent ?? '',
       button: (label) => {
@@ -274,6 +282,46 @@ describe('DeleteConfirmDialog', () => {
       // And it blocks nothing — an unavailable check only downgrades the finding, per the dialog's
       // own comment ("Colour here means *this run is unusual*, nothing else").
       expect(dialog.button(START_DELETE).disabled).toBe(false);
+    });
+  });
+
+  describe('hidden-by-filter block (Konzept "Auswahl überlebt Suche und Filter" 2.1)', () => {
+    it('is absent when nothing is hidden', () => {
+      const dialog = render();
+
+      expect(dialog.roleElements('status')).toHaveLength(0);
+      expect(dialog.text()).not.toContain('durch den aktuellen Filter ausgeblendet');
+    });
+
+    it('names every hidden target, findable by role and then by text, once something is hidden', () => {
+      const dialog = render({ hiddenEmotes: ['Foo', 'Bar', 'Baz'] });
+
+      // role="status" carries no accessible name of its own — find it by role first, then read
+      // its text, not the other way round.
+      const statuses = dialog.roleElements('status');
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0].textContent).toContain(
+        '3 davon sind durch den aktuellen Filter ausgeblendet.',
+      );
+      // The three names are listed next to the notice, not merely counted.
+      expect(dialog.text()).toContain('Foo');
+      expect(dialog.text()).toContain('Bar');
+      expect(dialog.text()).toContain('Baz');
+    });
+
+    it('uses the singular wording for exactly one hidden target', () => {
+      const dialog = render({ hiddenEmotes: ['Foo'] });
+
+      expect(dialog.roleElements('status')[0].textContent).toContain(
+        '1 davon ist durch den aktuellen Filter ausgeblendet.',
+      );
+    });
+
+    it('counts the title over every marked emote, hidden ones included', () => {
+      const dialog = render({ hiddenEmotes: ['Foo', 'Bar'] });
+
+      // render()'s default visible fixture is ['Kappa', 'PogU'] (2) + 2 hidden = 4.
+      expect(dialog.text()).toContain('4 Emotes von 7TV löschen?');
     });
   });
 });

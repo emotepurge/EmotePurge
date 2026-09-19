@@ -742,6 +742,10 @@ export class UsageStatsPage {
       emoteId: emote.emoteId,
       sevenTvEmoteId: emote.sevenTvEmoteId,
       name: emote.emoteName,
+      // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
+      // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
+      // hiddenSelectedCount is built from, so the two numbers can never disagree.
+      hidden: !this.selection.isVisible(emote),
     })),
   );
 

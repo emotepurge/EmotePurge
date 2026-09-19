@@ -913,6 +913,10 @@
     "ownershipCheckUnavailable": "We couldn't check right now whether this set really belongs to this channel — please verify on 7tv.app yourself before deleting.",
     "irreversibleNotice": "This can't be undone. Deletion then runs automatically, one emote at a time, with a short delay between each.",
     "undetectableChannelsNotice": "Note: we generally can't detect other channels that use this same set but aren't tracked by us or moderated by you.",
+    "hiddenByFilter": {
+      "one": "1 of them is hidden by the current filter.",
+      "other": "{{count}} of them are hidden by the current filter."
+    },
     "startDelete": "Start deleting",
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were deleted on 7TV, but EmotePurge could not record it. This usually resolves itself within a minute.",

@@ -1005,6 +1005,10 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
         .map((row) => row.emoteId)
         .sort(),
     ).toEqual(['a', 'c']);
+    // Both marked rows are filtered out of the current view — DeletableEmote.hidden must say so
+    // for each (Konzept "Auswahl überlebt Suche und Filter" 2.1), feeding the delete-confirm
+    // dialog's hidden-by-filter block.
+    expect(component['selectedForDelete']().every((row) => row.hidden)).toBe(true);
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 

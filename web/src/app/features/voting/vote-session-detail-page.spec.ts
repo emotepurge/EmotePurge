@@ -283,6 +283,9 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
         .map((row) => row.emoteId)
         .sort(),
     ).toEqual(['a', 'c']);
+    // Both marked rows are filtered out of the current view — DeletableEmote.hidden must say so
+    // for each (Konzept "Auswahl überlebt Suche und Filter" 2.1/3).
+    expect(component['selectedForDelete']().every((row) => row.hidden)).toBe(true);
   });
 
   it('a silent reload that loses nothing selected leaves the selection alone', () => {

@@ -13,7 +13,13 @@ import { NoticeBanner } from '../ui/notice-banner';
 /** Live view onto the host panel's state: the warning check finishes while the dialog is open,
  *  so the dialog reads the panel's signals instead of taking a snapshot. */
 export interface DeleteConfirmDialogData {
+  /** The visible names — same capped preview as before (Konzept "Auswahl überlebt Suche und
+   *  Filter" 2.1: they are on screen already, so the 50-name cap costs nothing here). */
   emotes: Signal<string[]>;
+  /** Names the host page's current filter hides right now. Shown in their own, uncapped block —
+   *  this is the safety-relevant half: every target the user cannot currently see must still be
+   *  identifiable by name right before the irreversible run. */
+  hiddenEmotes: Signal<string[]>;
   warning: Signal<EmoteSetWarning | null>;
   warningLoading: Signal<boolean>;
 }
@@ -30,8 +36,23 @@ export interface DeleteConfirmDialogData {
   selector: 'app-delete-confirm-dialog',
   imports: [Button, DialogShell, NamePreviewList, NoticeBanner, TranslocoPipe],
   template: `
-    <app-dialog-shell [dialogTitle]="titleKey() | transloco: { count: data.emotes().length }">
+    <app-dialog-shell [dialogTitle]="titleKey() | transloco: { count: totalCount() }">
       <app-name-preview-list [names]="data.emotes()" />
+
+      <!-- Uncapped on purpose (Konzept "Auswahl überlebt Suche und Filter" 2.1): the 50-name cap
+           above is fine because those names are on screen already, but a target the current
+           filter is hiding must stay identifiable by name right up to this irreversible action —
+           reducing it to a bare number here would be exactly the S2-16 safety gap this dialog
+           exists to close. role="status" so it is findable by role and text like the notices
+           below, even though — like those — it does not announce its own first mount. -->
+      @if (data.hiddenEmotes().length > 0) {
+        <div class="flex flex-col gap-2">
+          <p role="status" class="text-sm text-fg-secondary">
+            {{ hiddenByFilterKey() | transloco: { count: data.hiddenEmotes().length } }}
+          </p>
+          <app-name-preview-list [names]="data.hiddenEmotes()" [cap]="null" />
+        </div>
+      }
 
       @if (hasSharedSetWarning(); as warning) {
         <app-notice-banner variant="error">
@@ -106,8 +127,18 @@ export class DeleteConfirmDialog {
   protected readonly data = inject<DeleteConfirmDialogData>(DIALOG_DATA);
   protected readonly dialogRef = inject<DialogRef<boolean>>(DialogRef);
 
+  // The title counts every marked emote, hidden ones included — only the body's two lists split
+  // by visibility (Konzept "Auswahl überlebt Suche und Filter" 2.1).
+  protected readonly totalCount = computed(
+    () => this.data.emotes().length + this.data.hiddenEmotes().length,
+  );
+
   protected readonly titleKey = computed(() =>
-    pluralKey(this.data.emotes().length, 'massDelete.confirmTitle'),
+    pluralKey(this.totalCount(), 'massDelete.confirmTitle'),
+  );
+
+  protected readonly hiddenByFilterKey = computed(() =>
+    pluralKey(this.data.hiddenEmotes().length, 'massDelete.hiddenByFilter'),
   );
 
   // Only surface the alarming (red) block when the check actually *ran* and found something to

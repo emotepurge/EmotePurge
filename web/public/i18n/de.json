@@ -913,6 +913,10 @@
     "ownershipCheckUnavailable": "Wir konnten gerade nicht prüfen, ob dieses Set wirklich diesem Channel gehört — bitte vor dem Löschen selbst auf 7tv.app kontrollieren.",
     "irreversibleNotice": "Das kann nicht rückgängig gemacht werden. Löschen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
     "undetectableChannelsNotice": "Hinweis: Fremde Channels, die weder von uns getrackt werden noch von dir moderiert werden, aber ebenfalls dieses Set nutzen, können wir grundsätzlich nicht erkennen.",
+    "hiddenByFilter": {
+      "one": "1 davon ist durch den aktuellen Filter ausgeblendet.",
+      "other": "{{count}} davon sind durch den aktuellen Filter ausgeblendet."
+    },
     "startDelete": "Löschen starten",
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
