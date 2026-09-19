@@ -878,10 +878,17 @@
            not around the whole bar. -->
       @if (activeEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span class="font-mono text-base font-semibold text-accent-fg">{{
+          <!-- Spoken by the permanently mounted app-dock-outcome-announcer above instead
+               (dockMarkedCount(), docs/UI-Designsprache.md §4.5) — aria-hidden here so the count
+               is not read twice. Both spans only, never `projectedSlots()` below: that line is
+               not spoken by the announcer and stays in the accessibility tree. -->
+          <span aria-hidden="true" class="font-mono text-base font-semibold text-accent-fg">{{
             selection.selectedItems().length
           }}</span>
-          <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
+          <span
+            aria-hidden="true"
+            class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase"
+          >
             {{ 'usageStats.dock.marked' | transloco }}
           </span>
           @if (projectedSlots(); as slots) {

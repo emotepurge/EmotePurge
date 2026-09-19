@@ -1886,3 +1886,115 @@ describe('UsageStatsPage — mark-all does not exist on a coarse pointer (2026-0
     expect(component['showMarkAll']()).toBe(false);
   });
 });
+
+/**
+ * Codex P2 (independent review): the dock's marked-count row (`selection.selectedItems().length`
+ * next to the `usageStats.dock.marked` label) is spoken by the permanently mounted
+ * `app-dock-outcome-announcer` above the dock (`dockMarkedCount()`, docs/UI-Designsprache.md §4.5)
+ * — same defect and same fix as the hidden-by-filter row right below it (2.2/§4.5), which this
+ * branch found already correctly `aria-hidden`. The two lines must therefore both be pulled from
+ * the accessibility tree, exactly like that precedent, while `usageStats.dock.projected` — not
+ * covered by the announcer at all — has to stay reachable. The real template is rendered
+ * (not the two-`<div>` stub most describe blocks in this file use) because this is markup wiring,
+ * not component logic; located via the `app-dock-outcome-announcer` element and DOM structure, not
+ * a CSS class, per Regel 12 ("Accessibility-Semantik").
+ */
+describe("UsageStatsPage — the dock's marked-count row is hidden from the accessibility tree, the projected-slots line is not (Codex P2)", () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      // Default capacity/occupiedSlots (600/10, see setStatus() above) — projectedSlots() only
+      // renders its line once capacity is non-null, and this is what supplies it.
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('marks the count and its label aria-hidden, and leaves the projected-slots line out of that group', () => {
+    // A real (non-empty) imageUrl: this describe block renders the actual template, unlike most of
+    // this file's stub-template blocks, so the sprite's NgOptimizedImage directive now actually
+    // runs and rejects the shared emote() helper's default '' (NG02952).
+    const a = { ...emote('a', 'PeepoA'), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' };
+    mount([a]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    expect(component['dockVisible']()).toBe(true);
+    // No filter is active, so the hidden-by-filter row (2.2) does not render between the
+    // marked-count row and app-mass-delete-panel — the structural assumption the indices below
+    // depend on.
+    expect(component['selection'].hiddenSelectedCount()).toBe(0);
+
+    // Located by the announcer's element, not a CSS class: it is the one other thing the design
+    // language ties to this row (§4.5), and it is a stable sibling of the dock regardless of the
+    // dock's own utility classes.
+    const announcer = fixture.nativeElement.querySelector('app-dock-outcome-announcer');
+    expect(announcer).not.toBeNull();
+    const dock = announcer!.nextElementSibling as HTMLElement | null;
+    expect(dock).not.toBeNull();
+
+    const markedRow = dock!.children[0]?.children[0] as HTMLElement | undefined;
+    expect(markedRow).not.toBeUndefined();
+    const [countSpan, labelSpan, projectedSpan] = Array.from(markedRow!.children) as HTMLElement[];
+
+    // The count and its label: pulled from the tree, DockOutcomeAnnouncer is their only voice.
+    expect(countSpan.getAttribute('aria-hidden')).toBe('true');
+    expect(labelSpan.getAttribute('aria-hidden')).toBe('true');
+
+    // The projected-slots line: not spoken by the announcer, so it must stay reachable — neither
+    // aria-hidden itself nor nested inside either of the two spans above.
+    expect(projectedSpan).not.toBeUndefined();
+    expect(projectedSpan.getAttribute('aria-hidden')).toBeNull();
+    expect(projectedSpan.closest('[aria-hidden="true"]')).toBeNull();
+  });
+});
