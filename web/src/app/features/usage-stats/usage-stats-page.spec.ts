@@ -1942,18 +1942,21 @@ describe('UsageStatsPage — mark-all does not exist on a coarse pointer (2026-0
 });
 
 /**
- * Codex P2 (independent review): the dock's marked-count row (`selection.selectedItems().length`
- * next to the `usageStats.dock.marked` label) is spoken by the permanently mounted
- * `app-dock-outcome-announcer` above the dock (`dockMarkedCount()`, docs/UI-Designsprache.md §4.5)
- * — same defect and same fix as the hidden-by-filter row right below it (2.2/§4.5), which this
- * branch found already correctly `aria-hidden`. The two lines must therefore both be pulled from
- * the accessibility tree, exactly like that precedent, while `usageStats.dock.projected` — not
- * covered by the announcer at all — has to stay reachable. The real template is rendered
- * (not the two-`<div>` stub most describe blocks in this file use) because this is markup wiring,
- * not component logic; located via the `app-dock-outcome-announcer` element and DOM structure, not
- * a CSS class, per Regel 12 ("Accessibility-Semantik").
+ * Fix 5, Opus review (2026-09-19): every test above for `showMarkAll()`/`markAllDisabled()` runs
+ * against the two-`<div>` stub template every other describe block in this file uses, so neither the
+ * template's `@if (showMarkAll())` nor its `[disabled]="markAllDisabled()"` binding ever actually
+ * ran — removing either from usage-stats-page.html would still leave that suite green, only the
+ * computed()s behind it were pinned. These tests mount the real template instead, the same way the
+ * block this one replaces did (that one asserted `aria-hidden`/DOM-structure on the marked-count row
+ * via `children[n]` navigation — itself flagged in the same review and gone along with the behaviour
+ * it tested, since that row is reachable again, see usage-stats-page.html's own comment).
+ *
+ * Located by the button's rendered text, not a CSS class (Regel 12): with the empty `{}`
+ * translations this file's real-template blocks use, Transloco's default missing-key handler
+ * (`DefaultMissingHandler.handle`) returns the raw key itself, which is a stable, unique string here
+ * — the same fallback `vote-session-list-page.spec.ts` already relies on for its own text assertions.
  */
-describe("UsageStatsPage — the dock's marked-count row is hidden from the accessibility tree, the projected-slots line is not (Codex P2)", () => {
+describe("UsageStatsPage — the toolbar mark-all button's template binding (Opus review, 2026-09-19)", () => {
   let fixture: ComponentFixture<UsageStatsPage>;
   let component: UsageStatsPage;
   let httpMock: HttpTestingController;
@@ -2000,8 +2003,6 @@ describe("UsageStatsPage — the dock's marked-count row is hidden from the acce
       .flush({ canManage: true, canViewUsageStats: true });
     httpMock
       .expectOne('/api/channels/a/emotes/active-set')
-      // Default capacity/occupiedSlots (600/10, see setStatus() above) — projectedSlots() only
-      // renders its line once capacity is non-null, and this is what supplies it.
       .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
     fixture.detectChanges();
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
@@ -2011,44 +2012,56 @@ describe("UsageStatsPage — the dock's marked-count row is hidden from the acce
       liveDays: [],
       emotes: [],
     });
+    // Unlike the stub-template blocks in this file, the real template only reflects the flushes
+    // above once change detection actually runs — every assertion here reads the DOM, not a bare
+    // computed(), so this cannot be left to whichever later `fixture.detectChanges()` a test
+    // happens to call for its own reasons.
+    fixture.detectChanges();
   }
 
-  it('marks the count and its label aria-hidden, and leaves the projected-slots line out of that group', () => {
+  function markAllButton(): HTMLButtonElement | undefined {
+    return Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.trim() === 'usageStats.markAll');
+  }
+
+  it('exists and is enabled while the view is not fully marked, and disables the moment it is', () => {
     // A real (non-empty) imageUrl: this describe block renders the actual template, unlike most of
     // this file's stub-template blocks, so the sprite's NgOptimizedImage directive now actually
     // runs and rejects the shared emote() helper's default '' (NG02952).
     const a = { ...emote('a', 'PeepoA'), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' };
     mount([a]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    const button = markAllButton();
+    expect(button).not.toBeUndefined();
+    expect(button!.disabled).toBe(false);
+
+    button!.click();
     fixture.detectChanges();
 
-    expect(component['dockVisible']()).toBe(true);
-    // No filter is active, so the hidden-by-filter row (2.2) does not render between the
-    // marked-count row and app-mass-delete-panel — the structural assumption the indices below
-    // depend on.
-    expect(component['selection'].hiddenSelectedCount()).toBe(0);
+    expect(markAllButton()!.disabled).toBe(true);
+  });
 
-    // Located by the announcer's element, not a CSS class: it is the one other thing the design
-    // language ties to this row (§4.5), and it is a stable sibling of the dock regardless of the
-    // dock's own utility classes.
-    const announcer = fixture.nativeElement.querySelector('app-dock-outcome-announcer');
-    expect(announcer).not.toBeNull();
-    const dock = announcer!.nextElementSibling as HTMLElement | null;
-    expect(dock).not.toBeNull();
+  it('does not exist while a reload is in flight, even though the outgoing view is still non-empty, and reappears once it lands', () => {
+    const a = { ...emote('a', 'PeepoA'), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' };
+    mount([a]);
 
-    const markedRow = dock!.children[0]?.children[0] as HTMLElement | undefined;
-    expect(markedRow).not.toBeUndefined();
-    const [countSpan, labelSpan, projectedSpan] = Array.from(markedRow!.children) as HTMLElement[];
+    expect(markAllButton()).not.toBeUndefined();
 
-    // The count and its label: pulled from the tree, DockOutcomeAnnouncer is their only voice.
-    expect(countSpan.getAttribute('aria-hidden')).toBe('true');
-    expect(labelSpan.getAttribute('aria-hidden')).toBe('true');
+    // Off the 'all' preset first — see the computed-level test of the same scenario above for why.
+    component['rangePreset'].set('custom');
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
 
-    // The projected-slots line: not spoken by the announcer, so it must stay reachable — neither
-    // aria-hidden itself nor nested inside either of the two spans above.
-    expect(projectedSpan).not.toBeUndefined();
-    expect(projectedSpan.getAttribute('aria-hidden')).toBeNull();
-    expect(projectedSpan.closest('[aria-hidden="true"]')).toBeNull();
+    expect(component['isLoading']()).toBe(true);
+    expect(component['atlasOrder']().length).toBeGreaterThan(0);
+    expect(markAllButton()).toBeUndefined();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
+    fixture.detectChanges();
+
+    expect(component['isLoading']()).toBe(false);
+    expect(markAllButton()).not.toBeUndefined();
   });
 });
