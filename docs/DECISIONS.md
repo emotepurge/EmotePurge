@@ -183,7 +183,7 @@ on the usage page — was reachable only through a sentence of body text underne
 (`voting.list.wholeSetHintLink`, "Nur bestimmte Emotes zur Wahl stellen?"). The hierarchy was
 inverted: the prominent, zero-friction path produced the result nobody wants, and the wanted path
 was a link saying "do it somewhere else". For HandOfBlood's ~900 emotes a whole-set ballot is not a
-feature, it is a wall of cells; For a small channel it would be defensible, and that is where the
+feature, it is a wall of cells. For a small channel it would be defensible, and that is where the
 honest accounting belongs: there is no one-click path to the whole set in the atlas either —
 `selectBand` is offered on the `dead` band alone and deliberately so ("offering it on the heavy band
 would be a loaded gun with no purpose"), and even marking every cell by hand produces fixed
