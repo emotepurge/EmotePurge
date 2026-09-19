@@ -830,11 +830,27 @@ export class UsageStatsPage {
    *  sorted and banded, not the channel's whole universe underneath an active filter. */
   protected readonly showMarkAll = computed(() => !this.isCoarse() && this.atlasOrder().length > 0);
 
+  /** Shared by `markAllDisabled` below and the per-band select-all button in the template
+   *  (`selectBand('dead')`): true for the whole window between `load()` setting `isLoading` and
+   *  `loadTotals()`'s response finally calling `emotes.set(...)` (see both methods' own comments).
+   *  Until that write lands, `atlasOrder()` and `selection.isSelected()` still describe the
+   *  OUTGOING query, not the one the skeleton is standing in for — a mark pressed in that window
+   *  acts on rows the sheet is about to replace. `loadTotals()`'s own reconciliation afterwards
+   *  only prunes the marked set against the new response's unfiltered `emotes`, never against
+   *  whatever filter/band view was on screen at press time, so a row that no longer matches the
+   *  current filter can still ride the mark into the dock and from there into a delete or vote
+   *  dialog — disabling the trigger is simpler than trying to undo that after the fact. */
+  protected readonly markingSuspendedByLoad = computed(() => this.isLoading());
+
   /** Disabled once every row the sheet currently shows is already marked — a press that could not
    *  add anything is not a control worth pressing. Vacuously true on an empty view, which never
-   *  matters in practice: `showMarkAll()` already hides the button there. */
-  protected readonly markAllDisabled = computed(() =>
-    this.atlasOrder().every((emote) => this.selection.isSelected(emote)),
+   *  matters in practice: `showMarkAll()` already hides the button there. Also disabled during
+   *  `markingSuspendedByLoad()` (see its own comment) — a reload in flight must not let this act
+   *  on the outgoing query's rows. */
+  protected readonly markAllDisabled = computed(
+    () =>
+      this.markingSuspendedByLoad() ||
+      this.atlasOrder().every((emote) => this.selection.isSelected(emote)),
   );
 
   /**

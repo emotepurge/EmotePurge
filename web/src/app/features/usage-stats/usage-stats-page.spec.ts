@@ -1109,6 +1109,50 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
   });
 
   /**
+   * Codex P2: `load()` sets `isLoading` before `loadTotals()`'s response writes `emotes.set(...)`
+   * — a range change or the refresh button therefore leaves `atlasOrder()` (and the selection)
+   * still describing the OUTGOING query for the whole in-flight window. Both mark controls read
+   * `markingSuspendedByLoad()` for exactly this window, so a press in it cannot mark rows the sheet
+   * is about to replace, nor survive `loadTotals()`'s reconciliation as a false positive against a
+   * filter that no longer applies. `markAllDisabled` is the toolbar control; `selectBand`'s
+   * template button binds `markingSuspendedByLoad()` directly (asserted here, since the method
+   * itself — like `markAll()` — carries no guard of its own, only the template's `[disabled]` does).
+   */
+  it('suspends both mark-all and the per-band select-all while a reload is in flight, re-enabling once it lands', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    expect(component['markingSuspendedByLoad']()).toBe(false);
+    expect(component['markAllDisabled']()).toBe(false);
+
+    // Off the 'all' preset first — otherwise the "all time" correction effect (see its own comment
+    // in usage-stats-page.ts) would snap `from` straight back the moment it changes below, since
+    // that effect re-fires on every `from()`/`to()`/`rangePreset()` write and 'all' is what makes it
+    // active. This mirrors the setup the dedicated date-range-change describe block gives itself
+    // from the start; here it happens mid-test since the surrounding suite needs 'all' for mount().
+    component['rangePreset'].set('custom');
+
+    // A range change re-enters load(): isLoading flips true immediately, but atlasOrder() still
+    // shows the previous response until loadTotals()'s next 'next' callback lands.
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
+
+    expect(component['isLoading']()).toBe(true);
+    expect(component['markingSuspendedByLoad']()).toBe(true);
+    // Neither view is empty nor fully marked — without the loading gate this would read false.
+    expect(component['atlasOrder']().length).toBeGreaterThan(0);
+    expect(component['markAllDisabled']()).toBe(true);
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
+
+    expect(component['isLoading']()).toBe(false);
+    expect(component['markingSuspendedByLoad']()).toBe(false);
+    expect(component['markAllDisabled']()).toBe(false);
+  });
+
+  /**
    * The dock's own marked-count row is created by the same `@if` that fills it, so a bulk mark can
    * take it from unmounted to a double-digit count with nothing announced — the same defect
    * `dockHiddenSelectedCount` above exists to close, now for the count it sits next to
