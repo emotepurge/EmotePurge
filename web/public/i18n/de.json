@@ -641,6 +641,10 @@
     },
     "dock": {
       "marked": "markiert",
+      "markedAnnounced": {
+        "one": "{{count}} Emote markiert",
+        "other": "{{count}} Emotes markiert"
+      },
       "projected": "→ {{projected}} von {{capacity}} Slots nach dem Löschen",
       "hiddenByFilter": {
         "one": "1 davon durch den Filter ausgeblendet",
@@ -680,6 +684,7 @@
     "noActiveEmotesHint": "Das aktive 7TV-Emote-Set dieses Channels enthält derzeit keine Emotes.",
     "noMatches": "Keine Emotes passen zu den aktuellen Filtern.",
     "resetFilters": "Filter zurücksetzen",
+    "markAll": "alle {{count}} markieren",
     "createVoteSession": "Zur Abstimmung stellen ({{count}})",
     "selectionPruned": {
       "one": "Ein ausgewähltes Emote ist nicht mehr im Set und wurde aus der Auswahl entfernt.",

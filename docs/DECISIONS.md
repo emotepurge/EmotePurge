@@ -164,6 +164,25 @@ class of defect, but older than this branch and deliberately not taken along her
 
 ---
 
+### 2026-09-19 — "Mark all" on the usage toolbar: the loaded-gun argument lapsed when the safety moved to the point of action
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+The atlas has carried a mark-all button since the bands landed, on the `dead` band alone. The comment above it says why it was offered nowhere else: "Offering it on the heavy band would be a loaded gun with no purpose." That reasoning was written while a filter change still pruned the selection and the marking gesture itself carried the safety. Both halves have since moved. The selection entry of the same day made the selection survive filters and put the safety at the point of action — the delete dialog, which counts and announces what is marked but not visible. Marking is a statement of intent now, not a commitment, so withholding the button no longer buys anything.
+
+**The scope is the current view, not the channel.** The button marks `atlasOrder()` — filtered, sorted, banded, flattened — which is exactly what the page is showing. With no filter active that is the whole set, and the label says so: it carries the count rather than a bare verb. The band button can afford a bare verb because its band header states the count beside it; the toolbar has no such framing, so the number is the safety.
+
+**Placement follows scope, not habit.** It could not go in the dock: the dock does not render at zero selection (`actionDockHasContent`), and a control whose entire purpose is to create a selection out of nothing cannot live somewhere that only exists once one has. It sits in the filter row instead, beside the reset control and the count it acts on. Fine-pointer only, like every other selection surface. Disabled once the current view is fully marked, so it never presents itself as doing something it would not do.
+
+**What it does not do.** Range selection by shift-click stays undiscoverable. This button makes it less often necessary, not more visible. That is a separate question and deliberately left open here.
+
+---
+
 ### 2026-09-19 — A voting session is started from a selection on the usage page, and from nowhere else
 
 **Betrifft:** `web/src/app/features/voting/vote-session-list-page.html` ·
@@ -183,13 +202,14 @@ on the usage page — was reachable only through a sentence of body text underne
 (`voting.list.wholeSetHintLink`, "Nur bestimmte Emotes zur Wahl stellen?"). The hierarchy was
 inverted: the prominent, zero-friction path produced the result nobody wants, and the wanted path
 was a link saying "do it somewhere else". For HandOfBlood's ~900 emotes a whole-set ballot is not a
-feature, it is a wall of cells. For a small channel it would be defensible, and that is where the
-honest accounting belongs: there is no one-click path to the whole set in the atlas either —
-`selectBand` is offered on the `dead` band alone and deliberately so ("offering it on the heavy band
-would be a loaded gun with no purpose"), and even marking every cell by hand produces fixed
-`VoteSessionEmote` rows, not the dynamic ballot `emoteIds: null` creates. So something real is given
-up, and it deserves its name: the ballot that grows with the set. It goes because a cleanup vote is a
-decision about the emotes that exist when it is called, not a standing referendum.
+feature, it is a wall of cells. For a small channel it would be defensible, and that is where the honest accounting belongs. The
+whole set is in fact reachable in one click — the same branch adds a mark-all control to the usage
+toolbar whose scope is the current filtered view, and with no filter active that view is the whole
+set. What it produces, though, is a fixed ballot of `VoteSessionEmote` rows, not the dynamic one
+`emoteIds: null` creates. So what is given up is narrower than "voting over everything", and it
+deserves its exact name: the ballot that keeps growing with the set after it has been called. It
+goes because a cleanup vote is a decision about the emotes that exist when it is called, not a
+standing referendum.
 
 **The form is gone. The API contract is not.** `emoteIds: null` still means "whole set, dynamic
 ballot" in `CreateVoteSessionRequest`, `VoteSessionCreateRequest` and

@@ -824,6 +824,19 @@ export class UsageStatsPage {
       !this.importScopeCurrent(),
   );
 
+  /** Whether the toolbar's mark-all control exists at all — a fine pointer (no write path off a
+   *  phone, same reasoning as everywhere else selection appears) and a non-empty current view.
+   *  Scope is `atlasOrder()`, not `emotes()`: the button marks what the sheet is showing, filtered,
+   *  sorted and banded, not the channel's whole universe underneath an active filter. */
+  protected readonly showMarkAll = computed(() => !this.isCoarse() && this.atlasOrder().length > 0);
+
+  /** Disabled once every row the sheet currently shows is already marked — a press that could not
+   *  add anything is not a control worth pressing. Vacuously true on an empty view, which never
+   *  matters in practice: `showMarkAll()` already hides the button there. */
+  protected readonly markAllDisabled = computed(() =>
+    this.atlasOrder().every((emote) => this.selection.isSelected(emote)),
+  );
+
   /**
    * Count of the grid selection that would actually be captured by the dock's copy shortcut —
    * built on `selection.selectedItems()`, the one source every displayed count now reads from
@@ -861,6 +874,21 @@ export class UsageStatsPage {
    */
   protected readonly dockHiddenSelectedCount = computed(() =>
     !this.isCoarse() && this.activeEmoteSetId() !== null ? this.selection.hiddenSelectedCount() : 0,
+  );
+
+  /**
+   * The dock's own marked-count row (`usageStats.dock.marked`, next to `selection.selectedItems()
+   * .length`) is created by the same `@if (activeEmoteSetId(); as setId)` that fills it — the exact
+   * case §4.5 describes for `dockHiddenSelectedCount` above: appearing content does not announce
+   * itself, and a bulk mark (the toolbar's "mark all", the per-band one) can take the dock from
+   * unmounted to a double-digit count in one gesture with nothing spoken. 0 whenever that row is
+   * not on screen, mirroring `dockHiddenSelectedCount`'s own gates exactly, so `DockOutcomeAnnouncer`
+   * never says a number the dock itself does not show.
+   */
+  protected readonly dockMarkedCount = computed(() =>
+    !this.isCoarse() && this.dockVisible() && this.activeEmoteSetId() !== null
+      ? this.selection.selectedItems().length
+      : 0,
   );
 
   /**
@@ -1146,6 +1174,12 @@ export class UsageStatsPage {
     if (band) {
       this.selection.selectMany(band.items);
     }
+  }
+
+  /** The toolbar's mark-all control (see `showMarkAll`/`markAllDisabled`) — scope is the current
+   *  filtered/sorted/banded view, exactly what `atlasOrder()` returns and the sheet is showing. */
+  protected markAll(): void {
+    this.selection.selectMany(this.atlasOrder());
   }
 
   protected fillPercent(emote: EmoteUsageTotal): number {

@@ -1056,6 +1056,81 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     expect(component['dockHiddenSelectedCount']()).toBe(0);
   });
 
+  /**
+   * The toolbar's "mark all" control (2026-09-19, docs/DECISIONS.md). Its whole point is scope:
+   * `atlasOrder()`, the filtered/sorted/banded view the sheet is actually showing, never
+   * `emotes()`, the channel's unfiltered universe underneath it.
+   */
+  it('marks exactly the current filtered view, leaving filtered-out rows unmarked', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    const c = emote('c', 'Other');
+    mount([a, b, c]);
+
+    component['usageFilter'].setNameFilter('Peepo');
+    expect(
+      component['atlasOrder']()
+        .map((emote) => emote.emoteId)
+        .sort(),
+    ).toEqual(['a', 'b']);
+
+    component['markAll']();
+
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    expect(component['selection'].isSelected(c)).toBe(false);
+  });
+
+  it('is disabled once the current view is fully marked, and re-enables the moment a row is unmarked', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    expect(component['markAllDisabled']()).toBe(false);
+
+    component['markAll']();
+    expect(component['markAllDisabled']()).toBe(true);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['markAllDisabled']()).toBe(false);
+  });
+
+  it('does not stay disabled forever just because a filter narrowed the view to already-marked rows', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['markAllDisabled']()).toBe(false);
+
+    // Narrows atlasOrder() to just the already-marked 'a' — mark-all over that view could add
+    // nothing, so it is correctly disabled here, not a false positive of the check.
+    component['usageFilter'].setNameFilter('PeepoA');
+    expect(component['markAllDisabled']()).toBe(true);
+  });
+
+  /**
+   * The dock's own marked-count row is created by the same `@if` that fills it, so a bulk mark can
+   * take it from unmounted to a double-digit count with nothing announced — the same defect
+   * `dockHiddenSelectedCount` above exists to close, now for the count it sits next to
+   * (docs/UI-Designsprache.md §4.5).
+   */
+  it('hands the announcer the marked count only while the dock row that shows it is on screen', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    expect(component['dockMarkedCount']()).toBe(0);
+
+    component['markAll']();
+    expect(component['dockMarkedCount']()).toBe(2);
+
+    // No active 7TV set means no marking half of the dock, so no row — and therefore nothing to
+    // speak, even though the selection itself is untouched.
+    component['setStatus'].set(null);
+    expect(component['selection'].selectedKeys()).toHaveLength(2);
+    expect(component['dockMarkedCount']()).toBe(0);
+  });
+
   it('marking a band, changing the filter, marking again and clearing the filter unions both groups', () => {
     const dead1 = emote('d1', 'Dead1', 0);
     const dead2 = emote('d2', 'Dead2', 0);
@@ -1677,5 +1752,93 @@ describe('UsageStatsPage — openCreateVoteSession() (#132)', () => {
     component['selection'].retainAmong([a]);
 
     expect(data.emoteIds()).toEqual(['a']);
+  });
+});
+
+/**
+ * The toolbar's "mark all" control does not exist at all on a coarse pointer — same reasoning as
+ * every other selection surface (docs/UI-Designsprache.md §2.5): there is no 7TV write path off a
+ * phone, so nothing a mark could ever lead to. `PointerModeService` reads `matchMedia` once at
+ * construction, so the coarse device has to be in place before `TestBed.createComponent` runs
+ * (see core/pointer/pointer-mode.service.spec.ts for the same fake shape).
+ */
+describe('UsageStatsPage — mark-all does not exist on a coarse pointer (2026-09-19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.stubGlobal('matchMedia', () => ({
+      matches: true,
+      media: '',
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('reports not shown even though the current view is non-empty', () => {
+    mount([emote('a', 'PeepoA')]);
+
+    expect(component['isCoarse']()).toBe(true);
+    expect(component['atlasOrder']().length).toBeGreaterThan(0);
+    expect(component['showMarkAll']()).toBe(false);
   });
 });

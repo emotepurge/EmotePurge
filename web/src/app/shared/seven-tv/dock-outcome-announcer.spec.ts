@@ -12,12 +12,17 @@ import {
 import {
   DockOutcomeAnnouncer,
   hiddenByFilterNoticeKey,
+  markedCountNoticeKey,
   resyncNoticeKey,
 } from './dock-outcome-announcer';
 
 const DE_TRANSLATIONS = {
   usageStats: {
     dock: {
+      markedAnnounced: {
+        one: '{{ count }} Emote markiert',
+        other: '{{ count }} Emotes markiert',
+      },
       hiddenByFilter: {
         one: '1 davon durch den Filter ausgeblendet',
         other: '{{ count }} davon durch den Filter ausgeblendet',
@@ -73,11 +78,13 @@ function createFakeSource(): FakeOutcomeSource {
   imports: [DockOutcomeAnnouncer],
   template: `<app-dock-outcome-announcer
     [withImport]="withImport()"
+    [markedCount]="markedCount()"
     [hiddenSelectedCount]="hiddenSelectedCount()"
   />`,
 })
 class HostPage {
   readonly withImport = signal(true);
+  readonly markedCount = signal(0);
   readonly hiddenSelectedCount = signal(0);
 }
 
@@ -109,6 +116,13 @@ describe('hiddenByFilterNoticeKey', () => {
   it('picks the plural form the dock line and its announcement share', () => {
     expect(hiddenByFilterNoticeKey(1)).toBe('usageStats.dock.hiddenByFilter.one');
     expect(hiddenByFilterNoticeKey(4)).toBe('usageStats.dock.hiddenByFilter.other');
+  });
+});
+
+describe('markedCountNoticeKey', () => {
+  it('picks the plural form the dock row and its announcement share', () => {
+    expect(markedCountNoticeKey(1)).toBe('usageStats.dock.markedAnnounced.one');
+    expect(markedCountNoticeKey(4)).toBe('usageStats.dock.markedAnnounced.other');
   });
 });
 
@@ -216,6 +230,74 @@ describe('DockOutcomeAnnouncer', () => {
 
     expect(regions()[0].children[0]).toBe(standing);
     expect(spoken()).toHaveLength(2);
+  });
+
+  /**
+   * The dock's marked-count row (2026-09-19, docs/DECISIONS.md). Same defect as the hidden-by-
+   * filter line below and the same fix: the visible row is created by the same `@if` that fills
+   * it, so a bulk mark ("mark all") can take it from unmounted to a double-digit count with
+   * nothing announced — this region is its only voice (§4.5).
+   */
+  describe('marked-count row', () => {
+    it('says nothing while nothing is marked', () => {
+      expect(spoken()).toEqual([]);
+    });
+
+    it('fills the region that was already standing when a bulk mark lands', () => {
+      const regionAtRest = regions()[0];
+
+      fixture.componentInstance.markedCount.set(2);
+      fixture.detectChanges();
+
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual(['2 Emotes markiert']);
+    });
+
+    it('uses the singular wording for exactly one marked row', () => {
+      fixture.componentInstance.markedCount.set(1);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual(['1 Emote markiert']);
+    });
+
+    it('rewrites the standing sentence in place when the count changes, rather than adding a second one', () => {
+      fixture.componentInstance.markedCount.set(3);
+      fixture.detectChanges();
+      const standing = regions()[0].children[0];
+
+      fixture.componentInstance.markedCount.set(2);
+      fixture.detectChanges();
+
+      expect(regions()[0].children[0]).toBe(standing);
+      expect(spoken()).toEqual(['2 Emotes markiert']);
+    });
+
+    it('falls silent again once nothing is marked, without unmounting the region', () => {
+      const regionAtRest = regions()[0];
+      fixture.componentInstance.markedCount.set(2);
+      fixture.detectChanges();
+
+      fixture.componentInstance.markedCount.set(0);
+      fixture.detectChanges();
+
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks before the hidden-by-filter line, the restore and the import outcomes', () => {
+      fixture.componentInstance.markedCount.set(4);
+      fixture.componentInstance.hiddenSelectedCount.set(2);
+      restoreService.resyncTrigger.set('succeeded');
+      importService.resyncTrigger.set('pending');
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([
+        '4 Emotes markiert',
+        '2 davon durch den Filter ausgeblendet',
+        'Synchronisierung angestoßen.',
+        'Abgleich des Zielkanals wird angestoßen…',
+      ]);
+    });
   });
 
   /**
