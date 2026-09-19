@@ -1032,6 +1032,30 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     expect(component['selection'].hiddenSelectedCount()).toBe(0);
   });
 
+  /**
+   * The dock row is created by the same `@if` that fills it, so it cannot announce itself
+   * (docs/UI-Designsprache.md §4.5). Its text is `aria-hidden` and spoken by the permanently
+   * mounted `DockOutcomeAnnouncer` instead — which must say exactly what the dock shows, so this
+   * number mirrors that row's own gates rather than being the raw count.
+   */
+  it('hands the announcer the hidden count only while the dock row that shows it is on screen', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['dockHiddenSelectedCount']()).toBe(0);
+
+    component['usageFilter'].setNameFilter('PeepoB');
+    expect(component['dockHiddenSelectedCount']()).toBe(1);
+
+    // No active 7TV set means no marking half of the dock, so no row — and therefore nothing to
+    // speak, even though the selection is still hidden behind the filter.
+    component['setStatus'].set(null);
+    expect(component['selection'].hiddenSelectedCount()).toBe(1);
+    expect(component['dockHiddenSelectedCount']()).toBe(0);
+  });
+
   it('marking a band, changing the filter, marking again and clearing the filter unions both groups', () => {
     const dead1 = emote('d1', 'Dead1', 0);
     const dead2 = emote('d2', 'Dead2', 0);

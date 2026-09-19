@@ -9,9 +9,21 @@ import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
-import { DockOutcomeAnnouncer, resyncNoticeKey } from './dock-outcome-announcer';
+import {
+  DockOutcomeAnnouncer,
+  hiddenByFilterNoticeKey,
+  resyncNoticeKey,
+} from './dock-outcome-announcer';
 
 const DE_TRANSLATIONS = {
+  usageStats: {
+    dock: {
+      hiddenByFilter: {
+        one: '1 davon durch den Filter ausgeblendet',
+        other: '{{ count }} davon durch den Filter ausgeblendet',
+      },
+    },
+  },
   restore: {
     duplicateCheckUnavailable: 'Restore-Prüfung nicht möglich.',
     skippedDuplicates: {
@@ -59,10 +71,14 @@ function createFakeSource(): FakeOutcomeSource {
 /** Stands in for a host page: the announcer mounted once, with the page's own `withImport`. */
 @Component({
   imports: [DockOutcomeAnnouncer],
-  template: `<app-dock-outcome-announcer [withImport]="withImport()" />`,
+  template: `<app-dock-outcome-announcer
+    [withImport]="withImport()"
+    [hiddenSelectedCount]="hiddenSelectedCount()"
+  />`,
 })
 class HostPage {
   readonly withImport = signal(true);
+  readonly hiddenSelectedCount = signal(0);
 }
 
 // Keyed by the type rather than hand-listed, so a new ResyncTriggerState member (other than
@@ -86,6 +102,13 @@ describe('resyncNoticeKey', () => {
     ),
   )('names the family and state for %s/%s', (state, family) => {
     expect(resyncNoticeKey(state as ResyncTriggerState, family)).toBe(`${family}.resync.${state}`);
+  });
+});
+
+describe('hiddenByFilterNoticeKey', () => {
+  it('picks the plural form the dock line and its announcement share', () => {
+    expect(hiddenByFilterNoticeKey(1)).toBe('usageStats.dock.hiddenByFilter.one');
+    expect(hiddenByFilterNoticeKey(4)).toBe('usageStats.dock.hiddenByFilter.other');
   });
 });
 
@@ -193,6 +216,71 @@ describe('DockOutcomeAnnouncer', () => {
 
     expect(regions()[0].children[0]).toBe(standing);
     expect(spoken()).toHaveLength(2);
+  });
+
+  /**
+   * The dock's hidden-by-filter line (Konzept "Auswahl überlebt Suche und Filter" 2.2). Its visible
+   * row is created by the same `@if` that fills it, so it cannot announce itself — this region,
+   * which already stood before the filter was touched, is its only voice (§4.5).
+   */
+  describe('hidden-by-filter line', () => {
+    it('says nothing while the filter hides nothing', () => {
+      expect(spoken()).toEqual([]);
+    });
+
+    it('fills the region that was already standing when a filter starts hiding marked rows', () => {
+      const regionAtRest = regions()[0];
+
+      fixture.componentInstance.hiddenSelectedCount.set(2);
+      fixture.detectChanges();
+
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual(['2 davon durch den Filter ausgeblendet']);
+    });
+
+    it('uses the singular wording for exactly one hidden row', () => {
+      fixture.componentInstance.hiddenSelectedCount.set(1);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual(['1 davon durch den Filter ausgeblendet']);
+    });
+
+    it('rewrites the standing sentence in place when the count changes, rather than adding a second one', () => {
+      fixture.componentInstance.hiddenSelectedCount.set(3);
+      fixture.detectChanges();
+      const standing = regions()[0].children[0];
+
+      fixture.componentInstance.hiddenSelectedCount.set(2);
+      fixture.detectChanges();
+
+      expect(regions()[0].children[0]).toBe(standing);
+      expect(spoken()).toEqual(['2 davon durch den Filter ausgeblendet']);
+    });
+
+    it('falls silent again once the filter is reset, without unmounting the region', () => {
+      const regionAtRest = regions()[0];
+      fixture.componentInstance.hiddenSelectedCount.set(2);
+      fixture.detectChanges();
+
+      fixture.componentInstance.hiddenSelectedCount.set(0);
+      fixture.detectChanges();
+
+      expect(regions()).toEqual([regionAtRest]);
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks before the restore and import outcomes, matching the dock reading order', () => {
+      fixture.componentInstance.hiddenSelectedCount.set(2);
+      restoreService.resyncTrigger.set('succeeded');
+      importService.resyncTrigger.set('pending');
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([
+        '2 davon durch den Filter ausgeblendet',
+        'Synchronisierung angestoßen.',
+        'Abgleich des Zielkanals wird angestoßen…',
+      ]);
+    });
   });
 
   it('does not speak for an import on a page that shows no import section', () => {

@@ -277,7 +277,12 @@ test.describe('emote atlas', () => {
     await expect(page.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
 
     const dock = page.locator('.app-dock');
-    const hiddenLine = () => dock.getByRole('status').filter({ hasText: 'ausgeblendet' });
+    // Plain text, not a role: the visible line is aria-hidden on purpose, because the permanently
+    // mounted announcer outside the dock is its voice (docs/UI-Designsprache.md §4.5). A row that
+    // is created together with its own sentence announces nothing.
+    const hiddenLine = () => dock.getByText('davon durch den Filter ausgeblendet');
+    const announcer = () =>
+      page.getByRole('status').filter({ hasText: 'davon durch den Filter ausgeblendet' });
     const search = page.getByPlaceholder('Name suchen…');
 
     // "cat" only matches catJAM — Bedge falls out of the sheet without leaving the selection.
@@ -286,8 +291,10 @@ test.describe('emote atlas', () => {
     await expect(cell(page, 'catJAM')).toHaveAttribute('aria-pressed', 'true');
     await expect(dock.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
     // 2.1/2.2: while the filter hides part of the mark, the dock names the count, not just a
-    // shrunk total.
+    // shrunk total — and the live region that stood before the search was touched carries the
+    // same sentence for a screen reader.
     await expect(hiddenLine()).toContainText('1 davon durch den Filter ausgeblendet');
+    await expect(announcer()).toContainText('1 davon durch den Filter ausgeblendet');
 
     // Weitertippen: narrowing the query further keeps the same emote hidden and the same count.
     await search.fill('catJ');
@@ -302,6 +309,7 @@ test.describe('emote atlas', () => {
     await expect(cell(page, 'catJAM')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
     await expect(hiddenLine()).toHaveCount(0);
+    await expect(announcer()).toHaveCount(0);
   });
 
   test('the sidecar names whatever cell the pointer is on', async ({ page }) => {

@@ -16,6 +16,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/shared/emotes/emote-usage-filter.ts` · `web/src/app/shared/ui/name-preview-list.ts` ·
 `web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
 `web/src/app/shared/seven-tv/delete-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.html` ·
 `web/src/app/features/voting/vote-session-detail-page.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
@@ -118,6 +119,37 @@ offers no selection export scope at all, per 2.6), so there is no second set for
 The other `atlasOrder().length === 0` reads left on the page (the "no matches" empty-grid state, the
 distinct-from-this comment in `import-trigger-gate.ts`) describe visibility, not an action lock, and
 are unaffected.
+
+**Nachtrag (2026-09-19, where the new hidden-by-filter messages are announced).** An independent second
+opinion (Codex Sol, P2) found on the new dock secondary line exactly the defect design language §4.5
+warns about: it carried `role="status"` but was created in the same change-detection pass as its own
+text — a live region that mounts together with its content announces **nothing** on most screen
+reader/browser pairings. The implementer had read §4.4 as an argument *against* a permanently mounted
+twin; it is the argument *for* one.
+
+Upstream of that sits the question that comes before choosing a pattern: **"n of your marks are
+currently hidden" is a persisting state, not an acknowledgement.** §4.5's transient pattern (4000 ms,
+then the message clears itself) would therefore be wrong here — it would withdraw a statement that
+still holds for as long as the filter stands. The right one is §4.4's fourth bullet (precedent:
+`create-vote-session-dialog.ts`, #132): the same permanently mounted `sr-only role="status"` twin,
+but **without** self-clearing; the visible line stays for as long as it applies and carries
+`aria-hidden="true"` so the sentence is not read twice. The visible half does not change through
+this — it was already bound to a `computed()`, never to a timer.
+
+**The line is spoken by `DockOutcomeAnnouncer`, not by a third region.** The announcer already stands
+permanently outside every dock gate (`!isCoarse()` included), is already built as a multi-message
+region with `aria-atomic="false"`, and §4.5 itself names several simultaneously speaking regions as
+its own source of error. The line comes first there — the same place it holds in the dock, above the
+mass-delete panel. The page passes the number through as `dockHiddenSelectedCount()`: identical to
+`selection.hiddenSelectedCount()`, but 0 as soon as the dock does not show that line at all (no
+active 7TV set, coarse pointer) — the announcer says exactly what is on screen and nothing beyond it.
+The translation key comes from `hiddenByFilterNoticeKey()` next to `resyncNoticeKey()`, for the same
+reason: the spoken and the shown wording cannot drift apart. The reset button stays **outside** the
+`aria-hidden` span — a focusable element inside a hidden subtree is a defect of its own (axe
+`aria-hidden-focus`).
+
+Untouched and still open is `run-progress-panel.ts`, the one known instance §4.5 names — the same
+class of defect, but older than this branch and deliberately not taken along here.
 
 ---
 

@@ -105,7 +105,10 @@ import {
   packAtlasRows,
 } from '../../shared/grid/atlas-grid';
 import { actionDockHasContent } from '../../shared/seven-tv/action-dock';
-import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
+import {
+  DockOutcomeAnnouncer,
+  hiddenByFilterNoticeKey,
+} from '../../shared/seven-tv/dock-outcome-announcer';
 import { ImportFlowDeps, startImportFlow } from '../../shared/seven-tv/import-flow';
 import { ImportProgressSection } from '../../shared/seven-tv/import-progress-section';
 import { importScopeIsCurrent } from '../../shared/seven-tv/import-scope';
@@ -840,9 +843,23 @@ export class UsageStatsPage {
 
   /** Wording for the dock's hidden-by-filter secondary line (Konzept "Auswahl überlebt Suche und
    *  Filter" 2.2) — only ever read from the template behind `selection.hiddenSelectedCount() > 0`,
-   *  so the "no permanent control" rule (Frontend-Zurückhaltung) lives in the `@if`, not here. */
+   *  so the "no permanent control" rule (Frontend-Zurückhaltung) lives in the `@if`, not here.
+   *  The key comes from the same helper the announcer uses, so the shown and the spoken sentence
+   *  cannot drift apart. */
   protected readonly hiddenSelectedFilterKey = computed(() =>
-    pluralKey(this.selection.hiddenSelectedCount(), 'usageStats.dock.hiddenByFilter'),
+    hiddenByFilterNoticeKey(this.selection.hiddenSelectedCount()),
+  );
+
+  /**
+   * The same number again, but 0 whenever the dock's hidden-by-filter line is not on screen —
+   * what `DockOutcomeAnnouncer` speaks (docs/UI-Designsprache.md §4.5). The visible line is
+   * `aria-hidden`, so this is the only voice it has, and it must say exactly what is shown: the
+   * line lives behind the dock's `!isCoarse()` gate and behind the marking half's active-set gate,
+   * and a selection is only reachable with a fine pointer in the first place. `dockVisible()` is
+   * implied by an active set plus a non-zero marked count and is therefore not repeated here.
+   */
+  protected readonly dockHiddenSelectedCount = computed(() =>
+    !this.isCoarse() && this.activeEmoteSetId() !== null ? this.selection.hiddenSelectedCount() : 0,
   );
 
   /**

@@ -824,12 +824,16 @@
   </div>
 </div>
 
-<!-- The screen-reader voice for what the dock below reports (duplicate and resync notices of a
-     restore and of an import). Outside the dock's @if, !isCoarse() included, because the dock mounts
-     and unmounts with its content — a fully refused run is what mounts it — and a status region
-     created in the same pass as its text announces nothing (docs/UI-Designsprache.md §4.5). The
-     notices inside the dock are aria-hidden for that reason. -->
-<app-dock-outcome-announcer [withImport]="true" />
+<!-- The screen-reader voice for what the dock below reports: the duplicate and resync notices of a
+     restore and of an import, and the standing "n davon durch den Filter ausgeblendet" line.
+     Outside the dock's @if, !isCoarse() included, because the dock mounts and unmounts with its
+     content — a fully refused run is what mounts it — and a status region created in the same pass
+     as its text announces nothing (docs/UI-Designsprache.md §4.5). That is just as true of a line
+     inside an already-mounted dock whose own @if creates it together with its sentence, which is
+     why the hidden-by-filter count is spoken here too. Everything the dock shows is aria-hidden
+     for that reason, and dockHiddenSelectedCount() mirrors that line's own gates so this region
+     never says something the dock does not show. -->
+<app-dock-outcome-announcer [withImport]="true" [hiddenSelectedCount]="dockHiddenSelectedCount()" />
 
 <!-- The action bar. It exists only while there is something to act on, which is what allows the
      surface above it to be nothing but emotes. Kept mounted through a settled run as well, because
@@ -863,10 +867,18 @@
         <!-- Konzept "Auswahl überlebt Suche und Filter" 2.2: the main count above is the total,
              marked-but-hidden included — this line only names how many of those the filter is
              currently hiding, with the way back right next to it. No control when there is
-             nothing hidden (Frontend-Zurückhaltung): the whole row is gated on the count itself. -->
+             nothing hidden (Frontend-Zurückhaltung): the whole row is gated on the count itself.
+
+             Deliberately not a live region of its own (docs/UI-Designsprache.md §4.5): this row
+             is created by the same @if that fills it, so a role="status" here would announce
+             nothing on most screen reader/browser pairings. The sentence is spoken by the
+             permanently mounted app-dock-outcome-announcer above instead and is therefore
+             aria-hidden here, so it is not read twice. The button is NOT inside that aria-hidden
+             span — hiding a focusable control is its own defect (axe aria-hidden-focus); it keeps
+             the same label as the filter bar's own reset. -->
         @if (selection.hiddenSelectedCount(); as hiddenSelectedCount) {
-          <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted" role="status">
-            <span>
+          <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+            <span aria-hidden="true">
               {{ hiddenSelectedFilterKey() | transloco: { count: hiddenSelectedCount } }}
             </span>
             <button type="button" appButton="outline" (click)="usageFilter.reset()">
