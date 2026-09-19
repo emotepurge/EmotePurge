@@ -10,6 +10,85 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-19 — The selection survives search and filter changes; the safety moves to the point of action (supersedes S2-16)
+
+**Betrifft:** `web/src/app/shared/selection/list-selection.ts` ·
+`web/src/app/shared/emotes/emote-usage-filter.ts` · `web/src/app/shared/ui/name-preview-list.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/delete-confirm-dialog.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` · `web/e2e/usage-atlas.e2e.spec.ts`
+
+**Supersedes the S2-16 half of the 2026-07-30 entry** ("Filterwechsel beschneiden die Auswahl statt
+sie zu löschen"). HandOfBlood's mod team reported that searching resets a running selection — which
+is exactly what S2-16 built: every keystroke in the name filter pruned every key no longer on
+screen. The 2026-07-30 reasoning was that `selectedKeys` is authoritative for the delete path and an
+invisible-but-selected emote must never reach it. That conflated two different things: *state* (what
+is marked) and *safety* (never delete what the user has not seen). Pruning the state was one way to
+get the safety, and it was the wrong one — it also destroyed the state users were deliberately
+building across several searches.
+
+**New contract.** `ListSelection` now keeps two sources: the display list (filtered, ordered — for
+ranges, keyboard navigation and visibility) and an optional unfiltered universe (for resolution;
+defaults to the display list, which keeps the filter-less third consumer, `ForeignEmoteGrid`,
+unchanged). `selectedKeys` changes only through user gestures and through `retainAmong(universe)` on
+a data reload of the *same* context — never through a filter change; `retainVisible()` is gone, and
+so is `EmoteUsageFilter`'s `onChange` hook that used to drive it. Invariant: `selectedKeys ⊆
+keys(universe)`, enforced at every path that writes the universe. Because the invariant is formal and
+blind to a context switch that happens to reuse an emote id, every genuine context switch (channel,
+vote session) still clears outright — that rule sits next to the invariant, not inside it.
+`selectedItems` resolves against the universe and is the single source for every displayed count and
+every run (dock, delete/transfer/vote/export buttons alike). Newly derived: `isVisible(item)` and
+`hiddenSelectedCount`, from the same key set `selectedItems` uses, so the numbers can never disagree.
+
+**A date range is deliberately not a context switch.** A live test on 2026-09-19 found that clearing
+the selection on a range change or on the refresh button punished exactly the workflow this whole
+change exists for — narrowing or widening the range to check whether a marked-dead emote is still
+dead. A range is the same channel under a different window, same as a filter is the same emotes under
+a different view. `usage-stats-page.ts`'s `loadTotals` now tells a range change/refresh apart from an
+actual channel switch by comparing the incoming channel against `totalsChannel()` (the channel the
+last landed totals belong to): equal reconciles via `retainAmong(payload)` with the existing #94
+prune notice for anything the narrower window drops; different clears outright, because a different
+channel is a different grounding set regardless of any coincidental emote-id overlap.
+
+**The vote-session detail page did not clear on a context switch before this change**, and this
+change made the gap worse: `VoteSessionDetailPage` is reused across a direct navigation between
+sessions, but `applyResults()` reconciled the selection unconditionally via
+`retainAmong(results.emotes)` and never cleared — so an emote id that happened to also exist in the
+new session or channel stayed marked, and, once `selectedItems` started resolving against the
+universe instead of the filtered display list, stayed resolvable to the delete run too, not merely
+visually marked. `applyResults()` now keys on `channelName:sessionId` and clears on a mismatch; a
+reload of the same session still reconciles as before.
+
+**The safety moves into the delete confirmation.** `DeletableEmote` gets a required `hidden` flag,
+set by all three consumers of the contract (the two host pages and `MassDeletePanel` itself, which
+splits its selection into a visible and a hidden name list before opening the dialog) from
+`selection.isVisible()` — required, not optional, so the compiler forces both sides to supply it
+rather than the panel silently assuming everything is visible. `NamePreviewList` gets an optional
+`cap` input (default 50, `null` = uncapped). `DeleteConfirmDialog` shows the visible names capped as
+before and, only when something is hidden, a separate **uncapped** block naming every one of them: the
+50-name preview cap would otherwise reduce an off-screen delete target to a bare number right before
+an irreversible action. No opt-in and no second confirmation step — "Löschen (40)" deletes forty; a
+"keep only visible" control was deliberately not built (it would break "one count, one source" and
+the exact workflow the mod team wants). The dialog title keeps counting the whole selection, hidden
+targets included. The usage-stats dock mirrors the same information for its own page: a secondary
+line under the "n marked" count states how many of those the current filter hides, next to the
+existing "Filter zurücksetzen" action, and renders nothing at all when nothing is hidden — the
+voting-detail page has no dock, so it relies on the dialog's block alone. Everything else that
+already cleared the selection (touch mode, a finished run, the silent-reload reconciliation and its
+#94/#133 notice) stays unchanged; a sort-key change now resets only the shift anchor instead of the
+whole selection.
+
+**Verification.** The literal mod-team report — mark cells, type into the name search, keep typing,
+clear the search — is now a Playwright case in `usage-atlas.e2e.spec.ts`: the dock's count never
+moves while typing narrows and re-widens the sheet, the hidden-by-filter secondary line appears and
+names the right count while a mark is off-screen, and both marks are back and pressed once the search
+is cleared. Full design and the seven-question analysis behind these decisions:
+`docs/Konzept-Auswahl-ueberlebt-Filter-2026-09-18.md`.
+
+---
+
 ### 2026-09-16 — `IVoteSessionService.CreateAsync`'s `S107` finding fixed with a request record, not a filter
 
 **Betrifft:** `src/EmotePurge.Core/Services/IVoteSessionService.cs` · `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` · `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs`
@@ -6943,6 +7022,10 @@ Restrisiko, bewusst akzeptiert: bei N getrackten Channels mit hoher 7TV-Aktivit�
 **Befund des UI/UX-Audits vom 2026-07-30:** Vote-Session-, My-Votings- und Channel-Karten sahen wie klickbare Karten aus, reagierten aber nur auf einen ~24 px hohen Titel-Link bzw. einen kleinen „Öffnen"-Button — inkonsistent zu den vollflächig klickbaren Emote-Karten. Jetzt gilt für alle Listen-Karten das **Stretched-Link-Pattern** (Heydon Pickerings „Inclusive Components: Cards", auch Bootstrap `.stretched-link`): Der Titel- bzw. „Öffnen"-Link bleibt der einzige echte Link (Screenreader hören weiter nur den kurzen Namen), ein `::after`-Pseudoelement der neuen globalen Utility-Klasse `.app-card-link` dehnt seine Klickfläche über die ganze Karte. **Vertrag der Klasse:** Kartencontainer ist `relative`, jede Sekundäraktion in der Karte (Link kopieren, Beenden, Löschen, Bot reaktivieren) liegt per `relative z-10` über dem Overlay und bleibt separat klick- und fokussierbar. Bewusst **nicht** gewählt: die ganze Karte in ein `<a>` wrappen (ungültig bei verschachtelten Buttons, unbrauchbar langer Accessible Name) oder ein JS-Klick-Handler auf der Karte (müsste Textauswahl erkennen, hilft Tastaturnutzern nicht). Karten zeigen Hover-Feedback (`hover:bg-slate-800/70`), damit die Klickbarkeit sichtbar ist; auf der Overview ist „Öffnen" dafür vom `<button (click)>` zum `<a routerLink>` geworden (e2e-Selektor entsprechend `getByRole('link')`). Die Sekundäraktionen der Vote-Session-Karten sind zugleich von 20-px-Textlinks auf echte Buttons ≥ 32 px angehoben, „Löschen" rechts abgesetzt.
 
 ### 2026-07-30 — `SegmentedControl` als erster `shared/ui/`-Baustein; Filterwechsel beschneiden die Auswahl statt sie zu löschen (S2-16)
+
+> **Superseded on 2026-09-19** (the S2-16 half only — the `SegmentedControl` half stands): pruning
+> the selection on every filter change was reverted, and the safety it was protecting moved to the
+> delete-confirmation dialog instead — see the 2026-09-19 entry above.
 
 **Betrifft:** `web/src/app/shared/ui/segmented-control.ts` · `web/src/app/shared/selection/list-selection.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/voting/vote-session-detail-page.ts`
 
