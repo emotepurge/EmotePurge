@@ -1,4 +1,36 @@
 <div class="flex flex-col gap-8">
+  <!-- The page header (design doc §8.7): a command that is complete without any selection belongs
+       here, not in the dock or the flow beneath the sheet — and going to pick emotes for a ballot
+       needs no session of this list marked first. It stays visible whether the list is empty or
+       already has entries, unlike the old inline form that only existed below a (possibly absent)
+       list.
+
+       Manager-only, same gate the old form used (canManage) — a voter cannot start a session
+       either way, so nothing here would open a door for them. Fine-pointer only: the destination is
+       the usage-stats atlas, and marking cells for a curated ballot is `!isCoarse()`-gated there
+       (usage-stats-page.html's dock). Hiding rather than disabling on coarse, like the old
+       wholeSetHint link — a `pointer-coarse:hidden`/`hidden pointer-coarse:inline` pair (Pointer
+       ModeService: "purely visual hiding" prefers the CSS variant over the signal). The sentence
+       that takes the button's place on coarse replaces `voting.list.wholeSetHintDesktopOnly`
+       content-wise, moved from the removed form to here. -->
+  <header class="flex flex-wrap items-center justify-between gap-3">
+    <h2 class="text-lg font-semibold">{{ 'voting.list.title' | transloco }}</h2>
+    @if (canManage()) {
+      <div class="flex flex-wrap items-center gap-2">
+        <a
+          appButton="primary"
+          [routerLink]="['/channels', channelName(), 'usage-stats']"
+          class="pointer-coarse:hidden"
+        >
+          {{ 'voting.list.createEntryButton' | transloco }}
+        </a>
+        <span class="hidden text-sm text-fg-muted pointer-coarse:inline">
+          {{ 'voting.list.createEntryDesktopOnly' | transloco }}
+        </span>
+      </div>
+    }
+  </header>
+
   @if (errorMessage(); as message) {
     <app-notice-banner variant="error">{{ message | transloco }}</app-notice-banner>
   }
@@ -19,9 +51,8 @@
          No inner scroll box either: the pager already bounds the length, and a nested scroll area
          inside the page scroll was its own usability problem on mobile.
 
-         The list is the pager's scroll/focus target (§8.4). It sits at the top of the page now
-         that the create form moved below it, so a page change lands on the first row instead of on
-         a form. `scroll-mt-24` clears the shell header + workspace tabs, `tabindex="-1"` makes it
+         The list is the pager's scroll/focus target (§8.4), so a page change lands on the first
+         row. `scroll-mt-24` clears the shell header + workspace tabs, `tabindex="-1"` makes it
          focusable without adding a tab stop. -->
     <ul
       #resultsTop
@@ -134,116 +165,5 @@
       [scrollTarget]="resultsTop"
       (pageChange)="onPageChange($event)"
     />
-  }
-
-  @if (canManage()) {
-    <!-- Below the list, not above it. Someone opening this tab is asking what is running; creating
-         a session is the rarer errand, and as a card at the top it pushed that answer off the first
-         screen. It stays fully visible rather than folding into a disclosure — whether anyone wants
-         community voting at all is the open question about this feature (PRODUCT.md), and hiding
-         the entry point would answer it by attrition instead of by evidence. -->
-    <section class="flex flex-col gap-3 border-t border-border pt-6">
-      <div>
-        <h2 class="text-lg font-semibold">{{ 'voting.list.createTitle' | transloco }}</h2>
-        <!-- The counterpart of the dialog's "{{count}} emotes selected" line: this entry point has
-             no selection at all, and nothing else on the form said which emotes end up on the
-             ballot. -->
-        <!-- The link is fine-pointer only: a curated ballot is assembled by selecting cells on the
-             usage-stats page, and that selection does not exist on a coarse pointer — the dock that
-             carries "Zur Abstimmung stellen" is gated on `!isCoarse()` there. The page itself stays
-             reachable and readable, so the link is not broken navigation; it is a question its
-             destination cannot answer. The sentence that takes its place says where the capability
-             lives rather than leaving a hole where a mod would look for it. -->
-        <p class="mt-1 text-sm text-fg-muted">
-          {{ 'voting.list.wholeSetHint' | transloco }}
-          <a
-            [routerLink]="['/channels', channelName(), 'usage-stats']"
-            class="text-fg-secondary underline-offset-2 hover:text-accent-fg hover:underline pointer-coarse:hidden"
-          >
-            {{ 'voting.list.wholeSetHintLink' | transloco }}
-          </a>
-          <span class="hidden pointer-coarse:inline">
-            {{ 'voting.list.wholeSetHintDesktopOnly' | transloco }}
-          </span>
-        </p>
-      </div>
-      <input
-        id="vote-session-title"
-        type="text"
-        [formControl]="titleControl"
-        [placeholder]="'voting.list.titlePlaceholder' | transloco"
-        [attr.aria-label]="'voting.list.titlePlaceholder' | transloco"
-        [attr.aria-invalid]="titleControl.invalid && titleControl.touched ? 'true' : null"
-        [attr.aria-describedby]="
-          titleControl.invalid && titleControl.touched ? 'vote-session-title-error' : null
-        "
-        class="app-input"
-      />
-      @if (titleControl.invalid && titleControl.touched) {
-        <p id="vote-session-title-error" class="text-sm text-danger-fg">
-          {{ 'voting.list.titleRequired' | transloco }}
-        </p>
-      }
-      <div class="flex gap-4 text-sm text-fg-secondary">
-        <label class="flex items-center gap-2 py-1">
-          <input
-            type="radio"
-            class="h-4 w-4 accent-accent-solid"
-            name="audience"
-            [checked]="selectedAudience() === 'everyone'"
-            (change)="selectedAudience.set('everyone')"
-          />
-          {{ 'voting.list.audienceEveryone' | transloco }}
-        </label>
-        <label class="flex items-center gap-2 py-1">
-          <input
-            type="radio"
-            class="h-4 w-4 accent-accent-solid"
-            name="audience"
-            [checked]="selectedAudience() === 'subs'"
-            (change)="selectedAudience.set('subs')"
-          />
-          {{ 'voting.list.audienceSubs' | transloco }}
-        </label>
-        <label class="flex items-center gap-2 py-1">
-          <input
-            type="radio"
-            class="h-4 w-4 accent-accent-solid"
-            name="audience"
-            [checked]="selectedAudience() === 'mods'"
-            (change)="selectedAudience.set('mods')"
-          />
-          {{ 'voting.list.audienceMods' | transloco }}
-        </label>
-      </div>
-      <label class="flex flex-col gap-1 text-sm text-fg-secondary">
-        {{ 'voting.list.startCountingLabel' | transloco }}
-        <app-datetime-picker [(value)]="customStartedAt" [max]="maxStartedAt" />
-      </label>
-      <div class="flex flex-col gap-1 text-sm text-fg-secondary">
-        <label class="flex items-center gap-2 py-1">
-          <input
-            type="checkbox"
-            class="h-4 w-4 accent-accent-solid"
-            [checked]="hideResultsUntilEnd()"
-            (change)="hideResultsUntilEnd.set($any($event.target).checked)"
-            [attr.aria-describedby]="'vote-session-hide-results-hint'"
-          />
-          {{ 'voting.list.hideResultsLabel' | transloco }}
-        </label>
-        <span id="vote-session-hide-results-hint" class="text-xs text-fg-muted">
-          {{ 'voting.list.hideResultsHint' | transloco }}
-        </span>
-      </div>
-      <button
-        type="button"
-        appButton="primary"
-        buttonSize="lg"
-        class="self-start"
-        (click)="createSession()"
-      >
-        {{ 'voting.list.create' | transloco }}
-      </button>
-    </section>
   }
 </div>

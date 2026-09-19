@@ -164,6 +164,61 @@ class of defect, but older than this branch and deliberately not taken along her
 
 ---
 
+### 2026-09-19 — A voting session is started from a selection on the usage page, and from nowhere else
+
+**Betrifft:** `web/src/app/features/voting/vote-session-list-page.html` ·
+`web/src/app/features/voting/vote-session-list-page.ts` ·
+`web/src/app/features/voting/vote-session-list-page.spec.ts` · `web/public/i18n/de.json` ·
+`web/public/i18n/en.json` · `web/e2e/touch-mobile.e2e.spec.ts`
+
+The voting tab used to carry an inline create form, and that form could only ever produce one kind
+of ballot: the whole emote set, dynamically. The curated ballot — the one assembled by marking cells
+on the usage page — was reachable only through a sentence of body text underneath the form
+(`voting.list.wholeSetHintLink`, "Nur bestimmte Emotes zur Wahl stellen?"). The hierarchy was
+inverted: the prominent, zero-friction path produced the result nobody wants, and the wanted path
+was a link saying "do it somewhere else". For HandOfBlood's ~900 emotes a whole-set ballot is not a
+feature, it is a wall of cells; and for a 40-emote channel the whole set is already reachable by the
+bands' "alle markieren" in the atlas, so nothing is actually lost by not offering it separately.
+
+**The form is gone. The API contract is not.** `emoteIds: null` still means "whole set, dynamic
+ballot" in `CreateVoteSessionRequest`, `VoteSessionCreateRequest` and
+`VoteSessionService.CreateAsync`, and sessions created that way still render in the list, the detail
+page and the results view exactly as before. Nothing in `src/` was touched. This is a capability we
+stopped exposing, not dead code — whoever reads `VoteSessionService` next should not delete the
+`null` branch on the assumption that it is unreachable.
+
+**The entry point is two things, not one.** A single empty-state hint would have been the obvious
+move and it is wrong: whoever already has three sessions running needs the way to the fourth just as
+much, and an empty state by definition is not there for them. So the page header (§8.7 — a command
+complete without any selection of its own) carries a permanent manager-only link to the usage page,
+and the empty state separately spells out the two-step flow. The empty state's how-to is
+manager-only as well; a voter sees only that nothing is running yet, because the instruction would
+describe a door they cannot open.
+
+**Creating a voting session is desk work, decided rather than inherited.** The curated ballot is
+assembled by marking cells in the usage atlas, and that selection does not exist on a coarse pointer
+(`@if (!isCoarse())` in `usage-stats-page.html`). Removing the form therefore removes the last way
+to create a session from a phone. That was weighed and accepted: the header link is fine-pointer
+only, and a coarse pointer gets a sentence naming where the capability lives
+(`voting.list.createEntryDesktopOnly`) rather than a hole where a mod would look for it. The
+alternative — keeping the whole-set form alive on mobile only — would have left two tabs with the
+same name doing different things. If touch selection ever lands in the atlas, this decision is the
+one to revisit.
+
+**Why now, with no users.** Nobody has run a voting session yet. That is the argument for changing
+it today rather than later: no one has learned the current pattern, so the change costs nothing in
+relearning, and the feature's open question — whether community voting gets used at all — is better
+tested from the entry point people would actually reach for.
+
+**i18n footnote.** Only `createTitle`, `wholeSetHint`, `wholeSetHintLink`, `wholeSetHintDesktopOnly`
+and `create` were removed. `titlePlaceholder`, `titleRequired`, `audience*`, `startCountingLabel`
+and `hideResults*` look like form leftovers but are read by `create-vote-session-dialog.ts` on the
+usage page, which is now the only creation surface — they stay. `noSessionsManagerHint` was
+rewritten to name the flow, reusing the dock's own verb "Zur Abstimmung stellen" per the 2026-09-14
+one-verb rule.
+
+---
+
 ### 2026-09-16 — `IVoteSessionService.CreateAsync`'s `S107` finding fixed with a request record, not a filter
 
 **Betrifft:** `src/EmotePurge.Core/Services/IVoteSessionService.cs` · `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` · `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs`
