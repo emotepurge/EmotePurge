@@ -264,6 +264,46 @@ test.describe('emote atlas', () => {
     await expect(page.getByRole('button', { name: /^Löschen \(/ })).toHaveCount(0);
   });
 
+  test('a running selection survives typing into and clearing the name search, and the dock names what the filter hides', async ({
+    page,
+  }) => {
+    // The mod-team report, reproduced literally (Konzept "Auswahl überlebt Suche und Filter",
+    // 2026-09-18): mark cells, type into the search, keep typing, clear the search — the dock
+    // counts the whole selection throughout, and nothing gets lost along the way.
+    await openAtlas(page);
+
+    await cell(page, 'catJAM').click();
+    await cell(page, 'Bedge').click();
+    await expect(page.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
+
+    const dock = page.locator('.app-dock');
+    const hiddenLine = () => dock.getByRole('status').filter({ hasText: 'ausgeblendet' });
+    const search = page.getByPlaceholder('Name suchen…');
+
+    // "cat" only matches catJAM — Bedge falls out of the sheet without leaving the selection.
+    await search.fill('cat');
+    await expect(cell(page, 'Bedge')).toHaveCount(0);
+    await expect(cell(page, 'catJAM')).toHaveAttribute('aria-pressed', 'true');
+    await expect(dock.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
+    // 2.1/2.2: while the filter hides part of the mark, the dock names the count, not just a
+    // shrunk total.
+    await expect(hiddenLine()).toContainText('1 davon durch den Filter ausgeblendet');
+
+    // Weitertippen: narrowing the query further keeps the same emote hidden and the same count.
+    await search.fill('catJ');
+    await expect(cell(page, 'Bedge')).toHaveCount(0);
+    await expect(dock.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
+    await expect(hiddenLine()).toContainText('1 davon durch den Filter ausgeblendet');
+
+    // Suche löschen: both marks reappear, nothing was pruned, and the hidden-by-filter line is
+    // gone again because nothing is hidden any more.
+    await search.fill('');
+    await expect(cell(page, 'Bedge')).toHaveAttribute('aria-pressed', 'true');
+    await expect(cell(page, 'catJAM')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
+    await expect(hiddenLine()).toHaveCount(0);
+  });
+
   test('the sidecar names whatever cell the pointer is on', async ({ page }) => {
     await openAtlas(page);
     const sidecar = page.getByRole('complementary');
