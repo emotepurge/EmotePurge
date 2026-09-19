@@ -728,7 +728,7 @@
       "title": "Voting sessions",
       "createEntryButton": "Put emotes up for vote",
       "createEntryDesktopOnly": "Voting sessions are created on desktop, from the usage page.",
-      "createEntryHint": "Mark the emotes to vote on there first.",
+      "createEntryHint": "Mark the emotes to vote on.",
       "titlePlaceholder": "Title, e.g. July cleanup round",
       "titleRequired": "Title must not be empty.",
       "audienceEveryone": "Everyone",

@@ -728,7 +728,7 @@
       "title": "Votings",
       "createEntryButton": "Emotes zur Abstimmung stellen",
       "createEntryDesktopOnly": "Abstimmungen erstellst du am Rechner, auf der Nutzungsseite.",
-      "createEntryHint": "Markiere dort zuerst die Emotes, über die abgestimmt werden soll.",
+      "createEntryHint": "Markiere die Emotes, über die abgestimmt werden soll.",
       "titlePlaceholder": "Titel, z.B. Monats-Aufräumaktion Juli",
       "titleRequired": "Titel darf nicht leer sein.",
       "audienceEveryone": "Alle",

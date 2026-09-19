@@ -252,9 +252,7 @@ link — manager-only, hidden on a coarse pointer — so it stands whether the l
 **What that sentence does and does not say.** It names only the precondition: that emotes have to be
 marked first, before the button leads anywhere useful. It deliberately does not name the
 destination, because the button does that already ("Put emotes up for vote", linking to the usage
-page) and a hint repeating it back adds nothing. It refers to the destination as "there", off the
-button directly above it — sound only because the two carry the same two gates and the hint never
-renders without the button present. The old hint's second sentence ("the session then appears here")
+page) and a hint repeating it back adds nothing. The old hint's second sentence ("the session then appears here")
 is not carried along: it only ever explained why the list was empty, which is not a fact worth
 stating permanently. `noSessionsManagerHint` is retired outright, not renamed; a manager's empty
 state now shows the same plain `noSessions` title a voter sees, and only the `[description]` differs
