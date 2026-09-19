@@ -932,10 +932,12 @@ export class UsageStatsPage {
 
   /** Selection key snapshot the last bulk-mark gesture (`markAll()`/`selectBand()`) left behind, or
    *  `null` before either has ever fired — see `dockMarkedCount`'s comment for what this guards
-   *  against. A plain field, not a signal: it is only ever read from inside `dockMarkedCount`, which
-   *  already re-evaluates on every `selection.selectedKeys()` change (a bulk gesture is itself one
-   *  such change), so nothing is lost by not tracking it separately. */
-  private bulkMarkSnapshot: ReadonlySet<string> | null = null;
+   *  against. A signal, not a plain field, because `dockMarkedCount` reads it: a `computed()` that
+   *  reaches through the instance for mutable state never reacts to it (rule 14). It would happen to
+   *  work today, since every write here is paired with a `bulkMarkAnnouncement` write that does
+   *  invalidate the computed — but that is a coincidence of call order, not a property anyone should
+   *  have to preserve. */
+  private readonly bulkMarkSnapshot = signal<ReadonlySet<string> | null>(null);
 
   protected readonly dockMarkedCount = computed(() =>
     !this.isCoarse() &&
@@ -1565,7 +1567,7 @@ export class UsageStatsPage {
    *  marked band/view leaves a different total than the gesture's own item count. */
   private recordBulkMarkAnnouncement(): void {
     this.bulkMarkAnnouncement.set(this.selection.selectedItems().length);
-    this.bulkMarkSnapshot = new Set(this.selection.selectedKeys());
+    this.bulkMarkSnapshot.set(new Set(this.selection.selectedKeys()));
   }
 
   /** Whether the live selection still is exactly what the last bulk-mark gesture left behind — see
@@ -1575,7 +1577,7 @@ export class UsageStatsPage {
    *  `retainAmong()` call (a routine reload that prunes nothing) must not falsely count as the kind
    *  of change this exists to detect, or the row would flicker off on every silent refresh. */
   private matchesBulkMarkSnapshot(): boolean {
-    const snapshot = this.bulkMarkSnapshot;
+    const snapshot = this.bulkMarkSnapshot();
     if (snapshot === null) {
       return false;
     }
