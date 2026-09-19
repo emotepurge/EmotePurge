@@ -213,6 +213,30 @@
           {{ 'usageStats.resetFilters' | transloco }}
         </button>
       }
+      <!-- Scope is the current filtered view (`atlasOrder()`), not the channel's whole set
+           (`emotes()`) — with no filter active the two coincide. Fine-pointer only, like every
+           other selection surface (2.5), and gone whenever the sheet is not actually showing that
+           view (`showMarkAll`/`sheetShowsRows` — still loading, the awaiting-sync banner in its
+           place, or nothing matches). Disabled once the view is already fully marked, mirroring the
+           per-band button's own additive-only selectMany() rather than a toggle (Konzept "Auswahl
+           überlebt Suche und Filter" — a group action must never silently deselect). A bare verb,
+           same as the band button (`usageStats.bands.selectAll`) and for the same reason: the count
+           this button would act on is already stated right next to it, here by the emote-count
+           line at the end of this same row (`emoteCountKey()` below), there by the band heading —
+           neither button needs to say it twice (corrects docs/DECISIONS.md 2026-09-19, "mark all"
+           on the usage toolbar, and docs/UI-Designsprache.md §8.7, which both used to argue the
+           opposite). -->
+      @if (showMarkAll()) {
+        <button
+          type="button"
+          appButton="neutral"
+          class="disabled:cursor-not-allowed"
+          [disabled]="markAllDisabled()"
+          (click)="markAll()"
+        >
+          {{ 'usageStats.markAll' | transloco }}
+        </button>
+      }
       <p
         role="status"
         [class]="
@@ -539,6 +563,11 @@
                    definition, so "all of them" is a sentence a moderator actually means. Offering
                    it on the heavy band would be a loaded gun with no purpose. -->
                 @if (row.band === 'dead' && !isCoarse()) {
+                  <!-- No [disabled] here (Codex/Opus review): this row only ever renders in the
+                       grid's own @else branch, which isLoading() never reaches (see sheetShowsRows)
+                       — a loading-window guard on this button could never fire, so binding one was
+                       dead markup. A reload in flight simply removes this whole row instead, along
+                       with the rest of the outgoing sheet. -->
                   <button
                     type="button"
                     class="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium text-accent-fg transition hover:bg-surface-inset"
@@ -824,16 +853,27 @@
   </div>
 </div>
 
-<!-- The screen-reader voice for what the dock below reports: the duplicate and resync notices of a
-     restore and of an import, and the standing "n davon durch den Filter ausgeblendet" line.
-     Outside the dock's @if, !isCoarse() included, because the dock mounts and unmounts with its
-     content — a fully refused run is what mounts it — and a status region created in the same pass
-     as its text announces nothing (docs/UI-Designsprache.md §4.5). That is just as true of a line
-     inside an already-mounted dock whose own @if creates it together with its sentence, which is
-     why the hidden-by-filter count is spoken here too. Everything the dock shows is aria-hidden
-     for that reason, and dockHiddenSelectedCount() mirrors that line's own gates so this region
-     never says something the dock does not show. -->
-<app-dock-outcome-announcer [withImport]="true" [hiddenSelectedCount]="dockHiddenSelectedCount()" />
+<!-- The screen-reader voice for what the dock below reports: a bulk-mark gesture's outcome, the
+     duplicate and resync notices of a restore and of an import, and the standing "n davon durch den
+     Filter ausgeblendet" line. Outside the dock's @if, !isCoarse() included, because the dock mounts
+     and unmounts with its content — a fully refused run is what mounts it, and a status region
+     created in the same pass as its text announces nothing (docs/UI-Designsprache.md §4.5). That is
+     just as true of a line inside an already-mounted dock whose own @if creates it together with its
+     sentence, which is why the hidden-by-filter count is spoken here too, continuously.
+
+     The marked-count row is spoken differently (Opus review, 2026-09-19): reading dockMarkedCount()
+     is NOT the same live number the dock's visible row shows any more, only the size the selection
+     was left at by the last "mark all"/per-band "mark all" — an individual mark or unmark already
+     announces itself via its own cell's aria-pressed, so mirroring the live count here too spoke
+     every one of those a second time. The visible row is therefore reachable again (not aria-hidden,
+     see its own comment below): it is the only place that always names the live count, this region
+     only ever names the outcome of a bulk gesture. dockHiddenSelectedCount() still mirrors its
+     line's own gates exactly, unchanged. -->
+<app-dock-outcome-announcer
+  [withImport]="true"
+  [markedCount]="dockMarkedCount()"
+  [hiddenSelectedCount]="dockHiddenSelectedCount()"
+/>
 
 <!-- The action bar. It exists only while there is something to act on, which is what allows the
      surface above it to be nothing but emotes. Kept mounted through a settled run as well, because
@@ -849,6 +889,15 @@
            not around the whole bar. -->
       @if (activeEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <!-- Reachable in the accessibility tree again (Opus review, 2026-09-19 — was aria-hidden
+               before): the permanently mounted app-dock-outcome-announcer above no longer mirrors
+               this number continuously, only a bulk-mark gesture's outcome, so this live count is
+               now the only place that says what is marked *right now* for someone navigating the
+               dock by hand. Hiding it would have destroyed information instead of avoiding a double
+               reading — the double-reading risk that motivated aria-hidden in the first place is
+               gone along with the continuous mirroring (§4.5's "visible twin" contract is about two
+               surfaces announcing the same thing at the same moment, not a number read only when
+               navigated to, so this is not that contract's exception, just outside its scope now). -->
           <span class="font-mono text-base font-semibold text-accent-fg">{{
             selection.selectedItems().length
           }}</span>

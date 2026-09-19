@@ -1056,6 +1056,202 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     expect(component['dockHiddenSelectedCount']()).toBe(0);
   });
 
+  /**
+   * The toolbar's "mark all" control (2026-09-19, docs/DECISIONS.md). Its whole point is scope:
+   * `atlasOrder()`, the filtered/sorted/banded view the sheet is actually showing, never
+   * `emotes()`, the channel's unfiltered universe underneath it.
+   */
+  it('marks exactly the current filtered view, leaving filtered-out rows unmarked', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    const c = emote('c', 'Other');
+    mount([a, b, c]);
+
+    component['usageFilter'].setNameFilter('Peepo');
+    expect(
+      component['atlasOrder']()
+        .map((emote) => emote.emoteId)
+        .sort(),
+    ).toEqual(['a', 'b']);
+
+    component['markAll']();
+
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    expect(component['selection'].isSelected(c)).toBe(false);
+  });
+
+  it('is disabled once the current view is fully marked, and re-enables the moment a row is unmarked', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    expect(component['markAllDisabled']()).toBe(false);
+
+    component['markAll']();
+    expect(component['markAllDisabled']()).toBe(true);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['markAllDisabled']()).toBe(false);
+  });
+
+  it('is correctly disabled, not a false positive, once a filter narrows the view down to already-marked rows', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['markAllDisabled']()).toBe(false);
+
+    // Narrows atlasOrder() to just the already-marked 'a' — mark-all over that view could add
+    // nothing, so it is correctly disabled here, not a false positive of the check.
+    component['usageFilter'].setNameFilter('PeepoA');
+    expect(component['markAllDisabled']()).toBe(true);
+  });
+
+  /**
+   * Codex/Opus review: `load()` sets `isLoading` before `loadTotals()`'s response writes
+   * `emotes.set(...)` — a range change or the refresh button therefore leaves `atlasOrder()` (and
+   * the selection) still describing the OUTGOING query for the whole in-flight window. `showMarkAll`
+   * used to stay true through that window (it only checked `atlasOrder().length > 0`), which is
+   * exactly the "sync pending" bug fix 3 of the same review closed — the toolbar control now
+   * requires `sheetShowsRows()`, which folds `!isLoading()` in, so the button leaves the DOM for the
+   * same window that used to need a separate `markingSuspendedByLoad()` gate on `markAllDisabled`
+   * (removed as dead weight once this subsumed it — see `markAllDisabled`'s own comment). The
+   * template-level absence of the button is asserted against the real template in the dedicated
+   * describe block below; this only pins the computed signal `showMarkAll` reads to reach it.
+   */
+  it('hides the toolbar control while a reload is in flight, even though the outgoing atlasOrder() is still non-empty', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    expect(component['showMarkAll']()).toBe(true);
+
+    // Off the 'all' preset first — otherwise the "all time" correction effect (see its own comment
+    // in usage-stats-page.ts) would snap `from` straight back the moment it changes below, since
+    // that effect re-fires on every `from()`/`to()`/`rangePreset()` write and 'all' is what makes it
+    // active. This mirrors the setup the dedicated date-range-change describe block gives itself
+    // from the start; here it happens mid-test since the surrounding suite needs 'all' for mount().
+    component['rangePreset'].set('custom');
+
+    // A range change re-enters load(): isLoading flips true immediately, but atlasOrder() still
+    // shows the previous response until loadTotals()'s next 'next' callback lands.
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
+
+    expect(component['isLoading']()).toBe(true);
+    // The outgoing view is still non-empty — without sheetShowsRows() folding in isLoading(), this
+    // would still read true.
+    expect(component['atlasOrder']().length).toBeGreaterThan(0);
+    expect(component['showMarkAll']()).toBe(false);
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
+
+    expect(component['isLoading']()).toBe(false);
+    expect(component['showMarkAll']()).toBe(true);
+  });
+
+  /**
+   * The dock's own marked-count row is created by the same `@if` that fills it, so a bulk mark can
+   * take it from unmounted to a double-digit count with nothing announced — the same defect
+   * `dockHiddenSelectedCount` above exists to close, now for the count it sits next to
+   * (docs/UI-Designsprache.md §4.5).
+   *
+   * Opus review (2026-09-19) narrowed this further: an individual mark or unmark already announces
+   * itself through its own cell's `aria-pressed`, so mirroring the live selection count here too
+   * spoke every one of those a second time. Only `markAll()`/`selectBand()` write
+   * `dockMarkedCount()` now — see the tests below for the two failure modes that guarded against:
+   * an individual click must never move it, and it must not resurrect a stale bulk count once the
+   * selection it described has actually emptied.
+   */
+  describe('dockMarkedCount (bulk gestures only)', () => {
+    it('is fed only by a bulk mark, and clears once the dock row it feeds is off screen', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
+
+      expect(component['dockMarkedCount']()).toBe(0);
+
+      component['markAll']();
+      expect(component['dockMarkedCount']()).toBe(2);
+
+      // No active 7TV set means no marking half of the dock, so no row — and therefore nothing to
+      // speak, even though the selection itself is untouched.
+      component['setStatus'].set(null);
+      expect(component['selection'].selectedKeys()).toHaveLength(2);
+      expect(component['dockMarkedCount']()).toBe(0);
+    });
+
+    it('does not move for an individual click, only for the bulk gestures', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
+
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(1);
+      // An individual mark already announces itself via its own cell — this region must stay
+      // silent for it, unlike the pre-review behaviour that mirrored the live count here too.
+      expect(component['dockMarkedCount']()).toBe(0);
+
+      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(2);
+      expect(component['dockMarkedCount']()).toBe(0);
+    });
+
+    it('does not resurrect a stale bulk count once the selection it described has fully emptied', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
+
+      component['markAll']();
+      expect(component['dockMarkedCount']()).toBe(2);
+
+      // Unmarked by hand, down to nothing — no further bulk gesture in between.
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(0);
+      expect(component['dockMarkedCount']()).toBe(0);
+
+      // Lets the constructor's reset effect (see dockMarkedCount's own comment) actually run before
+      // the next click — effects are scheduled, not synchronous with the signal write that woke
+      // them, and detectChanges() is this file's established way to flush them (see the reload-in-
+      // flight test above).
+      fixture.detectChanges();
+
+      // A single individual click marks one row again. Without that effect having reset the stored
+      // bulk count back to 0 while the selection was empty, this would read 2 again — the stale
+      // "mark all" outcome — instead of staying silent for what is, on its own, just another
+      // individual mark.
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(1);
+      expect(component['dockMarkedCount']()).toBe(0);
+    });
+
+    it('re-announces a bulk gesture even when it lands back on the same total the last one left behind', () => {
+      const a = emote('a', 'PeepoA');
+      const b = emote('b', 'PeepoB');
+      mount([a, b]);
+
+      component['markAll']();
+      expect(component['dockMarkedCount']()).toBe(2);
+
+      // A single deselect is not a bulk gesture — it must retire the announcement even though the
+      // selection stays non-empty, unlike the fully-emptied case above.
+      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toHaveLength(1);
+      expect(component['dockMarkedCount']()).toBe(0);
+
+      // "Mark all" again re-adds the same row and lands on the same total (2) the first press
+      // already announced. `role="status"` only reacts to a DOM mutation, so if this stayed masked
+      // at "the same number as before" nothing would be spoken for a gesture that really happened —
+      // a screen-reader user marking everything twice in a row would hear it only the first time.
+      component['markAll']();
+      expect(component['selection'].selectedKeys()).toHaveLength(2);
+      expect(component['dockMarkedCount']()).toBe(2);
+    });
+  });
+
   it('marking a band, changing the filter, marking again and clearing the filter unions both groups', () => {
     const dead1 = emote('d1', 'Dead1', 0);
     const dead2 = emote('d2', 'Dead2', 0);
@@ -1677,5 +1873,218 @@ describe('UsageStatsPage — openCreateVoteSession() (#132)', () => {
     component['selection'].retainAmong([a]);
 
     expect(data.emoteIds()).toEqual(['a']);
+  });
+});
+
+/**
+ * The toolbar's "mark all" control does not exist at all on a coarse pointer — same reasoning as
+ * every other selection surface (docs/UI-Designsprache.md §2.5): there is no 7TV write path off a
+ * phone, so nothing a mark could ever lead to. `PointerModeService` reads `matchMedia` once at
+ * construction, so the coarse device has to be in place before `TestBed.createComponent` runs
+ * (see core/pointer/pointer-mode.service.spec.ts for the same fake shape).
+ */
+describe('UsageStatsPage — mark-all does not exist on a coarse pointer (2026-09-19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.stubGlobal('matchMedia', () => ({
+      matches: true,
+      media: '',
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('reports not shown even though the current view is non-empty', () => {
+    mount([emote('a', 'PeepoA')]);
+
+    expect(component['isCoarse']()).toBe(true);
+    expect(component['atlasOrder']().length).toBeGreaterThan(0);
+    expect(component['showMarkAll']()).toBe(false);
+  });
+});
+
+/**
+ * Fix 5, Opus review (2026-09-19): every test above for `showMarkAll()`/`markAllDisabled()` runs
+ * against the two-`<div>` stub template every other describe block in this file uses, so neither the
+ * template's `@if (showMarkAll())` nor its `[disabled]="markAllDisabled()"` binding ever actually
+ * ran — removing either from usage-stats-page.html would still leave that suite green, only the
+ * computed()s behind it were pinned. These tests mount the real template instead, the same way the
+ * block this one replaces did (that one asserted `aria-hidden`/DOM-structure on the marked-count row
+ * via `children[n]` navigation — itself flagged in the same review and gone along with the behaviour
+ * it tested, since that row is reachable again, see usage-stats-page.html's own comment).
+ *
+ * Located by the button's rendered text, not a CSS class (Regel 12): with the empty `{}`
+ * translations this file's real-template blocks use, Transloco's default missing-key handler
+ * (`DefaultMissingHandler.handle`) returns the raw key itself, which is a stable, unique string here
+ * — the same fallback `vote-session-list-page.spec.ts` already relies on for its own text assertions.
+ */
+describe("UsageStatsPage — the toolbar mark-all button's template binding (Opus review, 2026-09-19)", () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    // Unlike the stub-template blocks in this file, the real template only reflects the flushes
+    // above once change detection actually runs — every assertion here reads the DOM, not a bare
+    // computed(), so this cannot be left to whichever later `fixture.detectChanges()` a test
+    // happens to call for its own reasons.
+    fixture.detectChanges();
+  }
+
+  function markAllButton(): HTMLButtonElement | undefined {
+    return Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.trim() === 'usageStats.markAll');
+  }
+
+  it('exists and is enabled while the view is not fully marked, and disables the moment it is', () => {
+    // A real (non-empty) imageUrl: this describe block renders the actual template, unlike most of
+    // this file's stub-template blocks, so the sprite's NgOptimizedImage directive now actually
+    // runs and rejects the shared emote() helper's default '' (NG02952).
+    const a = { ...emote('a', 'PeepoA'), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' };
+    mount([a]);
+
+    const button = markAllButton();
+    expect(button).not.toBeUndefined();
+    expect(button!.disabled).toBe(false);
+
+    button!.click();
+    fixture.detectChanges();
+
+    expect(markAllButton()!.disabled).toBe(true);
+  });
+
+  it('does not exist while a reload is in flight, even though the outgoing view is still non-empty, and reappears once it lands', () => {
+    const a = { ...emote('a', 'PeepoA'), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' };
+    mount([a]);
+
+    expect(markAllButton()).not.toBeUndefined();
+
+    // Off the 'all' preset first — see the computed-level test of the same scenario above for why.
+    component['rangePreset'].set('custom');
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
+
+    expect(component['isLoading']()).toBe(true);
+    expect(component['atlasOrder']().length).toBeGreaterThan(0);
+    expect(markAllButton()).toBeUndefined();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
+    fixture.detectChanges();
+
+    expect(component['isLoading']()).toBe(false);
+    expect(markAllButton()).not.toBeUndefined();
   });
 });

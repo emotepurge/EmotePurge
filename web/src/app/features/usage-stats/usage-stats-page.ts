@@ -280,7 +280,8 @@ export class UsageStatsPage {
 
   // The route guard admits 7TV editors (canViewUsageStats), but creating a vote session is a
   // management action (ChannelManagementAuthorizationFilter on the endpoint) — the button only
-  // shows where the click can succeed. Same pattern as VoteSessionListPage's create form.
+  // shows where the click can succeed. Same pattern as VoteSessionListPage's own header link,
+  // gated behind the identical canManage computed.
   private readonly permissionsResource = rxResource({
     params: () => this.channelName(),
     stream: ({ params }) => this.channelService.getPermissions(params),
@@ -823,6 +824,46 @@ export class UsageStatsPage {
       !this.importScopeCurrent(),
   );
 
+  /** Whether the sheet is actually showing the rows `atlasOrder()` describes — the same condition
+   *  that picks the grid `@else` branch in the template (`usage-stats-page.html`'s
+   *  `isLoading()`/`isAwaitingSync()`/`atlasOrder().length === 0` chain), pulled out as one named
+   *  source rather than re-derived at the one other place that needs it (`showMarkAll` below). While
+   *  `isLoading()` is true, `atlasOrder()` can still be non-empty — it still describes the OUTGOING
+   *  query until `loadTotals()`'s response lands (see that method's own comment) — which is exactly
+   *  the state this excludes. */
+  protected readonly sheetShowsRows = computed(
+    () => !this.isLoading() && !this.isAwaitingSync() && this.atlasOrder().length > 0,
+  );
+
+  /** Whether the toolbar's mark-all control exists at all — a fine pointer (no write path off a
+   *  phone, same reasoning as everywhere else selection appears) and the sheet actually showing a
+   *  non-empty current view (`sheetShowsRows`). Scope is `atlasOrder()`, not `emotes()`: the button
+   *  marks what the sheet is showing, filtered, sorted and banded, not the channel's whole universe
+   *  underneath an active filter.
+   *
+   *  Codex/Opus review: this used to read `atlasOrder().length > 0` alone, which stayed true while
+   *  the sheet itself showed the "sync pending" banner in place of the grid (`emotes()` — and with
+   *  it `atlasOrder()` — is filled by the totals endpoint independently of the 7TV set status). The
+   *  toolbar button was therefore live over rows nobody could see, and a press marked them into a
+   *  dock with zero visible feedback (the dock mounts off `activeEmoteSetId`, which is exactly what
+   *  is missing while the banner shows). Requiring `sheetShowsRows()` closes that window; it also
+   *  makes the loading case redundant here, see `markAllDisabled` below. */
+  protected readonly showMarkAll = computed(() => !this.isCoarse() && this.sheetShowsRows());
+
+  /** Disabled once every row the sheet currently shows is already marked — a press that could not
+   *  add anything is not a control worth pressing. Vacuously true on an empty view, which never
+   *  matters in practice: `showMarkAll()` already hides the button there.
+   *
+   *  No loading gate here any more (Codex/Opus review): `showMarkAll()` now requires
+   *  `sheetShowsRows()`, which is already false for the whole window `isLoading()` covers, so the
+   *  button cannot be on screen while a reload is in flight in the first place — a second gate here
+   *  for the same case would just be two locks on one door. The per-band select-all button in the
+   *  template loses the same dead binding for the same reason, only more directly: it sits inside
+   *  the grid `@else` branch itself, which `isLoading()` never reaches at all. */
+  protected readonly markAllDisabled = computed(() =>
+    this.atlasOrder().every((emote) => this.selection.isSelected(emote)),
+  );
+
   /**
    * Count of the grid selection that would actually be captured by the dock's copy shortcut —
    * built on `selection.selectedItems()`, the one source every displayed count now reads from
@@ -860,6 +901,52 @@ export class UsageStatsPage {
    */
   protected readonly dockHiddenSelectedCount = computed(() =>
     !this.isCoarse() && this.activeEmoteSetId() !== null ? this.selection.hiddenSelectedCount() : 0,
+  );
+
+  /**
+   * The dock's own marked-count row (`usageStats.dock.marked`, next to `selection.selectedItems()
+   * .length`) is created by the same `@if (activeEmoteSetId(); as setId)` that fills it — the exact
+   * case §4.5 describes for `dockHiddenSelectedCount` above: appearing content does not announce
+   * itself. This used to feed the announcer the raw, continuously live `selection.selectedItems()
+   * .length`, which meant an individual mark or unmark — already announced by its own cell's
+   * `aria-pressed` flip — spoke a *second* time here, one paragraph per click; ten keyboard marks
+   * became ten status paragraphs (Opus review). Only a bulk-mark gesture (the toolbar's "mark all",
+   * the per-band one) has no cell of its own to announce through, so only those two write
+   * `bulkMarkAnnouncement`/`bulkMarkSnapshot` (see `markAll()`/`selectBand()`) — the number is the
+   * selection size *after* the gesture, not a running total.
+   *
+   * 0 whenever the row itself is not on screen, same gates as `dockHiddenSelectedCount` above, plus
+   * two more: 0 whenever the selection is empty, and 0 whenever the live selection no longer matches
+   * `bulkMarkSnapshot` — the exact key set the last bulk gesture left behind. The second condition is
+   * the one a plain "did it reach zero" check misses (Codex P2, follow-up 2026-09-19): unmarking a
+   * *single* row after a bulk mark leaves the selection non-empty, so the old code kept showing the
+   * stale total, and a second "mark all" that happened to land back on the very same number then
+   * wrote that number again — an unchanged `role="status"` paragraph announces nothing for a mutation
+   * that did not touch its text, so a real second bulk gesture went unheard. Any non-bulk change
+   * (an individual click, `retainAmong()`'s pruning, `clear()`) now retires the row instead — the
+   * `@if` in `DockOutcomeAnnouncer` unmounts it — so the *next* bulk gesture always remounts it fresh,
+   * a genuine DOM mutation, even when the number it carries repeats. `matchesBulkMarkSnapshot()`
+   * holds the one place this comparison happens; nothing else re-derives it.
+   */
+  private readonly bulkMarkAnnouncement = signal(0);
+
+  /** Selection key snapshot the last bulk-mark gesture (`markAll()`/`selectBand()`) left behind, or
+   *  `null` before either has ever fired — see `dockMarkedCount`'s comment for what this guards
+   *  against. A signal, not a plain field, because `dockMarkedCount` reads it: a `computed()` that
+   *  reaches through the instance for mutable state never reacts to it (rule 14). It would happen to
+   *  work today, since every write here is paired with a `bulkMarkAnnouncement` write that does
+   *  invalidate the computed — but that is a coincidence of call order, not a property anyone should
+   *  have to preserve. */
+  private readonly bulkMarkSnapshot = signal<ReadonlySet<string> | null>(null);
+
+  protected readonly dockMarkedCount = computed(() =>
+    !this.isCoarse() &&
+    this.dockVisible() &&
+    this.activeEmoteSetId() !== null &&
+    this.selection.selectedItems().length > 0 &&
+    this.matchesBulkMarkSnapshot()
+      ? this.bulkMarkAnnouncement()
+      : 0,
   );
 
   /**
@@ -1144,7 +1231,19 @@ export class UsageStatsPage {
     const band = this.bands().find((candidate) => candidate.key === key);
     if (band) {
       this.selection.selectMany(band.items);
+      // A bulk gesture, unlike an individual click, has no cell of its own to announce through —
+      // see `dockMarkedCount`'s comment for why only these two writers exist.
+      this.recordBulkMarkAnnouncement();
     }
+  }
+
+  /** The toolbar's mark-all control (see `showMarkAll`/`markAllDisabled`) — scope is the current
+   *  filtered/sorted/banded view, exactly what `atlasOrder()` returns and the sheet is showing. */
+  protected markAll(): void {
+    this.selection.selectMany(this.atlasOrder());
+    // See `selectBand()`'s comment just above for why this writes here and `dockMarkedCount`'s own
+    // comment for why the announcer needs it at all.
+    this.recordBulkMarkAnnouncement();
   }
 
   protected fillPercent(emote: EmoteUsageTotal): number {
@@ -1459,6 +1558,31 @@ export class UsageStatsPage {
   protected onReloadRequested(): void {
     this.selection.clear();
     this.refresh();
+  }
+
+  /** The single writer of `bulkMarkAnnouncement`/`bulkMarkSnapshot` (see `markAll()`/`selectBand()`,
+   *  the only two callers) — keeps the pair in lock-step so `dockMarkedCount` never reads one from
+   *  before this gesture and the other from after it. Snapshotted *after* `selectMany()` has run,
+   *  same reasoning as the comment at each call site: an additive gesture over an already-partially-
+   *  marked band/view leaves a different total than the gesture's own item count. */
+  private recordBulkMarkAnnouncement(): void {
+    this.bulkMarkAnnouncement.set(this.selection.selectedItems().length);
+    this.bulkMarkSnapshot.set(new Set(this.selection.selectedKeys()));
+  }
+
+  /** Whether the live selection still is exactly what the last bulk-mark gesture left behind — see
+   *  `dockMarkedCount`'s comment for what this guards against. `false` before either `markAll()` or
+   *  `selectBand()` has ever fired (`bulkMarkSnapshot` still `null`). Content equality, not identity
+   *  or a revision counter: `selection.selectedKeys()` is a fresh array on every read, and a no-op
+   *  `retainAmong()` call (a routine reload that prunes nothing) must not falsely count as the kind
+   *  of change this exists to detect, or the row would flicker off on every silent refresh. */
+  private matchesBulkMarkSnapshot(): boolean {
+    const snapshot = this.bulkMarkSnapshot();
+    if (snapshot === null) {
+      return false;
+    }
+    const current = this.selection.selectedKeys();
+    return current.length === snapshot.size && current.every((key) => snapshot.has(key));
   }
 
   /**

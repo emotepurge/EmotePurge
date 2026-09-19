@@ -3,7 +3,7 @@ import { AllowedRoles } from './vote-session.model';
 export type VoteAudience = 'everyone' | 'subs' | 'mods' | 'restricted';
 
 /**
- * Collapses the raw `AllowedRoles` bitmask into the audience the create forms offer, so the two
+ * Collapses the raw `AllowedRoles` bitmask into the audience the create form offers, so the two
  * voting pages can label an existing session with it. The roles are fixed at creation and were
  * previously visible only while creating — afterwards nobody could tell a subs-only vote from an
  * open one.

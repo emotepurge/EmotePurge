@@ -25,11 +25,25 @@ export function hiddenByFilterNoticeKey(count: number): string {
   return pluralKey(count, 'usageStats.dock.hiddenByFilter');
 }
 
+/** Translation key for announcing the outcome of a bulk-mark gesture ("mark all" in the toolbar, the
+ *  per-band one) — the row it names (`usageStats.dock.marked`) is created by the same `@if` that
+ *  fills it (docs/UI-Designsprache.md §4.5), which such a gesture can take from unmounted to a
+ *  double-digit count in one press with nothing announced. Unlike `hiddenByFilterNoticeKey` above,
+ *  the count passed in here is not a continuous mirror of what the row shows — the host
+ *  (`UsageStatsPage.dockMarkedCount`) only updates it after `markAll()`/`selectBand()`, never after
+ *  an individual click, which already announces itself through its own cell's `aria-pressed`. */
+export function markedCountNoticeKey(count: number): string {
+  return pluralKey(count, 'usageStats.dock.markedAnnounced');
+}
+
 /**
  * The screen-reader voice for what the usage-stats action dock *shows* — the duplicate notices and
- * the resync acknowledgement of a restore and of an import (#134, #149), plus the standing
- * "n of them hidden by the filter" line above them. Those visible notices stay inside the dock and
- * are `aria-hidden`; this component carries their text instead.
+ * the resync acknowledgement of a restore and of an import (#134, #149), the "n of them hidden by
+ * the filter" line, and a bulk-mark gesture's outcome. The hidden-by-filter line and the duplicate/
+ * resync notices stay inside the dock and are `aria-hidden`; this component carries their text
+ * instead. The dock's marked-count row is the one exception since the 2026-09-19 Opus review: it is
+ * reachable in the accessibility tree itself again (see its own comment in `usage-stats-page.html`),
+ * because this component no longer mirrors it continuously — see `markedCount` below.
  *
  * Why it cannot sit in the dock next to them (docs/UI-Designsprache.md §4.5): the dock mounts and
  * unmounts with its own content (`actionDockHasContent`), and a fully refused run is one of the
@@ -39,33 +53,49 @@ export function hiddenByFilterNoticeKey(count: number): string {
  * every gate of the dock (`!isCoarse()` included) — its region always exists, only the text inside
  * comes and goes, mirroring the service signals the visible notices are gated on.
  *
- * Several messages at once: one paragraph each, in the dock's own reading order — the hidden-by-
- * filter line first (it sits above the mass-delete panel), then restore (the marking half) before
- * import, and within each the skipped count, the check-unavailable notice,
- * then the resync acknowledgement. `role="status"` is implicitly `aria-atomic="true"` (WAI-ARIA
- * 1.2, §status), and Blink/WebKit apply that default — so without an explicit override, a new or
- * changed paragraph would make the whole region, standing ones included, be read again. This
- * multi-message region therefore sets `aria-atomic="false"` on its host, so a new paragraph is
- * announced alone; each paragraph's sentence stays a single interpolated text node so an in-place
- * pending→succeeded change is still read as the full new sentence, not a fragment.
+ * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
+ * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
+ * just below), then restore (the marking half) before import, and within each the skipped count,
+ * the check-unavailable notice, then the resync acknowledgement. `role="status"` is implicitly
+ * `aria-atomic="true"` (WAI-ARIA 1.2, §status), and Blink/WebKit apply that default — so without an
+ * explicit override, a new or changed paragraph would make the whole region, standing ones
+ * included, be read again. This multi-message region therefore sets `aria-atomic="false"` on its
+ * host, so a new paragraph is announced alone; each paragraph's sentence stays a single
+ * interpolated text node so an in-place pending→succeeded change is still read as the full new
+ * sentence, not a fragment.
  *
  * `withImport`: the import section only exists on the usage-stats page. The voting-results page
  * mounts the mass-delete panel alone and must not speak for an import run it does not show.
  *
- * `hiddenSelectedCount` is the one message here that is **not** a run outcome but a standing
- * condition: while a filter hides part of the marked selection, that stays true until the user
- * changes the filter, so it must not self-clear (docs/UI-Designsprache.md §4.4, persisting state —
- * §4.5's 4000-ms pattern would be exactly wrong for it). It still belongs in this region rather
- * than in one of its own: it is a line the dock shows, it appears in the same change-detection pass
- * as its own `@if`, and a second live region speaking beside this one is the failure mode §4.5
- * names. The host page passes 0 whenever that line is not on screen, so spoken and shown stay the
- * same set of statements; the voting-results page, which has no dock, never passes it at all.
+ * `hiddenSelectedCount` is not a run outcome but a standing condition: how many marked rows a filter
+ * currently hides. It does not self-clear the way a run outcome does (docs/UI-Designsprache.md §4.4,
+ * persisting state — §4.5's 4000-ms pattern would be exactly wrong for it). It still belongs in this
+ * region rather than in one of its own: it is a line the dock shows, it appears in the same
+ * change-detection pass as its own `@if`, and a second live region speaking beside this one is the
+ * failure mode §4.5 names. The host page passes 0 whenever the line is not on screen, so spoken and
+ * shown stay the same set of statements; the voting-results page, which has no dock, never passes it.
+ *
+ * `markedCount` looks the same shape but is not a continuous mirror of anything (Opus review,
+ * 2026-09-19): mirroring the dock's live marked count here meant an individual mark or unmark — which
+ * already announces itself through its own cell's `aria-pressed` — spoke a *second* time, one
+ * paragraph per click. So the host only updates it after a bulk-mark gesture (`markAll()`,
+ * `selectBand()`), with the selection size the gesture left behind, and passes 0 whenever anything
+ * *other* than a bulk gesture has touched the selection since — an individual mark/unmark, a filter-
+ * driven prune, a delete — not only once the selection has fully emptied (Codex P2, follow-up
+ * 2026-09-19: a plain "did it reach zero" check missed exactly the case where a single deselect
+ * leaves the selection non-empty, which then masked a second bulk gesture that happened to land back
+ * on the same total). See `UsageStatsPage.dockMarkedCount`'s own comment for the exact gates. It is
+ * passed 0 the same way `hiddenSelectedCount` is whenever there is nothing to say, so the `@if` in
+ * the template below behaves identically for both; only *when* the host updates the number differs.
  */
 @Component({
   selector: 'app-dock-outcome-announcer',
   imports: [TranslocoPipe],
   host: { role: 'status', class: 'sr-only', 'aria-atomic': 'false' },
   template: `
+    @if (markedCount(); as marked) {
+      <p>{{ markedKey() | transloco: { count: marked } }}</p>
+    }
     @if (hiddenSelectedCount(); as hidden) {
       <p>{{ hiddenByFilterKey() | transloco: { count: hidden } }}</p>
     }
@@ -97,6 +127,13 @@ export function hiddenByFilterNoticeKey(count: number): string {
 })
 export class DockOutcomeAnnouncer {
   readonly withImport = input(false);
+  /** The selection size a bulk-mark gesture ("mark all", per-band "mark all") left behind, or 0
+   *  while there is nothing to announce — either because the dock's marked-count row is not on
+   *  screen at all, or because a non-bulk change (an individual click, a prune, a clear) has touched
+   *  the selection since. NOT the live selection count: an individual click never updates this (see
+   *  `dockMarkedCount` on `UsageStatsPage` for exactly when it does), because that click already
+   *  announces itself through its own cell's `aria-pressed`. */
+  readonly markedCount = input(0);
   /** How many marked rows the host page's filter currently hides, or 0 when the dock does not show
    *  that line at all — the host mirrors its own template gates into this number. */
   readonly hiddenSelectedCount = input(0);
@@ -104,6 +141,7 @@ export class DockOutcomeAnnouncer {
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
 
+  protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
     hiddenByFilterNoticeKey(this.hiddenSelectedCount()),
   );

@@ -164,6 +164,112 @@ class of defect, but older than this branch and deliberately not taken along her
 
 ---
 
+### 2026-09-19 — "Mark all" on the usage toolbar: the loaded-gun argument lapsed when the safety moved to the point of action
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/e2e/usage-atlas.e2e.spec.ts`
+
+The atlas has carried a mark-all button since the bands landed, on the `dead` band alone. The comment above it says why it was offered nowhere else: "Offering it on the heavy band would be a loaded gun with no purpose." That reasoning was written while a filter change still pruned the selection and the marking gesture itself carried the safety. Both halves have since moved. The selection entry of the same day made the selection survive filters and put the safety at the point of action — the delete dialog, which counts and announces what is marked but not visible. Marking is a statement of intent now, not a commitment, so withholding the button no longer buys anything.
+
+**The scope is the current view, not the channel.** The button marks `atlasOrder()` — filtered,
+sorted, banded, flattened — which is exactly what the page is showing. With no filter active that is
+the whole set. The label is a bare verb, like the band button's: neither needs to carry a count,
+because the scope already stands beside it — the band button takes it from its own heading, this one
+from the emote-count line at the far end of the same filter row (`emoteCountKey()`), which
+pluralises correctly where a count in the label would not.
+
+**Placement follows scope, not habit.** It could not go in the dock: the dock does not render at
+zero selection (`actionDockHasContent`), and a control whose entire purpose is to create a selection
+out of nothing cannot live somewhere that only exists once one has. It sits in the filter row
+instead, beside the reset control and the count it acts on. Fine-pointer only, like every other
+selection surface. It is absent outright whenever the sheet is not showing that view — still
+loading, or the sync-pending banner standing in its place while `atlasOrder()` still holds the
+previous response (`showMarkAll`'s `sheetShowsRows()` term) — and disabled once the view it would
+act on is already fully marked, so it never presents itself as doing something it would not do.
+
+**What it does not do.** Range selection by shift-click stays undiscoverable. This button makes it
+less often necessary, not more visible. That is a separate question and deliberately left open here.
+
+---
+
+### 2026-09-19 — A voting session is started from a selection on the usage page, and from nowhere else
+
+**Betrifft:** `web/src/app/features/voting/vote-session-list-page.html` ·
+`web/src/app/features/voting/vote-session-list-page.ts` ·
+`web/src/app/features/voting/vote-session-list-page.spec.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
+`web/src/app/features/admin/admin-channels-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/shared/voting/vote-audience-badge.ts` · `web/src/app/core/voting/vote-audience.ts` ·
+`web/src/app/core/voting/vote-audience.spec.ts` · `web/public/i18n/de.json` ·
+`web/public/i18n/en.json` · `web/e2e/touch-mobile.e2e.spec.ts` · `docs/Architectur.md` ·
+`docs/UI-Designsprache.md`
+
+The voting tab used to carry an inline create form, and that form could only ever produce one kind
+of ballot: the whole emote set, dynamically. The curated ballot — the one assembled by marking cells
+on the usage page — was reachable only through a sentence of body text underneath the form
+(`voting.list.wholeSetHintLink`, "Nur bestimmte Emotes zur Wahl stellen?"). The hierarchy was
+inverted: the prominent, zero-friction path produced the result nobody wants, and the wanted path
+was a link saying "do it somewhere else". For HandOfBlood's ~900 emotes a whole-set ballot is not a feature, it is a wall of cells. For a
+small channel it would be defensible, and that is where the honest accounting belongs. The whole set
+is in fact reachable in one click — the same branch adds a mark-all control to the usage toolbar
+whose scope is the current filtered view, and with no filter active that view is the whole set. What
+it produces, though, is a fixed ballot of `VoteSessionEmote` rows, not the dynamic
+one `emoteIds: null` creates. So what is given up is narrower than "voting over everything", and it deserves its
+exact name: the ballot that keeps growing with the set after it has been called. It goes because a
+cleanup vote is a decision about the emotes that exist when it is called, not a standing referendum.
+
+**The form is gone. The API contract is not.** `emoteIds: null` still means "whole set, dynamic
+ballot" in `CreateVoteSessionRequest`, `VoteSessionCreateRequest` and
+`VoteSessionService.CreateAsync`, and sessions created that way still render in the list, the detail
+page and the results view exactly as before. Nothing in `src/` was touched. This is a capability we
+stopped exposing, not dead code — whoever reads `VoteSessionService` next should not delete the
+`null` branch on the assumption that it is unreachable.
+
+**The entry point is two things, not one.** A single empty-state hint would have been the obvious
+move and it is wrong: whoever already has three sessions running needs the way to the fourth just as
+much, and an empty state by definition is not there for them. So the page header (§8.7 — a command
+complete without any selection of its own) carries a permanent manager-only link to the usage page,
+and the empty state separately spells out the two-step flow. The empty state's how-to is
+manager-only as well; a voter sees only that nothing is running yet, because the instruction would
+describe a door they cannot open.
+
+**Creating a voting session is desk work, decided rather than inherited.** The curated ballot is
+assembled by marking cells in the usage atlas, and that selection does not exist on a coarse pointer
+(`@if (!isCoarse())` in `usage-stats-page.html`). Removing the form therefore removes the last way
+to create a session from a phone. That was weighed and accepted: the header link is fine-pointer
+only, and a coarse pointer gets a sentence naming where the capability lives
+(`voting.list.createEntryDesktopOnly`) rather than a hole where a mod would look for it. The
+alternative — keeping the whole-set form alive on mobile only — would have left two tabs with the
+same name doing different things. If touch selection ever lands in the atlas, this decision is the
+one to revisit.
+
+**One consequence, named rather than discovered.** The dock on the usage page does not render
+without an active 7TV set (`usage-stats-page.ts`, `activeEmoteSetId()` null after a failed sync).
+The old inline form did not care about the set, so a channel in that state could still open a vote;
+now it cannot, and the header link leads to a page whose dock is absent. That is accepted — a ballot
+assembled from a set we could not read would be built on stale data — but it is the first thing to
+revisit if the entry point ever feels like a dead end.
+
+**Why now, with no users.** Nobody has run a voting session yet. That is the argument for changing
+it today rather than later: no one has learned the current pattern, so the change costs nothing in
+relearning, and the feature's open question — whether community voting gets used at all — is better
+tested from the entry point people would actually reach for.
+
+**i18n footnote.** Only `createTitle`, `wholeSetHint`, `wholeSetHintLink`, `wholeSetHintDesktopOnly`
+and `create` were removed. `titlePlaceholder`, `titleRequired`, `audience*`, `startCountingLabel`
+and `hideResults*` look like form leftovers but are read by `create-vote-session-dialog.ts` on the
+usage page, which is now the only creation surface — they stay. `noSessionsManagerHint` was
+rewritten to name the flow, reusing the dock's own verb "Zur Abstimmung stellen" per the 2026-09-14
+one-verb rule.
+
+---
+
 ### 2026-09-16 — `IVoteSessionService.CreateAsync`'s `S107` finding fixed with a request record, not a filter
 
 **Betrifft:** `src/EmotePurge.Core/Services/IVoteSessionService.cs` · `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` · `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs`

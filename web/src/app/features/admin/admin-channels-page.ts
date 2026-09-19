@@ -56,11 +56,13 @@ const LIVE_AGE_TICK_MS = 30_000;
  * while the action buttons stay independently clickable via the elevated (`relative z-10`) actions
  * container.
  *
- * The join form stays *above* the list, unlike the vote-session list's create form which moved
- * below it. The rule there was that opening a tab asks "what is running", not "let me add one" —
- * but that form is six fields deep and pushed the answer off the first screen, and this one is a
- * single input on a single line. Applying the move here would cost an admin a scroll past twenty
- * rows to reach the field, and buy back one line of space.
+ * The join form stays *above* the list, unlike the vote-session list, which dropped its inline
+ * create form entirely rather than push it below the rows (2026-09-19: creating a session moved off
+ * that page altogether, onto a usage-stats selection). The reasoning behind that move still applies
+ * here: opening a tab asks "what is running", not "let me add one" — but that form was six fields
+ * deep and pushed the answer off the first screen, and this one is a single input on a single line.
+ * Moving it here would cost an admin a scroll past twenty rows to reach the field, and buy back one
+ * line of space.
  */
 @Component({
   selector: 'app-admin-channels-page',

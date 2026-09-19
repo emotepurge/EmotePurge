@@ -19,7 +19,7 @@ import { openAppDialog } from '../../shared/ui/dialog';
 import { DialogShell } from '../../shared/ui/dialog-shell';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 
-// Same rule as the inline create form on VoteSessionListPage (whitespace-only titles are empty).
+// Whitespace-only titles count as empty.
 function requiredTrimmed(control: AbstractControl<string>): ValidationErrors | null {
   return control.value?.trim().length > 0 ? null : { required: true };
 }
@@ -44,10 +44,11 @@ export interface CreateVoteSessionDialogData {
 }
 
 /**
- * "Zur Abstimmung stellen" from a usage-stats selection: the same four fields as the inline
- * create form on the voting list page (deliberately duplicated — the form is four existing
- * primitives, and a shared building block would couple the two features for less code than it
- * saves), plus the fixed ballot from the selection. Closes with the created session on success.
+ * "Zur Abstimmung stellen" from a usage-stats selection: the same four fields every voting session
+ * is created with (title, audience, count-from date, hide-results toggle) — assembled here from
+ * existing primitives rather than as a separate form component — plus the fixed ballot from the
+ * selection. This is the only surface that creates a voting session (2026-09-19; the voting list's
+ * own inline form is gone). Closes with the created session on success.
  */
 @Component({
   selector: 'app-create-vote-session-dialog',
@@ -194,7 +195,8 @@ export class CreateVoteSessionDialog {
   });
   protected readonly selectedAudience = signal<'everyone' | 'subs' | 'mods'>('everyone');
   // Prefilled with the start of the range the creator was just filtering on (midnight local time);
-  // clearing it falls back to "count from now", same as the inline form on the voting list.
+  // clearing it falls back to "count from now" (empty startedAt), same as VoteSessionCreateRequest's
+  // own default.
   protected readonly customStartedAt = signal(`${this.data.usageFromDate}T00:00`);
   protected readonly maxStartedAt = toLocalDateTimeInputValue(new Date());
   // Secret ballot, off by default and fixed once the session exists — see CreateVoteSessionRequest.

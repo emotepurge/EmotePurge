@@ -4,7 +4,7 @@ import { voteAudience } from './vote-audience';
 import { AllowedRoles } from './vote-session.model';
 
 describe('voteAudience', () => {
-  it('maps the three masks the create forms produce', () => {
+  it('maps the three masks the create form produces', () => {
     expect(voteAudience(AllowedRoles.Everyone)).toBe('everyone');
     expect(voteAudience(AllowedRoles.Subs)).toBe('subs');
     expect(voteAudience(AllowedRoles.Mods | AllowedRoles.Broadcaster)).toBe('mods');

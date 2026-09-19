@@ -641,6 +641,10 @@
     },
     "dock": {
       "marked": "marked",
+      "markedAnnounced": {
+        "one": "{{count}} emote marked",
+        "other": "{{count}} emotes marked"
+      },
       "projected": "→ {{projected}} of {{capacity}} slots after deleting",
       "hiddenByFilter": {
         "one": "1 of them hidden by the filter",
@@ -680,6 +684,7 @@
     "noActiveEmotesHint": "This channel's active 7TV emote set currently holds no emotes.",
     "noMatches": "No emotes match the current filters.",
     "resetFilters": "Reset filters",
+    "markAll": "mark all",
     "createVoteSession": "Put up for vote ({{count}})",
     "selectionPruned": {
       "one": "One selected emote is no longer in the set and was removed from the selection.",
@@ -720,10 +725,9 @@
   },
   "voting": {
     "list": {
-      "createTitle": "Create a new voting session",
-      "wholeSetHint": "The whole emote set of this channel goes on the ballot — nothing is preselected here.",
-      "wholeSetHintLink": "Want to put only certain emotes up for a vote?",
-      "wholeSetHintDesktopOnly": "Picking only certain emotes for the ballot is desktop work.",
+      "title": "Voting sessions",
+      "createEntryButton": "Put emotes up for vote",
+      "createEntryDesktopOnly": "Voting sessions are created on desktop, from the usage page.",
       "titlePlaceholder": "Title, e.g. July cleanup round",
       "titleRequired": "Title must not be empty.",
       "audienceEveryone": "Everyone",
@@ -733,9 +737,8 @@
       "hideResultsLabel": "Only show results after the session ends",
       "hideResultsHint": "While the session runs, the community sees no vote counts — only the mod team does. Once it ends, everyone sees everything. Can't be changed afterwards.",
       "hiddenBadge": "Hidden",
-      "create": "Create",
       "noSessions": "No voting sessions for this channel yet.",
-      "noSessionsManagerHint": "Create the first session below — the community then votes keep-or-delete per emote.",
+      "noSessionsManagerHint": "Mark emotes on the usage page and choose \"Put up for vote\" there. The session then appears here.",
       "noSessionsVoterHint": "As soon as the mod team starts a session, it shows up here.",
       "statusActive": "Active",
       "statusEnded": "Ended",

@@ -2,12 +2,6 @@ import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, computed, inject, input, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import {
-  AbstractControl,
-  FormControl,
-  ReactiveFormsModule,
-  ValidationErrors,
-} from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { Observable } from 'rxjs';
@@ -16,9 +10,8 @@ import { ChannelService } from '../../core/channels/channel.service';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { listQueryState } from '../../core/routing/list-query-state';
-import { AllowedRoles, VoteSessionSummary } from '../../core/voting/vote-session.model';
+import { VoteSessionSummary } from '../../core/voting/vote-session.model';
 import { VoteSessionService } from '../../core/voting/vote-session.service';
-import { DateTimePicker } from '../../shared/datetime/datetime-picker';
 import { Pager } from '../../shared/pagination/pager';
 import { Button } from '../../shared/ui/button';
 import { ConfirmDialogData, openConfirmDialog } from '../../shared/ui/confirm-dialog';
@@ -27,26 +20,6 @@ import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 import { StateDot } from '../../shared/ui/state-dot';
 import { VoteAudienceBadge } from '../../shared/voting/vote-audience-badge';
-
-function requiredTrimmed(control: AbstractControl<string>): ValidationErrors | null {
-  return control.value?.trim().length > 0 ? null : { required: true };
-}
-
-function toLocalDateTimeInputValue(date: Date): string {
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-// Whole-set sessions get a 30-day usage window by default: "count from now" made every session
-// start with all-zero usage context, which read as broken rather than as a fresh count. Midnight
-// local time, mirroring the prefill of the usage-stats create dialog. Clearing the field still
-// means "from now".
-function defaultStartedAt(): string {
-  const date = new Date();
-  date.setDate(date.getDate() - 30);
-  date.setHours(0, 0, 0, 0);
-  return toLocalDateTimeInputValue(date);
-}
 
 const EMPTY_PAGE: PagedResult<VoteSessionSummary> = {
   items: [],
@@ -62,9 +35,7 @@ const EMPTY_PAGE: PagedResult<VoteSessionSummary> = {
     Button,
     EmptyState,
     NoticeBanner,
-    ReactiveFormsModule,
     RouterLink,
-    DateTimePicker,
     Pager,
     SkeletonRows,
     StateDot,
@@ -130,16 +101,6 @@ export class VoteSessionListPage {
     return loadError instanceof HttpErrorResponse ? apiErrorTranslationKey(loadError) : null;
   });
 
-  protected readonly titleControl = new FormControl('', {
-    nonNullable: true,
-    validators: [requiredTrimmed],
-  });
-  protected readonly selectedAudience = signal<'everyone' | 'subs' | 'mods'>('everyone');
-  protected readonly customStartedAt = signal(defaultStartedAt());
-  protected readonly maxStartedAt = toLocalDateTimeInputValue(new Date());
-  // Secret ballot, off by default and fixed once the session exists — see CreateVoteSessionRequest.
-  protected readonly hideResultsUntilEnd = signal(false);
-
   protected readonly copyFeedback = signal<{
     sessionId: number;
     status: 'copied' | 'error';
@@ -150,47 +111,6 @@ export class VoteSessionListPage {
     // The navigation is the whole trigger — it moves `page()`, which `sessionsResource` reads in its
     // `params`. No scroll comes out of it either; the pager repositions to its own anchor (§8.4).
     this.query.goToPage(newPage);
-  }
-
-  protected createSession(): void {
-    if (this.titleControl.invalid) {
-      this.titleControl.markAsTouched();
-      return;
-    }
-
-    const audience = this.selectedAudience();
-    let roles: AllowedRoles;
-    if (audience === 'subs') {
-      roles = AllowedRoles.Subs;
-    } else if (audience === 'mods') {
-      roles = AllowedRoles.Mods | AllowedRoles.Broadcaster;
-    } else {
-      roles = AllowedRoles.Everyone;
-    }
-
-    const startedAtLocal = this.customStartedAt();
-    const startedAt = startedAtLocal ? new Date(startedAtLocal).toISOString() : undefined;
-
-    this.actionError.set(null);
-    this.voteSessionService
-      .create(this.channelName(), {
-        title: this.titleControl.value.trim(),
-        allowedVoterRoles: roles,
-        startedAt,
-        hideResultsUntilEnd: this.hideResultsUntilEnd(),
-      })
-      .subscribe({
-        next: () => {
-          // Reloads instead of prepending locally: a new session shifts the paging, and the old
-          // optimistic prepend could push the visible page to pageSize + 1 rows or show the new session
-          // on page 3 where it does not belong.
-          this.sessionsResource.reload();
-          this.titleControl.reset('');
-          this.customStartedAt.set(defaultStartedAt());
-          this.hideResultsUntilEnd.set(false);
-        },
-        error: (error: HttpErrorResponse) => this.handleError(error),
-      });
   }
 
   // Confirmed for the same reason as deleteSession, and more urgently: the detail page already
@@ -230,7 +150,8 @@ export class VoteSessionListPage {
       }
       this.actionError.set(null);
       this.voteSessionService.delete(this.channelName(), session.id).subscribe({
-        // Reload rather than filter locally, for the same paging reason as createSession.
+        // Reload rather than filter locally: a deleted row shifts the paging the same way a
+        // created one used to.
         next: () => this.sessionsResource.reload(),
         error: (error: HttpErrorResponse) => this.handleError(error),
       });

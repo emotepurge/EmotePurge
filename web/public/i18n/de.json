@@ -641,6 +641,10 @@
     },
     "dock": {
       "marked": "markiert",
+      "markedAnnounced": {
+        "one": "{{count}} Emote markiert",
+        "other": "{{count}} Emotes markiert"
+      },
       "projected": "→ {{projected}} von {{capacity}} Slots nach dem Löschen",
       "hiddenByFilter": {
         "one": "1 davon durch den Filter ausgeblendet",
@@ -680,6 +684,7 @@
     "noActiveEmotesHint": "Das aktive 7TV-Emote-Set dieses Channels enthält derzeit keine Emotes.",
     "noMatches": "Keine Emotes passen zu den aktuellen Filtern.",
     "resetFilters": "Filter zurücksetzen",
+    "markAll": "alle markieren",
     "createVoteSession": "Zur Abstimmung stellen ({{count}})",
     "selectionPruned": {
       "one": "Ein ausgewähltes Emote ist nicht mehr im Set und wurde aus der Auswahl entfernt.",
@@ -720,10 +725,9 @@
   },
   "voting": {
     "list": {
-      "createTitle": "Neue Abstimmung erstellen",
-      "wholeSetHint": "Zur Wahl steht das ganze Emote-Set des Channels — hier wird nichts vorausgewählt.",
-      "wholeSetHintLink": "Nur bestimmte Emotes zur Wahl stellen?",
-      "wholeSetHintDesktopOnly": "Eine Vorauswahl einzelner Emotes triffst du am Rechner.",
+      "title": "Votings",
+      "createEntryButton": "Emotes zur Abstimmung stellen",
+      "createEntryDesktopOnly": "Abstimmungen erstellst du am Rechner, auf der Nutzungsseite.",
       "titlePlaceholder": "Titel, z.B. Monats-Aufräumaktion Juli",
       "titleRequired": "Titel darf nicht leer sein.",
       "audienceEveryone": "Alle",
@@ -733,9 +737,8 @@
       "hideResultsLabel": "Ergebnisse erst nach Ende zeigen",
       "hideResultsHint": "Während die Abstimmung läuft, sieht die Community keine Stimmenzahlen — nur das Mod-Team. Nach dem Beenden sehen alle alles. Nachträglich nicht änderbar.",
       "hiddenBadge": "Verdeckt",
-      "create": "Erstellen",
       "noSessions": "Noch keine Abstimmungen für diesen Channel.",
-      "noSessionsManagerHint": "Erstelle unten die erste Abstimmung — die Community stimmt dann pro Emote über Behalten oder Löschen ab.",
+      "noSessionsManagerHint": "Markiere Emotes auf der Nutzungsseite und wähle dort „Zur Abstimmung stellen“. Die Abstimmung erscheint danach hier.",
       "noSessionsVoterHint": "Sobald das Mod-Team eine Abstimmung startet, erscheint sie hier.",
       "statusActive": "Aktiv",
       "statusEnded": "Beendet",

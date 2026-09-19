@@ -7,7 +7,7 @@ import { voteAudience } from '../../core/voting/vote-audience';
 /**
  * Names the audience a vote session was created for. Both voting pages carry it: the roles are
  * fixed at creation and cannot be changed afterwards, so without the badge the only place they were
- * ever visible was the create form.
+ * ever visible was the create dialog.
  *
  * It is no longer a badge (2026-08-06), and the two steps that got here are worth keeping.
  *
