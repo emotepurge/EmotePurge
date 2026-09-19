@@ -756,6 +756,165 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
 });
 
 /**
+ * The 2026-09-19 correction to the "Auswahl überlebt Suche und Filter" Konzept: a live test found
+ * that clearing the selection on a date-range change punished exactly the workflow the whole
+ * Konzept exists for — narrowing or widening the range to check whether a marked-dead emote is
+ * still dead. `rangePreset` is pinned to `'custom'` throughout so `rangeResolved` is trivially true
+ * from the first tick (see its own comment in usage-stats-page.ts) and every request in a test fires
+ * in one `fixture.detectChanges()` instead of the two-tick "all time" placeholder dance the other
+ * describe blocks in this file have to choreograph — the case under test here is the
+ * `previousTotalsChannel` comparison in `loadTotals`, not that placeholder resolution.
+ */
+describe('UsageStatsPage — a date-range change or refresh retains the selection, a channel switch clears it (2026-09-19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    component['rangePreset'].set('custom');
+    component['from'].set('2026-01-01');
+    component['to'].set('2026-01-31');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Mounts channel 'a' with the given totals under the fixed 2026-01-01..2026-01-31 range set in
+   *  beforeEach — all four requests `load()` fires are already pending after the constructor's
+   *  first tick, since a `'custom'` preset never waits on trackedSince to resolve the range. */
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-01-31',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('keeps a selection whose emotes are all still present after a date-range change', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
+    // Same channel as totalsChannel() named after mount() — no active-set request this time (see
+    // requestedSetStatusFor's channel-keyed guard), only a fresh totals/series round trip.
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selectionPrunedFeedback']()).toBeNull();
+  });
+
+  it('prunes a selected emote missing from the new range, with the existing #94 notice', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+
+    component['from'].set('2026-02-01');
+    component['to'].set('2026-02-28');
+    fixture.detectChanges();
+    // 'b' has no usage at all in the narrower window and drops out of the response entirely — a
+    // data-driven removal like any other, reconciled (not treated as a context switch) and
+    // surfaced through the same #94 notice a silent reload would show.
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selectionPrunedFeedback']()).toEqual({
+      key: 'usageStats.selectionPruned.one',
+      count: 1,
+    });
+  });
+
+  it('the refresh button retains the selection like a date-range change, not like a channel switch', () => {
+    const a = emote('a', 'PeepoA');
+    mount([a]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    component['refresh']();
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+  });
+
+  it('clears the selection outright on a channel switch, even when the new channel reuses the same emote id', () => {
+    const a = emote('a', 'PeepoA');
+    mount([a]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/b/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/b/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-b', trackedSince: '2026-01-01T00:00:00Z' }));
+    // Channel b happens to reuse the id 'a' for a wholly unrelated emote — a coincidence the
+    // Konzept's invariant is formal and blind to (Abschnitt 1), which is exactly why a channel
+    // switch is a hard clear() rather than a retainAmong() reconciliation.
+    flushByPath(httpMock, '/api/channels/b/usage-stats/totals', [emote('a', 'UnrelatedEmote')]);
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+});
+
+/**
  * The core behaviour of the 2026-09-18 "Auswahl überlebt Suche und Filter" Konzept: a filter
  * change must never touch `selectedKeys` — the old `retainVisible()` (S2-16) is gone without a
  * replacement, on purpose. What used to prune the selection now only shows up as

@@ -1490,9 +1490,15 @@ export class UsageStatsPage {
     this.errorMessage.set(null);
     // A selection-pruned notice (#94) names emotes from the *previous* channel/range's selection —
     // this method is the constructor effect's only entry point, so it runs on every channel switch
-    // and every date-range change, and `loadTotals` below already clears the selection outright on
-    // both (see its non-`preserveSelection` branch). A standing notice would otherwise misattribute
-    // itself to whatever channel happens to be on screen when its timeout fires (#94 follow-up P3).
+    // and every date-range change. A channel switch clears the selection outright in `loadTotals`
+    // below (see its non-`preserveSelection` branch), which would otherwise misattribute a standing
+    // notice to whatever channel happens to be on screen when its timeout fires (#94 follow-up P3).
+    // A date-range change or the refresh button does NOT clear since the Konzept "Auswahl überlebt
+    // Suche und Filter" (überarbeitet 2026-09-19): a narrower or wider range is exactly how a user
+    // checks whether a marked emote is still dead, and `loadTotals` reconciles against the new
+    // payload instead — resetting the notice here first still matters, because that reconciliation
+    // may leave nothing pruned (the old notice would otherwise linger for a range it no longer
+    // describes) or produce its own fresh one.
     // The two callers that must NOT lose a just-set notice — the live-reload subscription and the
     // sync-failure recheck poll — both call `loadTotals(..., { preserveSelection: true })` directly
     // and never go through this method, so they are unaffected.
@@ -1638,10 +1644,13 @@ export class UsageStatsPage {
   }
 
   /**
-   * `preserveSelection` and `silent` are what separates a user-triggered load from a pushed one:
-   * a live update must not throw away a half-built delete selection, and must not flash the
-   * skeleton over numbers the user is currently reading. Both default to the loud behaviour, so
-   * every existing caller (initial load, refresh button, sync poll) is unchanged.
+   * `preserveSelection` and `silent` are what separates a *pushed* load (live reload, sync-failure
+   * recheck) from everything else: a pushed update must not throw away a half-built delete
+   * selection, and must not flash the skeleton over numbers the user is currently reading. Neither
+   * flag distinguishes a channel switch from a date-range change/refresh among the *user-triggered*
+   * callers (initial load, range change, refresh button) that leave both unset — see the
+   * `previousTotalsChannel` comparison below for that, and Konzept "Auswahl überlebt Suche und
+   * Filter" (überarbeitet 2026-09-19) Abschnitt 2.3 for why it needs to exist at all.
    */
   private loadTotals(
     channelName: string,
@@ -1654,26 +1663,40 @@ export class UsageStatsPage {
       .pipe(this.latestTotals)
       .subscribe({
         next: (emotes) => {
+          // Read before totalsChannel is overwritten below: this is the last channel whose totals
+          // actually landed, which is exactly what tells a same-channel reload (date-range change,
+          // refresh button — retain) apart from a genuine channel switch (clear) once
+          // `preserveSelection` is off. `null` on the very first load for this component instance
+          // always takes the channel-switch branch, which is correct: there is nothing to retain yet.
+          const previousTotalsChannel = this.totalsChannel();
           this.emotes.set(emotes);
           // Written next to the rows themselves, never before: until this line runs, the grid still
           // shows the previous channel's emotes (see totalsChannel's declaration).
           this.totalsChannel.set(channelName);
           this.totalsRange.set({ from, to });
-          if (options.preserveSelection) {
+          if (options.preserveSelection || previousTotalsChannel === channelName) {
             // Reconciles against the freshly loaded, UNFILTERED `emotes` — not atlasOrder()/
             // retainVisible(), which read the filtered view and would wrongly drop a row that
             // merely fell outside the current min/max-usage or name filter this reload changed the
             // numbers under (#94). `emotes` is the response payload itself, not the signal, so the
             // reconciliation cannot read a half-updated view no matter where the set() calls land.
+            //
+            // The `previousTotalsChannel === channelName` arm is what makes a date-range change and
+            // the refresh button reconcile too, not just a pushed reload: both are a different SIGHT
+            // of the same channel, not a different context, and changing the range is precisely how
+            // a mod checks whether a marked-dead emote is still dead under a wider or narrower
+            // window (live-test finding, 2026-09-19 — the Konzept originally kept these on `clear()`
+            // and was corrected after this feedback). An emote the narrower range does not return is
+            // pruned here like any other data-driven removal, with the existing #94 notice.
             const removedCount = this.selection.retainAmong(emotes);
             if (removedCount > 0) {
               this.showSelectionPrunedFeedback(removedCount);
             }
           } else {
-            // Kept even though a keyed selection survives a plain refetch: load() also runs on a
-            // channel or date-range change, where the existing selection was made against different
-            // numbers (an emote with "0x in 7 days" may be heavily used over 30 days). Carrying it
-            // over would be its own deliberate feature, not a by-product of the keying.
+            // A genuine channel switch: different emotes, different grounding set entirely — nothing
+            // in the old selection can even resolve against the new payload in a meaningful sense
+            // (see the Konzept, same section: an id collision across channels is coincidence, not
+            // continuity), so it is not a pruning case but a hard reset.
             this.selection.clear();
           }
           if (!options.silent) {
