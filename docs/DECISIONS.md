@@ -172,15 +172,28 @@ class of defect, but older than this branch and deliberately not taken along her
 `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
 `web/src/app/shared/seven-tv/dock-outcome-announcer.spec.ts` ·
 `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`web/e2e/usage-atlas.e2e.spec.ts` (Opus-review nachtrag, 2026-09-19)
+`web/e2e/usage-atlas.e2e.spec.ts`
 
 The atlas has carried a mark-all button since the bands landed, on the `dead` band alone. The comment above it says why it was offered nowhere else: "Offering it on the heavy band would be a loaded gun with no purpose." That reasoning was written while a filter change still pruned the selection and the marking gesture itself carried the safety. Both halves have since moved. The selection entry of the same day made the selection survive filters and put the safety at the point of action — the delete dialog, which counts and announces what is marked but not visible. Marking is a statement of intent now, not a commitment, so withholding the button no longer buys anything.
 
-**The scope is the current view, not the channel.** The button marks `atlasOrder()` — filtered, sorted, banded, flattened — which is exactly what the page is showing. With no filter active that is the whole set. **Correction (Opus review, 2026-09-19):** the label is a bare verb, not one carrying the count — the paragraph below originally argued the opposite, on a mistaken premise. The toolbar row already states the scope: the emote-count line at the far end of the same filter row (`emoteCountKey()`) names it, exactly the framing the band button gets from its own heading. Neither button needs to say the count twice; the initial `{{count}}` interpolation on this key was accordingly a bug, not a design choice — it also had no plural form, so it read "mark all 1" for a single-row view.
+**The scope is the current view, not the channel.** The button marks `atlasOrder()` — filtered,
+sorted, banded, flattened — which is exactly what the page is showing. With no filter active that is
+the whole set. The label is a bare verb, like the band button's: neither needs to carry a count,
+because the scope already stands beside it — the band button takes it from its own heading, this one
+from the emote-count line at the far end of the same filter row (`emoteCountKey()`), which
+pluralises correctly where a count in the label would not.
 
-**Placement follows scope, not habit.** It could not go in the dock: the dock does not render at zero selection (`actionDockHasContent`), and a control whose entire purpose is to create a selection out of nothing cannot live somewhere that only exists once one has. It sits in the filter row instead, beside the reset control and the count it acts on. Fine-pointer only, like every other selection surface. Disabled once the current view is fully marked, so it never presents itself as doing something it would not do. **Correction (Opus review, 2026-09-19):** the button is also absent outright, not merely disabled, whenever the sheet is not actually showing that view — still loading, or the "sync pending" banner standing in its place while `atlasOrder()` still holds the previous, unrelated response (`showMarkAll`'s `sheetShowsRows()` term). The original wording covered only the fully-marked case.
+**Placement follows scope, not habit.** It could not go in the dock: the dock does not render at
+zero selection (`actionDockHasContent`), and a control whose entire purpose is to create a selection
+out of nothing cannot live somewhere that only exists once one has. It sits in the filter row
+instead, beside the reset control and the count it acts on. Fine-pointer only, like every other
+selection surface. It is absent outright whenever the sheet is not showing that view — still
+loading, or the sync-pending banner standing in its place while `atlasOrder()` still holds the
+previous response (`showMarkAll`'s `sheetShowsRows()` term) — and disabled once the view it would
+act on is already fully marked, so it never presents itself as doing something it would not do.
 
-**What it does not do.** Range selection by shift-click stays undiscoverable. This button makes it less often necessary, not more visible. That is a separate question and deliberately left open here.
+**What it does not do.** Range selection by shift-click stays undiscoverable. This button makes it
+less often necessary, not more visible. That is a separate question and deliberately left open here.
 
 ---
 
