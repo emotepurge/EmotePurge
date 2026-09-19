@@ -795,6 +795,32 @@ export class UsageStatsPage {
   );
 
   /**
+   * Whether the header "Exportieren" button is disabled — Konzept "Auswahl überlebt Suche und
+   * Filter" nachtrag (2026-09-19). Disabled only when there is nothing at all to act on: the
+   * visible list AND the selection both empty. Used to disable on `atlasOrder().length === 0`
+   * alone, which meant a filter that hid every row locked this out even while a selection built
+   * across several searches survived underneath it — the exact bug this nachtrag fixes, one level
+   * above the same mistake in `retainVisible()`. The dialog itself (`ExportDialog`) is what then
+   * keeps a genuinely empty scope from being chosen or submitted once it opens.
+   */
+  protected readonly exportButtonDisabled = computed(
+    () => this.atlasOrder().length === 0 && this.selection.selectedItems().length === 0,
+  );
+
+  /**
+   * Whether the header "Übertragen" button is disabled — same empty-scope reasoning as
+   * `exportButtonDisabled` above, plus the two locks the push shares with `app-import-trigger`
+   * (see the template comment above both buttons): any of the three 7TV-writing runs active, or
+   * the set status/rows still belonging to the previous channel (`importScopeCurrent`).
+   */
+  protected readonly transferButtonDisabled = computed(
+    () =>
+      (this.atlasOrder().length === 0 && this.selection.selectedItems().length === 0) ||
+      this.arbiter.activeRun() !== null ||
+      !this.importScopeCurrent(),
+  );
+
+  /**
    * Count of the grid selection that would actually be captured by the dock's copy shortcut —
    * built on `selection.selectedItems()`, the one source every displayed count now reads from
    * (Konzept "Auswahl überlebt Suche und Filter" 1, "eine Zahl je Knopf, aus einer Quelle"), NOT
@@ -1300,9 +1326,10 @@ export class UsageStatsPage {
    * choice to that module.
    */
   protected openExport(): void {
-    // Falls back to the live signals only in the state atlasOrder().length === 0 already rules out
-    // for the button that calls this (see the template): before the very first totals response,
-    // totalsChannel()/totalsRange() are still null and there are no rows to mislabel anyway.
+    // Falls back to the live signals only in the state exportButtonDisabled() already rules out:
+    // before the very first totals response both atlasOrder() and the selection are empty, since
+    // selectedItems() resolves against emotes(), which starts as []. totalsChannel()/totalsRange()
+    // are still null in that state, and there are no rows to mislabel anyway.
     const range = this.totalsRange();
     const captured: CapturedExportScope = {
       channelName: this.totalsChannel() ?? this.channelName(),

@@ -10,8 +10,10 @@
  *   without one.
  *
  * Also deliberately NOT part of it, unlike the neighbouring "Übertragen" button this trigger
- * otherwise mirrors: `atlasOrder().length === 0`. Neither the file path nor the foreign-channel path
- * needs rows loaded in the grid — both bring their own.
+ * otherwise mirrors: the empty-scope lock (`atlasOrder().length === 0 &&
+ * selection.selectedItems().length === 0`, Konzept "Auswahl überlebt Suche und Filter" nachtrag,
+ * 2026-09-19). Neither the file path nor the foreign-channel path needs a visible row or a
+ * selection at all — both bring their own rows regardless.
  *
  * `importScopeCurrent` mirrors `importScopeIsCurrent` (`import-scope.ts`): a channel switch inside
  * the route can leave `channelName()` pointing at the new channel while the set status/rows still

@@ -1072,6 +1072,106 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
 });
 
 /**
+ * The header "Exportieren"/"Übertragen" locks used to read `atlasOrder().length === 0` alone —
+ * the same mistake `retainVisible()` made one level down, fixed by S2-16's own nachtrag: once the
+ * selection survives a filter, an empty *visible* list no longer means an empty *selection*, and
+ * the two buttons must ask about the union of both, not the visible list on its own (see
+ * `exportButtonDisabled`/`transferButtonDisabled` in usage-stats-page.ts for the full reasoning).
+ */
+describe('UsageStatsPage — header export/transfer locks ask about the union, not just what is visible (nachtrag 2026-09-19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function mount(totals: EmoteUsageTotal[]): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('neither button is locked once a filter hides every row but a selection survives underneath it', () => {
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    mount([a, b]);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['usageFilter'].setNameFilter('does-not-match-anything');
+
+    expect(component['atlasOrder']()).toHaveLength(0);
+    expect(component['selection'].selectedItems()).toHaveLength(1);
+    // The transfer button's other two locks stay at their default "open" state here — this case
+    // is only about the empty-scope half both buttons share.
+    expect(component['arbiter'].activeRun()).toBeNull();
+    expect(component['importScopeCurrent']()).toBe(true);
+
+    expect(component['exportButtonDisabled']()).toBe(false);
+    expect(component['transferButtonDisabled']()).toBe(false);
+  });
+
+  it('locks both buttons when the visible list AND the selection are both empty', () => {
+    mount([]);
+
+    expect(component['atlasOrder']()).toHaveLength(0);
+    expect(component['selection'].selectedItems()).toHaveLength(0);
+
+    expect(component['exportButtonDisabled']()).toBe(true);
+    expect(component['transferButtonDisabled']()).toBe(true);
+  });
+});
+
+/**
  * Unlike every other describe block above, this one does NOT override the template with bare
  * `<div>`s — the whole point here is the actual markup in usage-stats-page.html, not the signal
  * behind it (that reconciliation logic is what the block above already covers). Mounting the real
