@@ -1687,10 +1687,30 @@ Die SQL-Datei aus Konzept 11.6 (`set-wechsel-pruefung.sql`), ausgeführt wie dor
 `ssh -N -L 15432:127.0.0.1:5433 vps`, dann
 `psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge password=<PROD-PW>' -f set-wechsel-pruefung.sql`.
 
+**Die Erwartung „genau zwei Zeilen" ist am 2026-09-20 widerlegt worden** — durch einen Trockenlauf
+dieser Abfrage gegen eine **wiederhergestellte Kopie der Produktionsdatenbank** (Stand 03:00 UTC
+desselben Tages, lokal im Container, ohne jede Verbindung nach Prod). Sie lieferte **sieben Zeilen
+über fünf Kanäle**, nicht zwei. Die Abfrage findet eben nicht „Set-Wechsel", sondern **jede
+Massenarchivierung** — und die entsteht auch durch eine gewollte Massenlöschung, durch den ersten
+Sync nach einem Join und durch eine unvollständige 7TV-Antwort. Von den sieben Zeilen waren
+**drei** durch einen Audit-Eintrag desselben Tages erklärt (`emotes.syncDeleted` in genau der
+Stückzahl, bzw. `channel.join`), **zwei** entfielen auf den Testkanal, und **zwei** standen ohne
+Audit-Eintrag da, bei 1,1 % und 2,8 % der Zeilen eines Kanals.
+
+Ein Tor, das bei sieben statt zwei Zeilen „Halt" ruft, hätte im Wartungsfenster angehalten — und
+zwar **zu Recht nach seinem Wortlaut, aber ohne dass etwas falsch war.** Die Zweige lauten deshalb
+seit dem 2026-09-20 nicht mehr auf eine Zeilenzahl, sondern auf **Erklärbarkeit**, was ohnehin die
+Logik von Prüfung 4 ist (die Signatur *entdeckt* nichts, sie *widerspricht* einer Aussage):
+
 | Zweig | Bedingung | Vertrag |
 |---|---|---|
-| A | genau zwei Zeilen — Testkanal (Positivkontrolle) und HandOfBlood mit Tag = `BoundaryUtc::date` und `archived_that_day` = `ExpectedArchivedCount`. **Zwei bleibt es auch ohne V1**, weil der Wegwerfkanal vorher gepurgt ist bzw. gar nicht existiert (4.2) | Liste bestätigt; Testkanal purgen (V2); Migration läuft |
-| B | Testkanal fehlt / HandOfBlood weicht ab / ein dritter Kanal erscheint | **Halt.** Der Betreiber klärt (Rückwechsel, Restore, unbekannter Wechsel, Massenlöschung auf 7TV), korrigiert die Liste oder nicht; Prüfung 2/3 der Migration bricht bei derselben Abweichung ab. Nichts wird geschätzt |
+| A | **Jede** Zeile ist erklärt: entweder durch einen Audit-Eintrag desselben Tages (`emotes.syncDeleted` in passender Stückzahl, `channel.join`, `channel.resync`) oder durch einen Wechseleintrag der Klassifikation. HandOfBlood erscheint mit Tag = `BoundaryUtc::date` und `archived_that_day` = `ExpectedArchivedCount` | Liste bestätigt; Testkanal purgen (V2); Migration läuft |
+| B | **Mindestens eine Zeile ohne Erklärung**, oder HandOfBloods Zeile fehlt bzw. weicht ab | **Halt.** Der Betreiber klärt (Rückwechsel, Restore, unbekannter Wechsel, Massenlöschung auf 7TV), korrigiert die Liste oder nicht; Prüfung 2/3 der Migration bricht bei derselben Abweichung ab. Nichts wird geschätzt |
+
+Die Spalte `audit_same_day` der Abfrage ist damit **kein Beiwerk mehr, sondern das Erklärmittel** —
+sie entscheidet Zweig A gegen B. Zwei unerklärte Zeilen aus dem Trockenlauf sind bis zum
+Wartungsfenster zu klären; sie sind der Grund, warum diese Sonde überhaupt vor der Migration steht
+und nicht danach.
 
 Diese Sonde ist ein Tor, kein Zweig, der aus der Spec gestrichen wird; ihr Ergebnis steht im
 DECISIONS-Eintrag 1.
@@ -1701,12 +1721,12 @@ nennen (4.2), und Prüfung 3 bricht bei jedem ab, der fehlt. Die Liste dieser Ka
 aus dem Code — sie kommt aus derselben Sitzung am Tunnel, rein lesend:
 
 ```sql
-SELECT c."Name", c."Id" AS channel_id, c."TwitchChannelId", c."ActiveEmoteSetId",
+SELECT c."ChannelName", c."Id" AS channel_id, c."TwitchChannelId", c."ActiveEmoteSetId",
        COUNT(u.*) AS usage_rows, MIN(u."Date") AS first_day, MAX(u."Date") AS last_day
 FROM "Channels" c
 JOIN "Emotes" e ON e."ChannelId" = c."Id"
 JOIN "UsageStats" u ON u."EmoteId" = e."Id"
-GROUP BY c."Id", c."Name", c."TwitchChannelId", c."ActiveEmoteSetId"
+GROUP BY c."Id", c."ChannelName", c."TwitchChannelId", c."ActiveEmoteSetId"
 ORDER BY usage_rows DESC;
 ```
 
@@ -2908,3 +2928,55 @@ vier Fälle (Vitest +103 → die nachgezählten **+107**; Gesamtsumme **+299**):
 Restore-Dienst für die beiden Queue-Formen, zwei im Protokoll für `aliases` und den Altbestand
 ohne das Feld. Die beiden Fälle, die vorher die Ausnahmegruppe belegt hätten (Panel und Dialog),
 belegen jetzt ihr Gegenteil — gleiche Zahl, anderer Prüfgegenstand.
+
+---
+
+## 29. Nachtrag: Trockenlauf gegen eine Produktionskopie (2026-09-20)
+
+**Aufbau.** Der nächtliche Dump von Prod (03:00 UTC, 2,5 MB gepackt, 7,1 MB roh) ist vom Betreiber
+über die bestehende Backup-Kette auf die Dev-Box kopiert und dort in eine **Wegwerfdatenbank im
+lokalen Postgres-Container** eingespielt worden (`probe_prod`). **Keine Verbindung nach Prod**, zu
+keinem Zeitpunkt; die Datei trägt Nutzerzeilen samt Twitch-Tokens und liegt deshalb in einem
+`700`-Verzeichnis, die Datei selbst `600`. Wiederherstellung mit `ON_ERROR_STOP=1`, Exit 0.
+
+**Die Kopie ist verwertbar** — und sie ist der erste Probekörper mit echten Größenordnungen:
+
+| | Dev-Dump (20.09.) | **Produktionskopie** |
+|---|---|---|
+| Kanäle | 27 | **20** |
+| Emote-Zeilen | 9 214 | **13 514** |
+| `UsageStats`-Zeilen | 6 022 | **62 771** |
+| abgedeckte Tage | 18 | **57** (26.07.–20.09.) |
+| Migrationsstand | — | 19, zuletzt `…AddUsageStatSharedChatUseCount` |
+
+**Zehnmal so viele Nutzungszeilen wie die Dev-Datenbank.** Backfill und Indextausch skalieren genau
+daran, also ist erst diese Kopie ein belastbarer Probekörper für T1.10 (V4 damit erfüllt).
+
+**Die Klassifikationsliste wird 18 Einträge haben**, nicht 20: zwei der zwanzig Kanäle tragen keine
+`UsageStats`-Zeile und erscheinen deshalb nicht (4.2). Kein Kanal mit Zeilen ist `IsBotActive =
+false`, es braucht also keinen Eintrag ohne Saatzeile. Die Zahl ist ein Stand vom 2026-09-20 und
+wird im Wartungsfenster neu erhoben; sie steht hier, damit V5 planbar ist — **die Liste selbst
+bleibt beim Betreiber** (E1).
+
+**Zwei Fehler gefunden, beide in Handgriffen, die erst im Wartungsfenster ausgeführt worden wären:**
+
+1. **Die Abfrage für die Klassifikationsliste war nicht lauffähig.** Sie las `c."Name"`; die Spalte
+   heißt `ChannelName`. Am Tunnel hätte das `ERROR: column c.Name does not exist` ergeben — nicht
+   schlimm, aber genau in der Sitzung, in der man es nicht braucht. Korrigiert.
+2. **Sonde 6 hätte angehalten, ohne dass etwas falsch gewesen wäre.** Zweig A verlangte *genau zwei
+   Zeilen*; die Abfrage liefert **sieben über fünf Kanäle**. Sie findet keine Set-Wechsel, sondern
+   **jede Massenarchivierung** — auch die gewollte Massenlöschung (drei der sieben Zeilen tragen
+   `emotes.syncDeleted` desselben Tages in genau passender Stückzahl bzw. `channel.join`), auch den
+   Testkanal (zwei weitere). Zwei Zeilen blieben ohne Audit-Erklärung, bei 1,1 % und 2,8 % der
+   Zeilen ihres Kanals. Die Zweige lauten jetzt auf **Erklärbarkeit** statt auf eine Zeilenzahl,
+   und die Spalte `audit_same_day` ist damit das Erklärmittel statt Beiwerk (s. Sonde 6).
+
+**Was das über die Methode sagt.** Beide Fehler waren durch Lesen nicht zu finden — der erste, weil
+ein falscher Spaltenname sich nicht von einem richtigen unterscheidet, solange niemand die Abfrage
+ausführt; der zweite, weil die Erwartung „zwei Zeilen" plausibel klang und erst an echten Daten
+zerbricht. Das ist dieselbe Lehre wie bei den Testzahlen (Abschnitt 26), nur an einem anderen
+Gegenstand: **eine Zahl, die niemand nachgerechnet hat, ist eine Behauptung.**
+
+**Was der Trockenlauf noch nicht konnte:** die Migration selbst gegen die Kopie fahren. Es gibt sie
+noch nicht — sie entsteht in T1.3. T1.10 bleibt damit vollständig bestehen; erledigt ist allein
+seine Voraussetzung V4 und die Gewissheit, dass der Probekörper trägt.
