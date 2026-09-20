@@ -1312,8 +1312,8 @@ Schema, nie umgekehrt.
 
 Der Klassifikator blockt 7TV-Sonden aus einer Session; jede Sonde ist ein fertiges Kommando mit
 Platzhaltern (`<TWITCH-ID>`, `<SET-ID>`, `<7TV-TOKEN>`, `<PROD-PW>`), das der Betreiber ausführt.
-Jede Sonde hat **zwei Zweige**, die Regel, welcher gilt, und was nach der Messung aus dieser Spec zu
-streichen ist. Sonden 1 und 2 sind gemessen (Konzept 11.1, 11.2); Sonde 1 (T0.1) und Sonde 7 (T0.5)
+Jede Sonde hatte **zwei Zweige**, die Regel, welcher gilt, und was nach der Messung aus dieser Spec
+zu streichen ist — **alle sind inzwischen aufgelöst**; was unten steht, ist der gemessene Zweig. Sonden 1 und 2 sind gemessen (Konzept 11.1, 11.2); Sonde 1 (T0.1) und Sonde 7 (T0.5)
 sind am 2026-09-20 gemessen und tragen ihr Ergebnis unten. **T0.6** (`editor_of { user { id } }`) ist
 ebenfalls am 2026-09-20 gemessen, steht aber nicht hier, sondern als Prüfaufgabe in Abschnitt 19 und
 im Plan (0.2). **Sonde 5 (T0.3) ist ebenfalls am 2026-09-20 gemessen und trägt ihr Ergebnis unten;
