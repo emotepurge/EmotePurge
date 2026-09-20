@@ -14,9 +14,28 @@ public class ChannelEmoteSetObservationService(AppDbContext db) : IChannelEmoteS
         if (openInterval is null)
         {
             // Nothing open — a first-ever sync, or the last interval was closed by leave/rename/merge
-            // and nothing has reopened it since. Tracked only: this rides whatever SaveChangesAsync
-            // the caller issues next (SevenTvSyncService.SyncChannelAsync commits the whole sync,
-            // including this row, in one call at its own :108).
+            // and nothing has reopened it since.
+            //
+            // Re-checked here rather than trusted: SevenTvPeriodicResyncWorker takes its channel list
+            // once per tick and SyncChannelAsync never re-reads IsBotActive mid-tick, so a leave that
+            // commits after the tick's snapshot and before this line runs would otherwise leave an
+            // open interval on a channel nothing is tracking anymore — and nothing would ever close
+            // it, since a later rejoin onto the same set just takes the "same set, do nothing" branch
+            // below instead of opening a fresh row.
+            //
+            // This is not a hopeful TOCTOU check: LeaveAsync (ChannelService.cs) commits the close of
+            // an open interval and the IsBotActive flip in the *same* SaveChangesAsync. That
+            // atomicity is what makes this safe without a lock — any snapshot that already shows "no
+            // open row" here necessarily also shows IsBotActive = false, because the two facts are
+            // written together and can never become visible one without the other.
+            if (!await IsChannelActiveAsync(channelId, cancellationToken))
+            {
+                return;
+            }
+
+            // Tracked only: this rides whatever SaveChangesAsync the caller issues next
+            // (SevenTvSyncService.SyncChannelAsync commits the whole sync, including this row, in one
+            // call at its own :108).
             db.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
             {
                 ChannelId = channelId,
@@ -43,6 +62,28 @@ public class ChannelEmoteSetObservationService(AppDbContext db) : IChannelEmoteS
         // case (AK 16), which injects a failure between the two saves via a SaveChangesInterceptor.
         var now = DateTime.UtcNow;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // Re-checked here, inside the transaction and immediately before the first write: the read
+        // above that decided this was a genuine switch happened before this transaction began, and
+        // can already be stale by now. Same atomicity argument as the open branch — LeaveAsync closes
+        // this exact interval and flips IsBotActive in one SaveChangesAsync, so if that flag now
+        // reads false, the interval below is already closed, and closing it again here would stomp
+        // Leave's ClosedBy with SetSwitch before opening a new interval that nothing is watching.
+        // This closes the "leave commits, then this method runs" ordering: Postgres serializes the
+        // two UPDATEs a leave-then-switch race would otherwise issue against the very same interval
+        // row, so leave's commit becomes visible to this read once it has happened.
+        //
+        // Known residual, not fixed here: the opposite ordering — this check passes, the transaction
+        // closes the old interval and opens and commits a new one, and only *then* does a concurrent
+        // leave run — can still leave that brand-new interval open on a channel that has since left.
+        // Preventing that would need a lock spanning this whole transaction, which spec decision E10
+        // rejected for a neighbouring race at this severity, and the close cannot be reconstructed
+        // honestly after the fact (the leave time lives only in the audit log, and spec 4.3 refuses
+        // to derive an observation interval from it). Accepted, not chased.
+        if (!await IsChannelActiveAsync(channelId, cancellationToken))
+        {
+            return;
+        }
 
         openInterval.ObservedToUtc = now;
         openInterval.ClosedBy = ChannelEmoteSetObservationClosedBy.SetSwitch;
@@ -79,5 +120,19 @@ public class ChannelEmoteSetObservationService(AppDbContext db) : IChannelEmoteS
     {
         return await db.ChannelEmoteSetObservations
             .SingleOrDefaultAsync(o => o.ChannelId == channelId && o.ObservedToUtc == null, cancellationToken);
+    }
+
+    // A scalar projection, deliberately: unlike a full-entity query, this always issues a fresh SQL
+    // SELECT rather than risking a return of some already-tracked Channel instance's (possibly
+    // stale) in-memory value, which is exactly the freshness both call sites above depend on.
+    // SingleOrDefaultAsync rather than SingleAsync so a channel id that somehow does not resolve
+    // reads as "not active" instead of throwing — every real caller passes an id it just loaded, but
+    // failing closed here costs nothing and asks for nothing.
+    private async Task<bool> IsChannelActiveAsync(string channelId, CancellationToken cancellationToken)
+    {
+        return await db.Channels
+            .Where(c => c.Id == channelId)
+            .Select(c => c.IsBotActive)
+            .SingleOrDefaultAsync(cancellationToken);
     }
 }

@@ -91,8 +91,11 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     private async Task<Channel> SeedChannelAsync(Persistence.AppDbContext db, string name, params (string SevenTvId, string Name, bool Archived)[] emotes)
     {
         // Channels.TwitchChannelId carries a unique index — derive it from the (unique) test
-        // channel name instead of sharing one literal across tests.
-        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId };
+        // channel name instead of sharing one literal across tests. IsBotActive = true because
+        // SyncChannelAsync is only ever called for an active channel in real operation (the
+        // periodic resync worker filters its channel list on this flag); ChannelEmoteSetObservationService
+        // now leans on that precondition to tell a stale, racing sync apart from a real one.
+        var channel = new Channel { ChannelName = name, TwitchChannelId = $"tw_{name}", ActiveEmoteSetId = SetId, IsBotActive = true };
         db.Channels.Add(channel);
         foreach (var (sevenTvId, emoteName, archived) in emotes)
         {

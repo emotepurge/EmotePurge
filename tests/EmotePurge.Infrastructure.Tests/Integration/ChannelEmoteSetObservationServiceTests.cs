@@ -1,9 +1,14 @@
 using EmotePurge.Core.Entities;
+using EmotePurge.Core.Messaging;
+using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 using Npgsql;
 using Xunit;
 
@@ -18,6 +23,8 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
 {
     private const string SetA = "64c9e0f0aa1234567890a000";
     private const string SetB = "64c9e0f0aa1234567890b111";
+
+    private static readonly AuditActor Actor = new("4711", "sensitron");
 
     [Fact]
     public async Task RecordObservedSetAsync_WithNoOpenInterval_OpensOneForTheReportedSet()
@@ -156,6 +163,65 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
         Assert.Null(rows[1].ObservedToUtc);
     }
 
+    [Fact]
+    public async Task SyncChannelAsync_AfterALeaveHasAlreadyCommitted_DoesNotReopenTheInterval_AndALaterRejoinOpensAFreshOne()
+    {
+        // The confirmed defect: SevenTvPeriodicResyncWorker snapshots its channel list once per
+        // tick and SyncChannelAsync never re-checks IsBotActive mid-tick, so a leave that commits
+        // after that snapshot and before this sync's RecordObservedSetAsync call used to leave an
+        // open interval on a channel nothing tracks anymore. Reproduced deterministically with two
+        // AppDbContexts and plain ordering — no interleaving hook needed: LeaveAsync runs to
+        // completion first, then the sync runs against its now-stale channel list entry.
+        const string twitchUserId = "tw_obsrace1";
+        await using var seedDb = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(seedDb, "obsrace1");
+        channel.TwitchChannelId = twitchUserId;
+        await seedDb.SaveChangesAsync();
+        await SeedOpenIntervalAsync(seedDb, channel.Id, SetA);
+
+        await using var leaveDb = fixture.CreateDbContext();
+        var left = await CreateChannelService(leaveDb).LeaveAsync(channel.ChannelName, Actor);
+        Assert.True(left);
+
+        // The stale sync: reports the very set that was already open, exactly as a resync tick
+        // that has not yet learned about the leave would.
+        await using var syncDb = fixture.CreateDbContext();
+        var staleSyncResult = await CreateSyncService(syncDb, twitchUserId, SetA).SyncChannelAsync(channel.ChannelName);
+        Assert.NotNull(staleSyncResult);
+
+        await using var afterRaceVerify = fixture.CreateDbContext();
+        var rowsAfterRace = await afterRaceVerify.ChannelEmoteSetObservations.AsNoTracking()
+            .Where(o => o.ChannelId == channel.Id)
+            .ToListAsync();
+        var onlyRow = Assert.Single(rowsAfterRace);
+        Assert.NotNull(onlyRow.ObservedToUtc);
+        Assert.Equal(ChannelEmoteSetObservationClosedBy.Leave, onlyRow.ClosedBy);
+        Assert.False(await afterRaceVerify.Channels.AsNoTracking()
+            .Where(c => c.Id == channel.Id).Select(c => c.IsBotActive).SingleAsync());
+
+        // A later rejoin reactivates the channel; the next sync must open a brand-new interval
+        // rather than resurrecting the one the stale sync above correctly left alone.
+        await using var rejoinDb = fixture.CreateDbContext();
+        var rejoinResult = await CreateChannelService(rejoinDb).JoinAsync(channel.ChannelName, Actor);
+        Assert.Equal(ChannelJoinStatus.Joined, rejoinResult.Status);
+
+        await using var resyncDb = fixture.CreateDbContext();
+        var resyncResult = await CreateSyncService(resyncDb, twitchUserId, SetA).SyncChannelAsync(channel.ChannelName);
+        Assert.NotNull(resyncResult);
+
+        await using var finalVerify = fixture.CreateDbContext();
+        var finalRows = await finalVerify.ChannelEmoteSetObservations.AsNoTracking()
+            .Where(o => o.ChannelId == channel.Id)
+            .OrderBy(o => o.Id)
+            .ToListAsync();
+        Assert.Equal(2, finalRows.Count);
+        Assert.Equal(onlyRow.Id, finalRows[0].Id);
+        Assert.NotNull(finalRows[0].ObservedToUtc);
+        Assert.NotEqual(onlyRow.Id, finalRows[1].Id);
+        Assert.Equal(SetA, finalRows[1].SevenTvEmoteSetId);
+        Assert.Null(finalRows[1].ObservedToUtc);
+    }
+
     [Theory]
     [InlineData(ChannelEmoteSetObservationClosedBy.Leave)]
     [InlineData(ChannelEmoteSetObservationClosedBy.Rename)]
@@ -223,6 +289,44 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;
+    }
+
+    // A real ChannelService, backed by a real ChannelEmoteSetObservationService bound to the same
+    // AppDbContext — the whole point of the race tests above is that LeaveAsync's actual commit
+    // (flag + close + audit in one SaveChangesAsync) is what the fix leans on, not a mocked stand-in
+    // for it. The identity lookup always answers Unavailable: JoinAsync's contract treats that as
+    // "carry on exactly as before" (name-based matching only), which is all the rejoin case needs.
+    private static ChannelService CreateChannelService(AppDbContext db)
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        identityService.LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable));
+        return new ChannelService(
+            db,
+            Substitute.For<IRedisPublisher>(),
+            identityService,
+            new ChannelEmoteSetObservationService(db),
+            NullLogger<ChannelService>.Instance);
+    }
+
+    // A real SevenTvSyncService, likewise backed by a real ChannelEmoteSetObservationService on the
+    // same AppDbContext, with only the 7TV boundary faked — the exact CreateRestService pattern
+    // SevenTvSyncServiceTests uses, reported set and one emote so neither the empty-set guard nor
+    // TryGuardAgainstImplausibleWipeAsync gets in the way of the race under test.
+    private static SevenTvSyncService CreateSyncService(AppDbContext db, string twitchUserId, string emoteSetId)
+    {
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        apiClient.GetChannelStateForTwitchUserAsync(twitchUserId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState(
+                "7tv-user", new SevenTvEmoteSet(emoteSetId, [new SevenTvEmote("e1", "PogU", "https://cdn/e1.webp")]))));
+        return new SevenTvSyncService(
+            db,
+            apiClient,
+            new EmoteMatchCache(),
+            new DuplicateEmoteNameTracker(),
+            new ChannelEmoteSetObservationService(db),
+            new ChannelSyncGate(),
+            NullLogger<SevenTvSyncService>.Instance);
     }
 
     private static async Task<ChannelEmoteSetObservation> SeedOpenIntervalAsync(AppDbContext db, string channelId, string emoteSetId)
