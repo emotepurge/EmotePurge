@@ -1,6 +1,6 @@
 # Emote-Sets: nicht-aktive Sets ansehen, bearbeiten, zwischen Sets übertragen, pro Set zählen — Spec
 
-**Datum:** 2026-09-20 · **Status:** Entwurf; adversariale Zweitmeinung am 2026-09-20 eingeholt (Codex Sol) — fünf Befunde, alle fünf eingearbeitet (s. **Nachtrag** am Ende) · **Konzept:** [Konzept-Emote-Sets-2026-09-19.md](../../Konzept-Emote-Sets-2026-09-19.md) (achte Fassung, zwei Codex-Reviews) · **Epic:** #200 (wird mit den Kind-Issues aus Abschnitt 12 zum Epic) · **Formatvorlage:** [2026-09-13-7tv-bestenliste-import-quelle-spec.md](2026-09-13-7tv-bestenliste-import-quelle-spec.md) · **Berührt:** #69, #74, #76, #201
+**Datum:** 2026-09-20 · **Status:** Entwurf; **zwei** adversariale Zweitmeinungen am 2026-09-20 eingeholt (Codex Sol) — Runde 1 fünf Befunde, Runde 2 sechs Befunde, alle elf eingearbeitet (s. **Nachträge** 24 und 25 am Ende) · **Konzept:** [Konzept-Emote-Sets-2026-09-19.md](../../Konzept-Emote-Sets-2026-09-19.md) (achte Fassung, zwei Codex-Reviews) · **Epic:** #200 (wird mit den Kind-Issues aus Abschnitt 12 zum Epic) · **Formatvorlage:** [2026-09-13-7tv-bestenliste-import-quelle-spec.md](2026-09-13-7tv-bestenliste-import-quelle-spec.md) · **Berührt:** #69, #74, #76, #201
 
 Diese Spec **zerlegt** das Konzept in seiner achten Fassung. Sie entwirft es nicht neu. Die Entscheidungen
 A–M des Betreibers, die verworfenen Alternativen (Emote-Split, `EmoteSet`-Entität, Sammelview,
@@ -383,7 +383,9 @@ sondern eine lückenlose Klassifikation jedes Kanals, der mindestens eine `Usage
   `ExpectedArchivedCount` ist die Zahl der IDs des alten Sets, die im neuen nicht liegen — vom
   Betreiber am Wechseltag mit der ID-Sonde aus Konzept 11.2 gemessen. Für HandOfBlood: alt
   `01GV88A38G0006FW5TVZVMG507`, neu `01J94NYQR0000D15QN0BDGN85E`, Grenze und Zahl aus V1.
-- **Kein-Wechsel-Eintrag** — `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)`. Eine
+- **Kein-Wechsel-Eintrag** — `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)` **plus den
+  Datenstand, für den die Bestätigung gilt: `ConfirmedFromDate`, `ConfirmedThroughDate`,
+  `ConfirmedRowCount`** (Abschnitt „Die Bestätigung hängt an einem Datenstand", unten). Eine
   ausdrückliche Bestätigung des Betreibers, dass dieser Kanal **innerhalb des Zeitraums, den seine
   `UsageStat`-Zeilen abdecken**, nicht gewechselt hat, **samt der Set-ID, die seine Zeilen bekommen
   sollen**. Das Fenster gehört in die Aussage, sonst ist sie für die Mehrzahl der Kanäle gar nicht
@@ -397,6 +399,68 @@ sondern eine lückenlose Klassifikation jedes Kanals, der mindestens eine `Usage
   `Channels."ActiveEmoteSetId"` abgeleitet — sonst prüfte die Migration gegen sich selbst und
   Prüfung 1 wäre eine Tautologie.
 
+**Die Bestätigung hängt an einem Datenstand (neu am 2026-09-20, Codex-Runde 2, Befund 1).**
+Bis dahin speicherte ein Kein-Wechsel-Eintrag nur `(ChannelId, TwitchChannelId,
+ConfirmedEmoteSetId)`. Die Bindung an das Zählfenster stand damit im Text und **nirgends in den
+Daten** — und ohne sie passiert ein Kanal, der nach der Bestätigung S1 → S2 → S1 zurückgewechselt
+ist, bei stark überlappenden Sets **alle** Prüfungen: der Endzustand stimmt (Prüfung 1), er ist
+klassifiziert (Prüfung 3), die Massenarchivierungs-Signatur schlägt nicht an (Prüfung 4), und einen
+Wechseleintrag gibt es nicht (Prüfung 5 leerlaufend). Sämtliche während S2 entstandenen Zeilen
+gingen still an S1.
+
+Der Eintrag trägt deshalb den Datenstand mit, auf den er sich bezieht:
+
+| Feld | Inhalt | Quelle |
+|---|---|---|
+| `ConfirmedFromDate` | `min("Date")` der `UsageStat`-Zeilen dieses Kanals | gemessen |
+| `ConfirmedThroughDate` | `max("Date")` derselben Zeilen | gemessen |
+| `ConfirmedRowCount` | `count(*)` derselben Zeilen | gemessen |
+
+**Prüfung 7** (unten) vergleicht die drei Werte gegen die tatsächlichen Zeilen. Jede Abweichung —
+in irgendeiner der drei Zahlen, in irgendeiner Richtung — ist ein **Abbruch mit Nennung des Kanals
+und beider Zahlen** (erwartet / vorgefunden). Damit deckt die Bestätigung genau die Zeilen ab, die
+die Migration zuordnet, und nicht eine Zeile mehr.
+
+**Aussage und Messung sind getrennt, und das ist der Punkt.** `ConfirmedEmoteSetId` ist eine
+**Aussage** des Betreibers und wird von Hand abgeschrieben — würde sie aus der Datenbank
+abgeleitet, prüfte die Migration gegen sich selbst (oben). Die drei neuen Felder sind dagegen
+**Messwerte** ohne jedes Urteil; sie dürfen und sollen maschinell erzeugt werden, weil ihr Zweck
+gerade ist, den Zustand der Datenbank festzuhalten, nicht ihn zu bewerten. Beide Teile leben
+deshalb in **zwei** gitignorierten Dateien (unten, „Wo die Liste liegt"): die Aussagen in
+`SetSwitchAssignments.Local.cs` (V5, vor dem Fenster, von Hand), die Messwerte in
+`SetSwitchAssignments.Window.cs` (im Fenster, aus der Abfrage erzeugt und eingefügt).
+
+**Wann der maßgebliche Snapshot entsteht — entschieden: nach dem Worker-Stopp.**
+
+Gewählt ist Codex' Weg: die drei Messwerte entstehen **nach Schritt 1 des Wartungsfensters**
+(Worker gestoppt), aus derselben lesenden Abfrage wie bei Sonde 6 (Abschnitt 11), und werden als
+`SetSwitchAssignments.Window.cs` eingefügt, bevor Schritt 6 die Migration startet. Erst dann
+schreibt niemand mehr Zeilen, und erst dann sind die Zahlen exakt.
+
+*Was das kostet, beziffert:* das Fenster wächst um die lesende Abfrage über den Tunnel (dieselbe
+Form wie Sonde 6, im Trockenlauf von T1.10 bereits gefahren), das Einfügen eines erzeugten Blocks
+und einen `dotnet build`, den `dotnet ef database update` ohnehin auslöst — als **Schritt 4** im
+Fenster veranschlagt mit **2–5 Minuten**, gemessen wird er einmal in T1.10 und die gemessene Zahl
+steht danach im Runbook. Diese Minuten liegen **innerhalb** des Budgets aus AK 86 und sind im
+Abbruchpunkt (Abschnitt 10) mitgerechnet.
+
+*Der andere Weg, benannt und verworfen:* die Messwerte schon in V5 mitfüllen und jede
+zwischenzeitliche Drift zum Abbruch machen. Er wäre billiger im Fenster, aber er **bricht im
+Normalfall ab**: solange der Worker zählt, wächst `count(*)` mit jedem Flush und `max("Date")` mit
+jedem Tag. Für jeden aktiv gezählten Kanal ist Drift zwischen V5 und dem Fenster keine
+Möglichkeit, sondern eine Gewissheit; die Prüfung feuerte am ersten Kanal, und der Betreiber zöge
+die Zahlen **doch** im Fenster nach — nur nach einem abgebrochenen Lauf statt davor. Eine Prüfung,
+die im Regelfall anschlägt, ist kein Schutz, sondern Rauschen. (Der Weg wäre gangbar, wenn die
+Zählung Tage vorher stillstünde — das will niemand.)
+
+**Ein Kanal, dessen Zahlen nicht belegbar sind, ist ein Abbruch.** Es gibt **keinen**
+„Unknown-Bucket", keinen Sammel-Platzhalter und keine Zeile, die ohne Aussage durchläuft:
+`EmoteSetId` ist `NOT NULL`, und Platzhalterwerte hat dieses Konzept zweimal aus guten Gründen
+verworfen (`NULL`-Platzhalter für Altdaten, Abschnitt 1; kein Default und kein `COALESCE` im
+Backfill, Schritte 11 und 12 unten). Fehlt einem klassifizierten Kanal der Messblock, oder weichen seine
+Zahlen ab, bricht `Up` ab, der Betreiber klärt, und der Lauf wird wiederholt. Das ist ausdrücklich
+so gewollt und keine Lücke.
+
 **Wo die Liste liegt (E1, entschieden am 2026-09-20).** Nicht im Repo. Die Klassifikation ist ein
 `internal static partial class SetSwitchAssignments` neben der Migration, aufgeteilt auf zwei
 Dateien nach dem Muster, das dieses Repo für `appsettings.Lan.json` schon fährt:
@@ -408,14 +472,50 @@ Dateien nach dem Muster, das dieses Repo für `appsettings.Lan.json` schon fähr
   bleiben** — der Aufruf wird dann wegkompiliert. Genau daran hängt, dass CI, Dependabot und ein
   fremder Contributor ohne die Datei bauen und testen können.
 - **gitignoriert** — `Infrastructure/Migrations/SetSwitchAssignments.Local.cs`: die implementierende
-  Deklaration mit den echten Werten. Der Betreiber legt sie an (V5).
-- **committet** — `SetSwitchAssignments.Local.cs.example`: dieselbe Datei mit Platzhaltern und der
-  Anleitung im Kopf, wörtlich wie `appsettings.Lan.json.example`. Die Endung `.example` hält sie aus
-  dem Standard-Glob `**/*.cs` heraus, sie wird also nicht mitkompiliert.
+  Deklaration mit den **Aussagen** (beide Eintragsarten, Set-IDs, Grenzen,
+  `ExpectedArchivedCount`). Der Betreiber legt sie an (V5).
+- **gitignoriert** — `Infrastructure/Migrations/SetSwitchAssignments.Window.cs`: eine zweite
+  implementierende Deklaration, die ausschließlich die **Messwerte** je Kein-Wechsel-Eintrag trägt
+  (`ConfirmedFromDate`, `ConfirmedThroughDate`, `ConfirmedRowCount`) und sie den Aussagen über
+  `ChannelId` zuordnet. Sie entsteht **im Wartungsfenster** aus der Abfrage (Abschnitt 10,
+  Schritt 4) und wird nicht von Hand getippt. Eigene Marke `builder.ConfirmWindow();` als erste
+  Anweisung — fehlt die Datei, bricht `Up` mit einer eigenen benannten Meldung ab, statt für jeden
+  Kanal einzeln „Messwerte fehlen" zu melden.
+- **committet** — `SetSwitchAssignments.Local.cs.example` und
+  `SetSwitchAssignments.Window.cs.example`: dieselben Dateien mit Platzhaltern und der Anleitung im
+  Kopf, wörtlich wie `appsettings.Lan.json.example`; die `.Window`-Vorlage trägt zusätzlich die
+  fertige `SELECT`-Zeile, die ihren Rumpf erzeugt. Die Endung `.example` hält beide aus dem
+  Standard-Glob `**/*.cs` heraus, sie werden also nicht mitkompiliert.
 
 Damit bleibt die Liste **Teil des Builds**: `dotnet ef database update` baut das Projekt, die Werte
 werden einkompiliert, und eine Korrektur verlangt einen neuen Build. Ein Weg, der ein Korrigieren
 ohne Rebuild erlaubte, ist ausdrücklich nicht gewollt (E1).
+
+**Herkunft und Wiederherstellbarkeit der Datei (Entscheidung des Betreibers vom 2026-09-20,
+Codex-Runde 2, Befund 6).** Eine Datei, die außerhalb des Repos lebt, hat weder Historie noch
+Identität — man kann ihr nicht ansehen, ob sie die ist, die geprüft wurde. Deshalb:
+
+- **Die ausgefüllte `SetSwitchAssignments.Local.cs` wird als SHA-256 festgehalten**, und zwar
+  zusammen mit (a) der **Commit-ID** des Branch-Stands, gegen den der Hash gebildet wurde, und
+  (b) dem **Zeitpunkt und Stand der Datenbank** (Datum der Zählabfrage aus T0.4, Zahl ihrer
+  Zeilen), auf den sich die Aussagen beziehen. Die drei Angaben gehören zusammen; einzeln sagt
+  keine etwas.
+- **Die Datei selbst liegt in `infra-docs`** — dem privaten, versionierten Repo des Betreibers.
+  Dieses Vorhaben fasst `infra-docs` nicht an; es verweist nur darauf. Dort hat die Datei eine
+  Historie, und von dort kommt sie zurück, wenn der Arbeitsbaum sie verliert.
+- **Der Hash selbst leckt nichts** und darf deshalb dorthin, wo die Werte nicht hindürfen: in den
+  PR-Text von T7 und in den Runbook-Eintrag zu K7. Er ist der Rest an Prüfbarkeit durch einen
+  Zweiten, der nach dem Ortswechsel der Liste übrig ist — nicht der Inhalt, aber die **Identität**
+  dessen, was gelaufen ist.
+- **T1.10 und K7 prüfen denselben Hash** und brechen bei Abweichung ab (V5-Handgriff „Hash bilden
+  und ablegen", K7-Handgriff „Hash prüfen"; AK 92). Das schließt nebenbei den Fall, gegen den es
+  sonst keinen Schutz gibt: ein Rebase oder ein Branch-Wechsel im selben Worktree lässt die
+  gitignorierte Datei **still** stehen, so dass eine veraltete Fassung gegen einen neuen Stand
+  liefe, ohne dass irgendetwas auffiele.
+- **`SetSwitchAssignments.Window.cs` ist davon ausgenommen** — sie entsteht erst im Fenster und
+  kann deshalb vorher nicht geprüft werden. Für sie wird der Hash **nach** dem Lauf gebildet und
+  zusammen mit der Zeilenzahl der Abfrage als Protokoll dessen abgelegt, was tatsächlich
+  einkompiliert war.
 
 **Fehlt die Datei, bricht die Migration sichtbar ab.** Die erste Anweisung im Rumpf der lokalen
 Datei ist `builder.Confirm();` — so steht es in der `.example`, und daran erkennt `Load()`, dass
@@ -425,7 +525,10 @@ Schritt 2, also vor jeder Schemaänderung — eine `InvalidOperationException`, 
 (`.example` kopieren, füllen, neu bauen). Das ist derselbe Fail-fast-Gedanke wie S3-34
 (`PendingMigrationGuard.cs:11`): lieber ein benannter Abbruch als eine rätselhafte Folgemeldung
 — hier wäre die Folgemeldung „unclassified channel …“ aus Prüfung 3 für den erstbesten Kanal,
-was wie ein fehlender Einzeleintrag aussieht und nicht wie eine fehlende Datei.
+was wie ein fehlender Einzeleintrag aussieht und nicht wie eine fehlende Datei. **Für
+`SetSwitchAssignments.Window.cs` gilt dasselbe mit eigener Marke** (`builder.ConfirmWindow();`) und
+eigener Meldung: fehlt der Messblock, ist die Ursache eine fehlende Datei und nicht ein Kanal, dem
+Zahlen fehlen — die Folgemeldung aus Prüfung 7 würde genau das vortäuschen.
 
 **Warum die Marke und nicht „beide Listen leer“:** eine leere Klassifikation ist gegen eine
 Datenbank **ohne** Nutzungszeilen völlig richtig — genau der Fall der lokalen Dev-Datenbank seit
@@ -463,8 +566,8 @@ veröffentlichen.
 
 An die Stelle des Gegenlesens treten zwei Dinge, die schwächer, aber nicht nichts sind:
 
-1. **Die sechs Abbruchprüfungen laufen gegen die Datenbank, nicht gegen den Build.** Ein
-   Abschreibfehler, den ein Reviewer im Diff gesehen hätte, fällt jetzt an Prüfung 1, 3, 4 oder 5
+1. **Die sieben Abbruchprüfungen laufen gegen die Datenbank, nicht gegen den Build.** Ein
+   Abschreibfehler, den ein Reviewer im Diff gesehen hätte, fällt jetzt an Prüfung 1, 3, 4, 5 oder 7
    auf — an echten Daten und im Wartungsfenster, also später und teurer, aber er fällt auf. Was
    dabei **nicht** auffällt, bleibt dasselbe wie vorher: eine falsche, aber in sich stimmige
    Bestätigung („nie gewechselt“ für einen Kanal, der leise gewechselt hat) — die Grenze
@@ -485,7 +588,10 @@ und eine fehlende Aussage ist ein Abbruch mit Namen (Prüfung 3).
 beweisen ließe — auch nicht für das Zählfenster — vor dieser Migration hat niemand das beobachtete Set je aufgeschrieben, genau das
 führt `ChannelEmoteSetObservation` (4.3) erst ein. Der Betreiber bestätigt aus dem Signaturtest
 plus eigenem Wissen. Gewonnen ist nicht Beweisbarkeit, sondern dass jeder Kanal eine bewusste,
-ausdrückliche Aussage trägt statt einer stillen Vorgabe. **Sichtbar ist diese Aussage seit dem
+ausdrückliche Aussage trägt statt einer stillen Vorgabe. **Prüfung 7 ändert daran nichts** — sie
+macht die Aussage nicht wahrer, sie begrenzt nur ihre Reichweite auf genau die Zeilen, die der
+Betreiber gesehen hat. Ein Wechsel, der innerhalb dieses Fensters liegt und keine Spur hinterlässt,
+bleibt unentdeckt; ein Wechsel **nach** der Bestätigung tut es seitdem nicht mehr. **Sichtbar ist diese Aussage seit dem
 Ortswechsel der Liste nur noch für den Betreiber** — im PR-Diff steht sie nicht mehr (E1, oben).
 
 **Woher die Kanalliste kommt.** Lückenlosigkeit lässt sich nur gegen eine Liste behaupten, die
@@ -505,8 +611,15 @@ mit, den `SetSwitchAssignments` nie enthält.
 
 1. `SET LOCAL lock_timeout = '5s'` (E11).
 2. **Zwei** temporäre Tabellen aus der Liste (`CREATE TEMP TABLE set_switch_assignments …` für die
-   Wechseleinträge, `set_no_switch_assignments …` für die Kein-Wechsel-Einträge, beide
-   `ON COMMIT DROP`, `INSERT … VALUES …`).
+   Wechseleinträge, `set_no_switch_assignments …` für die Kein-Wechsel-Einträge — Letztere samt
+   den drei Messwerten aus `SetSwitchAssignments.Window.cs` —, beide `ON COMMIT DROP`,
+   `INSERT … VALUES …`). **Beide tragen Unique-Constraints, die die XOR-Invariante schon beim
+   Befüllen erzwingen** (Codex-Runde 2, Befund 2): `set_no_switch_assignments` ist unique auf
+   `(ChannelId)` — ein Kanal kann höchstens **einmal** „nie gewechselt" bestätigt werden —,
+   `set_switch_assignments` unique auf `(ChannelId, BoundaryUtc)`, und ein Kanal darf nicht in
+   beiden Tabellen stehen. Der dritte Teil lässt sich in Postgres nicht als Constraint über zwei
+   Tabellen ausdrücken und ist deshalb **Prüfung 3**; die beiden ersten scheitern schon am
+   `INSERT`, also vor jeder Prüfung und lange vor jeder Schemaänderung.
 3. **Prüfung 1 — Endzustand** (erweitert die frühere Prüfung 1 auf **beide** Eintragsarten): jeder
    Eintrag findet seinen Kanal über `ChannelId` **und** `TwitchChannelId`; die `NewEmoteSetId` des
    jeweils letzten Wechseleintrags eines Kanals **bzw.** die `ConfirmedEmoteSetId` seines
@@ -517,11 +630,27 @@ mit, den `SetSwitchAssignments` nie enthält.
    `("ArchivedAt" AT TIME ZONE 'UTC')::date = boundary_day` ist gleich `ExpectedArchivedCount`, und
    es gibt an diesem Tag **keinen** `AuditLogEntries`-Eintrag mit `Action = 'emotes.syncDeleted'`
    und diesem `ChannelName`. Sonst `RAISE EXCEPTION`.
-5. **Prüfung 3 — Lückenlosigkeit** (ersetzt die frühere Prüfung 3): jeder Kanal mit mindestens
-   einer `UsageStats`-Zeile hat einen Eintrag **einer der beiden Arten**. Sonst
-   `RAISE EXCEPTION 'unclassified channel % (%) has usage rows'` — **mit Nennung des Kanals**,
-   weil der Betreiber danach genau diesen einen Eintrag nachzutragen hat. Das ist die Prüfung, die
-   Codex' Lücke schließt.
+5. **Prüfung 3 — Lückenlosigkeit *und* Eindeutigkeit** (ersetzt die frühere Prüfung 3; seit dem
+   2026-09-20, Codex-Runde 2 Befund 2, um die zweite Hälfte erweitert): jeder Kanal mit mindestens
+   einer `UsageStats`-Zeile hat einen Eintrag **genau einer** der beiden Arten — mindestens einen
+   (Lückenlosigkeit) und nicht beide (Eindeutigkeit). Sonst
+   `RAISE EXCEPTION 'unclassified channel % (%) has usage rows'` bzw.
+   `RAISE EXCEPTION 'channel % carries both a switch and a no-switch classification'` — **mit
+   Nennung des Kanals**, weil der Betreiber danach genau diesen einen Eintrag nachzutragen oder zu
+   entfernen hat. Die erste Hälfte ist die Prüfung, die Codex' Lücke aus Runde 1 schließt; die
+   zweite die aus Runde 2.
+
+   **Warum die zweite Hälfte nötig ist.** „Mindestens einen Eintrag einer der beiden Arten" ließ
+   einen Kanal **beide** tragen, solange beide auf derselben aktuellen Set-ID enden — Prüfung 1
+   ist dann für beide erfüllt, Prüfung 4 schweigt (es gibt ja einen Wechseleintrag, der die
+   Signatur erklärt), Prüfung 5 schließt die Kette. Der Backfill liefe danach **zweimal** über
+   dieselben Zeilen: Update (a) schriebe die richtigen Intervalle, Update (b) überschriebe
+   **alles** erneut mit `ConfirmedEmoteSetId`. Das Ergebnis wäre eine erfolgreiche Migration mit
+   still verlorener Historie. Bei einem **inaktiven** Kanal fängt das auch der partielle
+   Unique-Index der Saat nicht ab, weil für ihn gar keine Saatzeile entsteht (4.3) — deshalb ist
+   die XOR-Invariante **dreifach** abgesichert: der Builder lehnt die Doppelung schon beim
+   Eintragen ab (`Load()`, benannte Ausnahme vor jeder Schemaänderung), die temporären Tabellen
+   tragen die Unique-Constraints aus Schritt 2, und diese Prüfung läuft **vor dem Backfill**.
 6. **Prüfung 4 — Widerspruch** (neu, die Umkehrung der früheren Prüfung 3): kein Kanal mit
    **Kein-Wechsel-Eintrag** schlägt am Signaturtest an — ein Tag mit ≥ 10 Archivierungen oder
    ≥ 25 % seines Bestands ohne `emotes.syncDeleted` am selben Tag (die Schwellen der Gegenprobe,
@@ -534,36 +663,46 @@ mit, den `SetSwitchAssignments` nie enthält.
 8. **Prüfung 6 — leere `ActiveEmoteSetId`** (die frühere Prüfung 4, unverändert, neue Nummer):
    keine `UsageStats`-Zeile, deren Kanal eine leere `ActiveEmoteSetId` hat. Sonst
    `RAISE EXCEPTION`.
-9. `ALTER TABLE "UsageStats" ADD COLUMN "EmoteSetId" text NULL` — **ohne Default**.
-10. Backfill in **zwei** `UPDATE`s: (a) für Zeilen, deren Kanal einen **Wechseleintrag** hat, die
+9. **Prüfung 7 — Datenstand der Bestätigung** (neu am 2026-09-20, Codex-Runde 2 Befund 1): für
+   **jeden** Kein-Wechsel-Eintrag gilt `ConfirmedFromDate = min("Date")`,
+   `ConfirmedThroughDate = max("Date")` und `ConfirmedRowCount = count(*)` über die
+   `UsageStats`-Zeilen dieses Kanals. Jede Abweichung in jeder Richtung ⇒
+   `RAISE EXCEPTION 'confirmation for channel % covers % rows %..%, but the database holds % rows %..%'`
+   — **mit Nennung des Kanals und beider Zahlentripel**. Fehlt einem Eintrag der Messblock ganz,
+   bricht schon `Load()` an der Marke `ConfirmWindow()` ab (oben). Es gibt **keinen** Zweig, der
+   eine unbelegte Zahl durchgehen ließe.
+10. `ALTER TABLE "UsageStats" ADD COLUMN "EmoteSetId" text NULL` — **ohne Default**.
+11. Backfill in **zwei** `UPDATE`s: (a) für Zeilen, deren Kanal einen **Wechseleintrag** hat, die
     Set-ID des Intervalls, in das `"Date"` fällt — `Date < boundary_day` → alt,
     `Date >= boundary_day` → neu (bei mehreren Grenzen: die jüngste Grenze ≤ Date entscheidet,
     davor die erste alte ID); (b) für Zeilen, deren Kanal einen **Kein-Wechsel-Eintrag** hat, dessen
     `ConfirmedEmoteSetId` **aus der Liste** — ausdrücklich **nicht** `Channels."ActiveEmoteSetId"`,
     auch wenn Prüfung 1 die beiden gleichgesetzt hat: die Quelle ist die bestätigte Aussage, nicht
     der heutige Zustand. Eine dritte Gruppe gibt es nach Prüfung 3 nicht mehr.
-11. `ALTER TABLE "UsageStats" ALTER COLUMN "EmoteSetId" SET NOT NULL` — schlägt fehl, falls ein
+12. `ALTER TABLE "UsageStats" ALTER COLUMN "EmoteSetId" SET NOT NULL` — schlägt fehl, falls ein
     Backfill eine Zeile ausgelassen hat; das ist gewollt (kein Default, kein `COALESCE`).
-12. `DROP INDEX "IX_UsageStats_EmoteId_Date"`; `CREATE UNIQUE INDEX … (EmoteId, EmoteSetId, Date)
+13. `DROP INDEX "IX_UsageStats_EmoteId_Date"`; `CREATE UNIQUE INDEX … (EmoteId, EmoteSetId, Date)
     INCLUDE (UseCount)`.
-13. `CREATE TABLE "ChannelEmoteSetObservations"` samt beiden Indizes; **Saat** (4.3).
-14. `VoteSessions."EmoteSetId"`, `VoteSessionEmotes."NameAtCreation"/"ImageUrlAtCreation"` (additiv,
+14. `CREATE TABLE "ChannelEmoteSetObservations"` samt beiden Indizes; **Saat** (4.3).
+15. `VoteSessions."EmoteSetId"`, `VoteSessionEmotes."NameAtCreation"/"ImageUrlAtCreation"` (additiv,
     nullbar).
 
-Alles in **einer** Transaktion (EF-Standard); ab Schritt 9 hält sie `ACCESS EXCLUSIVE` auf
+Alles in **einer** Transaktion (EF-Standard); ab Schritt 10 hält sie `ACCESS EXCLUSIVE` auf
 `UsageStats`, bis sie committet — der Grund, warum die Api im Fenster steht (Konzept 12.3, D3).
+Alle sieben Prüfungen liegen **davor**: ein Abbruch kostet keine Sperre und hinterlässt nichts.
 
-**Sechs Prüfungen, und wie sie aus den bisherigen vier hervorgehen** (die Nummern haben sich
-verschoben; wer alte Notizen liest, braucht diese Tabelle):
+**Sieben Prüfungen, und wie sie aus den bisherigen vier hervorgehen** (die Nummern haben sich
+zweimal verschoben; wer alte Notizen liest, braucht diese Tabelle):
 
 | bisher | jetzt | was sich geändert hat |
 |---|---|---|
 | Prüfung 1 (Endzustand) | **Prüfung 1** | gilt jetzt für **beide** Eintragsarten, nicht nur für Wechsler |
 | Prüfung 2 (Grenztag-Signatur) | **Prüfung 2** | unverändert |
-| Prüfung 3 (Massenarchivierung außerhalb der Liste) | **Prüfung 3** (Lückenlosigkeit) | ersetzt — die alte Bedingung lebt als Prüfung 4 weiter, mit umgekehrter Rolle |
+| Prüfung 3 (Massenarchivierung außerhalb der Liste) | **Prüfung 3** (Lückenlosigkeit **und** Eindeutigkeit) | ersetzt — die alte Bedingung lebt als Prüfung 4 weiter, mit umgekehrter Rolle; am 2026-09-20 (Runde 2) um die XOR-Hälfte erweitert |
 | — | **Prüfung 4** (Widerspruch) | neu |
 | — | **Prüfung 5** (Kettenschluss) | neu |
 | Prüfung 4 (leere `ActiveEmoteSetId`) | **Prüfung 6** | unverändert, neue Nummer |
+| — | **Prüfung 7** (Datenstand der Bestätigung) | neu am 2026-09-20 (Runde 2, Befund 1) — bindet den Kein-Wechsel-Eintrag an `min`/`max`/`count` der Zeilen, die er abdeckt |
 
 **Der Rollentausch ist der Kern der Entscheidung.** Die Schwelle aus Konzept 11.6 bleibt Wort für
 Wort dieselbe, aber ihre Aufgabe dreht sich um. Bis zum 2026-09-20 sollte sie einen Wechsel
@@ -783,9 +922,46 @@ Listen-Dienst läuft deshalb hinter derselben Wächterkette und in derselben Rei
 |---|---|---|
 | 1. Cache | `IForeignEmoteSetCache`-Muster, Schlüsselraum `7tvsets:{twitchId}`, 60 s, fail-open (E12) | eigener Schlüsselraum im bestehenden Cache-Idiom (`ForeignEmoteSetCache.cs:17-20,24-25`) |
 | 2. Singleflight | `ForeignEmoteSetRequestCoalescer` | **nur nach einer Anpassung wiederverwendbar:** die Klasse ist heute auf `ForeignEmoteSetLookupResult` festgelegt (`:31`, `:38`). Vorgabe: generisch schließen (`…Coalescer<TResult>`) und je Ergebnistyp eine geschlossene Singleton-Registrierung — genau das Muster, das `SevenTvLeaderboardStore<TValue>` (`:68`) bereits fährt („generic on purpose … without dragging in the … service's own result types"). Verhalten des Vorschaupfads bleibt bitgleich: er schließt den Typ auf seinen bisherigen |
-| 3. Breaker | `ForeignSevenTvBreakerPolicy` — **dieselbe** typisierte Singleton-Instanz wie der Vorschaupfad (`ServiceCollectionExtensions.cs:106`), nicht die keyed zweite der Bestenliste (`:128`) | unverändert. Begründung: die Bestenliste bekam eine eigene Instanz, weil sie ein **eigenes** Budget hat (`SevenTvLeaderboardRequestBudget`); der Listen-Dienst teilt das Provider-Budget mit der Vorschau, also teilt er auch den Breaker. Ein v4-Ausfall soll beide Pfade anhalten, nicht nur einen |
+| 3. Breaker | `ForeignSevenTvBreakerPolicy` — **eine** Instanz für beide Pfade, aber mit **je Operation getrenntem Fehlerzähler und getrennter Half-open-Probe**; die Rate-Limit-Sperre bleibt providerweit. Nicht die keyed zweite Instanz der Bestenliste (`ServiceCollectionExtensions.cs:128`) | **Änderung an der Bestandsklasse** (Codex-Runde 2, Befund 3 — s. u.). Die Bestenliste bekam eine eigene Instanz, weil sie ein **eigenes** Budget hat (`SevenTvLeaderboardRequestBudget`, `:135-136`) und damit auf einem anderen Eimer sitzt; der Listen-Dienst teilt sich das Provider-Budget mit der Vorschau (`:107,113`) und muss deshalb die **Rate-Limit-Sperre** teilen — aber nicht den Fehlerzähler |
 | 4. Budget | `ForeignEmoteSetProviderBudget` — Nebenläufigkeits-Slot je Aufruf (`TryAcquireConcurrencySlotAsync`, `:109`, `MaxConcurrent = 2`) **und** ein Permit je Upstream-Request über `IForeignUpstreamRequestBudget` (`:16`, `:119`/`:126`, 60/min, F14, AK 24) | unverändert, beide Gesichter derselben Instanz (`ServiceCollectionExtensions.cs:107,113`) |
 | 5. Request | `SevenTvApiClient.FetchV4PageAsync` (`:552`) | unverändert — es erkennt **beide** 429-Gestalten: HTTP 429 (`:566-574`) und den als HTTP 200 getarnten GraphQL-429 über `errors[].extensions.status == 429` (`IsRateLimited`, `:842-843`, ausgewertet `:597-608`) |
+
+**Der Breaker trennt, was verschieden ist — Korrektur vom 2026-09-20 (Codex-Runde 2, Befund 3).**
+Die Zeile 3 oben hieß bis dahin „dieselbe Instanz, unverändert", mit der Begründung „beide Pfade
+teilen sich das Budget, also teilen sie auch den Breaker". **Diese Begründung war falsch, und sie
+stammt nicht von Codex, sondern aus der Einarbeitung von Runde 1** — der Fehlerzähler *ist* nicht
+das Budget. Am Code nachgesehen: `ForeignSevenTvBreakerPolicy` öffnet nicht nur bei einem
+bestätigten 429, sondern auch nach `FailureThreshold = 5` **aufeinanderfolgenden**
+`OtherFailure` (`ForeignSevenTvBreakerPolicy.cs`, `RecordFailure`), und `_consecutiveFailures`,
+`_open`, `_probeInFlight` und `_generation` sind Instanzfelder. Nach F17 erscheint eine falsch
+geformte oder durch Schema-Drift ungültige **Listen**abfrage als `Unavailable`, also als
+`OtherFailure`. Fünf davon öffnen den gemeinsamen Breaker — und die **gesunde** Vorschau antwortet
+ab da 503, obwohl mit ihr nichts ist. Schlimmer: die eine erlaubte Half-open-Probe kann danach von
+einem Listenaufruf gezogen und erneut verbrannt werden, so dass die Vorschau nie wieder durchkommt.
+
+Verbindlich ist deshalb:
+
+| Signal | Reichweite | Warum |
+|---|---|---|
+| **`RateLimited`** (HTTP 429 **oder** HTTP 200 mit `extensions.status: 429`) samt `Retry-After` | **providerweit** — sperrt Vorschau **und** Liste | 7TV limitiert den Eimer, nicht die Abfrage. Ein 429 auf einem Pfad sagt genauso viel über den anderen |
+| **Budget** (Nebenläufigkeit, 60/min) | **providerweit**, unverändert | eine Instanz, zwei Gesichter (`:107,113`) — daran ändert sich nichts |
+| **`OtherFailure`-Zähler** (`_consecutiveFailures`, Schwelle 5) | **je Operation** | „unsere Listenabfrage ist kaputt" sagt nichts über die Vorschauabfrage. F17 macht genau diesen Fall von einem echten Ausfall ununterscheidbar, also darf er nicht über den Pfad hinaus wirken |
+| **Half-open-Probe** (`_probeInFlight`, `_generation`) | **je Operation** | sonst verbraucht der kranke Pfad die eine Probe, die der gesunde bräuchte |
+
+**Zweite Instanz oder getrennte Zählung? — getrennte Zählung, entschieden.** Eine zweite
+`ForeignSevenTvBreakerPolicy` nach dem Muster der Bestenliste (`AddKeyedSingleton`, `:128`)
+**reicht nicht**: sie trennte alles, auch das 429, und damit genau das eine Signal, das geteilt
+gehören muss — ein bestätigter Rate Limit auf dem Listenpfad ließe die Vorschau weiterlaufen, bis
+sie ihr eigenes 429 einfängt. Bei der Bestenliste ist die vollständige Trennung richtig, **weil ihr
+Eimer ein anderer ist** (eigenes Budget, eigener Such-Eimer); hier ist er derselbe. Die Policy
+selbst bekommt deshalb eine **Operationskennung**: sie hält den Rate-Limit-Zustand einmal und
+Fehlerstreak plus Probe je Kennung. Für den Vorschaupfad — als einzige Kennung — ist das
+verhaltensgleich mit heute; das ist die Bedingung, unter der die 9 `HardenedForeignEmoteSetService`-
+und 14 `ForeignEmoteSetService`-Tests ohne Änderung grün bleiben müssen (AK 94).
+
+**Kreuztest, verbindlich (AK 94):** wiederholtes `Unavailable` der **Listen**abfrage — mehr als
+`FailureThreshold` mal — sperrt den Vorschaupfad **nicht**; ein bestätigtes 429 auf einem der
+beiden Pfade sperrt **beide**, mit demselben `Retry-After`.
 
 **Fehler werden gecacht, nicht wiederholt.** Ein negatives Ergebnis (Unavailable, RateLimited,
 Breaker offen, Budget verweigert) bekommt eine **eigene, kurze** Haltbarkeit im selben Schlüsselraum,
@@ -888,8 +1064,12 @@ Formen nebeneinander, das Fallenlassen der alten in einem **eigenen Schritt dana
   — `sevenTvEmoteId` **neu**, `emoteId` bleibt mit unverändertem Inhalt (die `Emote.Id`-Guid der
   DB-Zeile) daneben stehen. Ein Eintrag ohne DB-Zeile kann `/series` ohnehin nicht liefern (AK 20),
   also ist `emoteId` in Schritt 1 nie leer und das alte Frontend liest weiter, was es kennt.
-- **Schritt 2 (Folge-Issue 5, nach K4):** `emoteId` fällt aus dem DTO, aus dem Frontend-Modell und
-  aus den E2E-Mocks. **Eigener Schritt, eigener Commit, nicht im Merge von K4** — analog E3.
+- **Schritt 2 (Folge-Issue 5, hinter K7):** `emoteId` fällt aus dem DTO, aus dem Frontend-Modell und
+  aus den E2E-Mocks. **Eigener Schritt, eigener Commit, nicht im Merge von K4 — und nicht schon
+  hinter dessen Merge, sondern hinter dem Deploy plus Kompatibilitätsfenster** (Abschnitt 21, ein
+  Tor für beide Übergangsfelder; korrigiert am 2026-09-20, Codex-Runde 2 Befund 5): K7 deployt
+  später als jeder Kind-Merge, ein Folge-Commit nach K4 könnte also mit K4 im selben Release
+  landen und einem vor dem Deploy geöffneten Tab das Feld unter den Füßen wegziehen.
 - `ChannelUsageSeriesWireFormatTests.Days_SerializeAsPairsOfNumbers_NotObjects` (`:23-37`) prüft ab
   Schritt 1 **beide** Felder; der zweite Fall (`:39-49`) bleibt. **Damit wird kein bestehender Test
   rot** — die frühere Fassung ließ ihn bewusst rot werden (F4); das ist mit dem additiven Weg
@@ -1159,7 +1339,7 @@ des Beobachtungslogs ausdrücklich auf Preset (8.5), Tatsachenangabe und später
 begrenzt und die **Zuordnung der Zahlen** ausdrücklich ausgenommen ist — die trägt
 `UsageStat.EmoteSetId`. Und er war faktisch falsch: die Migration legt für **inaktive** Kanäle
 **keine** Beobachtungszeile an (4.3, Saat), backfillt deren `UsageStats` aber sehr wohl auf eine
-Set-ID (4.2, Schritt 8b). Nach einem späteren Rejoin trägt ein historischer Zeitraum deshalb Zahlen,
+Set-ID (4.2, Schritt 11b). Nach einem späteren Rejoin trägt ein historischer Zeitraum deshalb Zahlen,
 während die Seite das Gegenteil behauptet hätte.
 
 Verbindlich sind zwei getrennte Quellen:
@@ -1315,25 +1495,55 @@ die Ansicht zeigt weiterhin `null`, nicht 0 (E17, AK 63).
 
 Einmalig, **hinter** dem 2026-10-08, nach Freigabe gegen das Harness-Runbook in `infra-docs`.
 
-**Eine Vorbedingung liegt seit dem 2026-09-20 nicht mehr im Repo:** Schritt 4 baut das Projekt aus
-dem lokalen Checkout, und die Klassifikation steckt in der gitignorierten
-`SetSwitchAssignments.Local.cs` (E1). Sie muss dort **vor** Schritt 4 stehen und gefüllt sein
-(V5) — sonst bricht `Up` mit der benannten Meldung ab (AK 91). Das ist kein Sonderfall des
-Fensters, sondern der Normalfall: ein frischer Klon, ein Worktree oder eine andere Maschine hat die
-Datei nicht.
+**Eine Vorbedingung liegt seit dem 2026-09-20 nicht mehr im Repo:** Schritt 6 baut das Projekt aus
+dem lokalen Checkout, und die Klassifikation steckt in den gitignorierten Dateien
+`SetSwitchAssignments.Local.cs` (Aussagen, V5) und `SetSwitchAssignments.Window.cs` (Messwerte,
+Schritt 4) (E1). Beide müssen **vor** Schritt 6 stehen und gefüllt sein — sonst bricht `Up` mit der
+jeweils benannten Meldung ab (AK 91). Das ist kein Sonderfall des Fensters, sondern der Normalfall:
+ein frischer Klon, ein Worktree oder eine andere Maschine hat die Dateien nicht. **Der
+Wiederherstellungsweg für die Aussagen-Datei:** sie liegt versioniert in `infra-docs`; von dort
+wird sie zurückgeholt und ihr SHA-256 gegen den dort abgelegten Wert geprüft (Schritt −1, 4.2,
+AK 92).
 
 Reihenfolge, weil sie zählt:
 
 | Schritt | Handlung | Warum in dieser Position |
 |---|---|---|
-| 0 | Uptime-Kuma-Monitor pausieren oder Fenster ankündigen | ein Alarm für einen geplanten Zustand entwertet die echten |
+| −1 | **Vor allem anderen, ohne die Site anzufassen:** `sha256sum src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs` im Checkout, aus dem Schritt 5 läuft, gegen den in `infra-docs` abgelegten Wert (V5). Abweichung oder fehlende Datei ⇒ **nicht starten**, Datei aus `infra-docs` zurückholen | eine Minute hier spart ein halbes Fenster; der Abbruch aus `Load()` käme sonst bei gestoppter Site (AK 91/92) |
+| 0 | Uptime-Kuma-Monitor pausieren oder Fenster ankündigen; **Uhr starten** (AK 86 misst Schritt 1 bis 6) | ein Alarm für einen geplanten Zustand entwertet die echten |
 | 1 | **Worker stoppen** (Portainer, Stack `worker`) | Shutdown-Flush schreibt die letzten < 30 s gegen das **alte** Schema (`UsageFlushWorker.cs:30-38`); `stop_grace_period: 60s` (`docker-compose.prod.yml:95`) |
-| 2 | **Api stoppen** | ab Schritt 7 der Migration hält die Transaktion `ACCESS EXCLUSIVE` auf `UsageStats`; jede Seite hinge unbestimmt lange |
-| 3 | Tunnel `ssh -N -L 15432:127.0.0.1:5433 vps`; `dotnet ef migrations list --connection '…'` — genau **eine** Pending erwartet | mehr als eine heißt: Prod hängt Runden zurück, erst durchsehen |
-| 4 | `dotnet ef database update --connection 'Host=localhost;Port=15432;…;Options=-c lock_timeout=5s'` | Prüfungen 1–6 und `SET LOCAL lock_timeout` (4.2, E11) brechen ab, statt zu schätzen oder zu warten |
-| 5 | `dotnet ef migrations list` — keine Pending | Gegenprobe |
-| 6 | **Neue Images starten**, Api und Worker | Worker rejoined (Boot-Recovery, `Worker.cs:95-115`), Match-Cache kommt aus dem Warmstart **mit** Set-ID |
-| 7 | Live-Verifikation auf Prod (AK 84–86) | Set-Ansicht, eine Zeile mit `EmoteSetId`, `/api/health` 200, Picker am Testkanal |
+| 2 | **Api stoppen** | ab Schritt 10 der Migration hält die Transaktion `ACCESS EXCLUSIVE` auf `UsageStats`; jede Seite hinge unbestimmt lange |
+| 3 | Tunnel `ssh -N -L 15432:127.0.0.1:5433 vps` | ab hier läuft alles über den Tunnel |
+| 4 | **Messwerte ziehen und einfügen:** die Abfrage aus 4.2 („Die Bestätigung hängt an einem Datenstand") lesend gegen Prod, Ausgabe als Rumpf nach `SetSwitchAssignments.Window.cs` (Vorlage `.Window.cs.example`), danach `sha256sum` dieser Datei **notieren** | **erst jetzt** schreibt niemand mehr Zeilen — vorher wären `max("Date")` und `count(*)` schon beim Lesen veraltet (4.2, gewählter Weg). Veranschlagt: **2–5 Minuten**, gemessen in T1.10 |
+| 5 | `dotnet ef migrations list --connection '…'` — genau **eine** Pending erwartet | mehr als eine heißt: Prod hängt Runden zurück, erst durchsehen |
+| 6 | `dotnet ef database update --connection 'Host=localhost;Port=15432;…;Options=-c lock_timeout=5s'` | Prüfungen 1–7 und `SET LOCAL lock_timeout` (4.2, E11) brechen ab, statt zu schätzen oder zu warten |
+| 7 | `dotnet ef migrations list` — keine Pending | Gegenprobe |
+| 8 | **Neue Images starten**, Api und Worker | Worker rejoined (Boot-Recovery, `Worker.cs:95-115`), Match-Cache kommt aus dem Warmstart **mit** Set-ID |
+| 9 | Live-Verifikation auf Prod (AK 84–86) | Set-Ansicht, eine Zeile mit `EmoteSetId`, `/api/health` 200, Picker am Testkanal |
+
+*(Die Schrittnummern haben sich am 2026-09-20 um zwei verschoben; „Schritt 1 bis 6" in AK 86 meint
+weiterhin **Worker-Stopp bis Start der neuen Images**, hier also Schritt 1 bis 8.)*
+
+**Abbruchpunkt, verbindlich (Codex-Runde 2, Befund 4).** Produktionsnahe Hardware steht nicht zur
+Verfügung, also gibt es keine Messung, die die Fensterlänge belegt — T1.10 liefert eine
+**untere Schranke** und die Gewissheit, dass die Mechanik läuft (AK 87). An die Stelle der Messung
+tritt ein Budget mit einer Grenze, die nicht verhandelt wird:
+
+| Größe | Wert | Herkunft |
+|---|---|---|
+| Budget für das ganze Fenster (Schritt 1 bis 8) | **15 min** | AK 86, unverändert — aber jetzt als *Planwert mit Abbruchpunkt*, nicht als Messergebnis |
+| davon Schritt 4 (Messwerte) | 2–5 min | einmal in T1.10 gemessen, Zahl steht danach im Runbook |
+| **Abbruchpunkt für Schritt 6 (`Up`)** | **10 min ab Start des Kommandos** | s. u. |
+| erwartete Dauer von `Up` | T1.10-Messung × (Prod-Zeilen / Proben-Zeilen) × **3** | lineare Hochrechnung über die Zeilenzahl (zwei `UPDATE`s und ein Indexaufbau sind darin linear), Faktor 3 für langsamere Platte und kalten Cache. Liegt das Ergebnis über 10 min, **wird das Fenster anders geplant** (längeres angekündigtes Fenster, ausdrücklich beschlossen) statt im Lauf gehofft |
+
+**Was „Abbruch" konkret heißt:** kehrt Schritt 6 nach 10 Minuten nicht zurück, bricht der Betreiber
+das Kommando ab (die eine Transaktion rollt zurück; `lock_timeout = 5s` schließt aus, dass es an
+einer Sperre *wartet* — es rechnet dann tatsächlich), prüft mit `dotnet ef migrations list`, dass
+die Migration weiterhin `(Pending)` ist, startet die **alten** Images und beendet das Fenster als
+Nulllauf. Ein zweiter Anlauf ist eine neue, angekündigte Übung mit neuem Budget — **nicht** ein
+Weiterwarten bei gestoppter Site. Ob `Up` noch rechnet oder hängt, sieht der Betreiber in einer
+zweiten Sitzung am Tunnel über `pg_stat_activity`; das ist eine Diagnose, kein Grund, die Grenze zu
+dehnen.
 
 **Was bewusst verloren geht:** Chat-Zählung während des Fensters (Minuten, alle Kanäle); ein
 Helix-Poll-Intervall `ChannelLiveDay` (5-min-Raster); Erreichbarkeit der Site. Nichts davon ist
@@ -1452,7 +1662,15 @@ ORDER BY usage_rows DESC;
 
 Jede Zeile wird zu genau einem Eintrag in `SetSwitchAssignments` (**V5**, Handgriff des
 Betreibers): HandOfBlood zu Wechseleinträgen, alle übrigen zu **Kein-Wechsel-Einträgen** mit der
-hier abgelesenen `ActiveEmoteSetId` als `ConfirmedEmoteSetId`. Dass die ID hier abgelesen und dann
+hier abgelesenen `ActiveEmoteSetId` als `ConfirmedEmoteSetId`.
+
+**`first_day`, `last_day` und `usage_rows` aus *diesem* Lauf gehen ausdrücklich *nicht* in die
+Einträge** (seit dem 2026-09-20, Codex-Runde 2, Befund 1). Sie sind hier nur Anschauung: wie viele
+Zeilen ein Kanal trägt und über welchen Zeitraum — das, was der Betreiber braucht, um seine
+Kein-Wechsel-Aussage überhaupt treffen zu können. Die Werte, gegen die **Prüfung 7** vergleicht,
+entstehen aus **demselben `SELECT`, noch einmal ausgeführt im Wartungsfenster nach dem
+Worker-Stopp** (Abschnitt 10, Schritt 4), und landen in `SetSwitchAssignments.Window.cs`. Jeder
+frühere Stand wäre zum Migrationszeitpunkt veraltet, weil die Zählung bis Schritt 1 weiterläuft. Dass die ID hier abgelesen und dann
 als Konstante mitgeschrieben wird, ist der Punkt: die Migration liest sie aus der Liste, nicht aus
 der Datenbank, und kann deshalb widersprechen. **Die Ausgabe dieser Abfrage bleibt beim Betreiber**
 — sie nennt Kanalnamen und IDs, und weder das Repo noch ein PR-Text nimmt sie auf (E1); was in den
@@ -1533,13 +1751,13 @@ Abschnitt; #200 wird zum Epic mit dieser Liste (Regel: neue Issues gehören ins 
 | # | Titel | Umfang | Abhängigkeiten | Akzeptanzkriterien |
 |---|---|---|---|---|
 | K0 | **Preconditions: probes, assignment list, purges** (Betreiber, kein Code) | T0.1–T0.6 (Sonden in Abschnitt 11, T0.6 als Prüfaufgabe in Abschnitt 19; T0.1, T0.5 und T0.6 am 2026-09-20 gemessen); Zwischenweg V1 als **Empfehlung an das Mod-Team** vor dem 01.10.; Zuordnungsliste für HandOfBlood (Grenze, `ExpectedArchivedCount`) unabhängig davon; Purge Testkanal (V2) vor K7, Purge Wegwerfkanal (V3) **nur, falls V1 stattfindet** | — | AK 1–4 |
-| K1 | **Count chat usage per emote set** (Schritt 3) | 4.1–4.3, 5, Migration, Beobachtungs-Log mit allen Schließstellen, `GetRowsAsync`-Summe, DECISIONS-Eintrag 1 | K0 nur für die Listenwerte (V5) und für T1.10 | AK 5–20, 90–91 |
-| K2 | **Target set picker: any set of any account the user edits** (Schritt 4) | 6.1, 6.2, 6.4, 6.7, 6.8, 8.6, Preview-Kapazität, Set-ID-Lesepfad, set-zentrierter Endpunkt, Kollisions-/Alias-Gruppen, DECISIONS-Eintrag 2 | keine (parallel zu K1) | AK 21–46 |
+| K1 | **Count chat usage per emote set** (Schritt 3) | 4.1–4.3, 5, Migration, Beobachtungs-Log mit allen Schließstellen, `GetRowsAsync`-Summe, DECISIONS-Eintrag 1 | K0 nur für die Listenwerte (V5) und für T1.10 | AK 5–20, 87–92 |
+| K2 | **Target set picker: any set of any account the user edits** (Schritt 4) | 6.1, 6.2, 6.4, 6.7, 6.8, 8.6, Preview-Kapazität, Set-ID-Lesepfad, set-zentrierter Endpunkt, Kollisions-/Alias-Gruppen, DECISIONS-Eintrag 2 | keine (parallel zu K1) | AK 21–46, 94 |
 | K3 | **Source set picker for foreign channels** (Schritt 5) | 6.3, 8.7 | K2 (Lesepfad, Listen-Dienst) | AK 47–49 |
 | K4 | **Set view on the usage page: dropdown, per-set filters, union list, row identity** (Schritt 6) | 6.5, 7, 8.1–8.5, 8.9, Export, Türen auf das gewählte Set, DECISIONS-Eintrag 4 (erster Teil) | K1 (Set-Filter), K2 (Set-Liste, Lesepfad) | AK 50–66 |
 | K5 | **Delete and restore in the selected set** (Schritt 7) | 6.6, 7.2 (Queue-Key, Protokoll, Laufdatensatz), 8.8, 8.10, DECISIONS-Eintrag 4 (Nachtrag) | K4 | AK 67–74 |
 | K6 | **Vote sessions over a non-active set** (Schritt 8) | 6.9, 9, E10 Worker-Wiederholung, DECISIONS-Eintrag 3 | K1, K2, K4 | AK 75–83 |
-| K7 | **Maintenance-window deploy** (Runbook, kein Code) | Abschnitt 10, Live-Verifikation auf Prod | K0–K6 gemergt; Harness-Runbook freigegeben | AK 84–86 |
+| K7 | **Maintenance-window deploy** (Runbook, kein Code) | Abschnitt 10, Live-Verifikation auf Prod | K0–K6 gemergt; Harness-Runbook freigegeben | AK 84–86, 92, 93 |
 
 Folge-Issue nach dem Deploy: Altform entfernen (E3, Abschnitt 21).
 
@@ -1561,7 +1779,7 @@ ohne Api auf `:5151`), dazu Regel 16 je Bauschritt.
 | V2 | Testkanal per Admin-Purge räumen | nach Sonde 6, vor K7 |
 | V3 | Wegwerfkanal purgen — **entfällt, wenn V1 nicht stattfindet** | nach dem 01.10., vor Sonde 6 |
 | V4 | **Datenbank-Kopie für die Migrationsprobe (T1.10) beschaffen.** Zwei Quellen, beide gültig: die Sicherung der Dev-Datenbank von vor dem Leerräumen (`~/projects/emotepurge-devdb-vor-purge-2026-09-20.sql.gz`, 766 K, 27 Kanäle, 9 214 Emotes, 6 022 Nutzungszeilen über 18 Tage ab 2026-08-29, 3 Nutzer — liegt bereits vor) und, **aussagekräftiger**, eine Kopie der Produktionsdatenbank über die bestehende Backup-Kette. Nur die Prod-Kopie trägt die echte Zeilenzahl und macht die gemessene `Up`-Dauer zur belastbaren Länge des Wartungsfensters. Das Beschaffen ist ein Handgriff des Betreibers, kein Task — der Plan verbindet sich nicht nach außen | vor T1.10 |
-| V5 | **Die Klassifikationsdatei anlegen und füllen** (neu, 2026-09-20 — war bis dahin der Commit T1.9). `cp src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs`, darin HandOfBloods Wechseleinträge (beide Set-IDs stehen fest, `BoundaryUtc` und `ExpectedArchivedCount` aus der ID-Sonde vom Wechseltag) **und** je einen Kein-Wechsel-Eintrag für jeden übrigen Kanal aus der Zählabfrage neben Sonde 6 — `ConfirmedEmoteSetId` aus deren Ausgabe **abgeschrieben**, nicht abgeleitet. Die Datei ist gitignoriert; nichts davon geht ins Repo, in einen PR-Text oder in den DECISIONS-Eintrag (E1, 4.2). Ins Repo geht **eine Zahl**: die Zahl der Einträge (AK 2). **Kein Task, kein Commit** — der Handgriff hängt an Wissen, das nur der Betreiber hat | nach dem 01.10. **und** nach T0.4; vor T1.10 und vor K7-Schritt 4 |
+| V5 | **Die Klassifikationsdatei anlegen und füllen** (neu, 2026-09-20 — war bis dahin der Commit T1.9). `cp src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs`, darin HandOfBloods Wechseleinträge (beide Set-IDs stehen fest, `BoundaryUtc` und `ExpectedArchivedCount` aus der ID-Sonde vom Wechseltag) **und** je einen Kein-Wechsel-Eintrag für jeden übrigen Kanal aus der Zählabfrage neben Sonde 6 — `ConfirmedEmoteSetId` aus deren Ausgabe **abgeschrieben**, nicht abgeleitet. Die Datei ist gitignoriert; nichts davon geht ins Repo, in einen PR-Text oder in den DECISIONS-Eintrag (E1, 4.2). Ins Repo geht **eine Zahl**: die Zahl der Einträge (AK 2). **Kein Task, kein Commit** — der Handgriff hängt an Wissen, das nur der Betreiber hat. **Nur die Aussagen** — die drei `Confirmed*`-Messwerte entstehen erst im Fenster (Abschnitt 10, Schritt 4). Dazu der Hash-Handgriff (AK 92): SHA-256 der Datei, Commit-ID und Datum/Zeilenzahl der Zählabfrage nach `infra-docs`, wo auch die Datei selbst liegt | nach dem 01.10. **und** nach T0.4; vor T1.10 und vor K7-Schritt −1 |
 | T0.1–T0.6 | Sonden (Abschnitt 11; T0.6 steht als Prüfaufgabe in Abschnitt 19) — T0.1, T0.5 und T0.6 am 2026-09-20 gemessen | T0.3 vor K5, T0.2 vor K2, T0.4 vor K7 |
 
 **Branch-Arbeit:**
@@ -1570,7 +1788,7 @@ ohne Api auf `:5151`), dazu Regel 16 je Bauschritt.
 |---|---|---|
 | T1.1 | `UsageCounterKey`, `EmoteMatchSnapshot`, Interfaces (5); `EmoteUsageCounter`, `EmoteMatchCache` mit Tests zuerst (`Worker.Tests`, `Infrastructure.Tests/Unit`) | pure Klassen, kein Container; die 17 bestehenden Fälle werden mit umgestellt |
 | T1.2 | `TwitchChatManager` liest den Snapshot; `RefreshMatchCacheAsync`/Warmstart übergeben die Set-ID; Log beim Tausch | braucht T1.1 |
-| T1.3 | Entitäten, `AppDbContext`, Migration mit Prüfungen 1–6, Backfill, Indextausch, Saat, `Down`; `PendingMigrationGuardTests` bleibt grün; dazu der **Lader** der Klassifikation samt Abbruch, `.example` und Ignore-Einträgen (E1) | braucht nichts; die Listen**werte** kommen außerhalb des Repos dazu (V5) |
+| T1.3 | Entitäten, `AppDbContext`, Migration mit Prüfungen 1–7, Backfill, Indextausch, Saat, `Down`; `PendingMigrationGuardTests` bleibt grün; dazu der **Lader** der Klassifikation samt Abbruch, `.example` und Ignore-Einträgen (E1) | braucht nichts; die Listen**werte** kommen außerhalb des Repos dazu (V5) |
 | T1.4 | `UsageStatFlushService` (vier Arrays, dreispaltig) + Integrationstests inkl. zwei Set-IDs an einem Tag | braucht T1.1, T1.3 |
 | T1.5 | `IChannelEmoteSetObservationService` + alle Schließ-/Öffnungsstellen (4.3) + Tests je Stelle | braucht T1.3 |
 | T1.6 | `UsageStatQueryService`: Set-Filter überall, `GetTotalsByEmoteIdsAsync` mit Pflichtparameter, `GetRowsAsync`-Summe, `/series` **additiv** um `SevenTvEmoteId` erweitert (`emoteId` bleibt, 6.5 Schritt 1), `NameTwinEmoteSetIds`; Wire-Format-Test um das zweite Feld erweitert | braucht T1.3 |
@@ -1623,7 +1841,9 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
    nicht über die Liste:** die Werte stehen in der gitignorierten
    `SetSwitchAssignments.Local.cs` (V5, E1), nicht im Repo, nicht im PR-Text und nicht im
    DECISIONS-Eintrag 1 — dort steht nur das Verfahren. Der Betreiber führt V5 aus und nennt im
-   PR-Text zwei Zahlen: Zeilen der Zählabfrage und Einträge der Klassifikation.
+   PR-Text zwei Zahlen: Zeilen der Zählabfrage und Einträge der Klassifikation. **Und einen
+   Hash:** den SHA-256 der gefüllten Datei samt Commit-ID und Datum der Zählabfrage (AK 92).
+   **Genau eine Eintragsart je Kanal** — kein Kanal trägt beide (4.2, Prüfung 3).
 3. Sonde 6 liefert genau die zwei erwarteten Zeilen (Testkanal, HandOfBlood mit passendem Tag und
    passender Zahl); danach existiert der Testkanal in der Admin-Kanalliste nicht mehr.
 4. Der Wegwerfkanal hat vor Sonde 6 keine `Channel`-Zeile mehr (Admin-Purge); die
@@ -1636,17 +1856,27 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
 5. Die Migration gegen eine Datenbank mit einer `UsageStats`-Zeile, deren Kanal eine leere
    `ActiveEmoteSetId` hat, bricht mit einer Ausnahme ab und ändert **nichts** (Prüfung **6**; Test
    in `Infrastructure.Tests/Integration` gegen den ephemeren Container).
-6. Fünf weitere Abbrüche, je ein Test (Prüfungen 1–5): eine veraltete Liste (letzte
+6. Weitere Abbrüche, je ein Test (Prüfungen 1–5 und 7): eine veraltete Liste (letzte
    `NewEmoteSetId` bzw. `ConfirmedEmoteSetId` ≠ `ActiveEmoteSetId`, Prüfung 1); eine fehlende
    Signatur am Grenztag (Prüfung 2); **ein Kanal mit `UsageStats`-Zeilen ohne Eintrag beider Arten
-   — die Ausnahme nennt den Kanal** (Prüfung 3); ein Kanal mit Kein-Wechsel-Eintrag, der die
-   Massenarchivierungs-Signatur trägt (Prüfung 4); zwei Wechseleinträge eines Kanals, deren
-   `NewEmoteSetId`/`OldEmoteSetId` nicht aneinanderschließen (Prüfung 5).
+   — die Ausnahme nennt den Kanal** (Prüfung 3, erste Hälfte); **ein Kanal, der einen Wechsel- *und*
+   einen Kein-Wechsel-Eintrag trägt, die beide auf der aktuellen Set-ID enden — Abbruch mit Nennung
+   des Kanals, und der Fall wird ausdrücklich an einem `IsBotActive = false`-Kanal gestellt, weil
+   dort der partielle Unique-Index der Saat nicht schützt** (Prüfung 3, zweite Hälfte,
+   XOR-Invariante); ein Kanal mit Kein-Wechsel-Eintrag, der die Massenarchivierungs-Signatur trägt
+   (Prüfung 4); zwei Wechseleinträge eines Kanals, deren `NewEmoteSetId`/`OldEmoteSetId` nicht
+   aneinanderschließen (Prüfung 5); **ein Kein-Wechsel-Eintrag, dessen `ConfirmedRowCount` (oder
+   `ConfirmedFromDate`/`ConfirmedThroughDate`) nicht zu den tatsächlichen Zeilen passt — die
+   Ausnahme nennt den Kanal und beide Zahlentripel** (Prüfung 7). Dazu, **ohne** dass eine Prüfung
+   überhaupt läuft: der Builder lehnt eine doppelte Eintragung schon beim Eintragen ab, und die
+   Unique-Constraints der temporären Tabellen scheitern am `INSERT` (4.2, Schritt 2).
 7. Nach erfolgreicher Migration hat jede `UsageStats`-Zeile eine nicht-leere `EmoteSetId`; für einen
    Kanal mit Wechseleinträgen tragen Zeilen mit `Date < boundary_day` die alte, mit
    `Date >= boundary_day` die neue ID; Kanäle mit Kein-Wechsel-Eintrag die **`ConfirmedEmoteSetId`
    aus der Liste** (im Test von der `ActiveEmoteSetId` unterscheidbar gemacht, damit die Assertion
-   die Quelle prüft und nicht nur den Wert).
+   die Quelle prüft und nicht nur den Wert). **Jede Zeile wird von genau einem der beiden `UPDATE`s
+   erfasst** — der Fall „Update (b) überschreibt, was Update (a) intervallgenau gesetzt hat" kann
+   nach Prüfung 3 nicht mehr eintreten und wird an einem Kanal mit Wechseleinträgen mitgeprüft.
 8. `IX_UsageStats_EmoteId_Date` existiert nicht mehr; `IX_UsageStats_EmoteId_EmoteSetId_Date` ist
    unique mit `INCLUDE ("UseCount")` (Assertion über `pg_indexes`).
 9. Die Saat legt für jeden aktiven Kanal mit Kein-Wechsel-Eintrag genau eine offene
@@ -1689,7 +1919,9 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
     übergangsweise weiter** (6.5, Schritt 1); mit einer aktiven, einer archivierten und einer
     Guid-losen Zeile (die es in der DB nicht gibt) erscheinen genau die ersten beiden unter ihrer
     7TV-Id, beide mit gefülltem `emoteId`. `ChannelUsageSeriesWireFormatTests` pinnt **beide**
-    Felder, und **kein** bestehender Fall wird dabei rot.
+    Felder, und **kein** bestehender Fall wird dabei rot. **`emoteId` bleibt Vertrag, bis das
+    gemeinsame Übergangsfeld-Tor aus Abschnitt 21 offen ist** — nicht „ab dem Merge von K4"
+    (korrigiert am 2026-09-20, Codex-Runde 2 Befund 5).
 
 **K2 — Ziel-Set-Picker**
 
@@ -1892,17 +2124,25 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
 85. Picker am Testkanal: Sets mit Namen; ein nicht-aktives Set gewählt ⇒ der Dialog zeigt dessen
     Belegung und Kapazität, nicht die des aktiven.
 86. `dotnet ef migrations list` zeigt keine Pending; das Fenster hat weniger als 15 Minuten gedauert
-    (gemessen von Schritt 1 bis Schritt 6) — sonst steht die Dauer im DECISIONS-Eintrag 1 als
-    Befund.
+    (gemessen von Schritt 1 bis zum Start der neuen Images) — sonst steht die Dauer im
+    DECISIONS-Eintrag 1 als Befund. **Diese 15 Minuten sind seit dem 2026-09-20 ein *Planwert mit
+    Abbruchpunkt*, kein Messergebnis** (Codex-Runde 2, Befund 4): AK 87 belegt sie nicht, und der
+    Abbruchpunkt aus AK 93 ist das, was sie durchsetzt.
 
 **K1 — Migrationsprobe gegen eine wiederhergestellte Datenbank** (T1.10, nachgetragen am
 2026-09-20; hinten angehängt, damit keine Nummer wandert)
 
 87. `Up` läuft gegen die in eine **Wegwerfdatenbank** wiederhergestellte Sicherung durch, und die
-    **Dauer ist gemessen und notiert** (Quelle, Zeilenzahl, Sekunden). Läuft die Probe gegen eine
-    Prod-Kopie, ist diese Zahl die erwartete Länge des Wartungsfensters und steht im PR-Text; läuft
-    sie nur gegen die Dev-Sicherung, steht ausdrücklich dabei, dass die Zahl **nicht** überträgt.
-88. Jede der sechs Abbruchprüfungen feuert gegen dieselbe wiederhergestellte Datenbank, wenn man
+    **Dauer ist gemessen und notiert** (Quelle, Zeilenzahl, Sekunden). **Die Probe ist eine
+    Funktionsprobe und eine untere Schranke, kein Beleg der Fensterlänge** (geändert am
+    2026-09-20, Codex-Runde 2 Befund 4): sie läuft auf lokalem Docker-Postgres gegen eine frisch
+    wiederhergestellte Datenbank — Tabellen und Indizes sind neu aufgebaut, Hardware und Cache sind
+    andere, und AK 86 misst ohnehin das ganze Fenster und nicht nur `Up`. Sie belegt, **dass** die
+    Mechanik läuft und jede Abbruchprüfung feuert; **AK 86 ist davon entkoppelt** und hängt an
+    AK 93. Aus der gemessenen Zahl wird die **erwartete** Dauer hochgerechnet (Abschnitt 10:
+    Messung × Zeilenverhältnis × 3), und diese Hochrechnung — nicht die Messung — steht im
+    PR-Text und im Runbook, ausdrücklich als Schätzung beschriftet.
+88. Jede der sieben Abbruchprüfungen feuert gegen dieselbe wiederhergestellte Datenbank, wenn man
     ihren Fall herstellt — je Prüfung ein konstruierter Verstoß, je Verstoß die erwartete
     Fehlermeldung, und danach ist die Datenbank unverändert (die Transaktion ist zurückgerollt).
 89. `Down` verweigert an Schranke 1 (`ClosedBy = 'set-switch'`), **ohne etwas entfernt zu haben**
@@ -1923,7 +2163,35 @@ angehängt, damit keine Nummer wandert)
     Prüfung 3; danach ist die Datenbank unverändert. Eine **einkompilierte, aber leere**
     Klassifikation ist davon unberührt und legitim (Datenbank ohne Nutzungszeilen); dort greift
     Prüfung 3, sobald ein Kanal Zeilen trägt. Zwei Testfälle in
-    `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` halten beides fest.
+    `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` halten beides fest. **Für
+    `SetSwitchAssignments.Window.cs` gilt dasselbe mit eigener Marke und eigener Meldung** (4.2) —
+    ein dritter Fall.
+
+**K1/K7 — Herkunft der Klassifikation, Datenstand und Abbruchpunkt** (nachgetragen am 2026-09-20
+nach der zweiten Codex-Runde; hinten angehängt, damit keine Nummer wandert)
+
+92. **Die gefüllte `SetSwitchAssignments.Local.cs` hat einen festgehaltenen SHA-256**, abgelegt
+    zusammen mit der Commit-ID des Branch-Stands und mit Datum und Zeilenzahl der Zählabfrage, auf
+    die sich die Aussagen beziehen. Die Datei selbst liegt versioniert in `infra-docs`; dieses
+    Vorhaben fasst `infra-docs` nicht an. **T1.10 und K7 (Schritt −1) prüfen denselben Hash** und
+    brechen bei Abweichung ab, bevor irgendetwas gestoppt oder geändert wird; der Hash steht im
+    PR-Text von T7 und im Runbook (die Werte nicht, E1). Der Wiederherstellungsweg — Datei aus
+    `infra-docs` zurückholen, Hash erneut prüfen — steht im K7-Ablauf. Damit fällt auch der Fall
+    „Rebase oder Branch-Wechsel im selben Worktree behält still eine veraltete Datei" auf.
+93. **Abbruchpunkt im Fenster.** Das Runbook nennt drei Zahlen: Budget für Schritt 1 bis zum Start
+    der neuen Images (15 min, AK 86), veranschlagte Dauer für Schritt 4 (Messwerte, 2–5 min, aus
+    T1.10) und die **Grenze für `Up`: 10 Minuten ab Start des Kommandos**. Wird sie überschritten,
+    bricht der Betreiber ab, prüft mit `migrations list`, dass die Migration noch `(Pending)` ist,
+    startet die alten Images und beendet das Fenster als Nulllauf — kein Weiterwarten bei
+    gestoppter Site. Liegt die Hochrechnung aus AK 87 schon vor dem Fenster über 10 Minuten, wird
+    das Fenster **vorher** anders geplant, nicht im Lauf gehofft.
+94. **Breaker-Kreuztest** (6.1): mehr als `FailureThreshold` aufeinanderfolgende `Unavailable` der
+    **Listen**abfrage sperren den **Vorschau**pfad **nicht** — ein unmittelbar folgender
+    Vorschau-Aufruf kommt durch und zieht die Half-open-Probe nicht aus einem fremden Zähler; ein
+    bestätigtes 429 (HTTP 429 **oder** HTTP 200 mit `extensions.status: 429`) auf einem der beiden
+    Pfade sperrt **beide** mit demselben `Retry-After`. Der Vorschaupfad allein verhält sich
+    unverändert: die 9 `HardenedForeignEmoteSetServiceTests` und 14 `ForeignEmoteSetServiceTests`
+    bleiben ohne Änderung an ihren Dateien grün.
 
 ---
 ## 15. Testpyramide
@@ -1942,9 +2210,10 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | Unit | `Unit/SevenTvApiClientEmoteSetPreviewTests.cs` | `capacity`/`name` am Set-Objekt, 0 → `null`; Duplikate bleiben zwei Einträge | +3 | **0** von 14 (additiv) |
 | Unit | `Unit/SevenTvApiClientResolveIdentityTests.cs` / neu `EditorOfTests` | `editor_of { user { id } }` gemappt; fehlendes `id` ⇒ `null` | +2 | 0 |
 | Unit | `Unit/ForeignEmoteSetServiceTests.cs` | Set-ID-Modus ohne Helix, `sevenTvUserId: null` | +2 | 0 von 14 |
-| Unit | `Unit/SevenTvEmoteSetListServiceTests.cs` (neu) | Cache-Treffer, Miss, Redis-Ausfall fail-open, ein Permit je Request (AK 23/24); **Wächterkette aus 6.1**: *n* parallele kalte Misses ⇒ **ein** Upstream-Request (Singleflight); GraphQL-429 als HTTP 200 (`extensions.status: 429`) ⇒ `RateLimited`, nicht `Ok`; offener Breaker ⇒ 503 **ohne** Upstream-Request; negatives Ergebnis wird gehalten (zweiter Aufruf in der Frist ohne Upstream-Request), `NoSevenTvAccount` wie ein Treffer | +10 | — |
-| Unit | `Unit/UsageStatMigrationChecksTests.cs` (neu, pur) | die **sechs** Prüfbedingungen als pure Funktionen über Listen (Prüfung 1–6, je ein Abbruch- und ein Durchlauffall = 12), dazu die vier Zuordnungsfälle `Date` → Set-ID inkl. Grenztag | +16 | — |
-| Integration | `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu) | Migration gegen Container: Abbruch 1–6 (AK 5/6 — sechs Fälle), Backfill (AK 7), Index (AK 8), Saat (AK 9), **Saat vergibt nie `ClosedBy = 'set-switch'`** (AK 9, eigener Fall — die Invariante, an der `Down`-Schranke 1 hängt), `Down` (AK 10 — drei Fälle, darunter **Set-Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab und hat nichts entfernt**), **nicht einkompilierte Klassifikation ⇒ benannter Abbruch vor jeder Schemaänderung, einkompiliert-aber-leer läuft** (AK 91, zwei Fälle); die Klassifikation kommt in jedem Fall aus einer **Fixture über den `internal` Testsitz**, nie aus der Datei des Betreibers (AK 90) | +14 | — |
+| Unit | `Unit/ForeignSevenTvBreakerPolicyTests.cs` | Operationskennung (6.1): getrennter `OtherFailure`-Zähler je Operation, getrennte Half-open-Probe, **geteilte** Rate-Limit-Sperre samt `Retry-After` | +4 | **12 von 12** (Signatur — jede Bestandsmethode nimmt die Kennung; mit genau einer Kennung ist das Verhalten unverändert, und genau das belegen die umgestellten Fälle) |
+| Unit | `Unit/SevenTvEmoteSetListServiceTests.cs` (neu) | Cache-Treffer, Miss, Redis-Ausfall fail-open, ein Permit je Request (AK 23/24); **Wächterkette aus 6.1**: *n* parallele kalte Misses ⇒ **ein** Upstream-Request (Singleflight); GraphQL-429 als HTTP 200 (`extensions.status: 429`) ⇒ `RateLimited`, nicht `Ok`; offener Breaker ⇒ 503 **ohne** Upstream-Request; negatives Ergebnis wird gehalten (zweiter Aufruf in der Frist ohne Upstream-Request), `NoSevenTvAccount` wie ein Treffer; **Kreuztest (AK 94)**: wiederholtes `Unavailable` der Liste sperrt den Vorschaupfad nicht, ein bestätigtes 429 sperrt beide | +12 | — |
+| Unit | `Unit/UsageStatMigrationChecksTests.cs` (neu, pur) | die **sieben** Prüfbedingungen als pure Funktionen über Listen — je Prüfung 1–7 ein Abbruch- und ein Durchlauffall (14), dazu die **zweite Abbruchgestalt von Prüfung 3** (Kanal trägt beide Eintragsarten, XOR) und die **zwei weiteren von Prüfung 7** (`ConfirmedFromDate` bzw. `ConfirmedThroughDate` abweichend, neben dem `ConfirmedRowCount`-Fall) = 17, die vier Zuordnungsfälle `Date` → Set-ID inkl. Grenztag = 21, und **der Builder lehnt eine doppelte Eintragung schon beim Eintragen ab** (Lader, nicht Prüfung) = 22 | +22 | — |
+| Integration | `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu) | Migration gegen Container: Abbruch 1–7 (AK 5/6 — **acht** Fälle, weil Prüfung 3 zwei Gestalten hat und der XOR-Fall ausdrücklich an einem `IsBotActive = false`-Kanal gestellt wird, wo die Saat nicht schützt), Backfill (AK 7), Index (AK 8), Saat (AK 9), **Saat vergibt nie `ClosedBy = 'set-switch'`** (AK 9, eigener Fall — die Invariante, an der `Down`-Schranke 1 hängt), `Down` (AK 10 — drei Fälle, darunter **Set-Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab und hat nichts entfernt**), **nicht einkompilierte Klassifikation ⇒ benannter Abbruch vor jeder Schemaänderung, einkompiliert-aber-leer läuft, fehlender Messblock ⇒ eigene benannte Meldung** (AK 91, drei Fälle), **Backfill erfasst jede Zeile genau einmal** (AK 7); die Klassifikation kommt in jedem Fall aus einer **Fixture über den `internal` Testsitz**, nie aus der Datei des Betreibers (AK 90) | +18 | — |
 | Integration | `Integration/UsageStatFlushServiceTests.cs` | zwei Set-IDs an einem Tag, dreispaltiges Addieren, zurückgestellter Batch mit anderer Set-ID (AK 11) | +3 | **14 von 14** (Signatur) |
 | Integration | `Integration/UsageStatQueryServiceTests.cs` | Set-Filter in Context/Daily/Series/Totals, `null` = aktiv, `GetRowsAsync`-Summe, `/series` nach 7TV-Id (AK 19/20), `NameTwinEmoteSetIds`, nicht-aktive Grundmenge (archivierte mit Zahlen) | +10 | die Fälle für `GetChannelSeriesAsync` und `GetRowsAsync` (Teilmenge der 54; Zahl nicht verifiziert — beim Umstellen zählen) |
 | Integration | `Integration/ChannelEmoteSetObservationServiceTests.cs` (neu) | Öffnen, Set-Wechsel in einer Transaktion (AK 16), fünf Schließstellen (AK 17), partieller Index (AK 18), Rejoin öffnet neu | +9 | — |
@@ -2013,25 +2282,35 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `e2e/emote-import.e2e.spec.ts` | gleicher Kanal, anderes Set (AK 43); ungetracktes Ziel mit Bestätigung und set-zentriertem Report; Quell-Set-Picker | +3 |
 | `e2e/vote-ballot.e2e.spec.ts` | Set-Session (AK 83) | +1 |
 
-**Summe:** rund **+237** Fälle. Gegenrechnung zur Erstfassung: **+9** aus dem Codex-Review vom
-2026-09-20 (je ein Fall für `Down`, `/series` und die Tatsachenangabe-Matrix ×2, fünf für die
-Wächterkette des Listen-Dienstes), **+12** aus der Einarbeitung von Befund E und seiner Nachlese
-(acht in `UsageStatMigrationChecksTests` durch zwei zusätzliche Prüfungen bei nun ausgeschriebener
-Rechnung 6 × 2 + 4, zwei Abbruchfälle in den Migrationstests, ein eigener Fall für die
-`'set-switch'`-Invariante der Saat, ein zweiter Fall in T1.9 für einen falschen
-Kein-Wechsel-Eintrag). Die Erstfassung ließ bei `UsageStatMigrationChecksTests` offen, ob die +8
-die vier Zuordnungsfälle enthielten; jetzt steht die Rechnung da. Bestand rot beim Umstellen:
-**≥ 60** (die sicheren: 7 + 14 + 10 +
-5 + 8 + 28 + 4 = 76 aus Signatur- und Datenquellenwechseln — der `/series`-Wire-Format-Test ist
-**nicht** mehr darunter, weil der Übergang additiv ist; dazu Teilmengen, die T-Tasks beim
-Umstellen zählen und im PR nennen).
+**Summe: +277 Fälle** — **nachgerechnet am 2026-09-20**, Zeile für Zeile über die fünf Tabellen
+oben, nicht fortgeschrieben.
+
+**Die bisherige Zahl war falsch, in beiden Dokumenten.** Spec und Plan trugen **+237** bzw.
+**+236**; beide entstanden aus einer Gegenrechnung „Erstfassung plus/minus die Änderungen der
+Runde", nie aus einer Summe der Tabellen. Die Tabellen dieser Spec addieren sich vor den
+Änderungen dieser Runde auf **+261**, also lag die Gegenrechnung schon um 24 daneben — genau das,
+was eine fortgeschriebene Zahl nach drei Überarbeitungen tut. Ab hier gilt: **die Zahl ist die
+Summe der Tabellen, und wer eine Zeile ändert, addiert neu.** Die alte Gegenrechnung ist damit
+gegenstandslos und wird nicht weitergeführt.
+
+Aufteilung der +277: `Infrastructure.Tests` **+133**, `Worker.Tests` **+3**, `Api.Tests` **+38**,
+Vitest **+96**, Playwright **+7**. Der Beitrag der zweiten Codex-Runde darin ist **+16**: sechs in
+`UsageStatMigrationChecksTests` (Prüfung 7, die zweite Gestalt von Prüfung 3, die zwei weiteren von
+Prüfung 7, der Builder-Fall), vier in den Migrationstests (siebter Abbruch, XOR am inaktiven Kanal,
+fehlender Messblock, Backfill-Einmaligkeit), zwei im Listen-Dienst (Kreuztest) und vier in
+`ForeignSevenTvBreakerPolicyTests`.
+
+Bestand rot beim Umstellen: **≥ 60** (die sicheren: 7 + 14 + 10 + 5 + 8 + 28 + 4 = 76 aus
+Signatur- und Datenquellenwechseln, **plus 12** aus `ForeignSevenTvBreakerPolicyTests` seit der
+Operationskennung = **88** — der `/series`-Wire-Format-Test ist **nicht** darunter, weil der
+Übergang additiv ist; dazu Teilmengen, die T-Tasks beim Umstellen zählen und im PR nennen).
 
 **Coverage:** K1 und K2 legen viele **neue** Dateien an (Dienst, Filter, Migration-Prüfungen,
 `mergeSetView`) — dort ist `coverage-local.mjs` nah an Sonar. Die chirurgischen Änderungen in
 `usage-stats-page.ts` (1.904 Zeilen) und `SevenTvSyncService.cs` (543) sind der Fall „kleine
 Änderung in großer Datei", wo die lokale Näherung am schwächsten ist; die neuen Zeilen dort sind
 durch die genannten Fälle gedeckt. Sonar misst `new_coverage` zeilen- **und** zweiggenau — die
-Migration mit ihren **sechs** `RAISE`-Zweigen braucht je Zweig einen Test (AK 5/6), nicht nur den
+Migration mit ihren **sieben** `RAISE`-Zweigen braucht je Zweig einen Test (AK 5/6), nicht nur den
 Erfolgspfad.
 
 ---
@@ -2044,11 +2323,11 @@ Je Bauschritt, nicht als Summe zuerst. „CC" ist Wandzeit der Subagenten.
 |---|---|---|
 | K0 Sonden, Zuordnungsliste (V5), Purges (Betreiber) | ~2 h verteilt | — |
 | K1 Zählpfad: Snapshot/Schlüssel (T1.1–T1.2) | ~4 h | ~30 min |
-| K1 Migration mit sechs Prüfungen, Backfill, Saat, `Down` + Container-Tests (T1.3) | ~8 h | ~55 min |
+| K1 Migration mit sieben Prüfungen, Backfill, Saat, `Down` + Container-Tests (T1.3) | ~9 h | ~60 min |
 | K1 Flush, Query-Filter, `/series`-Identität, Beobachtungs-Log (T1.4–T1.6) | ~8 h | ~50 min |
 | K1 Wechsel-Tests, Live-Verifikation, DECISIONS 1 (T1.7, T1.8; T1.9 entfällt — Mechanismus in T1.3, Füllen als V5) | ~3 h | ~20 min |
 | K1 Migrationsprobe gegen die wiederhergestellte Datenbank (T1.10) | ~2 h | ~25 min |
-| K2 Listen-Dienst, Preview-Kapazität, Set-ID-Lesepfad, Routen, Filter, Codes (T2.1–T2.3) | ~9 h | ~55 min |
+| K2 Listen-Dienst (inkl. Operationskennung im Breaker), Preview-Kapazität, Set-ID-Lesepfad, Routen, Filter, Codes (T2.1–T2.3) | ~10 h | ~60 min |
 | K2 Grants-7TV-ID, `TargetEmoteSetId`, set-zentrierter Endpunkt, Projektion (T2.4) | ~5 h | ~30 min |
 | K2 Picker, Loader, Preview-Gruppen, Bestätigung, Audit-Ansicht (T2.5–T2.6) | ~10 h | ~60 min |
 | K2 Live-Verifikation, DECISIONS 2 (T2.7) | ~2 h | ~10 min |
@@ -2062,10 +2341,10 @@ Je Bauschritt, nicht als Summe zuerst. „CC" ist Wandzeit der Subagenten.
 | K6 Set-Session Anlage, Votable, Fehlercode (T6.1) | ~5 h | ~30 min |
 | K6 Worker-Wiederholung + Wettlauftest (T6.2) | ~4 h | ~25 min |
 | K6 Ergebnisse, Detailseite, Dialog, E2E, DECISIONS 3 (T6.3) | ~6 h | ~35 min |
-| Tests über alle Ebenen (+236, Bestand ≥ 60 umgestellt) — in den Zeilen oben enthalten | — | — |
+| Tests über alle Ebenen (**+277**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
 | T7 Coverage, Codex-Review, PR | ~2 h | ~15 min |
-| K7 Wartungsfenster inkl. Live-Verifikation Prod | ~1,5 h | — |
-| **Summe** | **~111 h** | **~11,5 h** |
+| K7 Wartungsfenster inkl. Messwert-Schritt und Live-Verifikation Prod | ~2 h | — |
+| **Summe** | **~113,5 h** | **~12 h** |
 
 Größer als #147 (~29 h) und #148 (~33 h) zusammen, aus drei Gründen: die einzige nicht-additive
 Migration an der heißesten Tabelle, ein Schlüsselwechsel quer durch das Raster und seine Rückwege,
@@ -2129,12 +2408,15 @@ Runbook auf diese Nachwirkung hingewiesen.
 | `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.cs` | **neu**, committet — Eintragsarten, `Load()` mit Abbruch, `static partial void AddLocalAssignments`, `internal` Testsitz (E1, 4.2) |
 | `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs` | **neu, gitignoriert** — die Werte; legt der Betreiber an (V5) |
 | `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example` | **neu**, committet — Platzhalter plus Anleitung, Muster `appsettings.Lan.json.example` |
-| `.gitignore`, `.dockerignore` | je ein Eintrag für `SetSwitchAssignments.Local.cs`, neben den vorhandenen für `appsettings.Lan.json` (`.gitignore:45-46`, `.dockerignore:27-29`) |
+| `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Window.cs` | **neu, gitignoriert** — die drei Messwerte je Kein-Wechsel-Eintrag; entsteht **im Fenster** aus der Abfrage (4.2, Abschnitt 10 Schritt 4), Marke `ConfirmWindow()` |
+| `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Window.cs.example` | **neu**, committet — Platzhalter, Anleitung und die fertige `SELECT`-Zeile, die den Rumpf erzeugt |
+| `.gitignore`, `.dockerignore` | je ein Eintrag für `SetSwitchAssignments.Local.cs` **und** `SetSwitchAssignments.Window.cs`, neben den vorhandenen für `appsettings.Lan.json` (`.gitignore:45-46`, `.dockerignore:27-29`) |
 | `src/EmotePurge.Infrastructure/Services/EmoteMatchCache.cs`, `UsageStatFlushService.cs:67-87`, `UsageStatQueryService.cs`, `SevenTvSyncService.cs:83-109,280-296,403-437,440-477`, `EmoteService.cs`, `EmoteSetOwnershipService.cs:21-60`, `VoteSessionService.cs:14-113,302-320`, `VoteSessionQueryService.cs:64-125,175-195`, `AuditLogQueryService.cs:129-193`, `ChannelService.cs:46-78,237-254`, `ChannelIdentityService.cs:325-350,445-455` | wie in 4–9 |
 | `src/EmotePurge.Infrastructure/Services/ChannelEmoteSetObservationService.cs`, `SevenTvEmoteSetListService.cs` | **neu** |
 | `src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs:57-58,67-68,163-241,323-367,369-414` | `editor_of { user { id } }`, Preview mit `capacity`/`name`, v4-Set-Listen-Abfrage (E7) |
 | `src/EmotePurge.Infrastructure/SevenTv/HardenedForeignEmoteSetService.cs:71-97`, `ForeignEmoteSetCache.cs` | Set-ID-Modus, zweiter Schlüsselraum |
 | `src/EmotePurge.Infrastructure/SevenTv/ForeignEmoteSetRequestCoalescer.cs:30-38` | generisch geschlossen (`<TResult>`), damit der Listen-Dienst dieselbe Koaleszierung nutzt; Vorschaupfad verhaltensgleich (6.1, Wächter 2) |
+| `src/EmotePurge.Infrastructure/SevenTv/ForeignSevenTvBreakerPolicy.cs` | **Operationskennung** — `OtherFailure`-Zähler und Half-open-Probe je Operation, Rate-Limit-Sperre providerweit (6.1, AK 94) |
 | `src/EmotePurge.Infrastructure/Redis/ModRoleCache.cs:41` | additives Feld tolerant lesen |
 | `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs:88-121` | Registrierungen |
 | `src/EmotePurge.Worker/IEmoteUsageCounter.cs`, `EmoteUsageCounter.cs`, `UsageFlushWorker.cs:68-82`, `TwitchChatManager.cs:1024-1055` | Schlüssel, Snapshot |
@@ -2159,8 +2441,9 @@ Runbook auf diese Nachwirkung hingewiesen.
 
 **Nicht angefasst:** `Emote.cs`, der Unique-Index `(ChannelId, SevenTvEmoteId)`, `SevenTvEventClient.cs`,
 `SevenTvSubscriptionRegistry.cs` (keine Subscriptions für nicht-aktive Sets), `HarnessRunner.cs`,
-`ReplayDayCounter.cs`, `ForeignEmoteSetProviderBudget.cs`, `ForeignSevenTvBreakerPolicy`
-(beide werden vom Listen-Dienst **benutzt**, nicht geändert — 6.1), `already-present-filter.ts` (ID-Vergleich bleibt), `list-selection.ts` (Klasse unverändert, nur die
+`ReplayDayCounter.cs`, `ForeignEmoteSetProviderBudget.cs`
+(wird vom Listen-Dienst **benutzt**, nicht geändert — 6.1; `ForeignSevenTvBreakerPolicy` steht hier
+**nicht mehr**: es bekommt seit dem 2026-09-20 die Operationskennung, Runde 2 Befund 3), `already-present-filter.ts` (ID-Vergleich bleibt), `list-selection.ts` (Klasse unverändert, nur die
 `keyFn` der Seite), `atlas-grid.ts`, `slot-projection.ts`, `usage-bands.ts`, `RateLimitPolicyNames.cs`,
 `RateLimitingOptions.cs`.
 
@@ -2176,8 +2459,8 @@ ist der Grund für die Spalte.
 | Schreibseite set-agnostisch: `SevenTvRunEngine.start(setId, …)`, `REMOVE_OPERATION`, `ADD_OPERATION`, Import-Operation | Mutationen reisen mit `setId` + `sevenTvEmoteId`, keine Guid | **Belegt:** `seven-tv-run-engine.ts:239-244`; `seven-tv-delete.service.ts:42-48`; `seven-tv-restore.service.ts:35-41`; `seven-tv-import.service.ts:124-128` |
 | `doneKeys` aus #70 | Rückmelde-Identität ohne Guid existiert schon | **Belegt:** Import-Queue `key: row.sevenTvEmoteId` (`seven-tv-import.service.ts:204-208`), `reportImported` liest `doneKeys` (`:297`). Delete/Restore sind die Nachzügler |
 | `app-name-preview-list` | Namensgruppen im Bestätigungsdialog | **Belegt:** `import-confirm-dialog.ts:203-209`; Spec `shared/ui/name-preview-list.spec.ts` existiert |
-| `ForeignEmoteSetCache`, `HardenedForeignEmoteSetService`, `ForeignEmoteSetRequestCoalescer`, `ForeignSevenTvBreakerPolicy`, `ForeignEmoteSetProviderBudget` | Set-ID-Lesepfad (T2.2) hinter demselben Dekorator | **Belegt mit Falle:** Cache nach Login geschlüsselt (`ForeignEmoteSetCache.cs:24,63`), Dekorator und Coalescer nach `normalized` (`:78`, `:95-96`) — zweiter Schlüsselraum nötig (E12, F6). Breaker/Budget sind schlüsselfrei und tragen unverändert (`:99-135`). **Prüfaufgabe T2.2:** der Coalescer koalesziert `set:{id}` und `{login}` getrennt |
-| `ForeignEmoteSetRequestCoalescer`, `ForeignSevenTvBreakerPolicy`, `ForeignEmoteSetProviderBudget`, `SevenTvApiClient.FetchV4PageAsync` | **Listen**-Dienst (T2.1) hinter derselben Wächterkette wie der Vorschaupfad (6.1) | **Teils belegt, teils Auflage:** Breaker und Budget tragen unverändert und sind schlüsselfrei — dieselbe typisierte Singleton-Instanz wie die Vorschau (`ServiceCollectionExtensions.cs:106,107,113`), **nicht** die keyed Bestenlisten-Instanz (`:128`, die ein eigenes Budget hat). `FetchV4PageAsync` (`SevenTvApiClient.cs:552`) erkennt beide 429-Gestalten (`:566-574`, `:597-608`, `IsRateLimited :842-843`) — belegt. **Nicht wiederverwendbar wie er ist:** `ForeignEmoteSetRequestCoalescer` ist auf `ForeignEmoteSetLookupResult` festgelegt (`:31`, `:38`); Auflage an T2.1: generisch schließen, Muster `SevenTvLeaderboardStore<TValue>` (`:68`), Vorschaupfad bitgleich. **Nicht wiederverwendet:** `HardenedForeignEmoteSetService` selbst — es implementiert `IForeignEmoteSetService`, ein anderer Ergebnistyp; wiederverwendet werden seine Kollaboratoren und seine Reihenfolge (`:76-150`), nicht die Klasse |
+| `ForeignEmoteSetCache`, `HardenedForeignEmoteSetService`, `ForeignEmoteSetRequestCoalescer`, `ForeignSevenTvBreakerPolicy`, `ForeignEmoteSetProviderBudget` | Set-ID-Lesepfad (T2.2) hinter demselben Dekorator | **Belegt mit Falle:** Cache nach Login geschlüsselt (`ForeignEmoteSetCache.cs:24,63`), Dekorator und Coalescer nach `normalized` (`:78`, `:95-96`) — zweiter Schlüsselraum nötig (E12, F6). Breaker/Budget sind schlüsselfrei und tragen unverändert (`:99-135`) — der Breaker allerdings nur für **diesen** Pfad; seine Operationskennung kommt aus T2.1 (6.1). **Prüfaufgabe T2.2:** der Coalescer koalesziert `set:{id}` und `{login}` getrennt |
+| `ForeignEmoteSetRequestCoalescer`, `ForeignSevenTvBreakerPolicy`, `ForeignEmoteSetProviderBudget`, `SevenTvApiClient.FetchV4PageAsync` | **Listen**-Dienst (T2.1) hinter derselben Wächterkette wie der Vorschaupfad (6.1) | **Teils belegt, teils Auflage — am 2026-09-20 korrigiert (Runde 2, Befund 3):** das **Budget** trägt unverändert und ist schlüsselfrei — dieselbe typisierte Singleton-Instanz wie die Vorschau (`ServiceCollectionExtensions.cs:107,113`), **nicht** die keyed Bestenlisten-Instanz (`:128`, die ein eigenes Budget hat). Der **Breaker** trägt **nicht** unverändert: `_consecutiveFailures`, `_probeInFlight` und `_generation` sind Instanzfelder, und `FailureThreshold = 5` öffnet ihn nach fünf beliebigen `OtherFailure` — geteilt hieße, dass eine kaputte Listenabfrage (F17) die gesunde Vorschau in 503 zieht. Auflage an T2.1: **Operationskennung** in der Policy, Fehlerzähler und Probe je Operation, Rate-Limit-Sperre geteilt; der Vorschaupfad bleibt mit genau einer Kennung verhaltensgleich. `FetchV4PageAsync` (`SevenTvApiClient.cs:552`) erkennt beide 429-Gestalten (`:566-574`, `:597-608`, `IsRateLimited :842-843`) — belegt. **Nicht wiederverwendbar wie er ist:** `ForeignEmoteSetRequestCoalescer` ist auf `ForeignEmoteSetLookupResult` festgelegt (`:31`, `:38`); Auflage an T2.1: generisch schließen, Muster `SevenTvLeaderboardStore<TValue>` (`:68`), Vorschaupfad bitgleich. **Nicht wiederverwendet:** `HardenedForeignEmoteSetService` selbst — es implementiert `IForeignEmoteSetService`, ein anderer Ergebnistyp; wiederverwendet werden seine Kollaboratoren und seine Reihenfolge (`:76-150`), nicht die Klasse |
 | `date-range-menu` als Muster | Dropdown mit `Popover` + `role="radiogroup"` | **Belegt:** `date-range-menu.ts:104-133`; `DateRangePreset` (`:19`) ist erweiterbar |
 | `archivedBadge` | Badge „nicht mehr im Set" | **Belegt:** `de.json:781`; DECISIONS 2026-08-01 (`:7028`) |
 | `EmoteSetOwnershipService.CheckAsync` | parametrisierbar auf eine Set-ID | **Belegt:** liest die aktive ID an vier Stellen (`:30,37,50,57`), Tier 3 vergleicht die übergebene ID (`:105`) — E9 |
@@ -2231,11 +2514,39 @@ Dazu:
 
 ## 21. Folge-Issues
 
-1. **Altform `{ emoteIds }` von `sync-deleted`/`sync-restored` entfernen** (E3) — frühestens 14 Tage
-   nach dem Deploy, nur bei null Altform-Log-Zeilen in diesem Fenster; entfernt `emoteIds` aus
-   beiden Records, den Guid-Match in `EmoteService` und die Log-Zeile; `Api.Tests` für die
-   Altform kippen auf 400 `emote_ids_empty`. Kein Frontend-Anteil (der Client sendet die Altform
-   nie).
+**Übergangsfelder — eine Regel, zwei Felder (verbindlich seit dem 2026-09-20, Codex-Runde 2
+Befund 5).** Dieses Vorhaben führt **zwei** Felder mit, die nur deshalb noch existieren, weil ein
+Deploy keinen offenen Tab schließt und ein Merge kein ausgeliefertes Frontend ersetzt: die Altform
+`{ emoteIds }` von `sync-deleted`/`sync-restored` (E3) und `emoteId` in `/usage-stats/series`
+(6.5, Schritt 1). Sie fallen **unter demselben Tor**, und das Tor hat drei Bedingungen:
+
+1. **Hinter K7.** Nicht hinter dem Merge eines Kind-Issues, sondern hinter dem **Deploy**. Vorher
+   ist die Frage gar nicht gestellt: was nicht ausgeliefert ist, kann auch niemand noch lesen.
+2. **Frist: mindestens 14 Tage nach dem Deploy.** Dieselbe Zahl wie bisher in E3.
+3. **Ein Beleg aus dem Betrieb:** in diesem Fenster **keine** Altform-Log-Zeile von
+   `sync-deleted`/`sync-restored`.
+
+**Warum die Korrektur nötig war.** Folge-Issue 5 stand bis dahin auf „nach dem Merge von K4". K7
+deployt **später** als jeder Kind-Merge, also hätte der Folge-Commit in **denselben** Release
+geraten können wie K4 selbst — ein Tab, der vor K7 geöffnet wurde, träfe dann sofort ein Backend
+**ohne** `emoteId` und renderte eine leere Serienansicht. Die Analogie zu E3, die im Text schon
+behauptet war, fehlte an genau der Stelle, an der sie zählt: E3 verlangt Frist **und** Beleg, das
+alte Folge-Issue 5 verlangte nur einen Merge.
+
+**Ehrlich zur Tragfähigkeit des Belegs.** Die Log-Zeile ist für `emoteId` ein **Stellvertreter**,
+kein Synonym — dieselbe Ehrlichkeit wie bei der zweiten `Down`-Schranke (4.2). Ein alter Tab, der
+die Nutzungsseite nur **liest**, postet nie eine Altform und taucht in keinem Log auf; der Beleg
+belegt streng genommen „kein altes Frontend **schreibt** mehr", nicht „keines liest mehr". Was ihn
+trotzdem brauchbar macht: die Nutzungsseite ist dieselbe Seite, von der Löschen und
+Wiederherstellen ausgehen, und ein Tab, der 14 Tage offen steht, ohne je etwas zu tun, ist ein
+Randfall, dessen Kosten eine leere Serienkurve bis zum nächsten Reload sind. Wer beim Umsetzen
+einen **direkten** Beleg will (eine Log-Zeile, wenn `/usage-stats/series` ohne `emoteSetId`
+aufgerufen wird), baut ihn dort — das entscheidet das Folge-Issue, nicht diese Spec.
+
+1. **Altform `{ emoteIds }` von `sync-deleted`/`sync-restored` entfernen** (E3) — **Tor oben**;
+   entfernt `emoteIds` aus beiden Records, den Guid-Match in `EmoteService` und die Log-Zeile;
+   `Api.Tests` für die Altform kippen auf 400 `emote_ids_empty`. Kein Frontend-Anteil (der Client
+   sendet die Altform nie).
 2. **#201** — Auswahl aus Protokoll/Emote-Liste laden: der Abgleich läuft über `sevenTvEmoteId`
    gegen das **gewählte** Set; Protokollzeilen können `emoteId: null` tragen (Konzept 12.1). Die
    zweispaltige Alias-Auflösung wird dort nachgehalten.
@@ -2243,13 +2554,13 @@ Dazu:
    Teilungen nur innerhalb eines Intervalls vorschlagen.
 4. **#74** — je nach Sonde 5: bei Zweig B ohne Alias-Treffer wandert die Frage „Duplikate per API
    löschbar?" als Befund dorthin.
-5. **`emoteId` aus `/series` entfernen** (6.5, Schritt 2) — **nach** dem Merge von K4, in einem
-   eigenen Commit, nicht in K4 selbst; entfernt das Feld aus `EmoteSeriesEntryDto`, aus
-   `EmoteSeriesEntry` (`usage-stat.model.ts:51-55`) und aus `mockUsageChannelSeries`
-   (`e2e/support/mocks.ts:688-703`) und streicht die `emoteId`-Assertion aus
-   `ChannelUsageSeriesWireFormatTests`. Dasselbe Muster wie Folge-Issue 1 (E3), aus demselben Grund:
-   ein Deploy kann keinen offenen Tab schließen, und ein Merge kein ausgeliefertes Frontend
-   ersetzen.
+5. **`emoteId` aus `/series` entfernen** (6.5, Schritt 2) — **dasselbe Tor wie Folge-Issue 1**
+   (oben: hinter K7, ≥ 14 Tage, Beleg aus dem Betrieb), in einem eigenen Commit, nicht in K4;
+   entfernt das Feld aus `EmoteSeriesEntryDto`, aus `EmoteSeriesEntry`
+   (`usage-stat.model.ts:51-55`) und aus `mockUsageChannelSeries` (`e2e/support/mocks.ts:688-703`)
+   und streicht die `emoteId`-Assertion aus `ChannelUsageSeriesWireFormatTests`. **Beide
+   Folge-Issues gehören in einen Vorgang** — sie haben dieselbe Bedingung, denselben Beleg und
+   denselben Grund; getrennt zu warten heißt nur, zweimal dieselbe Frist zu zählen.
 
 Kein weiteres. Ein „Gesamt"-Eintrag und ein Set-Wechsel-Audit sind ausdrücklich keine.
 
@@ -2260,7 +2571,12 @@ Kein weiteres. Ein „Gesamt"-Eintrag und ein Set-Wechsel-Audit sind ausdrückli
 | Risiko | Umgang |
 |---|---|
 | **#76 nicht rechtzeitig fertig** (läuft auf eigenem Branch **vor** #200). Solange `TryGuardAgainstImplausibleWipeAsync` (`SevenTvSyncService.cs:351-370`) greift, wird `:83` nie erreicht: `ActiveEmoteSetId` bleibt alt, der Match-Cache behält die alte Generation, **Zählung und Beobachtungs-Log buchen unbefristet auf das alte Set**, obwohl 7TV längst gewechselt hat | Diese Spec setzt #76 **nicht** voraus; sie benennt die Folge: im Modell ist das korrekt („was wir für aktiv halten", 5.2), im Betrieb eine leise Fehlbuchung ohne Ende. Ohne #76 gilt vor dem Deploy: der Betreiber prüft in der Admin-Kanalliste, dass kein getrackter Kanal ein wirklich geleertes Set hat (Sync-Fehlergrund / „0 aktive Emotes"-Warnung im Worker-Log), und der DECISIONS-Eintrag 1 nennt die Blockade als offene Fehlerquelle. Mit #76 entfällt der Vorbehalt |
-| Migration schreibt eine Fehlbuchung aus einer falschen Liste | Prüfungen 1–6 über einer **lückenlosen** Klassifikation (kein Kanal läuft stillschweigend durch), Sonde 6 als Tor, `ExpectedArchivedCount` gemessen, kein Default, kein Raten (AK 5–7); die Probe gegen eine wiederhergestellte Datenbank fährt jeden Abbruch einmal vor dem Ernstfall (T1.10, AK 87–89). **Seit dem 2026-09-20 fällt dabei eine Schutzschicht weg:** die Liste steht nicht mehr im PR-Diff, ein Zweiter liest sie nicht gegen, und der DECISIONS-Eintrag 1 wiederholt sie nicht (E1, 4.2). Was bleibt, sind die sechs Prüfungen an echten Daten und T1.10 — später und teurer als ein Review, aber wirksam gegen jeden Abschreibfehler, der sich mit der Datenbank schlägt. Unentdeckt bleibt weiterhin nur die falsche, in sich stimmige Bestätigung |
+| Migration schreibt eine Fehlbuchung aus einer falschen Liste | Prüfungen 1–7 über einer **lückenlosen** Klassifikation (kein Kanal läuft stillschweigend durch), Sonde 6 als Tor, `ExpectedArchivedCount` gemessen, kein Default, kein Raten (AK 5–7); die Probe gegen eine wiederhergestellte Datenbank fährt jeden Abbruch einmal vor dem Ernstfall (T1.10, AK 87–89). **Seit dem 2026-09-20 fällt dabei eine Schutzschicht weg:** die Liste steht nicht mehr im PR-Diff, ein Zweiter liest sie nicht gegen, und der DECISIONS-Eintrag 1 wiederholt sie nicht (E1, 4.2). Was bleibt, sind die sieben Prüfungen an echten Daten und T1.10 — später und teurer als ein Review, aber wirksam gegen jeden Abschreibfehler, der sich mit der Datenbank schlägt. Unentdeckt bleibt weiterhin nur die falsche, in sich stimmige Bestätigung |
+| **Eine Bestätigung deckt Zeilen ab, die der Betreiber nie gesehen hat** (Rückwechsel S1 → S2 → S1 nach der Bestätigung, überlappende Sets) | `ConfirmedFromDate`/`ConfirmedThroughDate`/`ConfirmedRowCount` am Eintrag, **Prüfung 7** vergleicht gegen `min`/`max`/`count` (4.2, AK 6); die Messwerte entstehen **nach dem Worker-Stopp**, also genau auf dem Stand, den die Migration zuordnet. Bleibt unentdeckt: ein Wechsel **innerhalb** des bestätigten Fensters ohne Signatur — dagegen hilft nur `ChannelEmoteSetObservation`, das diese Migration erst einführt |
+| **Ein Kanal trägt beide Klassifikationsarten** ⇒ Backfill (b) überschreibt Backfill (a), Historie still verloren | XOR-Invariante **dreifach**: Builder lehnt ab, Unique-Constraints der temporären Tabellen, **Prüfung 3** vor dem Backfill (4.2, AK 6/7). Der Testfall steht ausdrücklich an einem **inaktiven** Kanal, weil dort der partielle Unique-Index der Saat nicht greift |
+| **Die gitignorierte Datei ist nicht die, die geprüft wurde** (alte Kopie, Rebase im selben Worktree) | SHA-256 samt Commit-ID und Datenbankstand in `infra-docs`; T1.10 und K7-Schritt −1 prüfen denselben Hash (AK 92) |
+| **Das Fenster dauert länger als geplant** — die Messung aus T1.10 überträgt nicht auf Prod-Hardware | AK 86 ist ein Planwert mit **Abbruchpunkt** (10 min für `Up`), nicht ein Messergebnis; Hochrechnung vor dem Fenster, Nulllauf statt Warten (Abschnitt 10, AK 93). Was bleibt: ein abgebrochenes Fenster ist verlorene Zählzeit ohne Gegenwert |
+| **Ein kaputter Listenpfad zieht die gesunde Vorschau mit in 503** (fünf `OtherFailure` öffnen den geteilten Breaker; F17 macht eine falsche Abfrage von einem Ausfall ununterscheidbar) | Fehlerzähler und Half-open-Probe **je Operation**, Rate-Limit-Sperre und Budget **providerweit** (6.1, AK 94). Der frühere Satz „beide teilen sich das Budget, also teilen sie den Breaker" war eine falsche Gleichsetzung und ist korrigiert |
 | `Down` nach dem ersten Set-Wechsel unmöglich | Abschnitt 17; Handgriff dokumentiert; K7 nennt die Grenze |
 | Alter Worker gegen neues Schema (gestaffelter Deploy) | Wartungsfenster (F1, Abschnitt 10); `stop_grace_period` belegt |
 | Api hängt an `ACCESS EXCLUSIVE` | Api steht im Fenster; `lock_timeout` 5 s (E11) |
@@ -2281,7 +2597,7 @@ Kein weiteres. Ein „Gesamt"-Eintrag und ein Set-Wechsel-Audit sind ausdrückli
 | Voting-Session über nie aktives Set ohne Löschweg | `canSelectForDelete = canManage` (9), AK 81 |
 | `VoteSessionResultDto`-Konstruktoren in Tests brechen | nicht verifiziert; T6.3 zählt und meldet |
 | Namensvetter-Zahlen werden zusammengerechnet | E24: nur Merkmal, nie Summe (AK 59); die Produktfrage „dasselbe Emote?" bleibt offen (Konzept 6.2) |
-| Coverage-Gate reißt an den sechs `RAISE`-Zweigen | je Zweig ein Test (AK 5/6); `coverage-local.mjs` vor dem PR |
+| Coverage-Gate reißt an den sieben `RAISE`-Zweigen | je Zweig ein Test (AK 5/6); `coverage-local.mjs` vor dem PR |
 | Sonar `new_coverage` in `usage-stats-page.ts` | kleine Änderung in großer Datei — lokale Schätzung unscharf; die neuen Zeilen sind über AK 51–62 gedeckt |
 | Deploy vor dem Harness-Lauf | Kein Termin in dieser Spec; K7 nur nach Freigabe gegen das Runbook in `infra-docs` |
 
@@ -2294,10 +2610,10 @@ Neue Einträge sind **englisch** (Sprachregel seit #152). Jeder liegt im Commit,
 
 | # | Titel (Arbeitstitel) | Inhalt | Commit |
 |---|---|---|---|
-| 1 | *Usage is counted per emote set; the observed set travels with the match cache* | `UsageStat.EmoteSetId` als **lokal beobachtetes** Set; Conflict-Target dreispaltig; Migration der Bestandszeilen nach einer **lückenlosen Klassifikation jedes Kanals mit Nutzungszeilen** — Wechseleinträge und ausdrückliche Kein-Wechsel-Einträge mit mitgeschriebener `ConfirmedEmoteSetId`; **die Werte selbst stehen nicht im Eintrag** — statt ihrer das Verfahren: die Klassifikation lebt in der gitignorierten `Migrations/SetSwitchAssignments.Local.cs` neben einer committeten `.example`, sie ist Teil des **Builds** (eine Korrektur heißt Rebuild, nie Raten), CI/Dependabot/Fremd-Contributor bauen und testen **ohne** sie, ihr Fehlen bricht `Up` mit benannter Meldung ab (Fail-fast wie S3-34), sie gerät über `.dockerignore` und den sauberen CI-Checkout nicht ins Image, und die Migrationstests bringen ihre eigene Fixture mit — **samt Grund für den Ortswechsel**: die lückenlose Klassifikation nennt jeden Kanal mit Nutzungszeilen und ist damit die Nutzerliste des Dienstes, das Repo ist öffentlich, und die Kennung lässt sich nicht weglassen, weil die Set-IDs der Inhalt der Einträge sind und 7TV zu jeder Set-ID den Besitzer nennt — **und samt Preis**: die Liste ist nicht mehr im PR-Diff prüfbar und wird hier nicht wiederholt, an ihre Stelle treten die sechs Abbruchprüfungen gegen die Datenbank und die Migrationsprobe T1.10 (E1, 4.2); warum die frühere Vorgabe „ohne Eintrag heißt nie gewechselt" fiel, dass ein Kein-Wechsel-Eintrag Verantwortung und nicht Gewissheit trägt, Gegenprobe 11.6 und **sechs** Abbruchgründe samt dem Rollentausch der Massenarchivierungs-Schwelle (entdeckt nicht mehr, widerspricht), Ein-Tages-Unschärfe, Verbleib von Testkanal und Wegwerfkanal (gepurgt); `ChannelEmoteSetObservation` als Intervalle mit Öffnungs-/Schließregeln, partiellem Index, begrenztem Zweck und Saat; Wartungsfenster mit Worker- **und** Api-Stopp, Verluste, Rückrollgrenze; dass das #69-Design den breiteren Key abgelehnt hatte (`docs/designs/Chat-Log-Backfill-69-2026-09-05.md:306-308`) und warum er hier trotzdem kommt; dass die zwei früheren Zähler-Migrationen additiv waren, diese nicht; `GetRowsAsync` summiert (E15); #76-Blockade als offene Fehlerquelle | K1, Commit von T1.3 + T1.4 (Migration und Flush zusammen: `feat(usage): count chat usage per emote set`) |
-| 2 | *An import may target any set of an account the user edits; the confirm dialog keeps collisions out of the run* | revidiert „das Zielset bleibt ein getrackter Kanal aus `listMine()`" (DECISIONS 2026-09-09, `:2045-2048`) in der abgeschwächten Form: getrackt als Vorgabe, ungetrackt nach Bestätigung mit Besitzer-Login und Setname, Editor nachgewiesen über `editor_of`; **R2 (2026-09-06, `:4255`) unberührt** — Token erst vor dem Lauf; revidiert die informative Vorschau (2026-09-06, #72): Namenskollisionen draußen und als Gruppe, Alias-Abweichungen übersprungen und als Gruppe, keine Umbenennung (→ #201); Audit-Vertrag beider Wege (`TargetType`/`TargetId`, `targetIsActiveSetOfChannel`, set-zentrierter Endpunkt mit Besitzer-Prüfung); korrigiert die Annahme, `sync-imported` laufe gegen den Seitenkanal; E5 (dauerhaft nullbar); E6/E7 (drei Routen, ein Dienst, **v4** — ein Request je Account, aktive Set-ID und Besitzer-Anzeigename inklusive); `ownerDisplayName` ist ein Anzeigename, die Papierspur führt daneben den Twitch-Login (6.7) | K2, Commit von T2.5 |
+| 1 | *Usage is counted per emote set; the observed set travels with the match cache* | `UsageStat.EmoteSetId` als **lokal beobachtetes** Set; Conflict-Target dreispaltig; Migration der Bestandszeilen nach einer **lückenlosen Klassifikation jedes Kanals mit Nutzungszeilen** — Wechseleinträge und ausdrückliche Kein-Wechsel-Einträge mit mitgeschriebener `ConfirmedEmoteSetId`; **die Werte selbst stehen nicht im Eintrag** — statt ihrer das Verfahren: die Klassifikation lebt in der gitignorierten `Migrations/SetSwitchAssignments.Local.cs` neben einer committeten `.example`, sie ist Teil des **Builds** (eine Korrektur heißt Rebuild, nie Raten), CI/Dependabot/Fremd-Contributor bauen und testen **ohne** sie, ihr Fehlen bricht `Up` mit benannter Meldung ab (Fail-fast wie S3-34), sie gerät über `.dockerignore` und den sauberen CI-Checkout nicht ins Image, und die Migrationstests bringen ihre eigene Fixture mit — **samt Grund für den Ortswechsel**: die lückenlose Klassifikation nennt jeden Kanal mit Nutzungszeilen und ist damit die Nutzerliste des Dienstes, das Repo ist öffentlich, und die Kennung lässt sich nicht weglassen, weil die Set-IDs der Inhalt der Einträge sind und 7TV zu jeder Set-ID den Besitzer nennt — **und samt Preis**: die Liste ist nicht mehr im PR-Diff prüfbar und wird hier nicht wiederholt, an ihre Stelle treten die sieben Abbruchprüfungen gegen die Datenbank, der **SHA-256 der gefüllten Datei** samt Commit-ID und Datenbankstand (die Datei liegt versioniert in `infra-docs`, der Hash geht in PR-Text und Runbook) und die Migrationsprobe T1.10 (E1, 4.2); warum die frühere Vorgabe „ohne Eintrag heißt nie gewechselt" fiel, dass ein Kein-Wechsel-Eintrag Verantwortung und nicht Gewissheit trägt, Gegenprobe 11.6 und **sieben** Abbruchgründe samt dem Rollentausch der Massenarchivierungs-Schwelle (entdeckt nicht mehr, widerspricht), der **XOR-Invariante** (genau eine Klassifikationsart je Kanal, dreifach abgesichert) und dem **Datenstand der Bestätigung** (`ConfirmedFromDate`/`ConfirmedThroughDate`/`ConfirmedRowCount`, im Fenster nach dem Worker-Stopp gemessen und in einer zweiten gitignorierten Datei geführt, weil Aussage und Messung getrennt bleiben), Ein-Tages-Unschärfe, Verbleib von Testkanal und Wegwerfkanal (gepurgt); `ChannelEmoteSetObservation` als Intervalle mit Öffnungs-/Schließregeln, partiellem Index, begrenztem Zweck und Saat; Wartungsfenster mit Worker- **und** Api-Stopp, dem Messwert-Schritt, dem **Abbruchpunkt** (10 min für `Up`, danach Nulllauf statt Warten) und der Feststellung, dass die 15 Minuten aus AK 86 ein Planwert und kein Messergebnis sind, Verluste, Rückrollgrenze; dass das #69-Design den breiteren Key abgelehnt hatte (`docs/designs/Chat-Log-Backfill-69-2026-09-05.md:306-308`) und warum er hier trotzdem kommt; dass die zwei früheren Zähler-Migrationen additiv waren, diese nicht; `GetRowsAsync` summiert (E15); #76-Blockade als offene Fehlerquelle | K1, Commit von T1.3 + T1.4 (Migration und Flush zusammen: `feat(usage): count chat usage per emote set`) |
+| 2 | *An import may target any set of an account the user edits; the confirm dialog keeps collisions out of the run* | revidiert „das Zielset bleibt ein getrackter Kanal aus `listMine()`" (DECISIONS 2026-09-09, `:2045-2048`) in der abgeschwächten Form: getrackt als Vorgabe, ungetrackt nach Bestätigung mit Besitzer-Login und Setname, Editor nachgewiesen über `editor_of`; **R2 (2026-09-06, `:4255`) unberührt** — Token erst vor dem Lauf; revidiert die informative Vorschau (2026-09-06, #72): Namenskollisionen draußen und als Gruppe, Alias-Abweichungen übersprungen und als Gruppe, keine Umbenennung (→ #201); Audit-Vertrag beider Wege (`TargetType`/`TargetId`, `targetIsActiveSetOfChannel`, set-zentrierter Endpunkt mit Besitzer-Prüfung); korrigiert die Annahme, `sync-imported` laufe gegen den Seitenkanal; E5 (dauerhaft nullbar); E6/E7 (drei Routen, ein Dienst, **v4** — ein Request je Account, aktive Set-ID und Besitzer-Anzeigename inklusive); `ownerDisplayName` ist ein Anzeigename, die Papierspur führt daneben den Twitch-Login (6.7); **seit dem 2026-09-20 zusätzlich:** der geteilte 7TV-Breaker zählt gewöhnliche Fehler und hält seine Half-open-Probe **je Operation**, während Rate-Limit-Sperre und Provider-Budget geteilt bleiben — Listen- und Vorschaupfad sitzen auf **demselben** Eimer (anders als die Bestenliste mit eigenem Budget, `ServiceCollectionExtensions.cs:128,135-136`), und F17 macht eine falsch geformte Abfrage von einem echten Ausfall ununterscheidbar, so dass fünf davon sonst einen gesunden zweiten Lesepfad in 503 zögen | K2, Commit von T2.5 |
 | 3 | *Voting: "member of the session's set" replaces "not archived"; permission comes from permission* | revidiert den Archiviert-Badge-Absatz vom 2026-08-01 (`:7028`); Falle Anlegen **und** Abstimmen; Invariante Set-Session ⇒ fester Wahlzettel; kein Mid-Session-Badge für Set-Sessions; eingefrorene Anzeigedaten; datenbankseitiges Upsert; warum `ChannelSyncGate` es nicht sein konnte; Worker wiederholt einmal bei 23505 (E10); `canSelectForDelete` ↔ `hasUsageData` entkoppelt; `eligible`; beide Felder im Request (E4) | K6, Commit von T6.3 |
-| 4 | *A row of the set view is identified by its 7TV id; bookkeeping speaks 7TV ids* | Schlüssel des Rasters und des inneren `track` ist `SevenTvEmoteId`, `Emote.Id` nullbare Nutzlast ohne Aussagewert; Queue-Key Delete/Restore `sevenTvEmoteId` (Nachtrag zu R3 vom 2026-09-05 — der Import-Lauf war das Muster; `doneIds` entfällt, E2); Protokollzeile `emoteId` optional, Parser akzeptiert `null`; **`/series` benennt nach `SevenTvEmoteId`** und nimmt `emoteSetId` (revidiert den Wire-Format-Satz des Eintrags zu `/usage-stats/series`, `:5916-5922`) — **additiv**: `emoteId` bleibt bis zum Folge-Issue 5 daneben stehen, gleiches Muster wie die Altform in E3, damit der Integrationsbranch zwischen K1 und K4 benutzbar bleibt; beide Caches mit Set; Export mit Set-ID/Setname und `null`-Serialisierung; Set-Ansicht legt keine Zeilen an, Voting schon (Fremdschlüssel); Set-Wechsel ist Sicht (`retainAmong`), Lösch-/Restore-Bestätigung nennt das Set; die zwei korrigierten Konzeptsätze (6.2, 7.1) | **Zwei Commits, ein Eintrag:** geschrieben in K4 (Commit von T4.3, `/series`, Schlüssel, Export, Caches); **Nachtrag** im selben Eintrag in K5 (Commit von T5.2): Body `{ emoteSetId, sevenTvEmoteIds }`, Match über `(ChannelId, SevenTvEmoteId)`, Papier-Variante als Nachtrag zum Soft-Archive-Eintrag vom 2026-07-26 (`:7379`), Altform übergangsweise gültig (E3), Set-ID im Laufdatensatz |
+| 4 | *A row of the set view is identified by its 7TV id; bookkeeping speaks 7TV ids* | Schlüssel des Rasters und des inneren `track` ist `SevenTvEmoteId`, `Emote.Id` nullbare Nutzlast ohne Aussagewert; Queue-Key Delete/Restore `sevenTvEmoteId` (Nachtrag zu R3 vom 2026-09-05 — der Import-Lauf war das Muster; `doneIds` entfällt, E2); Protokollzeile `emoteId` optional, Parser akzeptiert `null`; **`/series` benennt nach `SevenTvEmoteId`** und nimmt `emoteSetId` (revidiert den Wire-Format-Satz des Eintrags zu `/usage-stats/series`, `:5916-5922`) — **additiv**: `emoteId` bleibt bis zum Folge-Issue 5 daneben stehen, gleiches Muster wie die Altform in E3 — **und hinter demselben Tor**: beide Übergangsfelder fallen erst hinter K7 plus 14 Tagen plus Beleg aus dem Betrieb, nicht hinter dem Merge von K4 (Abschnitt 21), damit der Integrationsbranch zwischen K1 und K4 benutzbar bleibt und kein vor dem Deploy geöffneter Tab das Feld verliert; beide Caches mit Set; Export mit Set-ID/Setname und `null`-Serialisierung; Set-Ansicht legt keine Zeilen an, Voting schon (Fremdschlüssel); Set-Wechsel ist Sicht (`retainAmong`), Lösch-/Restore-Bestätigung nennt das Set; die zwei korrigierten Konzeptsätze (6.2, 7.1) | **Zwei Commits, ein Eintrag:** geschrieben in K4 (Commit von T4.3, `/series`, Schlüssel, Export, Caches); **Nachtrag** im selben Eintrag in K5 (Commit von T5.2): Body `{ emoteSetId, sevenTvEmoteIds }`, Match über `(ChannelId, SevenTvEmoteId)`, Papier-Variante als Nachtrag zum Soft-Archive-Eintrag vom 2026-07-26 (`:7379`), Altform übergangsweise gültig (E3), Set-ID im Laufdatensatz |
 
 Ein fünfter Eintrag ist nicht nötig: der Quell-Set-Picker (K3) ändert keinen Vertrag, er
 parametrisiert einen Lesepfad.
@@ -2305,7 +2621,7 @@ parametrisiert einen Lesepfad.
 
 ---
 
-## 24. Nachtrag: Codex-Review vom 2026-09-20
+## 24. Nachtrag: Codex-Review vom 2026-09-20, **erste Runde**
 
 Adversariale Zweitmeinung (`/codex:adversarial-review --model gpt-5.6-sol`) über diese Spec und
 [Plan-200](../../plans/Plan-200-Emote-Sets.md). Fünf Befunde, **alle fünf eingearbeitet** — Befund
@@ -2331,3 +2647,26 @@ zurechnet:
 | **N1** | Die erste `Down`-Schranke hängt an der Invariante „die Saat vergibt `ClosedBy` nie `'set-switch'`". Die stand als **Auflage** in 4.2/4.3 und in T1.3b, hatte aber keinen eigenen Testfall — eine Auflage, die niemand prüft, ist eine Hoffnung. | AK 9 bekommt einen eigenen Fall: **nach `Up` existiert keine `ChannelEmoteSetObservation`-Zeile mit `ClosedBy = 'set-switch'`**. Migrationstests **+12 → +13**. |
 | **N2** | `SevenTvApiClient` liest jeden GraphQL-Fehler **ohne** `extensions.status: 429` als `Unavailable` (`:842-843`, `:446-451`, `:513`) — eine **falsch geformte Abfrage** ist damit von „7TV ist weg" nicht zu unterscheiden. Genau so war die Bestenliste einmal permanent „unavailable" (`:75-82`). | Als **F17** in Abschnitt 3 aufgenommen (hinten angehängt, keine Nummer verschoben), mit der Folge für den neuen v4-Listenpfad: die **Live-Sonde ist das Einzige**, was die beiden Fälle trennt — die Abfrage aus Sonde 7 ist am 2026-09-20 live gemessen, die Fixture für T2.1 stammt aus einer echten Antwort und ist kein Papierentwurf. |
 | **N3** | **Die Klassifikation ist die Nutzerliste des Dienstes.** Kein Review-Befund und keine Folge von Befund E als solchem, sondern eine Folge der **lückenlosen** Klassifikation, die erst beim Gegenlesen von E1 auffiel: solange die Liste nur die Wechsler nannte, waren das ein bis zwei Kanäle; seit sie **jeden Kanal mit Nutzungszeilen** nennt, ist sie die vollständige Liste der Kanäle, die der Dienst trackt. E1 legte sie als Konstanten „sichtbar im PR-Diff“ ab und ließ sie im DECISIONS-Eintrag 1 wiederholen — in einem öffentlichen Repo (AGPL-3.0). Die Kennung wegzulassen geht nicht: die Set-IDs **sind** der Inhalt, und 7TV nennt zu jeder Set-ID den Besitzer. | **Entscheidung des Betreibers vom 2026-09-20: die Liste kommt nicht ins Repo.** Sie folgt dem Muster von `appsettings.Lan.json` — gitignorierte Datei, committete `.example`, `.dockerignore`-Eintrag —, bleibt als kompilierte Konstanten aber **Teil des Builds** (kein Korrigieren ohne Rebuild), bricht bei Fehlen mit benannter Meldung ab (Fail-fast wie S3-34), lässt CI, Dependabot und einen fremden Contributor ohne sie bauen und testen und die Migrationstests ihre eigene Fixture mitbringen. **E1** neu gefasst, **4.2** um Ort, Abbruch, Image-Weg und den ausgeschriebenen Tausch ergänzt, **Sonde 6** (Ausgabe bleibt lokal, in den PR-Text geht nur die Zahl), **AK 2** umgeschrieben, **AK 90/91** hinten angehängt, **Abschnitt 10** um die Vorbedingung, **13** um **V5** (T1.9 entfällt als Commit), **15.1** +13 → +14, **18**, **22** und **23** nachgezogen. Der Preis steht ungeschönt in 4.2 und 22: **Prüfbarkeit durch einen Zweiten gegen Nichtveröffentlichung der Nutzerliste.** |
+
+---
+
+## 25. Nachtrag: Codex-Review vom 2026-09-20, **zweite Runde**
+
+**Scope:** der Diff seit `b41b6e2` (also die Einarbeitung von Befund E und N3 in Spec und Plan).
+**Verdikt:** *needs-attention*. **Sechs Befunde, alle sechs eingearbeitet.** Wie oben steht hier nur,
+was der Befund war und was daraus wurde; die Einarbeitung selbst steht im Text.
+
+| # | Befund | Ergebnis |
+|---|---|---|
+| **1** | **Die Kein-Wechsel-Bestätigung ist an keinen festen Datenstand gebunden [high].** Der Eintrag speichert nur `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)`. Wechselt ein Kanal nach der Bestätigung S1 → S2 → S1 zurück, passieren bei stark überlappenden Sets **alle** Prüfungen: Endzustand stimmt, der Kanal ist klassifiziert, keine Massensignatur, kein Wechseleintrag — alle während S2 entstandenen Zeilen gehen still an S1. Die behauptete Bindung an das `UsageStat`-Fenster war weder gespeichert noch prüfbar. | **Eingearbeitet.** Der Eintrag trägt `ConfirmedFromDate`, `ConfirmedThroughDate` und `ConfirmedRowCount`; **Prüfung 7** (neu, 4.2) vergleicht sie gegen `min("Date")`, `max("Date")` und `count(*)` und bricht bei jeder Abweichung mit Nennung des Kanals und beider Zahlentripel ab. Der maßgebliche Snapshot entsteht **nach dem Worker-Stopp** (Abschnitt 10, Schritt 4) — der andere Weg (vorher füllen, Drift als Abbruch) steht als benannte Alternative daneben und ist verworfen, weil Drift bei laufender Zählung keine Möglichkeit, sondern eine Gewissheit ist. Aussage und Messung sind getrennt: die Set-ID bleibt handgeschrieben, die drei Zahlen kommen aus der Abfrage und leben in einer zweiten gitignorierten Datei. **Kein „Unknown-Bucket"** — ein Kanal ohne belegbare Zahlen ist ein Abbruch, ausdrücklich hingeschrieben. AK 2/6/7, Testpyramide, Abschnitt 10, 11 (Sonde 6), 22 und 23 nachgezogen. |
+| **2** | **Keine Prüfung erzwingt genau eine Klassifikationsart je Kanal [high].** Prüfung 3 verlangte „mindestens einen Eintrag einer der beiden Arten". Ein Kanal kann beide tragen, solange beide auf der aktuellen Set-ID enden; dann schreibt Update (a) die richtigen Intervalle und Update (b) überschreibt alles erneut mit `ConfirmedEmoteSetId`. Bei einem **inaktiven** Kanal greift auch der partielle Unique-Index der Saat nicht, weil für ihn gar keine Saatzeile entsteht — eine erfolgreiche Migration mit still verlorener Historie. | **Eingearbeitet.** **XOR-Invariante**, dreifach abgesichert: (a) der Builder lehnt die Doppelung beim Eintragen ab, (b) die beiden temporären Tabellen tragen Unique-Constraints (`set_no_switch_assignments` unique auf `ChannelId`, `set_switch_assignments` auf `(ChannelId, BoundaryUtc)`), (c) **Prüfung 3** heißt jetzt „Lückenlosigkeit **und** Eindeutigkeit" und läuft vor dem Backfill. Der Testfall wird ausdrücklich an einem `IsBotActive = false`-Kanal gestellt. AK 6/7 und die Testpyramide nachgezogen. |
+| **3** | **Der geteilte Breaker macht einen listenlokalen Fehler zum Ausfall der Vorschau [medium].** `ForeignSevenTvBreakerPolicy` öffnet nicht nur bei providerweiten 429, sondern nach fünf beliebigen `OtherFailure`. Nach F17 erscheint eine falsch geformte oder durch Schema-Drift ungültige Listenabfrage als `Unavailable`; fünf davon öffnen den gemeinsamen Breaker und liefern auch für die **gesunde** Vorschau 503, und ein Listenaufruf kann danach die Half-open-Probe wiederholt verbrennen. | **Eingearbeitet — und das ist eine Korrektur meiner eigenen Einschätzung, nicht eine geänderte Faktenlage.** Die Kopplung stand in 6.1 als bewusste Entscheidung mit der Begründung „beide Pfade teilen sich das Budget, also teilen sie auch den Breaker". Der Code hat sich seitdem nicht geändert; die Begründung war von Anfang an eine falsche Gleichsetzung — der **Fehlerzähler ist nicht das Budget**. Verbindlich ist jetzt: Rate-Limit-Signal und Budget **providerweit**, `OtherFailure`-Zähler und Half-open-Probe **je Operation**. Eine zweite Instanz nach Bestenlisten-Muster **reicht nicht** (sie trennte auch das 429, das geteilt gehört); die Policy selbst bekommt eine Operationskennung. Kreuztest als **AK 94**; `ForeignSevenTvBreakerPolicyTests` +4 bei 12 umgestellten Fällen. |
+| **4** | **T1.10 belegt die Fensterlänge nicht [medium].** Die Probe läuft auf lokalem Docker-Postgres und misst nur `Up`; AK 86 misst das ganze Fenster. Ein Dump/Restore baut Tabellen und Indizes frisch auf, Hardware und Cache sind andere — die Probe kann einen optimistischen Lauf selbst bestätigen. | **Eingearbeitet.** T1.10 ist ausdrücklich **Funktionsprobe und untere Schranke** (AK 87). **AK 86 ist davon entkoppelt** und hängt jetzt an einem **Zeitpuffer mit Abbruchpunkt** (AK 93, Abschnitt 10): 15 min Budget für das Fenster, 2–5 min für den Messwert-Schritt, **10 min Grenze für `Up`** — danach Abbruch, `migrations list` zur Gegenprobe, alte Images, Nulllauf. Die erwartete Dauer wird aus der T1.10-Messung linear über die Zeilenzahl hochgerechnet und mit Faktor 3 für langsamere Platte und kalten Cache versehen; liegt sie über 10 min, wird das Fenster **vorher** anders geplant. Produktionsnahe Hardware steht nicht zur Verfügung, und das steht so da. |
+| **5** | **Der zweite `/series`-Schritt hängt nicht hinter dem Deploy [medium].** Folge-Issue 5 durfte `emoteId` schon „nach dem Merge von K4" entfernen. K7 deployt später, also kann der Folge-Commit in denselben Release geraten — ein vor K7 geöffneter Tab träfe sofort ein Backend ohne `emoteId`. Die Analogie zu E3 fehlte an der entscheidenden Stelle: E3 verlangt Frist **und** Telemetrie. | **Eingearbeitet.** Abschnitt 21 beginnt jetzt mit **einer Regel für beide Übergangsfelder**: hinter K7, mindestens 14 Tage, und ein Beleg aus dem Betrieb (keine Altform-Log-Zeile im Fenster). Folge-Issue 1 und 5 verweisen darauf und gehören in **einen** Vorgang. Dass der Log-Beleg für `emoteId` ein **Stellvertreter** ist — ein nur lesender Tab taucht nirgends auf —, steht ungeschönt dabei, samt dem Hinweis, wo ein direkter Beleg herkäme. 6.5 Schritt 2, AK 20 und DECISIONS-Eintrag 4 nachgezogen. |
+| **6** | **Herkunft und Wiederherstellbarkeit der lokalen Klassifikation sind unbelegt [medium].** Die Datei lebt außerhalb des Repos, hat weder Historie noch Identität, und nichts stellt fest, ob die Datei im Wartungsfenster dieselbe ist, mit der T1.10 gelaufen ist. | **Eingearbeitet — Entscheidung des Betreibers vom 2026-09-20.** Die ausgefüllte `SetSwitchAssignments.Local.cs` wird als **SHA-256** festgehalten, zusammen mit der **Commit-ID** des Branch-Stands und mit **Datum und Zeilenzahl** der Zählabfrage, auf die sich die Aussagen beziehen; die Datei selbst liegt versioniert in **`infra-docs`** (dieses Vorhaben fasst `infra-docs` nicht an, es verweist nur). **T1.10 und K7 prüfen denselben Hash** und brechen bei Abweichung ab — das schließt zugleich „Rebase im selben Worktree behält still eine veraltete Datei". Der Wiederherstellungsweg steht im K7-Ablauf; je ein Handgriff in **V5** (Hash bilden und ablegen) und **K7-Schritt −1** (Hash prüfen). Neu: **AK 92**. Der Hash selbst leckt nichts und darf deshalb in PR-Text und Runbook — der Rest an Prüfbarkeit durch einen Zweiten, der nach dem Ortswechsel übrig ist. |
+
+**Zur Zahlenkorrektur, die dabei anfiel.** Beim Nachrechnen der Testsumme (Widerspruch zwischen
++236 im Plan und +237 hier) stellte sich heraus, dass **beide** Zahlen falsch waren: die Tabellen
+in 15.1–15.5 addierten sich schon vor dieser Runde auf **+261**. Beide Zahlen waren fortgeschriebene
+Gegenrechnungen, keine Summen. Seit dem 2026-09-20 gilt die Summe der Tabellen — **+277** — und die
+Gegenrechnung ist abgeschafft.
