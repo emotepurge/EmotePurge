@@ -1158,6 +1158,84 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Single(SwitchLines(logger));
     }
 
+    // ---- Wechsel-Tests: counting across the cache swap (spec section 5, AK 14) ----
+    //
+    // Both tests below drive the exact per-message algorithm TwitchChatManager runs
+    // (TwitchChatManager.cs:1024-1055) — one GetChannelSnapshot call per message, a hit keyed by
+    // (resolved emote id, snapshot.EmoteSetId) — through the real cache and a real switch performed
+    // by SyncChannelAsync against Postgres, not through TwitchLib (that stays live-verified, rule
+    // 11/16). The counting dictionary is not EmoteUsageCounter: EmotePurge.Worker is not referenced
+    // from this project, so the key (EmotePurge.Core.Services.UsageCounterKey) is used directly —
+    // the same composite key the real counter buffers under.
+    private static void CountHit(Dictionary<UsageCounterKey, int> counts, EmoteMatchSnapshot snapshot, string emoteName)
+    {
+        var key = new UsageCounterKey(snapshot.NameToEmoteId[emoteName], snapshot.EmoteSetId);
+        counts[key] = counts.GetValueOrDefault(key) + 1;
+    }
+
+    [Fact]
+    public async Task SwitchTest_MessagesAroundTheCacheSwap_SplitIntoTwoUsageKeys()
+    {
+        // AK 14, first case: an emote that survives the switch unchanged. Three messages — before,
+        // during (after the swap, before any flush) and after — land as two keys: the first under
+        // the old set, the other two under the new one, because the swap is the only boundary that
+        // exists once it has happened.
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_ak14_split", ("e1", "combo", false));
+        var beforeSwitch = CreateRestService(db, cache, channel, SetId, LiveEmote("e1", "combo"));
+        Assert.NotNull(await beforeSwitch.SyncChannelAsync(channel.ChannelName));
+        var counts = new Dictionary<UsageCounterKey, int>();
+
+        CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // before
+
+        var afterSwitch = CreateRestService(db, cache, channel, SwitchedSetId, LiveEmote("e1", "combo"));
+        Assert.NotNull(await afterSwitch.SyncChannelAsync(channel.ChannelName));
+
+        CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // during
+        CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // after
+
+        var emoteId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1")
+            .Select(e => e.Id).SingleAsync();
+        Assert.Equal(2, counts.Count);
+        Assert.Equal(1, counts[new UsageCounterKey(emoteId, SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(emoteId, SwitchedSetId)]);
+    }
+
+    [Fact]
+    public async Task SwitchTest_SameNamedEmoteAcrossTheSwitch_NeverCountsOnBothRows()
+    {
+        // AK 14, second case: two distinct 7TV emotes sharing a display name — "Stare" on row A
+        // before the switch, row B after. The counter key is the resolved emote id, never the name,
+        // so a hit for one row must never land on, or bleed into, the other row's key.
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_ak14_stare");
+        var beforeSwitch = CreateRestService(db, cache, channel, SetId, LiveEmote("stare-a", "Stare"));
+        Assert.NotNull(await beforeSwitch.SyncChannelAsync(channel.ChannelName));
+        var counts = new Dictionary<UsageCounterKey, int>();
+
+        CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row A, before
+
+        var afterSwitch = CreateRestService(db, cache, channel, SwitchedSetId, LiveEmote("stare-b", "Stare"));
+        Assert.NotNull(await afterSwitch.SyncChannelAsync(channel.ChannelName));
+
+        CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row B, after
+        CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row B, after
+
+        var rowAId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "stare-a")
+            .Select(e => e.Id).SingleAsync();
+        var rowBId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "stare-b")
+            .Select(e => e.Id).SingleAsync();
+        Assert.NotEqual(rowAId, rowBId);
+        Assert.Equal(2, counts.Count);
+        Assert.Equal(1, counts[new UsageCounterKey(rowAId, SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(rowBId, SwitchedSetId)]);
+        // Never counted on both: neither row's id appears combined with the other switch state.
+        Assert.False(counts.ContainsKey(new UsageCounterKey(rowAId, SwitchedSetId)));
+        Assert.False(counts.ContainsKey(new UsageCounterKey(rowBId, SetId)));
+    }
+
     // A switch line is the only one that has to name both sets at once, which identifies it without
     // pinning its prose.
     private static IReadOnlyList<(LogLevel Level, string Message)> SwitchLines(RecordingLogger<SevenTvSyncService> logger) =>
