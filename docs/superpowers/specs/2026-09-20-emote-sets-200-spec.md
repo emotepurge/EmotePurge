@@ -2630,8 +2630,10 @@ aufgerufen wird), baut ihn dort — das entscheidet das Folge-Issue, nicht diese
 4. **#74** — **aus dieser Runde wandert nichts mehr dorthin.** Die Frage „Duplikate per API
    löschbar?" ist am 2026-09-20 von Sonde 5 beantwortet (Zweig A: ein `REMOVE` ohne Alias entfernt
    beide Einträge; ein zweiter `ADD` mit anderem Alias wird angenommen) — der Befund steht in
-   Abschnitt 28 und gehört als Messung zu #74, nicht als offene Frage. Was davon getrennt **ein
-   eigenes Issue neben #74** braucht, ist der dauerhafte Resync ohne Fixpunkt aus Abschnitt 27.
+   Abschnitt 28 und gehört als Messung zu #74, nicht als offene Frage. **Auch der dauerhafte
+   Resync ohne Fixpunkt aus Abschnitt 27 braucht kein eigenes Issue** — er *ist* #74, dort schon
+   als Folge 1 beschrieben; beide Messungen hängen seit dem 2026-09-20 als Kommentar an diesem
+   Ticket.
 5. **`emoteId` aus `/series` entfernen** (6.5, Schritt 2) — **dasselbe Tor wie Folge-Issue 1**
    (oben: hinter K7, ≥ 14 Tage, Beleg aus dem Betrieb), in einem eigenen Commit, nicht in K4;
    entfernt das Feld aus `EmoteSeriesEntryDto`, aus `EmoteSeriesEntry`
@@ -2849,7 +2851,15 @@ dauerhaft statt einmalig.
 **Folge für #200: keine.** Die TTL-Entscheidung ist in beide Richtungen stabil — wird der Defekt
 behoben, fällt die Rate auf ~0/min und Zweig A wird nur sicherer. Der Defekt selbst gehört
 **nicht** in diesen Epic: er ist älter, unabhängig von Emote-Sets und trifft jeden Kanal mit
-Duplikaten. Er gehört als eigenes Issue neben #74.
+Duplikaten.
+
+**Und er hat sein Ticket schon: #74.** Dessen Body beschreibt exakt diese Ursache (zwei Aufrufe von
+`UpsertEmote` treffen wegen `(ChannelId, SevenTvEmoteId)` dieselbe Zeile) und nennt den
+Minutentakt als „Folge 1", samt Fix-Vorschlag (Live-Einträge vor der Schleife deduplizieren). Neu
+ist hier allein die **Quantifizierung** — und dass der Zielkanal des Epics betroffen ist. Die
+Messung hängt seit dem 2026-09-20 als Kommentar an #74. **Lehre, die den Aufwand wert war:** vor
+dem Vorschlag „dafür braucht es ein Issue" das naheliegende bestehende Ticket **lesen**, nicht nur
+seine Nummer als verwandt führen.
 
 ---
 
