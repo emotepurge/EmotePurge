@@ -32,10 +32,15 @@ public static class UsageStatsEndpoints
             return Results.Ok(stats);
         });
 
+        // emoteSetId is optional on all three reads below; absent means the channel's active set,
+        // so a client that predates #200 keeps the answers it always got. Its format filter is a
+        // separate endpoint filter that arrives with the set-picker work — until then the raw value
+        // reaches the service, where it can only ever miss and answer empty.
         group.MapGet("/totals", async (
             string channelName,
             string from,
             string to,
+            string? emoteSetId,
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
@@ -45,7 +50,7 @@ public static class UsageStatsEndpoints
                 return rangeError;
             }
 
-            var totals = await usageStatQueryService.GetUsageContextAsync(channelName, fromDate, toDate, ct);
+            var totals = await usageStatQueryService.GetUsageContextAsync(channelName, fromDate, toDate, emoteSetId, ct);
             return Results.Ok(totals);
         });
 
@@ -58,6 +63,7 @@ public static class UsageStatsEndpoints
             string emoteId,
             string from,
             string to,
+            string? emoteSetId,
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
@@ -74,7 +80,7 @@ public static class UsageStatsEndpoints
 
             // Null covers both "unknown id" and "someone else's emote" — a bare 404 either way, so
             // the response does not confirm that a guessed id exists elsewhere.
-            var series = await usageStatQueryService.GetDailySeriesAsync(channelName, emoteId, fromDate, toDate, ct);
+            var series = await usageStatQueryService.GetDailySeriesAsync(channelName, emoteId, fromDate, toDate, emoteSetId, ct);
             return series is null ? Results.NotFound() : Results.Ok(series);
         });
 
@@ -86,6 +92,7 @@ public static class UsageStatsEndpoints
             string channelName,
             string from,
             string to,
+            string? emoteSetId,
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
@@ -95,7 +102,7 @@ public static class UsageStatsEndpoints
                 return rangeError;
             }
 
-            var series = await usageStatQueryService.GetChannelSeriesAsync(channelName, fromDate, toDate, ct);
+            var series = await usageStatQueryService.GetChannelSeriesAsync(channelName, fromDate, toDate, emoteSetId, ct);
             return Results.Ok(series);
         });
     }
