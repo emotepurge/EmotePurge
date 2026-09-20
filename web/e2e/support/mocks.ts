@@ -725,7 +725,9 @@ export async function mockEmoteList(
 /**
  * GET /api/channels/{channelName}/emotes/set-warning — the shared/foreign-set ownership check both
  * the mass-delete panel and the import confirm dialog read. Defaults to a clean, own, unshared set;
- * pass overrides for the shared-set-warning or check-unavailable cases.
+ * pass overrides for the shared-set-warning or check-unavailable cases. The trailing `*` covers the
+ * optional `?emoteSetId=` query a non-active target's check adds (spec 6.8) — without it a glob
+ * with no wildcard at the end only matches the bare, parameterless URL.
  */
 export async function mockSetWarning(
   page: Page,
@@ -737,7 +739,7 @@ export async function mockSetWarning(
     otherModeratedChannelsSharingSet?: string[];
   } = {},
 ): Promise<void> {
-  await page.route(`**/api/channels/${channelName}/emotes/set-warning`, (route) =>
+  await page.route(`**/api/channels/${channelName}/emotes/set-warning*`, (route) =>
     fulfillJson(route, 200, {
       available: overrides.available ?? true,
       isOwnSet: overrides.isOwnSet ?? true,
@@ -753,6 +755,125 @@ export async function mockSyncImported(page: Page, channelName: string): Promise
   await page.route(`**/api/channels/${channelName}/emotes/sync-imported`, (route) =>
     route.fulfill({ status: 204 }),
   );
+}
+
+/** POST /api/seventv/emote-sets/{emoteSetId}/sync-imported (spec 6.7) — the set-centric report
+ *  for a run into an *untracked* account's set (T2.6). Same "204, nothing else to say" contract as
+ *  {@link mockSyncImported}'s channel-scoped sibling; the two never share a channel name because
+ *  this route carries none. */
+export async function mockSyncImportedToSet(page: Page, emoteSetId: string): Promise<void> {
+  await page.route(`**/api/seventv/emote-sets/${emoteSetId}/sync-imported`, (route) =>
+    route.fulfill({ status: 204 }),
+  );
+}
+
+export interface MockEmoteSetTargetSet {
+  id: string;
+  name: string;
+  capacity?: number | null;
+  /** 7TV's `EmoteSetKind`, verbatim (E7) — `'NORMAL'` unless a test exercises the
+   *  `PERSONAL`/`GLOBAL`/`SPECIAL` "not a target set" labelling. */
+  kind?: string;
+  isActive?: boolean;
+  isPersonal?: boolean;
+  ownerDisplayName?: string | null;
+}
+
+export interface MockEmoteSetTargetAccount {
+  twitchChannelId: string;
+  twitchLogin: string;
+  isOwnAccount?: boolean;
+  /** `null` (the default) is what puts this account in the picker's *untracked* group (spec 8.6) —
+   *  set it to put the account (and therefore its sets) under the *tracked* one instead. */
+  trackedChannelName?: string | null;
+  activeEmoteSetId?: string | null;
+  sets?: MockEmoteSetTargetSet[];
+  setsUnavailable?: boolean;
+}
+
+/**
+ * GET /api/seventv/me/emote-set-targets (spec 6.2) — the target picker's own offer list (K2):
+ * the caller's own 7TV account, plus every account they hold a 7TV editor grant on. Replaces the
+ * picker's former `GET /api/channels/mine` data source (AK 34) — a test that only needs the
+ * account-menu/overview channel list still wants {@link mockMyChannels}, not this.
+ */
+export async function mockEmoteSetTargets(
+  page: Page,
+  accounts: MockEmoteSetTargetAccount[],
+  options: { sevenTvUnavailable?: boolean } = {},
+): Promise<void> {
+  await page.route('**/api/seventv/me/emote-set-targets', (route) =>
+    fulfillJson(route, 200, {
+      accounts: accounts.map((account) => ({
+        twitchChannelId: account.twitchChannelId,
+        twitchLogin: account.twitchLogin,
+        isOwnAccount: account.isOwnAccount ?? false,
+        trackedChannelName: account.trackedChannelName ?? null,
+        activeEmoteSetId: account.activeEmoteSetId ?? null,
+        sets: (account.sets ?? []).map((set) => ({
+          id: set.id,
+          name: set.name,
+          capacity: set.capacity ?? 1000,
+          kind: set.kind ?? 'NORMAL',
+          isActive: set.isActive ?? false,
+          isPersonal: set.isPersonal ?? false,
+          ownerDisplayName: set.ownerDisplayName ?? null,
+        })),
+        setsUnavailable: account.setsUnavailable ?? false,
+      })),
+      sevenTvUnavailable: options.sevenTvUnavailable ?? false,
+    }),
+  );
+}
+
+export interface MockForeignEmoteSetPreview {
+  channelName: string;
+  sevenTvUserId?: string | null;
+  emoteSetId: string;
+  emoteSetName?: string | null;
+  capacity?: number | null;
+  totalCount?: number;
+  truncated?: boolean;
+  emotes?: { sevenTvEmoteId: string; name: string }[];
+}
+
+/**
+ * GET /api/seventv/channels/{channelName}/emotes?emoteSetId=… (spec 6.4, set-ID read mode) — the
+ * import target loader's live read for a *specifically chosen* set, tracked-but-not-active or
+ * untracked (`import-target-loader.ts`'s `'trackedSet'`/`'untrackedSet'` cases, spec F5). Answers
+ * every request for `channelName` regardless of the `emoteSetId` query value — a test that needs to
+ * tell two set ids apart registers this twice with two different `channelName`s (the untracked
+ * loader path keys the URL on the account's own Twitch login, never its display name, spec 6.2/E7),
+ * or checks `route.request().url()` itself.
+ */
+export async function mockForeignEmoteSetPreview(
+  page: Page,
+  channelName: string,
+  response: MockForeignEmoteSetPreview,
+): Promise<void> {
+  await page.route(`**/api/seventv/channels/${channelName}/emotes*`, (route) => {
+    if (route.request().method() !== 'GET') {
+      return route.fallback();
+    }
+    const emotes = response.emotes ?? [];
+    return fulfillJson(route, 200, {
+      channelName: response.channelName,
+      sevenTvUserId: response.sevenTvUserId ?? null,
+      emoteSetId: response.emoteSetId,
+      emoteSetName: response.emoteSetName ?? null,
+      capacity: response.capacity ?? 1000,
+      totalCount: response.totalCount ?? emotes.length,
+      truncated: response.truncated ?? false,
+      emotes: emotes.map((emote) => ({
+        sevenTvEmoteId: emote.sevenTvEmoteId,
+        name: emote.name,
+        defaultName: emote.name,
+        imageUrl: `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
+        topAllTime: null,
+        trending: null,
+      })),
+    });
+  });
 }
 
 export interface MockLeaderboardEmote {

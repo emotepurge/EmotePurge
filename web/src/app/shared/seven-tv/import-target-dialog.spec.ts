@@ -42,6 +42,8 @@ const DE_TRANSLATIONS = {
       loadFailed: 'Die Angebotsliste konnte nicht geladen werden.',
       retry: 'Erneut laden',
       submit: 'Weiter',
+      confirmUntracked: "In das Set ‚{{setName}}' von ‚{{ownerDisplayName}}' kopieren?",
+      confirmUntrackedSubmit: 'Kopieren',
     },
   },
 };
@@ -119,6 +121,15 @@ interface Harness {
    *  just "any `[role=radiogroup]`" — the scope radiogroup above it (`export.scopeLabel`) is a
    *  second, unrelated one and must not be picked up here by accident. */
   targetRadiogroup(): Element | undefined;
+  /** AK 35's confirmation banner — present only while an untracked pick is pending. None of these
+   *  tests also trigger the load-failed/offer-incomplete banners, so "the one `app-notice-banner`
+   *  in the DOM" is unambiguous; a future test that combines both would need a more specific query. */
+  confirmationBanner(): HTMLElement | undefined;
+  /** The banner's own cancel button — scoped to the banner rather than the generic {@link button}
+   *  lookup, because both it and the dialog's own cancel button share the exact same label
+   *  ("Abbrechen") and the generic lookup would otherwise always resolve to whichever renders
+   *  first in document order. */
+  confirmationCancelButton(): HTMLButtonElement | undefined;
 }
 
 describe('ImportTargetDialog', () => {
@@ -221,6 +232,9 @@ describe('ImportTargetDialog', () => {
         Array.from(host.querySelectorAll('[role="radiogroup"]')).find(
           (el) => el.getAttribute('aria-label') === 'Ziel',
         ),
+      confirmationBanner: () => host.querySelector<HTMLElement>('app-notice-banner') ?? undefined,
+      confirmationCancelButton: () =>
+        host.querySelector<HTMLElement>('app-notice-banner')?.querySelector('button') ?? undefined,
     };
   }
 
@@ -681,11 +695,16 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '1',
               trackedChannelName: 'chan1',
+              // activeEmoteSetId matches the set marked isActive below — server-derived (E21),
+              // never independent of it (T2.6 straightened out a predecessor fixture where the two
+              // disagreed; see the T2.6 handover note).
+              activeEmoteSetId: 'set-1',
               sets: [set({ id: 'set-1', name: 'Main1', isActive: true })],
             }),
             account({
               twitchChannelId: '2',
               trackedChannelName: 'chan2',
+              activeEmoteSetId: 'set-2',
               sets: [
                 set({ id: 'set-2', name: 'Main2', ownerDisplayName: 'Chan2Owner', isActive: true }),
               ],
@@ -715,7 +734,7 @@ describe('ImportTargetDialog', () => {
           setName: 'Main2',
           isTracked: true,
           twitchLogin: 'someone',
-          activeEmoteSetId: null,
+          activeEmoteSetId: 'set-2',
         },
       ]);
     });
@@ -860,41 +879,6 @@ describe('ImportTargetDialog', () => {
       ]);
     });
 
-    it('closes with channelName: null and isTracked: false for an untracked target', async () => {
-      const dialog = render();
-      await resolve(
-        dialog,
-        0,
-        targetsResult({
-          accounts: [
-            account({
-              twitchChannelId: '1',
-              twitchLogin: 'stranger',
-              trackedChannelName: null,
-              sets: [set({ id: 'set-a', name: 'Halloween', ownerDisplayName: 'Stranger' })],
-            }),
-          ],
-        }),
-      );
-
-      dialog.setInput('Halloween')?.click();
-      dialog.detect();
-      dialog.button(SUBMIT).click();
-
-      expect(closed).toEqual([
-        {
-          scope: 'visible',
-          emoteSetId: 'set-a',
-          channelName: null,
-          ownerDisplayName: 'Stranger',
-          setName: 'Halloween',
-          isTracked: false,
-          twitchLogin: 'stranger',
-          activeEmoteSetId: null,
-        },
-      ]);
-    });
-
     it('closes empty-handed on cancel, even with a target already chosen', async () => {
       const dialog = render();
       await resolve(
@@ -916,6 +900,152 @@ describe('ImportTargetDialog', () => {
       dialog.button(CANCEL).click();
 
       expect(closed).toEqual([undefined]);
+    });
+  });
+
+  describe('untracked confirmation (AK 35)', () => {
+    function untrackedTargetsResult(): EmoteSetTargetsResponse {
+      return targetsResult({
+        accounts: [
+          account({
+            twitchChannelId: '1',
+            twitchLogin: 'stranger',
+            trackedChannelName: null,
+            sets: [set({ id: 'set-a', name: 'Halloween', ownerDisplayName: 'Stranger' })],
+          }),
+        ],
+      });
+    }
+
+    it('opens a confirmation instead of selecting the set outright', async () => {
+      const dialog = render();
+      await resolve(dialog, 0, untrackedTargetsResult());
+
+      expect(dialog.confirmationBanner()).toBeUndefined();
+
+      dialog.setInput('Halloween')?.click();
+      dialog.detect();
+
+      expect(dialog.confirmationBanner()?.textContent).toContain(
+        "In das Set ‚Halloween' von ‚Stranger' kopieren?",
+      );
+      // The radio shows the pending candidate (it is what the banner is asking to confirm), but
+      // nothing is decided yet (AK 35: "ohne Bestätigung keine Wahl") — "Weiter" cannot be used to
+      // slip past the banner, and the dialog has not closed with anything.
+      expect(dialog.setInput('Halloween')?.checked).toBe(true);
+      expect(dialog.button(SUBMIT).disabled).toBe(true);
+      expect(closed).toEqual([]);
+    });
+
+    it('leaves the previous choice unchanged when the confirmation is cancelled', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'chan',
+              activeEmoteSetId: 'set-tracked',
+              sets: [set({ id: 'set-tracked', name: 'Main', isActive: true })],
+            }),
+            account({
+              twitchChannelId: '2',
+              twitchLogin: 'stranger',
+              trackedChannelName: null,
+              sets: [set({ id: 'set-a', name: 'Halloween', ownerDisplayName: 'Stranger' })],
+            }),
+          ],
+        }),
+      );
+
+      // A tracked choice already stands (the load-time preselection, spec 8.6) — cancelling an
+      // untracked confirmation attempt must leave it exactly as it is.
+      expect(dialog.accountInput('chan')?.checked).toBe(true);
+
+      dialog.setInput('Halloween')?.click();
+      dialog.detect();
+      expect(dialog.confirmationBanner()).not.toBeUndefined();
+      // The pending candidate takes over the radio group's visual state while its confirmation is
+      // up — a native radio group can only ever show one checked item at a time regardless.
+      expect(dialog.accountInput('chan')?.checked).toBe(false);
+      expect(dialog.setInput('Halloween')?.checked).toBe(true);
+
+      dialog.confirmationCancelButton()?.click();
+      dialog.detect();
+
+      expect(dialog.confirmationBanner()).toBeUndefined();
+      // Not "leert sie" — the previously standing tracked choice is still there, unmodified.
+      expect(dialog.accountInput('chan')?.checked).toBe(true);
+      expect(dialog.setInput('Halloween')?.checked).toBe(false);
+      expect(dialog.button(SUBMIT).disabled).toBe(false);
+
+      dialog.button(SUBMIT).click();
+      expect(closed).toEqual([
+        {
+          scope: 'visible',
+          emoteSetId: 'set-tracked',
+          channelName: 'chan',
+          ownerDisplayName: 'SomeOwner',
+          setName: 'Main',
+          isTracked: true,
+          twitchLogin: 'someone',
+          activeEmoteSetId: 'set-tracked',
+        },
+      ]);
+    });
+
+    it('closes the whole picker with channelName: null once confirmed', async () => {
+      const dialog = render();
+      await resolve(dialog, 0, untrackedTargetsResult());
+
+      dialog.setInput('Halloween')?.click();
+      dialog.detect();
+      dialog.button('Kopieren').click();
+      dialog.detect();
+
+      expect(closed).toEqual([
+        {
+          scope: 'visible',
+          emoteSetId: 'set-a',
+          channelName: null,
+          ownerDisplayName: 'Stranger',
+          setName: 'Halloween',
+          isTracked: false,
+          twitchLogin: 'stranger',
+          activeEmoteSetId: null,
+        },
+      ]);
+      // The whole dialog closed directly on confirmation — there is no separate "Weiter" click
+      // for the untracked class (AK 35: "Bestätigung schließt den Picker").
+      expect(dialog.confirmationBanner()).toBeUndefined();
+    });
+
+    it('never shows a confirmation for a tracked pick — the one-click path stays', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'chan',
+              sets: [set({ id: 'set-a', name: 'Halloween' })],
+            }),
+          ],
+        }),
+      );
+
+      dialog.setInput('Halloween')?.click();
+      dialog.detect();
+
+      expect(dialog.confirmationBanner()).toBeUndefined();
+      expect(dialog.setInput('Halloween')?.checked).toBe(true);
+
+      dialog.button(SUBMIT).click();
+      expect(closed).toHaveLength(1);
     });
   });
 });

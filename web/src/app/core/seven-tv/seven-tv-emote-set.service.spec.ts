@@ -159,4 +159,32 @@ describe('SevenTvEmoteSetService', () => {
       req.flush(previewResponse());
     });
   });
+
+  // 6.7/T2.6: the closing report for a copy into an *untracked* account's set — no channel name in
+  // the route, and no `targetEmoteSetId` in the body (the route already names the set).
+  describe('reportImportedToSet — 6.7 set-centric endpoint', () => {
+    it('POSTs the body as-is, without a targetEmoteSetId, to the set-scoped route', () => {
+      let completed = false;
+      service
+        .reportImportedToSet('set-u', {
+          sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+          sourceChannelName: 'handofblood',
+          sourceKind: 'channel',
+          leaderboardSort: null,
+        })
+        .subscribe(() => (completed = true));
+
+      const req = httpMock.expectOne('/api/seventv/emote-sets/set-u/sync-imported');
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+        sourceChannelName: 'handofblood',
+        sourceKind: 'channel',
+        leaderboardSort: null,
+      });
+      req.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(completed).toBe(true);
+    });
+  });
 });

@@ -32,6 +32,7 @@ const DE_TRANSLATIONS = {
     summary: {
       counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
       target: 'Ziel: {{ channel }}',
+      targetSet: 'Ziel: Set {{ setId }} von {{ owner }}',
       openTarget: 'Zielkanal öffnen',
       insufficientPrivileges: 'Das 7TV-Token hat im Zielset kein Schreibrecht.',
     },
@@ -47,6 +48,7 @@ const DE_TRANSLATIONS = {
 function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
   return {
     targetChannelName: 'zielkanal',
+    targetOwnerDisplayName: null,
     targetSetId: 'set-1',
     origin: { kind: 'channel', channelName: 'quellkanal' },
     result: null,
@@ -142,6 +144,33 @@ describe('ImportProgressSection', () => {
     const fixture = render();
 
     expect(fixture.nativeElement.textContent).toContain('Ziel: zielkanal');
+  });
+
+  // T2.6/spec 8.6: an untracked target's run has no channel of ours to name — the summary line and
+  // the "open target channel" link both need a channel-free branch instead of reading targetChannelName
+  // and crashing into "/channels/null/usage-stats".
+  describe('untracked target (targetChannelName: null, T2.6)', () => {
+    it('names the set and its owner instead of a channel, and offers no "open target channel" link', () => {
+      importService.isRunning.set(true);
+      importService.run.set(
+        runInfo({
+          targetChannelName: null,
+          targetOwnerDisplayName: 'Stranger',
+          targetSetId: 'set-untracked',
+        }),
+      );
+
+      const fixture = render();
+
+      const host: HTMLElement = fixture.nativeElement;
+      expect(host.textContent).toContain('Ziel: Set set-untracked von Stranger');
+      expect(host.textContent).not.toContain('zielkanal');
+      expect(
+        Array.from(host.querySelectorAll<HTMLAnchorElement>('a')).some(
+          (a) => a.textContent?.trim() === 'Zielkanal öffnen',
+        ),
+      ).toBe(false);
+    });
   });
 
   it('stays visible after the run has settled, as long as the queue is not empty', () => {

@@ -167,14 +167,6 @@ export function startImportFlow(
     if (deps.arbiter.activeRun() !== null) {
       return;
     }
-    // Only a tracked target ever reaches here today: the untracked class's own confirmation step
-    // and its set-centric report are T2.6's job, and the caller that would produce a `'chosen'`
-    // target with no channel name (`usage-stats-page.ts`'s `startImportFromChoice`) already refuses
-    // to open this flow at all for that case. This is the type system's own backstop for that
-    // invariant, not a path any test should be able to reach.
-    if (targetChannelName === null) {
-      return;
-    }
     // #149/T5: `outcome.rows` already passed `buildImportPreview`'s filter against the target set's
     // contents as of when the confirm dialog opened — that snapshot can be stale by the time the
     // user actually confirms (another editor, another tab, a long-open dialog). Re-check fresh,
@@ -199,7 +191,18 @@ export function startImportFlow(
           // F5/AK 44). It is never re-derived from `target` here, on purpose: the load is the one
           // place that already resolved "which set", and re-deriving it a second time from the
           // selection is exactly how a stale assumption like F5's would creep back in.
-          { setId: outcome.targetSetId, channelName: targetChannelName },
+          //
+          // `targetChannelName` is `null` exactly for an untracked target (T2.6, spec 8.6) — the
+          // picker's own confirmation step (`import-target-dialog.ts`) is what already made this
+          // choice final before this flow ever opened, so there is nothing left to gate here.
+          // `targetOwnerDisplayName` (already computed above for the confirm dialog's own header,
+          // AK 39) rides along so the dock's post-run summary can name the same owner once the
+          // confirm dialog itself is gone (`import-progress-section.ts`).
+          {
+            setId: outcome.targetSetId,
+            channelName: targetChannelName,
+            ownerDisplayName: targetOwnerDisplayName,
+          },
           source.origin,
           rows,
           skipped,

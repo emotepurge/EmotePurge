@@ -541,7 +541,10 @@
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",
         "TOP_ALL_TIME": "7TV top overall"
-      }
+      },
+      "targetEmoteSet": "in set {{setId}}",
+      "targetEmoteSetNotActive": "in set {{setId}} (not the active set)",
+      "targetEmoteSetForOwner": "in set {{setId}} for {{ownerLogin}}"
     }
   },
   "emoteCount": {
@@ -978,7 +981,9 @@
       "listIncomplete": "The offer list is incomplete right now — missing targets appear after a reload.",
       "loadFailed": "The offer list could not be loaded.",
       "retry": "Reload",
-      "submit": "Continue"
+      "submit": "Continue",
+      "confirmUntracked": "Copy into the set ‚{{setName}}' from ‚{{ownerDisplayName}}'?",
+      "confirmUntrackedSubmit": "Copy"
     },
     "foreignChannel": {
       "title": "Import from a channel",
@@ -1076,6 +1081,7 @@
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",
       "target": "Target: {{ channel }}",
+      "targetSet": "Target: set {{ setId }} of {{ owner }}",
       "openTarget": "Open target channel",
       "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row."
     },

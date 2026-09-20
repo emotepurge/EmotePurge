@@ -4,7 +4,19 @@ import { Observable } from 'rxjs';
 
 import { normalizeChannelName } from '../channels/channel-name';
 import { ForeignEmoteSetResponse } from './foreign-emote-set.model';
+import { LeaderboardSort } from './leaderboard.model';
 import { EmoteSetListResponse, EmoteSetTargetsResponse } from './seven-tv-emote-set.model';
+
+/** Request body of the set-centric report (spec 6.7) — the same shape as
+ *  `EmoteAdminService`'s `SyncImportedBody` minus `targetEmoteSetId`: the route already names the
+ *  set (`POST /api/seventv/emote-sets/{emoteSetId}/sync-imported`), so repeating it in the body
+ *  would be a second, redundant source of truth for the very thing the URL already pins down. */
+export interface SyncImportedToSetBody {
+  sevenTvEmoteIds: string[];
+  sourceChannelName: string | null;
+  sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard';
+  leaderboardSort: LeaderboardSort | null;
+}
 
 /**
  * The frontend counterpart of `ISevenTvEmoteSetListService.ListByTwitchIdAsync` (spec 2026-09-20,
@@ -64,5 +76,16 @@ export class SevenTvEmoteSetService {
     return this.http.get<ForeignEmoteSetResponse>(`/api/seventv/channels/${normalized}/emotes`, {
       params,
     });
+  }
+
+  /**
+   * 6.7's set-centric report: the closing bookkeeping call for a copy run into an *untracked*
+   * account's set (T2.6). Writes an `AuditLogDetail` with `ChannelName = null` (admin-only log,
+   * spec 6.7) — there is no `Channel` of ours to own the entry, which is also why
+   * `SevenTvImportService` never follows this call with a resync (T2.6/8.6): a resync pulls emote
+   * rows into *our* database for a tracked channel, and an untracked target has none to pull into.
+   */
+  reportImportedToSet(emoteSetId: string, body: SyncImportedToSetBody): Observable<void> {
+    return this.http.post<void>(`/api/seventv/emote-sets/${emoteSetId}/sync-imported`, body);
   }
 }

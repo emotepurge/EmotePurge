@@ -168,7 +168,7 @@ describe('startForeignChannelImportFlow', () => {
     // read (`httpClient.post`) defaults to an empty target set. Fifth is whether that check
     // actually ran — true, since the fetch succeeded (#149).
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-target', channelName: 'my_channel' },
+      { setId: 'set-target', channelName: 'my_channel', ownerDisplayName: null },
       { kind: 'seventv-channel', channelName: 'handofblood' },
       [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
       0,
@@ -268,7 +268,7 @@ describe('startLeaderboardImportFlow', () => {
     });
 
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-target', channelName: 'my_channel' },
+      { setId: 'set-target', channelName: 'my_channel', ownerDisplayName: null },
       { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
       [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
       0,

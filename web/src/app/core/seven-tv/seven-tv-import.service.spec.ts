@@ -26,10 +26,13 @@ const DE_TRANSLATIONS = {
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 const TARGET_B = { setId: 'set-b', channelName: 'kanal_b' };
 const TARGET_C = { setId: 'set-c', channelName: 'kanal_c' };
+// An untracked target (spec 8.6, T2.6) — `channelName: null`, no `Channel` of ours to resync.
+const TARGET_UNTRACKED = { setId: 'set-u', channelName: null, ownerDisplayName: 'Stranger' };
 const SYNC_IMPORTED_B = '/api/channels/kanal_b/emotes/sync-imported';
 const RESYNC_B = '/api/channels/kanal_b/resync';
 const SYNC_IMPORTED_C = '/api/channels/kanal_c/emotes/sync-imported';
 const RESYNC_C = '/api/channels/kanal_c/resync';
+const SYNC_IMPORTED_SET_U = '/api/seventv/emote-sets/set-u/sync-imported';
 
 const CHANNEL_ORIGIN: ImportOrigin = { kind: 'channel', channelName: 'brudivoeller_tv' };
 const FOREIGN_CHANNEL_ORIGIN: ImportOrigin = {
@@ -234,6 +237,34 @@ describe('SevenTvImportService', () => {
     expect(reportReq.request.body.targetEmoteSetId).toBe('set-c');
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectOne(RESYNC_C).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
+  // AK 41/T2.6: an untracked target (channelName: null, spec 8.6) reports through the
+  // set-centric endpoint instead of the channel-scoped one, and never resyncs — there is no
+  // Channel of ours to pull rows into.
+  it('reports an untracked target through the set-centric endpoint and never resyncs (AK 41)', () => {
+    service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, ROWS);
+    // Threaded straight onto the run record — import-progress-section.ts's own "Ziel: …" line for
+    // an untracked run (T2.6) has no channel to read, so this is what it names instead.
+    expect(service.run()?.targetOwnerDisplayName).toBe('Stranger');
+    runTwoRowsToDone();
+
+    const reportReq = httpMock.expectOne(SYNC_IMPORTED_SET_U);
+    expect(reportReq.request.method).toBe('POST');
+    // No targetEmoteSetId in the body — the route already names the set (spec 6.7).
+    expect(reportReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+      sourceChannelName: 'brudivoeller_tv',
+      sourceKind: 'channel',
+      leaderboardSort: null,
+    });
+    reportReq.flush(null, { status: 204, statusText: 'No Content' });
+
+    expect(service.syncReport()).toBe('succeeded');
+    // Never even touched: onRunComplete's own guard returns before setting it to 'pending', let
+    // alone firing a request — afterEach's httpMock.verify() is what proves no resync request went
+    // out at all.
+    expect(service.resyncTrigger()).toBe('idle');
   });
 
   it('aborts the whole run on a 7TV privileges rejection and reports nothing', () => {

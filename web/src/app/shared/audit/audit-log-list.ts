@@ -48,6 +48,10 @@ import { AuditRow } from './audit-row';
               <span aria-hidden="true">·</span>
               <span>{{ detail.key | transloco: detail.params }}</span>
             }
+            @if (row.targetSet; as targetSet) {
+              <span aria-hidden="true">·</span>
+              <span>{{ targetSet.key | transloco: targetSet.params }}</span>
+            }
           </p>
         </li>
       }

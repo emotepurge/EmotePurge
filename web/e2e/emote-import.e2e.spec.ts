@@ -12,6 +12,8 @@ import {
   mockChannelScopedResync,
   mockChannelStatus,
   mockEmoteList,
+  mockEmoteSetTargets,
+  mockForeignEmoteSetPreview,
   mockMyChannels,
   mockSetWarning,
   mockSevenTvGql,
@@ -107,6 +109,34 @@ async function mockWorkspace(
   await mockUsageTotals(page, channelName, emotes);
 }
 
+/**
+ * The target picker's account list (spec 6.2) for the common two-channel push scenario: the own
+ * account (SOURCE_CHANNEL, its own active set `set-1` — matches `mockWorkspace`'s default, so
+ * "das ist the Quelle" has the right id to disable) plus one editor-granted tracked account
+ * (TARGET_CHANNEL, its active set the one these tests copy into). Replaces the picker's former
+ * `GET /api/channels/mine` data source (AK 34) — most tests below only need this shape; the picker
+ * UI's own describe block builds a richer one (untracked accounts, several sets) inline instead.
+ */
+async function mockTargetPicker(page: Page, targetEmoteSetId = 'target-set'): Promise<void> {
+  await mockEmoteSetTargets(page, [
+    {
+      twitchChannelId: 'source-1',
+      twitchLogin: SOURCE_CHANNEL,
+      isOwnAccount: true,
+      trackedChannelName: SOURCE_CHANNEL,
+      activeEmoteSetId: 'set-1',
+      sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+    },
+    {
+      twitchChannelId: 'target-1',
+      twitchLogin: TARGET_CHANNEL,
+      trackedChannelName: TARGET_CHANNEL,
+      activeEmoteSetId: targetEmoteSetId,
+      sets: [{ id: targetEmoteSetId, name: 'Main', isActive: true }],
+    },
+  ]);
+}
+
 async function gotoUsageStats(page: Page, channelName: string): Promise<void> {
   await page.goto(`/channels/${channelName}/usage-stats`);
   await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
@@ -171,14 +201,31 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    // Broadcaster of the current channel; an editor of one tracked and one untracked channel; a
-    // moderator-only channel — the filter is isBroadcaster || isSevenTvEditor (import-target-
-    // options.ts), so modonly must not appear and the current channel is always excluded.
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-      { channelName: 'untrackedbuddy', isSevenTvEditor: true, isTracked: false },
-      { channelName: 'modonly', isModerator: true, isTracked: true },
+    // K2's picker (spec 6.2/8.6) reads accounts/sets, not Twitch roles: the own account (source,
+    // its own active set 'set-1' is what "das ist die Quelle" then disables), a second tracked
+    // account editable through a 7TV grant, and an untracked one — no moderator-only channel here
+    // at all, since 6.2 has no Twitch-mod concept to filter on; it simply never appears.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+      {
+        twitchChannelId: 'target-1',
+        twitchLogin: TARGET_CHANNEL,
+        trackedChannelName: TARGET_CHANNEL,
+        activeEmoteSetId: 'target-set',
+        sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+      },
+      {
+        twitchChannelId: 'untracked-1',
+        twitchLogin: 'untrackedbuddy',
+        sets: [{ id: 'set-untracked', name: 'Wegwerf-Set', ownerDisplayName: 'UntrackedBuddy' }],
+      },
     ]);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     // Target's own data, fetched by loadImportTarget once a target is chosen: one row shares an id
@@ -196,8 +243,13 @@ test.describe('push flow: picker to confirmation dialog', () => {
 
     await gotoUsageStats(page, SOURCE_CHANNEL);
 
+    // All three: CatJAM (already present at the target) and KEKW (name collision) both leave
+    // toAdd under the current preview contract (8.6: collisions and already-present rows are both
+    // excluded, not just flagged) — Pog is the one row with nothing to collide with, so it is what
+    // makes the confirm dialog's own row count meaningful instead of a degenerate zero.
     await cell(page, 'CatJAM').click();
     await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await cell(page, 'Pog').click({ modifiers: ['Shift'] });
     await expect(copyButton(page)).toBeEnabled();
     await copyButton(page).click();
 
@@ -205,17 +257,19 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await expect(picker.locator('#app-dialog-title')).toHaveText('Emotes übertragen');
 
     // Scope defaults to the selection (R12), not to the visible list.
-    await expect(picker.getByRole('radio', { name: 'Auswahl (2)' })).toBeChecked();
+    await expect(picker.getByRole('radio', { name: 'Auswahl (3)' })).toBeChecked();
 
-    // Exactly the two expected channel rows, in alphabetical order, and nothing else — the picker
-    // no longer offers a file destination (#141, moved to the export dialog, see the
-    // 'export dialog: purpose-sorted options' describe block below).
+    // The target account's header radio is enabled (its active set is a normal, non-source set).
     await expect(picker.getByRole('radio', { name: '#aatrociity' })).toBeEnabled();
+    // The own channel stays in the list since K2 (spec 8.6, a deliberate change from the old
+    // picker) — only its own set is disabled, labelled as the run's source, never the account.
     await expect(
-      picker.getByRole('radio', { name: /^#untrackedbuddy \(Kanal muss erst beitreten\)$/ }),
+      picker.getByRole('radio', { name: /^Hauptset \(aktiv\) \(das ist die Quelle\)$/ }),
     ).toBeDisabled();
-    await expect(picker.getByText('#modonly')).toHaveCount(0);
-    await expect(picker.getByText('#sensitron', { exact: true })).toHaveCount(0);
+    // An untracked account is offered too, labelled as such — not excluded and not a hard "must
+    // join first" refusal (T2.6 is exactly the class that makes such a set selectable again).
+    await expect(picker.getByText('nicht getrackt')).toBeVisible();
+    await expect(picker.getByRole('radio', { name: 'Wegwerf-Set' })).toBeEnabled();
 
     await picker.getByRole('radio', { name: '#aatrociity' }).check();
     await picker.getByRole('button', { name: 'Weiter' }).click();
@@ -230,11 +284,13 @@ test.describe('push flow: picker to confirmation dialog', () => {
       confirm.getByText('1 Emote ist bereits im Zielset und wird übersprungen.'),
     ).toBeVisible();
     await expect(
-      confirm.getByText('1 Name ist im Zielset schon vergeben — 7TV wird dieses Emote ablehnen:'),
+      confirm.getByText(
+        '1 Emote trägt einen Namen, der im Zielset schon vergeben ist — wird nicht übertragen:',
+      ),
     ).toBeVisible();
     await expect(confirm.locator('app-name-preview-list')).toContainText('KEKW');
-    // occupied 3 + the one row that survives the already-present filter (KEKW, name collision but
-    // still added — nameCollisions stays IN toAdd per the import-preview contract) = 4 of 1000.
+    // occupied 3 + the one row with nothing to collide with (Pog) — CatJAM (already present) and
+    // KEKW (name collision) both leave toAdd under the current preview contract (8.6) = 4 of 1000.
     await expect(confirm.getByText('Das Set hätte danach 4 von 1000 Slots belegt.')).toBeVisible();
     await expect(confirm.getByRole('button', { name: 'Kopieren' })).toBeEnabled();
   });
@@ -254,10 +310,7 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-    ]);
+    await mockTargetPicker(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
       capacity: 1000,
@@ -374,6 +427,191 @@ test.describe('push flow: picker to confirmation dialog', () => {
     // gone, rather than sitting there relocked at "(0)".
     await expect(dockCopyButton(page, 2)).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Übertragen \(\d+\)$/ })).toHaveCount(0);
+  });
+});
+
+/**
+ * T2.6/spec 8.6: the two K2 target-picker paths the earlier "picker to confirmation dialog" block
+ * does not already cover — a *non-active* set of a still-tracked channel (AK 43), and an untracked
+ * account's set, which needs its own confirmation before the picker may close with it at all
+ * (AK 35) and reports through the set-centric endpoint instead of the channel-scoped one (AK 41).
+ */
+test.describe('push flow: K2 target-set picker (T2.6)', () => {
+  test('same channel, different set: the run writes into the chosen set, not the active one (AK 43)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+      {
+        twitchChannelId: 'target-1',
+        twitchLogin: TARGET_CHANNEL,
+        trackedChannelName: TARGET_CHANNEL,
+        activeEmoteSetId: 'target-set',
+        // Two sets of the SAME tracked account: the active one (would resolve via the
+        // unchanged 'trackedActive' path, AK 36) and a second, non-active one — picking the
+        // second is what this test is about.
+        sets: [
+          { id: 'target-set', name: 'Main', isActive: true },
+          { id: 'target-set-halloween', name: 'Halloween' },
+        ],
+      },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // The chosen (non-active) set's own live read (spec 6.4/F5) — never EmoteSetStatus/listEmotes,
+    // which only ever describe the channel's *active* set.
+    await mockForeignEmoteSetPreview(page, TARGET_CHANNEL, {
+      channelName: TARGET_CHANNEL,
+      sevenTvUserId: '7tv-user-t',
+      emoteSetId: 'target-set-halloween',
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 0,
+      emotes: [],
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    let capturedSetId: unknown;
+    await mockSevenTvGql(page, (request) => {
+      capturedSetId = request.variables['setId'];
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+      };
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await expect(picker.locator('#app-dialog-title')).toHaveText('Emotes übertragen');
+    // Halloween is not the account's active set, so it renders as its own nested radio rather
+    // than being merged into the account's header shortcut (spec 8.6) — no confirmation banner
+    // either, that class is untracked-only (T2.6, see the test below).
+    await picker.getByRole('radio', { name: 'Halloween' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = page.getByRole('dialog');
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '1 Emote nach aatrociity kopieren?',
+    );
+    // The confirm header names the CHOSEN set, never the account's active one (AK 39/F5).
+    await expect(confirm.getByText('Ziel: aatrociity · Set Halloween')).toBeVisible();
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(1000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    // AK 43: the GQL mutation's own setId is the chosen set, never 'target-set' (the active one).
+    expect(capturedSetId).toBe('target-set-halloween');
+  });
+
+  test('untracked target: the picker asks for confirmation, then reports through the set-centric endpoint (AK 35/41)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+      {
+        twitchChannelId: 'untracked-1',
+        twitchLogin: 'stranger',
+        // trackedChannelName omitted — null, the picker's untracked class (spec 6.2/8.6).
+        sets: [{ id: 'set-untracked', name: 'Wegwerf-Set', ownerDisplayName: 'Stranger' }],
+      },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // Keyed on the account's Twitch login ('stranger'), never its display name (E7) — the loader's
+    // 'untrackedSet' case routes through twitchLogin for exactly this URL.
+    await mockForeignEmoteSetPreview(page, 'stranger', {
+      channelName: 'stranger',
+      sevenTvUserId: null,
+      emoteSetId: 'set-untracked',
+      emoteSetName: 'Wegwerf-Set',
+      capacity: 250,
+      totalCount: 0,
+      emotes: [],
+    });
+
+    let reportRequestBody: unknown;
+    let reportRequestMethod: string | undefined;
+    await page.route('**/api/seventv/emote-sets/set-untracked/sync-imported', async (route) => {
+      reportRequestMethod = route.request().method();
+      reportRequestBody = route.request().postDataJSON();
+      await route.fulfill({ status: 204 });
+    });
+
+    await mockSevenTvGql(page, () => ({
+      data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
+    }));
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await expect(picker.getByText('nicht getrackt')).toBeVisible();
+
+    // AK 35: choosing the untracked set does not select it outright — a confirmation names the
+    // set and its owner first, and "Weiter" cannot be used to skip past it.
+    await picker.getByRole('radio', { name: 'Wegwerf-Set' }).check();
+    await expect(
+      picker.getByText("In das Set ‚Wegwerf-Set' von ‚Stranger' kopieren?"),
+    ).toBeVisible();
+    await expect(picker.getByRole('button', { name: 'Weiter' })).toBeDisabled();
+
+    // Confirming closes the whole picker directly (AK 35: "Bestätigung schließt den Picker mit
+    // channelName: null") — there is no separate "Weiter" click for this class.
+    await picker.getByRole('button', { name: 'Kopieren' }).click();
+
+    const confirm = page.getByRole('dialog');
+    // The header names the owner, not a channel (AK 39: there is none) — titleTargetLabel falls
+    // back to targetOwnerDisplayName.
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '1 Emote nach Stranger kopieren?',
+    );
+    await expect(confirm.getByText('Ziel: Set Wegwerf-Set von Stranger')).toBeVisible();
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(1000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    // T2.6/8.6: the dock's own summary line has no channel to name either, and offers no "open
+    // target channel" link — there is no channel page behind an untracked target.
+    await expect(page.getByText('Ziel: Set set-untracked von Stranger')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Zielkanal öffnen' })).toHaveCount(0);
+
+    // AK 41: the set-centric endpoint, POSTed without a targetEmoteSetId (the route already names
+    // the set) — never the channel-scoped .../emotes/sync-imported.
+    expect(reportRequestMethod).toBe('POST');
+    expect(reportRequestBody).toEqual({
+      sevenTvEmoteIds: ['7tv-1'],
+      sourceChannelName: SOURCE_CHANNEL,
+      sourceKind: 'channel',
+      leaderboardSort: null,
+    });
   });
 });
 
@@ -1383,10 +1621,7 @@ test.describe('running import: channel switch', () => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-    ]);
+    await mockTargetPicker(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     await mockWorkspace(page, TARGET_CHANNEL, [], 'target-set');
     await mockSetWarning(page, TARGET_CHANNEL);
@@ -1468,10 +1703,7 @@ test.describe('running import: channel switch', () => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-    ]);
+    await mockTargetPicker(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     // The target needs rows of its own: without them the button would end up disabled on
     // `atlasOrder().length === 0` and the final assertion could not tell the fix from an empty grid.
@@ -1567,10 +1799,7 @@ test.describe('running import: a token without write rights', () => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-    ]);
+    await mockTargetPicker(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
       capacity: 1000,
@@ -1667,10 +1896,7 @@ test.describe('running import: progress wording matches the outcome (#158)', () 
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-    ]);
+    await mockTargetPicker(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
       capacity: 1000,
@@ -1731,10 +1957,7 @@ test.describe('running import: leaving the page', () => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-    ]);
+    await mockTargetPicker(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
       capacity: 1000,
@@ -1985,10 +2208,7 @@ test.describe('dock outcomes: announced from a region that outlives the dock (#1
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
-    await mockMyChannels(page, [
-      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
-      { channelName: TARGET_CHANNEL, isSevenTvEditor: true, isTracked: true },
-    ]);
+    await mockTargetPicker(page);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
     await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
       capacity: 1000,

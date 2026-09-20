@@ -56,3 +56,24 @@ export const DETAIL_KEYS: Record<string, string> = {
   importedFromFile: 'audit.details.importedFromFile',
   importedFromLeaderboard: 'audit.details.importedFromLeaderboard',
 };
+
+/**
+ * Translation keys for the import ladder's target-set addenda (spec 8.10) — appended *after* a
+ * row's own detail line, never in place of it. Deliberately not part of `DETAIL_KEYS`:
+ * `targetEmoteSet` never selects a `kind` on its own, it only annotates whichever kind the row
+ * already has (mirroring the server, `AuditLogQueryService.TryProjectImportDetail`), so it needs
+ * its own small table rather than a seventh entry there.
+ *
+ * Three keys, one per case the row can show: the plain form (a set was reported, nothing further to
+ * say); the not-the-active-set form (channel-scoped endpoint, `isActiveSetOfChannel === false`);
+ * and the owner form (set-centric endpoint, which has no channel of ours to compare against at all
+ * and names its owner's Twitch login instead, spec 6.7). The latter two never co-occur — a row's
+ * `AuditLogTargetEmoteSet` is either channel-scoped (`isActiveSetOfChannel` three-valued,
+ * `ownerLogin` always `null`) or set-centric (`isActiveSetOfChannel` always `null`, `ownerLogin`
+ * set) — so a row needs at most one of the three keys, never two.
+ */
+export const TARGET_EMOTE_SET_KEYS = {
+  plain: 'audit.details.targetEmoteSet',
+  notActive: 'audit.details.targetEmoteSetNotActive',
+  forOwner: 'audit.details.targetEmoteSetForOwner',
+} as const;

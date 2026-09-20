@@ -1621,18 +1621,15 @@ export class UsageStatsPage {
    * `openImportTarget`'s continuation once a target has been chosen. Works exclusively off the
    * scope captured before the dialog opened (see there) — the run started here reads the very
    * same rows the dialog counted, not whatever the grid holds by the time this fires.
+   *
+   * `choice.channelName === null` (an untracked target, spec 8.6) is no longer special-cased here
+   * (T2.6): the picker itself already ran its own confirmation step before closing with such a
+   * choice (`import-target-dialog.ts`), so by the time this method runs there is nothing left to
+   * ask — the same `'chosen'` target below carries it straight through `startImportFlow` and
+   * `toTargetSelection`'s `'untrackedSet'` branch (spec F5), which resolves the live list itself
+   * rather than assuming a channel's *active* set the way the pre-K2 loader used to (F5).
    */
   private startImportFromChoice(captured: CapturedImportScope, choice: ImportTargetChoice): void {
-    if (choice.channelName === null) {
-      // Untracked target (spec 8.6): the confirmation step and the set-centric report are T2.6's
-      // job, not wired up here yet — nothing to start until they land. A *tracked* pick — active or
-      // not — is wired below (`startImportFlow`'s `'chosen'` target, T2.5b): the F5 bug (the loader
-      // used to always resolve the channel's *active* set regardless of what was picked) is exactly
-      // what this guard used to also paper over for the non-active case, silently. It no longer
-      // does — only the untracked class waits here now.
-      return;
-    }
-
     const rows = choice.scope === 'selection' ? captured.selection : captured.visible;
     const deduped = dedupeImportRows(rows);
     const source: ImportSource = {

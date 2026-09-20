@@ -165,6 +165,37 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
         }
       }
 
+      <!-- Untracked class only (spec 8.6, AK 35): choosing one of these sets does not select it
+           outright — it stays pending here until confirmed. Cancelling leaves target(), and
+           therefore every radio's checked state, exactly as it was before this click; nothing is
+           blanked (see cancelUntrackedConfirmation()'s doc). A tracked pick never reaches this
+           banner at all ("kein zweiter Schritt"). -->
+      @if (pendingUntrackedTarget(); as pending) {
+        <app-notice-banner variant="info">
+          {{
+            'import.target.confirmUntracked'
+              | transloco: { setName: pending.setName, ownerDisplayName: pending.ownerDisplayName }
+          }}
+          <button
+            notice-action
+            type="button"
+            appButton="outline"
+            (click)="cancelUntrackedConfirmation()"
+          >
+            {{ 'common.cancel' | transloco }}
+          </button>
+          <button
+            notice-action
+            type="button"
+            appButton="primary"
+            [disabled]="emptyScopeChosen()"
+            (click)="confirmUntrackedTarget()"
+          >
+            {{ 'import.target.confirmUntrackedSubmit' | transloco }}
+          </button>
+        </app-notice-banner>
+      }
+
       <button
         dialog-actions
         type="button"
@@ -179,7 +210,7 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
         type="button"
         appButton="primary"
         buttonSize="lg"
-        [disabled]="target() === null || emptyScopeChosen()"
+        [disabled]="target() === null || emptyScopeChosen() || pendingUntrackedTarget() !== null"
         (click)="submit()"
       >
         {{ 'import.target.submit' | transloco }}
@@ -289,8 +320,18 @@ export class ImportTargetDialog {
   );
 
   // No target chosen yet, unless the preselection effect below already found one: "Weiter" stays
-  // disabled until a set is picked one way or the other.
+  // disabled until a set is picked one way or the other. Only ever holds an *already confirmed*
+  // choice — an untracked pick never lands here directly, see pendingUntrackedTarget below.
   protected readonly target = signal<TargetSelection>(null);
+
+  /** The untracked choice awaiting its confirmation banner (spec 8.6, AK 35) — `null` whenever none
+   *  is pending. Deliberately a signal of its own rather than a second state stuffed into `target`:
+   *  a cancelled confirmation must leave `target()` — and therefore every radio's checked state —
+   *  exactly as it was before the click ("Abbruch lässt die Wahl unverändert", not "leert sie"),
+   *  which only works if confirming and choosing are two different pieces of state to begin with.
+   *  Confirming closes the whole dialog directly (confirmUntrackedTarget()) rather than ever
+   *  promoting this into `target()` — there is no second "Weiter" click for the untracked class. */
+  protected readonly pendingUntrackedTarget = signal<TargetSelection>(null);
 
   protected readonly targetsResource = rxResource({
     stream: () => this.emoteSetService.listEmoteSetTargets(),
@@ -346,7 +387,25 @@ export class ImportTargetDialog {
     });
   }
 
+  /** A pending untracked confirmation shows *its own* candidate as checked, never `target()`, while
+   *  it is up — this is also a technical necessity, not just a UX choice: a native radio input
+   *  flips its own DOM `checked` property the instant it is clicked, before Angular ever runs
+   *  `selectSet()`. If `isSetChecked` kept comparing against `target()` alone, that comparison
+   *  would evaluate to the exact same `false` before and after an untracked click (an untracked
+   *  pick never touches `target()`), Angular's binding would see no change to commit, and the
+   *  browser's own already-applied `checked = true` would be left standing uncorrected — a radio
+   *  showing checked for a choice that was never actually made. Routing the comparison through
+   *  `pendingUntrackedTarget()` instead makes the bound expression's value genuinely flip on both
+   *  the click and the cancel, so Angular always has something to write back. Cancelling clears the
+   *  pending signal and this reverts to comparing against `target()` again, exactly restoring the
+   *  prior radio state (AK 35's "Abbruch lässt die Wahl unverändert") — the *logical* choice
+   *  (`target()`, and therefore what `submit()`/`confirmUntrackedTarget()` can close with) is what
+   *  stays untouched throughout; only this rendering detail is pending-aware. */
   protected isSetChecked(emoteSetId: string): boolean {
+    const pending = this.pendingUntrackedTarget();
+    if (pending !== null) {
+      return pending.emoteSetId === emoteSetId;
+    }
     const current = this.target();
     return current !== null && current.emoteSetId === emoteSetId;
   }
@@ -373,8 +432,15 @@ export class ImportTargetDialog {
     return header === null ? group.sets : group.sets.filter((set) => set !== header);
   }
 
+  /**
+   * A tracked set is selected outright, same as always ("kein zweiter Schritt", spec 8.6). An
+   * untracked one only becomes *pending* (AK 35) — it needs `confirmUntrackedTarget()`'s explicit
+   * confirmation before it can become `target()` at all, and until then any earlier `target()` is
+   * left completely untouched: clicking around in the untracked list, cancelling, clicking again,
+   * none of it must overwrite an already-made tracked choice by accident.
+   */
   protected selectSet(group: ImportTargetAccountGroup, set: ImportTargetSetChoice): void {
-    this.target.set({
+    const candidate: TargetSelection = {
       emoteSetId: set.emoteSetId,
       channelName: group.channelName,
       ownerDisplayName: set.ownerDisplayName,
@@ -382,7 +448,36 @@ export class ImportTargetDialog {
       isTracked: group.isTracked,
       twitchLogin: group.twitchLogin,
       activeEmoteSetId: group.activeEmoteSetId,
-    });
+    };
+    if (!group.isTracked) {
+      this.pendingUntrackedTarget.set(candidate);
+      return;
+    }
+    // A tracked click abandons any confirmation the user may have had open for a different,
+    // untracked set — there is nothing left to confirm once a one-click tracked pick has won.
+    this.pendingUntrackedTarget.set(null);
+    this.target.set(candidate);
+  }
+
+  /** Leaves `target()` — and every radio's checked state derived from it — exactly as it was
+   *  before the untracked click that opened this confirmation (AK 35: "Abbruch lässt die Wahl
+   *  unverändert", explicitly not "leert sie"). */
+  protected cancelUntrackedConfirmation(): void {
+    this.pendingUntrackedTarget.set(null);
+  }
+
+  /** Closes the whole picker directly with the confirmed untracked choice (AK 35: "Bestätigung
+   *  schließt den Picker mit `channelName: null`") — there is no separate "Weiter" click for this
+   *  class, unlike a tracked pick, which still goes through submit(). `pending.channelName` is
+   *  already `null` here: it came from an untracked account group's own `channelName`, which is
+   *  `null` by {@link ImportTargetAccountGroup}'s own contract. */
+  protected confirmUntrackedTarget(): void {
+    const pending = this.pendingUntrackedTarget();
+    if (pending === null || this.emptyScopeChosen()) {
+      return;
+    }
+    this.pendingUntrackedTarget.set(null);
+    this.dialogRef.close({ scope: this.scope(), ...pending });
   }
 
   protected submit(): void {

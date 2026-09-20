@@ -16,6 +16,7 @@ import {
   SYNC_RETRY_DELAY_MS,
   SyncReportState,
 } from './seven-tv-delete.service';
+import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { ResyncTriggerState } from './seven-tv-restore.service';
 import { RunOperation, RunQueueEmote, RunResult, SevenTvRunEngine } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
@@ -84,7 +85,15 @@ function abortsForMissingPrivileges(failure: {
  * simply no longer `run()` and is dropped.
  */
 export interface ImportRunInfo {
-  targetChannelName: string;
+  /** `null` for a run into an *untracked* account's set (T2.6, spec 8.6) — there is no channel of
+   *  ours to resync afterwards or to report the channel-scoped `sync-imported` against; see
+   *  `reportImported` and `onRunComplete` for what each of the two cases does instead. */
+  targetChannelName: string | null;
+  /** The set's owner, 7TV display name — only ever set alongside `targetChannelName === null`
+   *  (E7: never compared against anything, display only). `import-progress-section.ts` is what
+   *  reads it: with no target channel to name, the dock's own "Ziel: …" line and its "open target
+   *  channel" link both need a different, channel-free way to say what this run wrote into. */
+  targetOwnerDisplayName: string | null;
   targetSetId: string;
   origin: ImportOrigin;
   /** `null` while the run is in flight; set once, when the engine reports the run complete. */
@@ -110,6 +119,7 @@ export interface ImportRunInfo {
 export class SevenTvImportService {
   private readonly channelService = inject(ChannelService);
   private readonly emoteAdminService = inject(EmoteAdminService);
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
 
   /** Own engine instance — see the identical note in SevenTvDeleteService. */
   private readonly engine = new SevenTvRunEngine(
@@ -185,12 +195,14 @@ export class SevenTvImportService {
 
   /** `rows` are expected deduplicated (`dedupeImportRows`) and already filtered against the
    *  dialog-time target snapshot (`buildImportPreview`); this method does no filtering of its own.
-   *  `skippedDuplicates` is the caller's own count from the *fresh* re-check it ran just before this
-   *  call (see `already-present-filter.ts`) — defaults to 0 so existing callers/tests that pass only
-   *  three arguments are unaffected. `duplicateCheckAvailable` mirrors the same call's `available`
-   *  and defaults to `true` for the same reason. */
+   *  `target.channelName` is `null` for an untracked target (T2.6, spec 8.6) — see
+   *  `ImportRunInfo.targetChannelName` for what that changes downstream. `skippedDuplicates` is the
+   *  caller's own count from the *fresh* re-check it ran just before this call (see
+   *  `already-present-filter.ts`) — defaults to 0 so existing callers/tests that pass only three
+   *  arguments are unaffected. `duplicateCheckAvailable` mirrors the same call's `available` and
+   *  defaults to `true` for the same reason. */
   startImport(
-    target: { setId: string; channelName: string },
+    target: { setId: string; channelName: string | null; ownerDisplayName?: string | null },
     origin: ImportOrigin,
     rows: ImportRow[],
     skippedDuplicates = 0,
@@ -208,6 +220,7 @@ export class SevenTvImportService {
     }));
     const started: ImportRunInfo = {
       targetChannelName: target.channelName,
+      targetOwnerDisplayName: target.ownerDisplayName ?? null,
       targetSetId: target.setId,
       origin,
       result: null,
@@ -278,9 +291,14 @@ export class SevenTvImportService {
       return;
     }
 
-    // Deliberately both, in parallel: the report is the audit trail for exactly these ids, the
-    // resync is what actually pulls the new emote rows in from 7TV. Neither replaces the other.
+    // The report is the audit trail for exactly these ids, always sent. The resync is what
+    // actually pulls the new emote rows in from 7TV — only meaningful for a *tracked* target
+    // (T2.6/8.6): an untracked one has no `Channel` of ours to resync at all, so `targetChannelName`
+    // being `null` is the one signal that decides whether this second step runs.
     this.reportImported(finished);
+    if (finished.targetChannelName === null) {
+      return;
+    }
     this.resyncTrigger.set('pending');
     this.channelService.resync(finished.targetChannelName).subscribe({
       next: () => this.applyIfCurrent(finished, () => this.resyncTrigger.set('succeeded')),
@@ -297,23 +315,34 @@ export class SevenTvImportService {
     const doneKeys = run.result?.doneKeys ?? [];
     this.syncReport.set('pending');
 
-    this.emoteAdminService
-      .syncImported(run.targetChannelName, {
-        sevenTvEmoteIds: doneKeys,
-        // Through the two exhaustive helpers, never through a `=== 'channel'`/`=== 'seventv-leaderboard'`
-        // test: this call runs after the 7TV mutations, so a kind that silently loses its source name
-        // or sort here is answered with a 400 when the emotes are already copied and the provenance is
-        // unrecoverable (spec F6/F1). A file still sends `null` for the source channel even when it
-        // names one, and every non-leaderboard origin sends `null` for the sort — both rules live in
-        // the helpers, not here.
-        sourceChannelName: importOriginSourceChannelName(run.origin),
-        sourceKind: run.origin.kind,
-        leaderboardSort: importOriginLeaderboardSort(run.origin),
-        // Sent on every call this client makes (spec 6.7/E5, AK 44) — the loaded target's own set,
-        // known by the time a run even started (`ImportRunInfo.targetSetId`), never omitted just
-        // because the server keeps the field optional for an older client.
-        targetEmoteSetId: run.targetSetId,
-      })
+    // Through the two exhaustive helpers, never through a `=== 'channel'`/`=== 'seventv-leaderboard'`
+    // test: this call runs after the 7TV mutations, so a kind that silently loses its source name
+    // or sort here is answered with a 400 when the emotes are already copied and the provenance is
+    // unrecoverable (spec F6/F1). A file still sends `null` for the source channel even when it
+    // names one, and every non-leaderboard origin sends `null` for the sort — both rules live in
+    // the helpers, not here.
+    const bodyBase = {
+      sevenTvEmoteIds: doneKeys,
+      sourceChannelName: importOriginSourceChannelName(run.origin),
+      sourceKind: run.origin.kind,
+      leaderboardSort: importOriginLeaderboardSort(run.origin),
+    };
+
+    // Tracked target → the channel-scoped endpoint, `targetEmoteSetId` sent on every call this
+    // client makes (spec 6.7/E5, AK 44) — the loaded target's own set, known by the time a run even
+    // started (`ImportRunInfo.targetSetId`), never omitted just because the server keeps the field
+    // optional for an older client. Untracked target → the set-centric endpoint (spec 6.7, T2.6):
+    // the route already names the set, so the body carries no `targetEmoteSetId` at all, and there
+    // is no channel of ours for this call to write the entry against (`ChannelName = null`).
+    const report$ =
+      run.targetChannelName !== null
+        ? this.emoteAdminService.syncImported(run.targetChannelName, {
+            ...bodyBase,
+            targetEmoteSetId: run.targetSetId,
+          })
+        : this.emoteSetService.reportImportedToSet(run.targetSetId, bodyBase);
+
+    report$
       .pipe(
         // Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a
         // 401/403.

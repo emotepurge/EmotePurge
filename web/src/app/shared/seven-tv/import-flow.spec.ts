@@ -310,7 +310,7 @@ describe('startImportFlow', () => {
     // default 7TV read (`httpPost`) reports an empty target set, so nothing gets filtered a second
     // time. Fifth is whether that check actually ran — true, since the fetch succeeded (#149).
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-1', channelName: 'target-channel' },
+      { setId: 'set-1', channelName: 'target-channel', ownerDisplayName: null },
       src.origin,
       outcome.rows,
       0,
@@ -363,7 +363,7 @@ describe('startImportFlow', () => {
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-1', channelName: 'target-channel' },
+        { setId: 'set-1', channelName: 'target-channel', ownerDisplayName: null },
         source().origin,
         [],
         1,
@@ -386,7 +386,7 @@ describe('startImportFlow', () => {
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-1', channelName: 'target-channel' },
+        { setId: 'set-1', channelName: 'target-channel', ownerDisplayName: null },
         source().origin,
         [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
         0,
@@ -555,7 +555,7 @@ describe('startImportFlow', () => {
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-halloween', channelName: 'handofblood' },
+        { setId: 'set-halloween', channelName: 'handofblood', ownerDisplayName: null },
         source().origin,
         [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
         0,
@@ -591,24 +591,41 @@ describe('startImportFlow', () => {
       expect(loadEmoteSetPreview).toHaveBeenCalledWith('stranger', 'set-x');
     });
 
-    it('never starts a run for an untracked choice, even if one somehow reaches this flow', () => {
-      // Defence in depth: `usage-stats-page.ts`'s own guard is what actually keeps an untracked
-      // choice from reaching `startImportFlow` at all today (the confirmation step is T2.6's job) —
-      // this pins that `startImportFlow` itself refuses to start a run with no channel to report
-      // to, rather than relying solely on that caller-side guard.
+    it('starts a run with channelName: null for a confirmed untracked choice (T2.6)', () => {
+      // Pre-T2.6 this flow refused to start anything for an untracked choice at all — a defensive
+      // backstop for a state `usage-stats-page.ts`'s own guard was supposed to make unreachable.
+      // T2.6 lifted that guard on purpose (the confirmation now happens earlier, inside the picker
+      // itself, spec 8.6) — a `'chosen'` target with no channel name is exactly what a confirmed
+      // untracked pick looks like once it reaches here, and this flow's job is to start it like any
+      // other, not to refuse it a second time.
       const { deps, dialogOpen, startImport, loadEmoteSetPreview } = setup();
       loadEmoteSetPreview.mockReturnValue(
         of(liveTarget({ channelName: 'stranger', emoteSetId: 'set-x' })),
       );
-      const untracked = choice({ channelName: null, isTracked: false, twitchLogin: 'stranger' });
+      const untracked = choice({
+        channelName: null,
+        isTracked: false,
+        twitchLogin: 'stranger',
+        ownerDisplayName: 'Stranger',
+      });
+      const src = source();
 
-      startImportFlow(deps, source(), { kind: 'chosen', choice: untracked });
-      confirmClosed(dialogOpen).next({
+      startImportFlow(deps, src, { kind: 'chosen', choice: untracked });
+      const outcome: ImportConfirmOutcome = {
         targetSetId: 'set-x',
         rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
-      });
+      };
+      confirmClosed(dialogOpen).next(outcome);
 
-      expect(startImport).not.toHaveBeenCalled();
+      // The owner name rides along too (T2.6) — import-progress-section.ts's own "Ziel: …" line
+      // needs it once the confirm dialog (which showed the same name, AK 39) is gone.
+      expect(startImport).toHaveBeenCalledWith(
+        { setId: 'set-x', channelName: null, ownerDisplayName: 'Stranger' },
+        src.origin,
+        outcome.rows,
+        0,
+        true,
+      );
     });
   });
 });
