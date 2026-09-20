@@ -2230,16 +2230,16 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | Unit | `Unit/ForeignSevenTvBreakerPolicyTests.cs` | Operationskennung (6.1): getrennter `OtherFailure`-Zähler je Operation, getrennte Half-open-Probe, **geteilte** Rate-Limit-Sperre samt `Retry-After` | +4 | **12 von 12** (Signatur — jede Bestandsmethode nimmt die Kennung; mit genau einer Kennung ist das Verhalten unverändert, und genau das belegen die umgestellten Fälle) |
 | Unit | `Unit/SevenTvEmoteSetListServiceTests.cs` (neu) | Cache-Treffer, Miss, Redis-Ausfall fail-open, ein Permit je Request (AK 23/24); **Wächterkette aus 6.1**: *n* parallele kalte Misses ⇒ **ein** Upstream-Request (Singleflight); GraphQL-429 als HTTP 200 (`extensions.status: 429`) ⇒ `RateLimited`, nicht `Ok`; offener Breaker ⇒ 503 **ohne** Upstream-Request; negatives Ergebnis wird gehalten (zweiter Aufruf in der Frist ohne Upstream-Request), `NoSevenTvAccount` wie ein Treffer; **Kreuztest (AK 94)**: wiederholtes `Unavailable` der Liste sperrt den Vorschaupfad nicht, ein bestätigtes 429 sperrt beide | +12 | — |
 | Unit | `Unit/UsageStatMigrationChecksTests.cs` (neu, pur) | die **sieben** Prüfbedingungen als pure Funktionen über Listen — je Prüfung 1–7 ein Abbruch- und ein Durchlauffall (14), dazu die **zweite Abbruchgestalt von Prüfung 3** (Kanal trägt beide Eintragsarten, XOR) und die **zwei weiteren von Prüfung 7** (`ConfirmedFromDate` bzw. `ConfirmedThroughDate` abweichend, neben dem `ConfirmedRowCount`-Fall) = 17, die vier Zuordnungsfälle `Date` → Set-ID inkl. Grenztag = 21, und **der Builder lehnt eine doppelte Eintragung schon beim Eintragen ab** (Lader, nicht Prüfung) = 22 | +22 | — |
-| Integration | `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu) | Migration gegen Container: Abbruch 1–7 (AK 5/6 — **acht** Fälle, weil Prüfung 3 zwei Gestalten hat und der XOR-Fall ausdrücklich an einem `IsBotActive = false`-Kanal gestellt wird, wo die Saat nicht schützt), Backfill (AK 7), Index (AK 8), Saat (AK 9), **Saat vergibt nie `ClosedBy = 'set-switch'`** (AK 9, eigener Fall — die Invariante, an der `Down`-Schranke 1 hängt), `Down` (AK 10 — drei Fälle, darunter **Set-Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab und hat nichts entfernt**), **nicht einkompilierte Klassifikation ⇒ benannter Abbruch vor jeder Schemaänderung, einkompiliert-aber-leer läuft, fehlender Messblock ⇒ eigene benannte Meldung** (AK 91, drei Fälle), **Backfill erfasst jede Zeile genau einmal** (AK 7); die Klassifikation kommt in jedem Fall aus einer **Fixture über den `internal` Testsitz**, nie aus der Datei des Betreibers (AK 90) | +18 | — |
+| Integration | `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu) | Migration gegen Container: Abbruch 1–7 (AK 5/6 — **acht** Fälle, weil Prüfung 3 zwei Gestalten hat und der XOR-Fall ausdrücklich an einem `IsBotActive = false`-Kanal gestellt wird, wo die Saat nicht schützt), **Backfill, das jede Zeile genau einmal erfasst** (AK 7, ein Fall), Index (AK 8), Saat (AK 9), **Saat vergibt nie `ClosedBy = 'set-switch'`** (AK 9, eigener Fall — die Invariante, an der `Down`-Schranke 1 hängt), `Down` (AK 10 — drei Fälle, darunter **Set-Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab und hat nichts entfernt**), **nicht einkompilierte Klassifikation ⇒ benannter Abbruch vor jeder Schemaänderung, einkompiliert-aber-leer läuft, fehlender Messblock ⇒ eigene benannte Meldung** (AK 91, drei Fälle); die Klassifikation kommt in jedem Fall aus einer **Fixture über den `internal` Testsitz**, nie aus der Datei des Betreibers (AK 90). Ausgezählt: 8 + 1 + 1 + 2 + 3 + 3 = 18 — die frühere Fassung nannte „Backfill" zweimal und kam so auf 19 | +18 | — |
 | Integration | `Integration/UsageStatFlushServiceTests.cs` | zwei Set-IDs an einem Tag, dreispaltiges Addieren, zurückgestellter Batch mit anderer Set-ID (AK 11) | +3 | **14 von 14** (Signatur) |
-| Integration | `Integration/UsageStatQueryServiceTests.cs` | Set-Filter in Context/Daily/Series/Totals, `null` = aktiv, `GetRowsAsync`-Summe, `/series` nach 7TV-Id (AK 19/20), `NameTwinEmoteSetIds`, nicht-aktive Grundmenge (archivierte mit Zahlen) | +10 | die Fälle für `GetChannelSeriesAsync` und `GetRowsAsync` (Teilmenge der 54; Zahl nicht verifiziert — beim Umstellen zählen) |
+| Integration | `Integration/UsageStatQueryServiceTests.cs` | Set-Filter in Context/Daily/Series/Totals, `null` = aktiv, `GetRowsAsync`-Summe, `/series` nach 7TV-Id (AK 19/20), `NameTwinEmoteSetIds`, nicht-aktive Grundmenge (archivierte mit Zahlen), Klasse 2b bleibt `null` in `/totals?emoteSetId=` nach dem Anlegen einer Set-Session (AK 63, T6.3) | +11 | die Fälle für `GetChannelSeriesAsync` und `GetRowsAsync` (Teilmenge der 54; Zahl nicht verifiziert — beim Umstellen zählen) |
 | Integration | `Integration/ChannelEmoteSetObservationServiceTests.cs` (neu) | Öffnen, Set-Wechsel in einer Transaktion (AK 16), fünf Schließstellen (AK 17), partieller Index (AK 18), Rejoin öffnet neu | +9 | — |
-| Integration | `Integration/SevenTvSyncServiceTests.cs` | Set-ID reist in den Cache; Wechsel-Tests (AK 14); Wiederholung bei 23505 (AK 78) | +5 | **nicht verifiziert** — hängt an den Fakes für `IEmoteMatchCache`; prüfen in T1.2 |
+| Integration | `Integration/SevenTvSyncServiceTests.cs` | Set-ID reist in den Cache, beim Sync **und** beim Warmstart, mit genau einer Log-Zeile bei anderer Set-ID (AK 15, zwei Fälle); Beobachtungs-Log öffnet nach dem Sync (T1.5, ein Fall); Wechsel-Tests (AK 14, zwei Fälle); Wiederholung bei 23505 (AK 78, zwei Fälle: erster Konflikt wird wiederholt und kommt durch, zweiter Konflikt propagiert) | +7 | **nicht verifiziert** — hängt an den Fakes für `IEmoteMatchCache`; prüfen in T1.2 |
 | Integration | `Integration/ChannelServiceTests.cs`, `ChannelIdentityServiceTests.cs` | Leave/Rename/Merge schließen (Teil von AK 17) | +3 | 0 |
-| Integration | `Integration/EmoteServiceTests.cs` | neue Form aktiv/nicht-aktiv, Altform, Log-Zeile, Audit-Details (AK 70) | +6 | **12 von 12** (Signatur der Überladung — oder 0, wenn die alte Signatur bleibt; T5.2 entscheidet und meldet) |
+| Integration | `Integration/EmoteServiceTests.cs` | neue Form aktiv/nicht-aktiv, Altform, Log-Zeile (AK 70); Audit-Details des set-zentrierten Imports mit `targetIsActiveSetOfChannel` true/false/null (AK 29–32, T2.4) | +8 | **12 von 12** (Signatur der Überladung — oder 0, wenn die alte Signatur bleibt; T5.2 entscheidet und meldet) |
 | Integration | `Integration/EmoteSetOwnershipServiceTests.cs` | `emoteSetId`-Parameter in drei Tiers (AK 33) | +3 | 0 von 5 |
 | Integration | `Integration/AuditLogQueryServiceTests.cs` | `TargetEmoteSet` projiziert / `null` (AK 32) | +2 | 0 von 19 |
-| Integration | `Integration/VoteSessionServiceTests.cs` | Set-Session Anlage (AK 76/77), Ausschlussregel, Votable in Set-Session (AK 79), Wettlauf (AK 78) | +6 | 0 von 25 (additive Felder) |
+| Integration | `Integration/VoteSessionServiceTests.cs` | Set-Session Anlage (AK 76/77), Ausschlussregel, Votable in Set-Session (AK 79) | +5 | 0 von 25 (additive Felder) |
 | Integration | `Integration/VoteSessionQueryServiceTests.cs` | `eligible`, Set-Totals, eingefrorene Namen (AK 80) | +4 | **nicht verifiziert** — ob Tests `VoteSessionResultDto` positional konstruieren |
 | Integration | `Integration/HardenedForeignEmoteSetServiceTests.cs` | zweiter Schlüsselraum (AK 26) | +2 | 0 von 9 |
 | Integration | `Integration/SevenTvEditorServiceTests.cs` (neu) oder `ModRoleCacheTests.cs` | Legacy-Payload ohne 7TV-ID wird nachgelöst (AK 31) | +2 | 0 |
@@ -2257,8 +2257,8 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | Datei | Was | Anzahl | Bestand rot |
 |---|---|---|---|
 | `ChannelUsageSeriesWireFormatTests.cs` | `"sevenTvEmoteId"` **und** `"emoteId"` nebeneinander (6.5, Schritt 1) | +1 (erweitert) | **0 von 2** — der additive Weg macht das frühere „bewusst rot" gegenstandslos |
-| `AuthFilterMatrixTests.cs` | Set-Listen-Route (AK 22), `set-warning?emoteSetId`, `sync-deleted`/`sync-restored` beide Formen und die drei 400-Fälle (AK 70), `/usage-stats/*?emoteSetId` 400 (AK 27), Vote-Ausschlussregel (AK 75) | +14 | 0 von 45 (`SyncRestored_Answers400_WhenTheBodyCarriesNoEmoteIds` bleibt gültig) |
-| `SevenTvForeignEmoteSetEndpointTests.cs` | `?emoteSetId=` (400/200/Set-Modus), `/emote-sets` fremd (AK 47), `/me/emote-set-targets` (AK 25) | +9 | 0 von 8 |
+| `AuthFilterMatrixTests.cs` | Set-Listen-Route (AK 22, fünf Fälle), `set-warning?emoteSetId` 400 (ein Fall), `sync-deleted`/`sync-restored` beide Formen und die drei 400-Fälle (AK 70, fünf Fälle, T5.2), `/usage-stats/*?emoteSetId` 400 (AK 27, drei Fälle), Vote-Ausschlussregel (AK 75, drei Fälle) und `emoteSetId` ungültig an der Vote-Session-Route (ein Fall) sowie `targetEmoteSetId` ungültig am set-zentrierten Import-Endpunkt (AK 29, ein Fall) | +19 | 0 von 45 (`SyncRestored_Answers400_WhenTheBodyCarriesNoEmoteIds` bleibt gültig) |
+| `SevenTvForeignEmoteSetEndpointTests.cs` | `?emoteSetId=` (400/200/Set-Modus, drei Fälle), `/me/emote-set-targets` (AK 25, drei Fälle), `/emote-sets` fremd (AK 47, fünf Fälle, T3.1) | +11 | 0 von 8 |
 | `SevenTvEmoteSetSyncImportedEndpointTests.cs` (neu) | die Leiter aus 6.7 (AK 30) | +9 | — |
 | `EmoteRoutePolicyTests.cs` | neue Routen (AK 46) | +5 `InlineData` | 0 |
 | `ApiFactory.cs` | Substitute für `ISevenTvEmoteSetListService`, `IEmoteSetOwnershipService`, `IUsageStatQueryService` (falls nicht schon über `IChannelService` abgedeckt — nicht verifiziert) | — | — |
@@ -2270,7 +2270,7 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `core/usage-stats/merge-set-view.spec.ts` (neu) | AK 53, Klassen, Duplikate, aktive Ansicht | +8 | — |
 | `core/usage-stats/usage-stat.service.spec.ts` | Cache-Schlüssel mit Set (AK 64) | +2 | **5 von 5** (Signaturen) |
 | `core/emotes/import-target-loader.spec.ts` | Set-Ziel, `truncated ⇒ failed`, Warnung je Klasse (AK 36) | +5 | **8 von 8** (Signatur) |
-| `core/emotes/emote-admin.service.spec.ts` | neue Bodies, `targetEmoteSetId` immer gesendet (AK 44) | +4 | 4 von 9 (`syncDeleted`/`syncRestored`/`syncImported`-Bodies) |
+| `core/emotes/emote-admin.service.spec.ts` | `targetEmoteSetId` immer gesendet (AK 44, ein Fall); neue Bodies für `syncDeleted`/`syncRestored` (T5.1, zwei Fälle) | +3 | 4 von 9 (`syncDeleted`/`syncRestored`/`syncImported`-Bodies) |
 | `core/seven-tv/seven-tv-emote-set.service.spec.ts` (neu) | drei Listen-Routen, `?emoteSetId=` | +4 | — |
 | `core/seven-tv/seven-tv-run-engine.spec.ts` | `doneKeys` einzige Identität; Delete-Lauf ohne `emoteId` (AK 68) | +2 | Fälle, die `doneIds` lesen (Teilmenge von 22; nicht verifiziert) |
 | `core/seven-tv/seven-tv-delete.service.spec.ts`, `seven-tv-restore.service.spec.ts` | Key `sevenTvEmoteId`, Set-ID im Datensatz, Retry (AK 71), Body neue Form | +6 | Teilmenge von 31 + 30 (Key- und Body-Assertions) |
@@ -2282,10 +2282,11 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `shared/seven-tv/import-preview.spec.ts` | drei Gruppen, Zahlen des Anlasses (AK 37/38) | +5 | Fälle „Kollisionen bleiben in `toAdd`" (Teilmenge von 11) |
 | `shared/seven-tv/import-confirm-dialog.spec.ts` | Setname im Kopf, Gruppen, Projektion ohne Kollisionen (AK 38/39) | +4 | Fälle mit `setId` im Kopf (Teilmenge von 32) |
 | `shared/seven-tv/foreign-channel-step.spec.ts` | Quell-Radiogroup, kein zweiter Request (AK 48/49) | +3 | 0 von 9 |
+| `shared/seven-tv/file-import-step.spec.ts` | Protokoll des Halloween-Sets in der Halloween-Ansicht angenommen, in der Hauptset-Ansicht abgewiesen (AK 66, T4.5) | +2 | — |
 | `shared/seven-tv/delete-confirm-dialog.spec.ts`, `restore-flow.spec.ts` | Setname, `emoteId` optional | +3 | Fixtures (Teilmenge von 14 + 16) |
 | `shared/selection/list-selection.spec.ts` | zwei Guid-lose Zeilen (AK 54) — als Konsument-Spec über `sevenTvEmoteId`-Keys | +2 | 0 von 26 |
 | `shared/datetime/date-range-menu.spec.ts` | Preset `'set-observed'` (AK 61) | +2 | 0 von 4 |
-| `features/usage-stats/usage-stats-page.spec.ts` | Dropdown, Reload-Regeln (AK 51/52), `null`-Gruppe (AK 56), Badge (AK 57), Tatsachenangabe als **Matrix** (AK 60 — alle vier Fälle, darunter **Zahlen ohne Beobachtungsintervall: nur B−, keine Aussage über Zahlen**), Sperren (AK 62), Voting-Auflösung, `onDeleted` nach Key | +14 | Fälle, die `emoteId`-Keys oder `totalUseCount: number` voraussetzen (Teilmenge von 42) |
+| `features/usage-stats/usage-stats-page.spec.ts` | Dropdown, Reload-Regeln (AK 50–52, T4.2, vier Fälle); Schlüsselwechsel als Konsument (AK 54: Guid-lose Zeilen wählbar, `retainAmong`, Drilldown-Gate, Voting-Auflösung — T4.3, drei Fälle); `null`-Gruppe (AK 56), Badge (AK 57), Tatsachenangabe als **Matrix** (AK 60 — alle vier Fälle, darunter **Zahlen ohne Beobachtungsintervall: nur B−, keine Aussage über Zahlen**), Sperren (AK 62 — T4.4, zehn Fälle); Scope-Capture für Export/Import (AK 64 zweiter Teil, T4.5, zwei Fälle); `onDeleted` nach Key (T5.1, ein Fall) | +20 | Fälle, die `emoteId`-Keys oder `totalUseCount: number` voraussetzen (Teilmenge von 42) |
 | `features/usage-stats/create-vote-session-dialog.spec.ts` | Set-Session-Body | +2 | Fälle zu `emoteIds` (Teilmenge von 14) |
 | `features/voting/vote-session-detail-page.spec.ts` | `canSelectForDelete = canManage`, Panel-Set-ID, `eligible`, `onDeleted` nach 7TV-Id (AK 81/82) | +4 | 2 von 8 (`hasUsageData`-Gate) |
 | `shared/audit/audit-row.spec.ts` | `targetEmoteSet`-Zusatz (8.10) | +3 | 0 |
@@ -2299,8 +2300,9 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `e2e/emote-import.e2e.spec.ts` | gleicher Kanal, anderes Set (AK 43); ungetracktes Ziel mit Bestätigung und set-zentriertem Report; Quell-Set-Picker | +3 |
 | `e2e/vote-ballot.e2e.spec.ts` | Set-Session (AK 83) | +1 |
 
-**Summe: +277 Fälle** — **nachgerechnet am 2026-09-20**, Zeile für Zeile über die fünf Tabellen
-oben, nicht fortgeschrieben.
+**Summe: +295 Fälle** — **nachgerechnet am 2026-09-20**, Zeile für Zeile über die fünf Tabellen
+oben, nicht fortgeschrieben. (Ein Zwischenstand dieses Nachrechnens trug kurzzeitig **+277** — die
+Korrektur auf +295 und ihre Herkunft stehen in Abschnitt 26.)
 
 **Die bisherige Zahl war falsch, in beiden Dokumenten.** Spec und Plan trugen **+237** bzw.
 **+236**; beide entstanden aus einer Gegenrechnung „Erstfassung plus/minus die Änderungen der
@@ -2310,8 +2312,8 @@ was eine fortgeschriebene Zahl nach drei Überarbeitungen tut. Ab hier gilt: **d
 Summe der Tabellen, und wer eine Zeile ändert, addiert neu.** Die alte Gegenrechnung ist damit
 gegenstandslos und wird nicht weitergeführt.
 
-Aufteilung der +277: `Infrastructure.Tests` **+133**, `Worker.Tests` **+3**, `Api.Tests` **+38**,
-Vitest **+96**, Playwright **+7**. Der Beitrag der zweiten Codex-Runde darin ist **+16**: sechs in
+Aufteilung der +295: `Infrastructure.Tests` **+137**, `Worker.Tests` **+3**, `Api.Tests` **+45**,
+Vitest **+103**, Playwright **+7**. Der Beitrag der zweiten Codex-Runde darin ist **+16**: sechs in
 `UsageStatMigrationChecksTests` (Prüfung 7, die zweite Gestalt von Prüfung 3, die zwei weiteren von
 Prüfung 7, der Builder-Fall), vier in den Migrationstests (siebter Abbruch, XOR am inaktiven Kanal,
 fehlender Messblock, Backfill-Einmaligkeit), zwei im Listen-Dienst (Kreuztest) und vier in
@@ -2358,7 +2360,7 @@ Je Bauschritt, nicht als Summe zuerst. „CC" ist Wandzeit der Subagenten.
 | K6 Set-Session Anlage, Votable, Fehlercode (T6.1) | ~5 h | ~30 min |
 | K6 Worker-Wiederholung + Wettlauftest (T6.2) | ~4 h | ~25 min |
 | K6 Ergebnisse, Detailseite, Dialog, E2E, DECISIONS 3 (T6.3) | ~6 h | ~35 min |
-| Tests über alle Ebenen (**+277**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
+| Tests über alle Ebenen (**+295**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
 | T7 Coverage, Codex-Review, PR | ~2 h | ~15 min |
 | K7 Wartungsfenster inkl. Messwert-Schritt und Live-Verifikation Prod | ~2 h | — |
 | **Summe** | **~113,5 h** | **~12 h** |
@@ -2708,6 +2710,29 @@ Messung am SDK 10.0.302 und die Sprache der beiden Abbruchmeldungen (4.2), der V
 vier Breaker-Methoden (6.1), `CLAUDE.md` in der Dateireferenz (18) und die getrennte Messung von
 Prüfung 7 (AK 87). Im selben Durchgang ist die **E1-Zeile in Abschnitt 2** auf den aktuellen Stand
 gezogen worden (vier Dateien, Aussage/Messung getrennt, Datenstand am Kein-Wechsel-Eintrag); ihre
-Geschichte steht in 24 (N3) und 25 (Befunde 1 und 2). **Offen geblieben sind fünf Zeilen der
-Testpyramide**, deren Zahlen nicht zur Summe der Task-Erwartungen des Plans passen — sie sind dort
-in Abschnitt 9 einzeln benannt, und **+277** bleibt bis zu ihrer Klärung stehen.
+Geschichte steht in 24 (N3) und 25 (Befunde 1 und 2). **Die fünf Zeilen der Testpyramide, deren
+Zahlen nicht zur Summe der Task-Erwartungen des Plans passten, sind geklärt** — Plan Abschnitt 9
+nennt sie einzeln mit ihrem Ergebnis.
+
+**Nachtrag, 2026-09-20 (Abgleich der Testzahlen):** Die Testzahlen in Abschnitt 15 sind gegen die
+Testerwartung je Task in [Plan-200](../../plans/Plan-200-Emote-Sets.md) abgeglichen worden, nach
+derselben Regel, die diesen Abschnitt trägt: **ein benannter Testfall gehört zu genau einem Task,
+die Zahl je Datei in 15 ist die Summe der ihr zugeordneten Fälle, und die Gesamtzahl ist die Summe
+der fünf Tabellen** — nie eine fortgeschriebene Gegenrechnung. Dabei sind **zehn Zeilen** bewegt
+worden — acht berichtigte Zahlen, eine entdoppelte Aufzählung, eine ergänzte Zeile:
+die fünf in Plan Abschnitt 9 benannten (`AuthFilterMatrixTests.cs` 14→19,
+`SevenTvForeignEmoteSetEndpointTests.cs` 9→11, `Integration/EmoteServiceTests.cs` 6→8,
+`Integration/SevenTvSyncServiceTests.cs` 5→7, `Integration/VoteSessionServiceTests.cs` 6→5 — der
+zweimal geführte Wettlauftest AK 78 gehört zu `SevenTvSyncServiceTests.cs`, wo `T6.2` ihn tatsächlich
+ablegt, nicht zu `VoteSessionServiceTests.cs`), die Migrationstest-Aufzählung (addierte 19 statt der
+genannten 18, weil „Backfill" doppelt genannt war — die Zahl **18** war bereits richtig, nur die
+Aufzählung nicht), sowie drei beim Gegenprüfen zusätzlich gefundene Abweichungen:
+`Integration/UsageStatQueryServiceTests.cs` (10→11, `T6.3`s Fall zu AK 63 fehlte),
+`core/emotes/emote-admin.service.spec.ts` (4→3, die beiden Beiträge aus `T2.5b` und `T5.1` ergeben
+zusammen drei, nicht vier) und `features/usage-stats/usage-stats-page.spec.ts` (14→20, die Beiträge
+aus `T4.3` und `T4.5` fehlten in der Zeile ganz). Dazu eine fehlende Zeile: `T4.5`s
+`shared/seven-tv/file-import-step.spec.ts` (AK 66, zwei Fälle) hatte in 15.4 gar keine eigene Zeile.
+Macht in Summe **+295** statt **+277** — **Infrastructure.Tests +137**, **Api.Tests +45**,
+**Vitest +103**, `Worker.Tests` und Playwright unverändert. **Gegenrechnungen sind als Schreibweise
+abgeschafft:** keine der obigen Korrekturen ist als „alt ± Änderung" notiert, sondern als die
+nachgezählte Zahl selbst.

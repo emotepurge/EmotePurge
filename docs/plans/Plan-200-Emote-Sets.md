@@ -460,9 +460,10 @@ Container) **+18** (Zielwert aus Spec 15.1) über AK 5/6 (**acht** Abbruchfälle
 Prüfung 3 ausdrücklich an einem `IsBotActive = false`-Kanal), AK 7 (Backfill; die bestätigte ID im
 Test von der `ActiveEmoteSetId` **unterscheidbar** gemacht, damit die Assertion die Quelle prüft,
 plus Einmaligkeit), AK 8, AK 9 (Saat **und**, als eigener Fall, die `'set-switch'`-Invariante),
-AK 10 (**drei**) und AK 91 (**drei**). Die Fälle selbst stehen in Spec 14 unter diesen Nummern; die
-Aufzählung dort ergibt addiert 19 statt 18 — beim Umsetzen nachzählen und die Zahl in beiden
-Dokumenten geradeziehen (Abschnitt 9). `Integration/PendingMigrationGuardTests.cs` bleibt grün.
+AK 10 (**drei**) und AK 91 (**drei**). Die Fälle selbst stehen in Spec 14 unter diesen Nummern.
+**Geklärt (Abschnitt 9):** Spec 15.1 nannte „Backfill" (AK 7) zweimal und addierte sich dadurch
+scheinbar auf 19; es ist **ein** Fall, und 8 + 1 + 1 + 2 + 3 + 3 = 18 bleibt der Zielwert.
+`Integration/PendingMigrationGuardTests.cs` bleibt grün.
 **Jeder** dieser Fälle setzt seine Klassifikation über den `internal` Testsitz; keiner liest die
 Datei des Betreibers, und keiner hängt an ihrer Existenz (AK 90). Der Testaufbau braucht ein
 Muster, um die Migration **bis zu einem bestimmten Stand** anzuwenden und dann Zeilen zu setzen —
@@ -820,8 +821,8 @@ AK 22, 25, 27, 33, 45, 46.
 verifiziert).
 
 **Tests:** `Unit/EmoteSetIdValidationFilterTests.cs` (neu) **+4**; `Api.Tests/AuthFilterMatrixTests.cs`
-**+8** (AK 22: fünf Fälle der Set-Listen-Route; AK 27: drei 400-Fälle an `/usage-stats/*`;
-`set-warning?emoteSetId` 400); `SevenTvForeignEmoteSetEndpointTests.cs` **+6** (`?emoteSetId=`
+**+9** (AK 22: fünf Fälle der Set-Listen-Route; AK 27: drei 400-Fälle an `/usage-stats/*`;
+`set-warning?emoteSetId` 400, ein Fall — 5 + 3 + 1 = 9); `SevenTvForeignEmoteSetEndpointTests.cs` **+6** (`?emoteSetId=`
 400/200/Set-Modus; `/me/emote-set-targets` AK 25 drei Fälle); `EmoteRoutePolicyTests.cs` **+5
 `InlineData`** (AK 46); `Integration/EmoteSetOwnershipServiceTests.cs` **+3** (AK 33; die 5
 bestehenden grün); `web/…/core/i18n/api-error-locales.spec.ts` grün ohne Änderung (AK 45).
@@ -1568,12 +1569,13 @@ Zuordnung wie in Spec 12.
 
 Vergleichspunkte auf `93af613`: 45 `SevenTvSyncServiceTests`, 54 `UsageStatQueryServiceTests`,
 14 `UsageStatFlushServiceTests`, 74 Harness-/Replay-Tests (müssen 0 rot bleiben), 42
-`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +277 neue Fälle und ≥ 88
+`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +295 neue Fälle und ≥ 88
 umgestellte** — beide Zahlen stehen in Spec 15 und gelten als Summe der dortigen Tabellen, nicht als
 fortgeschriebene Gegenrechnung. Die Zählungen aus T1.2, T1.6, T2.5b, T4.3, T5.1, T5.2 und T6.3
-machen aus den offenen Teilmengen eine Zahl. **Fünf Zeilen der Spec-Tabellen stimmen mit der Summe
-der Task-Erwartungen dieses Plans nicht überein** — sie sind in Abschnitt 9 einzeln benannt und beim
-Umsetzen geradezuziehen.
+machen aus den offenen Teilmengen eine Zahl. **Die Zeilen der Spec-Tabellen, die mit der Summe der
+Task-Erwartungen dieses Plans nicht übereinstimmten, sind geklärt** — acht Zahlen berichtigt, eine
+Zeile ergänzt (`file-import-step.spec.ts`), eine Aufzählung entdoppelt; Abschnitt 9 nennt sie
+einzeln mit ihrem Ergebnis. Die Zielzahl ist damit von **+277** auf **+295** gestiegen.
 
 Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.
 
@@ -1675,22 +1677,38 @@ Geschichte steht in den Nachträgen (Spec 24/N3, Spec 25/Befund 1 und 2). Die ü
 dabei auf denselben Fehler geprüft — E7, E21 und E25 tragen ihre Aktualisierung bereits in place,
 alle anderen sind unverändert gültig.
 
-**Offen geblieben: fünf Zahlen, die nicht zusammenpassen.** Sie sind beim Gegenlesen nach dem
-Schnitt aufgefallen, gehören zu derselben Drift und werden **nicht** im Vorbeigehen entschieden —
-wer die Datei anfasst, zählt nach und zieht beide Dokumente gerade:
+**Geklärt: fünf Zahlen, die nicht zusammenpassten.** Sie waren beim Gegenlesen nach dem Schnitt
+aufgefallen und gehörten zu derselben Drift. Aufgelöst nach der Regel „ein benannter Testfall gehört
+zu genau einem Task, die Datei-Zahl in Spec 15 ist die Summe ihrer Task-Zahlen":
 
-| Datei | Spec 15 | Summe der Task-Erwartungen hier |
+| Datei | Spec 15 (vorher → jetzt) | Summe der Task-Erwartungen hier | Entscheidung |
+|---|---|---|---|
+| `Api.Tests/AuthFilterMatrixTests.cs` | +14 → **+19** | T2.3 +9, T2.4 +1, T5.2 +5, T6.1 +4 = **+19** | Die Aufzählung in T2.3 zählte 5 + 3 + 1 = 9, die Zahl dort war mit +8 zu klein — korrigiert auf +9. |
+| `Api.Tests/SevenTvForeignEmoteSetEndpointTests.cs` | +9 → **+11** | T2.3 +6, T3.1 +5 = **+11** | Beide Task-Zahlen waren in sich stimmig; die Spec-Zeile hatte nur zu wenig aufsummiert. |
+| `Integration/EmoteServiceTests.cs` | +6 → **+8** | T2.4 +2, T5.2 +6 = **+8** | T2.4s Fall (Audit-Details des set-zentrierten Imports) fehlte in der Spec-Aufzählung ganz. |
+| `Integration/SevenTvSyncServiceTests.cs` | +5 → **+7** | T1.2 +2, T1.5 +1, T1.7 +2, T6.2 +2 = **+7** | T1.5s Fall (Beobachtungs-Log öffnet nach Sync) fehlte in der Spec-Aufzählung ganz. |
+| `Integration/VoteSessionServiceTests.cs` | +6 → **+5** | T6.1 +5 | AK 78 (Wettlauf) gehört zu `SevenTvSyncServiceTests.cs` — dort legt `T6.2` den Test tatsächlich an. Die Zeile hier führte ihn zusätzlich; entfernt. |
+
+Dazu die Aufzählung der Migrationstests in Spec 15.1: sie addierte sich auf 19, weil „Backfill"
+(AK 7) darin zweimal genannt war — es ist **ein** Fall, die Zahl **+18** (T1.3b) war bereits richtig
+und bleibt stehen.
+
+**Beim Gegenprüfen der übrigen Zeilen gegen dieselbe Regel drei weitere, bis dahin unbemerkte
+Abweichungen gefunden und ebenso aufgelöst:**
+
+| Datei | Spec 15 (vorher → jetzt) | Fund |
 |---|---|---|
-| `Api.Tests/AuthFilterMatrixTests.cs` | +14 | T2.3 +8, T2.4 +1, T5.2 +5, T6.1 +4 = **+18** (die Aufzählung in T2.3 liest sich als 9, nicht 8) |
-| `Api.Tests/SevenTvForeignEmoteSetEndpointTests.cs` | +9 | T2.3 +6, T3.1 +5 = **+11** |
-| `Integration/EmoteServiceTests.cs` | +6 | T2.4 +2, T5.2 +6 = **+8** |
-| `Integration/SevenTvSyncServiceTests.cs` | +5 | T1.2 +2, T1.5 +1, T1.7 +2, T6.2 +2 = **+7** |
-| `Integration/VoteSessionServiceTests.cs` | +6 | T6.1 **+5** — AK 78 (Wettlauf) führt Spec 15.1 **zweimal**, hier **und** bei `SevenTvSyncServiceTests`; der Plan legt ihn zu T6.2 |
+| `Integration/UsageStatQueryServiceTests.cs` | +10 → **+11** | `T6.3`s Fall zu AK 63 (Klasse 2b bleibt `null` in `/totals?emoteSetId=` nach dem Anlegen) fehlte in der Spec-Zeile. |
+| `core/emotes/emote-admin.service.spec.ts` | +4 → **+3** | `T2.5b` (+1) und `T5.1` (+2) ergeben zusammen drei, nicht vier. |
+| `features/usage-stats/usage-stats-page.spec.ts` | +14 → **+20** | Die Spec-Zeile nannte nur `T4.2` und `T4.4`; die Beiträge aus `T4.3` (+3) und `T4.5` (+2) fehlten. |
 
-Dazu ergibt die Aufzählung der Migrationstests in Spec 15.1 addiert **19** statt der dort genannten
-**+18** (T1.3b). Die Gesamtzahl **+277** bleibt bis zur Klärung stehen; sie ist die Summe der
-Spec-Tabellen, und geändert wird sie erst, wenn die fünf Zeilen entschieden sind — nicht durch eine
-neue Gegenrechnung.
+Und eine fehlende Zeile: `T4.5` erzeugt `shared/seven-tv/file-import-step.spec.ts` **+2** (AK 66),
+die in Spec 15.4 bislang gar keine eigene Zeile hatte.
+
+**Die Gesamtzahl ist damit von +277 auf +295 gestiegen** — Herleitung und Aufteilung nach
+Testprojekt in Spec 15 und Abschnitt 26 dort. Diese Zahlen sind nach der oben genannten Regel
+abgeglichen; **Gegenrechnungen („alt ± Änderung") sind als Schreibweise abgeschafft** — jede Zahl in
+diesem Abschnitt und in Spec 15 ist die nachgezählte Summe selbst, keine Fortschreibung.
 
 **Geprüft und in Ordnung:** sieben Abbruchprüfungen, fünfzehn `Up`-Schritte, zwei `Down`-Schranken,
 die Zahl der Kind-Issues und die AK-Zuordnung je Kind-Issue (Spec 12 gegen Abschnitt 6 hier:
