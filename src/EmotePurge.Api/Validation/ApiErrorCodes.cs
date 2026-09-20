@@ -78,4 +78,24 @@ internal static class ApiErrorCodes
     public const string UnexpectedError = "unexpected_error";
     public const string NoHealthData = "no_health_data";
     public const string HealthDataUnreadable = "health_data_unreadable";
+
+    // Four codes for the emote-set surface (spec 2026-09-20, E13). All four land in this one task
+    // even though only the first is wired to a route yet: the other three belong to routes later
+    // tasks build (sync-deleted/sync-restored's new body form, the set-centric import endpoint, the
+    // vote-session ballot rule), and adding codes piecemeal per task would leave this file,
+    // api-error.ts and the locale files out of step for the stretch between tasks — exactly the drift
+    // Regel 7 exists to prevent (AK 45).
+    // EmoteSetIdValidationFilter's format check (E14) — the one code this task's routes return.
+    public const string InvalidEmoteSetId = "invalid_emote_set_id";
+    // sync-deleted/sync-restored's new body form (6.6, T5.2): sevenTvEmoteIds set but emoteSetId
+    // missing or empty.
+    public const string EmoteSetIdEmpty = "emote_set_id_empty";
+    // The set-centric import endpoint only (6.7, T2.4) — 7TV does not know the given set id. Distinct
+    // from ForeignChannelNoActiveEmoteSet above, which the query-parameter preview path (6.4) reuses
+    // for the very same underlying "unknown set" answer: that path already had a code whose text
+    // fits, this one has no existing endpoint to borrow from.
+    public const string EmoteSetNotFound = "emote_set_not_found";
+    // CreateVoteSessionRequest's exclusion rule (6.9, K6): emoteSetId and sevenTvEmoteIds/emoteIds
+    // disagree about which of the two session shapes this is.
+    public const string VoteSessionSetBallotInvalid = "vote_session_set_ballot_invalid";
 }

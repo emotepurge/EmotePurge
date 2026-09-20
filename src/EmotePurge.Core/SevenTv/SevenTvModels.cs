@@ -441,7 +441,20 @@ public enum SevenTvPreviewLookupStatus
     /// 7TV's health. Reported rather than silently returning a short list — a partial set answered as
     /// if it were whole is exactly what F3 forbids.
     /// </summary>
-    BudgetExhausted
+    BudgetExhausted,
+
+    /// <summary>
+    /// 7TV answered the query (HTTP 200, no GraphQL error, no rate-limit signal) but named
+    /// <c>emoteSet: null</c> — a well-formed "this id does not exist" answer, not a failure to reach
+    /// or parse 7TV (spec 2026-09-20, 6.4, Vorentscheidung 4). Kept apart from
+    /// <see cref="Unavailable"/> for the same reason <see cref="SevenTvLookupStatus.NoSevenTvAccount"/>
+    /// is kept apart from that family's failures: this is evidence 7TV is healthy, not that it is
+    /// not. Before this status existed, an unknown set id and a genuine outage were indistinguishable
+    /// — both fell into <see cref="Unavailable"/>, which answered 503 for a query that should have
+    /// answered 404 and, worse, fed the circuit breaker a failure for an id nobody controls but the
+    /// caller.
+    /// </summary>
+    NotFound
 }
 
 /// <summary>

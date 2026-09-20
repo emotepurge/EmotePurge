@@ -112,6 +112,14 @@ public class ForeignEmoteSetService(
                 logger.LogInformation(
                     "Fremdkanal-Vorschau für {ChannelName}: 7TV-Set-Abruf fehlgeschlagen.", normalized);
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
+            // Only reachable on a race — identity.ActiveEmoteSetId was just resolved as this
+            // account's active set, so 7TV reporting it unknown moments later means the set was
+            // deleted or switched in between. Same answer as NoActiveEmoteSet either way (Vorentscheidung
+            // 4): the caller cannot act on "unknown" versus "none configured" any differently.
+            case SevenTvPreviewLookupStatus.NotFound:
+                logger.LogInformation(
+                    "Fremdkanal-Vorschau für {ChannelName}: 7TV kennt das zuvor aufgelöste Set nicht mehr.", normalized);
+                return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.NoActiveEmoteSet);
             case SevenTvPreviewLookupStatus.BudgetExhausted:
                 // Our own throttle, not 7TV's — kept apart all the way up so the circuit breaker never
                 // counts it as evidence about the provider.
@@ -157,6 +165,14 @@ public class ForeignEmoteSetService(
                 logger.LogInformation(
                     "Set-Vorschau für {SetId} (Kanal {ChannelName}): 7TV-Set-Abruf fehlgeschlagen.", emoteSetId, normalized);
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
+            // Vorentscheidung 4 (spec 6.4): 7TV answered, the set simply does not exist. Reuses the
+            // existing NoActiveEmoteSet status/404 code rather than minting a fifth one — the caller
+            // cannot act on "unknown set id" any differently than "this channel has none active", and
+            // a query with a manipulated emoteSetId is the only way to reach this branch at all.
+            case SevenTvPreviewLookupStatus.NotFound:
+                logger.LogInformation(
+                    "Set-Vorschau für {SetId} (Kanal {ChannelName}): 7TV kennt dieses Set nicht.", emoteSetId, normalized);
+                return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.NoActiveEmoteSet);
             case SevenTvPreviewLookupStatus.BudgetExhausted:
                 // Our own throttle, not 7TV's — kept apart all the way up so the circuit breaker never
                 // counts it as evidence about the provider.

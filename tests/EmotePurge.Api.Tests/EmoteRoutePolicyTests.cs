@@ -33,6 +33,13 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/{channelName}/emotes/sync-restored", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/emotes/sync-imported", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("GET", "/api/channels/{channelName}/emotes", RateLimitPolicyNames.InteractiveRead)]
+    // AK 46 (spec 2026-09-20, 6.10): the five K2 routes this task adds or extends, each on the policy
+    // its group already carries — none of them needed a new policy.
+    [InlineData("GET", "/api/channels/{channelName}/emote-sets", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/channels/{channelName}/emotes/set-warning", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/channels/{channelName}/usage-stats/totals", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/seventv/channels/{channelName}/emotes", RateLimitPolicyNames.ForeignEmoteLookup)]
+    [InlineData("GET", "/api/seventv/me/emote-set-targets", RateLimitPolicyNames.ForeignEmoteLookup)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

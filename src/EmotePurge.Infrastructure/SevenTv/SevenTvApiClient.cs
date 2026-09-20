@@ -636,8 +636,23 @@ public class SevenTvApiClient(
                 SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.RateLimited, pageResult.RetryAfter));
         }
 
-        var setDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet;
+        var setsRoot = pageResult.Dto?.Data?.EmoteSets;
+        var setDto = setsRoot?.EmoteSet;
         var pageDto = setDto?.Emotes;
+
+        // Vorentscheidung 4 (spec 2026-09-20, 6.4): a well-formed HTTP 200 that names emoteSets but
+        // whose nested emoteSet is null is 7TV's own "no such set" answer, not a failure to reach or
+        // parse 7TV — the set id simply does not exist. Checked ahead of the generic "no usable data"
+        // branch below on purpose: that branch's Unavailable would otherwise swallow this distinction,
+        // the same way a confirmed 429 has to be checked ahead of it (see the comment above).
+        if (pageResult.Status == V4PageStatus.Ok && setsRoot is not null && setDto is null)
+        {
+            logger.LogInformation(
+                "7TV-Vorschau-Abruf für Set {SetId}: 7TV kennt dieses Set nicht (emoteSet: null), Seite {Page}.",
+                emoteSetId, page);
+            return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.NotFound));
+        }
+
         if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
         {
             // A parse failure says so and carries the exception; everything else keeps the GraphQL hint.

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using EmotePurge.Api.Auth;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Services;
@@ -33,17 +34,27 @@ public static class SevenTvEndpoints
             string channelName,
             IForeignEmoteSetService foreignEmoteSetService,
             CancellationToken ct,
-            bool refresh = false) => // query string; a C# default is what makes minimal API treat it
-                                     // as optional instead of answering a plain request with 400
+            bool refresh = false, // query string; a C# default is what makes minimal API treat it
+                                  // as optional instead of answering a plain request with 400
+            string? emoteSetId = null) =>
         {
             // refresh=true (T2, spec E3) bypasses the hardening decorator's 60 s cache but still
             // passes through the same rate-limit policy and the same circuit breaker — no separate
             // policy was ever needed for it.
-            var result = await foreignEmoteSetService.GetForeignEmoteSetAsync(channelName, refresh, ct);
+            //
+            // emoteSetId (spec 6.4/E8): the set-ID read mode. No identity resolution runs at all on
+            // this path — neither Helix nor the 7TV userByConnection lookup — so channelName is
+            // echoed onto the response, never used to look anything up.
+            var result = emoteSetId is not null
+                ? await foreignEmoteSetService.GetForeignEmoteSetBySetIdAsync(channelName, emoteSetId, refresh, ct)
+                : await foreignEmoteSetService.GetForeignEmoteSetAsync(channelName, refresh, ct);
 
             // Mirrors the state table in spec section 5 one-to-one. SevenTvRateLimited and
             // SevenTvUnavailable deliberately share a branch and a code: the table has one row for
             // "7TV nicht erreichbar / 429", because the caller cannot act on the two any differently.
+            // NoActiveEmoteSet also covers the set-ID mode's "7TV kennt dieses Set nicht" (spec 6.4,
+            // Vorentscheidung 4) — same code, same reasoning: a caller cannot act on "unknown id"
+            // differently from "no active set configured".
             return result.Status switch
             {
                 ForeignEmoteSetLookupStatus.Ok => Results.Ok(result.EmoteSet),
@@ -67,6 +78,70 @@ public static class SevenTvEndpoints
                 _ => throw new UnreachableException(
                     $"Unexpected {nameof(ForeignEmoteSetLookupStatus)} value: {result.Status}.")
             };
+        })
+        // Spec 6.4/E14: format-validated ahead of the handler, same idiom as ChannelNameValidationFilter
+        // above.
+        .AddEndpointFilter<EmoteSetIdValidationFilter>();
+
+        // GET /api/seventv/me/emote-set-targets (spec 6.2/E6): the target picker's own offer list —
+        // the caller's own account plus every channel they hold a 7TV editor grant for. No channel
+        // name in the route at all (RequireAuthorization only, like /api/channels/mine), so no
+        // ChannelNameValidationFilter; ForeignEmoteLookup because opening the dialog is exactly the
+        // "a caller pulls 7TV requests" case that policy exists to bound (E6: 1 + k permits per open).
+        var meGroup = app.MapGroup("/api/seventv/me")
+            .RequireAuthorization()
+            .RequireRateLimiting(RateLimitPolicyNames.ForeignEmoteLookup);
+
+        meGroup.MapGet("/emote-set-targets", async (
+            HttpContext httpContext,
+            ISevenTvEditorService editorService,
+            ISevenTvEmoteSetListService emoteSetListService,
+            IChannelService channelService,
+            CancellationToken ct) =>
+        {
+            var principal = httpContext.User.TryBuildTwitchPrincipal();
+            if (principal is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var accounts = new List<EmoteSetTargetAccount>();
+            var sevenTvUnavailable = false;
+
+            // Own account first (spec 6.2's ordering contract): principal.TwitchUserId is enough for
+            // userByConnection (E7) — no ResolveSevenTvIdentityAsync round trip needed first.
+            var (ownAccount, ownUnavailable) = await ResolveEmoteSetTargetAccountAsync(
+                principal.TwitchUserId, principal.TwitchLogin, isOwnAccount: true,
+                emoteSetListService, channelService, ct);
+            accounts.Add(ownAccount);
+            sevenTvUnavailable |= ownUnavailable;
+
+            var grantsResult = await editorService.GetEditorGrantsAsync(principal.TwitchUserId, ct);
+            if (grantsResult.Status == SevenTvLookupStatus.Unavailable)
+            {
+                // Matches MyChannelsService's reading of the same result type: NoSevenTvAccount is a
+                // complete answer ("this user edits nothing, because they have no 7TV account at
+                // all"), not a degradation — only a genuine Unavailable means the editor_of list may
+                // be incomplete.
+                sevenTvUnavailable = true;
+            }
+            else if (grantsResult.Status == SevenTvLookupStatus.Ok)
+            {
+                var editorEntries = grantsResult.Grants!.Entries
+                    .Where(entry => !string.Equals(entry.TwitchChannelId, principal.TwitchUserId, StringComparison.Ordinal))
+                    .OrderBy(entry => entry.ChannelLogin, StringComparer.Ordinal);
+
+                foreach (var entry in editorEntries)
+                {
+                    var (account, unavailable) = await ResolveEmoteSetTargetAccountAsync(
+                        entry.TwitchChannelId, entry.ChannelLogin, isOwnAccount: false,
+                        emoteSetListService, channelService, ct);
+                    accounts.Add(account);
+                    sevenTvUnavailable |= unavailable;
+                }
+            }
+
+            return Results.Ok(new EmoteSetTargetsResponse(accounts, sevenTvUnavailable));
         });
 
         // GET /api/seventv/leaderboard (7TV-leaderboard-as-import-source spec 2026-09-13, section 4):
@@ -113,4 +188,88 @@ public static class SevenTvEndpoints
             };
         });
     }
+
+    /// <summary>
+    /// One account's answer for <c>GET /me/emote-set-targets</c> (spec 6.2): resolves whether it maps
+    /// to one of our tracked, bot-active channels, then its set list from the same
+    /// <see cref="ISevenTvEmoteSetListService"/> the other two list routes share. The bool half of the
+    /// tuple is exactly <see cref="EmoteSetTargetAccount.SetsUnavailable"/> — returned alongside
+    /// rather than read back off the account afterwards, so the caller can OR it into the response's
+    /// overall <c>sevenTvUnavailable</c> without re-deriving it from the DTO.
+    /// </summary>
+    private static async Task<(EmoteSetTargetAccount Account, bool Unavailable)> ResolveEmoteSetTargetAccountAsync(
+        string twitchChannelId,
+        string twitchLogin,
+        bool isOwnAccount,
+        ISevenTvEmoteSetListService emoteSetListService,
+        IChannelService channelService,
+        CancellationToken cancellationToken)
+    {
+        var trackedChannel = await channelService.GetActiveByTwitchChannelIdAsync(twitchChannelId, cancellationToken);
+        var result = await emoteSetListService.ListByTwitchIdAsync(twitchChannelId, cancellationToken);
+
+        // E7/E21: a tracked channel's own observed state always wins over 7TV's opinion of "active" —
+        // computed once, the same way regardless of what the list lookup below answered, because a
+        // tracked channel's ActiveEmoteSetId comes from our database, not from this request's 7TV call.
+        var activeEmoteSetId = trackedChannel?.ActiveEmoteSetId
+            ?? (result.Status == EmoteSetListStatus.Ok ? result.List!.SevenTvActiveEmoteSetId : null);
+
+        if (result.Status == EmoteSetListStatus.Ok)
+        {
+            var sets = result.List!.Sets
+                .Select(summary => ToEmoteSetTargetSummary(
+                    summary, string.Equals(summary.Id, activeEmoteSetId, StringComparison.Ordinal)))
+                .OrderByDescending(summary => summary.IsActive)
+                .ThenBy(summary => summary.Name, StringComparer.Ordinal)
+                .ToList();
+
+            return (new EmoteSetTargetAccount(
+                twitchChannelId, twitchLogin, isOwnAccount, trackedChannel?.ChannelName,
+                activeEmoteSetId, sets, SetsUnavailable: false), false);
+        }
+
+        if (result.Status == EmoteSetListStatus.NoSevenTvAccount)
+        {
+            // An answer, not a failure (spec 6.1's state table, reused here): this account genuinely
+            // has no 7TV account, so an empty set list is correct, not degraded.
+            return (new EmoteSetTargetAccount(
+                twitchChannelId, twitchLogin, isOwnAccount, trackedChannel?.ChannelName,
+                activeEmoteSetId, [], SetsUnavailable: false), false);
+        }
+
+        return (new EmoteSetTargetAccount(
+            twitchChannelId, twitchLogin, isOwnAccount, trackedChannel?.ChannelName,
+            activeEmoteSetId, [], SetsUnavailable: true), true);
+    }
+
+    private static EmoteSetTargetSummaryDto ToEmoteSetTargetSummary(EmoteSetSummary summary, bool isActive) => new(
+        summary.Id, summary.Name, summary.Capacity, summary.Kind, isActive, summary.IsPersonal, summary.OwnerDisplayName);
 }
+
+/// <summary>Wire shape of <c>GET /api/seventv/me/emote-set-targets</c> (spec 6.2).</summary>
+internal sealed record EmoteSetTargetsResponse(IReadOnlyList<EmoteSetTargetAccount> Accounts, bool SevenTvUnavailable);
+
+/// <param name="TwitchLogin">
+/// The grant's own copy of the login (or the principal's, for the own account) — sorting and paper
+/// trail (spec 6.7), never the displayed owner: that is <see cref="EmoteSetTargetSummaryDto.OwnerDisplayName"/>
+/// on each set.
+/// </param>
+/// <param name="TrackedChannelName">
+/// Non-null exactly when a <c>Channel</c> row with this Twitch id has <c>IsBotActive = true</c>; the
+/// picker's tracked/untracked grouping reads this field alone (spec 6.2).
+/// </param>
+internal sealed record EmoteSetTargetAccount(
+    string TwitchChannelId,
+    string TwitchLogin,
+    bool IsOwnAccount,
+    string? TrackedChannelName,
+    string? ActiveEmoteSetId,
+    IReadOnlyList<EmoteSetTargetSummaryDto> Sets,
+    bool SetsUnavailable);
+
+/// <summary>
+/// Same shape as <c>EmoteSetSummaryDto</c> (<c>EmoteEndpoints.cs</c>) minus <c>observations</c> —
+/// spec 6.2 carries it without that field, since the target picker never reads per-set history.
+/// </summary>
+internal sealed record EmoteSetTargetSummaryDto(
+    string Id, string Name, int? Capacity, string Kind, bool IsActive, bool IsPersonal, string? OwnerDisplayName);

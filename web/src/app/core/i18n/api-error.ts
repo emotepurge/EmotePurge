@@ -43,6 +43,14 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'unexpected_error',
   'no_health_data',
   'health_data_unreadable',
+  // Four codes for the emote-set surface (spec 2026-09-20, E13). Added together even though only
+  // the first is wired to a route yet (T2.3) — the other three belong to routes later tasks build,
+  // and adding codes piecemeal per task would leave this mirror and the locale files out of step
+  // for the stretch between tasks (AK 45).
+  'invalid_emote_set_id',
+  'emote_set_id_empty',
+  'emote_set_not_found',
+  'vote_session_set_ballot_invalid',
 ]);
 
 /**

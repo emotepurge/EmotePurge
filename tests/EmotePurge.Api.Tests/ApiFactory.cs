@@ -90,6 +90,29 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IEmoteService Emotes { get; } = Substitute.For<IEmoteService>();
 
     /// <summary>
+    /// Substituted so the new set-listing routes (<c>GET /emote-sets</c>, <c>GET
+    /// /me/emote-set-targets</c>, the <c>?emoteSetId=</c> mode of the foreign-channel preview) never
+    /// reach real 7TV — the real implementation sits behind the guard chain (cache, coalescer,
+    /// breaker, budget) this factory otherwise leaves real, none of which resolves without Redis.
+    /// </summary>
+    public ISevenTvEmoteSetListService EmoteSetList { get; } = Substitute.For<ISevenTvEmoteSetListService>();
+
+    /// <summary>
+    /// Substituted for <c>GET /emotes/set-warning</c>'s allow-path tests: the real implementation
+    /// takes <c>AppDbContext</c>, <c>ISevenTvApiClient</c> and <c>IModeratedChannelsProvider</c>, and
+    /// this factory has no real database behind the placeholder connection string below.
+    /// </summary>
+    public IEmoteSetOwnershipService EmoteSetOwnership { get; } = Substitute.For<IEmoteSetOwnershipService>();
+
+    /// <summary>
+    /// Substituted for <c>GET /me/emote-set-targets</c>'s AK 25 cases (the "Grants Failed" case in
+    /// particular): the real implementation goes through <c>IModRoleCache</c>'s Redis-backed
+    /// <see cref="IConnectionMultiplexer"/>, which this factory substitutes but never answers a real
+    /// grants lookup from.
+    /// </summary>
+    public ISevenTvEditorService EditorService { get; } = Substitute.For<ISevenTvEditorService>();
+
+    /// <summary>
     /// Substituted because Program.cs now runs the S3-34 migration guard at startup — the real
     /// implementation would open a connection to the placeholder database configured below.
     /// The substitute simply completes, which is the "fully migrated" answer.
@@ -128,6 +151,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => ForeignEmoteSet);
             services.AddScoped(_ => Leaderboard);
             services.AddScoped(_ => Emotes);
+            services.AddScoped(_ => EmoteSetList);
+            services.AddScoped(_ => EmoteSetOwnership);
+            services.AddScoped(_ => EditorService);
             services.AddScoped(_ => _migrationGuard);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected

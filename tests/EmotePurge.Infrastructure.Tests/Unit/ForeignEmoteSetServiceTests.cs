@@ -339,6 +339,27 @@ public class ForeignEmoteSetServiceTests
         Assert.Equal("emote-1", row.SevenTvEmoteId);
     }
 
+    /// <summary>
+    /// Vorentscheidung 4 (K2 task brief)/spec 6.4: an unknown set id must reach the caller as the
+    /// existing <see cref="ForeignEmoteSetLookupStatus.NoActiveEmoteSet"/>/404
+    /// <c>foreign_channel_no_active_emote_set</c>, not the 503
+    /// <see cref="ForeignEmoteSetLookupStatus.SevenTvUnavailable"/> a genuine outage produces — the
+    /// two used to be indistinguishable one layer down (<see cref="SevenTvPreviewLookupStatus.Unavailable"/>
+    /// covered both before this task).
+    /// </summary>
+    [Fact]
+    public async Task BySetId_MapsAnUnknownSetToNoActiveEmoteSet_NotSevenTvUnavailable()
+    {
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.GetEmoteSetPreviewAsync(EmoteSetId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.NotFound));
+        var service = CreateService(Substitute.For<IChannelIdentityService>(), sevenTv);
+
+        var result = await service.GetForeignEmoteSetBySetIdAsync(Channel, EmoteSetId);
+
+        Assert.Equal(ForeignEmoteSetLookupStatus.NoActiveEmoteSet, result.Status);
+    }
+
     private static IChannelIdentityService FoundIdentityService()
     {
         var identityService = Substitute.For<IChannelIdentityService>();

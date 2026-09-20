@@ -135,6 +135,28 @@ public class SevenTvApiClientEmoteSetPreviewTests
     }
 
     /// <summary>
+    /// Vorentscheidung 4 (K2 task brief)/spec 6.4: a well-formed HTTP 200 with no <c>errors</c> block
+    /// whose <c>emoteSet</c> is <c>null</c> is 7TV's own "this id does not exist" answer, not a
+    /// failure to reach or parse 7TV. Before this distinction existed it fell into the very same
+    /// <c>Unavailable</c> bucket as <see cref="GraphQlErrorWithoutRateLimitStatus_IsUnavailable"/>
+    /// above — indistinguishable from a genuine outage, which meant a manipulated
+    /// <c>?emoteSetId=</c> answered 503 instead of 404 and fed the circuit breaker a failure for an
+    /// id nobody but the caller controls.
+    /// </summary>
+    [Fact]
+    public async Task UnknownSetId_WithAWellFormed200AndNoErrors_IsReportedAsNotFound_NotUnavailable()
+    {
+        const string unknownSetPayload = """{"data":{"emote_sets":{"emote_set":null}}}""";
+        var handler = new PagedStubHandler(_ => unknownSetPayload);
+        var client = CreateClient(handler);
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.NotFound, result.Status);
+        Assert.Null(result.Preview);
+    }
+
+    /// <summary>
     /// The set-local alias and the emote's global default name are two different fields with two
     /// different meanings (spec DTO contract, section 4) and must never collapse into one — a
     /// regression here would silently make every renamed-in-this-set emote look like it kept its

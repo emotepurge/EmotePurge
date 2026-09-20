@@ -133,6 +133,103 @@ public class EmoteSetOwnershipServiceTests(PostgresFixture fixture)
         Assert.Equal(LogLevel.Information, entry.Level);
     }
 
+    // AK 33 (spec 2026-09-20, E9): the three tiers parametrized on an explicit, non-active
+    // emoteSetId — the picker can ask about a target set the channel is not currently using at all.
+
+    [Fact]
+    public async Task CheckAsync_WithExplicitEmoteSetId_RunsTier1AgainstThatSet_NotTheChannelsActiveSet()
+    {
+        await using var db = fixture.CreateDbContext();
+
+        db.Channels.Add(new Channel
+        {
+            ChannelName = "settierx_owner",
+            TwitchChannelId = "6001",
+            ActiveEmoteSetId = "set-active-x",
+        });
+        await db.SaveChangesAsync();
+
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.ResolveSevenTvIdentityAsync("6001", Arg.Any<CancellationToken>())
+            .Returns(SevenTvIdentityResult.Ok(new SevenTvIdentity("7tv-user-x", "set-active-x")));
+        // The channel's own active set has a DIFFERENT owner than the requested target — proof that
+        // Tier 1 checked the target, not the active set (which would have reported IsOwnSet: true).
+        sevenTv.GetEmoteSetOwnerIdAsync("set-active-x", Arg.Any<CancellationToken>()).Returns("7tv-user-x");
+        sevenTv.GetEmoteSetOwnerIdAsync("set-other-x", Arg.Any<CancellationToken>()).Returns("7tv-user-someone-else");
+
+        var service = CreateService(db, sevenTv);
+
+        var result = await service.CheckAsync("settierx_owner", caller: null, emoteSetId: "set-other-x");
+
+        Assert.True(result.Available);
+        Assert.False(result.IsOwnSet);
+        await sevenTv.Received(1).GetEmoteSetOwnerIdAsync("set-other-x", Arg.Any<CancellationToken>());
+        await sevenTv.DidNotReceive().GetEmoteSetOwnerIdAsync("set-active-x", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CheckAsync_WithExplicitEmoteSetId_RunsTier2AgainstThatSet()
+    {
+        await using var db = fixture.CreateDbContext();
+
+        var channelA = new Channel
+        {
+            ChannelName = "settierx_a",
+            TwitchChannelId = "6002",
+            ActiveEmoteSetId = "set-active-a",
+        };
+        // Tracks the TARGET set as its own active one — Tier 2 must find this even though it has
+        // nothing to do with channelA's own active set.
+        var channelB = new Channel
+        {
+            ChannelName = "settierx_b",
+            TwitchChannelId = "6003",
+            ActiveEmoteSetId = "set-target-x",
+        };
+        db.Channels.AddRange(channelA, channelB);
+        await db.SaveChangesAsync();
+
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.ResolveSevenTvIdentityAsync("6002", Arg.Any<CancellationToken>())
+            .Returns(SevenTvIdentityResult.Ok(new SevenTvIdentity("7tv-user-a", "set-active-a")));
+        sevenTv.GetEmoteSetOwnerIdAsync("set-target-x", Arg.Any<CancellationToken>()).Returns("7tv-user-a");
+
+        var service = CreateService(db, sevenTv);
+
+        var result = await service.CheckAsync("settierx_a", caller: null, emoteSetId: "set-target-x");
+
+        Assert.Contains("settierx_b", result.OtherTrackedChannelsSharingSet);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WithExplicitEmoteSetId_RunsTier3AgainstThatSet()
+    {
+        await using var db = fixture.CreateDbContext();
+
+        db.Channels.Add(new Channel
+        {
+            ChannelName = "settierx_owner3",
+            TwitchChannelId = "6004",
+            ActiveEmoteSetId = "set-active-3",
+        });
+        await db.SaveChangesAsync();
+
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.ResolveSevenTvIdentityAsync("6004", Arg.Any<CancellationToken>())
+            .Returns(SevenTvIdentityResult.Ok(new SevenTvIdentity("7tv-user-3", "set-active-3")));
+        sevenTv.GetEmoteSetOwnerIdAsync("set-target-3", Arg.Any<CancellationToken>()).Returns("7tv-user-3");
+        // The untracked moderated channel's broadcaster resolves to the TARGET set, not the current
+        // channel's own active set.
+        sevenTv.ResolveSevenTvIdentityAsync("7002", Arg.Any<CancellationToken>())
+            .Returns(SevenTvIdentityResult.Ok(new SevenTvIdentity("7tv-user-untracked3", "set-target-3")));
+
+        var service = CreateService(db, sevenTv, Moderated(("settierx_untracked3", "7002")));
+
+        var result = await service.CheckAsync("settierx_owner3", Caller(), emoteSetId: "set-target-3");
+
+        Assert.Contains("settierx_untracked3", result.OtherModeratedChannelsSharingSet);
+    }
+
     private static TwitchPrincipalInfo Caller() => new("caller-id", "callerlogin", "caller-token");
 
     private static ModeratedChannelsLookup Moderated(params (string Login, string BroadcasterId)[] channels) =>
