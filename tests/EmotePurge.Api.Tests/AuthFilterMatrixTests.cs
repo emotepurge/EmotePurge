@@ -66,6 +66,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/seventv/me/emote-set-targets")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-restored")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-imported")]
+    [InlineData("POST", "/api/seventv/emote-sets/01GV88A38G0006FW5TVZVMG507/sync-imported")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
     [InlineData("POST", "/api/channels/testchannel/vote-sessions/1/votes")]
@@ -483,6 +484,24 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task SyncImported_Answers400_ForAMalformedTargetEmoteSetId()
+    {
+        // AK 29 (spec 6.7, E5/E14): TargetEmoteSetId is a body field, not a query/route parameter, so
+        // EmoteSetIdValidationFilter never sees it — the check runs inline in the handler instead.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "file", "targetEmoteSetId": "../x"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.Emotes.DidNotReceive().MarkImportedAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task SyncImported_Answers400_ForAnUnrecognizedSourceKind()
     {
         // Strictly lower-case and ordinal (F3 in the import plan): the only caller is our own
@@ -539,7 +558,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "handofblood", "sourceKind": "seventv-channel"}""";
@@ -553,6 +572,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             "seventv-channel",
             null,
             Arg.Any<AuditActor>(),
+            null,
             Arg.Any<CancellationToken>());
     }
 
@@ -572,7 +592,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -622,7 +642,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_DAILY"}""";
@@ -636,6 +656,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             "seventv-leaderboard",
             "TRENDING_DAILY",
             Arg.Any<AuditActor>(),
+            null,
             Arg.Any<CancellationToken>());
     }
 
@@ -648,7 +669,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TOP_ALL_TIME"}""";
@@ -673,7 +694,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -728,7 +749,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

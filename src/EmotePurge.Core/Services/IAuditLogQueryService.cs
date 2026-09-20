@@ -1,6 +1,31 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
+/// The import ladder's target, projected onto an <see cref="AuditLogDetail"/> whenever
+/// <c>DetailsJson</c> carries a <c>targetEmoteSetId</c> (spec 6.7) — from either
+/// <c>emotes.MarkImportedAsync</c> (a set on the channel-scoped endpoint, E5) or
+/// <c>emotes.MarkImportedToSetAsync</c> (the set-centric endpoint, always). <see cref="Id"/> and
+/// <see cref="OwnerLogin"/> are never a display name: identification is always by id
+/// (<c>targetOwnerSevenTvUserId</c>, the entry's own <c>TargetId</c>), and the paper trail records a
+/// Twitch login rather than 7TV's own display name, which can change without the account changing
+/// (spec 6.7's deliberate split between the confirmation dialog's <c>ownerDisplayName</c> and this
+/// field).
+/// </summary>
+/// <param name="Id">The target set's 7TV id — the entry's own <c>TargetId</c>, echoed here so a
+/// consumer never has to cross-reference the two.</param>
+/// <param name="IsActiveSetOfChannel">
+/// Three-valued (E5): <c>true</c>/<c>false</c> when the channel-scoped endpoint compared the
+/// reported set against <c>Channel.ActiveEmoteSetId</c> at write time, <c>null</c> when no set was
+/// reported at all, or — for the set-centric endpoint — because the target set has no channel of
+/// ours to compare against in the first place.
+/// </param>
+/// <param name="OwnerLogin">
+/// The Twitch login of the set's owner (the set-centric endpoint's own account, or the matching
+/// editor grant's channel) — <c>null</c> for the channel-scoped endpoint, which never resolves one.
+/// </param>
+public record AuditLogTargetEmoteSet(string Id, bool? IsActiveSetOfChannel, string? OwnerLogin);
+
+/// <summary>
 /// The renderable part of an entry's <c>DetailsJson</c>, reduced to a closed set of shapes.
 /// <paramref name="Kind"/> is language-neutral like <see cref="Entities.AuditActions"/> — the
 /// frontend maps it to a translation key and owns the wording. <paramref name="Count"/> carries the
@@ -14,7 +39,7 @@ namespace EmotePurge.Core.Services;
 /// to every consumer until someone adds it to <see cref="Kinds"/> on purpose.
 /// </para>
 /// </summary>
-public record AuditLogDetail(string Kind, long? Count, string? Text)
+public record AuditLogDetail(string Kind, long? Count, string? Text, AuditLogTargetEmoteSet? TargetEmoteSet = null)
 {
     /// <summary>The recognized <see cref="Kind"/> values. Anything else is dropped.</summary>
     public static class Kinds

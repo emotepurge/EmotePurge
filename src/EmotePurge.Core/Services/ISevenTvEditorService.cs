@@ -9,7 +9,17 @@ namespace EmotePurge.Core.Services;
 /// 7TV's own copy of the login, which can be stale after a Twitch rename.</param>
 /// <param name="TwitchChannelId">The numeric Twitch id, opaque and compared with
 /// <see cref="StringComparison.Ordinal"/> — never normalized.</param>
-public record SevenTvEditorGrantEntry(string ChannelLogin, string TwitchChannelId);
+/// <param name="SevenTvUserId">
+/// The 7TV account id behind this Twitch channel (E22, spec 2026-09-20) — additive and nullable.
+/// <c>null</c> covers two different situations a reader must not conflate: a grant resolved live
+/// before this field existed in the 7TV query always carries it now, but a grant read back from
+/// <c>ModRoleCache</c> that was <em>written</em> before the field existed (F10 — the cache holds a
+/// JSON payload with a ten-minute TTL) still deserializes with it missing. The set-centric import's
+/// owner check (6.7, AK 31) must resolve that case live via
+/// <see cref="ISevenTvApiClient.ResolveSevenTvIdentityAsync"/> rather than reading the absence as
+/// "not an editor".
+/// </param>
+public record SevenTvEditorGrantEntry(string ChannelLogin, string TwitchChannelId, string? SevenTvUserId = null);
 
 /// <summary>
 /// A user's 7TV editor grants, normalized once. Carries both identifiers because the two callers ask
@@ -74,6 +84,62 @@ public sealed class SevenTvEditorGrantsLookupResult
 }
 
 /// <summary>
+/// The four outcomes of the set-centric import's owner check (spec 6.7, E22) — never a plain bool:
+/// the endpoint needs to tell "no such set" (404) apart from "not allowed" (403) and "7TV would not
+/// say" (503, no audit entry), and on a match it needs the matched owner's identity for the audit
+/// row (<c>targetOwnerSevenTvUserId</c>/<c>targetOwnerTwitchLogin</c>), not just a yes.
+/// </summary>
+public enum SevenTvEmoteSetOwnershipStatus
+{
+    Owner,
+    SetNotFound,
+    Forbidden,
+    Unavailable
+}
+
+/// <summary>
+/// The result of <see cref="ISevenTvEditorService.CheckEmoteSetOwnershipAsync"/>. The two identity
+/// properties are non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEmoteSetOwnershipStatus.Owner"/>, built like the other result families in this
+/// namespace (see <see cref="SevenTvEditorGrantsLookupResult"/>).
+/// </summary>
+public sealed class SevenTvEmoteSetOwnershipCheckResult
+{
+    private SevenTvEmoteSetOwnershipCheckResult(SevenTvEmoteSetOwnershipStatus status, string? ownerSevenTvUserId, string? ownerTwitchLogin)
+    {
+        Status = status;
+        OwnerSevenTvUserId = ownerSevenTvUserId;
+        OwnerTwitchLogin = ownerTwitchLogin;
+    }
+
+    public SevenTvEmoteSetOwnershipStatus Status { get; }
+
+    /// <summary>Non-null exactly when <see cref="Status"/> is <see cref="SevenTvEmoteSetOwnershipStatus.Owner"/>.</summary>
+    public string? OwnerSevenTvUserId { get; }
+
+    /// <summary>
+    /// Non-null exactly when <see cref="Status"/> is <see cref="SevenTvEmoteSetOwnershipStatus.Owner"/> —
+    /// the actor's own Twitch login when the actor owns the set directly, or the matching grant's
+    /// <see cref="SevenTvEditorGrantEntry.ChannelLogin"/> when ownership came through an editor grant
+    /// (spec 6.7: "der Login des passenden Grants bzw. des Akteurs" — a Twitch login for the paper
+    /// trail, deliberately never a 7TV display name).
+    /// </summary>
+    public string? OwnerTwitchLogin { get; }
+
+    public static SevenTvEmoteSetOwnershipCheckResult Owner(string ownerSevenTvUserId, string ownerTwitchLogin) =>
+        new(SevenTvEmoteSetOwnershipStatus.Owner, ownerSevenTvUserId, ownerTwitchLogin);
+
+    public static SevenTvEmoteSetOwnershipCheckResult SetNotFound() =>
+        new(SevenTvEmoteSetOwnershipStatus.SetNotFound, null, null);
+
+    public static SevenTvEmoteSetOwnershipCheckResult Forbidden() =>
+        new(SevenTvEmoteSetOwnershipStatus.Forbidden, null, null);
+
+    public static SevenTvEmoteSetOwnershipCheckResult Unavailable() =>
+        new(SevenTvEmoteSetOwnershipStatus.Unavailable, null, null);
+}
+
+/// <summary>
 /// Answers "which channels is this user a 7TV editor of?" — the single implementation of a chain
 /// (resolve 7TV identity, then look up editor grants) that used to exist twice, with two different
 /// string-comparison strategies, in ChannelAccessService and MyChannelsService.
@@ -89,4 +155,17 @@ public interface ISevenTvEditorService
     /// fails closed on both.
     /// </summary>
     Task<SevenTvEditorGrantsLookupResult> GetEditorGrantsAsync(string twitchUserId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The set-centric import's owner check (spec 6.7, E22): does <paramref name="actorTwitchUserId"/>
+    /// own <paramref name="emoteSetId"/> directly, or hold a 7TV editor grant on its owner? Checks the
+    /// actor's own identity first, then every grant's <see cref="SevenTvEditorGrantEntry.SevenTvUserId"/>
+    /// — resolving it live via <see cref="ISevenTvApiClient.ResolveSevenTvIdentityAsync"/> per grant
+    /// when it is missing (F10/AK 31: a cache payload written before that field existed), never
+    /// treating the absence as "not an editor". <paramref name="actorTwitchLogin"/> only feeds
+    /// <see cref="SevenTvEmoteSetOwnershipCheckResult.OwnerTwitchLogin"/> for the case the actor turns
+    /// out to be the owner themselves.
+    /// </summary>
+    Task<SevenTvEmoteSetOwnershipCheckResult> CheckEmoteSetOwnershipAsync(
+        string actorTwitchUserId, string actorTwitchLogin, string emoteSetId, CancellationToken cancellationToken = default);
 }

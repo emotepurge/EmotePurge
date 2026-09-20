@@ -286,4 +286,89 @@ public class EmoteServiceTests(PostgresFixture fixture)
         Assert.False(written);
         Assert.Equal(0, await db.AuditLogEntries.CountAsync(a => a.ChannelName == "syncimporttest_unknown"));
     }
+
+    [Fact]
+    public async Task MarkImportedAsync_WithTargetEmoteSetId_WritesTargetIsActiveSetOfChannelTrue_WhenItMatchesTheChannelsActiveSet()
+    {
+        // Spec 6.7/E5: targetIsActiveSetOfChannel is a comparison against Channel.ActiveEmoteSetId at
+        // write time, taken from the channel row this call already loaded — not a second 7TV read.
+        await using var db = fixture.CreateDbContext();
+        var channel = new Channel { ChannelName = "syncimporttest_d", TwitchChannelId = "4204", ActiveEmoteSetId = "set-id" };
+        db.Channels.Add(channel);
+        await db.SaveChangesAsync();
+
+        var service = new EmoteService(db);
+        await service.MarkImportedAsync("syncimporttest_d", ["7tv-id1"], null, "file", null, Actor, "set-id");
+
+        var audit = await db.AuditLogEntries.SingleAsync(a =>
+            a.ChannelName == "syncimporttest_d" && a.Action == AuditActions.EmotesSyncImported);
+        Assert.Equal("emoteSet", audit.TargetType);
+        Assert.Equal("set-id", audit.TargetId);
+        Assert.Contains("\"targetEmoteSetId\":\"set-id\"", audit.DetailsJson);
+        Assert.Contains("\"targetIsActiveSetOfChannel\":true", audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task MarkImportedAsync_WithTargetEmoteSetId_WritesTargetIsActiveSetOfChannelFalse_WhenItDoesNotMatch()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = new Channel { ChannelName = "syncimporttest_e", TwitchChannelId = "4205", ActiveEmoteSetId = "set-active" };
+        db.Channels.Add(channel);
+        await db.SaveChangesAsync();
+
+        var service = new EmoteService(db);
+        await service.MarkImportedAsync("syncimporttest_e", ["7tv-ie1"], null, "file", null, Actor, "set-not-active");
+
+        var audit = await db.AuditLogEntries.SingleAsync(a =>
+            a.ChannelName == "syncimporttest_e" && a.Action == AuditActions.EmotesSyncImported);
+        Assert.Equal("emoteSet", audit.TargetType);
+        Assert.Equal("set-not-active", audit.TargetId);
+        Assert.Contains("\"targetIsActiveSetOfChannel\":false", audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task MarkImportedAsync_WithoutTargetEmoteSetId_WritesNoTargetTypeAndNullTargetIsActiveSetOfChannel()
+    {
+        // E5: an old client that never learned the field is still a valid, complete call — the row
+        // honestly records "no set known" rather than failing after the 7TV mutation already happened.
+        await using var db = fixture.CreateDbContext();
+        var channel = new Channel { ChannelName = "syncimporttest_f", TwitchChannelId = "4206", ActiveEmoteSetId = "set-if" };
+        db.Channels.Add(channel);
+        await db.SaveChangesAsync();
+
+        var service = new EmoteService(db);
+        await service.MarkImportedAsync("syncimporttest_f", ["7tv-if1"], null, "file", null, Actor);
+
+        var audit = await db.AuditLogEntries.SingleAsync(a =>
+            a.ChannelName == "syncimporttest_f" && a.Action == AuditActions.EmotesSyncImported);
+        Assert.Null(audit.TargetType);
+        Assert.Null(audit.TargetId);
+        Assert.Contains("\"targetEmoteSetId\":null", audit.DetailsJson);
+        Assert.Contains("\"targetIsActiveSetOfChannel\":null", audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task MarkImportedToSetAsync_WritesAnAuditEntry_WithChannelNameNull_AndTheResolvedOwnerIdentity()
+    {
+        // The set-centric endpoint's own service call (spec 6.7): no Channel row is loaded or
+        // required at all, and ChannelName is deliberately null — the row surfaces in the global
+        // admin log, not a channel's own activity feed, because the target may not be a tracked
+        // channel in the first place (a bewusster Rest, not a bug).
+        await using var db = fixture.CreateDbContext();
+
+        var service = new EmoteService(db);
+        await service.MarkImportedToSetAsync(
+            "set-foreign", "owner-seven-tv-id", "handofblood", ["7tv-x1", "7tv-x2"],
+            "sourcechannel", "channel", null, Actor);
+
+        var audit = await db.AuditLogEntries.SingleAsync(a =>
+            a.TargetType == "emoteSet" && a.TargetId == "set-foreign" && a.Action == AuditActions.EmotesSyncImported);
+        Assert.Null(audit.ChannelName);
+        Assert.Contains("\"emoteCount\":2", audit.DetailsJson);
+        Assert.Contains("\"targetEmoteSetId\":\"set-foreign\"", audit.DetailsJson);
+        Assert.Contains("\"targetOwnerSevenTvUserId\":\"owner-seven-tv-id\"", audit.DetailsJson);
+        Assert.Contains("\"targetOwnerTwitchLogin\":\"handofblood\"", audit.DetailsJson);
+        // The set-centric endpoint never compares against a Channel row — no such property is written.
+        Assert.DoesNotContain("targetIsActiveSetOfChannel", audit.DetailsJson);
+    }
 }

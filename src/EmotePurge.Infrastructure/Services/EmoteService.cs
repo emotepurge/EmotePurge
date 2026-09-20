@@ -104,7 +104,9 @@ public class EmoteService(AppDbContext db) : IEmoteService
         return new SyncRestoredResultDto(emotes.Count, notFoundIds, newlyRestored.Count);
     }
 
-    public async Task<bool> MarkImportedAsync(string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind, string? leaderboardSort, AuditActor actor, CancellationToken cancellationToken = default)
+    public async Task<bool> MarkImportedAsync(
+        string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind,
+        string? leaderboardSort, AuditActor actor, string? targetEmoteSetId = null, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
 
@@ -122,18 +124,74 @@ public class EmoteService(AppDbContext db) : IEmoteService
         // a client that reported the same 7TV id twice did not import it twice.
         var emoteCount = sevenTvEmoteIds.Distinct(StringComparer.Ordinal).Count();
 
+        // E5/6.7: targetEmoteSetId stays optional forever, so targetIsActiveSetOfChannel is a
+        // three-valued fact, not a bool — null means "no set was reported", not "not active". The
+        // comparison is taken at write time against the channel row loaded moments ago, deliberately
+        // never against a live 7TV read: this call is bookkeeping after the mutation already
+        // happened, not a place to add a second source of truth.
+        var targetIsActiveSetOfChannel = targetEmoteSetId is null
+            ? (bool?)null
+            : string.Equals(targetEmoteSetId, channel.ActiveEmoteSetId, StringComparison.Ordinal);
+
         // leaderboardSort is written verbatim — it already passed EmoteEndpoints' allowlist check
         // and is language-neutral by design (E9, leaderboard-import spec), the same wire code
         // SevenTvLeaderboardSortWireCode uses. AuditLogQueryService.ProjectDetail reads it back
-        // under the same property name.
+        // under the same property name, alongside the three targetEmoteSetId/targetIsActiveSetOfChannel
+        // fields it now also learns to read.
         db.AddAuditEntry(
             actor,
             AuditActions.EmotesSyncImported,
             channelName: normalized,
-            details: new { emoteCount, sourceChannelName = normalizedSourceChannelName, sourceKind, leaderboardSort });
+            // TargetType/TargetId mirror the set-centric endpoint's own entry (6.7) whenever a set is
+            // actually known here — null/null when targetEmoteSetId was not reported, exactly like
+            // the JSON detail below.
+            targetType: targetEmoteSetId is null ? null : "emoteSet",
+            targetId: targetEmoteSetId,
+            details: new
+            {
+                emoteCount,
+                sourceChannelName = normalizedSourceChannelName,
+                sourceKind,
+                leaderboardSort,
+                targetEmoteSetId,
+                targetIsActiveSetOfChannel,
+            });
 
         await db.SaveChangesAsync(cancellationToken);
 
         return true;
+    }
+
+    public async Task MarkImportedToSetAsync(
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
+        string? sourceChannelName, string sourceKind, string? leaderboardSort, AuditActor actor,
+        CancellationToken cancellationToken = default)
+    {
+        // Same dedup/normalization discipline as MarkImportedAsync — no Channel row to load here at
+        // all (the target may not be a tracked channel, or a channel we track), which is exactly why
+        // this is a separate method rather than an overload with a nullable channelName.
+        var normalizedSourceChannelName = sourceChannelName is null ? null : ChannelName.Normalize(sourceChannelName);
+        var emoteCount = sevenTvEmoteIds.Distinct(StringComparer.Ordinal).Count();
+
+        db.AddAuditEntry(
+            actor,
+            AuditActions.EmotesSyncImported,
+            // ChannelName = null is deliberate (6.7): the row surfaces in the global admin log, not
+            // a channel's own activity feed — there may be no channel behind the target set at all.
+            channelName: null,
+            targetType: "emoteSet",
+            targetId: emoteSetId,
+            details: new
+            {
+                emoteCount,
+                sourceChannelName = normalizedSourceChannelName,
+                sourceKind,
+                leaderboardSort,
+                targetEmoteSetId = emoteSetId,
+                targetOwnerSevenTvUserId = ownerSevenTvUserId,
+                targetOwnerTwitchLogin = ownerTwitchLogin,
+            });
+
+        await db.SaveChangesAsync(cancellationToken);
     }
 }

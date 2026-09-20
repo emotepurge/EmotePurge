@@ -493,6 +493,99 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
         Assert.Equal(AuditActions.ChannelJoin, dto.Action);
     }
 
+    [Fact]
+    public async Task ListAsync_ProjectsTheTargetEmoteSet_WhenTheDetailsNameOne()
+    {
+        // AK 32/spec 6.7: annotates whichever import Kind the row already had (ImportedFromChannel
+        // here) with the target set, rather than picking a Kind of its own.
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-imp-target";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 19, 0, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncImported,
+            ChannelName = channel,
+            TargetType = "emoteSet",
+            TargetId = "set-target-a",
+            DetailsJson = """
+                {"emoteCount": 5, "sourceChannelName": "otherchannel", "sourceKind": "channel",
+                 "targetEmoteSetId": "set-target-a", "targetIsActiveSetOfChannel": true}
+                """
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(AuditLogDetail.Kinds.ImportedFromChannel, dto.Detail!.Kind);
+        Assert.Equal(new AuditLogTargetEmoteSet("set-target-a", true, null), dto.Detail.TargetEmoteSet);
+    }
+
+    [Fact]
+    public async Task ListAsync_ProjectsTheSetCentricImportsOwner_AsTheTargetEmoteSetsOwnerLogin()
+    {
+        // The set-centric endpoint's own shape (6.7): no targetIsActiveSetOfChannel key at all (no
+        // Channel row to compare against), but targetOwnerTwitchLogin instead — ChannelName is null
+        // on this row too (a global-admin-only entry), which the filter below matches on TargetId.
+        await using var db = fixture.CreateDbContext();
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 19, 15, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncImported,
+            ChannelName = null,
+            TargetType = "emoteSet",
+            TargetId = "set-target-b",
+            DetailsJson = """
+                {"emoteCount": 2, "sourceChannelName": "sourcechannel", "sourceKind": "channel",
+                 "targetEmoteSetId": "set-target-b", "targetOwnerSevenTvUserId": "owner-seven-tv-id",
+                 "targetOwnerTwitchLogin": "handofblood"}
+                """
+        });
+        await db.SaveChangesAsync();
+
+        // No ChannelName filter possible here (the row's own ChannelName is null, and the filter
+        // never matches a null column) — page size widened well past this class's usual 50 so a
+        // channel.synced-free but import-heavy shared database still surfaces this exact row.
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 500, new AuditLogFilter(AuditActions.EmotesSyncImported, null, null));
+
+        var dto = Assert.Single(page.Items, i => i.TargetId == "set-target-b");
+        Assert.Null(dto.ChannelName);
+        Assert.Equal(new AuditLogTargetEmoteSet("set-target-b", null, "handofblood"), dto.Detail!.TargetEmoteSet);
+    }
+
+    [Fact]
+    public async Task ListAsync_LeavesTargetEmoteSetNull_WhenTheDetailsNameNone()
+    {
+        // AK 32's other half: an import row that never reported a target set (E5 — the client omitted
+        // TargetEmoteSetId) projects a complete, valid detail with TargetEmoteSet simply null — not a
+        // missing row, not an exception.
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-imp-no-target";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 19, 30, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncImported,
+            ChannelName = channel,
+            DetailsJson = """{"emoteCount": 4, "sourceChannelName": null, "sourceKind": "file"}"""
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(AuditLogDetail.Kinds.ImportedFromFile, dto.Detail!.Kind);
+        Assert.Null(dto.Detail.TargetEmoteSet);
+    }
+
     private static AuditLogEntry NewEntry(string channelName, string action, DateTime occurredAtUtc, string actorLogin)
         => new()
         {

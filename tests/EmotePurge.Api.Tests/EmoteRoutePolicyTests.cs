@@ -40,6 +40,10 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/{channelName}/usage-stats/totals", RateLimitPolicyNames.InteractiveRead)]
     [InlineData("GET", "/api/seventv/channels/{channelName}/emotes", RateLimitPolicyNames.ForeignEmoteLookup)]
     [InlineData("GET", "/api/seventv/me/emote-set-targets", RateLimitPolicyNames.ForeignEmoteLookup)]
+    // The set-centric import (spec 6.7/6.10, T2.4): the 7TV mutation already happened by the time this
+    // call runs, same reasoning as its channel-scoped sibling two lines up — Bookkeeping, not
+    // ForeignEmoteLookup, so a spent read budget cannot drop the paper trail.
+    [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-imported", RateLimitPolicyNames.Bookkeeping)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

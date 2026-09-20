@@ -180,72 +180,20 @@ public static class EmoteEndpoints
             IEmoteService emoteService,
             CancellationToken ct) =>
         {
-            if (request.SevenTvEmoteIds is null || request.SevenTvEmoteIds.Count == 0)
+            var vocabularyError = ValidateSyncImportedVocabulary(
+                request.SevenTvEmoteIds, request.SourceChannelName, request.SourceKind, request.LeaderboardSort);
+            if (vocabularyError is not null)
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty });
+                return Results.BadRequest(new { errorCode = vocabularyError });
             }
 
-            // Ordinal and strictly lower-case (F3, import plan): the only caller is our own
-            // frontend, so a silent case-insensitive fallback would hide a frontend bug rather than
-            // surfacing it.
-            // "seventv-channel" is the third member (foreign-import spec E6/F5.1): a channel
-            // EmotePurge does not track, read straight from 7TV. "seventv-leaderboard" is the fourth
-            // (leaderboard-import spec E8/F1): a network-wide 7TV ranking, which has no source
-            // channel at all — its origin travels in LeaderboardSort instead (see the vocabulary
-            // table below). Every word is deliberately its own rather than folded into an existing
-            // one — they are read through different paths and an audit row must still say which one
-            // it was, forever. Adding a word here is never enough on its own:
-            // AuditLogQueryService.ProjectDetail has to learn it too, or every row written with it
-            // silently loses its provenance (F5.3/F1 Station 5).
-            if (request.SourceKind is not ("channel" or "file" or "seventv-channel" or "seventv-leaderboard"))
+            // TargetEmoteSetId (spec 6.7, E5): stays optional forever, so this only ever rejects a
+            // malformed value, never a missing one — the query-string half of EmoteSetIdValidationFilter
+            // does not apply here since this is a body field, not a query/route parameter, so the check
+            // is inline instead of a shared filter (AK 29).
+            if (request.TargetEmoteSetId is not null && !EmoteSetIdValidation.IsValid(request.TargetEmoteSetId))
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-            }
-
-            // SourceChannelName is attacker-controlled free text that ends up in jsonb forever
-            // (R6, import plan) — validated like every other inbound channel name, but only when the
-            // caller actually set one; the kind-versus-name agreement is checked just below.
-            if (request.SourceChannelName is not null && !ChannelNameValidation.IsValid(request.SourceChannelName))
-            {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidChannelName });
-            }
-
-            // The kind decides what else may be set, in both directions. Audit rows are write-once
-            // and kept forever, so an inconsistent body would leave a permanently wrong entry:
-            // "channel"/"seventv-channel" without a name claims an origin they cannot name, "file"
-            // or "seventv-leaderboard" with one gets filed under a channel origin the import never
-            // had, and any kind other than "seventv-leaderboard" carrying a LeaderboardSort claims a
-            // ranking it did not come from. This used to be a single binary check ("file versus
-            // not-file"), which covered "seventv-channel" correctly only by accident (F5.2) and
-            // predicted its own failure for a fourth, source-less kind (comment removed above) —
-            // this vocabulary table (leaderboard-import spec F1 Station 3) is that fourth kind's
-            // answer. A LeaderboardSort that is present but outside 7TV's own sort vocabulary is its
-            // own error, invalid_leaderboard_sort, because it is not "the wrong kind of import" —
-            // the kind is right, the sort code just is not one the endpoint knows how to hand to 7TV.
-            var isChannelSourceKind = request.SourceKind is "channel" or "seventv-channel";
-            if (isChannelSourceKind
-                && (string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is not null))
-            {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-            }
-
-            if (request.SourceKind == "file"
-                && (!string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is not null))
-            {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-            }
-
-            if (request.SourceKind == "seventv-leaderboard")
-            {
-                if (!string.IsNullOrWhiteSpace(request.SourceChannelName) || request.LeaderboardSort is null)
-                {
-                    return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidSourceKind });
-                }
-
-                if (!SevenTvLeaderboardSortWireCode.TryParse(request.LeaderboardSort, out _))
-                {
-                    return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidLeaderboardSort });
-                }
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidEmoteSetId });
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
@@ -256,7 +204,7 @@ public static class EmoteEndpoints
 
             var written = await emoteService.MarkImportedAsync(
                 channelName, request.SevenTvEmoteIds, request.SourceChannelName, request.SourceKind,
-                request.LeaderboardSort, actor, ct);
+                request.LeaderboardSort, actor, request.TargetEmoteSetId, ct);
             return written ? Results.NoContent() : Results.NotFound();
         })
         // Same reasoning as its two neighbors above: the emotes were already imported on 7TV by the
@@ -308,6 +256,83 @@ public static class EmoteEndpoints
     /// response must not change because Redis hiccuped.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The <c>sync-imported</c> body vocabulary table (spec 6.7), shared verbatim by this group's own
+    /// <c>/sync-imported</c> handler above and by the set-centric
+    /// <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-imported</c> in <c>SevenTvEndpoints</c> — it
+    /// exists exactly once so the two routes cannot drift apart. Ordinal and strictly lower-case (F3,
+    /// import plan): the only caller is our own frontend, so a silent case-insensitive fallback would
+    /// hide a frontend bug rather than surfacing it. "seventv-channel" is the third vocabulary word
+    /// (foreign-import spec E6/F5.1): a channel EmotePurge does not track, read straight from 7TV.
+    /// "seventv-leaderboard" is the fourth (leaderboard-import spec E8/F1): a network-wide 7TV ranking,
+    /// which has no source channel at all — its origin travels in <paramref name="leaderboardSort"/>
+    /// instead. Every word is deliberately its own rather than folded into an existing one — they are
+    /// read through different paths and an audit row must still say which one it was, forever. Adding
+    /// a word here is never enough on its own: <c>AuditLogQueryService.ProjectDetail</c> has to learn
+    /// it too, or every row written with it silently loses its provenance (F5.3/F1 Station 5).
+    /// <para>
+    /// Returns the <see cref="ApiErrorCodes"/> value for the first violation found, or <c>null</c> when
+    /// the body is internally consistent — never a <c>Results</c> value itself, so each caller (whose
+    /// filter chain and route shape differ — this group carries <c>ChannelNameValidationFilter</c>, the
+    /// set-centric route carries <c>EmoteSetIdValidationFilter</c> instead) decides how to answer.
+    /// </para>
+    /// </summary>
+    internal static string? ValidateSyncImportedVocabulary(
+        IReadOnlyList<string>? sevenTvEmoteIds, string? sourceChannelName, string sourceKind, string? leaderboardSort)
+    {
+        if (sevenTvEmoteIds is null || sevenTvEmoteIds.Count == 0)
+        {
+            return ApiErrorCodes.EmoteIdsEmpty;
+        }
+
+        if (sourceKind is not ("channel" or "file" or "seventv-channel" or "seventv-leaderboard"))
+        {
+            return ApiErrorCodes.InvalidSourceKind;
+        }
+
+        // SourceChannelName is attacker-controlled free text that ends up in jsonb forever (R6, import
+        // plan) — validated like every other inbound channel name, but only when the caller actually
+        // set one; the kind-versus-name agreement is checked just below.
+        if (sourceChannelName is not null && !ChannelNameValidation.IsValid(sourceChannelName))
+        {
+            return ApiErrorCodes.InvalidChannelName;
+        }
+
+        // The kind decides what else may be set, in both directions. Audit rows are write-once and
+        // kept forever, so an inconsistent body would leave a permanently wrong entry: "channel"/
+        // "seventv-channel" without a name claims an origin they cannot name, "file" or
+        // "seventv-leaderboard" with one gets filed under a channel origin the import never had, and
+        // any kind other than "seventv-leaderboard" carrying a LeaderboardSort claims a ranking it did
+        // not come from. A LeaderboardSort that is present but outside 7TV's own sort vocabulary is its
+        // own error, invalid_leaderboard_sort, because it is not "the wrong kind of import" — the kind
+        // is right, the sort code just is not one the endpoint knows how to hand to 7TV.
+        var isChannelSourceKind = sourceKind is "channel" or "seventv-channel";
+        if (isChannelSourceKind && (string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is not null))
+        {
+            return ApiErrorCodes.InvalidSourceKind;
+        }
+
+        if (sourceKind == "file" && (!string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is not null))
+        {
+            return ApiErrorCodes.InvalidSourceKind;
+        }
+
+        if (sourceKind == "seventv-leaderboard")
+        {
+            if (!string.IsNullOrWhiteSpace(sourceChannelName) || leaderboardSort is null)
+            {
+                return ApiErrorCodes.InvalidSourceKind;
+            }
+
+            if (!SevenTvLeaderboardSortWireCode.TryParse(leaderboardSort, out _))
+            {
+                return ApiErrorCodes.InvalidLeaderboardSort;
+            }
+        }
+
+        return null;
+    }
+
     private static async Task PublishChannelSyncedAsync(
         IRedisPublisher redisPublisher,
         ILogger logger,
@@ -395,5 +420,10 @@ internal sealed record SyncRestoredRequest(IReadOnlyList<string> EmoteIds);
 // sort code is not a channel name and never validates as one (ChannelNameValidation.IsValid would
 // reject "TRENDING_DAILY" — the exact F1/F6-class bug this field exists to avoid, a 400 arriving
 // after the 7TV mutation already happened).
+// TargetEmoteSetId (spec 6.7, E5) stays optional forever: an old open tab that never learned this
+// field is still a valid caller, and the audit row honestly records "no set known" rather than
+// failing a mutation that already happened on 7TV. Format-checked in the handler, not by
+// EmoteSetIdValidationFilter — that filter reads the query string and route values, not a body field.
 internal sealed record SyncImportedRequest(
-    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null);
+    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind,
+    string? LeaderboardSort = null, string? TargetEmoteSetId = null);

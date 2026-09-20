@@ -54,8 +54,11 @@ public class SevenTvApiClient(
     // circuit breaker shut for years.
     private const int MaxResetHintSeconds = 6 * 60 * 60;
 
+    // "id" on the inner user added spec 2026-09-20 (E22/T0.6, measured live against
+    // https://7tv.io/v3/gql: editor_of { user { id connections { ... } } } resolves) — the
+    // set-centric import's owner check (6.7) needs each grant expressed as a 7TV account id.
     private const string GqlEditorOfQuery =
-        "query($id: ObjectID!) { user(id: $id) { editor_of { user { connections { platform id username } } } } }";
+        "query($id: ObjectID!) { user(id: $id) { editor_of { user { id connections { platform id username } } } } }";
 
     // v4 schema, foreign-channel-import spec (F1 step 3): a set-agnostic, paginated preview of an
     // arbitrary emote set's entries, including the set-local alias, the emote's global default name,
@@ -367,10 +370,14 @@ public class SevenTvApiClient(
                 return SevenTvEditorGrantsResult.Failed(SevenTvLookupStatus.Unavailable);
             }
 
+            // g.User.Id (E22) has to travel alongside its own connections, not get flattened away
+            // with SelectMany first and looked up again afterwards — it is the 7TV account id of the
+            // channel this grant belongs to, and every Twitch connection of that one user shares it.
             var result = grants
-                .SelectMany(g => g.User?.Connections ?? [])
-                .Where(c => c.Platform == TwitchPlatform)
-                .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
+                .Where(g => g.User is not null)
+                .SelectMany(g => g.User!.Connections
+                    .Where(c => c.Platform == TwitchPlatform)
+                    .Select(c => new SevenTvEditorGrant(c.Username, c.Id, g.User!.Id)))
                 .ToList();
             return SevenTvEditorGrantsResult.Ok(result);
         }

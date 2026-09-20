@@ -40,5 +40,26 @@ public interface IEmoteService
     // "seventv-leaderboard" import — the only kind that has one, since a network-wide ranking has no
     // source channel to name (leaderboard-import spec E8) — and null for every other kind. Returns
     // false — writing nothing — for an unknown target channel.
-    Task<bool> MarkImportedAsync(string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind, string? leaderboardSort, AuditActor actor, CancellationToken cancellationToken = default);
+    // targetEmoteSetId (spec 6.7, E5) stays optional forever: a client that omits it (an old open
+    // tab) is still a valid call. When set, the written audit entry additionally carries
+    // targetEmoteSetId and targetIsActiveSetOfChannel (a three-valued comparison against
+    // Channel.ActiveEmoteSetId taken at write time — true/false when targetEmoteSetId is set, null
+    // when it is not) plus TargetType = "emoteSet"/TargetId = targetEmoteSetId on the entry itself.
+    Task<bool> MarkImportedAsync(
+        string channelName, IReadOnlyList<string> sevenTvEmoteIds, string? sourceChannelName, string sourceKind,
+        string? leaderboardSort, AuditActor actor, string? targetEmoteSetId = null, CancellationToken cancellationToken = default);
+
+    // The set-centric counterpart (spec 6.7): the import's target is an arbitrary 7TV emote set, not
+    // necessarily one belonging to any channel EmotePurge tracks — so there is no Channel row to load
+    // and no "unknown target" failure the way MarkImportedAsync has one. The caller (the endpoint's
+    // owner check, ISevenTvEditorService.CheckEmoteSetOwnershipAsync) has already resolved
+    // ownerSevenTvUserId/ownerTwitchLogin by the time this runs; this call only ever writes the audit
+    // entry — ChannelName = null (so the row surfaces in the global admin log, not a channel's own
+    // activity feed — a deliberate rest, not a bug, since the target may not be a channel at all),
+    // TargetType = "emoteSet", TargetId = emoteSetId, with sevenTvEmoteIds deduplicated ordinally
+    // before counting like MarkImportedAsync.
+    Task MarkImportedToSetAsync(
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
+        string? sourceChannelName, string sourceKind, string? leaderboardSort, AuditActor actor,
+        CancellationToken cancellationToken = default);
 }

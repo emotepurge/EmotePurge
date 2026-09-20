@@ -144,6 +144,70 @@ public static class SevenTvEndpoints
             return Results.Ok(new EmoteSetTargetsResponse(accounts, sevenTvUnavailable));
         });
 
+        // POST /api/seventv/emote-sets/{emoteSetId}/sync-imported (spec 6.7/E22, F7): the set-centric
+        // counterpart of EmoteEndpoints' own /sync-imported — exists because a target set's account
+        // need not be a channel EmotePurge tracks at all, and the channel-scoped route 404s without a
+        // Channel row (F7). Bookkeeping, not ForeignEmoteLookup: like its channel-scoped sibling, the
+        // 7TV mutation already happened by the time this call runs, so a spent read budget must not
+        // drop the paper trail. EmoteSetIdValidationFilter here validates the *route* value, not a
+        // query string — see the filter's own remarks.
+        var emoteSetGroup = app.MapGroup("/api/seventv/emote-sets/{emoteSetId}")
+            .RequireAuthorization()
+            .AddEndpointFilter<EmoteSetIdValidationFilter>()
+            .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
+        emoteSetGroup.MapPost("/sync-imported", async (
+            string emoteSetId,
+            SyncImportedToSetRequest request,
+            HttpContext httpContext,
+            ISevenTvEditorService editorService,
+            IEmoteService emoteService,
+            CancellationToken ct) =>
+        {
+            // Step 3 of the 6.7 ladder: the exact same vocabulary table as the channel-scoped
+            // endpoint, pulled out into one shared static method so it cannot exist twice (T2.4).
+            var vocabularyError = EmoteEndpoints.ValidateSyncImportedVocabulary(
+                request.SevenTvEmoteIds, request.SourceChannelName, request.SourceKind, request.LeaderboardSort);
+            if (vocabularyError is not null)
+            {
+                return Results.BadRequest(new { errorCode = vocabularyError });
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            // Step 4: does the actor own emoteSetId, or hold a 7TV editor grant on its owner?
+            var ownership = await editorService.CheckEmoteSetOwnershipAsync(
+                actor.TwitchUserId, actor.Login, emoteSetId, ct);
+
+            switch (ownership.Status)
+            {
+                case SevenTvEmoteSetOwnershipStatus.SetNotFound:
+                    return Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound });
+                case SevenTvEmoteSetOwnershipStatus.Forbidden:
+                    // Bare Forbid(), like the four existing IEndpointFilter-based authorization
+                    // filters (spec 6.7) — no error-code body, since "you may not do this" needs no
+                    // further explanation a caller could act on.
+                    return Results.Forbid();
+                case SevenTvEmoteSetOwnershipStatus.Unavailable:
+                    // No audit entry on this branch: nothing was determined, let alone imported.
+                    return Results.Json(
+                        new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            // Step 5: the service call is the only place that writes the audit row — ChannelName =
+            // null, TargetType = "emoteSet" (spec 6.7).
+            await emoteService.MarkImportedToSetAsync(
+                emoteSetId, ownership.OwnerSevenTvUserId!, ownership.OwnerTwitchLogin!, request.SevenTvEmoteIds,
+                request.SourceChannelName, request.SourceKind, request.LeaderboardSort, actor, ct);
+
+            return Results.NoContent();
+        });
+
         // GET /api/seventv/leaderboard (7TV-leaderboard-as-import-source spec 2026-09-13, section 4):
         // a network-wide ranking, not scoped to any channel — RequireAuthorization() only, no
         // ChannelNameValidationFilter (there is no channel name here at all) and no
@@ -273,3 +337,12 @@ internal sealed record EmoteSetTargetAccount(
 /// </summary>
 internal sealed record EmoteSetTargetSummaryDto(
     string Id, string Name, int? Capacity, string Kind, bool IsActive, bool IsPersonal, string? OwnerDisplayName);
+
+/// <summary>
+/// Body of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-imported</c> (spec 6.7) — the same
+/// shape as <c>EmoteEndpoints.SyncImportedRequest</c> minus <c>TargetEmoteSetId</c>: the route
+/// already carries the target set, so repeating it in the body would just be a second, potentially
+/// disagreeing source of truth for the same value.
+/// </summary>
+internal sealed record SyncImportedToSetRequest(
+    IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null);

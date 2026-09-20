@@ -203,8 +203,10 @@ public sealed class SevenTvDeltaResult
 public record SevenTvIdentity(string SevenTvUserId, string? ActiveEmoteSetId);
 
 // One entry in a 7TV user's editor_of list, reduced to the Twitch identity of the channel they can
-// edit — the 7TV-internal user id of the owner isn't needed by any current consumer.
-public record SevenTvEditorGrant(string TwitchChannelLogin, string TwitchChannelId);
+// edit. SevenTvUserId (E22, spec 2026-09-20) is additive and nullable: it is the 7TV-internal id of
+// that channel's own account, needed by the set-centric import's owner check (6.7) to compare a
+// grant against an arbitrary set's owner id without a Twitch-only identity in the way.
+public record SevenTvEditorGrant(string TwitchChannelLogin, string TwitchChannelId, string? SevenTvUserId = null);
 
 // Why a 7TV lookup produced no usable answer. Four outcomes used to collapse onto one `null`
 // (issue #32): "no 7TV account", "account but no active emote set", "7TV unreachable" and "never
