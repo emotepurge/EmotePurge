@@ -31,10 +31,13 @@ wäre, ist sie zitiert — sonst verwiesen.
   2026-09-20). Die Spec setzt #76 nicht voraus (Spec 22, erste Zeile), aber T1.5 und T1.2 fassen
   `SevenTvSyncService.cs:74-109` an — genau die Stelle, an der #76 die Plausibilitätssperre hält.
   Folge für den Branch: s. 0.4.
-- **Keine der sieben Sonden ist gemessen.** Der Plan hängt an keiner: jede Sonde hat in der Spec
-  zwei Zweige, und die Tasks bauen den Zweig, den die Spec als Beschluss trägt (E7 v3, E12 60 s,
-  8.9 Duplikate ausgenommen). Der andere Zweig ist je Sonde als **Umbaukosten** beziffert (2.1),
-  damit die Entscheidung „warten oder bauen" eine Zahl hat.
+- **Drei der T0-Aufgaben sind gemessen** (2026-09-20: T0.1, T0.5, T0.6), die übrigen nicht. Der
+  Plan hängt an keiner: jede offene Sonde hat in der Spec zwei Zweige, und die Tasks bauen den
+  Zweig, den die Spec als Beschluss trägt (E12 60 s, 8.9 Duplikate ausgenommen). Der andere Zweig
+  ist je Sonde als **Umbaukosten** beziffert (2.1), damit die Entscheidung „warten oder bauen" eine
+  Zahl hat. **E7 ist durch T0.5 entschieden und trägt jetzt v4** — T2.1 baut keinen v3-Zweig mehr,
+auch nicht für die aktive Set-ID: die Nachmessung vom 2026-09-20 (`style { activeEmoteSetId }`)
+deckt getrackte **und** ungetrackte Accounts mit **einem** Request je Account.
 
 ### 0.2 Was der Plan beim Nachprüfen am Code gefunden hat
 
@@ -44,7 +47,7 @@ beide werden Tasks, nicht Fußnoten.
 | Prüfaufgabe | Befund am Code (`93af613`) | Folge |
 |---|---|---|
 | **Gibt `core/routing/list-query-state` das Muster für den Set-Zustand in der URL her?** (Spec 8.1: „Zustand in der URL wie der Zeitraum") | **Die Prämisse stimmt nicht:** der Zeitraum der Nutzungsseite steht heute **nicht** in der URL. `usage-stats-page.ts` hat keinen `ActivatedRoute`-/`queryParamMap`-Zugriff; `rangePreset` (`:333`) ist ein lokales Signal. `listQueryState` (`core/routing/list-query-state.ts`, 142 Zeilen, 236 Zeilen Spec) ist für **paginierte Listen** gebaut (`page` + Filterparameter, `setParams` springt auf Seite 1, `replaceUrl`, Defaults werden aus der URL entfernt) und wird von fünf Listenseiten benutzt, nicht von der Nutzungsseite. | **T4.0** entscheidet zwischen zwei Wegen (s. dort). Das Set wäre der **erste** URL-getragene Zustand der Nutzungsseite; die Spec-Formulierung „wie der Zeitraum" ist damit ein Vorbild ohne Bestand und wird im DECISIONS-Eintrag 4 berichtigt. Ob der Zeitraum nachziehen soll, ist **nicht** Teil dieses Plans (3). |
-| **Liefert `editor_of { user { id } }` die 7TV-ID des Account-Besitzers?** (Spec 19, Prüfaufgabe T2.4) | `GqlEditorOfQuery` (`SevenTvApiClient.cs:58`) liest heute `editor_of { user { connections { platform id username } } }` — das `user`-Objekt ist also schon der Besitzer, nur sein `id` wird nicht projiziert. Die Frage ist damit nicht „welches Objekt", sondern „trägt v3 dort ein `id`, und ist es die 7TV-ObjectID". Das misst nur ein Aufruf. | **T0.6**: eine curl-Sonde des Betreibers (7TV-Sonden blockt der Klassifikator aus einer Session). T2.4 darf vorher starten und trägt bis zur Messung eine als „unverifiziert" markierte Fixture. |
+| **Liefert `editor_of { user { id } }` die 7TV-ID des Account-Besitzers?** (Spec 19, Prüfaufgabe T2.4) | `GqlEditorOfQuery` (`SevenTvApiClient.cs:58`) liest heute `editor_of { user { connections { platform id username } } }` — das `user`-Objekt ist also schon der Besitzer, nur sein `id` wird nicht projiziert. Die Frage ist damit nicht „welches Objekt", sondern „trägt v3 dort ein `id`, und ist es die 7TV-ObjectID". Das misst nur ein Aufruf. | **T0.6 — gemessen am 2026-09-20:** `editor_of { user { id … } }` liefert je Grant `user.id` (7TV-Account-ID, z. B. `01FY9A4ZG8000BH1HKPGP0R1S0`) **und** die Connections; das `id`-Feld am `user` existiert. T2.4 bekommt die redigierte Antwort als **verifizierte** Fixture, der Vorbehalt „unverifiziert" entfällt. |
 
 Dazu drei Beobachtungen, die den Schnitt beeinflusst haben:
 
@@ -152,10 +155,12 @@ Integrationsbranch, der in der Spec den gemessenen Zweig mit Datum einträgt und
 curl -s https://7tv.io/v3/users/twitch/49140130 | jq '{active: .emote_set_id, sets: [.user.emote_sets[] | {id, name, capacity, flags}]}'
 ```
 
-Ergebnis im Repo: Zweig A/B in Spec 11 (Sonde 1) und E7. **Zweig B** (Halloween fehlt oder ohne
-Namen) kostet: T2.1 liest v4 statt v3 (eine Client-Methode, eine Fixture, `isPersonal` bleibt
-`false` mit Vermerk) — kein anderer Task ändert sich. Die JSON-Antwort wird als Fixture für T2.1
-in `tests/EmotePurge.Infrastructure.Tests/Fixtures/` abgelegt (redigiert auf drei Sets reicht).
+**Gemessen am 2026-09-20: Zweig A** (Spec 11, Sonde 1). Aktiv `01GV88A38G0006FW5TVZVMG507`; drei
+Sets mit Namen, je Kapazität 1000 und `flags: 0`: `Christmas Set` `01J94Y3JDR0005G1FWF2H9ZHJT`,
+`HandOfBlood's Emotes` `01GV88A38G0006FW5TVZVMG507`, `Halloween Set`
+`01J94NYQR0000D15QN0BDGN85E`. Die Set-IDs samt Namen stehen damit für die Zuordnungsliste (T1.9)
+bereit. **Folge:** keine für T2.1 — die Liste kommt seit T0.5 ohnehin aus v4, und die v3-Antwort
+wird **nicht** als Fixture abgelegt.
 
 #### T0.2 — Sonde 4: Reload-Frequenz der Nutzungsseite (Dev-Box)
 
@@ -186,7 +191,10 @@ psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge password=<PROD
 
 (`set-wechsel-pruefung.sql` aus Konzept 11.6.) **Ein Tor, kein Zweig:** genau zwei Zeilen (Testkanal
 als Positivkontrolle, HandOfBlood mit Tag = `BoundaryUtc::date` und `archived_that_day` =
-`ExpectedArchivedCount`) — sonst Halt, klären, Liste korrigieren, neu bauen; nichts wird geschätzt.
+`ExpectedArchivedCount`) — sonst Halt, klären, `SetSwitchAssignments` korrigieren, neu bauen; nichts
+wird geschätzt. **Zwei Zeilen sind es mit und ohne V1:** die erwartete Trefferzahl der Gegenprobe
+ist nicht dieselbe Liste wie `SetSwitchAssignments` — sie zählt den Testkanal mit, der dort nie
+steht, und den Wegwerfkanal nicht, weil V3 ihm vorausgeht.
 Ergebnis im Repo: das Ergebnis steht im DECISIONS-Eintrag 1 (Nachtrag durch K7).
 
 #### T0.5 — Sonde 7: trägt v4 am `EmoteSet` ein Merkmal für persönliche Sets?
@@ -195,10 +203,30 @@ Ergebnis im Repo: das Ergebnis steht im DECISIONS-Eintrag 1 (Nachtrag durch K7).
 curl -s https://7tv.io/v4/gql -H 'Content-Type: application/json' -d '{"query":"query { __type(name: \"EmoteSet\") { fields { name type { name kind ofType { name kind } } } } }"}' | jq
 ```
 
-Ergebnis im Repo: Zweig A (E7 dreht auf v4 — ein Request mit Besitzer, kein `flags`-Rätsel, kein
-Anteil an der #43-Fläche) oder B (E7 bleibt v3). **Gehört vor T2.1**, ist aber kein Tor: T2.1 baut
-ohne Messung den v3-Beschluss; Zweig A kostet danach dieselbe eine Client-Methode wie Sonde 1
-Zweig B — die Kosten fallen also höchstens einmal an, egal welche der beiden Sonden dreht.
+**Gemessen am 2026-09-20: Zweig A** (Spec 11, Sonde 7). `EmoteSet` trägt `kind` als
+`EmoteSetKind!` (ENUM, NON_NULL); der Enum hat die Werte `NORMAL`, `PERSONAL`, `GLOBAL`, `SPECIAL`.
+End-to-end gegen `platformId: "49140130"` liefert v4 **vier** Sets, darunter
+`01HMHSTX2G000CNKGAKWBJQA56` `Personal Emotes`, Kapazität 5, `kind: PERSONAL` — v3 liefert an
+derselben Stelle nur drei und unterschlägt genau dieses Set.
+
+**Nachmessung am selben Tag, drei Befunde** (Spec 11, Sonde 7):
+
+- **A:** `__type(name: "User")` trägt `style: UserStyle!`, `UserStyle` trägt `activeEmoteSetId`.
+  Mit `style { activeEmoteSetId }` in der Abfrage (Analyzer **`complexity 14, depth 6`**, vorher
+  12/6) liefert v4 für `49140130` `01GV88A38G0006FW5TVZVMG507` — **derselbe** Wert wie v3
+  `.emote_set_id`. Damit entfällt der zweite Request für ungetrackte Accounts.
+- **B:** `platformId: "999999999999"` ⇒ `{"data":{"users":{"userByConnection":null}}}` bei
+  **HTTP 200 ohne `errors`-Block**, Analyzer `complexity 7, depth 4` ⇒ `NoSevenTvAccount`
+  (getrennt von „Antwort fehlt / Transportfehler" ⇒ `Unavailable`).
+- **C:** Der v4-`User`-Typ trägt auch `personalEmoteSet` und `specialEmoteSets`; da `emoteSets` das
+  persönliche Set gemessen **mitliefert**, bleibt es bei `emoteSets` + `kind`.
+
+**Folge: E7 dreht auf v4.** T2.1 liest `userByConnection … style { activeEmoteSetId } emoteSets
+{ id name capacity kind owner { id mainConnection { platformDisplayName } } }`,
+`isPersonal := kind == PERSONAL`, **wählbar ist nur `kind == NORMAL`**, und der Besitzer kommt je
+Set als **Anzeigename** (`ownerDisplayName`) aus derselben Antwort. Die redigierte v4-Antwort wird
+als Fixture für T2.1 in `tests/EmotePurge.Infrastructure.Tests/Fixtures/` abgelegt — samt einer
+zweiten Fixture für den unbekannten Account (Befund B).
 
 #### T0.6 — `editor_of { user { id } }` (neu, Prüfaufgabe der Spec)
 
@@ -206,22 +234,41 @@ Zweig B — die Kosten fallen also höchstens einmal an, egal welche der beiden 
 curl -s https://7tv.io/v3/gql -H 'Content-Type: application/json' -d '{"query":"query($id: ObjectID!) { user(id: $id) { editor_of { id user { id username connections { platform id } } } } }","variables":{"id":"<7TV-USER-ID>"}}' | jq
 ```
 
-`<7TV-USER-ID>` ist die eigene 7TV-ObjectID (ein Account, der irgendwo Editor ist). Zu prüfen: ist
-`editor_of[].user.id` gesetzt, und ist es die ObjectID des Accounts, dessen `connections` daneben
-stehen (Vergleich mit `GET /v3/users/twitch/<TWITCH-ID>` → `.user.id` desselben Accounts). Ergebnis
-im Repo: die redigierte Antwort als Fixture in T2.4; Vermerk in Spec 19 (Prüfaufgabe erledigt).
-**Gehört vor T2.4**; T2.4 darf vorher mit einer als unverifiziert markierten Fixture starten.
+**Gemessen am 2026-09-20 — erledigt.** Mit `id = 01GQA28FCR0002Q9KS8SKQKVXX` liefert die Abfrage je
+Grant `user.id` (7TV-Account-ID, z. B. `01FY9A4ZG8000BH1HKPGP0R1S0`) **und** die Connections; das
+`id`-Feld am `user` existiert also. **Folge:** E22 steht wie geschrieben, T2.4 bekommt die
+redigierte Antwort als **verifizierte** Fixture, und die Prüfaufgabe in Spec 19 ist abgehakt. Der
+Vorbehalt „T2.4 startet mit unverifizierter Fixture" ist gegenstandslos.
 
 #### V1 — Zwischenweg vor dem 2026-10-01 (Konzept 12.4)
 
 Wegwerfkanal (nie getrackt) bestimmen, Halloween dort aktiv, tracken, von HandOfBloods
-Nutzungsseite übertragen, Kollisionen im Dialog abwählen; am 01.10. wechseln; **am Wechseltag**
-`ExpectedArchivedCount` mit der ID-Sonde aus Konzept 11.2 messen und `BoundaryUtc` notieren. Beide
-Werte gehen in **T1.9**. Kein Repo-Anteil vor T1.9.
+Nutzungsseite übertragen, Kollisionen im Dialog abwählen.
+
+**V1 ist eine Empfehlung an HandOfBloods Mod-Team, keine Vorbedingung, die wir erfüllen können**
+(Betreiber, 2026-09-20): er kann den Weg vorschlagen, das Mod-Team entscheidet. Findet er **nicht**
+statt, entfällt **V3** (Purge des Wegwerfkanals) ersatzlos.
+
+**An der Zuordnungsliste ändert das nichts.** Der frühere Satz „dann hat die Zuordnungsliste einen
+Kanal weniger" war falsch und ist hier berichtigt: `SetSwitchAssignments` (Spec 4.2, E1) enthält
+**nur HandOfBlood** — der Wegwerfkanal steht dort ohnehin nie, weil V3 ihn vor der Migration purgt,
+und der Testkanal ebenso wenig (V2). Auch die **erwartete Trefferzahl der Gegenprobe** (Sonde 6 /
+T0.4: genau zwei Zeilen, Testkanal und HandOfBlood) bleibt unberührt, weil Sonde 6 **nach** V3 und
+**vor** V2 läuft. Ohne V1 entfällt eine Purge-Handlung, kein Listeneintrag und keine erwartete
+Zeile.
+
+**Unabhängig davon:** HandOfBlood wechselt am 01.10.; **am Wechseltag** `ExpectedArchivedCount` mit
+der ID-Sonde aus Konzept 11.2 messen und `BoundaryUtc` notieren. Beide Werte hängen am Wechsel,
+nicht am Zwischenweg, gehen in **T1.9** und werden so oder so gebraucht. Kein Repo-Anteil vor T1.9.
+
+Die Abbruchprüfung „ein Kanal mit Signatur, der nicht in der Liste steht" (Prüfung 3, Spec 4.2)
+gilt unverändert — sie ist der Schutz genau gegen den Fall, dass am Wegwerfkanal doch etwas
+passiert ist, von dem wir nichts wissen.
 
 #### V2 / V3 — Purges (Admin-UI, Prod)
 
-V3: Wegwerfkanal nach dem 01.10. und **vor** Sonde 6 purgen. V2: Testkanal **nach** Sonde 6 und vor
+V3: Wegwerfkanal nach dem 01.10. und **vor** Sonde 6 purgen — **entfällt, wenn V1 nicht
+stattfindet** (dann gibt es keinen Wegwerfkanal). V2: Testkanal **nach** Sonde 6 und vor
 K7 purgen (er ist die Positivkontrolle der Sonde). Ergebnis im Repo: AK 3/4 im PR-Text von T7.
 
 ### K1 — Zählen pro Set (Schritt 3)
@@ -472,7 +519,9 @@ across the match-cache swap`.
 **Ziel:** Der HandOfBlood-Eintrag in `SetSwitchAssignments` (`ChannelId`, `TwitchChannelId`
 `49140130`, alt `01GV88A38G0006FW5TVZVMG507`, neu `01J94NYQR0000D15QN0BDGN85E`, `BoundaryUtc`,
 `ExpectedArchivedCount` aus V1) und der Nachtrag im DECISIONS-Eintrag 1 (AK 2). Testkanal und
-Wegwerfkanal stehen **nicht** in der Liste.
+Wegwerfkanal stehen **nicht** in `SetSwitchAssignments` — beide sind vor der Migration gepurgt
+(V2, V3) und haben dann keine Zeilen, die zuzuordnen wären. HandOfBlood ist damit der **einzige**
+Eintrag, mit V1 wie ohne.
 
 **Tests:** `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` **+1**: mit dem echten Eintrag und
 einer synthetischen Datenbank, die die Signatur trägt, läuft die Migration durch; mit
@@ -489,30 +538,41 @@ Nachtrag; das Denken ist in V1 und T1.3b erledigt.
 
 Reihenfolge: T2.1 ∥ T2.2 → T2.3 → T2.4 → T2.5a → T2.5b → T2.6 → T2.7. Worktree B, parallel zu K1.
 
-#### T2.1 — `ISevenTvEmoteSetListService`: v3 `emote_sets`, Cache, Budget
+#### T2.1 — `ISevenTvEmoteSetListService`: v4 `emoteSets`, Cache, Budget
 
-**Ziel:** Ein Dienst für drei Routen (E6): `ListByTwitchIdAsync` → v3 `users/twitch/{id}`,
-`isPersonal = (flags & 4) != 0` (E7), Cache `7tvsets:{twitchId}` 60 s fail-open (E12), **ein Permit
-je Upstream-Request** (F14); `null`-`user.emote_sets` ist `Unavailable`, nicht leer (F13).
+**Ziel:** Ein Dienst für drei Routen (E6): `ListByTwitchIdAsync` → v4 `userByConnection(platform:
+TWITCH, platformId:)` mit `style { activeEmoteSetId } emoteSets { id name capacity kind owner
+{ id mainConnection { platformDisplayName } } }`, `isPersonal = kind == PERSONAL` (E7),
+`ownerDisplayName` je Set aus `owner.mainConnection.platformDisplayName` (**Anzeigename, kein
+Login** — nur Anzeige, nie Abgleich), `activeEmoteSetId` aus `style.activeEmoteSetId`
+(E21 — die Routen für getrackte Kanäle überschreiben sie mit `Channel.ActiveEmoteSetId`), Cache
+`7tvsets:{twitchId}` 60 s fail-open (E12), **ein Permit je Upstream-Request** (F14).
+**Fehlerabbildung, gemessen am 2026-09-20 (Spec 11, Sonde 7, Befund B):** `userByConnection: null`
+bei HTTP 200 ohne `errors`-Block ⇒ `NoSevenTvAccount`; `userByConnection` vorhanden, aber ohne
+`emoteSets` ⇒ `Unavailable`; fehlende Antwort / Transportfehler / 429 ⇒ `Unavailable`. Nie eine
+stille leere Liste.
 
-**Spec:** 6.1 (Quelle), E6, E7, E12, F13, F14; Sonde 1/7 (Zweig-Kosten in K0).
+**Spec:** 6.1 (Quelle), E6, E7, E12, F14; Sonde 7 (gemessen, K0).
 
 **Dateien:** `Core/Services/ISevenTvEmoteSetListService.cs` (neu; `EmoteSetSummary`),
 `Core/SevenTv/ISevenTvApiClient.cs` (`GetEmoteSetListForTwitchUserAsync`), `SevenTvModels.cs`,
-`Infrastructure/SevenTv/SevenTvApiClient.cs:163-241` (Endpunkt wie der Sync, `:167`),
-`SevenTvApiDtos.cs:114-118` (additive DTO-Klasse), `Infrastructure/Services/SevenTvEmoteSetListService.cs`
+`Infrastructure/SevenTv/SevenTvApiClient.cs` (v4-GQL-Abfrage neben den vorhandenen v4-Abfragen),
+`Infrastructure/Services/SevenTvEmoteSetListService.cs`
 (neu), `ServiceCollectionExtensions.cs` (Registrierung).
 
-**Tests:** `Unit/SevenTvApiClientEmoteSetListTests.cs` (neu) **+5** (AK 21: parsen aus der
-Sonde-1-Fixture — bis T0.1 gemessen ist, eine synthetische Fixture in derselben Form, markiert;
-`flags & 4`; `null` ⇒ `Unavailable`; 404 ⇒ `NoSevenTvAccount`; `capacity` 0 ⇒ `null`).
+**Tests:** `Unit/SevenTvApiClientEmoteSetListTests.cs` (neu) **+7** (AK 21: parsen aus der
+v4-Fixture von Sonde 7 — vier Sets, eines `PERSONAL`; `kind == PERSONAL`; `ownerDisplayName` aus
+`owner.mainConnection.platformDisplayName`; `style.activeEmoteSetId` durchgereicht; `capacity` 0 ⇒
+`null`; **die drei Fehlerfälle getrennt** — `userByConnection: null` bei HTTP 200 ⇒
+`NoSevenTvAccount`, `userByConnection` ohne `emoteSets` ⇒ `Unavailable`, fehlende Antwort ⇒
+`Unavailable`).
 `Unit/SevenTvEmoteSetListServiceTests.cs` (neu) **+5** (AK 23/24: Treffer, Miss, Redis-Ausfall
 fail-open, ein Permit je Request über `RecordingForeignUpstreamRequestBudget`, zweiter Aufruf in 60 s
 ohne Upstream).
 
 **Gate:** BE grün. **Commit:** `feat(seventv): list the emote sets of a 7TV account`.
 
-**Abhängigkeiten:** keine; T0.5/T0.1 wünschenswert vorher (0.1). **Modell:** `sonnet`.
+**Abhängigkeiten:** keine; T0.5/T0.1 sind gemessen (0.1). **Modell:** `sonnet`.
 
 #### T2.2 — Set-Vorschau nach Set-ID: `capacity`/`name`, zweiter Schlüsselraum, `sevenTvUserId` nullbar
 
@@ -593,8 +653,8 @@ gemeinsame statische Prüfmethode gezogen); `ProjectDetail` liefert `TargetEmote
 (`MarkImportedAsync` + `MarkImportedToSetAsync`), `Core/Services/IAuditLogQueryService.cs:17-34`,
 `Infrastructure/Services/AuditLogQueryService.cs:129-193`.
 
-**Tests:** `Unit/SevenTvApiClientEditorOfTests.cs` (neu) **+2** (Fixture aus T0.6; fehlendes `id`
-⇒ `null`); `Integration/ModRoleCacheTests.cs` oder neu `SevenTvEditorServiceTests.cs` **+2** (AK 31);
+**Tests:** `Unit/SevenTvApiClientEditorOfTests.cs` (neu) **+2** (verifizierte Fixture aus T0.6;
+fehlendes `id` ⇒ `null`); `Integration/ModRoleCacheTests.cs` oder neu `SevenTvEditorServiceTests.cs` **+2** (AK 31);
 `Api.Tests/SevenTvEmoteSetSyncImportedEndpointTests.cs` (neu) **+9** (AK 30: 401; die sechs
 400-Fälle aus `AuthFilterMatrixTests:394-503` gespiegelt; 404 `emote_set_not_found`; **403 bare**;
 503 ohne Eintrag; 204 mit `ChannelName = null`); `AuthFilterMatrixTests` **+1** (`targetEmoteSetId`
@@ -606,16 +666,18 @@ ungültig ⇒ 400, AK 29); `Integration/EmoteServiceTests.cs` **+2** (Audit-Deta
 **Gate:** BE grün; FE grün (Modell additiv). **Commit:** `feat(api): record imports into any set
 the actor edits`.
 
-**Abhängigkeiten:** T2.3 (Filter); T0.6 für die verifizierte Fixture — ohne Messung: Fixture
-markiert, T2.7 prüft live. **Modell:** `sonnet`.
+**Abhängigkeiten:** T2.3 (Filter); T0.6 ist gemessen, die Fixture damit verifiziert.
+**Modell:** `sonnet`.
 
 #### T2.5a — Picker: Angebotsliste aus 6.2, Klassen, Vorauswahl, eigener Kanal
 
-**Ziel:** `ImportTargetChoice { scope, emoteSetId, channelName: string | null, ownerLogin, setName,
-isTracked }`; der Picker lädt `GET /api/seventv/me/emote-set-targets` statt `listMine()`; Sets
-klappen unter ihrem Account auf; getrackt oben, aktives Set beschriftet und vorausgewählt;
-ungetrackt darunter gekennzeichnet; persönliche Sets deaktiviert mit Beschriftung; der eigene Kanal
-bleibt in der Liste, nur das Quell-Set ist deaktiviert. `import-target-options.ts` wird durch eine
+**Ziel:** `ImportTargetChoice { scope, emoteSetId, channelName: string | null, ownerDisplayName,
+setName, isTracked }` (`ownerLogin` heißt seit dem 2026-09-20 `ownerDisplayName`, weil v4 je Set
+einen Anzeigenamen liefert, keinen Login — E7); der Picker lädt
+`GET /api/seventv/me/emote-set-targets` statt `listMine()`; Sets klappen unter ihrem Account auf;
+getrackt oben, aktives Set beschriftet und vorausgewählt; ungetrackt darunter gekennzeichnet;
+**wählbar ist nur `kind == NORMAL`** — `PERSONAL`, `GLOBAL` und `SPECIAL` sichtbar, aber deaktiviert
+und beschriftet (8.6); der eigene Kanal bleibt in der Liste, nur das Quell-Set ist deaktiviert. `import-target-options.ts` wird durch eine
 **pure Funktion** über die neue Antwort ersetzt (`import-target-choices.ts`).
 
 **Spec:** 8.6 (erste drei Punkte), 6.2, E6.
@@ -624,11 +686,11 @@ bleibt in der Liste, nur das Quell-Set ist deaktiviert. `import-target-options.t
 `import-target-choices.ts` (neu, ersetzt `import-target-options.ts`),
 `core/seven-tv/seven-tv-emote-set.service.ts` (neu — die drei Listen-Routen und `?emoteSetId=`;
 K3 und K4 nutzen ihn mit), `de.json`/`en.json` (Beschriftungen „aktiv", „nicht getrackt",
-„persönlich", „das ist die Quelle").
+„persönliches Set", „kein Zielset" für `GLOBAL`/`SPECIAL`, „das ist die Quelle").
 
 **Tests:** `import-target-dialog.spec.ts` (**28 rot**, Datenquelle wechselt) + `import-target-options.spec.ts`
 (**4 rot**, Datei wandert nach `import-target-choices.spec.ts`) — beide umgestellt, **+6** (AK 34:
-Reihenfolge getrackt/ungetrackt, Vorauswahl, persönliche deaktiviert **mit Grund**, eigener Kanal
+Reihenfolge getrackt/ungetrackt, Vorauswahl, `kind != NORMAL` deaktiviert **mit Grund**, eigener Kanal
 gelistet mit deaktiviertem Quell-Set, `sevenTvUnavailable`/`setsUnavailable`-Hinweise als
 Sperrgrund). `core/seven-tv/seven-tv-emote-set.service.spec.ts` (neu) **+4** (drei Routen,
 `?emoteSetId=`, `HttpTestingController`). Nach Regel 12: Klassen und Rollen ja, Wortlaut nein.
@@ -675,10 +737,11 @@ target` — enthält den DECISIONS-Eintrag 2.
 
 #### T2.6 — Ungetrackte Klasse: Bestätigung, `channelName: null`, set-zentrierter Report, Audit-Ansicht
 
-**Ziel:** Wahl eines ungetrackten Sets ⇒ Bestätigung „In das Set ‚<setName>' von ‚<ownerLogin>'
+**Ziel:** Wahl eines ungetrackten Sets ⇒ Bestätigung „In das Set ‚<setName>' von ‚<ownerDisplayName>'
 kopieren?" vor dem Schließen; Abbruch lässt die Wahl unverändert; nach dem Lauf Report an den
 set-zentrierten Endpunkt **ohne** Nachlauf-Resync; `audit-row.ts` zeigt „in Set <id-Kurzform>",
-„(nicht das aktive Set)", „für <ownerLogin>" (8.10).
+„(nicht das aktive Set)", „für <ownerLogin>" (8.10 — dort bewusst der **Twitch-Login** aus der
+Papierspur, nicht der Anzeigename des Dialogs; s. Spec 6.7).
 
 **Spec:** 8.6 (Bestätigung, Report), 8.10, 6.7.
 
@@ -707,8 +770,8 @@ Kollisionen, `toAdd`, Projektion) stimmen mit `GET /v3/emote-sets/{id}` überein
 trägt Set-ID und `targetIsActiveSetOfChannel: false`; eine absichtliche Namenskollision und eine
 Alias-Abweichung erscheinen als Gruppen und der Lauf meldet keine `failed`-Zeile (AK 42). Zusätzlich
 ein ungetracktes Ziel (Zweitkonto, Wegwerf-Set): Bestätigung, Lauf, Eintrag in der globalen
-Admin-Audit-Ansicht mit `ChannelName = null` und `ownerLogin`. Und die T0.6-Fixture gegen die echte
-Antwort geprüft, falls T0.6 vorher nicht gemessen war.
+Admin-Audit-Ansicht mit `ChannelName = null` und `ownerLogin`. (Die T0.6-Fixture ist seit dem
+2026-09-20 gemessen; der frühere Nachtrag „Fixture gegen die echte Antwort prüfen" entfällt.)
 
 **Gate:** die drei Befunde im PR-Text; danach der K2-PR gegen den Integrationsbranch. Kein Commit,
 außer eine Korrektur nötig ist (dann `fix(import): …`).
@@ -720,9 +783,10 @@ außer eine Korrektur nötig ist (dann `fix(import): …`).
 #### T3.1 — Route 6.3 und Radiogroup im `ForeignChannelStep`
 
 **Ziel:** `GET /api/seventv/channels/{c}/emote-sets` in der bestehenden Gruppe (Helix by login →
-Twitch-ID → Listen-Dienst; `activeEmoteSetId` aus v3 `emote_set_id`, `observations: []`; Zustände
+Twitch-ID → Listen-Dienst; `activeEmoteSetId` aus `style.activeEmoteSetId` **derselben**
+v4-Antwort (E7/E21 — kein zweiter Request, kein v3-Aufruf), `observations: []`; Zustände
 wie `…/emotes :47-69`); im `ForeignChannelStep` nach der Auflösung ein Radiogroup (aktives
-vorausgewählt und beschriftet, persönliche deaktiviert); Vorschau mit `?emoteSetId=<gewählt>`, **kein**
+vorausgewählt und beschriftet, `kind != NORMAL` deaktiviert und beschriftet — 8.6); Vorschau mit `?emoteSetId=<gewählt>`, **kein**
 zweiter Request, wenn das aktive Set gewählt bleibt; `ForeignChannelImportResult.emoteSetId` trägt
 das gewählte Set.
 
@@ -807,7 +871,7 @@ Eingabe; leere Eingaben).
 
 **Ziel:** `emote-set-menu.ts` (neu, Muster `date-range-menu.ts:104-133`, `Popover` +
 `role="radiogroup"`) in der Kopfzeile neben dem Datumsbereich; aktives vorausgewählt und beschriftet,
-persönliche deaktiviert mit Beschriftung, **kein** „Gesamt"; Wechsel ⇒ `selection.retainAmong` mit
+Sets mit `kind != NORMAL` deaktiviert und beschriftet (8.6), **kein** „Gesamt"; Wechsel ⇒ `selection.retainAmong` mit
 der #94-Meldung (kein `clear()`), `clearSeriesCache()`, `/totals` + `/series` mit `emoteSetId`;
 Set-Liste **einmal je Kanal-Aufruf** und bei lautem Reload (E19); URL-Zustand nach T4.0. Die
 Gates auf `activeEmoteSetId()` (`.html:108`, `:890`) stehen auf `selectedEmoteSetId()`. Die
@@ -825,8 +889,8 @@ Live-Liste lädt hier noch **nicht** (T4.4) — der Wechsel zeigt in diesem Zwis
 `clearSeriesCache`, `/totals`/`/series` mit `emoteSetId`, Set-Liste **nicht** neu geladen; AK 52
 teilweise: `usage.flushed` lädt die Set-Liste nicht — Request-Zählung mit `HttpTestingController`;
 unbekanntes `emoteSetId` in der URL ⇒ aktives Set). Ggf. `shared/emotes/emote-set-menu.spec.ts`
-für die Sperrentscheidung „persönlich ⇒ deaktiviert mit Grund" (Regel 12: Sperre samt Grund ist
-erlaubt).
+für die Sperrentscheidung „`kind != NORMAL` ⇒ deaktiviert mit Grund" (Regel 12: Sperre samt Grund
+ist erlaubt).
 
 **Gate:** FE grün. **Commit:** `feat(usage-stats): switch the set from the page header`.
 
@@ -1186,17 +1250,21 @@ zum ersten beobachteten Set-Wechsel nach Schritt 6 (5).
 Aus Spec 20 übernommen, verbindlich: keine EventAPI-Subscriptions für nicht-aktive Sets; keine
 `EmoteSet`-Entität und keine Zugehörigkeits-Tabelle; keine Sicht „alle Sets zusammen"; keine
 automatische Teilung eines Backfill-Laufs; keine Schutzmechanik in der Set-Ansicht; kein Rückweg der
-Set-Zahlen in einen Score; keine Umbenennung auf 7TV (#201); kein v4-Fallback für `user.emote_sets`
-(#43); kein Audit-Eintrag für den Set-Wechsel; persönliche Sets bleiben deaktiviert; kein
-Owner-Anzeigename aus v4.
+Set-Zahlen in einen Score; keine Umbenennung auf 7TV (#201); kein v3-Rückweg für die Set-Liste
+**und keiner für die aktive Set-ID** (seit E7 liest der Dienst beides aus v4); kein Audit-Eintrag
+für den Set-Wechsel; Sets mit `kind != NORMAL` (`PERSONAL`, `GLOBAL`, `SPECIAL`) bleiben
+deaktiviert.
 
 Dazu, aus diesem Plan:
 
 - **#76 läuft auf einem eigenen Branch vor diesem Vorhaben** (Entscheidung des Betreibers vom
   2026-09-20). Dieser Plan baut die Plausibilitätssperre weder um noch setzt er sie voraus; er
   rebased auf sie (0.4) und hält im DECISIONS-Eintrag 1 fest, was ohne sie passiert (Spec 22).
-- **Der Zwischenweg vor dem 01.10. (V1) ist eine Betreiber-Handlung**, kein Bauauftrag; er liefert
-  nur die Werte für T1.9.
+- **Der Zwischenweg vor dem 01.10. (V1) ist kein Bauauftrag** — und seit dem 2026-09-20 auch keine
+  Vorbedingung, die wir erfüllen können: der Betreiber kann ihn HandOfBloods Mod-Team
+  **empfehlen**, nicht steuern. Findet er nicht statt, entfällt V3 — und sonst nichts: weder
+`SetSwitchAssignments` noch die erwartete Trefferzahl von Sonde 6 ändern sich (K0). Die Werte für T1.9
+  (`BoundaryUtc`, `ExpectedArchivedCount`) hängen am Wechsel am 01.10., nicht am Zwischenweg.
 - **Der Backfill-Parameter** (Set-ID als Pflichtparameter, Teilung an Set-Grenzen, Harness mit
   Set-ID) ist eine **Auflage an den Plan zu #69**; E15 hält den Harness-Vertrag bis dahin stabil,
   und T1.6 beweist es mit 0 roten Harness-Tests.
@@ -1212,8 +1280,8 @@ Dazu, aus diesem Plan:
 ## 4. Reihenfolge und Abhängigkeiten
 
 ```
-K0 (Betreiber, jederzeit; V1 am 01.10.)
-  T0.1 T0.5 ──▶ T2.1        T0.6 ──▶ T2.4        T0.2 ──▶ T2.2 (nur TTL-Konstante)
+K0 (Betreiber, jederzeit; T0.1/T0.5/T0.6 gemessen 2026-09-20; V1 als Empfehlung vor dem 01.10.)
+  T0.1 T0.5 ──▶ T2.1 ✓      T0.6 ──▶ T2.4 ✓      T0.2 ──▶ T2.2 (nur TTL-Konstante)
   T0.3 ──▶ T5.1/T5.3 (8.9 bis dahin)             T0.4 ──▶ K7 (Tor)      V1 ──▶ T1.9
 
 Worktree A — K1                                  Worktree B — K2
