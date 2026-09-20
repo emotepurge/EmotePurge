@@ -86,7 +86,7 @@ rollt eine Entscheidung A–M des Betreibers neu auf.
 
 | # | Frage | Entscheidung | Begründung |
 |---|---|---|---|
-| E1 (a, Konzept 528–530) | Wo lebt die Zuordnungsliste der Migration? | **Als kompilierte Konstanten in einer gitignorierten Quelldatei neben der Migration**, nach dem Bestandsmuster von `appsettings.Lan.json`: ein `internal static partial class SetSwitchAssignments` in `Infrastructure/Migrations/` — die **committete** Hälfte trägt die beiden Eintragsarten, den Lader und den Abbruch, die **gitignorierte** Hälfte `SetSwitchAssignments.Local.cs` trägt die Werte, und daneben liegt ein committetes `SetSwitchAssignments.Local.cs.example` mit Platzhaltern. Zwei Eintragsarten: Wechseleinträge `(ChannelId, TwitchChannelId, OldEmoteSetId, NewEmoteSetId, BoundaryUtc, ExpectedArchivedCount)` und Kein-Wechsel-Einträge `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)`. Seit dem 2026-09-20 ist die Liste eine **lückenlose Klassifikation jedes Kanals mit Nutzungszeilen**, keine Liste der Wechsler (4.2, Befund E in Abschnitt 24); die Migration rendert sie als zwei `VALUES`-Listen in zwei temporäre Tabellen und liest nur daraus. **Keine** persistierte Tabelle, **keine** Konfigurationsquelle zur Laufzeit | Kein Laufzeitpfad, kein Schema, das nach dem Umstieg leer herumsteht, und das tragende Argument bleibt unverändert: eine Tabelle oder eine `appsettings`-Quelle hätte nur einen Vorteil — Ändern ohne Rebuild —, und genau der ist unerwünscht; eine falsche Liste ist ein Abbruch, der Betreiber korrigiert sie und **baut neu**, die Migration rät nie. Neu seit dem 2026-09-20 ist allein der **Ort**, und zwar aus einem Grund, der selbst eine Entscheidung ist: seit der lückenlosen Klassifikation nennt die Liste **jeden Kanal mit Nutzungszeilen** und ist damit die Nutzerliste des Dienstes; dieses Repo ist öffentlich (AGPL-3.0), und die Kennung lässt sich nicht weglassen, weil die Set-IDs der **Inhalt** der Einträge sind und 7TV zu jeder Set-ID den Besitzer nennt. Was der Ortswechsel kostet, steht ungeschönt in 4.2 |
+| E1 (a, Konzept 528–530) | Wo lebt die Zuordnungsliste der Migration? | **Als kompilierte Konstanten in gitignorierten Quelldateien neben der Migration**, nach dem Bestandsmuster von `appsettings.Lan.json`: ein `internal static partial class SetSwitchAssignments` in `Infrastructure/Migrations/`, aufgeteilt auf **vier** Dateien (4.2, „Wo die Liste liegt") — **committet** `SetSwitchAssignments.cs` (beide Eintragsarten, Lader, Abbruch, `internal` Testsitz), **gitignoriert** `SetSwitchAssignments.Local.cs` mit den **Aussagen** (gefüllt vor dem Fenster, V5), **gitignoriert** `SetSwitchAssignments.Window.cs` mit den **Messwerten** (erzeugt **im** Fenster, Abschnitt 10 Schritt 4), dazu je ein committetes `.example` mit Platzhaltern. Die Liste ist eine **lückenlose Klassifikation jedes Kanals mit Nutzungszeilen**, keine Liste der Wechsler. Zwei Eintragsarten: Wechseleinträge `(ChannelId, TwitchChannelId, OldEmoteSetId, NewEmoteSetId, BoundaryUtc, ExpectedArchivedCount)` und Kein-Wechsel-Einträge `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)` **plus dem Datenstand, für den die Bestätigung gilt** (`ConfirmedFromDate`, `ConfirmedThroughDate`, `ConfirmedRowCount` — Prüfung 7); Aussage und Messung bleiben getrennt, weil die eine abgeschrieben und die andere erzeugt wird. Die Migration rendert beide Arten als zwei `VALUES`-Listen in zwei temporäre Tabellen **mit Unique-Constraints** (XOR-Invariante) und liest nur daraus. Die gefüllte Aussagen-Datei liegt versioniert in `infra-docs` und wird über ihren SHA-256 identifiziert (AK 92). **Keine** persistierte Tabelle, **keine** Konfigurationsquelle zur Laufzeit. *Wie diese Zeile zu ihrem heutigen Stand kam — erst eine Datei, erst ein Kein-Wechsel-Eintrag ohne Datenstand —, steht in den Nachträgen: 24 (N3, der Ortswechsel) und 25 (Befund 1, der Datenstand; Befund 2, die XOR-Invariante).* | Kein Laufzeitpfad, kein Schema, das nach dem Umstieg leer herumsteht, und das tragende Argument bleibt unverändert: eine Tabelle oder eine `appsettings`-Quelle hätte nur einen Vorteil — Ändern ohne Rebuild —, und genau der ist unerwünscht; eine falsche Liste ist ein Abbruch, der Betreiber korrigiert sie und **baut neu**, die Migration rät nie. Neu seit dem 2026-09-20 ist allein der **Ort**, und zwar aus einem Grund, der selbst eine Entscheidung ist: seit der lückenlosen Klassifikation nennt die Liste **jeden Kanal mit Nutzungszeilen** und ist damit die Nutzerliste des Dienstes; dieses Repo ist öffentlich (AGPL-3.0), und die Kennung lässt sich nicht weglassen, weil die Set-IDs der **Inhalt** der Einträge sind und 7TV zu jeder Set-ID den Besitzer nennt. Was der Ortswechsel kostet, steht ungeschönt in 4.2 |
 | E2 (b, 1033–1034) | Bleibt `RunResult.doneIds` als Guid-Teilmenge? | **Fällt.** `RunResult` behält `doneKeys` als einzige Rückmelde-Identität; `doneIds` wird entfernt, nicht „deprecated" | Eine Guid-Teilmenge neben `doneKeys` ist genau die Einladung, sie als Rückmelde-Identität zu benutzen — der Fehler, den 6.5 gerade beseitigt (`seven-tv-delete.service.ts:187-189`, `mass-delete-panel.ts:297-303`, `seven-tv-restore.service.ts:200-205`). Alle fünf Leser (Panel `deleted`, Delete-Report, Delete-Retry, Restore-Report, Restore-Retry) sprechen nach dieser Spec Keys; ein sechster Leser existiert nicht (`grep doneIds web/src` — nur die genannten plus Specs). Entfernen macht jede vergessene Stelle zum Compile-Fehler statt zum stillen Fehlverhalten |
 | E3 (c, 1048–1049) | Wann fällt die alte Body-Form `{ emoteIds }` von `sync-deleted`/`sync-restored`? | **In einem eigenen Folge-Commit nach dem Deploy, frühestens 14 Tage danach, und nur wenn das Api-Log in diesen 14 Tagen keine Altform-Anfrage mehr zeigt.** Der Service loggt jede Altform-Anfrage einmal je Aufruf auf `Information` (`"sync-deleted: legacy body form {emoteIds} used"`), damit die Entscheidung gemessen ist | Ein Deploy kann keinen offenen Tab schließen; 14 Tage sind länger als jede plausible Tab-Lebensdauer, und die Log-Zeile ersetzt die Vermutung durch einen Befund. Der Folge-Commit ist Folge-Issue 1 (Abschnitt 21) |
 | E4 (d, 1119–1123) | Behält `CreateVoteSessionRequest` beide Felder? | **Ja, beide** — `EmoteIds` (Null-Session, Guid) **und** `SevenTvEmoteIds` + `EmoteSetId` (Set-Session), mit einer Ausschlussregel (Abschnitt 9). Null-Sessions gehen **nicht** auf die 7TV-Id um | Eine Null-Session prüft heute `e.Id … && !e.IsArchived` (`VoteSessionService.cs:302-307`) und schreibt `VoteSessionEmote.EmoteId` direkt; ein Umbau auf 7TV-Ids hätte für einen Pfad, der sich fachlich nicht ändert, einen zweiten Lookup und eine zweite Fehlerklasse eingeführt. Der Dialog friert nichts ein: die Seite löst die Schlüssel des Rasters (7TV-Ids) für eine Null-Session **im Absende-Moment** über `selectedItems()` in Guids auf (jede Zeile des aktiven Sets ist Klasse 1 und hat eine, 6.5) — die beiden Sätze, an die das Konzept den Plan bindet, gelten |
@@ -470,7 +470,12 @@ Dateien nach dem Muster, das dieses Repo für `appsettings.Lan.json` schon fähr
   `static partial void AddLocalAssignments(SetSwitchClassificationBuilder builder)`. Eine partielle
   Methode dieser Form (Rückgabetyp `void`, kein Zugriffsmodifikator) **darf ohne Implementierung
   bleiben** — der Aufruf wird dann wegkompiliert. Genau daran hängt, dass CI, Dependabot und ein
-  fremder Contributor ohne die Datei bauen und testen können.
+  fremder Contributor ohne die Datei bauen und testen können. **Am 2026-09-20 gegen das hiesige SDK
+  (10.0.302) an einem Wegwerfprojekt gemessen, nicht aus der Sprachregel gefolgert:** Build ohne die
+  implementierende Datei erfolgreich, 0 Warnungen, 0 Fehler, und der Markenfall meldet sich wie
+  vorgesehen. **Die Form ist damit Vertrag, nicht Geschmack:** eine partielle *Property* oder eine
+  partielle Methode *mit Rückgabetyp* erzwingt eine Implementierung und damit einen Compile-Fehler,
+  sobald die gitignorierte Datei fehlt — die modernere Form ist hier ausdrücklich falsch.
 - **gitignoriert** — `Infrastructure/Migrations/SetSwitchAssignments.Local.cs`: die implementierende
   Deklaration mit den **Aussagen** (beide Eintragsarten, Set-IDs, Grenzen,
   `ExpectedArchivedCount`). Der Betreiber legt sie an (V5).
@@ -480,7 +485,9 @@ Dateien nach dem Muster, das dieses Repo für `appsettings.Lan.json` schon fähr
   `ChannelId` zuordnet. Sie entsteht **im Wartungsfenster** aus der Abfrage (Abschnitt 10,
   Schritt 4) und wird nicht von Hand getippt. Eigene Marke `builder.ConfirmWindow();` als erste
   Anweisung — fehlt die Datei, bricht `Up` mit einer eigenen benannten Meldung ab, statt für jeden
-  Kanal einzeln „Messwerte fehlen" zu melden.
+  Kanal einzeln „Messwerte fehlen" zu melden. **Nach dem Lauf bleibt sie nicht liegen:** sie wandert
+  samt ihrem Hash nach `infra-docs` und wird aus dem Arbeitsbaum entfernt, damit ein späterer Lauf
+  nicht still auf alten Zahlen aufsetzt.
 - **committet** — `SetSwitchAssignments.Local.cs.example` und
   `SetSwitchAssignments.Window.cs.example`: dieselben Dateien mit Platzhaltern und der Anleitung im
   Kopf, wörtlich wie `appsettings.Lan.json.example`; die `.Window`-Vorlage trägt zusätzlich die
@@ -528,7 +535,8 @@ Schritt 2, also vor jeder Schemaänderung — eine `InvalidOperationException`, 
 was wie ein fehlender Einzeleintrag aussieht und nicht wie eine fehlende Datei. **Für
 `SetSwitchAssignments.Window.cs` gilt dasselbe mit eigener Marke** (`builder.ConfirmWindow();`) und
 eigener Meldung: fehlt der Messblock, ist die Ursache eine fehlende Datei und nicht ein Kanal, dem
-Zahlen fehlen — die Folgemeldung aus Prüfung 7 würde genau das vortäuschen.
+Zahlen fehlen — die Folgemeldung aus Prüfung 7 würde genau das vortäuschen. Beide Meldungen sind
+**englisch** (Sprachregel seit #152), wie jede Log- und `throw`-Message in diesem Repo.
 
 **Warum die Marke und nicht „beide Listen leer“:** eine leere Klassifikation ist gegen eine
 Datenbank **ohne** Nutzungszeilen völlig richtig — genau der Fall der lokalen Dev-Datenbank seit
@@ -955,7 +963,10 @@ gehören muss — ein bestätigter Rate Limit auf dem Listenpfad ließe die Vors
 sie ihr eigenes 429 einfängt. Bei der Bestenliste ist die vollständige Trennung richtig, **weil ihr
 Eimer ein anderer ist** (eigenes Budget, eigener Such-Eimer); hier ist er derselbe. Die Policy
 selbst bekommt deshalb eine **Operationskennung**: sie hält den Rate-Limit-Zustand einmal und
-Fehlerstreak plus Probe je Kennung. Für den Vorschaupfad — als einzige Kennung — ist das
+Fehlerstreak plus Probe je Kennung. **Die Kennung ist Pflichtparameter, nicht optional:**
+`TryAcquire`, `RecordSuccess`, `RecordFailure` und `ReleaseProbeWithoutOutcome` nehmen sie alle vier
+**verpflichtend** entgegen, damit ein künftiger Aufrufer sie nicht stillschweigend weglässt und sich
+damit in einen fremden Zähler einklinkt. Für den Vorschaupfad — als einzige Kennung — ist das
 verhaltensgleich mit heute; das ist die Bedingung, unter der die 9 `HardenedForeignEmoteSetService`-
 und 14 `ForeignEmoteSetService`-Tests ohne Änderung grün bleiben müssen (AK 94).
 
@@ -2133,7 +2144,13 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
 2026-09-20; hinten angehängt, damit keine Nummer wandert)
 
 87. `Up` läuft gegen die in eine **Wegwerfdatenbank** wiederhergestellte Sicherung durch, und die
-    **Dauer ist gemessen und notiert** (Quelle, Zeilenzahl, Sekunden). **Die Probe ist eine
+    **Dauer ist gemessen und notiert** (Quelle, Zeilenzahl, Sekunden). **Die Dauer von Prüfung 7
+    wird dabei getrennt gemessen und getrennt berichtet** (neu am 2026-09-20): sie braucht
+    `min`/`max`/`count` je Kanal über `UsageStats` ⋈ `Emotes` **innerhalb** der
+    Migrationstransaktion, ist als einzige der sieben Prüfungen eine Aggregation über die heißeste
+    Tabelle, und ihre Kosten sind bis dahin ohne jede Zahl in das 15-Minuten-Budget aus AK 86
+    hineingerechnet. Ohne die getrennte Zahl steckt eine unbekannte Größe im Fenster. **Die Probe
+    ist eine
     Funktionsprobe und eine untere Schranke, kein Beleg der Fensterlänge** (geändert am
     2026-09-20, Codex-Runde 2 Befund 4): sie läuft auf lokalem Docker-Postgres gegen eine frisch
     wiederhergestellte Datenbank — Tabellen und Indizes sind neu aufgebaut, Hardware und Cache sind
@@ -2300,7 +2317,7 @@ Prüfung 7, der Builder-Fall), vier in den Migrationstests (siebter Abbruch, XOR
 fehlender Messblock, Backfill-Einmaligkeit), zwei im Listen-Dienst (Kreuztest) und vier in
 `ForeignSevenTvBreakerPolicyTests`.
 
-Bestand rot beim Umstellen: **≥ 60** (die sicheren: 7 + 14 + 10 + 5 + 8 + 28 + 4 = 76 aus
+Bestand rot beim Umstellen: **≥ 88** (die sicheren: 7 + 14 + 10 + 5 + 8 + 28 + 4 = 76 aus
 Signatur- und Datenquellenwechseln, **plus 12** aus `ForeignSevenTvBreakerPolicyTests` seit der
 Operationskennung = **88** — der `/series`-Wire-Format-Test ist **nicht** darunter, weil der
 Übergang additiv ist; dazu Teilmengen, die T-Tasks beim Umstellen zählen und im PR nennen).
@@ -2436,6 +2453,7 @@ Runbook auf diese Nachwirkung hingewiesen.
 | `web/src/app/features/voting/{vote-session-detail-page.ts,.html}` | 9 |
 | `web/public/i18n/de.json`, `en.json` | alle Schlüssel aus 8, vier Fehlercodes |
 | `web/e2e/support/mocks.ts:680-703` u. a. | Mocks für Set-Liste, Set-Vorschau, `/series` nach 7TV-Id, Set-Filter |
+| `CLAUDE.md` | die beiden gitignorierten Klassifikationsdateien dort nennen, wo `appsettings.Lan.json` schon steht — eine spätere Sitzung, die den Abbruch aus `Load()` sieht, findet sonst nicht heraus, was fehlt (4.2, AK 91) |
 | `docs/DECISIONS.md` | vier Einträge (Abschnitt 23) |
 | `docs/Feature-Ideen-2026-08-01.md` | Statuszeile der berührten Ideen (A16-Umfeld), falls dort geführt — Prüfaufgabe T4.6 |
 
@@ -2670,3 +2688,26 @@ was der Befund war und was daraus wurde; die Einarbeitung selbst steht im Text.
 in 15.1–15.5 addierten sich schon vor dieser Runde auf **+261**. Beide Zahlen waren fortgeschriebene
 Gegenrechnungen, keine Summen. Seit dem 2026-09-20 gilt die Summe der Tabellen — **+277** — und die
 Gegenrechnung ist abgeschafft.
+
+---
+
+## 26. Nachtrag: Rückschnitt des Plans, 2026-09-20
+
+Codex' zweite Runde hat neben ihren sechs Befunden festgestellt, dass
+[Plan-200](../../plans/Plan-200-Emote-Sets.md) „faktisch ein zweites Entwurfsdokument" sei und
+bereits drifte — belegt an drei Widersprüchen zwischen beiden Dateien und daran, dass die
+Testsumme in **beiden** falsch war, weil sie unabhängig voneinander fortgeschrieben wurde. Der
+Betreiber hat den Plan daraufhin zurückgeschnitten: **diese Spec ist die einzige Vertragsquelle;
+der Plan trägt Reihenfolge, Abhängigkeiten, Handgriffe und Gates.** Wire-Formate, Shapes,
+Fehlercodes, Schema- und Indexdefinitionen, UI-Verträge, Zustandsmatrizen, die Abbruchprüfungen,
+die Eintragsarten der Klassifikation, die Härtungskette des Listen-Dienstes und die Regel für die
+Übergangsfelder stehen seither nur noch hier; der Plan verweist darauf. Dabei ist nichts verloren
+gegangen, sondern **zuvor hierher übernommen** worden: die Form der partiellen Methode samt der
+Messung am SDK 10.0.302 und die Sprache der beiden Abbruchmeldungen (4.2), der Verbleib von
+`SetSwitchAssignments.Window.cs` nach dem Lauf (4.2), die **Pflicht**-Operationskennung an allen
+vier Breaker-Methoden (6.1), `CLAUDE.md` in der Dateireferenz (18) und die getrennte Messung von
+Prüfung 7 (AK 87). Im selben Durchgang ist die **E1-Zeile in Abschnitt 2** auf den aktuellen Stand
+gezogen worden (vier Dateien, Aussage/Messung getrennt, Datenstand am Kein-Wechsel-Eintrag); ihre
+Geschichte steht in 24 (N3) und 25 (Befunde 1 und 2). **Offen geblieben sind fünf Zeilen der
+Testpyramide**, deren Zahlen nicht zur Summe der Task-Erwartungen des Plans passen — sie sind dort
+in Abschnitt 9 einzeln benannt, und **+277** bleibt bis zu ihrer Klärung stehen.
