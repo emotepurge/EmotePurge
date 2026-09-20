@@ -412,12 +412,13 @@ Muster `ChannelLiveDay`), `Core/Entities/VoteSession.cs:13-30`, `VoteSessionEmot
 Unique-Index — Muster `:52-65`), ein neuer purer Typ für die Prüfungen neben der Migration
 (Infrastructure, kein EF-Bezug in der Signatur).
 
-**Tests:** `Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` (neu, pur) **+22**, und die
+**Tests:** `Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` (neu, pur) **+24**, und die
 Rechnung ausgeschrieben, weil die frühere Zahl offenließ, was sie zählt: **14** = je Prüfung 1–7
 ein Abbruch- und ein Durchlauffall (Sonar zählt Zweige), **+1** zweite Abbruchgestalt von Prüfung 3
 (XOR), **+2** weitere Abbruchgestalten von Prüfung 7, **+4** Zuordnungsfälle inklusive Grenztag,
 **+1** für den Builder, der eine doppelte Eintragung schon beim Eintragen ablehnt (Lader, keine
-Prüfung). Was die einzelnen Fälle prüfen, steht in Spec 4.2 und AK 6; hier steht, wie viele es
+Prüfung), **+2** für die beiden Durchlaufgestalten von Prüfung 4 (Signaturtag durch `channel.join`
+erklärt; Signaturtag durch `AcknowledgedArchiveDays` quittiert). Was die einzelnen Fälle prüfen, steht in Spec 4.2 und AK 6; hier steht, wie viele es
 sind und warum.
 
 **Gate:** BE grün — `dotnet ef migrations add` läuft hier **noch nicht** (das Snapshot-Diff gehört
@@ -1593,14 +1594,14 @@ Zuordnung wie in Spec 12.
 
 Vergleichspunkte auf `93af613`: 45 `SevenTvSyncServiceTests`, 54 `UsageStatQueryServiceTests`,
 14 `UsageStatFlushServiceTests`, 74 Harness-/Replay-Tests (müssen 0 rot bleiben), 42
-`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +299 neue Fälle und ≥ 88
+`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +301 neue Fälle und ≥ 88
 umgestellte** — beide Zahlen stehen in Spec 15 und gelten als Summe der dortigen Tabellen, nicht als
 fortgeschriebene Gegenrechnung. Die Zählungen aus T1.2, T1.6, T2.5b, T4.3, T5.1, T5.2 und T6.3
 machen aus den offenen Teilmengen eine Zahl. **Die Zeilen der Spec-Tabellen, die mit der Summe der
 Task-Erwartungen dieses Plans nicht übereinstimmten, sind geklärt** — acht Zahlen berichtigt, eine
 Zeile ergänzt (`file-import-step.spec.ts`), eine Aufzählung entdoppelt; Abschnitt 9 nennt sie
 einzeln mit ihrem Ergebnis. Der Stand nach der Messung von Sonde 5 (Spec 28) ist die nachgezählte
-Summe **+299**: `Infrastructure.Tests` +137, `Worker.Tests` +3, `Api.Tests` +45, Vitest +107,
+Summe **+301**: `Infrastructure.Tests` +139, `Worker.Tests` +3, `Api.Tests` +45, Vitest +107,
 Playwright +7.
 
 Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.

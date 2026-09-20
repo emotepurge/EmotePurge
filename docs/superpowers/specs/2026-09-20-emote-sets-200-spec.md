@@ -386,7 +386,12 @@ sondern eine lückenlose Klassifikation jedes Kanals, der mindestens eine `Usage
   `01GV88A38G0006FW5TVZVMG507`, neu `01J94NYQR0000D15QN0BDGN85E`, Grenze und Zahl aus V1.
 - **Kein-Wechsel-Eintrag** — `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)` **plus den
   Datenstand, für den die Bestätigung gilt: `ConfirmedFromDate`, `ConfirmedThroughDate`,
-  `ConfirmedRowCount`** (Abschnitt „Die Bestätigung hängt an einem Datenstand", unten). Eine
+  `ConfirmedRowCount`** (Abschnitt „Die Bestätigung hängt an einem Datenstand", unten) **plus
+  `AcknowledgedArchiveDays: DateOnly[]`, voreingestellt leer** (neu am 2026-09-20, s. Abschnitt 30):
+  die Tage, an denen der Betreiber eine Massenarchivierung dieses Kanals **gesehen und als
+  gewöhnlich eingeordnet** hat. Ohne dieses Feld ist die Aussage unvollständig, weil unser Audit
+  konstruktionsbedingt nur Handlungen kennt, die durch EmotePurge liefen — ein Kanal, dessen
+  Besitzer die App gar nicht benutzt, kann **nie** einen erklärenden Eintrag haben. Eine
   ausdrückliche Bestätigung des Betreibers, dass dieser Kanal **innerhalb des Zeitraums, den seine
   `UsageStat`-Zeilen abdecken**, nicht gewechselt hat, **samt der Set-ID, die seine Zeilen bekommen
   sollen**. Das Fenster gehört in die Aussage, sonst ist sie für die Mehrzahl der Kanäle gar nicht
@@ -662,9 +667,25 @@ mit, den `SetSwitchAssignments` nie enthält.
    tragen die Unique-Constraints aus Schritt 2, und diese Prüfung läuft **vor dem Backfill**.
 6. **Prüfung 4 — Widerspruch** (neu, die Umkehrung der früheren Prüfung 3): kein Kanal mit
    **Kein-Wechsel-Eintrag** schlägt am Signaturtest an — ein Tag mit ≥ 10 Archivierungen oder
-   ≥ 25 % seines Bestands ohne `emotes.syncDeleted` am selben Tag (die Schwellen der Gegenprobe,
-   Konzept 11.6). Sonst
-   `RAISE EXCEPTION 'channel % confirmed unchanged, but shows a mass archive at %'`.
+   ≥ 25 % seines Bestands (die Schwellen der Gegenprobe, Konzept 11.6), der **weder im Audit noch
+   in der Aussage erklärt** ist. Als erklärt gilt ein solcher Tag, wenn am selben Tag ein
+   `emotes.syncDeleted` **oder** ein `channel.join` im Audit steht, oder wenn er in
+   `AcknowledgedArchiveDays` des Eintrags steht. Sonst
+   `RAISE EXCEPTION 'channel % confirmed unchanged, but shows an unexplained mass archive at %'`.
+
+   **Warum `channel.join` zählt und `channel.resync` nicht** (beides am 2026-09-20 an echten
+   Prod-Daten entschieden, Abschnitt 30): der erste Sync nach einem Join archiviert, was zwischen
+   einem früheren Tracking und jetzt verschwunden ist — eine Zeile bleibt nach `LeaveAsync`
+   bestehen (`ChannelService.cs:64` setzt nur `IsBotActive`), ein Rejoin reaktiviert sie samt
+   Bestand. Das ist kein Set-Wechsel und auch kein Verdacht. Ein `channel.resync` dagegen ist
+   genau der Handgriff, mit dem ein **tatsächlicher** Wechsel sichtbar würde; ihn als Erklärung
+   zu akzeptieren hieße, die Prüfung an der Stelle blind zu machen, für die es sie gibt.
+
+   **Eine quittierte Tag-Angabe, die keine Signatur trifft, ist kein Fehler** und bricht nichts ab.
+   Der Grund ist die 25-%-Schwelle: wächst der Bestand eines Kanals zwischen Aussage und Fenster,
+   kann ein Tag aus der Signatur herausfallen, den der Betreiber zu Recht quittiert hatte. Ein
+   Abbruch darauf wäre ein Fehlalarm über einen Zustand, der sich verbessert hat. Ein Tippfehler im
+   Datum wird trotzdem gefunden — der **echte** Tag bleibt dann unquittiert und bricht ab.
 7. **Prüfung 5 — Kettenschluss** (neu, von Codex gefordert): trägt ein Kanal mehrere
    Wechseleinträge, sind ihre `BoundaryUtc` **streng aufsteigend sortiert** und die `NewEmoteSetId`
    des Eintrags *n* ist die `OldEmoteSetId` von *n+1*. Lücke oder Sprung ⇒
@@ -1704,8 +1725,13 @@ Logik von Prüfung 4 ist (die Signatur *entdeckt* nichts, sie *widerspricht* ein
 
 | Zweig | Bedingung | Vertrag |
 |---|---|---|
-| A | **Jede** Zeile ist erklärt: entweder durch einen Audit-Eintrag desselben Tages (`emotes.syncDeleted` in passender Stückzahl, `channel.join`, `channel.resync`) oder durch einen Wechseleintrag der Klassifikation. HandOfBlood erscheint mit Tag = `BoundaryUtc::date` und `archived_that_day` = `ExpectedArchivedCount` | Liste bestätigt; Testkanal purgen (V2); Migration läuft |
-| B | **Mindestens eine Zeile ohne Erklärung**, oder HandOfBloods Zeile fehlt bzw. weicht ab | **Halt.** Der Betreiber klärt (Rückwechsel, Restore, unbekannter Wechsel, Massenlöschung auf 7TV), korrigiert die Liste oder nicht; Prüfung 2/3 der Migration bricht bei derselben Abweichung ab. Nichts wird geschätzt |
+| A | **Jede** Zeile ist erklärt — durch `emotes.syncDeleted`/`channel.join` desselben Tages, durch einen Wechseleintrag der Klassifikation, oder dadurch, dass der Betreiber sie **quittiert** (Tag wandert in `AcknowledgedArchiveDays` des Kein-Wechsel-Eintrags). HandOfBlood erscheint mit Tag = `BoundaryUtc::date` und `archived_that_day` = `ExpectedArchivedCount` | Liste bestätigt und ggf. um Quittierungen ergänzt; Testkanal purgen (V2); Migration läuft |
+| B | Eine Zeile, die der Betreiber **nicht erklären kann**, oder HandOfBloods Zeile fehlt bzw. weicht ab | **Halt.** Der Betreiber klärt (Rückwechsel, Restore, unbekannter Wechsel, Massenlöschung auf 7TV), korrigiert die Liste oder nicht; Prüfung 4 der Migration bricht bei genau derselben Zeile ab. Nichts wird geschätzt |
+
+**Dieser Lauf ist damit die Vorlage für die Quittierungen**, nicht nur ein Tor: was hier erscheint
+und keinen erklärenden Audit-Eintrag trägt, ist genau die Menge, die in `AcknowledgedArchiveDays`
+gehört. Wer die Sonde überspringt, erfährt erst im Wartungsfenster von Prüfung 4, welche Tage
+gefehlt haben.
 
 Die Spalte `audit_same_day` der Abfrage ist damit **kein Beiwerk mehr, sondern das Erklärmittel** —
 sie entscheidet Zweig A gegen B.
@@ -1862,7 +1888,7 @@ ohne Api auf `:5151`), dazu Regel 16 je Bauschritt.
 | V2 | Testkanal per Admin-Purge räumen | nach Sonde 6, vor K7 |
 | V3 | Wegwerfkanal purgen — **entfällt, wenn V1 nicht stattfindet** | nach dem 01.10., vor Sonde 6 |
 | V4 | **Datenbank-Kopie für die Migrationsprobe (T1.10) beschaffen.** Zwei Quellen, beide gültig: die Sicherung der Dev-Datenbank von vor dem Leerräumen (`~/projects/emotepurge-devdb-vor-purge-2026-09-20.sql.gz`, 766 K, 27 Kanäle, 9 214 Emotes, 6 022 Nutzungszeilen über 18 Tage ab 2026-08-29, 3 Nutzer — liegt bereits vor) und, **aussagekräftiger**, eine Kopie der Produktionsdatenbank über die bestehende Backup-Kette. Nur die Prod-Kopie trägt die echte Zeilenzahl und macht die gemessene `Up`-Dauer zur belastbaren Länge des Wartungsfensters. Das Beschaffen ist ein Handgriff des Betreibers, kein Task — der Plan verbindet sich nicht nach außen | vor T1.10 |
-| V5 | **Die Klassifikationsdatei anlegen und füllen** (neu, 2026-09-20 — war bis dahin der Commit T1.9). `cp src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs`, darin HandOfBloods Wechseleinträge (beide Set-IDs stehen fest, `BoundaryUtc` und `ExpectedArchivedCount` aus der ID-Sonde vom Wechseltag) **und** je einen Kein-Wechsel-Eintrag für jeden übrigen Kanal aus der Zählabfrage neben Sonde 6 — `ConfirmedEmoteSetId` aus deren Ausgabe **abgeschrieben**, nicht abgeleitet. Die Datei ist gitignoriert; nichts davon geht ins Repo, in einen PR-Text oder in den DECISIONS-Eintrag (E1, 4.2). Ins Repo geht **eine Zahl**: die Zahl der Einträge (AK 2). **Kein Task, kein Commit** — der Handgriff hängt an Wissen, das nur der Betreiber hat. **Nur die Aussagen** — die drei `Confirmed*`-Messwerte entstehen erst im Fenster (Abschnitt 10, Schritt 4). Dazu der Hash-Handgriff (AK 92): SHA-256 der Datei, Commit-ID und Datum/Zeilenzahl der Zählabfrage nach `infra-docs`, wo auch die Datei selbst liegt | nach dem 01.10. **und** nach T0.4; vor T1.10 und vor K7-Schritt −1 |
+| V5 | **Die Klassifikationsdatei anlegen und füllen** (neu, 2026-09-20 — war bis dahin der Commit T1.9). `cp src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs`, darin HandOfBloods Wechseleinträge (beide Set-IDs stehen fest, `BoundaryUtc` und `ExpectedArchivedCount` aus der ID-Sonde vom Wechseltag) **und** je einen Kein-Wechsel-Eintrag für jeden übrigen Kanal aus der Zählabfrage neben Sonde 6 — `ConfirmedEmoteSetId` aus deren Ausgabe **abgeschrieben**, nicht abgeleitet. Die Datei ist gitignoriert; nichts davon geht ins Repo, in einen PR-Text oder in den DECISIONS-Eintrag (E1, 4.2). Ins Repo geht **eine Zahl**: die Zahl der Einträge (AK 2). **Kein Task, kein Commit** — der Handgriff hängt an Wissen, das nur der Betreiber hat. **Nur die Aussagen** — die drei `Confirmed*`-Messwerte entstehen erst im Fenster (Abschnitt 10, Schritt 4). **Dazu gehört seit dem 2026-09-20 `AcknowledgedArchiveDays`** (Abschnitt 30): jeder Tag aus der Gegenprobe, der keinen erklärenden Audit-Eintrag trägt und den der Betreiber als gewöhnliche Löschung einordnet. Nach dem Trockenlauf vom 2026-09-20 betrifft das **zwei** Kanäle mit je **einem** Tag; der Lauf im Fenster kann mehr zeigen. Die Quittierung ist eine **Aussage**, kein Messwert, und gehört deshalb in dieselbe Datei wie die übrigen Aussagen. Dazu der Hash-Handgriff (AK 92): SHA-256 der Datei, Commit-ID und Datum/Zeilenzahl der Zählabfrage nach `infra-docs`, wo auch die Datei selbst liegt | nach dem 01.10. **und** nach T0.4; vor T1.10 und vor K7-Schritt −1 |
 | T0.1–T0.6 | Sonden (Abschnitt 11; T0.6 steht als Prüfaufgabe in Abschnitt 19) — T0.1, T0.2, T0.3, T0.5 und T0.6 am 2026-09-20 gemessen | T0.4 vor K7; die übrigen sind erledigt |
 
 **Branch-Arbeit:**
@@ -1947,8 +1973,9 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
    einen Kein-Wechsel-Eintrag trägt, die beide auf der aktuellen Set-ID enden — Abbruch mit Nennung
    des Kanals, und der Fall wird ausdrücklich an einem `IsBotActive = false`-Kanal gestellt, weil
    dort der partielle Unique-Index der Saat nicht schützt** (Prüfung 3, zweite Hälfte,
-   XOR-Invariante); ein Kanal mit Kein-Wechsel-Eintrag, der die Massenarchivierungs-Signatur trägt
-   (Prüfung 4); zwei Wechseleinträge eines Kanals, deren `NewEmoteSetId`/`OldEmoteSetId` nicht
+   XOR-Invariante); ein Kanal mit Kein-Wechsel-Eintrag, der die Massenarchivierungs-Signatur an einem
+   Tag trägt, den **weder** `emotes.syncDeleted`/`channel.join` desselben Tages **noch**
+   `AcknowledgedArchiveDays` erklärt (Prüfung 4); zwei Wechseleinträge eines Kanals, deren `NewEmoteSetId`/`OldEmoteSetId` nicht
    aneinanderschließen (Prüfung 5); **ein Kein-Wechsel-Eintrag, dessen `ConfirmedRowCount` (oder
    `ConfirmedFromDate`/`ConfirmedThroughDate`) nicht zu den tatsächlichen Zeilen passt — die
    Ausnahme nennt den Kanal und beide Zahlentripel** (Prüfung 7). Dazu, **ohne** dass eine Prüfung
@@ -2314,7 +2341,7 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | Unit | `Unit/ForeignEmoteSetServiceTests.cs` | Set-ID-Modus ohne Helix, `sevenTvUserId: null` | +2 | 0 von 14 |
 | Unit | `Unit/ForeignSevenTvBreakerPolicyTests.cs` | Operationskennung (6.1): getrennter `OtherFailure`-Zähler je Operation, getrennte Half-open-Probe, **geteilte** Rate-Limit-Sperre samt `Retry-After` | +4 | **12 von 12** (Signatur — jede Bestandsmethode nimmt die Kennung; mit genau einer Kennung ist das Verhalten unverändert, und genau das belegen die umgestellten Fälle) |
 | Unit | `Unit/SevenTvEmoteSetListServiceTests.cs` (neu) | Cache-Treffer, Miss, Redis-Ausfall fail-open, ein Permit je Request (AK 23/24); **Wächterkette aus 6.1**: *n* parallele kalte Misses ⇒ **ein** Upstream-Request (Singleflight); GraphQL-429 als HTTP 200 (`extensions.status: 429`) ⇒ `RateLimited`, nicht `Ok`; offener Breaker ⇒ 503 **ohne** Upstream-Request; negatives Ergebnis wird gehalten (zweiter Aufruf in der Frist ohne Upstream-Request), `NoSevenTvAccount` wie ein Treffer; **Kreuztest (AK 94)**: wiederholtes `Unavailable` der Liste sperrt den Vorschaupfad nicht, ein bestätigtes 429 sperrt beide | +12 | — |
-| Unit | `Unit/UsageStatMigrationChecksTests.cs` (neu, pur) | die **sieben** Prüfbedingungen als pure Funktionen über Listen — je Prüfung 1–7 ein Abbruch- und ein Durchlauffall (14), dazu die **zweite Abbruchgestalt von Prüfung 3** (Kanal trägt beide Eintragsarten, XOR) und die **zwei weiteren von Prüfung 7** (`ConfirmedFromDate` bzw. `ConfirmedThroughDate` abweichend, neben dem `ConfirmedRowCount`-Fall) = 17, die vier Zuordnungsfälle `Date` → Set-ID inkl. Grenztag = 21, und **der Builder lehnt eine doppelte Eintragung schon beim Eintragen ab** (Lader, nicht Prüfung) = 22 | +22 | — |
+| Unit | `Unit/UsageStatMigrationChecksTests.cs` (neu, pur) | die **sieben** Prüfbedingungen als pure Funktionen über Listen — je Prüfung 1–7 ein Abbruch- und ein Durchlauffall (14), dazu die **zweite Abbruchgestalt von Prüfung 3** (Kanal trägt beide Eintragsarten, XOR) und die **zwei weiteren von Prüfung 7** (`ConfirmedFromDate` bzw. `ConfirmedThroughDate` abweichend, neben dem `ConfirmedRowCount`-Fall) = 17, die vier Zuordnungsfälle `Date` → Set-ID inkl. Grenztag = 21, **der Builder lehnt eine doppelte Eintragung schon beim Eintragen ab** (Lader, nicht Prüfung) = 22, und **die zwei Durchlaufgestalten von Prüfung 4** (Signaturtag durch `channel.join` erklärt; Signaturtag durch `AcknowledgedArchiveDays` quittiert — beide am 2026-09-20 nachgetragen, Abschnitt 30) = 24 | +24 | — |
 | Integration | `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu) | Migration gegen Container: Abbruch 1–7 (AK 5/6 — **acht** Fälle, weil Prüfung 3 zwei Gestalten hat und der XOR-Fall ausdrücklich an einem `IsBotActive = false`-Kanal gestellt wird, wo die Saat nicht schützt), **Backfill, das jede Zeile genau einmal erfasst** (AK 7, ein Fall), Index (AK 8), Saat (AK 9), **Saat vergibt nie `ClosedBy = 'set-switch'`** (AK 9, eigener Fall — die Invariante, an der `Down`-Schranke 1 hängt), `Down` (AK 10 — drei Fälle, darunter **Set-Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab und hat nichts entfernt**), **nicht einkompilierte Klassifikation ⇒ benannter Abbruch vor jeder Schemaänderung, einkompiliert-aber-leer läuft, fehlender Messblock ⇒ eigene benannte Meldung** (AK 91, drei Fälle); die Klassifikation kommt in jedem Fall aus einer **Fixture über den `internal` Testsitz**, nie aus der Datei des Betreibers (AK 90). Ausgezählt: 8 + 1 + 1 + 2 + 3 + 3 = 18 — die frühere Fassung nannte „Backfill" zweimal und kam so auf 19 | +18 | — |
 | Integration | `Integration/UsageStatFlushServiceTests.cs` | zwei Set-IDs an einem Tag, dreispaltiges Addieren, zurückgestellter Batch mit anderer Set-ID (AK 11) | +3 | **14 von 14** (Signatur) |
 | Integration | `Integration/UsageStatQueryServiceTests.cs` | Set-Filter in Context/Daily/Series/Totals, `null` = aktiv, `GetRowsAsync`-Summe, `/series` nach 7TV-Id (AK 19/20), `NameTwinEmoteSetIds`, nicht-aktive Grundmenge (archivierte mit Zahlen), Klasse 2b bleibt `null` in `/totals?emoteSetId=` nach dem Anlegen einer Set-Session (AK 63, T6.3) | +11 | die Fälle für `GetChannelSeriesAsync` und `GetRowsAsync` (Teilmenge der 54; Zahl nicht verifiziert — beim Umstellen zählen) |
@@ -2385,7 +2412,7 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `e2e/emote-import.e2e.spec.ts` | gleicher Kanal, anderes Set (AK 43); ungetracktes Ziel mit Bestätigung und set-zentriertem Report; Quell-Set-Picker | +3 |
 | `e2e/vote-ballot.e2e.spec.ts` | Set-Session (AK 83) | +1 |
 
-**Summe: +299 Fälle** — **nachgerechnet am 2026-09-20**, zuletzt nach der Messung von Sonde 5
+**Summe: +301 Fälle** — **nachgerechnet am 2026-09-20**, zuletzt nach der Messung von Sonde 5
 (Abschnitt 28), Zeile für Zeile über die fünf Tabellen oben, nicht fortgeschrieben. (Frühere
 Zwischenstände dieses Nachrechnens und ihre Herkunft stehen in Abschnitt 26.)
 
@@ -2397,7 +2424,7 @@ was eine fortgeschriebene Zahl nach drei Überarbeitungen tut. Ab hier gilt: **d
 Summe der Tabellen, und wer eine Zeile ändert, addiert neu.** Die alte Gegenrechnung ist damit
 gegenstandslos und wird nicht weitergeführt.
 
-Aufteilung der +299: `Infrastructure.Tests` **+137**, `Worker.Tests` **+3**, `Api.Tests` **+45**,
+Aufteilung der +301: `Infrastructure.Tests` **+139**, `Worker.Tests` **+3**, `Api.Tests` **+45**,
 Vitest **+107**, Playwright **+7**. Der Beitrag der zweiten Codex-Runde darin ist **+16**: sechs in
 `UsageStatMigrationChecksTests` (Prüfung 7, die zweite Gestalt von Prüfung 3, die zwei weiteren von
 Prüfung 7, der Builder-Fall), vier in den Migrationstests (siebter Abbruch, XOR am inaktiven Kanal,
@@ -2445,7 +2472,7 @@ Je Bauschritt, nicht als Summe zuerst. „CC" ist Wandzeit der Subagenten.
 | K6 Set-Session Anlage, Votable, Fehlercode (T6.1) | ~5 h | ~30 min |
 | K6 Worker-Wiederholung + Wettlauftest (T6.2) | ~4 h | ~25 min |
 | K6 Ergebnisse, Detailseite, Dialog, E2E, DECISIONS 3 (T6.3) | ~6 h | ~35 min |
-| Tests über alle Ebenen (**+299**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
+| Tests über alle Ebenen (**+301**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
 | T7 Coverage, Codex-Review, PR | ~2 h | ~15 min |
 | K7 Wartungsfenster inkl. Messwert-Schritt und Live-Verifikation Prod | ~2 h | — |
 | **Summe** | **~113,5 h** | **~12 h** |
@@ -2990,3 +3017,65 @@ Gegenstand: **eine Zahl, die niemand nachgerechnet hat, ist eine Behauptung.**
 **Was der Trockenlauf noch nicht konnte:** die Migration selbst gegen die Kopie fahren. Es gibt sie
 noch nicht — sie entsteht in T1.3. T1.10 bleibt damit vollständig bestehen; erledigt ist allein
 seine Voraussetzung V4 und die Gewissheit, dass der Probekörper trägt.
+
+---
+
+## 30. Nachtrag: Prüfung 4 hätte an echten Daten abgebrochen (2026-09-20)
+
+Der Trockenlauf aus Abschnitt 29 hat die Gegenprobe **Sonde 6** neu kalibriert. Beim Nachsehen,
+ob die Abbruchprüfung der Migration dieselbe Annahme trägt, stellte sich heraus: sie trägt sie —
+und wäre deshalb an den Produktionsdaten vom 2026-09-20 **abgebrochen**, an einem Kanal, der nie
+gewechselt hat.
+
+**Prüfung 4** akzeptierte als einzige Erklärung für eine Massenarchivierung einen
+`emotes.syncDeleted`-Audit-Eintrag desselben Tages. Gegen die Kopie ergab das:
+
+| Kanal | Tag | archiviert | Audit desselben Tages | Prüfung 4, alte Fassung |
+|---|---|---|---|---|
+| A | 28.08. | 40 | `emotes.syncDeleted (40)` | läuft durch |
+| B | 05.08. | 21 | nur `channel.join` | **Abbruch** |
+| C | 10.08. | 28 | keiner | **Abbruch** |
+
+(Kanalnamen stehen hier nicht — E1. Der Betreiber kann die Zeilen über Tag und Zahl zuordnen.)
+
+**Zwei Lücken, beide vom Betreiber erklärt, nicht erraten:**
+
+1. **`channel.join` ist eine Erklärung und wurde nicht als solche gelesen.** Der erste Sync nach
+   einem Join archiviert, was seit einem früheren Tracking verschwunden ist — `LeaveAsync` setzt
+   nur `IsBotActive` (`ChannelService.cs:64`), die Zeile samt Bestand überlebt, ein Rejoin
+   reaktiviert sie. Mechanisch zu beheben, ohne Zutun des Betreibers. `channel.resync` bleibt
+   ausdrücklich **keine** Erklärung: das ist der Handgriff, mit dem ein echter Wechsel sichtbar
+   würde.
+2. **Für „jemand hat direkt auf 7TV gelöscht" gab es keinen Weg, es zu sagen** — und das ist der
+   **Normalfall**, nicht die Ausnahme. Der Betreiber am 2026-09-20 zu Kanal C: er benutzt
+   EmotePurge gar nicht, sondern ist für Lasttests getrackt; dort kann **nie** ein Audit-Eintrag
+   entstehen. Und zum Zielkanal des Epics: dort werden „natürlich auch ständig mal Emotes gelöscht
+   ohne EmotePurge". Für einen solchen Kanal ist die Audit-Spalte als Erklärmittel dauerhaft
+   wertlos.
+
+**Die Antwort ist nicht, die Schwelle zu lockern.** Ein Wechsel zwischen **ähnlichen** Sets
+archiviert wenige Zeilen — genau deshalb wurde die Signatur in der ersten Codex-Runde vom
+*Entdecker* zum *Widersprecher* umgebaut (4.2). Eine höhere Schwelle würde die Fehlalarme gegen
+übersehene Wechsel eintauschen, also das Schlechtere gegen das Schlimmere.
+
+**Die Antwort ist, die Aussage vollständig zu machen.** Der Kein-Wechsel-Eintrag trägt jetzt
+`AcknowledgedArchiveDays: DateOnly[]`: die Tage, an denen der Betreiber eine Massenarchivierung
+gesehen und als gewöhnlich eingeordnet hat. Prüfung 4 bricht nur noch bei einem Tag ab, der weder
+im Audit erklärt noch quittiert ist. Damit bleibt die Prüfung scharf für den Fall, für den es sie
+gibt — ein **neuer**, unquittierter Massenlöschtag an einem angeblich unveränderten Kanal —, und
+hört auf, den Alltag für einen Verdacht zu halten.
+
+**Preis, benannt:** V5 wird mehr Tipparbeit, und die Quittierung ist eine Aussage, keine Messung —
+sie verschiebt Verantwortung zum Betreiber, wie die Kein-Wechsel-Aussage selbst. Das ist dieselbe
+Grenze, die 4.2 schon ehrlich benennt, nur an einer weiteren Stelle.
+
+**Folge für die Testzahlen:** `UsageStatMigrationChecksTests` bekommt **zwei** Durchlauffälle dazu
+(Signaturtag durch `channel.join` erklärt; Signaturtag quittiert) — **+22 → +24**, Gesamtsumme
+**+301** als Summe der fünf Tabellen, nachgezählt. Die Abbruchgestalt von Prüfung 4 bleibt **eine**,
+also ändert sich an den Migrations-Integrationstests (+18) nichts.
+
+**Und die Lehre, die diesmal wirklich neu ist:** Die beiden vorigen Nachträge fanden Fehler in
+Zahlen und in Abfragen. Dieser fand einen Fehler in einer **Annahme über die Wirklichkeit** — dass
+jede Massenlöschung durch unsere App läuft. Die stand nirgends als Satz, war aber in eine
+Abbruchbedingung einkompiliert. Solche Annahmen findet kein Review, weil sie im Dokument gar nicht
+auftauchen; sie fallen nur auf, wenn echte Daten dagegenlaufen.
