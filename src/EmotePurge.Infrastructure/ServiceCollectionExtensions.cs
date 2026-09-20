@@ -56,6 +56,12 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRedisSubscriber>(),
             sp.GetRequiredService<ILogger<RedisLiveEventStream>>()));
 
+        // Owns every write to ChannelEmoteSetObservation (spec 4.3); ChannelService,
+        // ChannelIdentityService and SevenTvSyncService all depend on it instead of touching the
+        // table directly. Scoped like them, so all four share one AppDbContext/change tracker per
+        // request or worker tick — the point of the "tracked only, rides the caller's SaveChangesAsync"
+        // contract on most of its methods.
+        services.AddScoped<IChannelEmoteSetObservationService, ChannelEmoteSetObservationService>();
         services.AddScoped<IChannelService, ChannelService>();
         // Scoped like every other AppDbContext consumer, with its warning deduplication parked in a
         // singleton beside it: the worker opens a fresh scope per reconcile tick, so a set living on

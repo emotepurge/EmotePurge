@@ -1,5 +1,6 @@
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -34,6 +35,20 @@ public sealed class PostgresFixture : IAsyncLifetime
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseNpgsql(_container.GetConnectionString())
+            .Options;
+
+        return new AppDbContext(options);
+    }
+
+    // Same container and database, with EF Core interceptors wired in — for tests that need to
+    // inject a failure at a specific point in a service's own SaveChangesAsync sequence (e.g.
+    // ChannelEmoteSetObservationServiceTests' transaction-rollback case) without touching the
+    // production code under test.
+    public AppDbContext CreateDbContext(IEnumerable<IInterceptor> interceptors)
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(_container.GetConnectionString())
+            .AddInterceptors(interceptors)
             .Options;
 
         return new AppDbContext(options);

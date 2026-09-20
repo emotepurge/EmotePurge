@@ -12,6 +12,7 @@ public class ChannelService(
     AppDbContext db,
     IRedisPublisher redisPublisher,
     IChannelIdentityService channelIdentityService,
+    IChannelEmoteSetObservationService emoteSetObservationService,
     ILogger<ChannelService> logger) : IChannelService
 {
     public async Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)
@@ -62,6 +63,11 @@ public class ChannelService(
         // SevenTvPeriodicResyncWorker and Worker's boot recovery both filter on IsBotActive, and
         // JoinAsync reactivates the row, so nothing else needs to change.
         channel.IsBotActive = false;
+        // Closes the open observation interval, if any (spec 4.3) — tracked only, riding the
+        // SaveChangesAsync a few lines below together with the deactivation and the audit entry, so
+        // "left" and "stopped observing this set" land in the same commit.
+        await emoteSetObservationService.CloseOpenIntervalAsync(
+            channel.Id, ChannelEmoteSetObservationClosedBy.Leave, cancellationToken);
         // Only reached for a channel that exists — the unknown-channel branch above returns without
         // touching anything and therefore without an entry.
         db.AddAuditEntry(actor, AuditActions.ChannelLeave, channelName: normalized);
@@ -245,6 +251,11 @@ public class ChannelService(
             // The rename is its own tracking gap — the IRC join pointed at a name that no longer
             // answered — independent of whether the row was also inactive.
             rowWithId.TrackingResumedAt = DateTime.UtcNow;
+            // Closes the open observation interval (spec 4.3) — tracked only, riding
+            // CompleteJoinAsync's SaveChangesAsync together with this rename's audit entry. The next
+            // successful sync opens a fresh interval; this method never does.
+            await emoteSetObservationService.CloseOpenIntervalAsync(
+                rowWithId.Id, ChannelEmoteSetObservationClosedBy.Rename, cancellationToken);
             db.AddAuditEntry(
                 actor,
                 AuditActions.ChannelRename,

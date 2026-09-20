@@ -13,6 +13,7 @@ public class SevenTvSyncService(
     ISevenTvApiClient sevenTvApiClient,
     IEmoteMatchCache emoteMatchCache,
     IDuplicateEmoteNameTracker duplicateNameTracker,
+    IChannelEmoteSetObservationService emoteSetObservationService,
     ChannelSyncGate channelSyncGate,
     ILogger<SevenTvSyncService> logger)
     : ISevenTvSyncService
@@ -81,6 +82,16 @@ public class SevenTvSyncService(
         // even when the two sets happen to hold identical emotes. A first-time TwitchChannelId
         // backfill deliberately does not count — it changes no emote the UI could show.
         var emoteSetSwitched = channel.ActiveEmoteSetId != emoteSet.Id;
+
+        // The observation log's own decision, independent of the ActiveEmoteSetId comparison above:
+        // it looks at whether an interval is *currently open* in its own table, not at this channel
+        // column, so a channel whose row was closed by a rename/merge without ActiveEmoteSetId
+        // changing still gets a fresh interval here (spec 4.3, "auch wenn die zuletzt geschlossene
+        // dieselbe ID trug"). Called before the assignments below, while db has no other pending
+        // changes yet, so a set switch's own transaction (see
+        // ChannelEmoteSetObservationService.RecordObservedSetAsync) never has to share a commit with
+        // unrelated in-flight state from this method.
+        await emoteSetObservationService.RecordObservedSetAsync(channel.Id, emoteSet.Id, cancellationToken);
 
         channel.TwitchChannelId ??= twitchUserId;
         channel.ActiveEmoteSetId = emoteSet.Id;
