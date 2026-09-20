@@ -22,5 +22,12 @@ public class UsageStat
     // Spalte", #73).
     public int SharedChatUseCount { get; set; }
 
+    // The 7TV emote set this row's usage was counted against — the locally observed set at count
+    // time, not necessarily the channel's current one (spec section 5: the chat path keys counts by
+    // the match cache's observed set id, which can lag a switch by a batch flush). Never a default:
+    // the AddUsageStatEmoteSetId migration (#200) backfills every existing row before this column
+    // becomes NOT NULL, so no code path ever sees an empty value here.
+    public string EmoteSetId { get; set; } = string.Empty;
+
     public Emote Emote { get; set; } = null!;
 }

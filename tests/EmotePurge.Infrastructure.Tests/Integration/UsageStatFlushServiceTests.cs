@@ -14,11 +14,12 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 [Collection("Postgres")]
 public class UsageStatFlushServiceTests(PostgresFixture fixture)
 {
-    // Every batch below uses a single, arbitrary emote set id — the composite (EmoteId, EmoteSetId)
-    // key is exercised here only as a signature change (T1.1); the behaviour of two different sets
-    // sharing a day is T1.4's addition once the flush writes the set id instead of summing across
-    // it (see UsageStatFlushService.FlushAsync's provisional grouping).
+    // Most batches below use a single, arbitrary emote set id — the composite (EmoteId, EmoteSetId)
+    // key does not otherwise matter to them. OtherSetId is reserved for the tests further down that
+    // exercise two different sets sharing a day (AK 11): the flush writes the set id with the row
+    // instead of summing across it.
     private const string SetId = "set-1";
+    private const string OtherSetId = "set-2";
 
     [Fact]
     public async Task FlushAsync_InsertsNewRow_ForFirstCountOfTheDay()
@@ -95,6 +96,79 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
         Assert.Equal(10, stat.UseCount);
         Assert.Equal(4, stat.BotUseCount);
         Assert.Equal(7, stat.SharedChatUseCount);
+    }
+
+    [Fact]
+    public async Task FlushAsync_WritesTwoRows_ForTwoSetIdsOfTheSameEmoteOnTheSameDay()
+    {
+        await using var db = fixture.CreateDbContext();
+        var emote = await SeedEmoteAsync(db, "flushtest-twosets");
+
+        // A mid-day set switch splits one emote's usage into two keys (spec section 5, rule 1). The
+        // flush must write two rows — this is exactly the case T1.1's provisional per-EmoteId
+        // summation collapsed into one, and T1.4 replaces that summation with the real set-aware SQL.
+        await CreateService(db).FlushAsync(new Dictionary<UsageCounterKey, EmoteUsageCounts>
+        {
+            [new UsageCounterKey(emote.Id, SetId)] = new(3, 0, 0),
+            [new UsageCounterKey(emote.Id, OtherSetId)] = new(5, 0, 0),
+        });
+
+        var stats = await ReadStatsAsync(fixture, emote.Id);
+        Assert.Equal(2, stats.Count);
+        Assert.Equal(3, stats.Single(s => s.EmoteSetId == SetId).UseCount);
+        Assert.Equal(5, stats.Single(s => s.EmoteSetId == OtherSetId).UseCount);
+    }
+
+    [Fact]
+    public async Task FlushAsync_AddsToExistingRow_OnlyForTheMatchingSetId()
+    {
+        await using var db = fixture.CreateDbContext();
+        var emote = await SeedEmoteAsync(db, "flushtest-setconflict");
+
+        // First flush seeds both set rows for the day; the second flush only carries (E, SetId). The
+        // ON CONFLICT target is now three columns wide ("EmoteId", "EmoteSetId", "Date"), so it must
+        // add only to the matching row and leave the other set's row untouched — proof that the
+        // arbiter is set-aware, not just re-checking the old two-column shape with a third value along
+        // for the ride.
+        await CreateService(db).FlushAsync(new Dictionary<UsageCounterKey, EmoteUsageCounts>
+        {
+            [new UsageCounterKey(emote.Id, SetId)] = new(4, 0, 0),
+            [new UsageCounterKey(emote.Id, OtherSetId)] = new(9, 0, 0),
+        });
+        await CreateService(db).FlushAsync(new Dictionary<UsageCounterKey, EmoteUsageCounts>
+        {
+            [new UsageCounterKey(emote.Id, SetId)] = new(6, 0, 0),
+        });
+
+        var stats = await ReadStatsAsync(fixture, emote.Id);
+        Assert.Equal(2, stats.Count);
+        Assert.Equal(10, stats.Single(s => s.EmoteSetId == SetId).UseCount);
+        Assert.Equal(9, stats.Single(s => s.EmoteSetId == OtherSetId).UseCount);
+    }
+
+    [Fact]
+    public async Task FlushAsync_KeepsADeferredBatchsSetId_SeparateFromANewerFlush()
+    {
+        await using var db = fixture.CreateDbContext();
+        var emote = await SeedEmoteAsync(db, "flushtest-deferredset");
+
+        // Models UsageFlushWorker requeuing a failed batch (spec section 5, rule 4): the key
+        // preserves the set id the batch was counted under, so when a batch that failed under the
+        // old set (OtherSetId) is finally retried after a newer flush already wrote under the current
+        // set (SetId), the two must land as separate rows, not merge into either one.
+        await CreateService(db).FlushAsync(new Dictionary<UsageCounterKey, EmoteUsageCounts>
+        {
+            [new UsageCounterKey(emote.Id, SetId)] = new(7, 0, 0),
+        });
+        await CreateService(db).FlushAsync(new Dictionary<UsageCounterKey, EmoteUsageCounts>
+        {
+            [new UsageCounterKey(emote.Id, OtherSetId)] = new(2, 0, 0),
+        });
+
+        var stats = await ReadStatsAsync(fixture, emote.Id);
+        Assert.Equal(2, stats.Count);
+        Assert.Equal(7, stats.Single(s => s.EmoteSetId == SetId).UseCount);
+        Assert.Equal(2, stats.Single(s => s.EmoteSetId == OtherSetId).UseCount);
     }
 
     [Fact]
