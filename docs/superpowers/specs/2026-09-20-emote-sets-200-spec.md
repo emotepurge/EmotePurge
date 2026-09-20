@@ -12,9 +12,10 @@ es als nummerierte Entscheidung in Abschnitt 2 mit Beleg.
 Neu gegenüber dem Konzept ist nur dies: die **elf Punkte, die das Konzept an den Plan delegiert**, sind
 hier entschieden (E1–E11, je mit dem Buchstaben (a)–(k) aus dem Auftrag), dazu vierzehn weitere
 Festlegungen, die beim Nachprüfen am Code nötig wurden (E12–E25); **siebzehn im Code nachgeprüfte
-Fallen** (Abschnitt 3); die Verträge in prüfbarer Form; die vier noch nicht gemessenen Sonden als
-T0-Aufgaben mit beiden Zweigen (Abschnitt 11); der Schnitt in Kind-Issues (Abschnitt 12); und die
-Aufgabenreihenfolge.
+Fallen** (Abschnitt 3); die Verträge in prüfbarer Form; die Sonden als T0-Aufgaben (Abschnitt 11 —
+**fünf der sechs** sind inzwischen gemessen und einzweigig: T0.1, T0.2, T0.3, T0.5, T0.6; offen ist
+allein Sonde 6); der Schnitt in
+Kind-Issues (Abschnitt 12); und die Aufgabenreihenfolge.
 
 **Zeitbezug, verbindlich.** HandOfBlood wechselt am **2026-10-01** auf sein Halloween-Set. Der
 bindende Harness-Lauf (#69, Epic #118) ist am **2026-10-08**. **Der Deploy dieser Spec liegt
@@ -1211,6 +1212,12 @@ Name kommt aus der Set-Liste der Seite, wie beim Dropdown).
 Nutzlast ohne Aussagewert.** Eine Zelle je 7TV-Emote, nicht je Set-Eintrag (#74-Duplikate: eine Zelle,
 Slot-Zahl 2).
 
+**Der Delete-Lauf folgt derselben Identität** (Sonde 5, Zweig A, gemessen am 2026-09-20): eine
+Duplikat-Zelle ergibt **eine** Queue-Zeile und **ein** `REMOVE`, das beide Einträge entfernt. Der
+**Restore** ist die einzige Ausnahme — er muss je Alias ein `ADD` senden und hat deshalb als
+einziger Lauf einen Schlüsselraum `sevenTvEmoteId#alias`. Der Schlüssel der **Seite** bleibt davon
+unberührt.
+
 ### 7.1 Das Zeilenmodell der Seite
 
 ```ts
@@ -1245,11 +1252,12 @@ Zahlen; Live ohne Zeile → `emoteId: null, totalUseCount: null`; Zeile ohne Liv
 | inneres `track` (`.html:585`) | `track emote.sevenTvEmoteId`; äußeres `trackBy: trackRow` (Index, `:524`) **unverändert** (DECISIONS 2026-08-30) |
 | `inspectedId`, `usageRank`, `fillPercents`, `seriesByEmote` (`:561-565`, `:533-537`, `:488-494`, `:678-680`) | Maps nach `sevenTvEmoteId` |
 | `DeletableEmote.emoteId` (`mass-delete-panel.ts:34-37`), `DeleteQueueEmote.emoteId` (`seven-tv-delete.service.ts:55-59`) | `emoteId?: string` |
-| Queue-Key Delete/Restore (`:118`, `seven-tv-restore.service.ts:152`) | `key: emote.sevenTvEmoteId` — R3-Nachtrag: der Import-Lauf war das Muster |
+| Queue-Key Delete (`:118`) | `key: emote.sevenTvEmoteId` — R3-Nachtrag: der Import-Lauf war das Muster. Eine Duplikat-Zelle ergibt **eine** Zeile (Sonde 5, Zweig A) |
+| Queue-Key Restore (`seven-tv-restore.service.ts:152`) | `key: ${sevenTvEmoteId}#${alias}` — **eine Zeile je Alias**, weil je Alias ein `ADD` nötig ist; das `ADD` sendet den Alias. Der Schlüsselraum mit `#` existiert **nur** im Restore-Lauf; `sync-restored` bekommt die 7TV-Ids dedupliziert |
 | `RunResult` (`seven-tv-run-engine.ts:117-118`) | `doneIds` entfällt (E2); `doneKeys` einzige Rückmelde-Identität |
 | Panel `deleted` (`mass-delete-panel.ts:297-303`) | emittiert `doneKeys` (E18); `usage-stats-page.ts:1349-1350` und `vote-session-detail-page.ts:690-695` filtern nach `sevenTvEmoteId` |
-| Protokoll (`purge-run-export.ts:37-42`, `:154-162`) | `PurgeRunRow.emoteId: string \| null`; Panel-Filter `:344-352`/`:393-398` entfällt; Parser akzeptiert `null` **und** alte Protokolle mit Guid |
-| Restore aus Protokoll (`restore-flow.ts:82-86`) | `emoteId: row.emoteId ?? undefined` |
+| Protokoll (`purge-run-export.ts:37-42`, `:154-162`) | `PurgeRunRow.emoteId: string \| null` **und** `aliases: string[]` (alle Aliase, unter denen die Zelle im Set lag — bei `slotCount 1` genau einer); Panel-Filter `:344-352`/`:393-398` entfällt; Parser akzeptiert `null` **und** alte Protokolle mit Guid **und** solche ohne `aliases` (dann gilt `[emoteName]`) |
+| Restore aus Protokoll (`restore-flow.ts:82-86`) | `emoteId: row.emoteId ?? undefined`; `aliases` der Zeile werden durchgereicht, und der Restore-Dienst legt daraus je Alias eine Queue-Zeile an |
 | Delete-/Restore-Laufdatensatz (`DeleteRunInfo :79-83`, `RestoreRunInfo :62-66`) | `+ setId: string`, beim Start eingefroren; `reportDeleted`/`reportRestored` und beide Retries lesen Set-ID **und** Keys aus dem Datensatz |
 | `emote-admin.service.ts:55-68` | `syncDeleted(channelName, { emoteSetId, sevenTvEmoteIds })`, `syncRestored` ebenso; die Altform sendet der Client **nie** |
 | Drilldown (`usage-stats-page.ts`, `emote-drilldown-dialog.ts:319-321`) | nur für `emoteId !== null && totalUseCount !== null`; `data` trägt `emoteSetId` eingefroren |
@@ -1319,7 +1327,7 @@ Designsprache: `docs/UI-Designsprache.md` (verbindlich), `DESIGN.md`; Muster: `d
 | Live, Zeile, Zahlen unter X | aus `/totals` | — | ja | ja |
 | Live, keine Zahlen unter X (`totalUseCount: null`) — Klasse 2b oder 3 | keine | Beschriftung „keine Zählungen unter diesem Set" (E17); eigene Gruppe am Ende, nicht im Pareto, nicht in der Summe (F16) | ja | nein |
 | `'left'` — Zeile mit Zahlen, nicht mehr im Set | aus `/totals` | Badge wie `archivedBadge` | **nein** | ja |
-| `slotCount 2` (#74) | einmal | Slot-Zahl an der Zelle, beide Aliase im Tooltip; Slot-Projektion zählt 2 | **Sonde 5, Zweig A oder B** (Abschnitt 11) | wie Zeile 1 |
+| `slotCount 2` (#74) | einmal | Slot-Zahl an der Zelle, beide Aliase im Tooltip; Slot-Projektion zählt 2 | **ja, wie Zeile 1** — ein `REMOVE` entfernt beide Einträge (Sonde 5, Zweig A, Abschnitt 11) | wie Zeile 1 |
 | `nameTwinEmoteSetIds` nicht leer | eigene | kleines Merkmal mit Tooltip „unter diesem Namen liegt in ‚<Setname>' ein anderes Emote"; kein Banner, kein Filter | wie sonst | wie sonst |
 
 Sortierung, Bänder (`groupIntoUsageBands`), Verteilungsstreifen, Fill-Bars und Summenzeile rechnen
@@ -1442,11 +1450,22 @@ trägt das gewählte Set. Kein zweiter Request, wenn das aktive Set gewählt ble
 nicht-aktivem Set zusätzlich „dieses Set ist gerade nicht aktiv". Kein Bestätigungsschritt mehr als
 heute (Konzept 9: keine Schutzmechanik).
 
-### 8.9 Duplikat-Zellen und die Lösch-Vorprüfung
+**Eine Duplikat-Zelle zählt im Dialog als eine Löschung** und erscheint in keiner Ausnahmegruppe
+(8.9 ist entfallen); dass sie zwei Slots freigibt, steht an der Zelle (8.2), nicht im Dialog.
 
-Bis Sonde 5 gemessen ist: Zellen mit `slotCount > 1` sind wählbar, werden aber vom Delete-Lauf
-**ausgenommen** — der Dialog zeigt sie als eigene Gruppe „N Emotes liegen doppelt im Set und werden
-nicht gelöscht" (Konzept 6.2). Nach der Messung: Abschnitt 11, Sonde 5.
+### 8.9 Entfallen — Duplikat-Zellen brauchen keine Lösch-Vorprüfung
+
+**Dieser Abschnitt ist am 2026-09-20 mit der Messung von Sonde 5 entfallen** (Abschnitt 28); die
+Nummer bleibt stehen, damit keine Verweiskette bricht und 8.10 nicht wandert. Er hielt eine
+Zwischenregel für den ungemessenen Fall: Zellen mit `slotCount > 1` wären wählbar, aber vom
+Delete-Lauf **ausgenommen** gewesen, mit einer eigenen Gruppe im Dialog („N Emotes liegen doppelt
+im Set und werden nicht gelöscht", Konzept 6.2).
+
+**An seine Stelle tritt Zweig A von Sonde 5:** ein `removeEmote(id: { emoteId })` entfernt **beide**
+Einträge, also ist eine Duplikat-Zelle wählbar und löschbar **wie jede andere Zelle** — eine
+Queue-Zeile, ein `REMOVE`, keine Ausnahmegruppe und kein Sonderhinweis im Dialog. Die Folgen für
+Queue-Key, Protokoll (`aliases: string[]`) und den Restore je Alias stehen in **7.2**, die
+Zeilenklasse in **8.2**, die Bestätigungsdialoge in **8.8**.
 
 ### 8.10 Audit-Ansicht
 
@@ -1575,7 +1594,9 @@ Jede Sonde hat **zwei Zweige**, die Regel, welcher gilt, und was nach der Messun
 streichen ist. Sonden 1 und 2 sind gemessen (Konzept 11.1, 11.2); Sonde 1 (T0.1) und Sonde 7 (T0.5)
 sind am 2026-09-20 gemessen und tragen ihr Ergebnis unten. **T0.6** (`editor_of { user { id } }`) ist
 ebenfalls am 2026-09-20 gemessen, steht aber nicht hier, sondern als Prüfaufgabe in Abschnitt 19 und
-im Plan (0.2). **Sonde 4 (T0.2), 5 (T0.3) und 6 (T0.4) stehen aus.**
+im Plan (0.2). **Sonde 5 (T0.3) ist ebenfalls am 2026-09-20 gemessen und trägt ihr Ergebnis unten;
+Sonde 4 (T0.2) auch, ihr Ergebnis steht in Abschnitt 27 und an E12. Offen ist allein Sonde 6
+(T0.4).**
 
 ### Sonde 1 (Rest) — enthält HandOfBloods eigene Set-Liste das Halloween-Set mit Namen? (T0.1)
 
@@ -1606,13 +1627,23 @@ Einen Kanal mit Chat-Betrieb im Dev-Stack tracken, Nutzungsseite öffnen, im Net
 `EventSource` auf `/api/live/…` beobachten und über **10 Minuten** zählen: `usage.flushed`,
 `channel.synced`.
 
+**Gemessen am 2026-09-20: Zweig A.** Fenster 15:46:37–15:56:37 UTC am Dev-Stack `:8080`, vier
+getrackte Kanäle. Abweichend von der Anleitung oben **nicht** am `EventSource` gezählt, sondern am
+Redis-Kanal `live:events` — dieselben Ereignisse eine Stufe vor der SSE-Auslieferung, dadurch
+vollständiger und ohne offenen Browser; beide Ereignisarten werden unabhängig davon veröffentlicht,
+ob eine Seite offen ist. `channel.synced`: **10 / 10 / 10 / 0** (`knirpz`, `handofblood`,
+`brudivoeller_tv`, `papaplatte`), also **1,00 je Minute** je betroffenem Kanal.
+
 | Zweig | Bedingung | Vertrag |
 |---|---|---|
-| A | `channel.synced` ≤ 1 je Minute im Mittel | TTL des Set-ID-Lesepfads bleibt **60 s** (E12); ein Betrachter eines 900er-Sets kostet ≤ 2 Permits/min |
-| B | > 1 je Minute | TTL für `7tvforeign:set:*` **300 s** (eigene Konstante neben `ForeignEmoteSetCache.Ttl`); `refresh=true` umgeht sie wie heute (`SevenTvEndpoints.cs:39-42`) |
+| A (gemessen) | `channel.synced` ≤ 1 je Minute im Mittel | TTL des Set-ID-Lesepfads bleibt **60 s** (E12); ein Betrachter eines 900er-Sets kostet ≤ 2 Permits/min |
 
-`usage.flushed` ist für die Kosten irrelevant (E16: stille Reloads laden keine Live-Liste) und wird
-nur mitgezählt, um die Regel zu belegen. Nach der Messung streichen: den anderen Zweig aus E12.
+Zweig B (TTL 300 s) ist gestrichen. Der Wert ist zusätzlich nach oben gedeckelt: der periodische
+Resync **ist** der Ein-Minuten-Takt, dieser Pfad kann gar nicht mehr erzeugen; der EventAPI-Client
+hat im Fenster nichts beigetragen. `usage.flushed` ist für die Kosten irrelevant (E16: stille
+Reloads laden keine Live-Liste) und belegt hier die Regel: der Kanal mit den **meisten** Flushes
+hat **null** Syncs. Warum drei Kanäle überhaupt jede Minute eine Änderung melden — ein Defekt, kein
+Normalbetrieb — steht in Abschnitt 27.
 
 ### Sonde 5 — entfernt ein `REMOVE` bei doppelt eingetragener Emote-ID einen oder beide Einträge? (T0.3)
 
@@ -1633,14 +1664,22 @@ curl -s "https://7tv.io/v3/emote-sets/<SET-ID>" | jq '[.emotes[] | select(.id=="
 curl -s https://7tv.io/v4/gql -H 'Content-Type: application/json' -H 'Authorization: Bearer <7TV-TOKEN>' -d '{"query":"mutation($s: Id!, $e: Id!) { emoteSets { emoteSet(id: $s) { removeEmote(id: { emoteId: $e, alias: \"probeB\" }) { id } } } }","variables":{"s":"<SET-ID>","e":"<EMOTE-ID>"}}'
 ```
 
+**Gemessen am 2026-09-20: Zweig A**, und zwar mit beiden Teilantworten. Aufbau, Antworten und
+Folgen im Einzelnen: Abschnitt 28.
+
+| Frage | Ergebnis | Beleg |
+|---|---|---|
+| **5a** — nimmt 7TV einen zweiten `addEmote` mit derselben `emoteId` und anderem Alias an? | **angenommen** | HTTP 200, `data.emoteSets.emoteSet.addEmote.id` gesetzt; Gegenprobe `https://7tv.io/v3/emote-sets/<SET-ID>` liefert `["probeA","probeB"]` — zwei Einträge derselben ID |
+| **5b** — wie viele Einträge bleiben nach `removeEmote(id: { emoteId })` ohne Alias? | **keiner, beide sind weg** | Gegenprobe liefert `[]` |
+| **5c** — trifft ein `REMOVE` mit Alias den verbliebenen Eintrag? | **entfällt** — nach 5b war nichts übrig | der trotzdem ausgeführte vierte Aufruf bestätigt das: `{"errors":[{"message":"BAD_REQUEST emote not found in set", … "status":404}]}` |
+
 | Zweig | Bedingung | Vertrag der Lösch-Vorprüfung und des Protokolls |
 |---|---|---|
-| A | 5b: **beide** Einträge weg | Duplikat-Zellen laufen im Delete-Lauf mit **einer** Queue-Zeile (Key `sevenTvEmoteId`); die Protokollzeile trägt `aliases: string[]`; der Restore gibt je Alias ein `ADD` (Queue-Key `sevenTvEmoteId#alias` **nur** im Restore-Lauf, weil dort mehrere Zeilen je ID nötig sind; 5a muss dafür „angenommen" ergeben, sonst nur der erste Alias); 8.9 entfällt |
-| B | 5b: **ein** Eintrag bleibt | Delete-Lauf braucht je Eintrag ein `REMOVE`; 5c entscheidet die Form: trifft der Alias (`removeEmote(id: { emoteId, alias })`), bekommt die Queue je Alias eine Zeile mit Key `sevenTvEmoteId#alias` und `REMOVE_OPERATION` sendet den Alias; trifft er nicht, bleibt 8.9 **dauerhaft** (Duplikate ausgenommen, Hinweis) und die Frage geht als Notiz an #74 |
-| — | 5a: zweiter `ADD` **abgelehnt** | die Duplikate im Bestand sind dann nicht per API reproduzierbar; Sonde an einem Set mit vorhandenem Duplikat wiederholen (Schritt 3/4 nur), sonst Zweig B ohne 5c |
+| A (gemessen) | 5b: **beide** Einträge weg | Duplikat-Zellen laufen im Delete-Lauf mit **einer** Queue-Zeile (Key `sevenTvEmoteId`) und **einem** `REMOVE`; die Protokollzeile trägt `aliases: string[]`; der Restore gibt je Alias ein `ADD` (Queue-Key `sevenTvEmoteId#alias` **nur** im Restore-Lauf, weil dort mehrere Zeilen je ID nötig sind). Weil 5a „angenommen" ergeben hat, gilt der Restore-Teil **vollständig** — je Alias ein Eintrag, nicht nur der erste. 8.9 ist damit entfallen (s. dort) |
 
-Nach der Messung streichen: 8.9 (bei A) bzw. den A-Zweig; der Schlüssel-Vertrag aus Abschnitt 7 bleibt
-bei „eine Zelle je 7TV-Emote" in beiden Zweigen.
+Zweig B und die Sonderzeile zu einem abgelehnten zweiten `ADD` sind gestrichen. Der
+Schlüssel-Vertrag aus Abschnitt 7 bleibt unverändert bei „eine Zelle je 7TV-Emote"; der
+Alias-Schlüsselraum entsteht allein in der Restore-Queue und nie im Zeilenmodell der Seite.
 
 ### Sonde 6 — Gegenprobe vor der Migration (T0.4, lesend gegen Prod, unmittelbar vor K7)
 
@@ -1765,7 +1804,7 @@ Abschnitt; #200 wird zum Epic mit dieser Liste (Regel: neue Issues gehören ins 
 | K1 · **#205** | **Count chat usage per emote set** (Schritt 3) | 4.1–4.3, 5, Migration, Beobachtungs-Log mit allen Schließstellen, `GetRowsAsync`-Summe, DECISIONS-Eintrag 1 | K0 nur für die Listenwerte (V5) und für T1.10 | AK 5–20, 87–92 |
 | K2 · **#206** | **Target set picker: any set of any account the user edits** (Schritt 4) | 6.1, 6.2, 6.4, 6.7, 6.8, 8.6, Preview-Kapazität, Set-ID-Lesepfad, set-zentrierter Endpunkt, Kollisions-/Alias-Gruppen, DECISIONS-Eintrag 2 | keine (parallel zu K1) | AK 21–46, 94 |
 | K3 · **#207** | **Source set picker for foreign channels** (Schritt 5) | 6.3, 8.7 | K2 (Lesepfad, Listen-Dienst) | AK 47–49 |
-| K4 · **#208** | **Set view on the usage page: dropdown, per-set filters, union list, row identity** (Schritt 6) | 6.5, 7, 8.1–8.5, 8.9, Export, Türen auf das gewählte Set, DECISIONS-Eintrag 4 (erster Teil) | K1 (Set-Filter), K2 (Set-Liste, Lesepfad) | AK 50–66 |
+| K4 · **#208** | **Set view on the usage page: dropdown, per-set filters, union list, row identity** (Schritt 6) | 6.5, 7, 8.1–8.5 (Duplikat-Zelle: 8.2, seit dem Wegfall von 8.9), Export, Türen auf das gewählte Set, DECISIONS-Eintrag 4 (erster Teil) | K1 (Set-Filter), K2 (Set-Liste, Lesepfad) | AK 50–66 |
 | K5 · **#209** | **Delete and restore in the selected set** (Schritt 7) | 6.6, 7.2 (Queue-Key, Protokoll, Laufdatensatz), 8.8, 8.10, DECISIONS-Eintrag 4 (Nachtrag) | K4 | AK 67–74 |
 | K6 · **#210** | **Vote sessions over a non-active set** (Schritt 8) | 6.9, 9, E10 Worker-Wiederholung, DECISIONS-Eintrag 3 | K1, K2, K4 | AK 75–83 |
 | K7 · **#211** | **Maintenance-window deploy** (Runbook, kein Code) | Abschnitt 10, Live-Verifikation auf Prod | K0–K6 gemergt; Harness-Runbook freigegeben | AK 84–86, 92, 93 |
@@ -1794,7 +1833,7 @@ ohne Api auf `:5151`), dazu Regel 16 je Bauschritt.
 | V3 | Wegwerfkanal purgen — **entfällt, wenn V1 nicht stattfindet** | nach dem 01.10., vor Sonde 6 |
 | V4 | **Datenbank-Kopie für die Migrationsprobe (T1.10) beschaffen.** Zwei Quellen, beide gültig: die Sicherung der Dev-Datenbank von vor dem Leerräumen (`~/projects/emotepurge-devdb-vor-purge-2026-09-20.sql.gz`, 766 K, 27 Kanäle, 9 214 Emotes, 6 022 Nutzungszeilen über 18 Tage ab 2026-08-29, 3 Nutzer — liegt bereits vor) und, **aussagekräftiger**, eine Kopie der Produktionsdatenbank über die bestehende Backup-Kette. Nur die Prod-Kopie trägt die echte Zeilenzahl und macht die gemessene `Up`-Dauer zur belastbaren Länge des Wartungsfensters. Das Beschaffen ist ein Handgriff des Betreibers, kein Task — der Plan verbindet sich nicht nach außen | vor T1.10 |
 | V5 | **Die Klassifikationsdatei anlegen und füllen** (neu, 2026-09-20 — war bis dahin der Commit T1.9). `cp src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs`, darin HandOfBloods Wechseleinträge (beide Set-IDs stehen fest, `BoundaryUtc` und `ExpectedArchivedCount` aus der ID-Sonde vom Wechseltag) **und** je einen Kein-Wechsel-Eintrag für jeden übrigen Kanal aus der Zählabfrage neben Sonde 6 — `ConfirmedEmoteSetId` aus deren Ausgabe **abgeschrieben**, nicht abgeleitet. Die Datei ist gitignoriert; nichts davon geht ins Repo, in einen PR-Text oder in den DECISIONS-Eintrag (E1, 4.2). Ins Repo geht **eine Zahl**: die Zahl der Einträge (AK 2). **Kein Task, kein Commit** — der Handgriff hängt an Wissen, das nur der Betreiber hat. **Nur die Aussagen** — die drei `Confirmed*`-Messwerte entstehen erst im Fenster (Abschnitt 10, Schritt 4). Dazu der Hash-Handgriff (AK 92): SHA-256 der Datei, Commit-ID und Datum/Zeilenzahl der Zählabfrage nach `infra-docs`, wo auch die Datei selbst liegt | nach dem 01.10. **und** nach T0.4; vor T1.10 und vor K7-Schritt −1 |
-| T0.1–T0.6 | Sonden (Abschnitt 11; T0.6 steht als Prüfaufgabe in Abschnitt 19) — T0.1, T0.5 und T0.6 am 2026-09-20 gemessen | T0.3 vor K5, T0.2 vor K2, T0.4 vor K7 |
+| T0.1–T0.6 | Sonden (Abschnitt 11; T0.6 steht als Prüfaufgabe in Abschnitt 19) — T0.1, T0.2, T0.3, T0.5 und T0.6 am 2026-09-20 gemessen | T0.4 vor K7; die übrigen sind erledigt |
 
 **Branch-Arbeit:**
 
@@ -1826,7 +1865,7 @@ ohne Api auf `:5151`), dazu Regel 16 je Bauschritt.
 | T4.6 | DECISIONS-Eintrag 4 (Identität, `/series`, Export, Caches) im Commit von T4.3; E2E: Set-Ansicht mit gemockter Live-Liste, Guid-lose Zelle markieren | Regel 3 |
 | T5.1 | `RunResult.doneIds` entfernen (E2), Queue-Keys, Protokoll (`emoteId` optional, Parser), Laufdatensatz mit Set-ID, Panel `deleted` als Keys (E18), Detailseite `onDeleted` (F12); Specs | braucht T4.3 |
 | T5.2 | `sync-deleted`/`sync-restored` neue Form + Altform (6.6), Service-Überladung, Log-Zeile (E3), Papier-Fall; `Api.Tests` beide Formen; `EmoteServiceTests` | braucht T2.3 (Filter) |
-| T5.3 | Lösch-/Restore-Bestätigung mit Setname; Duplikat-Gruppe (8.9 oder Sonde-5-Zweig); Audit-Ansicht; Live-Verifikation am Testkanal (Konzept 13.7); DECISIONS-Eintrag 4 Nachtrag im Commit von T5.2 | braucht T5.1, T5.2 |
+| T5.3 | Lösch-/Restore-Bestätigung mit Setname; Duplikat-Zelle als **eine** Löschung ohne Ausnahmegruppe (Sonde 5, Zweig A — 8.8, 8.9 entfallen); Audit-Ansicht; Live-Verifikation am Testkanal (Konzept 13.7); DECISIONS-Eintrag 4 Nachtrag im Commit von T5.2 | braucht T5.1, T5.2 |
 | T6.1 | Entitäten/Migration sind aus K1; `VoteSessionService.CreateAsync` Set-Pfad (9), Ausschlussregel, Fehlercode; `IsEmoteVotableAsync`; Tests | braucht T1.3, T2.2 |
 | T6.2 | Worker-Wiederholung (E10) + Wettlauftest mit erzwungener Verschränkung (zwei `AppDbContext`) | braucht T6.1 |
 | T6.3 | `GetResultsAsync`: `eligible`, Set-Totals, eingefrorene Anzeigedaten; Detailseite `canSelectForDelete = canManage`, Panel-Set-ID, Badge auf `eligible`; Dialog „Zur Abstimmung stellen" mit Set-Session; Specs + E2E; DECISIONS-Eintrag 3 | braucht T6.1, T4.3 |
@@ -1844,9 +1883,10 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
 
 1. T0.1–T0.6 sind ausgeführt; je Sonde steht der gemessene Zweig (A/B) mit Datum in dieser Spec
    und der jeweils andere ist gestrichen. **Stand 2026-09-20 gemessen: T0.1** (Sonde 1),
-   **T0.5** (Sonde 7) und **T0.6** (`editor_of { user { id } }` — die Prüfaufgabe aus Abschnitt 19;
-   sie steht dort und im Plan, 0.2, nicht in Abschnitt 11). **Offen: T0.2** (Sonde 4),
-   **T0.3** (Sonde 5), **T0.4** (Sonde 6).
+   **T0.2** (Sonde 4 — Ergebnis in Abschnitt 27 und an E12), **T0.3** (Sonde 5 — Ergebnis in
+   Abschnitt 11 und 28), **T0.5** (Sonde 7) und **T0.6** (`editor_of { user { id } }` — die
+   Prüfaufgabe aus Abschnitt 19; sie steht dort und im Plan, 0.2, nicht in Abschnitt 11).
+   **Offen: T0.4** (Sonde 6) — ein Tor vor K7, kein Zweig.
 2. Die Zuordnungsliste für HandOfBlood trägt `BoundaryUtc` und `ExpectedArchivedCount` aus der
    ID-Sonde vom Wechseltag. **Und sie ist lückenlos:** jeder Kanal aus der Zählabfrage neben
    Sonde 6 (Abschnitt 11) hat einen Eintrag einer der beiden Arten — HandOfBlood Wechseleinträge,
@@ -2084,10 +2124,15 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
 **K5 — Löschen und Wiederherstellen**
 
 67. `RunResult` hat kein `doneIds` mehr; der Build ist grün (jede Stelle umgestellt).
-68. Delete- und Restore-Queue-Key ist `sevenTvEmoteId`; ein Lauf mit `emoteId: undefined` erzeugt
-    eine Protokollzeile mit `emoteId: null` und meldet den Key in `doneKeys`.
-69. `parsePurgeRunProtocol` akzeptiert `emoteId: null` und alte Protokolle mit Guid; beide sind
-    wiederherstellbar.
+68. Delete-Queue-Key ist `sevenTvEmoteId`; ein Lauf mit `emoteId: undefined` erzeugt
+    eine Protokollzeile mit `emoteId: null` und meldet den Key in `doneKeys`. **Eine Duplikat-Zelle
+    (`slotCount 2`) erzeugt genau eine Queue-Zeile und genau ein `REMOVE`** (Sonde 5, Zweig A);
+    ihre Protokollzeile trägt **beide** Aliase in `aliases`.
+69. `parsePurgeRunProtocol` akzeptiert `emoteId: null`, alte Protokolle mit Guid und alte
+    Protokolle **ohne** `aliases` (dann gilt `[row.name]` — das Namensfeld der Protokollzeile heißt `name`, nicht `emoteName`; Letzteres ist das Feld des Zeilenmodells aus 7.1); alle drei sind wiederherstellbar.
+    **Der Restore-Queue-Key ist `sevenTvEmoteId#alias`:** eine Protokollzeile mit zwei Aliasen
+    erzeugt zwei Queue-Zeilen und zwei `ADD`s, der Bericht an `sync-restored` dagegen **eine**
+    7TV-Id.
 70. `sync-deleted` neue Form, aktives Set: matcht über `(ChannelId, SevenTvEmoteId)`, archiviert,
     Audit mit `emoteSetId` und `targetIsActiveSetOfChannel: true`, `channel.synced` bei
     `NewlyArchivedCount > 0`. Nicht-aktives Set: keine Zeile geändert, Audit mit
@@ -2099,10 +2144,17 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
     dieselbe Set-ID auch nach einem Dropdown-Wechsel (Spec).
 72. Das Panel emittiert `deleted` als 7TV-Ids; die Nutzungsseite entfernt die Zellen und
     reduziert `occupiedSlots`; die Vote-Detailseite entfernt die Zeilen über `sevenTvEmoteId`.
-73. Lösch- und Restore-Bestätigung nennen den Setnamen und, bei nicht-aktivem Set, den Zusatz.
+73. Lösch- und Restore-Bestätigung nennen den Setnamen und, bei nicht-aktivem Set, den Zusatz. Eine
+    Duplikat-Zelle zählt darin als **eine** Löschung; eine Ausnahmegruppe „liegen doppelt im Set und
+    werden nicht gelöscht" gibt es nicht (8.9 entfallen).
 74. Live-Verifikation am Testkanal (Regel 16): Set mit einem nie aktiven Emote; löschen; Protokoll
     enthält die Zeile mit `emoteId: null`; Audit-Eintrag trägt Set-ID und 7TV-Id-Anzahl; Restore aus
-    genau diesem Protokoll.
+    genau diesem Protokoll. **Dazu einmal derselbe Weg an einer Duplikat-Zelle** (nachgetragen
+    2026-09-20, weil Sonde 5 den Vertrag genau dort geändert hat und 5a belegt hat, dass sich ein
+    Duplikat per API herstellen lässt): zweimal dasselbe Emote unter zwei Aliassen eintragen, die
+    Zelle löschen — **ein** `REMOVE`, **beide** Einträge weg —, Protokollzeile trägt beide Aliase,
+    Restore aus diesem Protokoll legt **beide** wieder an. Kein zusätzlicher Testfall: der Fall
+    steht als Unit-Fall schon in T5.1, hier wird er einmal gegen echtes 7TV gestellt.
 
 **K6 — Voting**
 
@@ -2276,17 +2328,17 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `core/emotes/emote-admin.service.spec.ts` | `targetEmoteSetId` immer gesendet (AK 44, ein Fall); neue Bodies für `syncDeleted`/`syncRestored` (T5.1, zwei Fälle) | +3 | 4 von 9 (`syncDeleted`/`syncRestored`/`syncImported`-Bodies) |
 | `core/seven-tv/seven-tv-emote-set.service.spec.ts` (neu) | drei Listen-Routen, `?emoteSetId=` | +4 | — |
 | `core/seven-tv/seven-tv-run-engine.spec.ts` | `doneKeys` einzige Identität; Delete-Lauf ohne `emoteId` (AK 68) | +2 | Fälle, die `doneIds` lesen (Teilmenge von 22; nicht verifiziert) |
-| `core/seven-tv/seven-tv-delete.service.spec.ts`, `seven-tv-restore.service.spec.ts` | Key `sevenTvEmoteId`, Set-ID im Datensatz, Retry (AK 71), Body neue Form | +6 | Teilmenge von 31 + 30 (Key- und Body-Assertions) |
+| `core/seven-tv/seven-tv-delete.service.spec.ts`, `seven-tv-restore.service.spec.ts` | Key `sevenTvEmoteId`, Set-ID im Datensatz, Retry (AK 71), Body neue Form; Duplikat-Zelle ⇒ **eine** Delete-Zeile mit **einem** `REMOVE`; Protokollzeile mit zwei Aliasen ⇒ **zwei** Restore-Zeilen `sevenTvEmoteId#alias` mit je einem `ADD`, aber einer 7TV-Id im Bericht (AK 68/69) | +8 | Teilmenge von 31 + 30 (Key- und Body-Assertions) |
 | `core/seven-tv/seven-tv-import.service.spec.ts` | set-zentrierter Report ohne Resync (AK 41) | +2 | 0 von 25 |
-| `shared/export/purge-run-export.spec.ts` | `emoteId: null`, altes Protokoll (AK 69) | +3 | Fälle mit `emoteId: string`-Pflicht (Teilmenge von 14) |
+| `shared/export/purge-run-export.spec.ts` | `emoteId: null`, altes Protokoll (AK 69); `aliases` geschrieben und gelesen; altes Protokoll **ohne** `aliases` ⇒ `[emoteName]` | +5 | Fälle mit `emoteId: string`-Pflicht (Teilmenge von 14) |
 | `shared/export/usage-export.spec.ts`, `usage-export-purposes.spec.ts` | Set in Name/Meta, `null`-Zeile (AK 65) | +4 | Fixtures ohne Set (5 + 8, Signatur) |
-| `shared/seven-tv/mass-delete-panel.spec.ts` | `deleted` als Keys, kein Protokoll-Filter, Setname in Dialogdaten (AK 72/73) | +4 | Fälle zu `doneIds`/Protokoll-Filter (Teilmenge von 29) |
+| `shared/seven-tv/mass-delete-panel.spec.ts` | `deleted` als Keys, kein Protokoll-Filter, Duplikat-Zelle geht in die Queue wie jede andere (keine Ausnahme mehr, AK 68), Setname in Dialogdaten (AK 72/73) | +4 | Fälle zu `doneIds`/Protokoll-Filter (Teilmenge von 29) |
 | `shared/seven-tv/import-target-dialog.spec.ts`, neu `import-target-choices.spec.ts` (ersetzt `import-target-options.spec.ts`) | Klassen, Vorauswahl, eigener Kanal, Bestätigung ungetrackt (AK 34/35) | +10 | **28 + 4** (Datenquelle wechselt von `listMine` auf 6.2) |
 | `shared/seven-tv/import-preview.spec.ts` | drei Gruppen, Zahlen des Anlasses (AK 37/38) | +5 | Fälle „Kollisionen bleiben in `toAdd`" (Teilmenge von 11) |
 | `shared/seven-tv/import-confirm-dialog.spec.ts` | Setname im Kopf, Gruppen, Projektion ohne Kollisionen (AK 38/39) | +4 | Fälle mit `setId` im Kopf (Teilmenge von 32) |
 | `shared/seven-tv/foreign-channel-step.spec.ts` | Quell-Radiogroup, kein zweiter Request (AK 48/49) | +3 | 0 von 9 |
 | `shared/seven-tv/file-import-step.spec.ts` | Protokoll des Halloween-Sets in der Halloween-Ansicht angenommen, in der Hauptset-Ansicht abgewiesen (AK 66, T4.5) | +2 | — |
-| `shared/seven-tv/delete-confirm-dialog.spec.ts`, `restore-flow.spec.ts` | Setname, `emoteId` optional | +3 | Fixtures (Teilmenge von 14 + 16) |
+| `shared/seven-tv/delete-confirm-dialog.spec.ts`, `restore-flow.spec.ts` | Setname, Zusatz nur bei nicht-aktivem Set, Duplikat-Zelle als **eine** Löschung ohne Ausnahmegruppe (AK 73); `emoteId` optional | +3 | Fixtures (Teilmenge von 14 + 16) |
 | `shared/selection/list-selection.spec.ts` | zwei Guid-lose Zeilen (AK 54) — als Konsument-Spec über `sevenTvEmoteId`-Keys | +2 | 0 von 26 |
 | `shared/datetime/date-range-menu.spec.ts` | Preset `'set-observed'` (AK 61) | +2 | 0 von 4 |
 | `features/usage-stats/usage-stats-page.spec.ts` | Dropdown, Reload-Regeln (AK 50–52, T4.2, vier Fälle); Schlüsselwechsel als Konsument (AK 54: Guid-lose Zeilen wählbar, `retainAmong`, Drilldown-Gate, Voting-Auflösung — T4.3, drei Fälle); `null`-Gruppe (AK 56), Badge (AK 57), Tatsachenangabe als **Matrix** (AK 60 — alle vier Fälle, darunter **Zahlen ohne Beobachtungsintervall: nur B−, keine Aussage über Zahlen**), Sperren (AK 62 — T4.4, zehn Fälle); Scope-Capture für Export/Import (AK 64 zweiter Teil, T4.5, zwei Fälle); `onDeleted` nach Key (T5.1, ein Fall) | +20 | Fälle, die `emoteId`-Keys oder `totalUseCount: number` voraussetzen (Teilmenge von 42) |
@@ -2303,9 +2355,9 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `e2e/emote-import.e2e.spec.ts` | gleicher Kanal, anderes Set (AK 43); ungetracktes Ziel mit Bestätigung und set-zentriertem Report; Quell-Set-Picker | +3 |
 | `e2e/vote-ballot.e2e.spec.ts` | Set-Session (AK 83) | +1 |
 
-**Summe: +295 Fälle** — **nachgerechnet am 2026-09-20**, Zeile für Zeile über die fünf Tabellen
-oben, nicht fortgeschrieben. (Ein Zwischenstand dieses Nachrechnens trug kurzzeitig **+277** — die
-Korrektur auf +295 und ihre Herkunft stehen in Abschnitt 26.)
+**Summe: +299 Fälle** — **nachgerechnet am 2026-09-20**, zuletzt nach der Messung von Sonde 5
+(Abschnitt 28), Zeile für Zeile über die fünf Tabellen oben, nicht fortgeschrieben. (Frühere
+Zwischenstände dieses Nachrechnens und ihre Herkunft stehen in Abschnitt 26.)
 
 **Die bisherige Zahl war falsch, in beiden Dokumenten.** Spec und Plan trugen **+237** bzw.
 **+236**; beide entstanden aus einer Gegenrechnung „Erstfassung plus/minus die Änderungen der
@@ -2315,8 +2367,8 @@ was eine fortgeschriebene Zahl nach drei Überarbeitungen tut. Ab hier gilt: **d
 Summe der Tabellen, und wer eine Zeile ändert, addiert neu.** Die alte Gegenrechnung ist damit
 gegenstandslos und wird nicht weitergeführt.
 
-Aufteilung der +295: `Infrastructure.Tests` **+137**, `Worker.Tests` **+3**, `Api.Tests` **+45**,
-Vitest **+103**, Playwright **+7**. Der Beitrag der zweiten Codex-Runde darin ist **+16**: sechs in
+Aufteilung der +299: `Infrastructure.Tests` **+137**, `Worker.Tests` **+3**, `Api.Tests` **+45**,
+Vitest **+107**, Playwright **+7**. Der Beitrag der zweiten Codex-Runde darin ist **+16**: sechs in
 `UsageStatMigrationChecksTests` (Prüfung 7, die zweite Gestalt von Prüfung 3, die zwei weiteren von
 Prüfung 7, der Builder-Fall), vier in den Migrationstests (siebter Abbruch, XOR am inaktiven Kanal,
 fehlender Messblock, Backfill-Einmaligkeit), zwei im Listen-Dienst (Kreuztest) und vier in
@@ -2363,7 +2415,7 @@ Je Bauschritt, nicht als Summe zuerst. „CC" ist Wandzeit der Subagenten.
 | K6 Set-Session Anlage, Votable, Fehlercode (T6.1) | ~5 h | ~30 min |
 | K6 Worker-Wiederholung + Wettlauftest (T6.2) | ~4 h | ~25 min |
 | K6 Ergebnisse, Detailseite, Dialog, E2E, DECISIONS 3 (T6.3) | ~6 h | ~35 min |
-| Tests über alle Ebenen (**+295**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
+| Tests über alle Ebenen (**+299**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
 | T7 Coverage, Codex-Review, PR | ~2 h | ~15 min |
 | K7 Wartungsfenster inkl. Messwert-Schritt und Live-Verifikation Prod | ~2 h | — |
 | **Summe** | **~113,5 h** | **~12 h** |
@@ -2449,7 +2501,7 @@ Runbook auf diese Nachwirkung hingewiesen.
 | `web/src/app/core/seven-tv/{seven-tv-run-engine,seven-tv-delete.service,seven-tv-restore.service,seven-tv-import.service,foreign-emote-set.model,foreign-emote-set.service}.ts`, `seven-tv-emote-set.service.ts` (**neu**) | 7.2, 6.1–6.4 |
 | `web/src/app/core/emotes/{emote-admin.service,import-target-loader,emote-set-status.model}.ts` | Bodies, Set-Ziel |
 | `web/src/app/core/i18n/api-error.ts:10-46` | vier Codes |
-| `web/src/app/shared/seven-tv/{import-target-dialog,import-target-choices (neu, ersetzt import-target-options),import-confirm-dialog,import-preview,mass-delete-panel,delete-confirm-dialog,restore-confirm-dialog,restore-flow,import-flow,file-import-step,import-trigger,foreign-channel-step}.ts` | 8.6–8.9 |
+| `web/src/app/shared/seven-tv/{import-target-dialog,import-target-choices (neu, ersetzt import-target-options),import-confirm-dialog,import-preview,mass-delete-panel,delete-confirm-dialog,restore-confirm-dialog,restore-flow,import-flow,file-import-step,import-trigger,foreign-channel-step}.ts` | 8.6–8.8 (8.9 entfallen), 7.2 (Queue-Keys, Protokoll) |
 | `web/src/app/shared/export/{purge-run-export,usage-export,usage-export-purposes}.ts` | 7.2, 7.4 |
 | `web/src/app/shared/datetime/date-range-menu.ts:19-30` | Preset |
 | `web/src/app/shared/emotes/emote-set-menu.ts` (**neu**) | Dropdown nach dem Muster `date-range-menu` |
@@ -2575,8 +2627,11 @@ aufgerufen wird), baut ihn dort — das entscheidet das Folge-Issue, nicht diese
    zweispaltige Alias-Auflösung wird dort nachgehalten.
 3. **#69** — Backfill mit Set-ID als Pflichtparameter (Konzept 5.3); das Beobachtungs-Log darf
    Teilungen nur innerhalb eines Intervalls vorschlagen.
-4. **#74** — je nach Sonde 5: bei Zweig B ohne Alias-Treffer wandert die Frage „Duplikate per API
-   löschbar?" als Befund dorthin.
+4. **#74** — **aus dieser Runde wandert nichts mehr dorthin.** Die Frage „Duplikate per API
+   löschbar?" ist am 2026-09-20 von Sonde 5 beantwortet (Zweig A: ein `REMOVE` ohne Alias entfernt
+   beide Einträge; ein zweiter `ADD` mit anderem Alias wird angenommen) — der Befund steht in
+   Abschnitt 28 und gehört als Messung zu #74, nicht als offene Frage. Was davon getrennt **ein
+   eigenes Issue neben #74** braucht, ist der dauerhafte Resync ohne Fixpunkt aus Abschnitt 27.
 5. **`emoteId` aus `/series` entfernen** (6.5, Schritt 2) — **dasselbe Tor wie Folge-Issue 1**
    (oben: hinter K7, ≥ 14 Tage, Beleg aus dem Betrieb), in einem eigenen Commit, nicht in K4;
    entfernt das Feld aus `EmoteSeriesEntryDto`, aus `EmoteSeriesEntry`
@@ -2795,3 +2850,51 @@ dauerhaft statt einmalig.
 behoben, fällt die Rate auf ~0/min und Zweig A wird nur sicherer. Der Defekt selbst gehört
 **nicht** in diesen Epic: er ist älter, unabhängig von Emote-Sets und trifft jeden Kanal mit
 Duplikaten. Er gehört als eigenes Issue neben #74.
+
+---
+
+## 28. Nachtrag: Sonde 5 gemessen — Duplikate sind löschbar (2026-09-20)
+
+**Messaufbau.** Ein eigenes Testset auf 7TV, ein Token mit Schreibrecht, ein Emote, das nicht im
+Set lag; die vier Aufrufe aus Abschnitt 11 (Sonde 5) in der dortigen Reihenfolge, ausgeführt vom
+Betreiber, gegen `https://7tv.io/v4/gql` (Schreiben) und `https://7tv.io/v3/emote-sets/<SET-ID>`
+(Gegenprobe). Keine Varianten, keine Wiederholungen.
+
+**Die drei Ergebnisse.**
+
+- **5a — ein zweiter `addEmote` mit derselben `emoteId` und anderem Alias wird angenommen.**
+  HTTP 200, `data.emoteSets.emoteSet.addEmote.id` gesetzt. Die Gegenprobe über den v3-Endpunkt
+  liefert `["probeA","probeB"]` — zwei Einträge derselben ID, nebeneinander im selben Set. Damit
+  sind die #74-Duplikate des Bestands **per API reproduzierbar**; die Zeile aus Abschnitt 11, die
+  für den Ablehnungsfall eine Wiederholung an einem vorhandenen Duplikat vorsah, ist
+  gegenstandslos.
+- **5b — ein `removeEmote(id: { emoteId })` ohne Alias entfernt beide Einträge.** Die Gegenprobe
+  liefert `[]`.
+- **5c — entfällt.** Nach 5b war nichts mehr übrig, das ein alias-genaues `REMOVE` hätte treffen
+  können. Der trotzdem ausgeführte vierte Aufruf bestätigt genau das:
+  `{"errors":[{"message":"BAD_REQUEST emote not found in set", … "status":404}]}`.
+
+**Ergebnis: Zweig A, mit beiden Teilantworten.** Weil 5b „beide" ergeben hat, braucht der
+Delete-Lauf je Duplikat-Zelle **eine** Queue-Zeile mit Key `sevenTvEmoteId` und **ein** `REMOVE`.
+Weil 5a „angenommen" ergeben hat, gilt der Restore-Teil des Zweigs **vollständig**: je Alias ein
+`ADD`, mit dem Queue-Key `sevenTvEmoteId#alias` — dem einzigen Ort im ganzen Vorhaben, an dem ein
+Alias Teil eines Schlüssels ist. Wäre 5a abgelehnt worden, hätte der Restore nur den ersten Alias
+wiederherstellen können; diese Einschränkung ist nicht eingetreten.
+
+**Was daraus folgt, im Vertrag.** 7.2 trägt die beiden Queue-Keys jetzt getrennt (Delete:
+`sevenTvEmoteId`; Restore: `sevenTvEmoteId#alias`), die Protokollzeile trägt zusätzlich
+`aliases: string[]`, und der Parser nimmt auch Protokolle **ohne** dieses Feld an (dann gilt
+`[row.name]`, das vorhandene Namensfeld von `PurgeRunRow`). 8.2 nennt die Duplikat-Zelle wählbar wie jede andere; 8.8 hält fest, dass sie im
+Bestätigungsdialog als **eine** Löschung zählt. Der Schlüssel-Vertrag aus Abschnitt 7 — eine Zelle
+je 7TV-Emote — bleibt unangetastet: der Alias-Schlüsselraum entsteht allein in der Restore-Queue
+und erreicht das Zeilenmodell der Seite nie.
+
+**Was entfallen ist.** **8.9** — die Zwischenregel, Duplikat-Zellen vom Delete-Lauf auszunehmen und
+im Dialog als eigene Gruppe zu zeigen. Die Nummer bleibt als Wegweiser stehen, damit 8.10 nicht
+wandert und kein Verweis ins Leere zeigt. Mit ihr entfallen: der B-Zweig samt 5c-Fallunterscheidung
+in Abschnitt 11, die Notiz an **#74** aus Folge-Issue 4 (die Frage ist beantwortet, nicht
+weitergereicht) und im Plan die Umbaukosten-Schätzung an T0.3. Die Testpyramide wächst dadurch um
+vier Fälle (Vitest +103 → die nachgezählten **+107**; Gesamtsumme **+299**): zwei im Delete-/
+Restore-Dienst für die beiden Queue-Formen, zwei im Protokoll für `aliases` und den Altbestand
+ohne das Feld. Die beiden Fälle, die vorher die Ausnahmegruppe belegt hätten (Panel und Dialog),
+belegen jetzt ihr Gegenteil — gleiche Zahl, anderer Prüfgegenstand.

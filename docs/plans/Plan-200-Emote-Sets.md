@@ -49,12 +49,14 @@ Rückweg und die Betreiber-Handgriffe mit fertigen Kommandozeilen. Der Plan enth
   2026-09-20). Die Spec setzt #76 nicht voraus (Spec 22, erste Zeile), aber T1.5 und T1.2 fassen
   `SevenTvSyncService.cs:74-109` an — genau die Stelle, an der #76 die Plausibilitätssperre hält.
   Folge für den Branch: s. 0.4.
-- **Drei der T0-Aufgaben sind gemessen** (2026-09-20: T0.1, T0.5, T0.6), die übrigen nicht. Der
-  Plan hängt an keiner: jede offene Sonde hat in der Spec zwei Zweige, und die Tasks bauen den
-  Zweig, den die Spec als Beschluss trägt (E12 60 s, 8.9 Duplikate ausgenommen). Der andere Zweig
-  ist je Sonde als **Umbaukosten** beziffert (K0, am jeweiligen T0.x), damit „warten oder bauen" eine
-  Zahl hat. **E7 ist durch T0.5 entschieden und trägt jetzt v4** (Vertrag: Spec E7, E21, Sonde 7) —
-  T2.1 baut keinen v3-Zweig mehr, auch nicht für die aktive Set-ID.
+- **Fünf der T0-Aufgaben sind gemessen** (2026-09-20: T0.1, T0.2, T0.3, T0.5, T0.6); offen ist
+  allein **T0.4**, und das ist ein Tor vor K7, kein Zweig. Damit ist **keine** Bauentscheidung
+  dieses Plans mehr von einer ausstehenden Messung abhängig: **E7** trägt v4 (T0.5 — Spec E7, E21,
+  Sonde 7), **E12** bleibt bei 60 s (T0.2 — Spec 27), und die Duplikat-Frage ist mit **Sonde 5,
+  Zweig A** entschieden (T0.3 — Spec 11 und 28): eine Queue-Zeile je Duplikat im Delete-Lauf,
+  `aliases` im Protokoll, ein `ADD` je Alias im Restore. T2.1 baut keinen v3-Zweig mehr, auch nicht
+  für die aktive Set-ID; T5.1 und T5.3 bauen unmittelbar Zweig A, und die früher hier bezifferten
+  Umbaukosten sind gegenstandslos.
 
 ### 0.2 Was der Plan beim Nachprüfen am Code gefunden hat
 
@@ -187,17 +189,20 @@ offenen Browser). 1,00 `channel.synced` je Minute je betroffenem Kanal, ein Kana
 bei 0. Zahlen, Aufbau und der dabei gefundene Dauer-Resync aus #74: Spec Abschnitt 27. Für T2.2
 ändert sich nichts — die Konstante bleibt, wie sie geplant war.
 
-#### T0.3 — Sonde 5: `REMOVE` bei doppelt eingetragener Emote-ID
+#### T0.3 — Sonde 5: `REMOVE` bei doppelt eingetragener Emote-ID — **erledigt 2026-09-20**
 
-Vier Aufrufe gegen ein **eigenes Testset** mit `<7TV-TOKEN>`, `<SET-ID>`, `<EMOTE-ID>` — die vier
-curl-Zeilen stehen wörtlich in Spec 11 (Sonde 5) und werden hier nicht kopiert. Eine
-GraphQL-Fehlermeldung ist ein Ergebnis, kein Anlass für Varianten; nach zwei Fehlschlägen derselben
-Probe: abbrechen und fragen.
+**Gemessen, Zweig A — und zwar mit beiden Teilantworten.** Vier Aufrufe gegen ein eigenes Testset,
+wie in Spec 11 (Sonde 5) beschrieben: ein zweiter `addEmote` mit derselben `emoteId` und anderem
+Alias wird **angenommen** (HTTP 200, Gegenprobe `["probeA","probeB"]`); ein
+`removeEmote(id: { emoteId })` ohne Alias entfernt **beide** Einträge (Gegenprobe `[]`); 5c
+entfällt, weil nichts übrig war. Antworten, Belege und Folgen: Spec 11 (Sonde 5) und **Spec 28**.
 
-Beide Zweige und ihr Vertrag: Spec 11, Sonde 5 und 8.9. **Betrifft T5.1 und T5.3:** bis zur Messung
-bauen beide den Beschluss aus Spec 8.9. **Umbaukosten von Zweig A bzw. B-mit-Alias-Treffer:** ein
-eigener kleiner Task in K5 danach — geschätzt eine Sitzung `sonnet`, kein Vertrag außerhalb der
-Queue.
+**Folge im Plan:** **T5.1 und T5.3 bauen unmittelbar Zweig A** — Delete mit einer Queue-Zeile je
+Duplikat (Key `sevenTvEmoteId`), Protokollzeile mit `aliases: string[]`, Restore je Alias mit Key
+`sevenTvEmoteId#alias`. Spec **8.9 ist entfallen**, es gibt keine Ausnahmegruppe im Dialog und
+keinen Nachbau-Task in K5; die früher hier genannten Umbaukosten sind gegenstandslos. Die
+Testzahlen von T5.1 und T5.3 sind danach neu ausgezählt (je Datei die nachgezählte Zahl selbst,
+nicht fortgeschrieben); die Summe steht in Spec 15.
 
 #### T0.4 — Sonde 6: Gegenprobe vor der Migration (lesend gegen Prod, unmittelbar vor K7)
 
@@ -1089,14 +1094,18 @@ ist erlaubt).
 der Seite. Der DECISIONS-Eintrag 4 (erster Teil) liegt in diesem Commit — inklusive der
 Berichtigung aus 0.2 und der T4.0-Entscheidung.
 
-**Vertrag:** Spec 7.2 (Tabelle, Zeilen 1–3 und 11–13), 7.3, F3, F4, F12, E4; Spec 23 Zeile 4;
+**Vertrag:** Spec 7.2 (Tabelle: `ListSelection`, inneres `track`, die vier Maps, Drilldown-Gate,
+Voting-Draht und die Vote-Session-Detailseite — die Zeilen sind hier **benannt** statt gezählt,
+seit 7.2 die beiden Queue-Keys getrennt führt), 7.3, F3, F4, F12, E4; Spec 23 Zeile 4;
 Kriterien AK 54, 55.
 
 **Zwei Abgrenzungen, die der Plan setzt:** `emoteId` wird aus `/series` **nicht hier** entfernt
 (Folge-Issue 5, hinter K7 — Spec 21), und Queue-Keys, Protokoll und `doneIds` sind **T5.1**. Hier
 werden die Typen nur so weit optional, dass T4.4 Guid-lose Zeilen anzeigen kann, ohne dass ein Lauf
-sie schon annimmt — die Sperre aus Spec 8.9 bleibt bis T5.1 auf „Guid-lose Zeile nicht wählbar zum
-Löschen".
+sie schon annimmt — die Zwischensperre „Guid-lose Zeile nicht wählbar zum Löschen" gilt bis T5.1.
+Sie ist ein Zustand **innerhalb** des Branchs, kein Vertrag der Spec (der frühere Verweis auf
+Spec 8.9 war ohnehin eine Verwechslung: 8.9 regelte Duplikate, nicht Guid-lose Zeilen, und ist seit
+der Messung von Sonde 5 entfallen).
 
 **Dateien:** `usage-stats-page.ts:488-494,533-537,549-553,561-565,678-680,1349-1350,1375`,
 `usage-stats-page.html:585` (**`:524` `trackBy: trackRow` bleibt** — DECISIONS 2026-08-30),
@@ -1231,7 +1240,9 @@ set-scoped bookkeeping for sync-deleted and sync-restored`.
 **Ziel:** Lösch- und Wiederherstellungsläufe sprechen durchgängig 7TV-Ids — Queue-Key, Protokoll,
 Laufdatensatz mit eingefrorener Set-ID, Panel-Ausgabe; `RunResult.doneIds` fällt.
 
-**Vertrag:** Spec 7.2 (Tabelle, Zeilen 4–10 und 13), 8.9 (bis T0.3 gemessen ist), E2, E18, F3,
+**Vertrag:** Spec 7.2 (Tabelle, die beiden Queue-Key-Zeilen, Protokoll, Laufdatensatz, Panel und
+Hosts), Spec 11 Sonde 5 / Spec 28 (**Zweig A**, gemessen: Delete **eine** Zeile je Duplikat,
+Protokoll mit `aliases`, Restore **je Alias** mit Key `sevenTvEmoteId#alias`), E2, E18, F3,
 F12; Kriterien AK 67–69, 71, 72.
 
 **Dateien:** `core/seven-tv/seven-tv-run-engine.ts:117-118`, `seven-tv-delete.service.ts:55-59,79-83,118,187-189`,
@@ -1243,12 +1254,16 @@ F12; Kriterien AK 67–69, 71, 72.
 **Tests — Teilaufgabe: alle Teilmengen zählen und im PR-Text nennen.** `seven-tv-run-engine.spec.ts`
 (Fälle, die `doneIds` lesen, von 22) **+2** (AK 68: `doneKeys` einzige Identität; Lauf ohne `emoteId`).
 `seven-tv-delete.service.spec.ts` (31) / `seven-tv-restore.service.spec.ts` (30) — Key- und
-Body-Assertions umgestellt, **+6** (AK 68, AK 71: Set-ID beim Start eingefroren, Erstbericht und
+Body-Assertions umgestellt, **+8** (AK 68, AK 71: Set-ID beim Start eingefroren, Erstbericht und
 `retrySyncReport` senden dieselbe Set-ID nach einem Dropdown-Wechsel; neue Body-Form; Altform wird
-**nie** gesendet). `shared/export/purge-run-export.spec.ts` (14) **+3** (AK 69: `emoteId: null`,
-altes Protokoll mit Guid, beides wiederherstellbar). `mass-delete-panel.spec.ts` (29) — `doneIds`- und
+**nie** gesendet; **Duplikat-Zelle ⇒ eine Delete-Zeile mit einem `REMOVE`**; **Protokollzeile mit
+zwei Aliasen ⇒ zwei Restore-Zeilen `sevenTvEmoteId#alias` mit je einem `ADD`, aber einer 7TV-Id im
+Bericht**). `shared/export/purge-run-export.spec.ts` (14) **+5** (AK 69: `emoteId: null`,
+altes Protokoll mit Guid, beides wiederherstellbar; **`aliases` geschrieben und gelesen**; **altes
+Protokoll ohne `aliases` ⇒ `[row.name]`**). `mass-delete-panel.spec.ts` (29) — `doneIds`- und
 Protokoll-Filter-Fälle umgestellt, **+3** (AK 72: `deleted` als Keys; kein Protokoll-Filter;
-Duplikat-Gruppe nach 8.9). `restore-flow.spec.ts` (16) — Fixtures. `usage-stats-page.spec.ts` **+1**,
+**Duplikat-Zelle geht in die Queue wie jede andere** — die Ausnahme aus dem entfallenen 8.9 gibt es
+nicht). `restore-flow.spec.ts` (16) — Fixtures. `usage-stats-page.spec.ts` **+1**,
 `vote-session-detail-page.spec.ts` **+1** (AK 72: Hosts filtern nach `sevenTvEmoteId`; Detailseite
 behält ihren Guid-Schlüssel — ein Test, der das festhält). `emote-admin.service.spec.ts` (4 von 9
 rot: Bodies) umgestellt, **+2**.
@@ -1261,19 +1276,21 @@ Purge-Protokoll ist die **einzige** Rückwegdatei einer Löschung; ein Fehler in
 Laufdatensatz macht einen Halloween-Lauf zur Hälfte unumkehrbar, ohne dass es jemand sähe (F3), und
 der Rückweg nach dem Deploy reicht dafür nicht (5).
 
-#### T5.3 — Bestätigungen nennen das Set; Duplikat-Gruppe; Live-Verifikation am Testkanal
+#### T5.3 — Bestätigungen nennen das Set; Duplikat-Zelle als eine Löschung; Live-Verifikation am Testkanal
 
-**Ziel:** Lösch- und Restore-Bestätigung nennen das Set; die Duplikat-Gruppe erscheint im Dialog;
-dazu der Nachweis nach Regel 16.
+**Ziel:** Lösch- und Restore-Bestätigung nennen das Set; eine Duplikat-Zelle zählt darin als **eine**
+Löschung, ohne Ausnahmegruppe; dazu der Nachweis nach Regel 16.
 
-**Vertrag:** Spec 8.8 (Felder und Wortlautregel, **kein** zusätzlicher Bestätigungsschritt),
-8.9 (bis Sonde 5 gemessen ist); Kriterien AK 73, 74.
+**Vertrag:** Spec 8.8 (Felder und Wortlautregel, **kein** zusätzlicher Bestätigungsschritt, und der
+Zusatz zur Duplikat-Zelle), Spec 11 Sonde 5 / Spec 28 (Zweig A; **8.9 ist entfallen**); Kriterien
+AK 73, 74.
 
 **Dateien:** `shared/seven-tv/delete-confirm-dialog.ts:15-25`, `restore-confirm-dialog.ts`,
 `mass-delete-panel.ts` (Dialogdaten aus dem gewählten Set der Seite), `de.json`/`en.json`.
 
 **Tests:** `delete-confirm-dialog.spec.ts` (14) / `restore-flow.spec.ts` — Fixtures, **+3** (AK 73:
-Setname in beiden Dialogen; Zusatz nur bei `isActiveSet: false`; Duplikat-Gruppe mit Anzahl).
+Setname in beiden Dialogen; Zusatz nur bei `isActiveSet: false`; **eine Duplikat-Zelle zählt als
+eine Löschung und erscheint in keiner Ausnahmegruppe**).
 `mass-delete-panel.spec.ts` **+1** (Setname in den Dialogdaten aus dem Set der Seite, nicht aus
 `activeEmoteSetId`).
 
@@ -1281,8 +1298,11 @@ Setname in beiden Dialogen; Zusatz nur bei `isActiveSet: false`; Duplikat-Gruppe
 Set-Ansicht; das Protokoll enthält die Zeile mit `emoteId: null`; der Audit-Eintrag trägt Set-ID und
 7TV-Id-Anzahl mit `targetIsActiveSetOfChannel: false`; Restore aus **genau diesem** Protokoll
 (AK 74). Dazu einmal derselbe Weg im aktiven Set: Zeile archiviert, `channel.synced` gefeuert.
+**Und einmal an einer Duplikat-Zelle** (AK 74, nachgetragen nach Sonde 5): dasselbe Emote unter zwei
+Aliassen eintragen, Zelle löschen — ein `REMOVE`, beide Einträge weg —, Protokoll trägt beide
+Aliase, Restore legt beide wieder an. Kein zusätzlicher Testfall, der Unit-Fall liegt in T5.1.
 
-**Gate:** FE + E2E grün; die beiden Live-Befunde im PR-Text. **Commit:** `feat(seventv): name the
+**Gate:** FE + E2E grün; die **drei** Live-Befunde im PR-Text. **Commit:** `feat(seventv): name the
 set in delete and restore confirmations`. K5-PR.
 
 **Abhängigkeiten:** T5.1, T5.2. **Modell:** `sonnet`.
@@ -1452,17 +1472,20 @@ Dazu, aus diesem Plan:
   ist ein Irrtum über den Bestand (0.2), kein Auftrag, ihn nachzuziehen. Wer das will, macht ein
   Issue daraus.
 - **Die Altform `{ emoteIds }` bleibt** bis Folge-Issue 1 (E3), angelegt in K7.
-- **Sonde-5-Zweig A** (Duplikate mit einer Queue-Zeile, Restore je Alias) ist erst nach der Messung
-  ein Task (T0.3); bis dahin gilt 8.9.
+- **Ein eigener Nachbau-Task für Sonde-5-Zweig A entfällt.** Die Messung liegt seit dem 2026-09-20
+  vor (T0.3), also bauen **T5.1 und T5.3 den Zweig direkt**: eine Queue-Zeile je Duplikat im
+  Delete-Lauf, `aliases` im Protokoll, ein `ADD` je Alias im Restore. Was hier ausdrücklich **nicht**
+  hineingehört, ist der Duplikat-Defekt selbst (#74) samt dem dauerhaften Resync aus Spec 27 — der
+  ist älter als dieses Vorhaben und bleibt ein eigenes Issue.
 
 ---
 
 ## 4. Reihenfolge und Abhängigkeiten
 
 ```
-K0 (Betreiber, jederzeit; T0.1/T0.5/T0.6 gemessen 2026-09-20; V1 als Empfehlung vor dem 01.10.)
-  T0.1 T0.5 ──▶ T2.1 ✓      T0.6 ──▶ T2.4 ✓      T0.2 ──▶ T2.2 (nur TTL-Konstante)
-  T0.3 ──▶ T5.1/T5.3 (8.9 bis dahin)             T0.4 ──▶ K7 (Tor)      T0.4 ──▶ V5
+K0 (Betreiber, jederzeit; T0.1/T0.2/T0.3/T0.5/T0.6 gemessen 2026-09-20; V1 als Empfehlung vor dem 01.10.)
+  T0.1 T0.5 ──▶ T2.1 ✓      T0.6 ──▶ T2.4 ✓      T0.2 ──▶ T2.2 ✓ (TTL-Konstante bleibt)
+  T0.3 ──▶ T5.1/T5.3 ✓ (Zweig A)                 T0.4 ──▶ K7 (Tor)      T0.4 ──▶ V5
 
 Worktree A — K1                                  Worktree B — K2
   T1.1 ─▶ T1.2 ─┐                                  T2.1 ─┐
@@ -1570,13 +1593,15 @@ Zuordnung wie in Spec 12.
 
 Vergleichspunkte auf `93af613`: 45 `SevenTvSyncServiceTests`, 54 `UsageStatQueryServiceTests`,
 14 `UsageStatFlushServiceTests`, 74 Harness-/Replay-Tests (müssen 0 rot bleiben), 42
-`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +295 neue Fälle und ≥ 88
+`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +299 neue Fälle und ≥ 88
 umgestellte** — beide Zahlen stehen in Spec 15 und gelten als Summe der dortigen Tabellen, nicht als
 fortgeschriebene Gegenrechnung. Die Zählungen aus T1.2, T1.6, T2.5b, T4.3, T5.1, T5.2 und T6.3
 machen aus den offenen Teilmengen eine Zahl. **Die Zeilen der Spec-Tabellen, die mit der Summe der
 Task-Erwartungen dieses Plans nicht übereinstimmten, sind geklärt** — acht Zahlen berichtigt, eine
 Zeile ergänzt (`file-import-step.spec.ts`), eine Aufzählung entdoppelt; Abschnitt 9 nennt sie
-einzeln mit ihrem Ergebnis. Die Zielzahl ist damit von **+277** auf **+295** gestiegen.
+einzeln mit ihrem Ergebnis. Der Stand nach der Messung von Sonde 5 (Spec 28) ist die nachgezählte
+Summe **+299**: `Infrastructure.Tests` +137, `Worker.Tests` +3, `Api.Tests` +45, Vitest +107,
+Playwright +7.
 
 Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.
 
