@@ -31,7 +31,12 @@ export interface ForeignEmoteRow {
 export interface ForeignEmoteSetResponse {
   /** Normalized (Regel 9). */
   channelName: string;
-  sevenTvUserId: string;
+  /**
+   * `null` in the set-ID read mode (spec 2026-09-20, E8) — that path never resolves an identity at
+   * all, so there is nothing to report here. Never `null` for a response this login-based load
+   * produced.
+   */
+  sevenTvUserId: string | null;
   emoteSetId: string;
   /** What 7TV reports as the set's total entry count. */
   totalCount: number;

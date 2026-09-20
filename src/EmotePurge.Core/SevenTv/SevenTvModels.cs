@@ -500,7 +500,21 @@ public sealed class SevenTvEmoteSetPreviewResult
 /// <see cref="TotalCount"/> is what 7TV itself reports, which can exceed <see cref="Items"/>.Count —
 /// <see cref="Truncated"/> says so explicitly rather than letting a caller find out by subtracting.
 /// </summary>
-public sealed record SevenTvEmoteSetPreview(int TotalCount, bool Truncated, IReadOnlyList<SevenTvEmoteSetPreviewItem> Items);
+/// <param name="Name">
+/// The set's own name as 7TV reports it (spec 2026-09-20, F6); <c>null</c> when 7TV omits it.
+/// Trailing and optional so the pre-existing positional constructions of this record — none of
+/// which knew this field existed — keep compiling unchanged (AK 28).
+/// </param>
+/// <param name="Capacity">
+/// The set's slot limit; <c>0</c> is already normalised to <c>null</c> here, the same idiom
+/// <see cref="SevenTvEmoteSet"/> and <see cref="SevenTvEmoteSetListEntry"/> already use.
+/// </param>
+public sealed record SevenTvEmoteSetPreview(
+    int TotalCount,
+    bool Truncated,
+    IReadOnlyList<SevenTvEmoteSetPreviewItem> Items,
+    string? Name = null,
+    int? Capacity = null);
 
 /// <summary>
 /// One emote as it appears in a specific foreign set: <see cref="Alias"/> is the name used within

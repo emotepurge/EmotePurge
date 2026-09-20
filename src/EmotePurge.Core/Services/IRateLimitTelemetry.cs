@@ -150,4 +150,11 @@ public static class RateLimitCacheNames
     /// 2026-09-09, E3).
     /// </summary>
     public const string ForeignEmoteSet = "foreign-emote-set";
+
+    /// <summary>
+    /// The same 60 s cache's second key space (spec 2026-09-20, E12): the set-ID read mode, keyed on
+    /// the 7TV set id instead of a channel login. Named apart from <see cref="ForeignEmoteSet"/> so a
+    /// hit-rate dashboard can tell the two read paths apart, even though both live in the one cache.
+    /// </summary>
+    public const string ForeignEmoteSetBySetId = "foreign-emote-set-by-set-id";
 }

@@ -64,8 +64,11 @@ public class SevenTvApiClient(
     // to the 174 547 bytes the design doc measured for HandOfBlood's set with a near-identical
     // shape). Deliberately omits Emote.images — see the comment on SevenTvGqlEmoteSetPreviewResponseDto
     // for why, and BuildForeignImageUrl for how the image url is built instead.
+    // name/capacity added spec 2026-09-20 (F6/6.4) — read at the emoteSet level, alongside the
+    // paginated entries, so the assembled ForeignEmoteSet can carry the set's own name and slot
+    // count without a second request.
     private const string GqlEmoteSetPreviewQuery =
-        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
+        "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { name capacity emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
 
     // v4 schema, the emote-set list of one account (spec 2026-09-20, E7/6.1) — the source behind
     // all three set-list routes. This string is the query that was run live against
@@ -384,6 +387,8 @@ public class SevenTvApiClient(
         {
             var items = new List<SevenTvEmoteSetPreviewItem>();
             var totalCount = 0;
+            string? setName = null;
+            int? setCapacity = null;
 
             for (var page = 1; page <= MaxSetEntryPages; page++)
             {
@@ -396,6 +401,16 @@ public class SevenTvApiClient(
                 var pageDto = fetch.PageDto!;
                 totalCount = pageDto.TotalCount;
                 items.AddRange(pageDto.Items.Select(MapPreviewItem));
+
+                if (page == 1)
+                {
+                    // 7TV repeats the set's own name/capacity identically on every page of the same
+                    // query (F6) — reading them once off the first page avoids re-deriving Capacity's
+                    // 0-to-null idiom on every iteration for a value that never changes mid-walk.
+                    var setDto = fetch.SetDto!;
+                    setName = setDto.Name;
+                    setCapacity = setDto.Capacity > 0 ? setDto.Capacity : null;
+                }
 
                 if (page >= pageDto.PageCount)
                 {
@@ -416,7 +431,7 @@ public class SevenTvApiClient(
             }
 
             var truncated = items.Count < totalCount;
-            return SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(totalCount, truncated, items));
+            return SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(totalCount, truncated, items, setName, setCapacity));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -621,7 +636,8 @@ public class SevenTvApiClient(
                 SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.RateLimited, pageResult.RetryAfter));
         }
 
-        var pageDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet?.Emotes;
+        var setDto = pageResult.Dto?.Data?.EmoteSets?.EmoteSet;
+        var pageDto = setDto?.Emotes;
         if (pageResult.Status == V4PageStatus.Unavailable || pageDto is null)
         {
             // A parse failure says so and carries the exception; everything else keeps the GraphQL hint.
@@ -641,7 +657,7 @@ public class SevenTvApiClient(
             return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.Unavailable));
         }
 
-        return PreviewPageFetch.Success(pageDto);
+        return PreviewPageFetch.Success(setDto!);
     }
 
     // The shared v4 GraphQL page-fetch behind both FetchPreviewPageAsync and SearchEmotesAsync
@@ -1097,13 +1113,16 @@ public class SevenTvApiClient(
     // it has to survive into every outcome, not just Ok.
     private readonly record struct V4HeaderSample(string? Limit, string? Remaining, string? Reset);
 
-    // Outcome of FetchClassifiedPreviewPageAsync: exactly one of the two is set. PageDto is the page
-    // ready to fold into GetEmoteSetPreviewAsync's accumulated preview; Failure is the already-built
-    // result that method returns as-is, since the reason (and its log line) was decided here.
-    private readonly record struct PreviewPageFetch(SevenTvGqlEmoteSetPreviewPageDto? PageDto, SevenTvEmoteSetPreviewResult? Failure)
+    // Outcome of FetchClassifiedPreviewPageAsync: exactly one of PageDto/Failure is set. PageDto is
+    // the page ready to fold into GetEmoteSetPreviewAsync's accumulated preview; SetDto is its parent
+    // — the same object one level up, carrying the set's own name/capacity (F6) that repeats
+    // identically on every page; Failure is the already-built result that method returns as-is, since
+    // the reason (and its log line) was decided here.
+    private readonly record struct PreviewPageFetch(
+        SevenTvGqlEmoteSetPreviewPageDto? PageDto, SevenTvGqlEmoteSetPreviewSetDto? SetDto, SevenTvEmoteSetPreviewResult? Failure)
     {
-        public static PreviewPageFetch Success(SevenTvGqlEmoteSetPreviewPageDto pageDto) => new(pageDto, null);
+        public static PreviewPageFetch Success(SevenTvGqlEmoteSetPreviewSetDto setDto) => new(setDto.Emotes, setDto, null);
 
-        public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, failure);
+        public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, null, failure);
     }
 }

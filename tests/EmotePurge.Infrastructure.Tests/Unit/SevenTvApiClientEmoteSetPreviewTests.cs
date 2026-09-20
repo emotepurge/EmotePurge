@@ -229,8 +229,15 @@ public class SevenTvApiClientEmoteSetPreviewTests
     // Built through JsonNode rather than a hand-assembled string: the response nests five levels
     // deep (data.emote_sets.emote_set.emotes.items[].emote.scores), and getting the brace-counting
     // right in a raw string literal for that shape is exactly the kind of thing worth not doing by
-    // hand.
-    private static string Page(int totalCount, int pageCount, params (string Id, string Alias, string DefaultName, int? TopAllTime, int? TrendingDay, bool Animated)[] items)
+    // hand. name/capacity default to values that reproduce the pre-F6 shape exactly (no name, a
+    // capacity that already normalises to null) so every call site above this line stays unchanged.
+    private static string Page(
+        int totalCount, int pageCount, params (string Id, string Alias, string DefaultName, int? TopAllTime, int? TrendingDay, bool Animated)[] items) =>
+        Page(totalCount, pageCount, name: null, capacity: 0, items);
+
+    private static string Page(
+        int totalCount, int pageCount, string? name, int capacity,
+        params (string Id, string Alias, string DefaultName, int? TopAllTime, int? TrendingDay, bool Animated)[] items)
     {
         var itemsArray = new JsonArray();
         foreach (var item in items)
@@ -263,6 +270,8 @@ public class SevenTvApiClientEmoteSetPreviewTests
                 {
                     ["emote_set"] = new JsonObject
                     {
+                        ["name"] = name,
+                        ["capacity"] = capacity,
                         ["emotes"] = new JsonObject
                         {
                             ["total_count"] = totalCount,
@@ -275,6 +284,63 @@ public class SevenTvApiClientEmoteSetPreviewTests
         };
 
         return root.ToJsonString();
+    }
+
+    /// <summary>F6/AK 28: name and a non-zero capacity are read off the set object and land on the
+    /// assembled preview alongside the paginated entries.</summary>
+    [Fact]
+    public async Task NameAndCapacity_AreReadFromTheSetObject()
+    {
+        var handler = new PagedStubHandler(_ => Page(
+            totalCount: 1, pageCount: 1, name: "HandOfBlood's set", capacity: 956,
+            ("e1", "Alias", "Default", null, null, true)));
+        var client = CreateClient(handler);
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
+        Assert.Equal("HandOfBlood's set", result.Preview!.Name);
+        Assert.Equal(956, result.Preview.Capacity);
+    }
+
+    /// <summary>F6: a reported capacity of <c>0</c> normalises to <c>null</c>, the same idiom the
+    /// tracked-channel sync path (<c>SevenTvApiClient.cs</c>, the "0 ? … : null" comment) and the
+    /// set-list path already use — a bare <c>0</c> would make the UI claim the set is full.</summary>
+    [Fact]
+    public async Task ZeroCapacity_NormalisesToNull()
+    {
+        var handler = new PagedStubHandler(_ => Page(
+            totalCount: 0, pageCount: 1, name: "Empty set", capacity: 0));
+        var client = CreateClient(handler);
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
+        Assert.Null(result.Preview!.Capacity);
+    }
+
+    /// <summary>
+    /// AK 28/#74: two set entries that (due to 7TV's own merge bug, #74) share one
+    /// <c>SevenTvEmoteId</c> are kept as two separate rows, never deduplicated — <c>totalCount</c>
+    /// counts both, because it stands for the occupied slots of the *target* set, not for distinct
+    /// emotes.
+    /// </summary>
+    [Fact]
+    public async Task DuplicateSevenTvEmoteIds_AreKeptAsTwoSeparateEntries_NotDeduplicated()
+    {
+        var handler = new PagedStubHandler(_ => Page(
+            totalCount: 2, pageCount: 1,
+            ("e1", "AliasOne", "Default", null, null, true),
+            ("e1", "AliasTwo", "Default", null, null, true)));
+        var client = CreateClient(handler);
+
+        var result = await client.GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
+        Assert.Equal(2, result.Preview!.TotalCount);
+        Assert.Equal(2, result.Preview.Items.Count);
+        Assert.Equal(["e1", "e1"], result.Preview.Items.Select(i => i.SevenTvEmoteId));
+        Assert.Equal(["AliasOne", "AliasTwo"], result.Preview.Items.Select(i => i.Alias));
     }
 
 

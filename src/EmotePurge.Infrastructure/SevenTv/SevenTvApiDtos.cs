@@ -288,6 +288,12 @@ internal sealed class SevenTvGqlEmoteSetPreviewRootDto
 
 internal sealed class SevenTvGqlEmoteSetPreviewSetDto
 {
+    // Added spec 2026-09-20 (F6/6.4): the set's own name and slot capacity, read once per lookup
+    // alongside the paginated entries rather than in a separate request. 7TV returns the same values
+    // on every page of the same query — capturing them from whichever page happens to be classified
+    // successfully first (SevenTvApiClient.GetEmoteSetPreviewAsync) is correct either way.
+    public string? Name { get; set; }
+    public int Capacity { get; set; }
     public SevenTvGqlEmoteSetPreviewPageDto? Emotes { get; set; }
 }
 

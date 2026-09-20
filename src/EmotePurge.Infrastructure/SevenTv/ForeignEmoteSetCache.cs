@@ -22,13 +22,33 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
     : IForeignEmoteSetCache
 {
     private const string KeyPrefix = "7tvforeign:";
+
+    // The set-ID read mode's own namespace (spec 2026-09-20, E12): nested under the same prefix as
+    // the login-keyed entries above but never colliding with one — a channel login can never contain
+    // a colon, so "set:{id}" and any normalized login are disjoint strings by construction. An entry
+    // here for channel A's currently-inactive set must never be overwritten by, or overwrite, the
+    // "{login}"-keyed entry for A's active set.
+    private const string SetIdKeyPrefix = "7tvforeign:set:";
+
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(60);
 
-    public async Task<ForeignEmoteSet?> TryGetAsync(string normalizedChannelName, CancellationToken cancellationToken = default)
+    public Task<ForeignEmoteSet?> TryGetAsync(string normalizedChannelName, CancellationToken cancellationToken = default) =>
+        TryGetByKeyAsync(BuildLoginKey(normalizedChannelName), normalizedChannelName);
+
+    public Task SetAsync(string normalizedChannelName, ForeignEmoteSet emoteSet, CancellationToken cancellationToken = default) =>
+        SetByKeyAsync(BuildLoginKey(normalizedChannelName), normalizedChannelName, emoteSet);
+
+    public Task<ForeignEmoteSet?> TryGetBySetIdAsync(string emoteSetId, CancellationToken cancellationToken = default) =>
+        TryGetByKeyAsync(BuildSetIdKey(emoteSetId), emoteSetId);
+
+    public Task SetBySetIdAsync(string emoteSetId, ForeignEmoteSet emoteSet, CancellationToken cancellationToken = default) =>
+        SetByKeyAsync(BuildSetIdKey(emoteSetId), emoteSetId, emoteSet);
+
+    private async Task<ForeignEmoteSet?> TryGetByKeyAsync(string key, string logIdentifier)
     {
         try
         {
-            var value = await connectionMultiplexer.GetDatabase().StringGetAsync(BuildKey(normalizedChannelName));
+            var value = await connectionMultiplexer.GetDatabase().StringGetAsync(key);
             if (value.IsNullOrEmpty)
             {
                 return null;
@@ -41,24 +61,26 @@ public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, 
             // A payload we cannot read is treated the same as a miss — the caller resolves live,
             // which is the safe direction for a read-only preview.
             logger.LogWarning(
-                ex, "Lesen des Fremdkanal-Vorschau-Caches für {ChannelName} fehlgeschlagen — behandle als Miss.", normalizedChannelName);
+                ex, "Lesen des Fremdkanal-Vorschau-Caches für {Identifier} fehlgeschlagen — behandle als Miss.", logIdentifier);
             return null;
         }
     }
 
-    public async Task SetAsync(string normalizedChannelName, ForeignEmoteSet emoteSet, CancellationToken cancellationToken = default)
+    private async Task SetByKeyAsync(string key, string logIdentifier, ForeignEmoteSet emoteSet)
     {
         try
         {
             var payload = JsonSerializer.Serialize(emoteSet, JsonSerializerOptions.Web);
-            await connectionMultiplexer.GetDatabase().StringSetAsync(BuildKey(normalizedChannelName), payload, Ttl);
+            await connectionMultiplexer.GetDatabase().StringSetAsync(key, payload, Ttl);
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException)
         {
             logger.LogWarning(
-                ex, "Schreiben des Fremdkanal-Vorschau-Caches für {ChannelName} fehlgeschlagen — Ergebnis wird nur für diesen Request verwendet.", normalizedChannelName);
+                ex, "Schreiben des Fremdkanal-Vorschau-Caches für {Identifier} fehlgeschlagen — Ergebnis wird nur für diesen Request verwendet.", logIdentifier);
         }
     }
 
-    private static string BuildKey(string normalizedChannelName) => $"{KeyPrefix}{normalizedChannelName}";
+    private static string BuildLoginKey(string normalizedChannelName) => $"{KeyPrefix}{normalizedChannelName}";
+
+    private static string BuildSetIdKey(string emoteSetId) => $"{SetIdKeyPrefix}{emoteSetId}";
 }

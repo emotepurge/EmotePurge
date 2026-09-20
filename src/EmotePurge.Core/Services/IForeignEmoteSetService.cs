@@ -26,6 +26,23 @@ public interface IForeignEmoteSetService
     /// </param>
     Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetAsync(
         string channelName, bool refresh = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The set-ID read mode (spec 2026-09-20, 6.4/E8): reads an arbitrary 7TV emote set by its own
+    /// id, never by resolving a channel's identity first. <paramref name="channelName"/> is the
+    /// route's channel and is only ever echoed back onto <see cref="ForeignEmoteSet.ChannelName"/> —
+    /// it is never normalized against Twitch, never used to look anything up, and its value has no
+    /// bearing on which set is read. There is deliberately no Helix call and no 7TV identity
+    /// resolution on this path: <see cref="ForeignEmoteSet.SevenTvUserId"/> on the result is always
+    /// <c>null</c>, because our <c>Channel</c> row holds no 7TV user id to report in the first place
+    /// (only the worker's live subscription registry does) — a channel with no role at all for the
+    /// caller has nothing to resolve to.
+    /// </summary>
+    /// <param name="channelName">The route's channel — echoed, not resolved.</param>
+    /// <param name="emoteSetId">The 7TV set id to read, already format-validated at the API edge.</param>
+    /// <param name="refresh">Same meaning as on <see cref="GetForeignEmoteSetAsync"/>.</param>
+    Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetBySetIdAsync(
+        string channelName, string emoteSetId, bool refresh = false, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -120,13 +137,31 @@ public sealed class ForeignEmoteSetLookupResult
 /// step the API endpoint needs, the same convention <c>ResyncCooldownState</c> and
 /// <c>SevenTvChannelState</c> already rely on elsewhere in this codebase.
 /// </summary>
+/// <param name="SevenTvUserId">
+/// <c>null</c> in the set-ID read mode (spec E8) — see
+/// <see cref="IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync"/>. Never <c>null</c> for a
+/// result the login-based <see cref="IForeignEmoteSetService.GetForeignEmoteSetAsync"/> produced.
+/// </param>
+/// <param name="EmoteSetName">
+/// What 7TV reports as the set's own name (spec 6.4, F6); <c>null</c> when 7TV omits it. Trailing
+/// and optional, together with <paramref name="Capacity"/>, purely so every existing positional
+/// construction of this record — none of which knew this field existed — keeps compiling unchanged
+/// (AK 28: the 9 Hardened-decorator tests and this record's other callers must stay untouched).
+/// </param>
+/// <param name="Capacity">
+/// The set's slot limit as 7TV reports it; <c>0</c> is already normalised to <c>null</c> here, the
+/// same idiom <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSet"/> and
+/// <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSetListEntry"/> already use.
+/// </param>
 public sealed record ForeignEmoteSet(
     string ChannelName,
-    string SevenTvUserId,
+    string? SevenTvUserId,
     string EmoteSetId,
     int TotalCount,
     bool Truncated,
-    IReadOnlyList<ForeignEmoteRow> Emotes);
+    IReadOnlyList<ForeignEmoteRow> Emotes,
+    string? EmoteSetName = null,
+    int? Capacity = null);
 
 /// <summary>
 /// One emote in a foreign set preview. <see cref="SevenTvEmoteId"/> is 7TV's own ObjectID, never our

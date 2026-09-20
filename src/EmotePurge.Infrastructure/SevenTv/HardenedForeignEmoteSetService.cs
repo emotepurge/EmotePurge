@@ -93,10 +93,62 @@ public sealed class HardenedForeignEmoteSetService(
         // the rest. This caller's own token is handed to the coalescer, which applies it to this
         // caller's wait alone. The abandoned work still completes and still fills the cache.
         return await coalescer.CoalesceAsync(
-            normalized, () => ExecuteGuardedAsync(normalized, CancellationToken.None), cancellationToken);
+            normalized,
+            () => ExecuteGuardedAsync(
+                normalized,
+                () => inner.GetForeignEmoteSetAsync(normalized, refresh: false, CancellationToken.None),
+                emoteSet => cache.SetAsync(normalized, emoteSet, CancellationToken.None)),
+            cancellationToken);
     }
 
-    private async Task<ForeignEmoteSetLookupResult> ExecuteGuardedAsync(string normalizedChannelName, CancellationToken cancellationToken)
+    public async Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetBySetIdAsync(
+        string channelName, string emoteSetId, bool refresh = false, CancellationToken cancellationToken = default)
+    {
+        var normalizedChannel = ChannelName.Normalize(channelName);
+
+        if (!refresh)
+        {
+            var cached = await cache.TryGetBySetIdAsync(emoteSetId, cancellationToken);
+            telemetry.RecordCacheLookup(RateLimitCacheNames.ForeignEmoteSetBySetId, hit: cached is not null);
+            if (cached is not null)
+            {
+                return ForeignEmoteSetLookupResult.Ok(cached);
+            }
+        }
+
+        // Coalescing key "set:{id}" (spec E12) — deliberately its own namespace within the shared
+        // coalescer, distinct from the bare normalized login GetForeignEmoteSetAsync above uses as
+        // its key. A Twitch login can never contain a colon, so the two key spaces are disjoint by
+        // construction: a set-ID lookup for X and a login lookup that happens to resolve to the same
+        // account's active set never share one in-flight entry, and neither ever coalesces onto the
+        // other's cache write (AK 26, spec 19's Prüfaufgabe).
+        var coalesceKey = $"set:{emoteSetId}";
+        return await coalescer.CoalesceAsync(
+            coalesceKey,
+            () => ExecuteGuardedAsync(
+                emoteSetId,
+                () => inner.GetForeignEmoteSetBySetIdAsync(normalizedChannel, emoteSetId, refresh: false, CancellationToken.None),
+                emoteSet => cache.SetBySetIdAsync(emoteSetId, emoteSet, CancellationToken.None)),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// The shared guarded execution behind both public methods: breaker, then the provider-wide
+    /// concurrency budget, then the caller-supplied <paramref name="resolve"/> chain, then (on
+    /// success) <paramref name="writeCache"/>. Both read modes share this — and, with it, the same
+    /// <see cref="ForeignSevenTvBreakerOperations.ForeignPreview"/> operation and the same budget —
+    /// because F6 (spec 2026-09-20) is explicit that hardening "wie heute" applies to the set-ID mode
+    /// too: it is the same 7TV bucket and the same preview query shape, just without the two
+    /// resolution calls in front of it.
+    /// </summary>
+    /// <param name="logIdentifier">
+    /// What log lines below name — the normalized channel for the login mode, the set id for the
+    /// set-ID mode (which has no identity to resolve and so nothing else to log).
+    /// </param>
+    private async Task<ForeignEmoteSetLookupResult> ExecuteGuardedAsync(
+        string logIdentifier,
+        Func<Task<ForeignEmoteSetLookupResult>> resolve,
+        Func<ForeignEmoteSet, Task> writeCache)
     {
         var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.ForeignPreview);
         if (!decision.Allowed)
@@ -105,8 +157,8 @@ public sealed class HardenedForeignEmoteSetService(
             // breaker is open, and the one event worth a real log line — the breaker actually opening
             // — is logged exactly once, below, at the point the transition happens.
             logger.LogDebug(
-                "Fremdkanal-Vorschau für {ChannelName}: Circuit-Breaker offen, kein Upstream-Aufruf (verbleibende Offenzeit {RemainingSeconds}s).",
-                normalizedChannelName, Math.Ceiling(decision.RemainingOpenTime.TotalSeconds));
+                "Fremdkanal-Vorschau für {Identifier}: Circuit-Breaker offen, kein Upstream-Aufruf (verbleibende Offenzeit {RemainingSeconds}s).",
+                logIdentifier, Math.Ceiling(decision.RemainingOpenTime.TotalSeconds));
             return ForeignEmoteSetLookupResult.Failed(
                 decision.OpenedByRateLimit
                     ? ForeignEmoteSetLookupStatus.SevenTvRateLimited
@@ -117,12 +169,12 @@ public sealed class HardenedForeignEmoteSetService(
         IDisposable? permit = null;
         try
         {
-            permit = await budget.TryAcquireConcurrencySlotAsync(BudgetWaitTimeout, cancellationToken);
+            permit = await budget.TryAcquireConcurrencySlotAsync(BudgetWaitTimeout, CancellationToken.None);
             if (permit is null)
             {
                 logger.LogWarning(
-                    "Fremdkanal-Vorschau für {ChannelName}: providerweites 7TV-Budget nach {TimeoutSeconds}s Wartezeit nicht verfügbar.",
-                    normalizedChannelName, BudgetWaitTimeout.TotalSeconds);
+                    "Fremdkanal-Vorschau für {Identifier}: providerweites 7TV-Budget nach {TimeoutSeconds}s Wartezeit nicht verfügbar.",
+                    logIdentifier, BudgetWaitTimeout.TotalSeconds);
                 // Never reached the inner chain — nothing to tell the breaker about 7TV's health, but
                 // the probe slot (if this was one) still needs releasing.
                 breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.ForeignPreview, decision.Generation);
@@ -130,13 +182,13 @@ public sealed class HardenedForeignEmoteSetService(
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
             }
 
-            var result = await inner.GetForeignEmoteSetAsync(normalizedChannelName, refresh: false, cancellationToken);
-            LogBreakerTransition(normalizedChannelName, result.Status, ApplyBreakerFeedback(result, decision.Generation));
+            var result = await resolve();
+            LogBreakerTransition(logIdentifier, result.Status, ApplyBreakerFeedback(result, decision.Generation));
             breakerResolved = true;
 
             if (result.Status == ForeignEmoteSetLookupStatus.Ok)
             {
-                await cache.SetAsync(normalizedChannelName, result.EmoteSet!, cancellationToken);
+                await writeCache(result.EmoteSet!);
             }
 
             return result;
@@ -188,7 +240,7 @@ public sealed class HardenedForeignEmoteSetService(
         return ForeignSevenTvBreakerTransition.None;
     }
 
-    private void LogBreakerTransition(string normalizedChannelName, ForeignEmoteSetLookupStatus status, ForeignSevenTvBreakerTransition transition)
+    private void LogBreakerTransition(string logIdentifier, ForeignEmoteSetLookupStatus status, ForeignSevenTvBreakerTransition transition)
     {
         switch (transition)
         {
@@ -197,8 +249,8 @@ public sealed class HardenedForeignEmoteSetService(
                 // rejected request (spec section 6): a transition only ever happens on the call that
                 // causes it, never on the many rejections that follow while it stays open.
                 logger.LogWarning(
-                    "7TV-Circuit-Breaker für Fremdkanal-Vorschauen geöffnet (ausgelöst durch Kanal {ChannelName}, Status {Status}).",
-                    normalizedChannelName, status);
+                    "7TV-Circuit-Breaker für Fremdkanal-Vorschauen geöffnet (ausgelöst durch {Identifier}, Status {Status}).",
+                    logIdentifier, status);
                 break;
             case ForeignSevenTvBreakerTransition.Closed:
                 logger.LogInformation("7TV-Circuit-Breaker für Fremdkanal-Vorschauen wieder geschlossen.");
