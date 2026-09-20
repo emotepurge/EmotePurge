@@ -9,15 +9,29 @@ namespace EmotePurge.Infrastructure.Services;
 
 public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushService> logger) : IUsageStatFlushService
 {
-    public async Task<IReadOnlyCollection<string>> FlushAsync(IReadOnlyDictionary<string, EmoteUsageCounts> usageCounts, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyCollection<string>> FlushAsync(IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> usageCounts, CancellationToken cancellationToken = default)
     {
         if (usageCounts.Count == 0)
         {
             return [];
         }
 
+        // Provisional (T1.1): the schema and the SQL below still know only (EmoteId, Date), not the
+        // observed set — that arrives with the index swap in T1.3b and the rewritten SQL in T1.4.
+        // Until then, two keys that share an EmoteId but differ in EmoteSetId (a cache swap between
+        // two chat messages) are summed into a single row here. This is the exact state T1.4
+        // replaces; nothing downstream may come to rely on it.
+        var countsByEmoteId = usageCounts
+            .GroupBy(kvp => kvp.Key.EmoteId)
+            .ToDictionary(
+                g => g.Key,
+                g => new EmoteUsageCounts(
+                    g.Sum(kvp => kvp.Value.Human),
+                    g.Sum(kvp => kvp.Value.Bot),
+                    g.Sum(kvp => kvp.Value.SharedChat)));
+
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var emoteIds = usageCounts.Keys.ToList();
+        var emoteIds = countsByEmoteId.Keys.ToList();
 
         // A channel leave deactivates instead of deleting nowadays, but archived emotes can still
         // be hard-deleted by an admin purge — and a count buffered before that would otherwise
@@ -45,9 +59,9 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
             return [];
         }
 
-        var useCounts = validIds.Select(id => usageCounts[id].Human).ToArray();
-        var botUseCounts = validIds.Select(id => usageCounts[id].Bot).ToArray();
-        var sharedChatUseCounts = validIds.Select(id => usageCounts[id].SharedChat).ToArray();
+        var useCounts = validIds.Select(id => countsByEmoteId[id].Human).ToArray();
+        var botUseCounts = validIds.Select(id => countsByEmoteId[id].Bot).ToArray();
+        var sharedChatUseCounts = validIds.Select(id => countsByEmoteId[id].SharedChat).ToArray();
 
         // Atomic upsert rather than read-then-insert. The previous version decided per emote between
         // += and Add based on a prior SELECT, which is only correct while there is exactly one

@@ -279,14 +279,14 @@ public class SevenTvSyncService(
     /// </summary>
     private async Task WarmMatchCacheIfEmptyAsync(Channel channel, CancellationToken cancellationToken)
     {
-        if (emoteMatchCache.GetChannelEmotes(channel.ChannelName).Count != 0)
+        if (emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Count != 0)
         {
             return;
         }
 
         await RefreshMatchCacheAsync(channel, cancellationToken);
 
-        var warmedCount = emoteMatchCache.GetChannelEmotes(channel.ChannelName).Count;
+        var warmedCount = emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Count;
         if (warmedCount > 0)
         {
             logger.LogInformation(
@@ -433,7 +433,31 @@ public class SevenTvSyncService(
             }
         }
 
-        emoteMatchCache.ReplaceChannel(channel.ChannelName, emoteNameToId);
+        // The set id comes off the very row this method was handed, and that row is also where the
+        // sync writes ActiveEmoteSetId — so the set the dictionary was built for travels with it
+        // without a second lookup that could answer for a different moment. This holds for the warm
+        // start too: it runs before either 7TV call and therefore pairs the emote rows in Postgres
+        // with the set id those rows were last reconciled against.
+        var previous = emoteMatchCache.GetChannelSnapshot(channel.ChannelName);
+        emoteMatchCache.ReplaceChannel(channel.ChannelName, channel.ActiveEmoteSetId, emoteNameToId);
+
+        // Only a swap between two known sets is worth a line — it is what makes the delay between
+        // a set switch on 7TV and our observing it measurable in production. Two non-cases: a first
+        // population replaces the empty snapshot (EmoteSetId == ""), which is not a switch; and a
+        // refresh onto the same set is the ordinary resync tick, which runs once a minute per
+        // channel and would drown the log. The new generation is read back rather than guessed,
+        // because ReplaceChannel stamps it.
+        if (previous.EmoteSetId.Length > 0
+            && !string.Equals(previous.EmoteSetId, channel.ActiveEmoteSetId, StringComparison.Ordinal))
+        {
+            logger.LogInformation(
+                "Match cache for {Channel} switched from set {OldSetId} (generation {OldGeneratedAt}) to {NewSetId} (generation {NewGeneratedAt})",
+                channel.ChannelName,
+                previous.EmoteSetId,
+                previous.GeneratedAtUtc,
+                channel.ActiveEmoteSetId,
+                emoteMatchCache.GetChannelSnapshot(channel.ChannelName).GeneratedAtUtc);
+        }
     }
 
     /// <summary>Returns true when at least one emote row was added, archived or altered.</summary>

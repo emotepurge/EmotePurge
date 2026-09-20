@@ -1,9 +1,12 @@
+using System.Globalization;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -18,6 +21,10 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 public class SevenTvSyncServiceTests(PostgresFixture fixture)
 {
     private const string SetId = "64c9e0f0aa1234567890abcd";
+
+    // A second, clearly distinct set for the switch cases below — neither id is a
+    // substring of the other, so a log line can be attributed to one of them.
+    private const string SwitchedSetId = "64c9e0f0aa1234567890beef";
 
     private static SevenTvEmoteSetDelta Delta(
         IReadOnlyList<SevenTvEmote>? pushed = null,
@@ -58,6 +65,22 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes, capacity))));
         return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+    }
+
+    // As CreateRestService, but with a logger of the caller's choosing. Separate method for the
+    // same reason CreateRestServiceWithCapacity is one: the params array has to stay last.
+    private static SevenTvSyncService CreateRestServiceWithLogger(
+        Persistence.AppDbContext db,
+        EmoteMatchCache cache,
+        Channel channel,
+        string emoteSetId,
+        ILogger<SevenTvSyncService> logger,
+        params SevenTvEmote[] liveEmotes)
+    {
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes))));
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelSyncGate(), logger);
     }
 
     private static string SeededImageUrl(string sevenTvId) => $"https://cdn.7tv.app/emote/{sevenTvId}/2x.webp";
@@ -101,7 +124,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         await service.SyncChannelAsync(channel.ChannelName);
 
-        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
         Assert.Equal(2, cached.Count);
         Assert.True(cached.ContainsKey("Dup"));
         Assert.True(cached.ContainsKey("Solo"));
@@ -124,7 +147,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e2");
         Assert.Equal("catJAM", row.Name);
         Assert.False(row.IsArchived);
-        Assert.True(cache.GetChannelEmotes(channel.ChannelName).ContainsKey("catJAM"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("catJAM"));
     }
 
     [Fact]
@@ -140,7 +163,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e2");
         Assert.True(row.IsArchived);
-        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
         Assert.True(cached.ContainsKey("keepme"));
         Assert.False(cached.ContainsKey("removeme"));
     }
@@ -159,7 +182,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
         Assert.False(row.IsArchived);
-        Assert.True(cache.GetChannelEmotes(channel.ChannelName).ContainsKey("phoenix"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("phoenix"));
     }
 
     [Fact]
@@ -176,7 +199,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
         Assert.Equal("newname", row.Name);
-        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
         Assert.True(cached.ContainsKey("newname"));
         Assert.False(cached.ContainsKey("oldname"));
     }
@@ -191,14 +214,14 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "wstest_wipe",
             ("e1", "one", false), ("e2", "two", false), ("e3", "three", false));
         var service = CreateService(db, cache);
-        cache.ReplaceChannel(channel.ChannelName, new Dictionary<string, string> { ["one"] = "x" });
+        cache.ReplaceChannel(channel.ChannelName, SetId, new Dictionary<string, string> { ["one"] = "x" });
 
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName, SetId, Delta(pulledIds: ["e1", "e2", "e3"]));
 
         Assert.Equal(SevenTvDeltaOutcome.ImplausibleSkipped, result.Outcome);
         Assert.Equal(0, await db.Emotes.CountAsync(e => e.ChannelId == channel.Id && e.IsArchived));
-        Assert.True(cache.GetChannelEmotes(channel.ChannelName).ContainsKey("one"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("one"));
     }
 
     [Fact]
@@ -260,8 +283,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, (await service.ApplyEmoteSetUpdateAsync(channelB.ChannelName, SetId, delta)).Outcome);
 
         Assert.Equal(2, await db.Emotes.CountAsync(e => e.SevenTvEmoteId == "e7"));
-        Assert.True(cache.GetChannelEmotes(channelA.ChannelName).ContainsKey("sharedjam"));
-        Assert.True(cache.GetChannelEmotes(channelB.ChannelName).ContainsKey("sharedjam"));
+        Assert.True(cache.GetChannelSnapshot(channelA.ChannelName).NameToEmoteId.ContainsKey("sharedjam"));
+        Assert.True(cache.GetChannelSnapshot(channelB.ChannelName).NameToEmoteId.ContainsKey("sharedjam"));
     }
 
     [Fact]
@@ -763,8 +786,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SetId, row.ActiveEmoteSetId);
         Assert.Null(row.LastSyncedAtUtc);
         Assert.Equal(1, await db.Emotes.CountAsync(e => e.ChannelId == channel.Id));
-        Assert.True(cache.GetChannelEmotes(channel.ChannelName).ContainsKey("stable"));
-        Assert.False(cache.GetChannelEmotes(channel.ChannelName).ContainsKey("fresh"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("stable"));
+        Assert.False(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("fresh"));
     }
 
     [Fact]
@@ -924,7 +947,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.Null(result);
-        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
         Assert.Single(cached);
         Assert.True(cached.ContainsKey("active"));
         Assert.False(cached.ContainsKey("archived"));
@@ -940,13 +963,13 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_warmstart_filled", ("e1", "postgresonly", false));
         var marker = new Dictionary<string, string> { ["markeronly"] = "marker-id" };
-        cache.ReplaceChannel(channel.ChannelName, marker);
+        cache.ReplaceChannel(channel.ChannelName, SetId, marker);
         var service = CreateFailingService(db, cache, channel, SevenTvLookupStatus.Unavailable);
 
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.Null(result);
-        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
         Assert.Single(cached);
         Assert.True(cached.ContainsKey("markeronly"));
         Assert.False(cached.ContainsKey("postgresonly"));
@@ -964,7 +987,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.NotNull(result);
-        var cached = cache.GetChannelEmotes(channel.ChannelName);
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
         Assert.True(cached.ContainsKey("newname"));
         Assert.False(cached.ContainsKey("oldname"));
     }
@@ -982,7 +1005,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.Null(result);
-        Assert.Empty(cache.GetChannelEmotes(channel.ChannelName));
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
     }
 
     [Fact]
@@ -1015,4 +1038,75 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Null(await db.Channels.Where(c => c.Id == renamed.Id)
             .Select(c => c.TwitchChannelId).SingleAsync());
     }
+
+    // The set the match cache was built for, from the two places that fill it. Deliberately one
+    // case over both: the point of rule 2 is that the two writers agree on where the id comes
+    // from, and a switch between them is what makes a disagreement visible at all.
+    [Fact]
+    public async Task SyncChannel_PutsTheObservedSetIdIntoTheMatchCache_OnTheWarmStartAndOnTheSync()
+    {
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_setid_travels", ("e1", "beforeswitch", false));
+
+        // Warm start: 7TV is unreachable, so the cache is filled from the emote rows in Postgres
+        // alone — and those rows belong to the set the channel row still names.
+        var failing = CreateFailingService(db, cache, channel, SevenTvLookupStatus.Unavailable);
+        Assert.Null(await failing.SyncChannelAsync(channel.ChannelName));
+        var warmed = cache.GetChannelSnapshot(channel.ChannelName);
+        Assert.Equal(SetId, warmed.EmoteSetId);
+        Assert.True(warmed.NameToEmoteId.ContainsKey("beforeswitch"));
+
+        // Sync: 7TV reports a different active set, and the snapshot follows it in lockstep with
+        // the dictionary — the pair a chat message is counted under.
+        var service = CreateRestService(db, cache, channel, SwitchedSetId, LiveEmote("e2", "afterswitch"));
+        Assert.NotNull(await service.SyncChannelAsync(channel.ChannelName));
+        var synced = cache.GetChannelSnapshot(channel.ChannelName);
+        Assert.Equal(SwitchedSetId, synced.EmoteSetId);
+        Assert.True(synced.NameToEmoteId.ContainsKey("afterswitch"));
+        Assert.False(synced.NameToEmoteId.ContainsKey("beforeswitch"));
+    }
+
+    [Fact]
+    public async Task RefreshMatchCache_LogsTheSetSwitchExactlyOnce_AndNotWhenTheSetStaysTheSame()
+    {
+        // The line is what makes the gap between a switch on 7TV and our noticing it measurable in
+        // production, so it has to fire on the switch and stay quiet around it. Asserted through a
+        // recording logger and matched on the two set ids and the two generation timestamps it has
+        // to carry — not on its wording.
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        var channel = await SeedChannelAsync(db, "wstest_setid_switchlog", ("e1", "beforeswitch", false));
+
+        // Same set: the warm start populates the empty snapshot and the sync refreshes onto the
+        // very set that was already there. Neither is a switch, and the second is the ordinary
+        // resync tick — once a minute per channel, so a line here would be noise.
+        var sameSet = CreateRestServiceWithLogger(db, cache, channel, SetId, logger, LiveEmote("e1", "beforeswitch"));
+        Assert.NotNull(await sameSet.SyncChannelAsync(channel.ChannelName));
+        Assert.Empty(SwitchLines(logger));
+        var generationBefore = cache.GetChannelSnapshot(channel.ChannelName).GeneratedAtUtc;
+
+        // Different set: exactly one line, naming both sets and both generations.
+        var switched = CreateRestServiceWithLogger(db, cache, channel, SwitchedSetId, logger, LiveEmote("e2", "afterswitch"));
+        Assert.NotNull(await switched.SyncChannelAsync(channel.ChannelName));
+        var generationAfter = cache.GetChannelSnapshot(channel.ChannelName).GeneratedAtUtc;
+
+        var line = Assert.Single(SwitchLines(logger));
+        Assert.Equal(LogLevel.Information, line.Level);
+        Assert.Contains(generationBefore.ToString(CultureInfo.InvariantCulture), line.Message, StringComparison.Ordinal);
+        Assert.Contains(generationAfter.ToString(CultureInfo.InvariantCulture), line.Message, StringComparison.Ordinal);
+
+        // And a refresh back onto the set that is now current adds nothing.
+        var again = CreateRestServiceWithLogger(db, cache, channel, SwitchedSetId, logger, LiveEmote("e2", "afterswitch"));
+        Assert.NotNull(await again.SyncChannelAsync(channel.ChannelName));
+        Assert.Single(SwitchLines(logger));
+    }
+
+    // A switch line is the only one that has to name both sets at once, which identifies it without
+    // pinning its prose.
+    private static IReadOnlyList<(LogLevel Level, string Message)> SwitchLines(RecordingLogger<SevenTvSyncService> logger) =>
+        [.. logger.Entries.Where(e =>
+            e.Message.Contains(SetId, StringComparison.Ordinal)
+            && e.Message.Contains(SwitchedSetId, StringComparison.Ordinal))];
 }
