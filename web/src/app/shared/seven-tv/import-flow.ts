@@ -3,13 +3,19 @@ import { HttpClient } from '@angular/common/http';
 import { computed, signal } from '@angular/core';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { ImportTargetLoadState, loadImportTarget } from '../../core/emotes/import-target-loader';
+import {
+  ImportTargetLoadState,
+  ImportTargetSelection,
+  loadImportTarget,
+} from '../../core/emotes/import-target-loader';
 import { ImportSource } from '../../core/seven-tv/import-source';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { filterAlreadyPresent } from './already-present-filter';
 import { ImportConfirmOutcome, openImportConfirmDialog } from './import-confirm-dialog';
+import { ImportTargetChoice } from './import-target-dialog';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
 /**
@@ -23,12 +29,89 @@ import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 export interface ImportFlowDeps {
   dialog: Dialog;
   emoteAdminService: EmoteAdminService;
+  /** `loadImportTarget`'s live-list collaborator for a `'chosen'` target (spec F5) — the three
+   *  channel-only entry points (file, foreign channel, leaderboard) never reach it, since they
+   *  always resolve `'activeSet'`. */
+  emoteSetService: SevenTvEmoteSetService;
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read in
    *  this flow goes through `emoteAdminService`. */
   httpClient: HttpClient;
   tokenService: SevenTvTokenService;
   importService: SevenTvImportService;
   arbiter: SevenTvRunArbiter;
+}
+
+/**
+ * What `startImportFlow` targets (spec F5, 8.6). Two shapes, not one, because the flow has two
+ * different callers with two different amounts of knowledge:
+ *
+ * - `'activeSet'` — the three channel-only doors (file, foreign channel, leaderboard), which have
+ *   never asked *which* set, only *which channel* (K4 is what will eventually let the page itself
+ *   pick a non-active set for these too — not this task). Resolves exactly like before this spec:
+ *   `EmoteSetStatus`/`listEmotes`/`getSetWarning`, unchanged requests (AK 36).
+ * - `'chosen'` — the K2 target picker's own answer, a full `ImportTargetChoice` (minus the `scope`
+ *   the picker also returns, which the flow never needs — the caller has already turned that into
+ *   `source`'s rows before calling here). Carries a tracked channel's *specific* set (active or
+ *   not) or an untracked account's set; `loadImportTarget`'s `'trackedSet'`/`'untrackedSet'` cases
+ *   read it live rather than assume it is the channel's active one — that assumption is exactly
+ *   the bug this type exists to close (F5: "der Ziel-Loader liest das aktive Set, und der Dialog
+ *   schließt mit dessen ID", the reason T2.5a and T2.5b were one commit to begin with).
+ *
+ * A plain `Omit<ImportTargetChoice, 'scope'>` (no `kind` tag) was the first draft, distinguished
+ * from `'activeSet'` structurally (an `emoteSetId` field's presence). The explicit tag reads better
+ * at every call site below and makes a third, future shape (K4's set dropdown, maybe) a compile
+ * error at every `switch` here instead of a silent fall-through.
+ */
+export type ImportFlowTarget =
+  | { kind: 'activeSet'; channelName: string }
+  | { kind: 'chosen'; choice: Omit<ImportTargetChoice, 'scope'> };
+
+/** `loadImportTarget`'s own input (spec F5) from an `ImportFlowTarget` — the one place this flow
+ *  decides *how* to resolve a target, so every caller below shares the same rule.
+ *
+ *  A tracked choice whose `emoteSetId` is the account's own `activeEmoteSetId` resolves via
+ *  `'trackedActive'` — the *same* "today" path an `'activeSet'` target takes, on purpose (spec 8.6,
+ *  fourth bullet: "getracktes Ziel **und** `emoteSetId === activeEmoteSetId` ⇒ heutiger Weg").
+ *  AK 36 pins the reason as a *request* contract, not a style preference: the active case must fire
+ *  exactly the same requests as before this spec, no more — and per the E6 permit budget, the
+ *  live-list read this function's other branch takes is not free, it draws on the same 7TV-preview
+ *  budget the target-set preview itself does. Comparing `emoteSetId === activeEmoteSetId` here
+ *  (rather than reusing `ImportTargetSetChoice.isActive`, computed one step earlier and already
+ *  discarded by the time a choice reaches this function) is what makes that comparison legible at
+ *  the exact point it decides anything.
+ *
+ *  A tracked choice's `channelName` is asserted non-null rather than defended with a fallback:
+ *  `ImportTargetChoice`'s own contract (`import-target-dialog.ts`) is that `channelName` is the
+ *  tracked class's attribute, never absent when `isTracked` is `true` — a `null` there would be a
+ *  bug in the picker, not a legitimate state this function should quietly paper over.
+ *
+ *  An untracked choice routes through `twitchLogin` (spec 6.2), never `ownerDisplayName`: the
+ *  latter is a display name, unfit for a URL path segment and explicitly barred from any
+ *  comparison/routing use (E7, spec 8.6) — `twitchLogin` is the machine-readable field 6.2 carries
+ *  for exactly this. */
+function toTargetSelection(target: ImportFlowTarget): ImportTargetSelection {
+  if (target.kind === 'activeSet') {
+    return { kind: 'trackedActive', channelName: target.channelName };
+  }
+  const choice = target.choice;
+  if (choice.isTracked) {
+    if (choice.channelName === null) {
+      throw new Error(
+        'ImportTargetChoice.isTracked without a channelName — picker contract broken',
+      );
+    }
+    if (choice.emoteSetId === choice.activeEmoteSetId) {
+      return { kind: 'trackedActive', channelName: choice.channelName };
+    }
+    return { kind: 'trackedSet', channelName: choice.channelName, emoteSetId: choice.emoteSetId };
+  }
+  return { kind: 'untrackedSet', channelName: choice.twitchLogin, emoteSetId: choice.emoteSetId };
+}
+
+/** The confirm dialog's `targetChannelName` from an `ImportFlowTarget` — `null` only for an
+ *  untracked choice, which the header then names by owner instead (spec 8.6, AK 39). */
+function toTargetChannelName(target: ImportFlowTarget): string | null {
+  return target.kind === 'activeSet' ? target.channelName : target.choice.channelName;
 }
 
 /**
@@ -46,9 +129,17 @@ export interface ImportFlowDeps {
 export function startImportFlow(
   deps: ImportFlowDeps,
   source: ImportSource,
-  targetChannelName: string,
+  target: ImportFlowTarget,
 ): void {
-  const target = signal<ImportTargetLoadState>({ status: 'loading' });
+  const targetState = signal<ImportTargetLoadState>({ status: 'loading' });
+  const targetChannelName = toTargetChannelName(target);
+  // Only meaningful for an untracked choice (spec 8.6, AK 39) — `targetChannelName` names the
+  // destination for every tracked one, so this stays `null` there, on purpose, even though the
+  // choice itself also carries an owner display name for a tracked set.
+  const targetOwnerDisplayName =
+    target.kind === 'chosen' && target.choice.channelName === null
+      ? target.choice.ownerDisplayName
+      : null;
 
   // A retry while an earlier load is still in flight must not be overwritten by that older answer
   // — every load claims a generation and drops itself if it is no longer the current one. Closing
@@ -57,10 +148,14 @@ export function startImportFlow(
 
   const load = (): void => {
     const mine = ++generation;
-    target.set({ status: 'loading' });
-    loadImportTarget(deps.emoteAdminService, targetChannelName).subscribe((state) => {
+    targetState.set({ status: 'loading' });
+    loadImportTarget(
+      deps.emoteAdminService,
+      deps.emoteSetService,
+      toTargetSelection(target),
+    ).subscribe((state) => {
       if (mine === generation) {
-        target.set(state);
+        targetState.set(state);
       }
     });
   };
@@ -70,6 +165,14 @@ export function startImportFlow(
     // invisible to it, so the cross-kind check happens here — silently, because the progress of
     // that other run is already on screen and saying it twice would be the louder mistake.
     if (deps.arbiter.activeRun() !== null) {
+      return;
+    }
+    // Only a tracked target ever reaches here today: the untracked class's own confirmation step
+    // and its set-centric report are T2.6's job, and the caller that would produce a `'chosen'`
+    // target with no channel name (`usage-stats-page.ts`'s `startImportFromChoice`) already refuses
+    // to open this flow at all for that case. This is the type system's own backstop for that
+    // invariant, not a path any test should be able to reach.
+    if (targetChannelName === null) {
       return;
     }
     // #149/T5: `outcome.rows` already passed `buildImportPreview`'s filter against the target set's
@@ -91,6 +194,11 @@ export function startImportFlow(
           return;
         }
         deps.importService.startImport(
+          // `outcome.targetSetId` is `target.setId` from the *loaded* state — the set the run
+          // actually reads/writes against, whichever of the three loader cases produced it (spec
+          // F5/AK 44). It is never re-derived from `target` here, on purpose: the load is the one
+          // place that already resolved "which set", and re-deriving it a second time from the
+          // selection is exactly how a stale assumption like F5's would creep back in.
           { setId: outcome.targetSetId, channelName: targetChannelName },
           source.origin,
           rows,
@@ -106,7 +214,8 @@ export function startImportFlow(
   const confirmRef = openImportConfirmDialog(deps.dialog, {
     source,
     targetChannelName,
-    target: target.asReadonly(),
+    targetOwnerDisplayName,
+    target: targetState.asReadonly(),
     retry: load,
     runBlocked: computed(() => deps.arbiter.activeRun() !== null),
   });

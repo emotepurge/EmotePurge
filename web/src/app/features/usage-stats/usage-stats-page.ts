@@ -33,6 +33,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
 import { dedupeImportRows, ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -245,6 +246,9 @@ export class UsageStatsPage {
 
   private readonly usageStatService = inject(UsageStatService);
   private readonly emoteAdminService = inject(EmoteAdminService);
+  /** Only threaded through to `ImportFlowDeps` — `loadImportTarget`'s live-list collaborator for a
+   *  non-active/untracked target, not otherwise exercised from this page yet (spec F5). */
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix, via `import-flow.ts`)
    *  — every other read on this page goes through `emoteAdminService`. */
   private readonly httpClient = inject(HttpClient);
@@ -1544,6 +1548,9 @@ export class UsageStatsPage {
       visibleCount: captured.visible.length,
       selectionCount: captured.selection.length,
       forcedScope,
+      // The picker (spec 8.6) disables only this one set wherever it turns up in the offer list —
+      // never the whole current channel. See CapturedImportScope above.
+      sourceEmoteSetId: captured.emoteSetId,
     };
     openImportTargetDialog(this.dialog, data).closed.subscribe((choice) => {
       if (!choice) {
@@ -1616,6 +1623,16 @@ export class UsageStatsPage {
    * same rows the dialog counted, not whatever the grid holds by the time this fires.
    */
   private startImportFromChoice(captured: CapturedImportScope, choice: ImportTargetChoice): void {
+    if (choice.channelName === null) {
+      // Untracked target (spec 8.6): the confirmation step and the set-centric report are T2.6's
+      // job, not wired up here yet — nothing to start until they land. A *tracked* pick — active or
+      // not — is wired below (`startImportFlow`'s `'chosen'` target, T2.5b): the F5 bug (the loader
+      // used to always resolve the channel's *active* set regardless of what was picked) is exactly
+      // what this guard used to also paper over for the non-active case, silently. It no longer
+      // does — only the untracked class waits here now.
+      return;
+    }
+
     const rows = choice.scope === 'selection' ? captured.selection : captured.visible;
     const deduped = dedupeImportRows(rows);
     const source: ImportSource = {
@@ -1630,12 +1647,13 @@ export class UsageStatsPage {
     const deps: ImportFlowDeps = {
       dialog: this.dialog,
       emoteAdminService: this.emoteAdminService,
+      emoteSetService: this.emoteSetService,
       httpClient: this.httpClient,
       tokenService: this.tokenService,
       importService: this.importService,
       arbiter: this.arbiter,
     };
-    startImportFlow(deps, source, choice.channelName);
+    startImportFlow(deps, source, { kind: 'chosen', choice });
   }
 
   // Quiet counterpart to the set-status fetch in load(): no sync-poll, and a failed refetch keeps

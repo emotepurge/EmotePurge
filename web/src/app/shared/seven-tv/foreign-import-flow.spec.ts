@@ -8,6 +8,7 @@ import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ForeignEmoteRow } from '../../core/seven-tv/foreign-emote-set.model';
 import { LeaderboardImportResult } from '../../core/seven-tv/leaderboard.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
@@ -94,6 +95,9 @@ function setup(): Harness {
     deps: {
       dialog: { open: dialogOpen } as unknown as Dialog,
       emoteAdminService,
+      // Never called: this flow always builds a `'trackedActive'` selection (see
+      // `import-flow.ts`'s `load()`), which never reaches `SevenTvEmoteSetService`.
+      emoteSetService: { loadEmoteSetPreview: vi.fn() } as unknown as SevenTvEmoteSetService,
       httpClient,
       tokenService: { hasToken: signal(true) } as unknown as SevenTvTokenService,
       importService: { startImport } as unknown as SevenTvImportService,
@@ -231,10 +235,9 @@ describe('buildLeaderboardImportSource', () => {
     const preview = buildImportPreview(source, target);
 
     expect(preview.nameCollisions).toEqual(['Kappa']);
-    expect(preview.toAdd).toEqual([
-      { sevenTvEmoteId: 'e1', name: 'Kappa' },
-      { sevenTvEmoteId: 'e2', name: 'PogU' },
-    ]);
+    // Since spec 2026-09-20 a name collision is excluded from toAdd rather than merely reported
+    // (revises the pre-#72 reading pinned here before this task).
+    expect(preview.toAdd).toEqual([{ sevenTvEmoteId: 'e2', name: 'PogU' }]);
   });
 });
 

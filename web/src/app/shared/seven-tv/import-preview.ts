@@ -1,53 +1,98 @@
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 
+/** One `toAdd` row 7TV would refuse to add under its source alias because the target already has
+ *  *some other* alias under the same `sevenTvEmoteId` — spec 8.6: "N sind vorhanden, heißen dort
+ *  aber anders". `targetAlias` is the target's own alias for that id (the first one found, when
+ *  the target itself has the #74 duplicate-id defect — 7TV's own merge glitch, not this preview's
+ *  choice of which duplicate to name). */
+export interface AliasMismatch {
+  sourceName: string;
+  targetAlias: string;
+}
+
 export interface ImportPreview {
-  /** Source rows the run would actually submit — everything except rows already in the target. */
+  /** Source rows the run would actually submit — every row that is genuinely new, minus a name
+   *  collision (spec 8.6: those are counted in `nameCollisions` and never attempted at all, not
+   *  merely warned about) and minus an alias mismatch (`aliasMismatches`, same reasoning). An
+   *  `invalidNames` row *does* still reach here — see that field's own doc for why. */
   toAdd: ImportRow[];
-  /** Count of source rows whose `sevenTvEmoteId` is already in the target set (excluded from
-   *  `toAdd`, not double-counted with `nameCollisions`). */
+  /** Count of source rows whose `sevenTvEmoteId` is already in the target set **under the same
+   *  alias** — excluded from `toAdd`, and never double-counted with `aliasMismatches`: a #74
+   *  duplicate id with two different target aliases counts here the moment *one* of them matches
+   *  the source alias, never as a mismatch (spec 8.6, AK 37). */
   alreadyPresent: number;
-  /** Names from `toAdd` that 7TV will reject for colliding with an existing name in the target
-   *  set — informational only, the rows stay in `toAdd` (7TV decides, not this preview). */
+  /** Names `toAdd` would otherwise have carried that 7TV would reject outright — a different
+   *  `sevenTvEmoteId` in the target already owns that exact (case-sensitive) name. Pulled *out* of
+   *  `toAdd` since spec 2026-09-20 (revises the 2026-09-06 "informational only, 7TV decides"
+   *  reading, docs/DECISIONS.md): a run that still tried these would fail every one of them, and
+   *  counting a doomed row as "added" is worse than not offering it at all. */
   nameCollisions: string[];
+  /** Rows whose `sevenTvEmoteId` already exists in the target, but under a different alias —
+   *  pulled out of `toAdd` for the same reason as `nameCollisions` (spec 8.6): 7TV already has
+   *  this emote in the set, an ADD under a second alias is not what "already present" should mean
+   *  here, and this preview never silently renames anything. */
+  aliasMismatches: AliasMismatch[];
   /** Names from `toAdd` that 7TV will reject outright, regardless of the target set's contents —
    *  see `isNameRejectedBySevenTv` for what that covers and why it is deliberately narrow.
-   *  Informational only, same as `nameCollisions`: the rows stay in `toAdd`. */
+   *  Informational only, unlike `nameCollisions`/`aliasMismatches`: the row still reaches `toAdd`
+   *  because nothing about the *target's contents* is what dooms it, so removing it here would
+   *  not even be correct once the alias is fixed upstream — the row stays, 7TV decides. */
   invalidNames: string[];
 }
 
 /**
- * Projects an `ImportSource` onto a target channel's current emotes, splitting it into what the
- * run would add, what it would skip (same 7TV id already present, regardless of name), and what
- * it would add but 7TV will likely reject — either for colliding with an already-used name
- * (`nameCollisions`) or for the name itself being unwritable (`invalidNames`).
+ * Projects an `ImportSource` onto a target set's current emotes, splitting it into what the run
+ * would add, what it would skip outright (already present, under the same or a different alias, or
+ * blocked by a name collision), and what it would add but 7TV will likely still reject for its
+ * alias alone (`invalidNames`).
  *
- * Both name checks are informational: `toAdd` is not filtered by either of them, 7TV decides.
  * The identity comparison is ordinal (`sevenTvEmoteId`, exact string equality — these are 7TV
- * object ids, not display text); the collision comparison is exact (`===`, case-sensitive)
- * string equality, matching how 7TV itself treats emote names.
+ * object ids, not display text); every name comparison is exact (`===`, case-sensitive) string
+ * equality, matching how 7TV itself treats emote names/aliases.
+ *
+ * `targetEmotes` is grouped by id first (not deduplicated) precisely because the target set can
+ * itself carry a #74 duplicate — two rows sharing one `sevenTvEmoteId` under different aliases,
+ * 7TV's own set-merge defect. A source row matching that id is `alreadyPresent` the moment *any*
+ * of the target's aliases for it agrees with the source's; only when *none* of them do is it an
+ * alias mismatch (spec 8.6, AK 37 — the #74 grenzfall).
  */
 export function buildImportPreview(
   source: ImportSource,
   targetEmotes: EmoteListItem[],
 ): ImportPreview {
-  const targetIds = new Set(targetEmotes.map((emote) => emote.sevenTvEmoteId));
+  const targetById = new Map<string, EmoteListItem[]>();
+  for (const emote of targetEmotes) {
+    const group = targetById.get(emote.sevenTvEmoteId);
+    if (group) {
+      group.push(emote);
+    } else {
+      targetById.set(emote.sevenTvEmoteId, [emote]);
+    }
+  }
   const targetNames = new Set(targetEmotes.map((emote) => emote.name));
 
   const toAdd: ImportRow[] = [];
   const nameCollisions = new Set<string>();
+  const aliasMismatches: AliasMismatch[] = [];
   const invalidNames = new Set<string>();
   let alreadyPresent = 0;
 
   for (const row of source.rows) {
-    if (targetIds.has(row.sevenTvEmoteId)) {
-      alreadyPresent++;
+    const targetGroup = targetById.get(row.sevenTvEmoteId);
+    if (targetGroup) {
+      if (targetGroup.some((target) => target.name === row.name)) {
+        alreadyPresent++;
+      } else {
+        aliasMismatches.push({ sourceName: row.name, targetAlias: targetGroup[0].name });
+      }
+      continue;
+    }
+    if (targetNames.has(row.name)) {
+      nameCollisions.add(row.name);
       continue;
     }
     toAdd.push(row);
-    if (targetNames.has(row.name)) {
-      nameCollisions.add(row.name);
-    }
     if (isNameRejectedBySevenTv(row.name)) {
       invalidNames.add(row.name);
     }
@@ -57,6 +102,7 @@ export function buildImportPreview(
     toAdd,
     alreadyPresent,
     nameCollisions: [...nameCollisions],
+    aliasMismatches,
     invalidNames: [...invalidNames],
   };
 }

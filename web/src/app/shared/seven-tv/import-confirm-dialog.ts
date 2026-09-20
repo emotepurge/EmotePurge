@@ -26,8 +26,16 @@ import { projectSlots } from './slot-projection';
 export interface ImportConfirmDialogData {
   /** The rows on offer, already deduplicated — a snapshot, it cannot change while the dialog is up. */
   source: ImportSource;
-  targetChannelName: string;
-  /** Live view of the target channel's data: the dialog opens on `loading` and fills in (R8). */
+  /** `null` for an untracked target (spec 8.6) — the header then names the owner instead of a
+   *  channel, and `sameChannelFile` never fires (a file can only ever have come from a *tracked*
+   *  channel). */
+  targetChannelName: string | null;
+  /** The 7TV display name of the target set's owner — only meaningful (non-`null`) when
+   *  `targetChannelName` is `null`; every tracked caller passes `null` here, since the header then
+   *  names the channel instead (spec 8.6, AK 39). Never compared against anything (E7) — display
+   *  only. */
+  targetOwnerDisplayName: string | null;
+  /** Live view of the target's data: the dialog opens on `loading` and fills in (R8). */
   target: Signal<ImportTargetLoadState>;
   /** Re-runs the target load; the flow owns the request, the dialog only asks for it. */
   retry: () => void;
@@ -70,9 +78,7 @@ type BlockReason = string | null;
   imports: [Button, DialogShell, NamePreviewList, NoticeBanner, TranslocoPipe],
   template: `
     <app-dialog-shell
-      [dialogTitle]="
-        titleKey() | transloco: { count: titleCount(), channel: data.targetChannelName }
-      "
+      [dialogTitle]="titleKey() | transloco: { count: titleCount(), channel: titleTargetLabel() }"
     >
       <!-- Branches on the three computeds below, never on origin.kind: with a fourth origin
            "not a channel" and "is a file" stopped being the same question, and a template test is
@@ -98,10 +104,21 @@ type BlockReason = string | null;
 
       @if (ready(); as target) {
         <p class="text-sm text-fg-secondary">
-          {{
-            'import.confirm.target'
-              | transloco: { channel: data.targetChannelName, setId: target.setId }
-          }}
+          @if (data.targetChannelName !== null) {
+            {{
+              'import.confirm.target'
+                | transloco: { channel: data.targetChannelName, setName: targetSetLabel(target) }
+            }}
+          } @else {
+            {{
+              'import.confirm.targetUntracked'
+                | transloco
+                  : {
+                      owner: data.targetOwnerDisplayName ?? '',
+                      setName: targetSetLabel(target),
+                    }
+            }}
+          }
         </p>
       }
 
@@ -206,6 +223,14 @@ type BlockReason = string | null;
               {{ nameCollisionsKey() | transloco: { count: preview.nameCollisions.length } }}
             </p>
             <app-name-preview-list [names]="preview.nameCollisions" />
+          </div>
+        }
+        @if (preview.aliasMismatches.length > 0) {
+          <div class="flex flex-col gap-1">
+            <p class="text-sm text-fg-secondary">
+              {{ aliasMismatchesKey() | transloco: { count: preview.aliasMismatches.length } }}
+            </p>
+            <app-name-preview-list [names]="aliasMismatchRows()" />
           </div>
         }
         @if (preview.invalidNames.length > 0) {
@@ -341,6 +366,13 @@ export class ImportConfirmDialog {
     pluralKey(this.titleCount(), 'import.confirm.title'),
   );
 
+  // Falls back to the owner's display name for an untracked target (spec 8.6, AK 39/35) — the
+  // title's `channel` param is really "how the target names itself", and a channel is only one of
+  // the two ways this dialog can now have one.
+  protected readonly titleTargetLabel = computed(
+    () => this.data.targetChannelName ?? this.data.targetOwnerDisplayName ?? '',
+  );
+
   protected readonly alreadyPresentKey = computed(() =>
     pluralKey(this.preview()?.alreadyPresent ?? 0, 'import.confirm.alreadyPresent'),
   );
@@ -348,6 +380,23 @@ export class ImportConfirmDialog {
   protected readonly nameCollisionsKey = computed(() =>
     pluralKey(this.preview()?.nameCollisions.length ?? 0, 'import.confirm.nameCollisions'),
   );
+
+  protected readonly aliasMismatchesKey = computed(() =>
+    pluralKey(this.preview()?.aliasMismatches.length ?? 0, 'import.confirm.aliasMismatches'),
+  );
+
+  // Reads `lang()` first, same reasoning as `fileDetails` — a language switch while the dialog is
+  // open re-composes every row through the (then current) translation.
+  protected readonly aliasMismatchRows = computed<string[]>(() => {
+    this.languageService.lang();
+    const mismatches = this.preview()?.aliasMismatches ?? [];
+    return mismatches.map((mismatch) =>
+      this.translocoService.translate('import.confirm.aliasMismatchRow', {
+        source: mismatch.sourceName,
+        target: mismatch.targetAlias,
+      }),
+    );
+  });
 
   protected readonly invalidNamesKey = computed(() =>
     pluralKey(this.preview()?.invalidNames.length ?? 0, 'import.confirm.invalidNames'),
@@ -420,14 +469,18 @@ export class ImportConfirmDialog {
 
   // Stays file-only, deliberately: it warns that a *downloaded list* came from the very channel it
   // is about to be copied back into, which a picker cannot produce — the target list excludes the
-  // source channel it was opened for (`importTargetOptions`), so the same finding is impossible for
-  // either channel origin rather than merely unlikely.
+  // source's own set wherever it appears (`import-target-choices.ts`'s `isSourceSet` disabling), so
+  // the same finding is impossible for either channel origin rather than merely unlikely. An
+  // untracked target (`targetChannelName === null`, spec 8.6) can never trigger this either: a file
+  // only ever names a *tracked* channel as its export source.
   protected readonly sameChannelFile = computed(() => {
     const origin = this.fileOrigin();
+    const target = this.data.targetChannelName;
     return (
       origin !== null &&
       origin.channelName !== null &&
-      normalizeChannelName(origin.channelName) === normalizeChannelName(this.data.targetChannelName)
+      target !== null &&
+      normalizeChannelName(origin.channelName) === normalizeChannelName(target)
     );
   });
 
@@ -476,6 +529,13 @@ export class ImportConfirmDialog {
       return;
     }
     this.dialogRef.close({ targetSetId: target.setId, rows: preview.toAdd });
+  }
+
+  /** The header's `setName` param (spec 8.6 AK 39) — falls back to the raw id when 7TV reported no
+   *  name (or, on the "today" path, when none was ever fetched at all — `ImportTargetLoadState`'s
+   *  own doc explains why). Never `''`: an id is always a usable, if less friendly, answer. */
+  protected targetSetLabel(target: { setId: string; setName: string | null }): string {
+    return target.setName ?? target.setId;
   }
 
   private formatExportDate(exportedAt: string | null, locale: string): string {

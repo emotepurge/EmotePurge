@@ -57,6 +57,8 @@ function response(overrides: Partial<ForeignEmoteSetResponse> = {}): ForeignEmot
     channelName: 'handofblood',
     sevenTvUserId: 'user-1',
     emoteSetId: 'set-1',
+    emoteSetName: 'Main',
+    capacity: 250,
     totalCount: 1,
     truncated: false,
     emotes: [

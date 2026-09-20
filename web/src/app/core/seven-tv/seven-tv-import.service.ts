@@ -309,6 +309,10 @@ export class SevenTvImportService {
         sourceChannelName: importOriginSourceChannelName(run.origin),
         sourceKind: run.origin.kind,
         leaderboardSort: importOriginLeaderboardSort(run.origin),
+        // Sent on every call this client makes (spec 6.7/E5, AK 44) — the loaded target's own set,
+        // known by the time a run even started (`ImportRunInfo.targetSetId`), never omitted just
+        // because the server keeps the field optional for an older client.
+        targetEmoteSetId: run.targetSetId,
       })
       .pipe(
         // Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a

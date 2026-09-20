@@ -967,12 +967,16 @@
     "dockCopyButton": "Übertragen ({{ count }})",
     "target": {
       "title": "Emotes übertragen",
-      "label": "Zielkanal",
-      "notTracked": "Kanal muss erst beitreten",
-      "none": "Kein weiterer Kanal, in dem du Broadcaster oder 7TV-Editor bist.",
-      "listIncomplete": "Die Kanalliste ist gerade unvollständig — fehlende Kanäle erscheinen nach einem erneuten Laden.",
-      "reauthRequired": "Deine Twitch-Anmeldung ist abgelaufen oder wurde widerrufen — Zielkanäle gibt es erst nach einem neuen Login.",
-      "loadFailed": "Die Kanalliste konnte nicht geladen werden.",
+      "label": "Ziel",
+      "active": "aktiv",
+      "untracked": "nicht getrackt",
+      "kindPersonal": "persönliches Set",
+      "kindUnavailable": "kein Zielset",
+      "isSource": "das ist die Quelle",
+      "setsUnavailable": "Sets nicht lesbar",
+      "none": "Kein Set gefunden, in das kopiert werden kann.",
+      "listIncomplete": "Die Angebotsliste ist gerade unvollständig — fehlende Ziele erscheinen nach einem erneuten Laden.",
+      "loadFailed": "Die Angebotsliste konnte nicht geladen werden.",
       "retry": "Erneut laden",
       "submit": "Weiter"
     },
@@ -1025,7 +1029,8 @@
       "originLeaderboard": "Aus 7TVs Bestenliste: {{ sort }}",
       "dateUnknown": "Datum unbekannt",
       "channelUnknown": "Kanal unbekannt",
-      "target": "Ziel: {{ channel }} · Set {{ setId }}",
+      "target": "Ziel: {{ channel }} · Set {{ setName }}",
+      "targetUntracked": "Ziel: Set {{ setName }} von {{ owner }}",
       "loadingHint": "Zieldaten werden geladen…",
       "noTargetSet": "Der Zielkanal hat noch kein aktives 7TV-Set — der erste Abgleich läuft noch oder ist fehlgeschlagen.",
       "loadFailed": "Die Daten des Zielkanals konnten nicht geladen werden.",
@@ -1036,9 +1041,14 @@
         "other": "{{ count }} Emotes sind bereits im Zielset und werden übersprungen."
       },
       "nameCollisions": {
-        "one": "{{ count }} Name ist im Zielset schon vergeben — 7TV wird dieses Emote ablehnen:",
-        "other": "{{ count }} Namen sind im Zielset schon vergeben — 7TV wird diese Emotes ablehnen:"
+        "one": "{{ count }} Emote trägt einen Namen, der im Zielset schon vergeben ist — wird nicht übertragen:",
+        "other": "{{ count }} Emotes tragen einen Namen, der im Zielset schon vergeben ist — werden nicht übertragen:"
       },
+      "aliasMismatches": {
+        "one": "{{ count }} ist im Zielset bereits vorhanden, heißt dort aber anders:",
+        "other": "{{ count }} sind im Zielset bereits vorhanden, heißen dort aber anders:"
+      },
+      "aliasMismatchRow": "{{ source }} → {{ target }}",
       "invalidNames": {
         "one": "{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann — 7TV wird dieses Emote ablehnen:",
         "other": "{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann — 7TV wird diese Emotes ablehnen:"

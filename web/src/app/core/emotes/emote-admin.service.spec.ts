@@ -128,6 +128,7 @@ describe('EmoteAdminService', () => {
         sourceChannelName: 'other-channel',
         sourceKind: 'channel',
         leaderboardSort: null,
+        targetEmoteSetId: 'set-1',
       })
       .subscribe();
 
@@ -138,6 +139,7 @@ describe('EmoteAdminService', () => {
       sourceChannelName: 'other-channel',
       sourceKind: 'channel',
       leaderboardSort: null,
+      targetEmoteSetId: 'set-1',
     });
     req.flush(null, { status: 204, statusText: 'No Content' });
   });
@@ -149,6 +151,7 @@ describe('EmoteAdminService', () => {
         sourceChannelName: null,
         sourceKind: 'file',
         leaderboardSort: null,
+        targetEmoteSetId: 'set-1',
       })
       .subscribe();
 
@@ -158,6 +161,7 @@ describe('EmoteAdminService', () => {
       sourceChannelName: null,
       sourceKind: 'file',
       leaderboardSort: null,
+      targetEmoteSetId: 'set-1',
     });
     expect('sourceChannelName' in req.request.body).toBe(true);
     req.flush(null, { status: 204, statusText: 'No Content' });
@@ -170,6 +174,7 @@ describe('EmoteAdminService', () => {
         sourceChannelName: null,
         sourceKind: 'seventv-leaderboard',
         leaderboardSort: 'TOP_ALL_TIME',
+        targetEmoteSetId: 'set-1',
       })
       .subscribe();
 
@@ -179,7 +184,59 @@ describe('EmoteAdminService', () => {
       sourceChannelName: null,
       sourceKind: 'seventv-leaderboard',
       leaderboardSort: 'TOP_ALL_TIME',
+      targetEmoteSetId: 'set-1',
     });
     req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  // AK 44: this client always knows the set it just wrote into by the time it reports — every
+  // syncImported call carries it, active target or not, tracked or not (the server keeps the field
+  // optional forever for an older client, spec 6.7/E5 — that leniency is not this client's excuse).
+  it('always sends targetEmoteSetId, even for a target that is not the channel active set', () => {
+    service
+      .syncImported('sensitron', {
+        sevenTvEmoteIds: ['7tv-1'],
+        sourceChannelName: 'sensitron',
+        sourceKind: 'channel',
+        leaderboardSort: null,
+        targetEmoteSetId: 'set-halloween',
+      })
+      .subscribe();
+
+    const req = httpMock.expectOne('/api/channels/sensitron/emotes/sync-imported');
+    expect(req.request.body.targetEmoteSetId).toBe('set-halloween');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('getSetWarning GETs the same set-warning URL with no query when emoteSetId is omitted', () => {
+    // AK 36's "no other request" guarantee for the tracked-active path depends on this: passing no
+    // emoteSetId must not append an empty query string that the loader's existing tests would fail
+    // to match.
+    service.getSetWarning('sensitron').subscribe();
+
+    const req = httpMock.expectOne('/api/channels/sensitron/emotes/set-warning');
+    expect(req.request.params.has('emoteSetId')).toBe(false);
+    req.flush({
+      available: true,
+      isOwnSet: true,
+      otherTrackedChannelsSharingSet: [],
+      otherModeratedChannelsSharingSet: [],
+    });
+  });
+
+  it('getSetWarning appends emoteSetId when checking a specific, possibly non-active set', () => {
+    service.getSetWarning('sensitron', 'set-halloween').subscribe();
+
+    const req = httpMock.expectOne(
+      (candidate) =>
+        candidate.url === '/api/channels/sensitron/emotes/set-warning' &&
+        candidate.params.get('emoteSetId') === 'set-halloween',
+    );
+    req.flush({
+      available: true,
+      isOwnSet: true,
+      otherTrackedChannelsSharingSet: [],
+      otherModeratedChannelsSharingSet: [],
+    });
   });
 });

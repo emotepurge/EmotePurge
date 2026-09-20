@@ -146,6 +146,7 @@ describe('SevenTvImportService', () => {
       sourceChannelName: 'brudivoeller_tv',
       sourceKind: 'channel',
       leaderboardSort: null,
+      targetEmoteSetId: 'set-b',
     });
     expect(service.syncReport()).toBe('pending');
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
@@ -174,6 +175,7 @@ describe('SevenTvImportService', () => {
       sourceChannelName: 'handofblood',
       sourceKind: 'seventv-channel',
       leaderboardSort: null,
+      targetEmoteSetId: 'set-b',
     });
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
     expect(service.syncReport()).toBe('succeeded');
@@ -192,6 +194,7 @@ describe('SevenTvImportService', () => {
       sourceChannelName: null,
       sourceKind: 'file',
       leaderboardSort: null,
+      targetEmoteSetId: 'set-b',
     });
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
@@ -211,9 +214,26 @@ describe('SevenTvImportService', () => {
       sourceChannelName: null,
       sourceKind: 'seventv-leaderboard',
       leaderboardSort: 'TRENDING_DAILY',
+      targetEmoteSetId: 'set-b',
     });
     reportReq.flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
+  // AK 44: the run's own targetSetId always rides along, whatever it is — this is what lets the
+  // audit row say which (possibly non-active) set a copy actually landed in, once T2.6 wires a
+  // chosen non-active target through to `startImport`.
+  it("sends the run's own targetSetId as targetEmoteSetId, not the channel active set", () => {
+    service.startImport(TARGET_C, CHANNEL_ORIGIN, ROWS);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const reportReq = httpMock.expectOne(SYNC_IMPORTED_C);
+    expect(reportReq.request.body.targetEmoteSetId).toBe('set-c');
+    reportReq.flush(null, { status: 204, statusText: 'No Content' });
+    httpMock.expectOne(RESYNC_C).flush(null, { status: 202, statusText: 'Accepted' });
   });
 
   it('aborts the whole run on a 7TV privileges rejection and reports nothing', () => {
@@ -497,6 +517,7 @@ describe('SevenTvImportService', () => {
       sourceChannelName: null,
       sourceKind: 'file',
       leaderboardSort: null,
+      targetEmoteSetId: 'set-c',
     });
     retryReq.flush(null, { status: 204, statusText: 'No Content' });
     httpMock.expectNone(SYNC_IMPORTED_B);

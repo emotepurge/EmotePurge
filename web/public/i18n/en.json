@@ -967,12 +967,16 @@
     "dockCopyButton": "Transfer ({{ count }})",
     "target": {
       "title": "Transfer emotes",
-      "label": "Target channel",
-      "notTracked": "Channel has to join first",
-      "none": "No other channel where you are broadcaster or 7TV editor.",
-      "listIncomplete": "The channel list is incomplete right now — missing channels appear after a reload.",
-      "reauthRequired": "Your Twitch login has expired or was revoked — target channels appear after a fresh login.",
-      "loadFailed": "The channel list could not be loaded.",
+      "label": "Target",
+      "active": "active",
+      "untracked": "not tracked",
+      "kindPersonal": "personal set",
+      "kindUnavailable": "not a target set",
+      "isSource": "this is the source",
+      "setsUnavailable": "sets could not be read",
+      "none": "No set found to copy into.",
+      "listIncomplete": "The offer list is incomplete right now — missing targets appear after a reload.",
+      "loadFailed": "The offer list could not be loaded.",
       "retry": "Reload",
       "submit": "Continue"
     },
@@ -1025,7 +1029,8 @@
       "originLeaderboard": "From 7TV's leaderboard: {{ sort }}",
       "dateUnknown": "date unknown",
       "channelUnknown": "channel unknown",
-      "target": "Target: {{ channel }} · set {{ setId }}",
+      "target": "Target: {{ channel }} · set {{ setName }}",
+      "targetUntracked": "Target: set {{ setName }} of {{ owner }}",
       "loadingHint": "Loading target data…",
       "noTargetSet": "The target channel has no active 7TV set yet — its first sync is still running or has failed.",
       "loadFailed": "The target channel's data could not be loaded.",
@@ -1036,9 +1041,14 @@
         "other": "{{ count }} emotes are already in the target set and will be skipped."
       },
       "nameCollisions": {
-        "one": "{{ count }} name is already taken in the target set — 7TV will reject this emote:",
-        "other": "{{ count }} names are already taken in the target set — 7TV will reject these emotes:"
+        "one": "{{ count }} emote's name is already taken in the target set — it will not be copied:",
+        "other": "{{ count }} emotes' names are already taken in the target set — they will not be copied:"
       },
+      "aliasMismatches": {
+        "one": "{{ count }} is already in the target set, but under a different name:",
+        "other": "{{ count }} are already in the target set, but under a different name:"
+      },
+      "aliasMismatchRow": "{{ source }} → {{ target }}",
       "invalidNames": {
         "one": "{{ count }} name contains characters 7TV cannot create — 7TV will reject this emote:",
         "other": "{{ count }} names contain characters 7TV cannot create — 7TV will reject these emotes:"
