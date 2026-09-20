@@ -384,8 +384,16 @@ sondern eine lückenlose Klassifikation jedes Kanals, der mindestens eine `Usage
   Betreiber am Wechseltag mit der ID-Sonde aus Konzept 11.2 gemessen. Für HandOfBlood: alt
   `01GV88A38G0006FW5TVZVMG507`, neu `01J94NYQR0000D15QN0BDGN85E`, Grenze und Zahl aus V1.
 - **Kein-Wechsel-Eintrag** — `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)`. Eine
-  ausdrückliche Bestätigung des Betreibers, dass dieser Kanal nie gewechselt hat, **samt der
-  Set-ID, die seine Zeilen bekommen sollen**. Die ID steht in der Liste und wird **nicht** aus
+  ausdrückliche Bestätigung des Betreibers, dass dieser Kanal **innerhalb des Zeitraums, den seine
+  `UsageStat`-Zeilen abdecken**, nicht gewechselt hat, **samt der Set-ID, die seine Zeilen bekommen
+  sollen**. Das Fenster gehört in die Aussage, sonst ist sie für die Mehrzahl der Kanäle gar nicht
+  treffbar: Saison-Sets sind auf 7TV verbreitet und älter als unsere Zählung. Gemessen am
+  2026-09-20 führt `knirpz` (Twitch `529112648`) neben seinem Hauptset ein `KP Halloween` und ein
+  `KP Christmas`, beide seit 2023 — getrackt wird er seit dem 2026-09-20, seine Zeilen beginnen
+  also nach jedem Wechsel, den es dort gegeben haben mag. Wörtlich gelesen wäre „nie gewechselt"
+  für ihn unbestätigbar und trotzdem die richtige Zuordnung; auf das Zählfenster bezogen ist die
+  Aussage schlicht wahr und prüfbar. **Prüfung 4 (Widerspruch) sieht ohnehin nur dieses Fenster**,
+  weil die Massenarchivierungs-Signatur aus unseren eigenen Daten stammt. Die ID steht in der Liste und wird **nicht** aus
   `Channels."ActiveEmoteSetId"` abgeleitet — sonst prüfte die Migration gegen sich selbst und
   Prüfung 1 wäre eine Tautologie.
 
@@ -474,7 +482,7 @@ und eine fehlende Aussage ist ein Abbruch mit Namen (Prüfung 3).
 
 **Die Grenze dieser Entscheidung, ehrlich benannt:** ein Kein-Wechsel-Eintrag verschiebt die
 **Verantwortung**, nicht die **Gewissheit**. Es gibt keine Historie, aus der sich „nie gewechselt"
-beweisen ließe — vor dieser Migration hat niemand das beobachtete Set je aufgeschrieben, genau das
+beweisen ließe — auch nicht für das Zählfenster — vor dieser Migration hat niemand das beobachtete Set je aufgeschrieben, genau das
 führt `ChannelEmoteSetObservation` (4.3) erst ein. Der Betreiber bestätigt aus dem Signaturtest
 plus eigenem Wissen. Gewonnen ist nicht Beweisbarkeit, sondern dass jeder Kanal eine bewusste,
 ausdrückliche Aussage trägt statt einer stillen Vorgabe. **Sichtbar ist diese Aussage seit dem
