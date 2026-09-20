@@ -97,7 +97,7 @@ rollt eine Entscheidung A–M des Betreibers neu auf.
 | E9 (i, 1488–1493) | Wie antwortet `getSetWarning` für ein nicht-aktives Ziel? | **Der Endpunkt nimmt `?emoteSetId=`, und `EmoteSetOwnershipService.CheckAsync` wird auf die Set-ID parametrisiert** (`emoteSetId ?? channel.ActiveEmoteSetId`): Tier 1 fragt den Besitzer **dieses** Sets, Tier 2 sucht Kanäle mit **dieser** `ActiveEmoteSetId`, Tier 3 vergleicht die moderierten Kanäle mit **dieser** ID. Für ein **ungetracktes** Ziel (7.3, Klasse 2) gibt es keinen Kanal und damit `UNAVAILABLE_WARNING` („nicht geprüft") | Die drei Tiers sind am Code schon set-agnostisch — sie lesen die aktive ID nur an vier Stellen (`EmoteSetOwnershipService.cs:30,37,50,57`; Tier 3 vergleicht `identity.ActiveEmoteSetId == activeEmoteSetId`, `:105`). Die Kosten sind dieselben wie heute (2 Requests Tier 1, bis zu N Tier 3 — unbudgetiert wie heute, keine neue Kostenklasse). Die Konzept-Schranke gilt: die Prüfung **läuft**, ein Grün ist ein Befund, kein Ausbleiben. `available: false` bleibt die Antwort auf „nicht prüfbar" |
 | E10 (j, 1699–1702) | Advisory-Lock je Kanal oder Wiederholen? | **Wiederholen, einmal.** `SyncChannelAsync` fängt beim `SaveChangesAsync` die Unique-Verletzung auf `IX_Emotes_ChannelId_SevenTvEmoteId` (`DbUpdateException` mit `PostgresException.SqlState == "23505"`) genau einmal ab, leert den Change-Tracker, lädt die Kanalzeile neu und wiederholt die Zuweisung + `ReconcileAsync` aus demselben Aufruf heraus unter denselben Gates; der zweite Konflikt propagiert wie heute (`Worker.cs:105`, `SevenTvPeriodicResyncWorker.cs:98`). Kein `pg_advisory_xact_lock` | Ein Advisory-Lock müsste im Worker die Spanne Lesen (`SevenTvSyncService.cs:442-444`) → Speichern (`:108`) decken und in der Api das Upsert — also jeden 60-s-Tick jedes Kanals um eine Sperre verlängern, für einen Fall, dessen Schaden **eine** verlorene Runde ist. Wiederholen ist lokal, worker-seitig, ohne Api-Änderung, und mit zwei `AppDbContext`-Instanzen erzwungen testbar (AK 78). Die Api-Seite ist als Einzelstatement (`INSERT … ON CONFLICT DO NOTHING`) ohnehin atomar |
 | E11 (k, 2199–2201) | Wert des `lock_timeout`? | **5 s**, gesetzt als **erstes Statement der Migration**: `SET LOCAL lock_timeout = '5s'` (transaktionsgebunden, kann nicht in die Sitzung lecken). Kein `statement_timeout`. Zusätzlich empfohlen, nicht vorausgesetzt: `Options=-c lock_timeout=5s` im `--connection`-String des Betreibers | Im Wartungsfenster stehen Worker und Api; nichts Legitimes hält eine Sperre auf `UsageStats`. Fünf Sekunden trennen „vergessene `psql`-Sitzung" sauber von Lock-Queue-Latenz. Ein `statement_timeout` wäre falsch: die Dauer des Backfills hängt an der Zeilenzahl, die niemand gemessen hat (Konzept 12.3), und ein Abbruch mitten im Backfill kostete das Fenster, nicht die Daten. EF Core führt die Migration transaktional aus (Npgsql, transaktionales DDL), `SET LOCAL` gilt damit genau für sie |
-| E12 | Cache und Schlüsselräume der neuen 7TV-Lesepfade | **Ein Redis-Cache je Pfad, Präfix je Schlüsselraum, 60 s, fail-open** wie `ForeignEmoteSetCache` (`:17-20, :24-25`): `7tvsets:{twitchId}` (Set-Liste je Account), `7tvforeign:set:{setId}` (Set-Vorschau nach Set-ID) neben dem bestehenden `7tvforeign:{login}` | Konzept 6.4/7.5: Set-ID als zweiter Schlüsselraum **im selben Cache**, sonst überschriebe „Set X von Kanal A" den Eintrag „aktives Set von A". TTL-Frage bleibt Sonde 4 (Abschnitt 11) |
+| E12 | Cache und Schlüsselräume der neuen 7TV-Lesepfade | **Ein Redis-Cache je Pfad, Präfix je Schlüsselraum, 60 s, fail-open** wie `ForeignEmoteSetCache` (`:17-20, :24-25`): `7tvsets:{twitchId}` (Set-Liste je Account), `7tvforeign:set:{setId}` (Set-Vorschau nach Set-ID) neben dem bestehenden `7tvforeign:{login}` | Konzept 6.4/7.5: Set-ID als zweiter Schlüsselraum **im selben Cache**, sonst überschriebe „Set X von Kanal A" den Eintrag „aktives Set von A". **TTL-Frage am 2026-09-20 gemessen (Sonde 4): Zweig A, 60 s bleiben.** Gemessen am Dev-Stack `:8080`, Fenster 15:46:37–15:56:37 UTC, vier getrackte Kanäle, gezählt am Redis-Kanal `live:events` statt am `EventSource` — dieselben Ereignisse, eine Stufe vor der SSE-Auslieferung, und dadurch vollständiger. `channel.synced`: **genau 10 in 10 Minuten** für `knirpz`, `handofblood` und `brudivoeller_tv`, **0** für `papaplatte` — also 1,00/min, die A-Schwelle genau eingehalten. Der Wert ist zudem nach oben gedeckelt: der periodische Resync **ist** der Ein-Minuten-Takt, mehr kann dieser Pfad nicht erzeugen. Was die drei Kanäle von `papaplatte` unterscheidet, ist allerdings **kein** Normalbetrieb, sondern der Duplikat-Defekt aus #74 (s. Abschnitt 27): ohne ihn liegt die Rate bei ~0/min. Die Entscheidung ist damit in beide Richtungen stabil — wird der Defekt behoben, wird A nur sicherer |
 | E13 | Neue Fehlercodes | **Vier:** `invalid_emote_set_id` (400, Format), `emote_set_id_empty` (400, neue Body-Form ohne Set-ID), `emote_set_not_found` (404, 7TV kennt das Set nicht — nur am set-zentrierten Endpunkt), `vote_session_set_ballot_invalid` (400, Ausschlussregel aus E4). 503-Fälle (7TV nicht erreichbar, 429, Budget) nutzen den **vorhandenen** `foreign_channel_seventv_unavailable` | Regel 7: jeder Code in `ApiErrorCodes.cs`, `web/src/app/core/i18n/api-error.ts` (`KNOWN_API_ERROR_CODES`, `:10-46`) und **beiden** Locales (`errors.api.*`); `api-error-locales.spec.ts` erzwingt die hinteren zwei Schritte. Der 503-Text ist quellneutral („7TV ist gerade nicht erreichbar", `de.json:1097`-Nachbarschaft, Präzedenz E13 der Bestenlisten-Spec) |
 | E14 | Format der Set-ID an der Api-Grenze | **Ein `IEndpointFilter` `EmoteSetIdValidationFilter`** nach dem Muster von `ChannelNameValidationFilter`: nicht leer, 1–32 Zeichen, nur `[0-9A-Za-z]`, ordinal. Gilt für Query-Parameter und Body-Feld | 7TV-Set-IDs sind gemessen 26-stellige ULIDs (`01GV88A38G0006FW5TVZVMG507`), ältere Objekt-IDs 24-stellig hex (`Emote.cs:7`); die Schranke ist bewusst weiter als beide, weil sie nur Unfug abweist (leer, Pfadzeichen, Anführungszeichen), nicht 7TVs Format nachbildet |
 | E15 | `GetRowsAsync` (Harness #69) unter dem dreispaltigen Schlüssel | **Summiert über `EmoteSetId`** je `(EmoteId, Date)`; `UsageStatRowDto` bleibt unverändert | `HarnessRunner.cs:279,624` liest die Live-Zeilen als eine je `(EmoteId, Date)`; nach einem Set-Wechsel gäbe es zwei. Der Harness vergleicht Chat-Zählung gegen Zeilen, nicht gegen Sets — die Summe ist die richtige Zahl, und der Vertrag von `HarnessRunnerTests` (50) und `ReplayDayCounterTests` (24) bleibt unangetastet (F11). Die Set-ID als Harness-Eingabe (Konzept 5.3) bleibt Auflage an den #69-Plan |
@@ -1788,7 +1788,7 @@ ohne Api auf `:5151`), dazu Regel 16 je Bauschritt.
 
 | # | Handlung | Termin |
 |---|---|---|
-| V1 | Zwischenweg (Konzept 12.4): Wegwerfkanal (nie getrackt) bestimmen, Halloween dort aktiv, tracken, übertragen, Kollisionen im Dialog abwählen. **Eine Empfehlung an HandOfBloods Mod-Team, keine Vorbedingung, die wir erfüllen können** — der Betreiber kann den Weg vorschlagen, nicht steuern (2026-09-20). Findet er nicht statt, entfällt **V3** ersatzlos. **An `SetSwitchAssignments` ändert das nichts** — der frühere Satz „dann hat die Zuordnungsliste einen Kanal weniger" war falsch: der Wegwerfkanal steht dort ohnehin nie, weil V3 ihn vor der Migration purgt (4.2). Auch die erwartete Trefferzahl der Gegenprobe bleibt bei zwei Zeilen, weil Sonde 6 **nach** V3 läuft. Was entfällt, ist eine Purge-Handlung, kein Listeneintrag. Der Schutz gegen den Fall „am Wegwerfkanal ist doch etwas passiert, von dem wir nichts wissen" liegt seit dem 2026-09-20 in **zwei** Prüfungen statt in einer: existiert der Kanal noch und trägt Nutzungszeilen, verlangt **Prüfung 3** (Lückenlosigkeit) eine ausdrückliche Aussage über ihn, und **Prüfung 4** (Widerspruch) bricht ab, wenn diese Aussage „nie gewechselt" lautet und die Signatur dagegen spricht (4.2) | Vorschlag vor dem 2026-10-01 |
+| V1 | Zwischenweg (Konzept 12.4): Wegwerfkanal (nie getrackt) bestimmen, Halloween dort aktiv, tracken, übertragen. **Zwei Korrekturen des Betreibers am 2026-09-20:** (a) der Kanal braucht **7TV-Editorrecht bei HandOfBlood**, sonst kann er dessen Set gar nicht aktiv setzen — praktisch heißt das: ein Teammitglied, das ohnehin Editor ist, nimmt seinen **eigenen** Kanal, sofern dieser bei uns nie getrackt war. (b) „Kollisionen im Dialog abwählen" ist **falsch**: der Bestätigungsdialog **zählt sie nur auf** (`import-confirm-dialog.ts:202-209`, `app-name-preview-list`, ohne Auswahl). Abgewählt wird auf der Nutzungsseite **vor** dem Start — Dialog öffnen, Namen lesen, abbrechen, abwählen, erneut starten; oder die Ablehnungen als `failed`-Zeilen hinnehmen (Konzept 12.4). **Eine Empfehlung an HandOfBloods Mod-Team, keine Vorbedingung, die wir erfüllen können** — der Betreiber kann den Weg vorschlagen, nicht steuern (2026-09-20). Findet er nicht statt, entfällt **V3** ersatzlos. **An `SetSwitchAssignments` ändert das nichts** — der frühere Satz „dann hat die Zuordnungsliste einen Kanal weniger" war falsch: der Wegwerfkanal steht dort ohnehin nie, weil V3 ihn vor der Migration purgt (4.2). Auch die erwartete Trefferzahl der Gegenprobe bleibt bei zwei Zeilen, weil Sonde 6 **nach** V3 läuft. Was entfällt, ist eine Purge-Handlung, kein Listeneintrag. Der Schutz gegen den Fall „am Wegwerfkanal ist doch etwas passiert, von dem wir nichts wissen" liegt seit dem 2026-09-20 in **zwei** Prüfungen statt in einer: existiert der Kanal noch und trägt Nutzungszeilen, verlangt **Prüfung 3** (Lückenlosigkeit) eine ausdrückliche Aussage über ihn, und **Prüfung 4** (Widerspruch) bricht ab, wenn diese Aussage „nie gewechselt" lautet und die Signatur dagegen spricht (4.2) | Vorschlag vor dem 2026-10-01 |
 | — | **Unabhängig von V1:** HandOfBlood wechselt am 01.10.; **am Wechseltag** `ExpectedArchivedCount` mit der ID-Sonde aus Konzept 11.2 messen und `BoundaryUtc` notieren. Beide Werte hängen am Wechsel, nicht am Zwischenweg, und werden so oder so gebraucht (V5) | am 2026-10-01 |
 | V2 | Testkanal per Admin-Purge räumen | nach Sonde 6, vor K7 |
 | V3 | Wegwerfkanal purgen — **entfällt, wenn V1 nicht stattfindet** | nach dem 01.10., vor Sonde 6 |
@@ -2739,3 +2739,59 @@ Macht in Summe **+295** statt **+277** — **Infrastructure.Tests +137**, **Api.
 **Vitest +103**, `Worker.Tests` und Playwright unverändert. **Gegenrechnungen sind als Schreibweise
 abgeschafft:** keine der obigen Korrekturen ist als „alt ± Änderung" notiert, sondern als die
 nachgezählte Zahl selbst.
+
+---
+
+## 27. Nachtrag: Sonde 4 gemessen — und was sie nebenbei aufgedeckt hat (2026-09-20)
+
+**Messaufbau.** Dev-Stack `:8080`, vier getrackte Kanäle (`papaplatte`, `knirpz`, `handofblood`,
+`brudivoeller_tv`), Fenster **15:46:37–15:56:37 UTC**, zehn Minuten. Abweichend von Abschnitt 11
+**nicht** im Netzwerk-Panel am `EventSource` gezählt, sondern am Redis-Kanal `live:events` — das
+sind dieselben Ereignisse eine Stufe vor der SSE-Auslieferung, also vollständiger (nichts kann
+unterwegs verloren gehen) und ohne offenen Browser. Die Messung braucht keinen Betrachter: beide
+Ereignisarten werden unabhängig davon veröffentlicht, ob eine Seite offen ist.
+
+| Ereignis | `papaplatte` | `knirpz` | `handofblood` | `brudivoeller_tv` |
+|---|---|---|---|---|
+| `channel.synced` | **0** | **10** | **10** | **10** |
+| `usage.flushed` | 20 | 11 | 0 | 5 |
+
+**Ergebnis: Zweig A.** 1,00 `channel.synced` je Minute je betroffenem Kanal, die Schwelle „≤ 1 je
+Minute" genau eingehalten; die TTL des Set-ID-Lesepfads bleibt bei **60 s** (E12). Der Wert ist
+zusätzlich nach oben gedeckelt: der periodische Resync **ist** der Ein-Minuten-Takt
+(`SevenTvPeriodicResyncWorker`), dieser Pfad kann gar nicht mehr erzeugen. Die zweite Quelle, der
+EventAPI-Client, hat im Fenster **nichts** beigetragen — 10 Ereignisse bei 10 Takten.
+`usage.flushed` ist für die Kosten irrelevant (E16) und steht nur als Beleg der Regel da: der
+Kanal mit den meisten Flushes hat **null** Syncs.
+
+**Der eigentliche Fund steht in der Null.** `papaplatte` ist nicht der Ausreißer, sondern der
+Normalfall; die anderen drei melden **jede Minute** eine Änderung, und zwar dauerhaft. Ursache ist
+der Duplikat-Defekt aus #74, hier zum ersten Mal in seiner Folge gemessen:
+
+- Ein 7TV-Set kann dieselbe Emote-ID **zweimal** führen, unter zwei Aliassen. Live nachgewiesen in
+  HandOfBloods aktivem Set: `01J55NX1X0000EBJQG04YD6BQF` steht dort als `inkorrekt` **und** als
+  `Nerdge`.
+- Der Unique-Index `(ChannelId, SevenTvEmoteId)` lässt beide auf **eine** Zeile fallen.
+  `UpsertEmote` läuft über beide Live-Einträge: der erste schreibt `Name = inkorrekt` (Änderung),
+  der zweite `Name = Nerdge` (Änderung). Der Sync endet auf dem zweiten Alias.
+- Der nächste Resync findet `Nerdge`, wo der erste Live-Eintrag `inkorrekt` erwartet — und beginnt
+  von vorn. **Es gibt keinen Fixpunkt**, `HasChanges` ist für so einen Kanal ab dem Join für immer
+  wahr.
+
+**Gemessen, nicht gefolgert:** genau sieben Emote-Zeilen über drei Kanäle tragen einen
+`LastSyncedAt` aus den letzten drei Minuten (HandOfBlood **2**, `knirpz` **3**,
+`brudivoeller_tv` **2**), während die übrigen 760/787/677 Zeilen unberührt bleiben. Bei
+HandOfBlood deckt sich das mit der Zählung aus Konzept 11.2: 762 Set-Einträge, 760 Zeilen — zwei
+Duplikate, zwei ruhelose Zeilen. `papaplatte` hat keine und deshalb null Syncs.
+
+**Was das kostet, heute und auf Prod:** je betroffenem Kanal ein `UPDATE` pro Minute und ein
+`channel.synced` pro Minute — und damit ein erzwungenes Nachladen **jeder offenen Nutzungsseite
+dieses Kanals**, im Minutentakt, ohne dass sich etwas geändert hätte. Genau der Fall, den der
+Kommentar an `UpsertEmote:496-498` für den Deploy-Sonderfall ausdrücklich vermeiden wollte
+(„would fire channel.synced for every channel at once and make every open page refetch") — nur
+dauerhaft statt einmalig.
+
+**Folge für #200: keine.** Die TTL-Entscheidung ist in beide Richtungen stabil — wird der Defekt
+behoben, fällt die Rate auf ~0/min und Zweig A wird nur sicherer. Der Defekt selbst gehört
+**nicht** in diesen Epic: er ist älter, unabhängig von Emote-Sets und trifft jeden Kanal mit
+Duplikaten. Er gehört als eigenes Issue neben #74.

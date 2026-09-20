@@ -179,12 +179,13 @@ curl -s https://7tv.io/v3/users/twitch/49140130 | jq '{active: .emote_set_id, se
 keine für T2.1 — die Liste kommt seit T0.5 aus v4, und die v3-Antwort wird **nicht** als Fixture
 abgelegt. Die Set-IDs stehen für V5 bereit.
 
-#### T0.2 — Sonde 4: Reload-Frequenz der Nutzungsseite (Dev-Box)
+#### T0.2 — Sonde 4: Reload-Frequenz der Nutzungsseite (Dev-Box) — **erledigt 2026-09-20**
 
-Kein Kommando: Dev-Stack mit einem Kanal mit Chat-Betrieb, Nutzungsseite offen, im Netzwerk-Panel
-den `EventSource` auf `/api/live/…` über **10 Minuten** zählen (`usage.flushed`, `channel.synced`).
-Beide Zweige und ihr Vertrag: Spec 11, Sonde 4 (Beschluss in E12). **Umbaukosten von Zweig B:** in
-T2.2 eine Konstante und ein Testfall — deshalb ist die Sonde **kein Tor** für T2.2.
+**Gemessen, Zweig A: die TTL bleibt bei 60 s.** Zehn Minuten am Dev-Stack `:8080`, gezählt am
+Redis-Kanal `live:events` statt am `EventSource` (dieselben Ereignisse, eine Stufe früher, ohne
+offenen Browser). 1,00 `channel.synced` je Minute je betroffenem Kanal, ein Kanal ohne Duplikate
+bei 0. Zahlen, Aufbau und der dabei gefundene Dauer-Resync aus #74: Spec Abschnitt 27. Für T2.2
+ändert sich nichts — die Konstante bleibt, wie sie geplant war.
 
 #### T0.3 — Sonde 5: `REMOVE` bei doppelt eingetragener Emote-ID
 
@@ -246,7 +247,7 @@ gegenstandslos.
 #### V1 — Zwischenweg vor dem 2026-10-01 (Konzept 12.4)
 
 Wegwerfkanal (nie getrackt) bestimmen, Halloween dort aktiv, tracken, von HandOfBloods
-Nutzungsseite übertragen, Kollisionen im Dialog abwählen.
+Nutzungsseite übertragen. Der Kanal braucht **7TV-Editorrecht bei HandOfBlood** (sonst ist dessen Set dort nicht aktiv setzbar), und Kollisionen werden **auf der Nutzungsseite vor dem Start** abgewählt — der Bestätigungsdialog zählt sie nur auf (Korrekturen des Betreibers, 2026-09-20; s. Spec 13, V1).
 
 **V1 ist eine Empfehlung an HandOfBloods Mod-Team, keine Vorbedingung, die wir erfüllen können**
 (Betreiber, 2026-09-20): er kann den Weg vorschlagen, das Mod-Team entscheidet. Findet er **nicht**
