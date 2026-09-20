@@ -1708,7 +1708,17 @@ Logik von Prüfung 4 ist (die Signatur *entdeckt* nichts, sie *widerspricht* ein
 | B | **Mindestens eine Zeile ohne Erklärung**, oder HandOfBloods Zeile fehlt bzw. weicht ab | **Halt.** Der Betreiber klärt (Rückwechsel, Restore, unbekannter Wechsel, Massenlöschung auf 7TV), korrigiert die Liste oder nicht; Prüfung 2/3 der Migration bricht bei derselben Abweichung ab. Nichts wird geschätzt |
 
 Die Spalte `audit_same_day` der Abfrage ist damit **kein Beiwerk mehr, sondern das Erklärmittel** —
-sie entscheidet Zweig A gegen B. Zwei unerklärte Zeilen aus dem Trockenlauf sind bis zum
+sie entscheidet Zweig A gegen B.
+
+**Ehrlich dazugesagt: ein fehlender Audit-Eintrag ist kein Verdacht.** Wer Emotes direkt im
+7TV-Frontend entfernt, erzeugt bei uns **konstruktionsbedingt** keinen Eintrag — unser Audit kennt
+nur Handlungen, die durch EmotePurge liefen. Dazu kommt der REST-Cache-Verzug von 10–30 min
+(SevenTV/SevenTV#81), der eine Archivierung auslösen kann, die niemand veranlasst hat. „Erklärt"
+heißt deshalb nicht „durch einen Audit-Eintrag belegt", sondern **der Betreiber kann sagen, was da
+war** — notfalls „das war ich, direkt auf 7TV". Das ist eine Aussage, keine Messung, und sie trägt
+genauso weit wie die Kein-Wechsel-Aussage der Klassifikation, auf der die ganze Migration ohnehin
+steht (4.2). Der Rückhalt bleibt Prüfung 4: sie bricht ab, wenn die Aussage der Signatur
+widerspricht. Zwei unerklärte Zeilen aus dem Trockenlauf sind bis zum
 Wartungsfenster zu klären; sie sind der Grund, warum diese Sonde überhaupt vor der Migration steht
 und nicht danach.
 
