@@ -2,7 +2,7 @@
 
 Erstellt am 2026-09-20 gegen `docs/konzept-emote-sets` = `93af613` (der Commit, der die Spec
 enthält). Quellen: [die Spec](../superpowers/specs/2026-09-20-emote-sets-200-spec.md) (Abschnitte
-werden als „Spec N" zitiert, Entscheidungen als E1–E25, Fallen als F1–F16, Akzeptanzkriterien als
+werden als „Spec N" zitiert, Entscheidungen als E1–E25, Fallen als F1–F17, Akzeptanzkriterien als
 AK n), [das Konzept](../Konzept-Emote-Sets-2026-09-19.md) nur, wo die Spec darauf verweist,
 `CLAUDE.md` (Regeln 1–22, Schichtentreue, Gates), `web/.claude/CLAUDE.md`, und der Code auf
 `93af613`. Formatvorlagen: [Plan-149](Plan-149-7TV-v4-Schreibflaeche.md), [Plan-91](Plan-91-Datei-Weg.md).
@@ -95,9 +95,9 @@ Nichts davon wird hier wiederholt. Je Vertrag: Spec-Abschnitt, die Tasks, die ih
 
 | Vertrag | Spec | Tasks |
 |---|---|---|
-| Schema, Migration mit vier Prüfungen, Saat, `Down` | 4.1–4.3, E1, E11 | T1.3a, T1.3b, T1.9 |
+| Schema, Migration mit **sechs** Prüfungen über einer lückenlosen Klassifikation, Saat, `Down` | 4.1–4.3, E1, E11 | T1.3a, T1.3b, T1.9, T1.10 |
 | Zählpfad: Snapshot, Schlüssel, Flush, Log-Zeile | 5, F2 | T1.1, T1.2, T1.4, T1.7 |
-| Lesepfade mit `emoteSetId`, `/series` nach 7TV-Id, `GetRowsAsync`-Summe, `NameTwinEmoteSetIds` | 5 (Tabelle), E15, E24 | T1.6 |
+| Lesepfade mit `emoteSetId`, `/series` **additiv** um 7TV-Id (6.5 Schritt 1), `GetRowsAsync`-Summe, `NameTwinEmoteSetIds` | 5 (Tabelle), 6.5, E15, E24 | T1.6 |
 | Beobachtungs-Log: Öffnen/Schließen an sechs Stellen | 4.3, F9 | T1.5 |
 | Api-Routen 6.1–6.5, 6.8, `EmoteSetIdValidationFilter`, vier Fehlercodes | 6, E13, E14 | T2.3, T3.1 |
 | `sync-imported` mit `TargetEmoteSetId`, set-zentrierter Endpunkt, Besitzer-Prüfung, Audit-Projektion | 6.7, E5, E22, F7, F10 | T2.4 |
@@ -197,6 +197,27 @@ ist nicht dieselbe Liste wie `SetSwitchAssignments` — sie zählt den Testkanal
 steht, und den Wegwerfkanal nicht, weil V3 ihm vorausgeht.
 Ergebnis im Repo: das Ergebnis steht im DECISIONS-Eintrag 1 (Nachtrag durch K7).
 
+**Im selben Handgriff, zweite Abfrage — die Kanalliste für die Klassifikation (neu, 2026-09-20).**
+Seit der Entscheidung zu Codex-Befund E ist `SetSwitchAssignments` eine **lückenlose
+Klassifikation jedes Kanals mit Nutzungszeilen** (Spec 4.2), und Prüfung 3 bricht bei jedem Kanal
+ab, der fehlt. Ohne diese Liste kann niemand Lückenlosigkeit behaupten. Rein lesend, in derselben
+`psql`-Sitzung am selben Tunnel:
+
+```sql
+SELECT c."Name", c."Id" AS channel_id, c."TwitchChannelId", c."ActiveEmoteSetId",
+       COUNT(u.*) AS usage_rows, MIN(u."Date") AS first_day, MAX(u."Date") AS last_day
+FROM "Channels" c
+JOIN "Emotes" e ON e."ChannelId" = c."Id"
+JOIN "UsageStats" u ON u."EmoteId" = e."Id"
+GROUP BY c."Id", c."Name", c."TwitchChannelId", c."ActiveEmoteSetId"
+ORDER BY usage_rows DESC;
+```
+
+Jede Zeile wird in **T1.9** zu genau einem Eintrag: HandOfBlood zu Wechseleinträgen, alle übrigen
+zu Kein-Wechsel-Einträgen mit der hier abgelesenen `ActiveEmoteSetId` als `ConfirmedEmoteSetId`.
+Die Ausgabe gehört in den PR-Text von T1.9 (AK 2: Zahl der Einträge = Zahl der Zeilen), nicht in
+eine Datei im Repo — sie nennt Kanalnamen und IDs, und das Repo ist öffentlich.
+
 #### T0.5 — Sonde 7: trägt v4 am `EmoteSet` ein Merkmal für persönliche Sets?
 
 ```
@@ -261,9 +282,12 @@ Zeile.
 der ID-Sonde aus Konzept 11.2 messen und `BoundaryUtc` notieren. Beide Werte hängen am Wechsel,
 nicht am Zwischenweg, gehen in **T1.9** und werden so oder so gebraucht. Kein Repo-Anteil vor T1.9.
 
-Die Abbruchprüfung „ein Kanal mit Signatur, der nicht in der Liste steht" (Prüfung 3, Spec 4.2)
-gilt unverändert — sie ist der Schutz genau gegen den Fall, dass am Wegwerfkanal doch etwas
-passiert ist, von dem wir nichts wissen.
+Der Schutz gegen den Fall „am Wegwerfkanal ist doch etwas passiert, von dem wir nichts wissen"
+liegt seit dem 2026-09-20 in **zwei** Prüfungen statt in einer (Spec 4.2): existiert der Kanal noch
+und trägt er Nutzungszeilen, verlangt **Prüfung 3** (Lückenlosigkeit) eine ausdrückliche Aussage
+über ihn — er kann nicht mehr stillschweigend als „nie gewechselt" durchlaufen —, und **Prüfung 4**
+(Widerspruch) bricht ab, wenn diese Aussage „nie gewechselt" lautet, die Signatur aber dagegen
+spricht.
 
 #### V2 / V3 — Purges (Admin-UI, Prod)
 
@@ -271,10 +295,30 @@ V3: Wegwerfkanal nach dem 01.10. und **vor** Sonde 6 purgen — **entfällt, wen
 stattfindet** (dann gibt es keinen Wegwerfkanal). V2: Testkanal **nach** Sonde 6 und vor
 K7 purgen (er ist die Positivkontrolle der Sonde). Ergebnis im Repo: AK 3/4 im PR-Text von T7.
 
+#### V4 — Datenbank-Kopie für die Migrationsprobe beschaffen (neu, 2026-09-20)
+
+**T1.10 braucht eine Datenbank, gegen die sich die Migration einmal vollständig vorführen lässt.**
+Zwei Quellen, beide gültig:
+
+- **Die Sicherung der Dev-Datenbank von vor dem Leerräumen** — liegt bereits vor unter
+  `~/projects/emotepurge-devdb-vor-purge-2026-09-20.sql.gz` (766 K; 27 Kanäle, 9 214 Emotes,
+  6 022 Nutzungszeilen über 18 Tage ab 2026-08-29, 3 Nutzer). Die Wiederherstellung in eine
+  **Wegwerfdatenbank** im selben Postgres-Container ist am 2026-09-20 vorgeführt worden und
+  deckungsgleich zurückgekommen.
+- **Eine Kopie der Produktionsdatenbank** über die bestehende Backup-Kette (VPS → NAS → OneDrive;
+  Aufrufform in `docs/Operations.md` und `infra-docs`). **Das ist die aussagekräftigere Quelle:**
+  nur sie trägt die echte Zeilenzahl, und nur an ihr ist die gemessene `Up`-Dauer die erwartete
+  Länge des Wartungsfensters. Gegen die Dev-Sicherung ist die Dauer eine untere Schranke, mehr
+  nicht.
+
+Das Beschaffen ist ein **Handgriff des Betreibers**, kein Task: der Plan verbindet sich nirgends
+nach außen. Die Probe selbst läuft danach lokal (T1.10) und fasst weder Prod noch den laufenden
+Teststack an.
+
 ### K1 — Zählen pro Set (Schritt 3)
 
 Reihenfolge innerhalb K1: T1.1 → T1.2 → T1.3a → T1.3b → T1.4 → T1.8 (Commit) → T1.5 ∥ T1.6 → T1.7 →
-T1.9 (nach dem 01.10.). Worktree A.
+T1.9 (nach dem 01.10.) → T1.10 (Migrationsprobe, vor dem K1-PR). Worktree A.
 
 #### T1.1 — Schlüssel und Snapshot im Worker; Flush-Signatur mit vorläufiger Summe
 
@@ -335,10 +379,13 @@ Nachrichten sauber trennt oder ob je Nachricht zwei Aufrufe ein gemischtes Paar 
 #### T1.3a — Entitäten, `AppDbContext`, pure Prüf- und Zuordnungsfunktionen
 
 **Ziel:** Die Modelländerungen aus Spec 4.1 und die Entscheidungslogik der Migration als **pure
-Funktionen** über Listen — vier Prüfungen und die Intervallzuordnung `Date` → Set-ID inklusive
-Grenztag —, damit T1.3b sie nur noch in SQL abbildet und die Zweige einzeln getestet sind.
+Funktionen** über Listen — **sechs** Prüfungen und die Intervallzuordnung `Date` → Set-ID inklusive
+Grenztag —, damit T1.3b sie nur noch in SQL abbildet und die Zweige einzeln getestet sind. Die
+Eingabe hat seit dem 2026-09-20 **zwei** Eintragsarten (Wechsel und Kein-Wechsel, Spec 4.2); die
+puren Funktionen arbeiten über beiden Listen, nicht über einer.
 
-**Spec:** 4.1 (Tabelle), 4.2 (Prüfungen 1–4, Zuordnungsregel), E1 (Form der Liste).
+**Spec:** 4.1 (Tabelle), 4.2 (Prüfungen 1–6 samt Umrechnungstabelle zu den früheren vier,
+Zuordnungsregel), E1 (Form der Liste, beide Eintragsarten).
 
 **Dateien:** `Core/Entities/UsageStat.cs:3-26`, `Core/Entities/ChannelEmoteSetObservation.cs` (neu,
 Muster `ChannelLiveDay`), `Core/Entities/VoteSession.cs:13-30`, `VoteSessionEmote.cs:7-14`,
@@ -346,10 +393,15 @@ Muster `ChannelLiveDay`), `Core/Entities/VoteSession.cs:13-30`, `VoteSessionEmot
 Unique-Index — Muster `:52-65`), ein neuer purer Typ für die Prüfungen neben der Migration
 (Infrastructure, kein EF-Bezug in der Signatur).
 
-**Tests:** `Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` (neu, pur) **+8**:
-je Prüfung 1–4 ein Abbruch- und ein Durchlauffall (Sonar zählt Zweige, Spec 15 letzter Absatz);
-Zuordnung: `Date < boundary` alt, `>= boundary` neu, mehrere Grenzen (jüngste Grenze ≤ Date),
-Grenztag ganz an die neue ID (Ein-Tages-Unschärfe, benannt).
+**Tests:** `Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` (neu, pur) **+16**,
+ausgeschrieben, weil die frühere Zahl offenließ, was sie zählt: **12** = je Prüfung 1–6 ein
+Abbruch- und ein Durchlauffall (Sonar zählt Zweige, Spec 15 letzter Absatz), **+4** Zuordnungsfälle
+(`Date < boundary` alt, `>= boundary` neu, mehrere Grenzen mit der jüngsten Grenze ≤ Date, Grenztag
+ganz an die neue ID — Ein-Tages-Unschärfe, benannt). Die beiden neuen Prüfungen brauchen dabei
+Fälle, die es vorher nicht gab: **Lückenlosigkeit** (ein Kanal mit Nutzungszeilen ohne Eintrag
+beider Arten ⇒ Abbruch, **und die Meldung nennt ihn**) und **Kettenschluss** (zwei Wechseleinträge,
+deren `NewEmoteSetId`/`OldEmoteSetId` nicht aneinanderschließen bzw. deren Grenzen nicht sortiert
+sind).
 
 **Gate:** BE grün — `dotnet ef migrations add` läuft hier **noch nicht** (das Snapshot-Diff gehört
 zu T1.3b, sonst entsteht eine Migration ohne Prüfungen, die jemand versehentlich anwendet). Kein
@@ -361,23 +413,43 @@ sequenziell). **Modell:** `sonnet`.
 #### T1.3b — Die Migration `AddUsageStatEmoteSetId`: Prüfungen, Backfill, Indextausch, Saat, `Down`
 
 **Ziel:** Die eine nicht-additive Migration an der heißesten Tabelle — in der Reihenfolge aus Spec
-4.2 (zwölf Schritte, verbindlich), in **einer** Transaktion, mit `SET LOCAL lock_timeout = '5s'` als
-erstem Statement, ohne Default, ohne `COALESCE`; Saat aus derselben Eingabe (4.3); `Down`, das ab
-dem ersten beobachteten Set-Wechsel **fehlschlägt** (gewollt).
+4.2 (**vierzehn** Schritte, verbindlich — zwei temporäre Tabellen statt einer, **sechs** Prüfungen
+statt vier), in **einer** Transaktion, mit `SET LOCAL lock_timeout = '5s'` als
+erstem Statement, ohne Default, ohne `COALESCE`; Saat aus derselben Eingabe (4.3) — die `ClosedBy`
+**ausschließlich** `'migration'` vergibt, nie `'set-switch'`; `Down` mit den **zwei unabhängigen
+Schranken** aus 4.2, die **vor jedem zerstörenden Schritt** laufen: (1) eine ausdrückliche Prüfung
+auf eine `ChannelEmoteSetObservations`-Zeile mit `ClosedBy = 'set-switch'` ⇒ `RAISE EXCEPTION`,
+(2) die Kollision des alten Unique-Index. Schranke 2 ist ein **Stellvertreter** („zwei Set-IDs an
+einem `(EmoteId, Date)`"), nicht gleichbedeutend mit „es hat einen Wechsel gegeben" — sie lässt
+disjunkte Sets und Wechsel zwischen zwei Tagen durch. Keine ersetzt die andere; beide bleiben.
 
-**Spec:** 4.2, 4.3 (Saat), E1, E11, F1; Zuordnungsliste **leer** bis T1.9 (nur die Form; HandOfBlood
-kommt mit den V1-Werten).
+**Spec:** 4.2, 4.3 (Saat), E1, E11, F1; Zuordnungsliste **leer** bis T1.9 (nur die Form —
+**beide** Eintragsarten; HandOfBlood kommt mit den V1-Werten, die Kein-Wechsel-Einträge mit der
+Kanalliste aus Sonde 6). Wichtig für den Backfill: die `ConfirmedEmoteSetId` kommt **aus der
+Liste**, nicht aus `Channels."ActiveEmoteSetId"` — auch wenn Prüfung 1 die beiden gleichsetzt.
+Leitete der Backfill sie ab, prüfte die Migration gegen sich selbst und der ganze Gewinn der
+Klassifikation wäre weg.
 
 **Dateien:** `Infrastructure/Migrations/<stamp>_AddUsageStatEmoteSetId.cs` (neu, setzt auf
 `20260907080507_AddUsageStatSharedChatUseCount` auf), `AppDbContextModelSnapshot.cs` (generiert).
 `PendingMigrationGuard.cs:11` bleibt unverändert.
 
 **Tests:** `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu, gegen den ephemeren
-Container) **+9**: AK 5 (Prüfung 4: leere `ActiveEmoteSetId` ⇒ Ausnahme, **nichts** geändert), AK 6
-(Prüfungen 1–3, drei Fälle), AK 7 (Backfill alt/neu/ungelistet), AK 8 (`pg_indexes`: alter Index
-weg, neuer unique mit `INCLUDE`), AK 9 (Saat: aktiv-ungelistet eine offene Zeile ab
-`COALESCE(TrackingResumedAt, CreatedAt)`; gelistet je Intervall; inaktiv keine), AK 10 (`Down` ohne
-Wechsel stellt den alten Index her; mit zwei Set-IDs an einem `(EmoteId, Date)` schlägt sie fehl).
+Container) **+13**: AK 5 (Prüfung **6**: leere `ActiveEmoteSetId` ⇒ Ausnahme, **nichts** geändert),
+AK 6 (Prüfungen 1–5, **fünf** Fälle — darunter die zwei neuen: ein Kanal mit Nutzungszeilen ohne
+Eintrag beider Arten ⇒ Abbruch **mit Nennung des Kanals**, und ein Kanal mit Kein-Wechsel-Eintrag,
+der die Massenarchivierungs-Signatur trägt ⇒ Abbruch), AK 7 (Backfill alt/neu/Kein-Wechsel — die
+bestätigte ID im Test **von** der `ActiveEmoteSetId` unterscheidbar gemacht, damit die Assertion
+die Quelle prüft und nicht nur den Wert), AK 8 (`pg_indexes`: alter Index weg, neuer unique mit
+`INCLUDE`), AK 9 (Saat: Kein-Wechsel-Eintrag ⇒ eine offene Zeile ab
+`COALESCE(TrackingResumedAt, CreatedAt)`; Wechseleinträge ⇒ je Intervall eine; inaktiv keine —
+auch wenn klassifiziert), **AK 9 als eigener Fall: nach `Up` existiert keine
+`ChannelEmoteSetObservation`-Zeile mit `ClosedBy = 'set-switch'`** (die Invariante, an der
+`Down`-Schranke 1 hängt — sie stand bisher nur als Auflage im Text), AK 10 (**drei** Fälle: `Down` ohne Wechsel stellt den alten Index her; mit zwei
+Set-IDs an einem `(EmoteId, Date)` schlägt sie fehl; **und — der Fall, der heute durchrutschen
+würde — ein Set-Wechsel *ohne* `(EmoteId, Date)`-Kollision** (disjunkte Sets oder Wechsel zwischen
+zwei Tagen, dazu eine `'set-switch'`-Zeile) lässt `Down` **ebenfalls** abbrechen, und zwar mit
+unverändertem Schema: Spalte, Tabelle und neuer Index stehen danach noch).
 `Integration/PendingMigrationGuardTests.cs` bleibt grün. Der Testaufbau braucht ein Muster, um die
 Migration **bis zu einem bestimmten Stand** anzuwenden und dann Zeilen zu setzen — der Task legt
 es in `Fixtures/` ab, damit T1.9 es wiederverwendet.
@@ -385,11 +457,13 @@ es in `Fixtures/` ab, damit T1.9 es wiederverwendet.
 **Gate:** BE grün; `dotnet ef migrations list` gegen die lokale Dev-DB zeigt genau eine Pending;
 `dotnet ef database update` lokal läuft durch **und** `dotnet ef database update
 20260907080507_AddUsageStatSharedChatUseCount` rollt sauber zurück (Dev-DB hat keinen
-Set-Wechsel). Kein Commit (Flush folgt).
+Set-Wechsel — falls doch, ist der Abbruch an Schranke 1 das **erwartete** Ergebnis und kein
+Task-Fehler; dann die `'set-switch'`-Zeile der Dev-DB vorher entfernen). Kein Commit (Flush folgt).
 
 **Abhängigkeiten:** T1.3a. **Modell:** `opus` — die einzige Migration des Vorhabens, die ein
-laufendes altes Image nicht verträgt (F1), mit vier `RAISE`-Zweigen, zwei `UPDATE`s in fester
-Reihenfolge und einem `Down`, das absichtlich scheitern muss; jeder Fehler hier ist eine falsche
+laufendes altes Image nicht verträgt (F1), mit **sechs** `RAISE`-Zweigen in `Up`, zwei `UPDATE`s in
+fester Reihenfolge und einem `Down`, das an **zwei** unabhängigen Schranken absichtlich scheitern
+muss; jeder Fehler hier ist eine falsche
 Zuordnung, die kein späterer Task erkennt.
 
 #### T1.4 — Der Flush schreibt dreispaltig
@@ -454,12 +528,14 @@ festhalten muss: während einer #76-Blockade bleibt die alte Zeile offen — **k
 
 **Abhängigkeiten:** T1.8 (Tabelle existiert); Stand mit #76 (0.4). **Modell:** `sonnet`.
 
-#### T1.6 — Lesepfade: Set-Filter, `/series` nach 7TV-Id, `GetRowsAsync`-Summe, `NameTwinEmoteSetIds`
+#### T1.6 — Lesepfade: Set-Filter, `/series` additiv um die 7TV-Id, `GetRowsAsync`-Summe, `NameTwinEmoteSetIds`
 
 **Ziel:** Die Tabelle in Spec 5 („Lesepfade") Zeile für Zeile: fünf Methoden bekommen
 `string? emoteSetId` (`null` = `Channel.ActiveEmoteSetId`), `GetTotalsByEmoteIdsAsync` den
-**Pflicht**parameter, `GetRowsAsync` summiert (E15), `GetChannelSeriesAsync` benennt nach
-`SevenTvEmoteId` (F4), `GetUsageContextAsync` liefert `IsArchived` und `NameTwinEmoteSetIds` (E24)
+**Pflicht**parameter, `GetRowsAsync` summiert (E15), `GetChannelSeriesAsync` trägt `SevenTvEmoteId`
+**zusätzlich** zu `emoteId` (F4, Spec 6.5 Schritt 1 — **additiv**, weil K1 vor K4 mergt und die
+Live-Verifikationen aus T2.7/T5.3 aus genau diesem Zwischenstand laufen; `emoteId` fällt erst nach
+K4 in einem eigenen Schritt, Folge-Issue 5, Muster wie E3), `GetUsageContextAsync` liefert `IsArchived` und `NameTwinEmoteSetIds` (E24)
 und für ein nicht-aktives Set die Grundmenge „Zeilen mit ≥ 1 `UsageStat` unter X, archivierte
 eingeschlossen" (E16). Der Aufrufer `VoteSessionQueryService.cs:101-103` übergibt vorerst
 `channel.ActiveEmoteSetId` (K6 ersetzt das durch `session.EmoteSetId ?? …`).
@@ -471,14 +547,16 @@ eingeschlossen" (E16). Der Aufrufer `VoteSessionQueryService.cs:101-103` übergi
 238-264,326-352`, `VoteSessionQueryService.cs:101-103` (Aufruf), `Api/Endpoints/UsageStatsEndpoints.cs:35-100`
 (Query-Parameter durchreichen — der Validierungsfilter kommt aus T2.3; bis dahin reicht der
 Endpunkt den Rohwert durch, und das ist auf dem Integrationsbranch hinnehmbar, weil K2 vor T7
-mergt). `Api.Tests/ChannelUsageSeriesWireFormatTests.cs:23-37` — **der eine Test, der bewusst rot
-wird und geändert wird** (`"sevenTvEmoteId"`); `:39-49` bleibt.
+mergt). `Api.Tests/ChannelUsageSeriesWireFormatTests.cs:23-37` — **erweitert, nicht geändert**: der Fall
+pinnt ab hier `"sevenTvEmoteId"` **und** `"emoteId"`; `:39-49` bleibt. **Kein bestehender Test wird
+rot** — das frühere „bewusst rot" entfällt mit dem additiven Weg.
 
 **Tests:** `Integration/UsageStatQueryServiceTests.cs` (54 Fälle) — **Teilaufgabe:** zählen, wie
 viele an `GetChannelSeriesAsync`/`GetRowsAsync`/`EmoteSeriesEntryDto` hängen; umstellen; Zahl in
 den PR-Text. **+10**: Set-Filter in Context/Daily/Series/Totals; `null` = aktiv; AK 19
 (`GetRowsAsync` eine Zeile je `(EmoteId, Date)` als Summe — der Harness-Vertrag, F11); AK 20
-(`/series`: aktiv + archiviert erscheinen, eine in der DB nicht vorhandene Guid-lose Zeile nicht);
+(`/series`: aktiv + archiviert erscheinen, **beide mit gefülltem `emoteId` neben `sevenTvEmoteId`**,
+eine in der DB nicht vorhandene Guid-lose Zeile nicht);
 `NameTwinEmoteSetIds` (gleicher Name, andere ID, anderes Set ⇒ gelistet; gleiches Set ⇒ nicht);
 nicht-aktive Grundmenge (archivierte Zeile mit Zahlen unter X erscheint, aktive Zeile ohne Zahlen
 unter X erscheint **nicht**). `Worker.Tests/HarnessRunnerTests.cs`, `ReplayDayCounterTests.cs`:
@@ -514,51 +592,144 @@ across the match-cache swap`.
 
 **Abhängigkeiten:** T1.2, T1.5. **Modell:** `sonnet`.
 
-#### T1.9 — Zuordnungsliste mit den Werten aus V1 füllen (letzter Commit von K1, nach dem 01.10.)
+#### T1.9 — Die Klassifikation füllen: beide Eintragsarten (vorletzter Commit von K1, nach dem 01.10.)
 
-**Ziel:** Der HandOfBlood-Eintrag in `SetSwitchAssignments` (`ChannelId`, `TwitchChannelId`
-`49140130`, alt `01GV88A38G0006FW5TVZVMG507`, neu `01J94NYQR0000D15QN0BDGN85E`, `BoundaryUtc`,
-`ExpectedArchivedCount` aus V1) und der Nachtrag im DECISIONS-Eintrag 1 (AK 2). Testkanal und
-Wegwerfkanal stehen **nicht** in `SetSwitchAssignments` — beide sind vor der Migration gepurgt
-(V2, V3) und haben dann keine Zeilen, die zuzuordnen wären. HandOfBlood ist damit der **einzige**
-Eintrag, mit V1 wie ohne.
+**Ziel:** `SetSwitchAssignments` vollständig füllen — seit dem 2026-09-20 sind das **zwei**
+Eintragsarten, nicht eine (Spec 4.2, Befund E):
 
-**Tests:** `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` **+1**: mit dem echten Eintrag und
-einer synthetischen Datenbank, die die Signatur trägt, läuft die Migration durch; mit
-`ExpectedArchivedCount ± 1` bricht Prüfung 2 ab (der Wert ist damit im Test verankert, nicht nur
-im Code).
+- **Wechseleinträge** für HandOfBlood (`ChannelId`, `TwitchChannelId` `49140130`, alt
+  `01GV88A38G0006FW5TVZVMG507`, neu `01J94NYQR0000D15QN0BDGN85E`, `BoundaryUtc`,
+  `ExpectedArchivedCount` aus V1).
+- **Je ein Kein-Wechsel-Eintrag** `(ChannelId, TwitchChannelId, ConfirmedEmoteSetId)` für **jeden
+  übrigen Kanal** aus der Zählabfrage neben Sonde 6 (T0.4). Die `ConfirmedEmoteSetId` wird aus
+  dieser Ausgabe **abgeschrieben**, nicht im SQL abgeleitet — das ist der ganze Punkt der
+  Entscheidung.
 
-**Gate:** BE grün. **Commit:** `feat(usage): fill the set-switch assignment list for the
-migration`. Danach der K1-PR gegen den Integrationsbranch.
+Dazu der Nachtrag im DECISIONS-Eintrag 1 (AK 2). Testkanal und Wegwerfkanal stehen in **keiner**
+der beiden Arten — beide sind vor der Migration gepurgt (V2, V3), haben dann keine Zeilen und
+erscheinen deshalb auch in der Zählabfrage nicht mehr. HandOfBlood ist der einzige Kanal mit
+Wechseleinträgen, mit V1 wie ohne; die **Zahl der Kein-Wechsel-Einträge steht vorher nicht fest**
+und ergibt sich aus der Zählabfrage.
 
-**Abhängigkeiten:** V1 (Werte), T1.8. **Modell:** `haiku` — eine Konstante, ein Test, ein
-Nachtrag; das Denken ist in V1 und T1.3b erledigt.
+**Der Task ist damit nicht mehr „eine Konstante".** Er trägt die Aussage ein, auf die sich die
+ganze Migration stützt; die Ausgabe der Zählabfrage gehört in den PR-Text, damit AK 2 (Zahl der
+Einträge = Zahl der Zeilen) nachrechenbar ist.
+
+**Tests:** `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` **+2**: (1) mit dem echten
+HandOfBlood-Eintrag und einer synthetischen Datenbank, die die Signatur trägt, läuft die Migration
+durch; mit `ExpectedArchivedCount ± 1` bricht Prüfung 2 ab (der Wert ist damit im Test verankert,
+nicht nur im Code). (2) ein **echter Kein-Wechsel-Eintrag** aus der Liste, dessen
+`ConfirmedEmoteSetId` künstlich verfälscht wird, bricht an Prüfung 1 ab — sonst wäre nicht
+gezeigt, dass die Migration die Liste liest und nicht die Datenbank.
+
+**Gate:** BE grün. **Commit:** `feat(usage): fill the set assignment list for the migration`.
+Danach T1.10, dann der K1-PR gegen den Integrationsbranch.
+
+**Abhängigkeiten:** V1 (Werte), T0.4 (Kanalliste), T1.8. **Modell:** `sonnet` — nicht mehr
+`haiku`: es sind jetzt N Einträge aus einer Ausgabe, ein zweiter Test und eine Aussage, deren
+Abschreibfehler die Migration klaglos in eine Fehlbuchung laufen ließe (Prüfung 1 fängt nur den
+Fall, dass die ID nicht die aktive ist).
+
+#### T1.10 — Migrationsprobe gegen eine wiederhergestellte Datenbank (neu, 2026-09-20)
+
+**Ziel:** Die Migration **einmal vollständig vorführen**, bevor sie im Wartungsfenster über einem
+Tunnel zum ersten Mal ernst wird. Keine Containertests, sondern ein Durchlauf gegen eine
+wiederhergestellte, echte Datenbank — mit vier Fragen, von denen die erste bisher ausdrücklich
+offen war.
+
+**Testort:** der lokale Docker-Stack (`docker compose`, Api auf `:8080`) und eine
+**Wegwerfdatenbank** im vorhandenen Postgres-Container. **Nicht** `:5151` — der Prozess überlebt
+das Ausschalten des Arbeitsrechners nicht, und die Probe soll wiederholbar sein. Der Task berührt
+**weder Prod noch den laufenden Teststack**: er legt die Wegwerfdatenbank an, arbeitet
+ausschließlich darin und löscht sie danach.
+
+**Quelle (V4, Handgriff des Betreibers):** die Dev-Sicherung
+`~/projects/emotepurge-devdb-vor-purge-2026-09-20.sql.gz` (766 K; 27 Kanäle, 9 214 Emotes,
+6 022 Nutzungszeilen über 18 Tage ab 2026-08-29, 3 Nutzer; Wiederherstellung am 2026-09-20
+vorgeführt und deckungsgleich zurückgekommen) **oder** eine Prod-Kopie über die bestehende
+Backup-Kette. Der Task läuft mit **beiden** Quellen; die **Prod-Kopie ist die aussagekräftigere**
+und wird, wenn sie vorliegt, bevorzugt.
+
+**Die vier Prüfungen des Tasks:**
+
+1. **`Up` läuft durch — und die Dauer wird gemessen.** Das ist heute ein offener Punkt: wie lange
+   die Migration an der heißesten Tabelle braucht, hat niemand gemessen, und genau diese Dauer
+   **ist** die Länge des Wartungsfensters, in dem Site und Zählung stillstehen (AK 86 verlangt
+   unter 15 Minuten, ohne bisher eine Messung dahinter zu haben). Notiert werden Quelle,
+   Zeilenzahl und Sekunden. Gegen die Dev-Sicherung ist die Zahl eine **untere Schranke** und wird
+   ausdrücklich so beschriftet; nur gegen eine Prod-Kopie überträgt sie.
+2. **Jede Abbruchprüfung feuert, wenn man ihren Fall herstellt** — je Prüfung 1–6 ein konstruierter
+   Verstoß gegen die wiederhergestellten Daten (Eintrag entfernen ⇒ Prüfung 3; `ConfirmedEmoteSetId`
+   verfälschen ⇒ Prüfung 1; `ExpectedArchivedCount` verschieben ⇒ Prüfung 2; einen Kanal mit
+   Massenarchivierung als „nie gewechselt" führen ⇒ Prüfung 4; die Kette aufbrechen ⇒ Prüfung 5;
+   eine `ActiveEmoteSetId` leeren ⇒ Prüfung 6). Nach jedem Abbruch ist die Datenbank unverändert.
+3. **`Down` verweigert an Schranke 1, ohne etwas entfernt zu haben** — eine
+   `ClosedBy = 'set-switch'`-Zeile setzen, `Down` laufen lassen, danach prüfen, dass Spalte,
+   Tabelle und neuer Index noch stehen.
+4. **Die Gegenprobe-Abfrage (Sonde 6) läuft gegen dieselbe Datenbank** und liefert, was sie soll —
+   ein Trockenlauf des Tors, samt der Zählabfrage aus T0.4. Am Migrationstag ist dann weder die
+   SQL-Datei noch ihre Ausgabeform neu.
+
+**Was die Probe nicht zeigt, ausdrücklich:** baut man die Klassifikation für die Wegwerfdatenbank
+aus deren eigener `ActiveEmoteSetId`, ist Prüfung 1 dort eine Tautologie. Die Probe belegt die
+**Mechanik** (Reihenfolge, Transaktion, Abbrüche, Dauer, Rückweg), **nicht** die Richtigkeit der
+echten Liste aus T1.9 — die hängt am Wissen des Betreibers und an Sonde 6.
+
+**Gate:** die vier Befunde belegt (Kommandos und Ausgaben im PR-Text von T1.9/T7); BE grün bleibt
+unberührt, weil der Task keine Quelldatei ändert. **Kein Commit** — es sei denn, die Probe findet
+einen Fehler; dann geht der Fix zurück an T1.3b und der Befund in den PR-Text.
+
+**Abhängigkeiten:** T1.9 (die echte Liste) und V4 (die Kopie). Ein früherer Trockenlauf gegen den
+Stand nach T1.3b mit leerer Liste ist erlaubt und kostet nichts — er prüft dann nur Prüfung 3 und
+den Rückweg. **Modell:** `sonnet` — mechanisch, aber vielschrittig: Wiederherstellen, sechs
+Verstöße herstellen und zurückrollen, Zeiten messen, aufräumen.
 
 ### K2 — Ziel-Set-Picker (Schritt 4)
 
 Reihenfolge: T2.1 ∥ T2.2 → T2.3 → T2.4 → T2.5a → T2.5b → T2.6 → T2.7. Worktree B, parallel zu K1.
 
-#### T2.1 — `ISevenTvEmoteSetListService`: v4 `emoteSets`, Cache, Budget
+#### T2.1 — `ISevenTvEmoteSetListService`: v4 `emoteSets`, Cache, Singleflight, Breaker, Budget
 
 **Ziel:** Ein Dienst für drei Routen (E6): `ListByTwitchIdAsync` → v4 `userByConnection(platform:
 TWITCH, platformId:)` mit `style { activeEmoteSetId } emoteSets { id name capacity kind owner
 { id mainConnection { platformDisplayName } } }`, `isPersonal = kind == PERSONAL` (E7),
 `ownerDisplayName` je Set aus `owner.mainConnection.platformDisplayName` (**Anzeigename, kein
 Login** — nur Anzeige, nie Abgleich), `activeEmoteSetId` aus `style.activeEmoteSetId`
-(E21 — die Routen für getrackte Kanäle überschreiben sie mit `Channel.ActiveEmoteSetId`), Cache
-`7tvsets:{twitchId}` 60 s fail-open (E12), **ein Permit je Upstream-Request** (F14).
+(E21 — die Routen für getrackte Kanäle überschreiben sie mit `Channel.ActiveEmoteSetId`), und die
+**vollständige Wächterkette aus Spec 6.1** — Cache `7tvsets:{twitchId}` 60 s fail-open (E12),
+**Singleflight**, **Breaker**, **Budget** (Nebenläufigkeits-Slot **und** ein Permit je
+Upstream-Request, F14), in dieser Reihenfolge. Cache plus Permit allein wäre eine Härtung unter der
+des Vorschaupfads: gleichzeitige kalte Misses gingen einzeln an v4, Fehler würden bei jedem Aufruf
+wiederholt, und ein v4-Ausfall könnte das **gemeinsame** 60/min-Budget leeren und die
+Fremdkanal-Vorschau mit in 503 ziehen.
+
+**Wiederverwenden, nicht nachbauen — und nur, was am Code steht (Spec 19):** `ForeignSevenTvBreakerPolicy`
+und `ForeignEmoteSetProviderBudget` werden **unverändert** benutzt, und zwar **dieselben typisierten
+Singleton-Instanzen wie der Vorschaupfad** (`ServiceCollectionExtensions.cs:106,107,113`) — nicht die
+keyed Bestenlisten-Instanz (`:128`), die ihr eigenes Budget hat. Der Upstream-Request läuft über
+`SevenTvApiClient.FetchV4PageAsync` (`:552`), das beide 429-Gestalten kennt (HTTP 429 `:566-574`;
+GraphQL-429 über HTTP 200, `IsRateLimited :842-843`, ausgewertet `:597-608`). **Eine Anpassung ist
+nötig:** `ForeignEmoteSetRequestCoalescer` ist heute auf `ForeignEmoteSetLookupResult` festgelegt
+(`:31`, `:38`) und wird generisch geschlossen (`<TResult>`, je Ergebnistyp eine Registrierung) —
+dasselbe Muster wie `SevenTvLeaderboardStore<TValue>` (`:68`); der Vorschaupfad schließt den Typ auf
+seinen bisherigen und verhält sich unverändert. Negative Ergebnisse bekommen eine kurze eigene
+Haltbarkeit nach dem Muster von `SevenTvLeaderboardTtlPolicy` (`:87-118`); `NoSevenTvAccount` gilt als
+Antwort, nicht als Fehler.
 **Fehlerabbildung, gemessen am 2026-09-20 (Spec 11, Sonde 7, Befund B):** `userByConnection: null`
 bei HTTP 200 ohne `errors`-Block ⇒ `NoSevenTvAccount`; `userByConnection` vorhanden, aber ohne
 `emoteSets` ⇒ `Unavailable`; fehlende Antwort / Transportfehler / 429 ⇒ `Unavailable`. Nie eine
 stille leere Liste.
 
-**Spec:** 6.1 (Quelle), E6, E7, E12, F14; Sonde 7 (gemessen, K0).
+**Spec:** 6.1 (Quelle **und** Wächterkette), 19 (Prüfliste), E6, E7, E12, F14; Sonde 7 (gemessen, K0).
 
 **Dateien:** `Core/Services/ISevenTvEmoteSetListService.cs` (neu; `EmoteSetSummary`),
 `Core/SevenTv/ISevenTvApiClient.cs` (`GetEmoteSetListForTwitchUserAsync`), `SevenTvModels.cs`,
-`Infrastructure/SevenTv/SevenTvApiClient.cs` (v4-GQL-Abfrage neben den vorhandenen v4-Abfragen),
-`Infrastructure/Services/SevenTvEmoteSetListService.cs`
-(neu), `ServiceCollectionExtensions.cs` (Registrierung).
+`Infrastructure/SevenTv/SevenTvApiClient.cs` (v4-GQL-Abfrage neben den vorhandenen v4-Abfragen,
+über `FetchV4PageAsync`), `Infrastructure/Services/SevenTvEmoteSetListService.cs`
+(neu), `Infrastructure/SevenTv/ForeignEmoteSetRequestCoalescer.cs:30-38` (generisch geschlossen —
+**einzige** Änderung an einer Bestandsklasse dieser Kette; Breaker und Budget bleiben unangetastet),
+`ServiceCollectionExtensions.cs` (Registrierung des Dienstes **und** der zweiten geschlossenen
+Coalescer-Instanz).
 
 **Tests:** `Unit/SevenTvApiClientEmoteSetListTests.cs` (neu) **+7** (AK 21: parsen aus der
 v4-Fixture von Sonde 7 — vier Sets, eines `PERSONAL`; `kind == PERSONAL`; `ownerDisplayName` aus
@@ -566,13 +737,18 @@ v4-Fixture von Sonde 7 — vier Sets, eines `PERSONAL`; `kind == PERSONAL`; `own
 `null`; **die drei Fehlerfälle getrennt** — `userByConnection: null` bei HTTP 200 ⇒
 `NoSevenTvAccount`, `userByConnection` ohne `emoteSets` ⇒ `Unavailable`, fehlende Antwort ⇒
 `Unavailable`).
-`Unit/SevenTvEmoteSetListServiceTests.cs` (neu) **+5** (AK 23/24: Treffer, Miss, Redis-Ausfall
+`Unit/SevenTvEmoteSetListServiceTests.cs` (neu) **+10** (AK 23/24: Treffer, Miss, Redis-Ausfall
 fail-open, ein Permit je Request über `RecordingForeignUpstreamRequestBudget`, zweiter Aufruf in 60 s
-ohne Upstream).
+ohne Upstream — **plus die vier Fälle der Wächterkette**: *n* parallele kalte Misses für denselben
+Kanal ⇒ genau **ein** Upstream-Request; GraphQL-429 als HTTP 200 ⇒ `RateLimited`, nie `Ok`; offener
+Breaker ⇒ 503 **ohne** Upstream-Request; ein gehaltenes negatives Ergebnis ⇒ zweiter Aufruf in der
+Frist ohne Upstream-Request). **Bestand:** `HardenedForeignEmoteSetServiceTests` (9) und
+`ForeignEmoteSetServiceTests` (14) bleiben grün — die generische Schließung des Coalescers ist
+verhaltensneutral; wird dort etwas rot, ist die Schließung falsch gemacht und nicht der Test.
 
 **Gate:** BE grün. **Commit:** `feat(seventv): list the emote sets of a 7TV account`.
 
-**Abhängigkeiten:** keine; T0.5/T0.1 sind gemessen (0.1). **Modell:** `sonnet`.
+**Abhängigkeiten:** keine; T0.5/T0.1 sind gemessen (0.1). **Modell:** `opus` — angehoben von `sonnet`: der Task fasst jetzt eine Bestandsklasse generisch (der Vorschaupfad muss dabei bitgleich bleiben) und verdrahtet vier Wächter in fester Reihenfolge an geteilten Singletons; ein Fehler darin ist kein falsches Feld, sondern ein geleertes Provider-Budget, das einen zweiten, unbeteiligten Lesepfad in 503 zieht.
 
 #### T2.2 — Set-Vorschau nach Set-ID: `capacity`/`name`, zweiter Schlüsselraum, `sevenTvUserId` nullbar
 
@@ -899,7 +1075,9 @@ ist erlaubt).
 #### T4.3 — Schlüsselwechsel (Spec 7.2) und DECISIONS-Eintrag 4
 
 **Ziel:** Der Schlüssel des Rasters und des inneren `track` ist `sevenTvEmoteId`; jede Map der
-Seite ebenso; `DeletableEmote.emoteId?`, `DeleteQueueEmote.emoteId?`; Drilldown nur für
+Seite ebenso — die Seite liest ab hier `entry.sevenTvEmoteId` aus `/series` und **nicht mehr**
+`entry.emoteId`, das der Endpunkt seit T1.6 additiv daneben führt (Spec 6.5 Schritt 1); entfernt
+wird das Feld **nicht hier**, sondern nach dem Merge von K4 als Folge-Issue 5; `DeletableEmote.emoteId?`, `DeleteQueueEmote.emoteId?`; Drilldown nur für
 `emoteId !== null && totalUseCount !== null` mit `emoteSetId` eingefroren in `data`; Voting-Draht
 als Signal der 7TV-Ids mit Auflösung in Guids **im Absende-Moment** über `selectedItems()` (E4);
 Vote-Session-Detailseite behält die Guid (F12 — nur `onDeleted` ändert sich, das ist T5.1). Der
@@ -921,7 +1099,8 @@ Guid-lose Zeilen einzeln wählbar und unterscheidbar, `retainAmong` behält die 
 Gate; Voting-Auflösung im Absende-Moment liefert Guids für eine Null-Session). `shared/selection/list-selection.spec.ts`
 **+2** (AK 54 über `sevenTvEmoteId`-Keys; **die Klasse selbst bleibt unverändert** — Spec 18). `create-vote-session-dialog.spec.ts`
 — Fälle zu `emoteIds` zählen und umstellen. E2E-Mock `e2e/support/mocks.ts:688-703`
-(`mockUsageChannelSeries` auf `sevenTvEmoteId`) — **die 30 bestehenden `usage-atlas`-Fälle laufen
+(`mockUsageChannelSeries` liefert **beide** Felder, solange `/series` sie liefert — der Mock bildet
+den Vertrag ab, nicht den Wunsch; er verliert `emoteId` mit Folge-Issue 5) — **die 30 bestehenden `usage-atlas`-Fälle laufen
 mit umgestelltem Mock** (Teilaufgabe: Lauf, Zahl im PR-Text).
 
 **Gate:** FE grün; E2E `usage-atlas` grün. **Kein eigener Commit** — T4.4 folgt in denselben, weil
@@ -941,7 +1120,10 @@ nicht wählbar mit Grund; `null`-Gruppe am Ende in Namensreihenfolge, nicht in S
 F16; Slot-Zahl an Duplikat-Zellen mit beiden Aliasen im Tooltip; Namensvetter-Merkmal mit Setname
 aus der Dropdown-Liste); Kapazität/Belegung fürs Dock aus der Live-Liste, nicht aus `EmoteSetStatus`;
 Live-Liste 503/429 oder `truncated` ⇒ Hinweis, Dock gesperrt **mit Grund**; Tatsachenangabe (8.4)
-über `observations`; Preset `'set-observed'` (8.5) nur mit Intervall.
+als **Matrix aus zwei unabhängigen Aussagen** — „beobachtet ja/nein" allein aus `observations`,
+„Zahlen ja/nein" allein aus den geladenen Totals; aus einem fehlenden Intervall folgt **nie** eine
+Aussage über Zahlen (das wäre der Selbstwiderspruch zu Spec 4.3, wo der Zweck des Beobachtungslogs
+die Zuordnung der Zahlen ausdrücklich ausnimmt); Preset `'set-observed'` (8.5) nur mit Intervall.
 
 **Spec:** 8.2–8.5, E16, E17, E20, E23, E24, F16.
 
@@ -951,11 +1133,14 @@ und das Raster, `shared/datetime/date-range-menu.ts:19-30` (Preset), `shared/emo
 (Setnamen für Tooltips), `de.json`/`en.json` (E17-Beschriftung, Badge-Zusatz, Sperrgründe,
 Tatsachenangabe, Preset-Beschriftung „während dieses Set beobachtet wurde").
 
-**Tests:** `usage-stats-page.spec.ts` **+8** (AK 52 vollständig: Request-Zählung stiller/lauter
+**Tests:** `usage-stats-page.spec.ts` **+10** (AK 52 vollständig: Request-Zählung stiller/lauter
 Reload; AK 56: `null`-Gruppe außerhalb Summe/Nenner/Bändern, Beschriftung hängt an
 `totalUseCount === null`, nicht an `emoteId === null` — Klasse 2b; AK 57: `'left'` nicht wählbar mit
 Grund, zählt in Summe; AK 58: Slot-Projektion zählt 2; AK 59: Merkmal, keine Summierung; AK 60:
-drei Fälle der Tatsachenangabe; AK 62: 503 und `truncated` ⇒ Sperre mit Grund, DB-Zeilen sichtbar).
+**alle vier Fälle der Matrix**, darunter der, den die frühere Fassung falsch beantwortet hätte —
+zuvor inaktiver Kanal, von der Migration auf eine Set-ID backfillt (Spec 4.2 Schritt 8b), ohne
+Beobachtungszeile (Spec 4.3, Saat), später rejoined: ein historischer Zeitraum trägt **Zahlen ohne
+Beobachtungsintervall**, die Seite sagt **B−** und **nichts** über Zahlen; AK 62: 503 und `truncated` ⇒ Sperre mit Grund, DB-Zeilen sichtbar).
 `shared/datetime/date-range-menu.spec.ts` **+2** (AK 61). Nach Regel 12: Zustandsübergänge,
 `computed()`-Ergebnisse, Sperrgründe, Rollen — keine Klassen, keine Tailwind-Ketten.
 
@@ -1201,14 +1386,15 @@ names and eligibility` — enthält den DECISIONS-Eintrag 3. K6-PR.
    Beobachtungs-Dienst, Set-Menü) nah an 100 %; `usage-stats-page.ts` und `SevenTvSyncService.cs`
    sind die zwei Stellen, an denen die Näherung in beide Richtungen unscharf ist — dort zählt die
    Frage, ob jede neue Zeile einen der in T1.2/T1.5/T4.2–T4.5 genannten Fälle hat, nicht die Zahl.
-   Sonar misst `new_coverage` zeilen- **und** zweiggenau; die vier `RAISE`-Zweige der Migration
-   haben je einen Test (T1.3b).
+   Sonar misst `new_coverage` zeilen- **und** zweiggenau; die **sechs** `RAISE`-Zweige der
+   Migration haben je einen Test (T1.3b).
 3. `/codex:review --model gpt-5.6-sol --scope branch --base origin/main` über das Ganze — nach den
    Kind-Issue-Reviews (0.4) ein Blick auf die Nähte zwischen den Kind-Issues. Findings sind Input;
    widersprechen sich Opus-Review und Codex bei einem P1/P2, entscheidet Fable (globale Regel).
 4. PR-Text nennt: die Zahl der umgestellten Bestandstests je Datei (aus den Teilaufgaben), die
    gemessenen Sonden-Zweige, die Live-Befunde aus T1.7/T2.7/T5.3, AK 3/4 (Purges), die
-   Rückrollgrenze, und dass der Deploy ein getrenntes Wartungsfenster (K7) ist.
+   Rückrollgrenze, **die gemessene `Up`-Dauer aus T1.10 samt Quelle und der Angabe, ob sie
+   überträgt (AK 87)**, und dass der Deploy ein getrenntes Wartungsfenster (K7) ist.
 5. Der Merge gehört dem Nutzer. Ein Push ist kein Deploy.
 
 **Modell:** `sonnet` für die Läufe und den PR-Text; Codex und Fable-Schiedsrichter steuert die
@@ -1227,7 +1413,7 @@ Image-Tags notiert (Rollback).
 | 1 | Portainer: Stack-Service `worker` stoppen — `stop_grace_period: 60s` abwarten (Shutdown-Flush schreibt gegen das **alte** Schema) |
 | 2 | Portainer: `api` stoppen |
 | 3 | `ssh -N -L 15432:127.0.0.1:5433 vps` — dann in einer zweiten Shell: `dotnet ef migrations list --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<PROD-PW>'` — **genau eine** Pending (`AddUsageStatEmoteSetId`); mehr heißt: Prod hängt Runden zurück, erst durchsehen |
-| 4 | `dotnet ef database update --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<PROD-PW>;Options=-c lock_timeout=5s'` — bricht bei Prüfung 1–4 ab statt zu schätzen; ein Abbruch ist ein Befund, kein Anlass zum Nachhelfen |
+| 4 | `dotnet ef database update --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<PROD-PW>;Options=-c lock_timeout=5s'` — bricht bei Prüfung 1–6 ab statt zu schätzen; ein Abbruch ist ein Befund, kein Anlass zum Nachhelfen. Die erwartete Dauer steht aus T1.10 fest (AK 87); dauert es deutlich länger, ist das selbst ein Befund |
 | 5 | `dotnet ef migrations list …` — keine Pending |
 | 6 | Portainer: neue Images (`ghcr.io/emotepurge/…`) für `api` **und** `worker` starten — Pull-Policy beachten (ein Re-Deploy ohne Pull fährt das alte Image weiter) |
 | 7 | Live-Verifikation Prod: `GET /api/health` 200; Set-Ansicht eines nicht-aktiven Sets lädt; eine `UsageStats`-Zeile des Tages trägt die aktive `EmoteSetId` (`psql` über den Tunnel); Worker-Log zeigt den Warmstart mit Set-ID; Picker am Testkanal — nicht-aktives Set zeigt dessen Belegung und Kapazität (AK 84/85) |
@@ -1290,7 +1476,8 @@ Worktree A — K1                                  Worktree B — K2
                  │            ├─▶ T1.5 ─┐                              │
                  │            └─▶ T1.6 ─┴▶ T1.7                        └─▶ T3.1 (K3)
                  │                          │
-   (01.10.) V1 ─────────────────────────────┴▶ T1.9 ─▶ K1-PR
+   (01.10.) V1 ─────────────────────────────┴▶ T1.9 ─▶ T1.10 ─▶ K1-PR
+   V4 (DB-Kopie) ──────────────────────────────────────┘
 
 K4 (nach K1-PR ohne T1.9 reicht: T1.6; und K2-PR)
   T4.0 ─▶ T4.1 ─▶ T4.2 ─▶ [T4.3 + T4.4] ─▶ T4.5 ─▶ T4.6 ─▶ K4-PR
@@ -1308,8 +1495,13 @@ T7 (nach K1–K6 auf dem Integrationsbranch; nach dem 08.10.) ─▶ PR auf main
   7TV-Client, Routen, Picker. Die einzige gemeinsame Stelle (`UsageStatsEndpoints.cs` bekommt den
   Filter aus T2.3, den Parameter aus T1.6) ist ein Einzeiler-Merge.
 - **T1.9 wartet auf den 01.10., sonst wartet nichts darauf.** Die Migration ist ab T1.3b mit leerer
-  Liste vollständig getestet; der HandOfBlood-Eintrag ist eine Konstante. Deshalb blockiert K1 die
-  K4-Arbeit nicht: K4 braucht T1.6, nicht T1.9.
+  Liste vollständig getestet; HandOfBloods Wechseleinträge und die Kein-Wechsel-Einträge sind
+  Konstanten. Deshalb blockiert K1 die K4-Arbeit nicht: K4 braucht T1.6, nicht T1.9.
+- **T1.10 steht zwischen T1.9 und dem K1-PR, und nirgends sonst.** Die Probe braucht die echte
+  Liste (sonst prüft sie eine leere Klassifikation) und soll vor dem PR laufen, weil ihr wichtigstes
+  Ergebnis — die gemessene `Up`-Dauer — in den PR-Text und später ins Wartungsfenster-Runbook
+  gehört. Sie hält nichts anderes auf: K2–K6 hängen nicht an ihr, und ein Fehlschlag fällt auf
+  T1.3b zurück, nicht auf die Frontend-Stränge.
 - **Schritt 6 (K4) vor Schritt 7 (K5)** — die Spec-Begründung, verdichtet: der Löschlauf im gewählten
   Set setzt voraus, dass das Raster Guid-lose Zeilen **anzeigen und markieren** kann; das ist der
   Schlüsselwechsel aus K4. Umgekehrt braucht K4 den Lauf nicht — Guid-lose Zeilen sind bis T5.1
@@ -1323,6 +1515,14 @@ T7 (nach K1–K6 auf dem Integrationsbranch; nach dem 08.10.) ─▶ PR auf main
   im Runbook stehen. K6 hängt an K4 (Schlüssel) und K1/K2 (Spalten, Lesepfad), nicht an K5; die Spec
   ordnet K6 dennoch dahinter, weil es das Vorhaben mit dem geringsten Verlust bei Aufschub ist
   („Votings nutzt bisher niemand").
+- **Der Zwischenstand zwischen K1 und K4 muss benutzbar bleiben.** K1 mergt vor K4, also gibt es auf
+  dem Integrationsbranch eine Phase, in der `/series` schon umgebaut ist und das Frontend noch nicht.
+  Der Branch wird nie deployt — aber die **Live-Verifikationen** des Plans (T2.7, T5.3, Regel 16)
+  laufen aus ihm, und eine leere oder falsch zugeordnete Serienansicht wäre dort Rauschen, das einen
+  echten Befund verdecken kann. Deshalb ist `/series` **additiv**: `sevenTvEmoteId` **neben**
+  `emoteId` (Spec 6.5, Schritt 1), und `emoteId` fällt erst **nach** dem Merge von K4 in einem
+  eigenen Commit (Folge-Issue 5) — dasselbe Muster, das die Spec für die Altform `{ emoteIds }`
+  ohnehin fährt (E3).
 - **T5.2 darf K4 überholen.** Es ist reines Backend hinter T2.3 und lässt sich früh reviewen; T5.1
   braucht es dann fertig.
 - **Der Deploy ist genau einer, hinter dem 08.10.** Ein gestaffelter Deploy scheidet aus (F1: das
@@ -1334,16 +1534,20 @@ T7 (nach K1–K6 auf dem Integrationsbranch; nach dem 08.10.) ─▶ PR auf main
 ## 5. Rückweg
 
 Global (Spec 17): **bis zum ersten beobachteten Set-Wechsel nach dem Deploy** ist die Migration
-verlustfrei umkehrbar (`Down`, alte Images). Danach trägt ein `(EmoteId, Date)` Zeilen unter zwei
-Set-IDs, `Down` scheitert am Unique-Index, und der Handgriff davor (je `(EmoteId, Date)` summieren,
-Duplikate löschen) verliert genau die Zuordnung, die das Vorhaben eingeführt hat. Je riskantem Task:
+verlustfrei umkehrbar (`Down`, alte Images). Danach bricht `Down` an **zwei unabhängigen Schranken**
+ab: (1) eine `ChannelEmoteSetObservations`-Zeile mit `ClosedBy = 'set-switch'` belegt den Wechsel
+direkt — auch wenn kein `(EmoteId, Date)` doppelt belegt ist (disjunkte Sets, Wechsel zwischen zwei
+Tagen); (2) die Kollision des alten Unique-Index fängt Kollisionen, die das Log nicht kennt. Der
+Handgriff davor löst beide getrennt (je `(EmoteId, Date)` summieren und Duplikate löschen für
+Schranke 2, `'set-switch'`-Zeilen entfernen für Schranke 1) und verliert genau die Zuordnung, die das
+Vorhaben eingeführt hat. Je riskantem Task:
 
 | Task | Revert vor dem Deploy | Wo ein Revert nach dem Deploy nicht reicht |
 |---|---|---|
-| **T1.3b/T1.4** (Migration + Flush) | ein Commit, `git revert` genügt; die lokale Dev-DB per `dotnet ef database update <vorherige>` zurück | Prod: nur bis zum ersten Set-Wechsel; danach der Summier-Handgriff. Die Beobachtungs-Tabelle und die Voting-Spalten stören ein altes Image **nicht** — das Argument gilt nur für alte Images gegen neues Schema |
+| **T1.3b/T1.4** (Migration + Flush) | ein Commit, `git revert` genügt; die lokale Dev-DB per `dotnet ef database update <vorherige>` zurück | Prod: nur bis zum ersten Set-Wechsel; danach der Summier-Handgriff **und** das Entfernen der `'set-switch'`-Zeilen (zwei Schranken, s. o.). Die Beobachtungs-Tabelle und die Voting-Spalten stören ein altes Image **nicht** — das Argument gilt nur für alte Images gegen neues Schema |
 | **T1.2** (Chat-Pfad) | Revert des K1-Commits; **Nachwirkung keine** (Zählung lief in der Zwischenzeit lokal) | Fehlbuchungen unter falscher Set-ID sind Daten, kein Schema; sie bleiben, sind aber je Zeile sichtbar (`EmoteSetId`) und über `GetRowsAsync` summenneutral (E15) |
 | **T1.5** (Beobachtungs-Log) | eigener Commit, revertierbar; Tabelle bleibt leer stehen | Intervalle sind additive Daten; ein Revert lässt sie stehen, nichts liest sie mehr |
-| **T1.6** (`/series` nach 7TV-Id) | revertierbar, **zusammen mit T4.3** — ein Frontend, das `sevenTvEmoteId` liest, gegen ein Backend, das `emoteId` liefert, rendert leere Serien | — (Wire-Format, kein Datenbestand) |
+| **T1.6** (`/series` additiv um 7TV-Id) | einzeln revertierbar: solange `emoteId` mitläuft (Spec 6.5, Schritt 1), rendert ein altes Frontend gegen ein neues Backend korrekt. **Umgekehrt nicht:** ein Revert von T1.6 **ohne** T4.3 nähme dem umgestellten Frontend `sevenTvEmoteId` weg — T4.3 wird dann mit zurückgenommen | — (Wire-Format, kein Datenbestand) |
 | **T2.4** (Papierspur, set-zentrierter Endpunkt) | revertierbar | Audit-Zeilen mit `targetEmoteSetId`, `ChannelName = null` bleiben; `ProjectDetail` fällt auf den `EmoteCount`-Zweig — Anzeigequalität, kein Verlust |
 | **T4.3/T4.4** (Schlüsselwechsel) | **ein** Commit mit T1.6-Abhängigkeit (s. o.); Revert setzt das Raster auf Guids zurück — dann dürfen keine Guid-losen Zeilen mehr ankommen, also auch T2.2/T4.2 zurück oder die Live-Liste abschalten | — |
 | **T5.1** (Protokoll `emoteId: null`) | revertierbar | **Protokolle, die mit `emoteId: null` geschrieben wurden, liest der alte Parser nicht** — ein Restore aus ihnen wäre nach einem Revert unmöglich. Das ist die eine Nachwirkung, die ein Rückweg nicht beseitigt; sie steht im Runbook (K7) und ist der Grund für die Position von K5 |
@@ -1351,8 +1555,10 @@ Duplikate löschen) verliert genau die Zuordnung, die das Vorhaben eingeführt h
 | **T6.1–T6.3** (Voting) | revertierbar; Spalten nullbar, alte Images ignorieren sie | Set-Sessions mit `EmoteSetId` und Wahlzettel-Zeilen mit `ArchivedAt = null` bleiben; ein altes Image zeigt sie als Null-Sessions mit archivierten Zeilen — lesbar, nicht löschbar aus der Session heraus |
 
 Auslöser für einen Rückweg vor dem Deploy: ein Live-Befund aus T1.7, T2.7 oder T5.3 fehlt; Sonde 6
-Zweig B ohne Klärung. Auslöser im Fenster: Prüfung 1–4 bricht ab (dann ist nichts geschehen — die
-Transaktion ist zurückgerollt), oder AK 84 scheitert nach Schritt 6.
+Zweig B ohne Klärung; ebenso ein Fehlschlag in T1.10, der nicht auf einen Fehler der Probe selbst
+zurückgeht. Auslöser im Fenster: Prüfung 1–6 bricht ab (dann ist nichts geschehen — die
+Transaktion ist zurückgerollt), oder AK 84 scheitert nach Schritt 6. Bricht später `Down` an einer
+der beiden Schranken ab, ist das **kein** Fehler, sondern die Grenze, die der Plan zugesagt hat.
 
 ---
 
@@ -1361,12 +1567,53 @@ Transaktion ist zurückgerollt), oder AK 84 scheitert nach Schritt 6.
 Je Task das Gate am Task. Je Kind-Issue-PR: BE, FE, E2E (freier `:5151`) grün, die genannten
 Live-Befunde im PR-Text, die gezählten Bestandstests genannt, Codex-Review über den Kind-Branch.
 Für T7 zusätzlich `node scripts/coverage-local.mjs` nach dem letzten Commit und die Zweitmeinung
-über das Ganze. Für K7: AK 84–86 und der `docs:`-Nachtrag.
+über das Ganze. **Für K1 zusätzlich AK 87–89 aus T1.10** — die Migrationsprobe ist ein Gate des
+K1-PR, kein optionaler Zusatz. Für K7: AK 84–86 und der `docs:`-Nachtrag.
 
 Vergleichspunkte auf `93af613`: 45 `SevenTvSyncServiceTests`, 54 `UsageStatQueryServiceTests`,
 14 `UsageStatFlushServiceTests`, 74 Harness-/Replay-Tests (müssen 0 rot bleiben), 42
-`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. Die Spec erwartet **rund +215** neue Fälle
-und **≥ 60** umgestellte (sicher 77 aus Signatur- und Datenquellenwechseln: 7 + 14 + 10 + 1 + 5 + 8
-+ 28 + 4) — die Zählungen aus T1.2, T1.6, T2.5b, T4.3, T5.1, T5.2 und T6.3 machen daraus eine Zahl.
+`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. Die Spec erwartet **rund +237** neue Fälle
+und **≥ 60** umgestellte (sicher 76 aus Signatur- und Datenquellenwechseln: 7 + 14 + 10 + 5 + 8
++ 28 + 4 — der `/series`-Wire-Format-Test zählt seit dem additiven Übergang nicht mehr dazu) — die Zählungen aus T1.2, T1.6, T2.5b, T4.3, T5.1, T5.2 und T6.3 machen daraus eine Zahl.
 
 Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.
+
+
+---
+
+## 7. Nachtrag: Codex-Review vom 2026-09-20
+
+Adversariale Zweitmeinung (`/codex:adversarial-review --model gpt-5.6-sol`) über
+[die Spec](../superpowers/specs/2026-09-20-emote-sets-200-spec.md) und diesen Plan. Fünf Befunde,
+**alle fünf eingearbeitet** (Befund E am 2026-09-20 nach der Entscheidung des Betreibers), dazu
+zwei Nachzügler aus der Einarbeitung und ein daraus entstandener neuer Task. Die Verträge sind in
+der Spec nachgezogen (dort Abschnitt 24); hier steht, was sich **an den Tasks** geändert hat.
+
+| # | Befund | Was daraus wurde — im Plan |
+|---|---|---|
+| **A** | `Down` blockiert nicht zuverlässig [high]: die Index-Kollision ist ein Stellvertreter für „es hat einen Set-Wechsel gegeben", kein Synonym — disjunkte Sets oder ein Wechsel zwischen zwei Tagen rutschen durch, und `Down` verwirft `EmoteSetId` still. | **T1.3b**: `Down` mit **zwei unabhängigen Schranken** (Log-Prüfung auf `ClosedBy = 'set-switch'` vor jedem zerstörenden Schritt, plus die Index-Kollision); Saat vergibt `'set-switch'` nie; AK 10 mit drittem Fall („Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab"), Migrationstests **+9 → +10**; Gate-Hinweis, dass ein Abbruch an Schranke 1 erwartetes Verhalten ist. **Abschnitt 5 (Rückweg)** nennt beide Schranken und beide Handgriffe. |
+| **B** | Der v4-Listenpfad umgeht die vorhandene Härtung [medium]: kein Singleflight, kein Breaker, keine Fehler-Haltbarkeit; ein v4-Ausfall kann das gemeinsame 60/min-Budget leeren und die Fremdkanal-Vorschau mit in 503 ziehen. | **T2.1**: der Dienst läuft hinter der **vollständigen** Wächterkette aus Spec 6.1, mit **denselben** typisierten Singletons für Breaker und Budget wie der Vorschaupfad (nicht der keyed Bestenlisten-Instanz); einzige Bestandsänderung ist die generische Schließung von `ForeignEmoteSetRequestCoalescer`; Tests **+5 → +10** (paralleler Cold Miss, GraphQL-429 über HTTP 200, offener Breaker, gehaltenes negatives Ergebnis) plus die Auflage, dass die 9 Hardened- und 14 Vorschau-Tests grün bleiben; **Modell `sonnet` → `opus`** mit Begründung. |
+| **C** | Integrationsbranch zwischen K1 und K4 wire-inkompatibel [medium]. | **T1.6** liefert `/series` **additiv** (`sevenTvEmoteId` **neben** `emoteId`), der Wire-Format-Test wird erweitert statt geändert und **kein** Bestandstest wird mehr bewusst rot; **T4.3** liest nur noch `sevenTvEmoteId`, entfernt das alte Feld aber nicht; der E2E-Mock bildet beide Felder ab; **Abschnitt 4** hat einen eigenen Begründungspunkt, warum der nie deployte Zwischenstand trotzdem zählt (die Live-Verifikationen T2.7/T5.3 laufen aus ihm); **Abschnitt 5** korrigiert die Revert-Zeile zu T1.6. Das Entfernen von `emoteId` ist Folge-Issue 5 der Spec, **nach** dem Merge von K4. |
+| **D** | Fehlende Beobachtung wurde als fehlende Zählung ausgegeben [medium] — Selbstwiderspruch zum begrenzten Zweck des Beobachtungslogs (Spec 4.3). | **T4.4**: Tatsachenangabe als **Matrix** aus zwei unabhängigen Aussagen; AK 60 mit allen vier Feldern, darunter „zuvor inaktiver Kanal, von der Migration backfillt, später rejoined: Zahlen ohne Beobachtungsintervall"; Tests **+8 → +10**. |
+| **E** | Die vier Abbruchprüfungen der Migration [high]: ungelistete Kanäle galten implizit als „nie gewechselt", und Prüfung 3 erkannte einen Wechsel nur ab 10 Archivierungen oder 25 % — ein Wechsel zwischen stark überlappenden Sets lief still durch, und die Migration schrieb die ganze Historie des Kanals auf das heute aktive Set. | **Eingearbeitet; der Betreiber hat am 2026-09-20 die vollständige Klassifikation entschieden.** `SetSwitchAssignments` klassifiziert jetzt **jeden** Kanal mit Nutzungszeilen, mit einer zweiten Eintragsart für „nie gewechselt" samt mitgeschriebener `ConfirmedEmoteSetId`; aus vier Prüfungen werden **sechs** (Lückenlosigkeit ersetzt die alte Prüfung 3 und nennt den Kanal, die alte Schwelle lebt als **Widerspruch** weiter, dazu **Kettenschluss**; **Endzustand** gilt für beide Arten). **Im Plan:** **T1.3a** sechs pure Prüfungen, Tests **+8 → +16** (Rechnung ausgeschrieben: 6 × 2 + 4); **T1.3b** vierzehn statt zwölf Schritte, zwei temporäre Tabellen, Backfill aus der Liste statt aus `ActiveEmoteSetId`, Tests **+9 → +13**, Modellbegründung auf sechs `RAISE`-Zweige; **T1.9** füllt beide Eintragsarten, Tests **+1 → +2**, Modell `haiku → sonnet`; **T0.4** bekommt die lesende Zählabfrage, die die Kanalliste beschafft; **V1** verweist auf Prüfung 3/4 statt auf die alte Prüfung 3; K7-Schritt 4 und Abschnitt 5 nennen Prüfung 1–6. |
+
+**Zwei Nachzügler aus der Einarbeitung — Funde, keine Review-Befunde.** Beide sind beim Nachprüfen
+am Code aufgefallen, nachdem Codex seine fünf Befunde abgegeben hatte:
+
+| # | Fund | Was daraus wurde — im Plan |
+|---|---|---|
+| **N1** | `Down`-Schranke 1 hängt an der Invariante „die Saat vergibt `ClosedBy` nie `'set-switch'`" — die stand als Auflage in Spec 4.3 und in T1.3b, hatte aber keinen eigenen Testfall. | **T1.3b** bekommt den Fall ausdrücklich: **nach `Up` existiert keine `ChannelEmoteSetObservation`-Zeile mit `ClosedBy = 'set-switch'`** (in der +13 oben enthalten, Spec AK 9). |
+| **N2** | `SevenTvApiClient` liest jeden GraphQL-Fehler ohne `extensions.status: 429` als `Unavailable` (`:842-843`, `:446-451`, `:513`) — eine falsch geformte Abfrage sieht aus wie ein Dauerausfall; genau so war die Bestenliste einmal permanent „unavailable" (`:75-82`). | Als **F17** in Spec 3 aufgenommen. Für **T2.1** heißt das: die Live-Sonde ist das Einzige, was „unsere Abfrage ist falsch" von „7TV ist weg" trennt — die Fixture stammt aus der am 2026-09-20 live gemessenen v4-Antwort (Sonde 7) und ist kein Papierentwurf. Kein Task-Zuschnitt ändert sich. |
+
+**Ein neuer Task, aus einer Zusage an den Betreiber:** **T1.10 — Migrationsprobe gegen eine
+wiederhergestellte Datenbank** (K1, nach T1.9, vor dem K1-PR). Sie fährt `Up` gegen eine
+Wegwerfdatenbank aus der Dev-Sicherung vom 2026-09-20 bzw. einer Prod-Kopie (**V4**, neuer
+K0-Handgriff), **misst dabei die Dauer** — bisher ein ausdrücklich offener Punkt und zugleich die
+Länge des Wartungsfensters —, stellt je Abbruchprüfung einen Verstoß her, prüft `Down` an
+Schranke 1 und fährt Sonde 6 trocken. Neue AK 87–89 in der Spec (hinten angehängt).
+
+Gegenrechnung der Zahlen: **+9** Testfälle aus dem Review (1 Migration, 5 Listen-Dienst,
+2 Nutzungsseite, 1 Wire-Format) und **+12** aus der Einarbeitung von Befund E und N1 (8 + 3 + 1),
+zusammen **rund +237** statt +225; **−1** beim Bestand rot (der `/series`-Wire-Format-Test wird
+nicht mehr rot). Aufwand: **~108 h → ~111 h** (T1.3 eine Stunde mehr für zwei zusätzliche
+Prüfungen, T1.10 ~2 h). Abschnitt 6 trägt die angepassten Zahlen.
