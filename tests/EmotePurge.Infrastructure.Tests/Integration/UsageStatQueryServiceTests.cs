@@ -93,6 +93,18 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetUsageContextAsync_ForAnUnknownChannel_ReturnsEmpty()
+    {
+        await using var db = fixture.CreateDbContext();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            "no-such-channel", new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
+
+        Assert.Empty(totals);
+    }
+
+    [Fact]
     public async Task GetUsageContextAsync_LastUsedDate_IsNotBoundedByTheRange()
     {
         // The whole point of the field: "0 uses in the last 7 days" must still be able to say the
