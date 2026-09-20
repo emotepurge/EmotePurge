@@ -30,27 +30,33 @@ Rückweg und die Betreiber-Handgriffe mit fertigen Kommandozeilen. Der Plan enth
 - **Vier DECISIONS-Einträge** (Spec 23) mit festgelegten Commits — Regel 3 gilt je Commit, nicht je
   PR. Die Zuordnung steht in 1.2.
 - **Zeitbezug:** HandOfBlood wechselt am **2026-10-01**; der bindende Harness-Lauf ist am
-  **2026-10-08**; der Deploy (K7) liegt **dahinter**. Die Werte der Zuordnungsliste (Grenze,
-  `ExpectedArchivedCount`) entstehen erst am 01.10. — seit dem 2026-09-20 trägt sie **kein Task**
-  mehr ein: die Klassifikation liegt in einer gitignorierten Datei (Spec E1), das Füllen ist der
-  Betreiber-Handgriff **V5**, und nur **T1.10** wartet darauf.
+  **2026-10-08**; der Deploy (K7) liegt **dahinter**. Der einzige Wert, der erst am 01.10.
+  entsteht, ist `BoundaryUtc` des einen Wechseleintrags — er geht als Konstantenwert in **T1.3b**
+  (Spec E1). `ExpectedArchivedCount` und die ID-Sonde vom Wechseltag sind am 2026-09-20 entfallen
+  (Spec 31).
 - **Zwei adversariale Codex-Runden am 2026-09-20 sind eingearbeitet** — Runde 1 (fünf Befunde) in
-  Abschnitt 7, **Runde 2 (sechs Befunde) in Abschnitt 8**. Aus Runde 2 stammen die drei
-  Änderungen, die den Plan am stärksten betreffen: der **Datenstand der Bestätigung** samt
-  Prüfung 7 und einer zweiten gitignorierten Datei (T1.3a/b, V5, K7), die **XOR-Invariante**
-  (T1.3a/b, T1.10), die **Operationskennung im Breaker** (T2.1), der **Abbruchpunkt im Fenster**
-  (T1.10, K7), der **Hash der Klassifikationsdatei** (V5, T1.10, K7) und das **gemeinsame Tor**
-  für beide Übergangsfelder (K7).
-- **Die Zuordnungsliste kommt nicht ins Repo** (Vertrag: Spec E1, 4.2 „Wo die Liste liegt";
-  Entscheidung des Betreibers vom 2026-09-20, Nachtrag N3 in 7). Folgen **im Plan**: **T1.3b** baut
-  den Mechanismus, **T1.9 entfällt als Commit**, **V5** ist neu in K0, und T1.10 hängt an V5 statt
-  an T1.9.
+  Abschnitt 7, **Runde 2 (sechs Befunde) in Abschnitt 8**. **Vier ihrer Ergebnisse sind noch am
+  selben Tag wieder entfallen**, weil der Betreiber die Absicherung zurückgeschnitten hat (Spec 31,
+  s. nächster Punkt): der Datenstand der Bestätigung samt Prüfung 7, die XOR-Invariante, der
+  Hash der Klassifikationsdatei und der Messschritt im Fenster. **Es bleiben** aus Runde 2: die
+  **Operationskennung im Breaker** (T2.1), der **Abbruchpunkt im Fenster** (T1.10, K7) und das
+  **gemeinsame Tor** für beide Übergangsfelder (K7). Die Abschnitte 7 und 8 sind der Stand jener
+  Runden und werden nicht nachträglich umgeschrieben.
+- **Die Migrations-Absicherung ist am 2026-09-20 zurückgeschnitten worden** (Entscheidung des
+  Betreibers; Vertrag und Herleitung: **Spec 31**, E1, 4.2). Aus der lückenlosen Klassifikation
+  jedes Kanals wird **eine Liste der Wechsel mit genau einem Eintrag**, als **committete Konstante**
+  neben der Migration; aus sieben Abbruchprüfungen werden **drei**; Kein-Wechsel-Einträge,
+  `ExpectedArchivedCount`, Datenstand, Quittierungen, Kettenschluss, Sonde 6/T0.4, der
+  Messschritt im Fenster, beide gitignorierten Dateien samt Lader, Marken, `.example`s und Hash
+  sind ersatzlos gestrichen. Folgen **im Plan**: **T1.3a** und **T1.3b** schrumpfen (Tests +10 und
+  +10 statt +24 und +18), **T0.4 und V5 entfallen**, **T1.10** hängt nur noch an **V4**, und **K7**
+  verliert die Schritte −1 und 4.
 - **#76 läuft auf einem eigenen Branch vor diesem Vorhaben** (Entscheidung des Betreibers vom
   2026-09-20). Die Spec setzt #76 nicht voraus (Spec 22, erste Zeile), aber T1.5 und T1.2 fassen
   `SevenTvSyncService.cs:74-109` an — genau die Stelle, an der #76 die Plausibilitätssperre hält.
   Folge für den Branch: s. 0.4.
-- **Fünf der T0-Aufgaben sind gemessen** (2026-09-20: T0.1, T0.2, T0.3, T0.5, T0.6); offen ist
-  allein **T0.4**, und das ist ein Tor vor K7, kein Zweig. Damit ist **keine** Bauentscheidung
+- **Alle verbliebenen T0-Aufgaben sind gemessen** (2026-09-20: T0.1, T0.2, T0.3, T0.5, T0.6);
+  **T0.4 ist am selben Tag ersatzlos entfallen** (Spec 31). Damit ist **keine** Bauentscheidung
   dieses Plans mehr von einer ausstehenden Messung abhängig: **E7** trägt v4 (T0.5 — Spec E7, E21,
   Sonde 7), **E12** bleibt bei 60 s (T0.2 — Spec 27), und die Duplikat-Frage ist mit **Sonde 5,
   Zweig A** entschieden (T0.3 — Spec 11 und 28): eine Queue-Zeile je Duplikat im Delete-Lauf,
@@ -114,7 +120,7 @@ Nichts davon wird hier wiederholt. Je Vertrag: Spec-Abschnitt, die Tasks, die ih
 
 | Vertrag | Spec | Tasks |
 |---|---|---|
-| Schema, Migration mit **sieben** Prüfungen über einer lückenlosen Klassifikation (inkl. XOR-Invariante und Datenstand der Bestätigung), Saat, `Down`, **Lader der beiden gitignorierten Klassifikationsdateien** | 4.1–4.3, E1, E11 | T1.3a, T1.3b, T1.10 (Füllen: V5; Messwerte: K7-Schritt 4) |
+| Schema, Migration mit **drei** Prüfungen über einer Wechselliste mit **einem** Eintrag, Backfill in zwei `UPDATE`s, Saat, `Down`, die **committete Konstante** `SetSwitchAssignments` | 4.1–4.3, E1, E11, 31 | T1.3a, T1.3b, T1.10 |
 | Zählpfad: Snapshot, Schlüssel, Flush, Log-Zeile | 5, F2 | T1.1, T1.2, T1.4, T1.7 |
 | Lesepfade mit `emoteSetId`, `/series` **additiv** um 7TV-Id (6.5 Schritt 1), `GetRowsAsync`-Summe, `NameTwinEmoteSetIds` | 5 (Tabelle), 6.5, E15, E24 | T1.6 |
 | Beobachtungs-Log: Öffnen/Schließen an sechs Stellen | 4.3, F9 | T1.5 |
@@ -133,7 +139,7 @@ Nichts davon wird hier wiederholt. Je Vertrag: Spec-Abschnitt, die Tasks, die ih
 
 | Eintrag (Spec 23) | Geschrieben von | Liegt im Commit | Was der Plan ergänzt |
 |---|---|---|---|
-| 1 *Usage is counted per emote set …* | **T1.8** (eigener Task, weil der Eintrag Migration, Flush, Beobachtungs-Log **und** Wartungsfenster zusammenfasst und drei Subagents davor gearbeitet haben) | `feat(usage): count chat usage per emote set` — der Commit von T1.3b + T1.4 | **kein Werte-Nachtrag mehr.** Der Inhalt steht vollständig in Spec 23, Zeile 1; der Plan ergänzt nur die Zuordnung: dieser Task schreibt ihn, und die **Dauer des Fensters** (AK 86) samt der Dauer von Schritt 4 und Schritt 6 trägt **K7** später nach |
+| 1 *Usage is counted per emote set …* | **T1.8** (eigener Task, weil der Eintrag Migration, Flush, Beobachtungs-Log **und** Wartungsfenster zusammenfasst und drei Subagents davor gearbeitet haben) | `feat(usage): count chat usage per emote set` — der Commit von T1.3b + T1.4 | **kein Werte-Nachtrag mehr.** Der Inhalt steht vollständig in Spec 23, Zeile 1; der Plan ergänzt nur die Zuordnung: dieser Task schreibt ihn, und die **Dauer des Fensters** (AK 86) samt der Dauer von Schritt 5 trägt **K7** später nach |
 | 2 *An import may target any set of an account the user edits …* | **T2.5b** | `feat(import): pick any set of a tracked account as the target` | — |
 | 3 *Voting: "member of the session's set" replaces "not archived" …* | **T6.3** | `feat(voting): show set-session results with frozen names and eligibility` | — |
 | 4 *A row of the set view is identified by its 7TV id …* | **T4.3** (erster Teil) und **T5.2** (Nachtrag im selben Eintrag) | `feat(usage-stats): identify grid rows by their 7TV id and show non-active sets` bzw. `feat(api): accept set-scoped bookkeeping for sync-deleted and sync-restored` | berichtigt zusätzlich die Spec-Prämisse „URL wie der Zeitraum" (0.2) und hält fest, welchen Weg T4.0 gewählt hat |
@@ -179,7 +185,7 @@ curl -s https://7tv.io/v3/users/twitch/49140130 | jq '{active: .emote_set_id, se
 
 **Gemessen am 2026-09-20: Zweig A** — Ergebnis und Set-IDs in Spec 11, Sonde 1. **Folge im Plan:**
 keine für T2.1 — die Liste kommt seit T0.5 aus v4, und die v3-Antwort wird **nicht** als Fixture
-abgelegt. Die Set-IDs stehen für V5 bereit.
+abgelegt. Die Set-IDs stehen für den Wechseleintrag bereit (Spec E1).
 
 #### T0.2 — Sonde 4: Reload-Frequenz der Nutzungsseite (Dev-Box) — **erledigt 2026-09-20**
 
@@ -204,24 +210,14 @@ keinen Nachbau-Task in K5; die früher hier genannten Umbaukosten sind gegenstan
 Testzahlen von T5.1 und T5.3 sind danach neu ausgezählt (je Datei die nachgezählte Zahl selbst,
 nicht fortgeschrieben); die Summe steht in Spec 15.
 
-#### T0.4 — Sonde 6: Gegenprobe vor der Migration (lesend gegen Prod, unmittelbar vor K7)
+#### T0.4 — Entfallen (2026-09-20)
 
-```
-ssh -N -L 15432:127.0.0.1:5433 vps
-psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge password=<PROD-PW>' -f set-wechsel-pruefung.sql
-```
-
-(`set-wechsel-pruefung.sql` aus Konzept 11.6.) **Ein Tor, kein Zweig** — die erwarteten zwei Zeilen,
-beide Zweige und was bei Abweichung zu tun ist: Vertrag Spec 11, Sonde 6. Ergebnis im Repo: im
-DECISIONS-Eintrag 1, nachgetragen durch K7.
-
-**Im selben Handgriff, zweite Abfrage — die Kanalliste für die Klassifikation.** Rein lesend, in
-derselben `psql`-Sitzung am selben Tunnel; die `SELECT`-Zeile steht wörtlich in Spec 11 (Sonde 6,
-„Im selben Handgriff, zweite Abfrage") und wird hier nicht kopiert. **Vertrag:** Spec 11 (Sonde 6),
-4.2 („Woher die Kanalliste kommt"), E1, AK 2 — dort steht auch, dass die Ausgabe beim Betreiber
-bleibt und nur **zwei Zahlen** in den PR-Text gehen (Zeilen der Abfrage, Einträge der
-Klassifikation). **Folge im Plan:** die Abfrage ist die Eingabe von **V5** und damit Vorbedingung
-von T1.10.
+**Sonde 6 und mit ihr dieser Handgriff sind ersatzlos gestrichen** (Vertrag: Spec 31, Spec 11
+„Sonde 6 — Entfallen"). Sie war das Tor vor der Migration und beschaffte zuletzt nur noch
+`ExpectedArchivedCount` und die Kanalliste für die lückenlose Klassifikation; beides gibt es nicht
+mehr. **Folge im Plan:** K7 hat keine Sonde mehr als Vorbedingung, **V5 entfällt** (es gab nichts
+mehr zu füllen), und **T1.10** braucht nur noch V4. Die Nummer bleibt als Wegweiser stehen, damit
+T0.5 und T0.6 nicht wandern.
 
 #### T0.5 — Sonde 7: trägt v4 am `EmoteSet` ein Merkmal für persönliche Sets?
 
@@ -258,21 +254,23 @@ Nutzungsseite übertragen. Der Kanal braucht **7TV-Editorrecht bei HandOfBlood**
 (Betreiber, 2026-09-20): er kann den Weg vorschlagen, das Mod-Team entscheidet. Findet er **nicht**
 statt, entfällt **V3** (Purge des Wegwerfkanals) ersatzlos.
 
-**An der Zuordnungsliste und an der erwarteten Trefferzahl von Sonde 6 ändert das nichts** — warum
-nicht, und welche zwei Prüfungen den Fall „am Wegwerfkanal ist doch etwas passiert" abfangen:
-Vertrag Spec 13 (V1), 4.2, AK 3/4. Ohne V1 entfällt eine Purge-Handlung, kein Listeneintrag und
-keine erwartete Zeile. (Der frühere Satz „dann hat die Zuordnungsliste einen Kanal weniger" war
-falsch; er ist am 2026-09-20 in beiden Dokumenten berichtigt worden — s. 8, Widerspruch 1.)
+**An der Wechselliste ändert das nichts** — sie trägt ohnehin nur HandOfBlood (Vertrag: Spec 13
+(V1), 4.2, AK 4). Ohne V1 entfällt eine Purge-Handlung, kein Listeneintrag. **Was seit dem
+2026-09-20 fehlt:** einen Schutz gegen „am Wegwerfkanal ist doch etwas passiert" gibt es nicht mehr
+— die beiden Prüfungen, die ihn trugen (Lückenlosigkeit, Widerspruch), sind gestrichen (Spec 31).
+Der **Purge ist der Schutz**, nicht mehr eine Aufräumhandlung neben ihm.
 
-**Unabhängig davon, und in jedem Fall fällig:** HandOfBlood wechselt am 01.10.; **am Wechseltag**
-`ExpectedArchivedCount` mit der ID-Sonde aus Konzept 11.2 messen und `BoundaryUtc` notieren. Beide
-Werte gehen in **V5** und in keinen Commit (Vertrag: Spec E1, 13/V5).
+**Unabhängig davon, und in jedem Fall fällig:** HandOfBlood wechselt am 01.10.; **am Wechseltag den
+Tag notieren** — das ist `BoundaryUtc`, und mehr braucht die Migration nicht.
+`ExpectedArchivedCount` und die ID-Sonde aus Konzept 11.2 sind am 2026-09-20 entfallen (Spec 31).
+Der Wert geht als Konstantenwert in den Commit von **T1.3b**, nicht in einen Handgriff.
 
 #### V2 / V3 — Purges (Admin-UI, Prod)
 
-V3: Wegwerfkanal nach dem 01.10. und **vor** Sonde 6 purgen — **entfällt, wenn V1 nicht
-stattfindet** (dann gibt es keinen Wegwerfkanal). V2: Testkanal **nach** Sonde 6 und vor
-K7 purgen (er ist die Positivkontrolle der Sonde). Ergebnis im Repo: AK 3/4 im PR-Text von T7.
+V3: Wegwerfkanal nach dem 01.10. und **vor K7** purgen — **entfällt, wenn V1 nicht stattfindet**
+(dann gibt es keinen Wegwerfkanal). V2: Testkanal **vor K7** purgen. Beide Termine hingen bis zum
+2026-09-20 an Sonde 6; die ist entfallen (Spec 31), das Tor ist jetzt schlicht der Deploy.
+Ergebnis im Repo: AK 3/4 im PR-Text von T7.
 
 #### V4 — Datenbank-Kopie für die Migrationsprobe beschaffen (neu, 2026-09-20)
 
@@ -294,52 +292,19 @@ Das Beschaffen ist ein **Handgriff des Betreibers**, kein Task: der Plan verbind
 nach außen. Die Probe selbst läuft danach lokal (T1.10) und fasst weder Prod noch den laufenden
 Teststack an.
 
-#### V5 — Die Klassifikationsdatei anlegen und füllen (neu, 2026-09-20; war T1.9)
+#### V5 — Entfallen (2026-09-20)
 
-**Vertrag:** Spec 13 (V5), E1, 4.2, AK 2, AK 92 — dort steht, **was** hineingehört, warum die Datei
-nicht ins Repo geht und welche zwei Zahlen stattdessen in den PR-Text gehen. Hier steht der
-Handgriff. **T1.3b** baut den Mechanismus, **hier** wird gefüllt. Einmalig, im Haupt-Checkout bzw.
-in dem Worktree, aus dem T1.10 und später die K7-Schritte −1 bis 6 laufen:
-
-```
-cp src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example \
-   src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs
-```
-
-Darin, nach der Anleitung im Kopf der `.example`: HandOfBloods **Wechseleinträge** (beide Set-IDs
-stehen seit T0.1/T0.5 fest, `BoundaryUtc` und `ExpectedArchivedCount` aus der ID-Sonde vom
-Wechseltag) und **je ein Kein-Wechsel-Eintrag für jeden übrigen Kanal** aus der Zählabfrage neben
-Sonde 6 (T0.4), `ConfirmedEmoteSetId` **abgeschrieben**, nicht abgeleitet. **Nur die Aussagen** —
-die drei `Confirmed*`-Messwerte entstehen erst in K7, Schritt 4. Form, Regeln und Begründung: Spec
-13 (V5) und 4.2.
-
-**Was das für den Plan heißt:** die Zahl der Kein-Wechsel-Einträge steht vorher nicht fest, und
-HandOfBlood ist der einzige Kanal mit Wechseleinträgen, mit V1 wie ohne. `git status` bleibt sauber.
-
-**Gegenprobe vor Ort:** nach dem Füllen `dotnet build EmotePurge.slnx` — die Datei ist Teil des
-Builds, ein Tippfehler ist hier ein Compile-Fehler und keine stille Fehlbuchung. Danach T1.10.
-
-**Handgriff „Hash bilden und ablegen" (Vertrag: Spec 4.2 „Herkunft und Wiederherstellbarkeit",
-AK 92).** Unmittelbar nach dem erfolgreichen Build:
-
-```
-sha256sum src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs
-git -C . rev-parse HEAD
-```
-
-Beide Ausgaben wandern zusammen mit **Datum und Zeilenzahl der Zählabfrage aus T0.4** nach
-`infra-docs`, und die **Datei selbst** wird dort abgelegt und eingecheckt. Dieser Plan fasst
-`infra-docs` nicht an; er verweist nur darauf. Der **Hash** (nicht die Werte) geht außerdem in den
-PR-Text von T7 und in den Runbook-Eintrag zu K7.
-
-**Termin:** nach dem 01.10. **und** nach T0.4; vor T1.10, und noch einmal zu prüfen unmittelbar vor
-dem Fenster (K7, Schritt −1 — ein anderer Checkout hat die Datei nicht). **Kein Task, kein Modell,
-kein Commit.**
+**Der Handgriff legte die gitignorierte `SetSwitchAssignments.Local.cs` an, füllte sie mit der
+lückenlosen Klassifikation und bildete ihren SHA-256.** Mit dem Rückschnitt vom 2026-09-20 (Spec 31)
+gibt es nichts mehr zu füllen: die Wechselliste ist eine **committete Konstante** mit genau einem
+Eintrag, und ihr einziger Wert vom Betreiber ist `BoundaryUtc` — den nennt er am 01.10. (V1-Block
+oben), und ein Subagent trägt ihn in **T1.3b** ein. Kein Handgriff, kein Hash, kein `infra-docs`,
+keine Zahlen im PR-Text. Die Nummer bleibt als Wegweiser stehen, damit V4 nicht wandert.
 
 ### K1 — Zählen pro Set (Schritt 3)
 
 Reihenfolge innerhalb K1: T1.1 → T1.2 → T1.3a → T1.3b → T1.4 → T1.8 (Commit) → T1.5 ∥ T1.6 → T1.7 →
-T1.10 (Migrationsprobe, vor dem K1-PR; braucht V5). **T1.9 entfällt als Commit** — s. dort.
+T1.10 (Migrationsprobe, vor dem K1-PR; braucht V4). **T1.9 entfällt als Commit** — s. dort.
 Worktree A.
 
 #### T1.1 — Schlüssel und Snapshot im Worker; Flush-Signatur mit vorläufiger Summe
@@ -403,8 +368,9 @@ Nachrichten sauber trennt oder ob je Nachricht zwei Aufrufe ein gemischtes Paar 
 **Ziel:** Die Modelländerungen und die Entscheidungslogik der Migration als **pure Funktionen** über
 beide Eintragslisten, damit T1.3b sie nur noch in SQL abbildet und jeder Zweig einzeln getestet ist.
 
-**Vertrag:** Spec 4.1 (Schema-Tabelle), 4.2 (Prüfungen 1–7 samt Umrechnungstabelle,
-Zuordnungsregel, Ein-Tages-Unschärfe), E1 (Form der Liste, beide Eintragsarten).
+**Vertrag:** Spec 4.1 (Schema-Tabelle), 4.2 (Prüfungen 1–3, zweistufige Backfill-Regel,
+Ein-Tages-Unschärfe), E1 (Form der Liste, **eine** Eintragsart), 31 (was entfallen ist und wie die
+alten Prüfungsnummern aufzulösen sind).
 
 **Dateien:** `Core/Entities/UsageStat.cs:3-26`, `Core/Entities/ChannelEmoteSetObservation.cs` (neu,
 Muster `ChannelLiveDay`), `Core/Entities/VoteSession.cs:13-30`, `VoteSessionEmote.cs:7-14`,
@@ -412,14 +378,13 @@ Muster `ChannelLiveDay`), `Core/Entities/VoteSession.cs:13-30`, `VoteSessionEmot
 Unique-Index — Muster `:52-65`), ein neuer purer Typ für die Prüfungen neben der Migration
 (Infrastructure, kein EF-Bezug in der Signatur).
 
-**Tests:** `Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` (neu, pur) **+24**, und die
-Rechnung ausgeschrieben, weil die frühere Zahl offenließ, was sie zählt: **14** = je Prüfung 1–7
-ein Abbruch- und ein Durchlauffall (Sonar zählt Zweige), **+1** zweite Abbruchgestalt von Prüfung 3
-(XOR), **+2** weitere Abbruchgestalten von Prüfung 7, **+4** Zuordnungsfälle inklusive Grenztag,
-**+1** für den Builder, der eine doppelte Eintragung schon beim Eintragen ablehnt (Lader, keine
-Prüfung), **+2** für die beiden Durchlaufgestalten von Prüfung 4 (Signaturtag durch `channel.join`
-erklärt; Signaturtag durch `AcknowledgedArchiveDays` quittiert). Was die einzelnen Fälle prüfen, steht in Spec 4.2 und AK 6; hier steht, wie viele es
-sind und warum.
+**Tests:** `Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` (neu, pur) **+11**, und die
+Rechnung ausgeschrieben: **6** = je Prüfung 1–3 ein Abbruch- und ein Durchlauffall (Sonar zählt
+Zweige), **+4** Zuordnungsfälle der zweistufigen Backfill-Regel (Kanal ohne Wechseleintrag ⇒
+`ActiveEmoteSetId`; Zeile vor der Grenze ⇒ `OldEmoteSetId`; Zeile **am** Grenztag ⇒
+`NewEmoteSetId`; Zeile nach der Grenze ⇒ `NewEmoteSetId`). Was die einzelnen Fälle prüfen, steht in
+Spec 4.2 und AK 5/6; hier steht, wie viele es sind und warum. Die pure Funktion nimmt die
+Wechselliste als **Parameter** — sie liest die Konstante nicht.
 
 **Gate:** BE grün — `dotnet ef migrations add` läuft hier **noch nicht** (das Snapshot-Diff gehört
 zu T1.3b, sonst entsteht eine Migration ohne Prüfungen, die jemand versehentlich anwendet). Kein
@@ -430,69 +395,57 @@ sequenziell). **Modell:** `sonnet`.
 
 #### T1.3b — Die Migration `AddUsageStatEmoteSetId`: Prüfungen, Backfill, Indextausch, Saat, `Down`
 
-**Ziel:** Die eine nicht-additive Migration an der heißesten Tabelle — fünfzehn Schritte, sieben
-Prüfungen, zwei temporäre Tabellen, Backfill in zwei `UPDATE`s, Indextausch, Saat und ein `Down`
-mit zwei unabhängigen Schranken. Dazu der **Lader** der Klassifikation samt Abbruchmarken,
-`.example`-Vorlagen und Ignore-Einträgen (das, was bis zum 2026-09-20 T1.9 war).
+**Ziel:** Die eine nicht-additive Migration an der heißesten Tabelle — elf Schritte, **drei**
+Prüfungen, eine temporäre Tabelle, Backfill in zwei `UPDATE`s, Indextausch, Saat und ein `Down`
+mit zwei unabhängigen Schranken. Dazu die **committete Konstante** `SetSwitchAssignments` mit dem
+einen Wechseleintrag.
 
-**Vertrag:** Spec 4.2 vollständig (Reihenfolge in `Up`, die sieben Prüfungen samt Meldungen, die
-Unique-Constraints der temporären Tabellen, Backfill-Quelle, `Down` mit beiden Schranken, „Wo die
-Liste liegt" mit allen vier Dateien, Marken `Confirm()`/`ConfirmWindow()`, Fail-fast-Meldung,
-Image-Weg), 4.3 (Saat, inkl. der Auflage, dass sie `'set-switch'` nie vergibt), E1, E11, F1;
-Kriterien AK 5–10, 90, 91. **Nichts davon wird hier wiederholt** — wer den Task ausführt, liest
-Spec 4.2 als Ganzes, nicht diesen Absatz.
+**Vertrag:** Spec 4.2 vollständig (Reihenfolge in `Up`, die drei Prüfungen samt Meldungen, die
+zweistufige Backfill-Regel und die Auflage zu einem zweiten Eintrag je Kanal, `Down` mit beiden
+Schranken, „Wo die Liste liegt"), 4.3 (Saat, inkl. der Auflage, dass sie `'set-switch'` nie
+vergibt), E1, E11, F1, **31**; Kriterien AK 5–10. **Nichts davon wird hier wiederholt** — wer den
+Task ausführt, liest Spec 4.2 als Ganzes, nicht diesen Absatz.
 
-**Drei Dinge, die der Plan dazu festhält, weil sie den Task und nicht den Vertrag betreffen:**
+**Zwei Dinge, die der Plan dazu festhält, weil sie den Task und nicht den Vertrag betreffen:**
 
-- **Die Klassifikation ist in diesem Task und im ganzen Repo leer.** Der Subagent füllt sie nicht
-  und legt sie nicht an; das ist V5, außerhalb des Repos. Seine eigenen Tests bringen ihre Werte
-  über den `internal` Testsitz mit (AK 90).
-- **Die Messwert-Datei füllt kein Task** — sie entsteht in K7, Schritt 4. T1.3b erzeugt die drei
-  `Confirmed*`-Werte nur in seinen Fixtures.
-- **Die Falle bei der partiellen Methode** ist in Spec 4.2 als Vertrag benannt (klassische Form,
-  kein Rückgabetyp, keine partielle Property) — sie steht hier als Hinweis, weil ein Subagent
-  sonst die modernere Form wählt und damit AK 90 bricht.
+- **Die Konstante ist normaler Quellcode und geht in denselben Commit.** Kein `partial`, kein
+  Lader, keine Marke, keine `.example`, kein `.gitignore`- oder `.dockerignore`-Eintrag, kein
+  `internal` Testsitz — all das ist am 2026-09-20 entfallen (Spec 31). Der Subagent legt den
+  Eintragstyp und die Liste an; `BoundaryUtc` ist bis zum 01.10. ein deutlich markierter
+  Platzhalter, den der Betreiber am Wechseltag nennt und der dann in einem `chore:`-Commit auf dem
+  Integrationsbranch seinen echten Wert bekommt — **vor** T1.10.
+- **Die Migrationstests stellen ihre Fälle über die Datenbank her**, nicht über eine Fixture der
+  Liste: sie legen einen Kanal mit der `TwitchChannelId` der Konstante an und geben ihm die Zeilen
+  und die `ActiveEmoteSetId`, die den jeweiligen Zweig auslösen (Spec 4.2, „Die Tests bringen ihre
+  Fälle selbst mit").
 
 **Dateien:** `Infrastructure/Migrations/<stamp>_AddUsageStatEmoteSetId.cs` (neu, setzt auf
 `20260907080507_AddUsageStatSharedChatUseCount` auf), `AppDbContextModelSnapshot.cs` (generiert),
-`Infrastructure/Migrations/SetSwitchAssignments.cs` (neu, committet),
-`Infrastructure/Migrations/SetSwitchAssignments.Local.cs.example` und
-`SetSwitchAssignments.Window.cs.example` (neu, committet), `.gitignore`,
-`.dockerignore`, **`CLAUDE.md`** (die gitignorierte Datei gehört dorthin, wo `appsettings.Lan.json`
-schon steht — eine spätere Sitzung, die den Abbruch sieht, findet sonst nicht heraus, was fehlt).
+`Infrastructure/Migrations/SetSwitchAssignments.cs` (neu, committet).
 `PendingMigrationGuard.cs:11` bleibt unverändert.
 
 **Tests:** `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu, gegen den ephemeren
-Container) **+18** (Zielwert aus Spec 15.1) über AK 5/6 (**acht** Abbruchfälle — die XOR-Hälfte von
-Prüfung 3 ausdrücklich an einem `IsBotActive = false`-Kanal), AK 7 (Backfill; die bestätigte ID im
-Test von der `ActiveEmoteSetId` **unterscheidbar** gemacht, damit die Assertion die Quelle prüft,
-plus Einmaligkeit), AK 8, AK 9 (Saat **und**, als eigener Fall, die `'set-switch'`-Invariante),
-AK 10 (**drei**) und AK 91 (**drei**). Die Fälle selbst stehen in Spec 14 unter diesen Nummern.
-**Geklärt (Abschnitt 9):** Spec 15.1 nannte „Backfill" (AK 7) zweimal und addierte sich dadurch
-scheinbar auf 19; es ist **ein** Fall, und 8 + 1 + 1 + 2 + 3 + 3 = 18 bleibt der Zielwert.
+Container) **+10** (Zielwert aus Spec 15.1) über AK 5/6 (**drei** Abbruchfälle: veraltete Liste,
+leere `ActiveEmoteSetId`, unplausibles Grenzdatum), AK 7 (Backfill — ein Fall, der den Kanal mit
+Wechseleintrag **und** einen ohne prüft), AK 8, AK 9 (Saat **und**, als eigener Fall, die
+`'set-switch'`-Invariante) und AK 10 (**drei**). Die Fälle selbst stehen in Spec 14 unter diesen
+Nummern; ausgezählt: 3 + 1 + 1 + 2 + 3 = 10.
 `Integration/PendingMigrationGuardTests.cs` bleibt grün.
-**Jeder** dieser Fälle setzt seine Klassifikation über den `internal` Testsitz; keiner liest die
-Datei des Betreibers, und keiner hängt an ihrer Existenz (AK 90). Der Testaufbau braucht ein
-Muster, um die Migration **bis zu einem bestimmten Stand** anzuwenden und dann Zeilen zu setzen —
-der Task legt es in `Fixtures/` ab.
 
 **Gate:** BE grün; `dotnet ef migrations list` gegen die lokale Dev-DB zeigt genau eine Pending;
 `dotnet ef database update` lokal läuft durch **und** `dotnet ef database update
 20260907080507_AddUsageStatSharedChatUseCount` rollt sauber zurück (Dev-DB hat keinen
 Set-Wechsel — falls doch, ist der Abbruch an Schranke 1 das **erwartete** Ergebnis und kein
-Task-Fehler; dann die `'set-switch'`-Zeile der Dev-DB vorher entfernen). **Zusätzlich, seit dem 2026-09-20:** der Task läuft
-**ohne** `SetSwitchAssignments.Local.cs` (die entsteht erst in V5), und genau das ist die Probe auf
-AK 90 — Build und alle drei Suiten grün ohne sie. Für den lokalen `database update`-Teil des Gates
-legt der Subagent **beide** Dateien **vorübergehend** aus den `.example`s an, mit
-`builder.Confirm();` bzw. `builder.ConfirmWindow();` und **ohne** Einträge (die Dev-DB trägt seit
-dem Leerräumen keine Nutzungszeilen, Prüfung 3 und Prüfung 7 sind damit leer erfüllt), und löscht
-sie danach wieder; beide sind gitignoriert und können nicht versehentlich in den Commit geraten. Kein Commit (Flush folgt).
+Task-Fehler; dann die `'set-switch'`-Zeile der Dev-DB vorher entfernen). Die Dev-DB trägt seit dem
+Leerräumen am 2026-09-20 keine Nutzungszeilen; Prüfung 2 und Prüfung 3 sind damit leer erfüllt,
+und Prüfung 1 schlägt nur an, wenn HandOfBlood dort getrackt ist — in dem Fall bekommt seine
+Kanalzeile lokal die `NewEmoteSetId` oder der Lauf wird gegen eine frische DB gefahren.
+Kein Commit (Flush folgt).
 
 **Abhängigkeiten:** T1.3a. **Modell:** `opus` — die einzige Migration des Vorhabens, die ein
-laufendes altes Image nicht verträgt (F1), mit **sieben** `RAISE`-Zweigen in `Up`, zwei `UPDATE`s in
+laufendes altes Image nicht verträgt (F1), mit drei `RAISE`-Zweigen in `Up`, zwei `UPDATE`s in
 fester Reihenfolge und einem `Down`, das an **zwei** unabhängigen Schranken absichtlich scheitern
-muss; jeder Fehler hier ist eine falsche
-Zuordnung, die kein späterer Task erkennt.
+muss; jeder Fehler hier ist eine falsche Zuordnung, die kein späterer Task erkennt.
 
 #### T1.4 — Der Flush schreibt dreispaltig
 
@@ -519,9 +472,10 @@ T1.8 zusammen.
 cache* — englisch, `**Betrifft:**` mit den Dateien aus T1.1–T1.4.
 
 **Vertrag:** Spec 23, Zeile 1 nennt den Inhalt vollständig und abschließend; der Task schreibt ihn
-aus, ohne etwas hinzuzuerfinden. Quellen dafür: Spec 4.2, 4.3, 5, E1, E15, 10, 17, 22 (Zeile 1,
-#76-Blockade). **Was ausdrücklich nicht hineingehört: die Werte der Klassifikation** — nur das
-Verfahren (E1). **Kein späterer Werte-Nachtrag;** nachgetragen wird allein, was K7 misst (1.2).
+aus, ohne etwas hinzuzuerfinden. Quellen dafür: Spec 4.2, 4.3, 5, E1, E15, 10, 17, 22, **31**
+(warum die Absicherung zurückgeschnitten wurde und was das offen lässt), 22 (Zeile 1,
+#76-Blockade). Der Eintrag nennt den **einen** Wechseleintrag und die **drei** Abbruchgründe;
+nachgetragen wird allein, was K7 misst (1.2).
 
 **Gate:** BE grün auf dem Gesamtstand; `git status` zeigt nur die Dateien aus T1.3a/T1.3b/T1.4
 und `docs/DECISIONS.md`. **Commit:** `feat(usage): count chat usage per emote set`.
@@ -621,34 +575,30 @@ across the match-cache swap`.
 
 #### T1.9 — Entfällt als Commit (2026-09-20)
 
-**Der Task hieß „Zuordnungsliste füllen — letzter Commit von K1“.** Mit der Entscheidung des
-Betreibers vom 2026-09-20, die Liste **nicht** ins Repo zu geben (Spec E1/4.2), gibt es hier nichts
-mehr zu committen. Der Task wird nicht neu geschnitten, sondern aufgeteilt — die Nummer bleibt als
-Wegweiser stehen, damit keine andere wandert:
+**Der Task hieß „Zuordnungsliste füllen — letzter Commit von K1".** Er ist am 2026-09-20 **zweimal**
+umgeschrieben worden, und der zweite Stand gilt: zuerst wanderte das Füllen in die gitignorierte
+Datei und damit zum Betreiber-Handgriff V5 (Nachtrag 7, N3); dann schnitt der Betreiber die ganze
+Absicherung zurück (Spec 31). Der heutige Stand:
 
 | Was | Wohin |
 |---|---|
-| Der **Lader** `SetSwitchAssignments` samt Abbruch bei nicht einkompilierter Klassifikation, die committete `.example`, die Einträge in `.gitignore` und `.dockerignore`, der `internal` Testsitz und die Tests mit eigener Fixture | **T1.3b** — dorthin, weil dessen eigene Migrationstests den Mechanismus brauchen, nicht erst ein späterer Task |
-| Das **Füllen** der gitignorierten Datei mit den echten Werten, nach dem 01.10. und nach der Zählabfrage aus T0.4 | **V5** (K0, Betreiber) — der Handgriff hängt an Wissen, das nur der Betreiber hat, und hinterlässt nichts im Repo |
-| Der Nachtrag der Werte im DECISIONS-Eintrag 1 | **entfällt ersatzlos** — T1.8 schreibt stattdessen das Verfahren samt Grund und Preis |
+| Die **committete Konstante** `SetSwitchAssignments` mit dem einen Wechseleintrag | **T1.3b**, im selben Commit wie die Migration |
+| Der **Platzhalter für `BoundaryUtc`**, ersetzt durch den echten Wert, sobald der Betreiber ihn am 01.10. nennt | ein eigener `chore:`-Commit auf dem Integrationsbranch, **vor** T1.10 |
+| Lader, Marke, `.example`, `.gitignore`/`.dockerignore`, `internal` Testsitz, SHA-256, `infra-docs` | **entfallen** (Spec 31) — es gibt nichts davon mehr |
+| Der Nachtrag der Werte im DECISIONS-Eintrag 1 | **entfällt** — T1.8 schreibt das Verfahren samt Grund und Preis |
 
-**Die beiden Testfälle dieses Tasks entfallen ebenfalls** (−2). Fall (1) verankerte
-`ExpectedArchivedCount` ± 1 in einem Test — er hätte den echten Wert in eine **committete**
-Testdatei geschrieben und damit den Ortswechsel unterlaufen; der Gedanke lebt in T1.10 weiter, wo
-derselbe Verstoß gegen die **echte** Datei konstruiert wird (AK 88). Fall (2) — ein verfälschter
-Kein-Wechsel-Eintrag bricht an Prüfung 1 ab — ist mit Fixture-Werten in T1.3b bereits abgedeckt
-(AK 6, Prüfung 1). Dafür kommt in T1.3b der Fall zu AK 91 dazu: **netto −1** über den Plan.
+**Die beiden Testfälle dieses Tasks entfallen weiterhin** (−2), und die Fälle zu AK 90/91, die in
+der vorigen Fassung dafür in T1.3b dazukamen, entfallen mit dem Lader ebenfalls. Die Nummer bleibt
+als Wegweiser stehen, damit keine andere wandert.
 
-**Was nicht entfällt: die Aussage selbst.** Sie trägt weiterhin die ganze Migration — sie steht
-nur nicht mehr im Diff, sondern auf der Maschine des Betreibers, und wird nicht mehr von einem
-Zweiten gegengelesen, sondern von sieben Abbruchprüfungen gegen echte Daten, von ihrem festgehaltenen SHA-256 und von T1.10
-(Spec 4.2, „Was der Ortswechsel kostet“).
+**Was nicht entfällt: das Wechseldatum.** Es trägt die einzige inhaltliche Aussage der Migration,
+und es steht seit dem Rückschnitt wieder dort, wo ein Zweiter es liest — im Diff.
 
 #### T1.10 — Migrationsprobe gegen eine wiederhergestellte Datenbank (neu, 2026-09-20)
 
 **Ziel:** Die Migration **einmal vollständig vorführen**, bevor sie im Wartungsfenster über einem
 Tunnel zum ersten Mal ernst wird. Keine Containertests, sondern ein Durchlauf gegen eine
-wiederhergestellte, echte Datenbank — mit vier Fragen, von denen die erste bisher ausdrücklich
+wiederhergestellte, echte Datenbank — mit drei Fragen, von denen die erste bisher ausdrücklich
 offen war.
 
 **Testort:** der lokale Docker-Stack (`docker compose`, Api auf `:8080`) und eine
@@ -664,7 +614,7 @@ vorgeführt und deckungsgleich zurückgekommen) **oder** eine Prod-Kopie über d
 Backup-Kette. Der Task läuft mit **beiden** Quellen; die **Prod-Kopie ist die aussagekräftigere**
 und wird, wenn sie vorliegt, bevorzugt.
 
-**Die vier Prüfungen des Tasks:**
+**Die drei Prüfungen des Tasks:**
 
 1. **`Up` läuft durch, und die Dauer wird gemessen** (Quelle, Zeilenzahl, Sekunden). Der Task
    liefert **zwei** Zahlen: die gemessene **Untergrenze** und die daraus abgeleitete
@@ -672,58 +622,30 @@ und wird, wenn sie vorliegt, bevorzugt.
    Probe die Fensterlänge nicht belegt und wie AK 86 stattdessen durchgesetzt wird: Vertrag
    Spec AK 87, AK 93, Abschnitt 10. Liegt die Hochrechnung über 10 Minuten, ist das ein **Befund
    vor dem Fenster**, kein Grund, im Fenster zu warten.
-   **Zwei Teilzeiten werden getrennt gestoppt und getrennt berichtet:**
-   - **Der Messwert-Schritt** (Spec 10, Schritt 4: Abfrage, Einfügen, Build) — die Zahl geht ins
-     Runbook und ersetzt die veranschlagten 2–5 Minuten.
-   - **Prüfung 7** (neu am 2026-09-20). Sie ist die einzige der sieben Prüfungen, die eine
-     Aggregation über `UsageStats` ⋈ `Emotes` je Kanal fährt (`min`/`max`/`count`), und zwar
-     **innerhalb** der Migrationstransaktion. Ihre Kosten sind heute ohne jede Zahl in das
-     15-Minuten-Budget hineingerechnet. Der Task misst ihre Dauer **einzeln** — nicht als Teil der
-     `Up`-Gesamtzeit — und berichtet sie getrennt; ohne diese Zahl steckt eine unbekannte Größe im
-     Fenster (Spec AK 87). Fällt sie ins Gewicht, ist das ein Befund für die Fensterplanung, kein
-     Grund, die Prüfung zu streichen.
-2. **Jede Abbruchprüfung feuert, wenn man ihren Fall herstellt** — je Prüfung 1–7 ein konstruierter
-   Verstoß gegen die wiederhergestellten Daten, dazu die zweite Hälfte von Prüfung 3 (XOR) an einem
-   `IsBotActive = false`-Kanal. Welche Manipulation welche Prüfung auslöst und welche Meldung
-   erwartet wird: Vertrag Spec 4.2 (Prüfungen 1–7) und AK 88. Nach jedem Abbruch ist die Datenbank
-   unverändert.
+2. **Jede Abbruchprüfung feuert, wenn man ihren Fall herstellt** — je Prüfung 1–3 ein konstruierter
+   Verstoß gegen die wiederhergestellten Daten. Welche Manipulation welche Prüfung auslöst und
+   welche Meldung erwartet wird: Vertrag Spec 4.2 (Prüfungen 1–3) und AK 88. Nach jedem Abbruch ist
+   die Datenbank unverändert.
 3. **`Down` verweigert an Schranke 1, ohne etwas entfernt zu haben** — eine
    `ClosedBy = 'set-switch'`-Zeile setzen, `Down` laufen lassen, danach prüfen, dass Spalte,
    Tabelle und neuer Index noch stehen (AK 89).
-4. **Die Gegenprobe-Abfrage (Sonde 6) läuft gegen dieselbe Datenbank** und liefert, was sie soll —
-   ein Trockenlauf des Tors, samt der Zählabfrage aus T0.4. Am Migrationstag ist dann weder die
-   SQL-Datei noch ihre Ausgabeform neu.
 
-**Was die Probe nicht zeigt, ausdrücklich:** baut man die Klassifikation für die Wegwerfdatenbank
-aus deren eigener `ActiveEmoteSetId`, ist Prüfung 1 dort eine Tautologie. Die Probe belegt die
-**Mechanik** (Reihenfolge, Transaktion, Abbrüche, Dauer, Rückweg), **nicht** die Richtigkeit der
-echten Liste aus V5 — die hängt am Wissen des Betreibers und an Sonde 6.
+**Was die Probe nicht zeigt, ausdrücklich:** trägt die Wegwerfdatenbank HandOfBlood gar nicht oder
+mit einer anderen `ActiveEmoteSetId`, feuert Prüfung 1 dort — das ist dann ein Befund über die
+Wegwerfdatenbank, nicht über die Liste. Die Probe belegt die **Mechanik** (Reihenfolge,
+Transaktion, Abbrüche, Dauer, Rückweg), **nicht** die Richtigkeit des Wechseldatums; das hängt am
+Wissen des Betreibers und steht seit dem 2026-09-20 im Diff statt in einer Datei außerhalb des
+Repos (Spec 31).
 
-**Warum die Probe seit dem Ortswechsel der Liste zusätzlich Gewicht trägt** (Spec 4.2, „Was der
-Ortswechsel kostet", Punkt 2): sie ist der **einzige** Lauf, in dem die echte, gefüllte Datei vor
-dem Ernstfall einmal benutzt wird. Folge für den Plan: der Task läuft aus demselben Checkout wie
-V5 — ein Worktree ohne die Datei bräche gleich an `Load()` ab (AK 91), was ein korrektes, aber
-nutzloses Ergebnis wäre.
-
-**Hash-Handgriff, vor dem ersten Lauf (Vertrag: Spec AK 92):** `sha256sum` über
-`src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs` gegen den in `infra-docs`
-abgelegten Wert aus V5, dazu `git rev-parse HEAD` gegen die dort notierte Commit-ID. Weicht eines
-ab, läuft die Probe **nicht** — dann ist entweder die Datei eine andere als die geprüfte oder der
-Branch-Stand ein anderer als der, gegen den sie gebildet wurde; beides ist ein Befund, kein
-Startsignal. Für die Messwerte erzeugt der Task die `SetSwitchAssignments.Window.cs` aus der
-Wegwerfdatenbank mit derselben Abfrage, die im Fenster läuft — das ist zugleich der Trockenlauf
-dieses Schritts.
-
-**Gate:** die vier Befunde belegt (Kommandos und Ausgaben im PR-Text von T7 — **ohne** die
-Klassifikation selbst und ohne die Ausgabe der Zählabfrage; Zahlen, Hash und Commit-ID ja,
-Kanalnamen nein, E1); BE grün bleibt
+**Gate:** die drei Befunde belegt (Kommandos und Ausgaben im PR-Text von T7); BE grün bleibt
 unberührt, weil der Task keine Quelldatei ändert. **Kein Commit** — es sei denn, die Probe findet
 einen Fehler; dann geht der Fix zurück an T1.3b und der Befund in den PR-Text.
 
-**Abhängigkeiten:** **V5** (die gefüllte, gitignorierte Datei) und V4 (die Kopie). Ein früherer
-Trockenlauf gegen den Stand nach T1.3b mit einer einkompilierten, aber leeren Klassifikation ist
-erlaubt und kostet nichts — er prüft dann nur Prüfung 3 und den Rückweg. **Modell:** `sonnet` — mechanisch, aber vielschrittig: Wiederherstellen, sieben
-Verstöße herstellen und zurückrollen, Zeiten messen, aufräumen.
+**Abhängigkeiten:** **V4** (die Kopie) und der Commit, der `BoundaryUtc` von einem Platzhalter auf
+den echten Wert setzt (T1.9-Tabelle). Ein früherer Lauf gegen den Stand nach T1.3b mit dem
+Platzhalter ist erlaubt und kostet nichts — er prüft dann Mechanik und Rückweg, und Prüfung 3
+feuert erwartungsgemäß. **Modell:** `sonnet` — mechanisch, aber vielschrittig: Wiederherstellen,
+drei Verstöße herstellen und zurückrollen, Zeiten messen, aufräumen.
 
 ### K2 — Ziel-Set-Picker (Schritt 4)
 
@@ -1390,7 +1312,7 @@ names and eligibility` — enthält den DECISIONS-Eintrag 3. K6-PR.
    Beobachtungs-Dienst, Set-Menü) nah an 100 %; `usage-stats-page.ts` und `SevenTvSyncService.cs`
    sind die zwei Stellen, an denen die Näherung in beide Richtungen unscharf ist — dort zählt die
    Frage, ob jede neue Zeile einen der in T1.2/T1.5/T4.2–T4.5 genannten Fälle hat, nicht die Zahl.
-   Sonar misst `new_coverage` zeilen- **und** zweiggenau; die **sieben** `RAISE`-Zweige der
+   Sonar misst `new_coverage` zeilen- **und** zweiggenau; die **drei** `RAISE`-Zweige der
    Migration haben je einen Test (T1.3b).
 3. `/codex:review --model gpt-5.6-sol --scope branch --base origin/main` über das Ganze — nach den
    Kind-Issue-Reviews (0.4) ein Blick auf die Nähte zwischen den Kind-Issues. Findings sind Input;
@@ -1408,46 +1330,39 @@ Hauptsession.
 
 Einmalig, **hinter** dem 2026-10-08, nach Freigabe gegen das Harness-Runbook in `infra-docs`
 (Nachläufer des Laufs brauchen den Zählpfad unverändert). Die Reihenfolge ist Spec 10; hier die
-Kommandozeilen und was danach ins Repo gehört. Vorher: Sonde 6 (T0.4) Zweig A, V2/V3 erledigt, alte
-Image-Tags notiert (Rollback) — **und die gitignorierte `SetSwitchAssignments.Local.cs` steht
-gefüllt und mit geprüftem SHA-256 in dem Checkout, aus dem Schritt 6 läuft** (V5; ein frischer Klon
-oder ein Worktree hat sie nicht, und `dotnet ef database update` baut aus genau diesem Checkout).
-Die zweite gitignorierte Datei, `SetSwitchAssignments.Window.cs`, entsteht **im Fenster**
-(Schritt 4) und steht vorher absichtlich nicht da.
+Kommandozeilen und was danach ins Repo gehört. Vorher: V2/V3 erledigt, alte Image-Tags notiert
+(Rollback). **Mehr nicht:** seit dem Rückschnitt vom 2026-09-20 (Spec 31) gibt es keine Sonde als
+Tor, keine Datei außerhalb des Repos, keinen Hash zu prüfen und keine Messwerte zu ziehen — die
+Wechselliste ist committeter Quellcode und liegt in jedem Checkout.
 
 | Schritt | Handgriff |
 |---|---|
-| −1 | **Bevor irgendetwas stoppt** (AK 92): `sha256sum src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Local.cs` und `git rev-parse HEAD` im selben Checkout, aus dem Schritt 6 läuft, gegen die in `infra-docs` abgelegten Werte aus V5. Fehlt die Datei, holt der Betreiber sie aus `infra-docs` zurück und prüft erneut; weicht der Hash ab, **wird nicht gestartet** — es ist dann eine andere Datei als die, mit der T1.10 gelaufen ist. Danach `dotnet build EmotePurge.slnx`. Ohne diese Zeile käme der Abbruch aus `Load()` (AK 91) erst bei gestoppter Site. Kostet eine Minute, spart ein halbes Fenster |
 | 0 | Uptime-Kuma-Monitor pausieren; **Uhr starten** (AK 86 misst Schritt 1 bis zum Start der neuen Images) |
 | 1 | Portainer: Stack-Service `worker` stoppen — `stop_grace_period: 60s` abwarten (Shutdown-Flush schreibt gegen das **alte** Schema) |
 | 2 | Portainer: `api` stoppen |
 | 3 | `ssh -N -L 15432:127.0.0.1:5433 vps` |
-| 4 | **Messwerte ziehen** (Spec 4.2, Prüfung 7): in einer zweiten Shell die `SELECT`-Zeile aus `SetSwitchAssignments.Window.cs.example` lesend gegen Prod, Ausgabe als Rumpf nach `src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.Window.cs` (Marke `builder.ConfirmWindow();` bleibt die erste Zeile), danach `sha256sum` dieser Datei **notieren**. **Erst hier** sind `max("Date")` und `count(*)` endgültig — vorher schreibt der Worker noch. Veranschlagt 2–5 min; die in T1.10 gestoppte Zahl steht im Runbook |
-| 5 | `dotnet ef migrations list --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<PROD-PW>'` — **genau eine** Pending (`AddUsageStatEmoteSetId`); mehr heißt: Prod hängt Runden zurück, erst durchsehen |
-| 6 | `dotnet ef database update --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<PROD-PW>;Options=-c lock_timeout=5s'` — bricht bei Prüfung 1–7 ab statt zu schätzen; ein Abbruch ist ein Befund, kein Anlass zum Nachhelfen. **Abbruchpunkt: 10 Minuten** (AK 93, s. u.) |
-| 7 | `dotnet ef migrations list …` — keine Pending |
-| 8 | Portainer: neue Images (`ghcr.io/emotepurge/…`) für `api` **und** `worker` starten — Pull-Policy beachten (ein Re-Deploy ohne Pull fährt das alte Image weiter). **Hier stoppt die Uhr für AK 86** |
-| 9 | Live-Verifikation Prod: `GET /api/health` 200; Set-Ansicht eines nicht-aktiven Sets lädt; eine `UsageStats`-Zeile des Tages trägt die aktive `EmoteSetId` (`psql` über den Tunnel); Worker-Log zeigt den Warmstart mit Set-ID; Picker am Testkanal — nicht-aktives Set zeigt dessen Belegung und Kapazität (AK 84/85) |
-| 10 | Monitor wieder aktivieren; Tunnel schließen |
+| 4 | `dotnet ef migrations list --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<PROD-PW>'` — **genau eine** Pending (`AddUsageStatEmoteSetId`); mehr heißt: Prod hängt Runden zurück, erst durchsehen |
+| 5 | `dotnet ef database update --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<PROD-PW>;Options=-c lock_timeout=5s'` — bricht bei Prüfung 1–3 ab statt zu schätzen; ein Abbruch ist ein Befund, kein Anlass zum Nachhelfen. **Abbruchpunkt: 10 Minuten** (AK 93, s. u.) |
+| 6 | `dotnet ef migrations list …` — keine Pending |
+| 7 | Portainer: neue Images (`ghcr.io/emotepurge/…`) für `api` **und** `worker` starten — Pull-Policy beachten (ein Re-Deploy ohne Pull fährt das alte Image weiter). **Hier stoppt die Uhr für AK 86** |
+| 8 | Live-Verifikation Prod: `GET /api/health` 200; Set-Ansicht eines nicht-aktiven Sets lädt; eine `UsageStats`-Zeile des Tages trägt die aktive `EmoteSetId` (`psql` über den Tunnel); Worker-Log zeigt den Warmstart mit Set-ID; Picker am Testkanal — nicht-aktives Set zeigt dessen Belegung und Kapazität (AK 84/85) |
+| 9 | Monitor wieder aktivieren; Tunnel schließen |
 
 **Abbruchpunkt.** Vertrag: Spec AK 93 und Abschnitt 10 („Abbruchpunkt, verbindlich") — dort stehen
 die drei Zahlen, was „Abbruch" konkret heißt und die Vorab-Regel „Hochrechnung über 10 min ⇒
-Fenster anders planen". **Als Handgriff heißt das:** kehrt Schritt 6 nach 10 Minuten nicht zurück,
+Fenster anders planen". **Als Handgriff heißt das:** kehrt Schritt 5 nach 10 Minuten nicht zurück,
 Kommando abbrechen, mit `migrations list` gegenprüfen, dass die Migration weiterhin `(Pending)`
 ist, alte Images starten, Fenster als **Nulllauf** beenden. Ob `Up` noch rechnet oder hängt, zeigt
 `pg_stat_activity` in einer dritten Shell am Tunnel — Diagnose, kein Grund, die Grenze zu dehnen.
 
 **Danach ins Repo** (`docs:`-Commit): Nachtrag im DECISIONS-Eintrag 1 mit Datum, Dauer des Fensters
-(AK 86: unter 15 min, sonst die Dauer als Befund), **Dauer von Schritt 4 und von Schritt 6
-einzeln**, Ergebnis von Sonde 6, **die beiden Hashes** (Aussagen-Datei aus Schritt −1,
-Messwert-Datei aus Schritt 4 — die Werte selbst nicht, E1) und dem Hinweis auf die Nachwirkung aus
-Spec 17. **Ein** Folge-Issue für **beide** Übergangsfelder wird mit Datum „frühestens +14 Tage"
-angelegt und ins Epic #200 eingetragen (Vertrag: Spec 21, ein Tor für beide). Die Messwert-Datei
-wandert samt Hash nach `infra-docs` und wird aus dem Arbeitsbaum entfernt (Spec 4.2).
+(AK 86: unter 15 min, sonst die Dauer als Befund), **Dauer von Schritt 5** und dem Hinweis auf die
+Nachwirkung aus Spec 17. **Ein** Folge-Issue für **beide** Übergangsfelder wird mit Datum „frühestens +14 Tage"
+angelegt und ins Epic #200 eingetragen (Vertrag: Spec 21, ein Tor für beide).
 
 **Rollback im Fenster:** neuen `worker` **und** `api` stoppen, `dotnet ef database update
 20260907080507_AddUsageStatSharedChatUseCount --connection '…'`, alte Images starten — nur bis
-zum ersten beobachteten Set-Wechsel nach Schritt 8 (5). Ein Abbruch **während** Schritt 6 ist kein
+zum ersten beobachteten Set-Wechsel nach Schritt 7 (5). Ein Abbruch **während** Schritt 5 ist kein
 Rollback, sondern ein Nulllauf: es ist nichts geschehen, und es genügt, die alten Images wieder zu
 starten.
 
@@ -1463,9 +1378,9 @@ Dazu, aus diesem Plan:
   rebased auf sie (0.4) und hält im DECISIONS-Eintrag 1 fest, was ohne sie passiert (Spec 22).
 - **Der Zwischenweg vor dem 01.10. (V1) ist kein Bauauftrag** — und seit dem 2026-09-20 auch keine
   Vorbedingung, die wir erfüllen können: der Betreiber kann ihn HandOfBloods Mod-Team
-  **empfehlen**, nicht steuern. Findet er nicht statt, entfällt V3 — und sonst nichts: weder
-`SetSwitchAssignments` noch die erwartete Trefferzahl von Sonde 6 ändern sich (K0). Die Werte für V5
-  (`BoundaryUtc`, `ExpectedArchivedCount`) hängen am Wechsel am 01.10., nicht am Zwischenweg.
+  **empfehlen**, nicht steuern. Findet er nicht statt, entfällt V3 — und sonst nichts: an
+  `SetSwitchAssignments` ändert sich nichts (K0). `BoundaryUtc` hängt am Wechsel am 01.10., nicht am
+  Zwischenweg.
 - **Der Backfill-Parameter** (Set-ID als Pflichtparameter, Teilung an Set-Grenzen, Harness mit
   Set-ID) ist eine **Auflage an den Plan zu #69**; E15 hält den Harness-Vertrag bis dahin stabil,
   und T1.6 beweist es mit 0 roten Harness-Tests.
@@ -1484,9 +1399,9 @@ Dazu, aus diesem Plan:
 ## 4. Reihenfolge und Abhängigkeiten
 
 ```
-K0 (Betreiber, jederzeit; T0.1/T0.2/T0.3/T0.5/T0.6 gemessen 2026-09-20; V1 als Empfehlung vor dem 01.10.)
+K0 (Betreiber, jederzeit; T0.1/T0.2/T0.3/T0.5/T0.6 gemessen 2026-09-20; T0.4 und V5 entfallen; V1 als Empfehlung vor dem 01.10.)
   T0.1 T0.5 ──▶ T2.1 ✓      T0.6 ──▶ T2.4 ✓      T0.2 ──▶ T2.2 ✓ (TTL-Konstante bleibt)
-  T0.3 ──▶ T5.1/T5.3 ✓ (Zweig A)                 T0.4 ──▶ K7 (Tor)      T0.4 ──▶ V5
+  T0.3 ──▶ T5.1/T5.3 ✓ (Zweig A)
 
 Worktree A — K1                                  Worktree B — K2
   T1.1 ─▶ T1.2 ─┐                                  T2.1 ─┐
@@ -1494,8 +1409,8 @@ Worktree A — K1                                  Worktree B — K2
                  │            ├─▶ T1.5 ─┐                              │
                  │            └─▶ T1.6 ─┴▶ T1.7                        └─▶ T3.1 (K3)
                  │                          │
-   (01.10.) Wechseltag ─────────────────┴▶ V5 ─▶ T1.10 ─▶ K1-PR    (T1.9 entfällt)
-   V4 (DB-Kopie) ─────────────────────────┘
+   (01.10.) Wechseltag ───▶ BoundaryUtc in die Konstante (chore:) ─▶ T1.10 ─▶ K1-PR   (T1.9, V5 entfallen)
+   V4 (DB-Kopie) ──────────────────────────────────────────────────┘
 
 K4 (nach K1-PR — tatsächlich reicht T1.6; und K2-PR)
   T4.0 ─▶ T4.1 ─▶ T4.2 ─▶ [T4.3 + T4.4] ─▶ T4.5 ─▶ T4.6 ─▶ K4-PR
@@ -1512,22 +1427,15 @@ T7 (nach K1–K6 auf dem Integrationsbranch; nach dem 08.10.) ─▶ PR auf main
 - **K1 ∥ K2, weil sie sich nicht berühren.** K1 lebt in Worker, Migration, Flush, Query; K2 in
   7TV-Client, Routen, Picker. Die einzige gemeinsame Stelle (`UsageStatsEndpoints.cs` bekommt den
   Filter aus T2.3, den Parameter aus T1.6) ist ein Einzeiler-Merge.
-- **V5 wartet auf den 01.10., und nur T1.10 wartet auf V5.** Die Migration ist ab T1.3b mit einer
-  leeren Klassifikation vollständig getestet — die Tests bringen ihre Werte als Fixture mit, nicht
-  aus der Datei. Deshalb blockiert K1 die K4-Arbeit nicht: K4 braucht T1.6. **Seit dem 2026-09-20
-  wartet auch kein Commit mehr auf den 01.10.**: früher war T1.9 der letzte Commit von K1 und
-  terminlich gebunden, heute ist der Termin ein Handgriff außerhalb des Repos (V5). K1 ist damit
-  **vor** dem 01.10. commit-fertig; nur die Probe und das Fenster liegen dahinter.
-- **Die Messwerte der Bestätigung hängen an keinem Task.** `ConfirmedFromDate`,
-  `ConfirmedThroughDate` und `ConfirmedRowCount` (Spec 4.2, Prüfung 7) entstehen erst **im
-  Wartungsfenster nach dem Worker-Stopp** (K7, Schritt 4) — vorher wären sie garantiert veraltet.
-  T1.3b baut nur den Lader dafür, T1.10 erzeugt sie für die Wegwerfdatenbank selbst, und **kein
-  Commit** wartet darauf.
-- **T1.10 steht zwischen V5 und dem K1-PR, und nirgends sonst.** Die Probe braucht die gefüllte
-  Datei (sonst prüft sie eine leere Klassifikation) und soll vor dem PR laufen, weil ihr wichtigstes
-  Ergebnis — die gemessene `Up`-Dauer — in den PR-Text und später ins Wartungsfenster-Runbook
-  gehört. Sie hält nichts anderes auf: K2–K6 hängen nicht an ihr, und ein Fehlschlag fällt auf
-  T1.3b zurück, nicht auf die Frontend-Stränge.
+- **Nur `BoundaryUtc` wartet auf den 01.10.** Die Migration ist ab T1.3b mit einem Platzhalter
+  vollständig getestet — die Migrationstests stellen ihre Fälle über die Datenbank her, nicht über
+  den Wert der Konstante. Deshalb blockiert K1 die K4-Arbeit nicht: K4 braucht T1.6. K1 ist **vor**
+  dem 01.10. bis auf einen `chore:`-Einzeiler commit-fertig; nur dieser, die Probe und das Fenster
+  liegen dahinter.
+- **T1.10 steht zwischen dem Datums-Commit und dem K1-PR, und nirgends sonst.** Die Probe soll vor
+  dem PR laufen, weil ihr wichtigstes Ergebnis — die gemessene `Up`-Dauer — in den PR-Text und
+  später ins Wartungsfenster-Runbook gehört. Sie hält nichts anderes auf: K2–K6 hängen nicht an
+  ihr, und ein Fehlschlag fällt auf T1.3b zurück, nicht auf die Frontend-Stränge.
 - **Schritt 6 (K4) vor Schritt 7 (K5)** — die Spec-Begründung, verdichtet: der Löschlauf im gewählten
   Set setzt voraus, dass das Raster Guid-lose Zeilen **anzeigen und markieren** kann; das ist der
   Schlüsselwechsel aus K4. Umgekehrt braucht K4 den Lauf nicht — Guid-lose Zeilen sind bis T5.1
@@ -1573,9 +1481,9 @@ Was der Plan trägt, ist die Zuordnung **je riskantem Task**:
 | **T5.2** (neue Body-Form) | revertierbar; die Altform bleibt ohnehin | ein alter Tab postet `{ emoteIds }` — gilt weiter (E3); ein **neuer** Tab gegen ein revertiertes Backend postet die neue Form und bekommt 400 nach der Mutation — deshalb Frontend und Backend gemeinsam zurück |
 | **T6.1–T6.3** (Voting) | revertierbar; Spalten nullbar, alte Images ignorieren sie | Set-Sessions mit `EmoteSetId` und Wahlzettel-Zeilen mit `ArchivedAt = null` bleiben; ein altes Image zeigt sie als Null-Sessions mit archivierten Zeilen — lesbar, nicht löschbar aus der Session heraus |
 
-Auslöser für einen Rückweg vor dem Deploy: ein Live-Befund aus T1.7, T2.7 oder T5.3 fehlt; Sonde 6
-Zweig B ohne Klärung; ebenso ein Fehlschlag in T1.10, der nicht auf einen Fehler der Probe selbst
-zurückgeht. Auslöser im Fenster: Prüfung 1–7 bricht ab (dann ist nichts geschehen — die
+Auslöser für einen Rückweg vor dem Deploy: ein Live-Befund aus T1.7, T2.7 oder T5.3 fehlt; ein
+Fehlschlag in T1.10, der nicht auf einen Fehler der Probe selbst
+zurückgeht. Auslöser im Fenster: Prüfung 1–3 bricht ab (dann ist nichts geschehen — die
 Transaktion ist zurückgerollt), oder AK 84 scheitert nach Schritt 6. Bricht später `Down` an einer
 der beiden Schranken ab, ist das **kein** Fehler, sondern die Grenze, die der Plan zugesagt hat.
 
@@ -1586,23 +1494,22 @@ der beiden Schranken ab, ist das **kein** Fehler, sondern die Grenze, die der Pl
 Je Task das Gate am Task. Je Kind-Issue-PR: BE, FE, E2E (freier `:5151`) grün, die genannten
 Live-Befunde im PR-Text, die gezählten Bestandstests genannt, Codex-Review über den Kind-Branch.
 Für T7 zusätzlich `node scripts/coverage-local.mjs` nach dem letzten Commit und die Zweitmeinung
-über das Ganze. **Für K1 zusätzlich AK 87–92** — davon 87–89 und 92 aus **T1.10** (die
-Migrationsprobe samt Hash-Prüfung ist ein Gate des K1-PR, kein optionaler Zusatz) und 90/91 aus
-**T1.3b** (Bauen und Testen **ohne** die gitignorierte Datei). Für K2 zusätzlich **AK 94**
-(Breaker-Kreuztest). Für K7: AK 84–86, 92 und 93 sowie der `docs:`-Nachtrag. Das ist dieselbe
-Zuordnung wie in Spec 12.
+über das Ganze. **Für K1 zusätzlich AK 87–89** aus **T1.10** (die Migrationsprobe ist ein Gate des
+K1-PR, kein optionaler Zusatz); **AK 90–92 sind am 2026-09-20 entfallen** (Spec 31). Für K2
+zusätzlich **AK 94** (Breaker-Kreuztest). Für K7: AK 84–86 und 93 sowie der `docs:`-Nachtrag. Das
+ist dieselbe Zuordnung wie in Spec 12.
 
 Vergleichspunkte auf `93af613`: 45 `SevenTvSyncServiceTests`, 54 `UsageStatQueryServiceTests`,
 14 `UsageStatFlushServiceTests`, 74 Harness-/Replay-Tests (müssen 0 rot bleiben), 42
-`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +301 neue Fälle und ≥ 88
+`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +280 neue Fälle und ≥ 88
 umgestellte** — beide Zahlen stehen in Spec 15 und gelten als Summe der dortigen Tabellen, nicht als
 fortgeschriebene Gegenrechnung. Die Zählungen aus T1.2, T1.6, T2.5b, T4.3, T5.1, T5.2 und T6.3
 machen aus den offenen Teilmengen eine Zahl. **Die Zeilen der Spec-Tabellen, die mit der Summe der
-Task-Erwartungen dieses Plans nicht übereinstimmten, sind geklärt** — acht Zahlen berichtigt, eine
-Zeile ergänzt (`file-import-step.spec.ts`), eine Aufzählung entdoppelt; Abschnitt 9 nennt sie
-einzeln mit ihrem Ergebnis. Der Stand nach der Messung von Sonde 5 (Spec 28) ist die nachgezählte
-Summe **+301**: `Infrastructure.Tests` +139, `Worker.Tests` +3, `Api.Tests` +45, Vitest +107,
-Playwright +7.
+Task-Erwartungen dieses Plans nicht übereinstimmten, sind geklärt** — Abschnitt 9 nennt sie
+einzeln mit ihrem Ergebnis. Der Stand nach dem Rückschnitt der Migrations-Absicherung (Spec 31) ist
+die nachgezählte Summe **+280**: `Infrastructure.Tests` +118, `Worker.Tests` +3, `Api.Tests` +45,
+Vitest +107, Playwright +7. Bewegt haben sich dabei genau zwei Zeilen: `UsageStatMigrationChecksTests`
+(**+10**, T1.3a) und `AddUsageStatEmoteSetIdMigrationTests` (**+10**, T1.3b).
 
 Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.
 
@@ -1746,3 +1653,48 @@ K7 = 84–86, 92, 93) stimmen nach dem Schnitt in beiden Dokumenten überein.
 escapete `\|` in Codespans tragen — die E8-Zeile in Abschnitt 2, die Protokollzeile in 7.2 und die
 `emote-usage-filter`-Zeile in 19 (am 2026-09-20 die Zeilen 96, 1251 und 2485). Sie sind in Ordnung;
 eine „Reparatur" würde sie zerstören.
+
+---
+
+## 10. Nachtrag: Rückschnitt der Migrations-Absicherung, 2026-09-20
+
+**Vertrag, Begründung und die einmalige Auflösung der alten Prüfungsnummern stehen in
+[Spec 31](../superpowers/specs/2026-09-20-emote-sets-200-spec.md).** Hier steht nur, was daraus
+**an den Tasks** wurde. Die Abschnitte 7, 8 und 9 bleiben als Stand jener Runden stehen und werden
+nicht nachträglich umgeschrieben.
+
+| Wo | Was daraus wurde |
+|---|---|
+| **T0.4** | **Entfällt** — Sonde 6 ist ersatzlos gestrichen. Keine Sonde ist mehr offen, K7 hat kein Sonden-Tor mehr, und die Zählabfrage für die Kanalliste gibt es nicht. |
+| **V5** | **Entfällt** — es gibt keine gitignorierte Datei zu füllen und keinen Hash zu bilden. Der einzige Wert vom Betreiber ist `BoundaryUtc`, genannt am 01.10. |
+| **V1 / V2 / V3** | V1 unverändert (Empfehlung). V2 und V3 hängen nicht mehr an Sonde 6, sondern schlicht an K7. **Der Purge des Wegwerfkanals ist seither der einzige Schutz** gegen seine Zeilen — die beiden Prüfungen, die ihn trugen, sind weg. |
+| **T1.3a** | Prüfungen 1–7 → **1–3**; Tests **+10** (6 + 4), ausgezählt in Spec 15.1 und am Task. |
+| **T1.3b** | Fünfzehn `Up`-Schritte → **elf**; zwei temporäre Tabellen → **eine**; Lader, Marken, `.example`s, `.gitignore`/`.dockerignore`, `internal` Testsitz und der `CLAUDE.md`-Eintrag entfallen; die Liste ist eine **committete Konstante**. Tests **+10** (3 + 1 + 1 + 2 + 3). |
+| **T1.8** | Der DECISIONS-Eintrag 1 nennt einen Wechseleintrag und drei Abbruchgründe — und den Grund für den Rückschnitt samt dem, was er offen lässt. |
+| **T1.9** | Bleibt als Wegweiser; die Tabelle darin trägt den zweiten Stand desselben Tages. **Neu darin:** der `chore:`-Commit, der `BoundaryUtc` vom Platzhalter auf den echten Wert setzt. |
+| **T1.10** | Vier Prüfungen → **drei** (die Sonde-6-Trockenprobe entfällt); kein Hash-Handgriff, keine `SetSwitchAssignments.Window.cs`, keine getrennte Messung von Prüfung 7. Abhängigkeit: nur noch **V4**. |
+| **K7** | Schritte −1 (Hash) und 4 (Messwerte) entfallen; die Schritte heißen jetzt 0–9, `Up` ist **Schritt 5**, und der `docs:`-Nachtrag nennt keine Hashes mehr. |
+| **T7** | „sieben `RAISE`-Zweige" → **drei**. |
+| **Abschnitt 4** | V5 fällt aus dem Diagramm; auf den 01.10. wartet nur noch ein `chore:`-Einzeiler. |
+| **Abschnitt 5** | Auslöser im Fenster: Prüfung **1–3**; Sonde 6 als Auslöser entfällt. |
+| **Abschnitt 6** | **AK 90–92 entfallen**; K1-Gate ist AK 5–20 und 87–89, K7 ist AK 84–86 und 93. Zielwert **+279**. |
+
+**Testzahlen, nachgezählt (keine Gegenrechnung).** Bewegt haben sich genau zwei Zeilen — beide in
+`Infrastructure.Tests`:
+
+| Datei | Task | jetzt | Herleitung |
+|---|---|---|---|
+| `Unit/UsageStatMigrationChecksTests.cs` | T1.3a | **+10** | 3 Prüfungen × (Abbruch + Durchlauf) = 6, plus 4 Zuordnungsfälle |
+| `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` | T1.3b | **+10** | 3 Abbrüche + 1 Backfill + 1 Index + 2 Saat + 3 `Down` |
+
+Damit: `Infrastructure.Tests` **+117**, `Worker.Tests` **+3**, `Api.Tests` **+45**, Vitest **+107**,
+Playwright **+7** — **Gesamt +280**. „Bestand rot" bleibt **≥ 88**.
+
+**Eine Stelle, die an etwas Gestrichenem hängt und deshalb hier steht statt still mitzugehen:** die
+zweistufige Backfill-Regel bildet genau **eine** Grenze je Kanal ab. Der Kettenschluss (alte
+Prüfung 5) deckte den Fall „zwei Wechsel an einem Kanal" ab; er ist weg, und die einfache Regel
+verlöre dort das mittlere Set, ohne dass etwas widerspricht. Spec 4.2 erklärt einen zweiten
+Wechseleintrag je Kanal deshalb zur **unzulässigen Eingabe**, und Spec 22 führt es als Risiko. Wer
+die Liste je erweitert, ändert zuerst die Backfill-Regel — das ist kein Detail des Tasks, sondern
+eine Bedingung des Vertrags.
+
