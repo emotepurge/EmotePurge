@@ -406,12 +406,11 @@ sie legen einen Kanal mit der `TwitchChannelId` des Eintrags an und geben ihm di
 1. `SET LOCAL lock_timeout = '5s'` (E11).
 2. **Eine** temporäre Tabelle aus der Liste (`CREATE TEMP TABLE set_switch_assignments … ON COMMIT
    DROP`, `INSERT … VALUES …`, gerendert aus der Konstante).
-3. **Prüfung 1 — veraltete Liste:** für jeden Wechseleintrag ist `NewEmoteSetId` gleich
-   `Channels."ActiveEmoteSetId"` des Kanals (gefunden über `TwitchChannelId`), **und kein Kanal
-   trägt mehr als einen Eintrag**. Sonst
+3. **Prüfung 1 — veraltete Liste:** für jeden Wechseleintrag, **dessen Kanal in dieser Datenbank
+   existiert**, ist `NewEmoteSetId` gleich `Channels."ActiveEmoteSetId"` des Kanals (gefunden über
+   `TwitchChannelId`), **und kein Kanal trägt mehr als einen Eintrag**. Sonst
    `RAISE EXCEPTION 'set-switch assignment stale or duplicated for channel %'`. Fängt die Liste,
-   die seit ihrer Erhebung überholt ist, einen Eintrag, dessen Kanal gar nicht existiert — und den
-   zweiten Eintrag desselben Kanals. **Die zweite Hälfte ist der Preis für den einfachen Backfill**
+   die seit ihrer Erhebung überholt ist — und den zweiten Eintrag desselben Kanals. **Die zweite Hälfte ist der Preis für den einfachen Backfill**
    (nachgetragen 2026-09-20, nach dem Zuschnitt): der bildet genau **eine** Grenze je Kanal ab, ein
    zweiter Eintrag verlöre das mittlere Set still. Die alte Intervall-Regel konnte mehrere Grenzen,
    brauchte dafür aber den Kettenschluss, der mitgestrichen wurde. Eine zusätzliche Bedingung in
@@ -426,6 +425,18 @@ sie legen einen Kanal mit der `TwitchChannelId` des Eintrags an und geben ihm di
    `RAISE EXCEPTION 'set-switch boundary % for channel % lies outside its usage range %..%'`.
    Fängt den vertippten Monat und das vertippte Jahr — die Fehler, die ein Datum von Hand
    tatsächlich macht und die sonst die halbe Historie auf die falsche Seite der Grenze schöben.
+
+**Alle drei Prüfungen betrachten nur Kanäle, die es in dieser Datenbank gibt** — Prüfungen 1 und 3
+zusätzlich nur solche mit `UsageStats`-Zeilen. **Auf einer leeren Datenbank ist die Liste damit
+wirkungslos und die Migration läuft durch.** Das ist keine Feinheit, sondern die Bedingung dafür,
+dass das Repo überhaupt benutzbar bleibt: `PostgresFixture.InitializeAsync`
+(`tests/EmotePurge.Infrastructure.Tests/Fixtures/PostgresFixture.cs:21-26`) fährt **alle** echten
+Migrationen gegen einen frischen Container, **bevor** irgendein Kanal existiert — eine Prüfung, die
+einen fehlenden Kanal als Fehler liest, würde die gesamte Infrastructure-Suite und jede
+Neuinstallation zum Abbruch bringen. Der Backfill braucht dafür keine Sonderbehandlung: ohne
+Kanalzeile gibt es keine Nutzungszeilen, die er zuordnen könnte. *(Nachgetragen am 2026-09-20 nach
+dem Codex-Review des Zuschnitts — die frühere Fassung erklärte einen fehlenden Kanal ausdrücklich
+zum Abbruchgrund.)*
 6. `ALTER TABLE "UsageStats" ADD COLUMN "EmoteSetId" text NULL` — **ohne** Default.
 7. Backfill in **zwei** `UPDATE`s, in dieser Reihenfolge: (a) **alle** Zeilen bekommen die
    `Channels."ActiveEmoteSetId"` ihres Kanals; (b) für jeden Wechseleintrag bekommen die Zeilen
@@ -455,6 +466,14 @@ keinen Datenstand, keinen Kettenschluss. Das ist die bewusste Entscheidung des B
 dort kein Schaden, der den Aufwand einer lückenlosen Klassifikation rechtfertigt, und der
 Chat-Log-Backfill (#69) kann die Zahlen nach dem 2026-10-08 ohnehin neu erzeugen. Die Herleitung
 steht in Nachtrag 31.
+
+**Und ein zweites, das offen bleibt:** ein Tippfehler **in** einem Eintrag — eine gültig aussehende,
+aber falsche `OldEmoteSetId` — wird von keiner der drei Prüfungen gefunden. Set-IDs sind freier
+Text ohne Fremdschlüssel, und der Wert landet ungeprüft auf allen Zeilen vor der Grenze. Ebenso ein
+Grenzdatum, das falsch ist, aber innerhalb des Nutzungszeitraums liegt. Beides hängt an genau
+**einer** handgeschriebenen Zeile in einer committeten Datei und wird im PR gelesen; eine Prüfung
+dagegen hieße, die Liste gegen eine zweite Quelle zu halten, und die zweite Quelle war gerade der
+gestrichene Aufwand. **Bewusst akzeptiert**, Review durch Lesen.
 
 **Ein-Tages-Unschärfe (verbindlich benannt, nicht kaschiert):** die Tageszeile des Grenztags kann
 Nutzung beider Phasen enthalten und geht **ganz** an die neue Set-ID. Der DECISIONS-Eintrag 1 nennt
@@ -984,9 +1003,11 @@ Zahlen; Live ohne Zeile → `emoteId: null, totalUseCount: null`; Zeile ohne Liv
 | `DeletableEmote.emoteId` (`mass-delete-panel.ts:34-37`), `DeleteQueueEmote.emoteId` (`seven-tv-delete.service.ts:55-59`) | `emoteId?: string` |
 | Queue-Key Delete (`:118`) | `key: emote.sevenTvEmoteId` — R3-Nachtrag: der Import-Lauf war das Muster. Eine Duplikat-Zelle ergibt **eine** Zeile (Sonde 5, Zweig A) |
 | Queue-Key Restore (`seven-tv-restore.service.ts:152`) | `key: ${sevenTvEmoteId}#${alias}` — **eine Zeile je Alias**, weil je Alias ein `ADD` nötig ist; das `ADD` sendet den Alias. Der Schlüsselraum mit `#` existiert **nur** im Restore-Lauf; `sync-restored` bekommt die 7TV-Ids dedupliziert |
+| Vorprüfung des Restore (`already-present-filter.ts:144-151`) | vergleicht im Restore-Lauf **`(sevenTvEmoteId, alias)`**, nicht mehr die ID allein. Heute filtert `filterAlreadyPresent` über `targetIds.has(row.sevenTvEmoteId)` — bei einer Duplikat-Zelle, deren einer Alias wiederhergestellt wurde und deren anderer scheiterte, fiele die ganze Zeile aus dem Wiederholungslauf und der fehlende Alias wäre **aus dem Protokoll nicht mehr herstellbar**. Nachgetragen am 2026-09-20 (Codex-Review des Zuschnitts); der Delete-Lauf und der Import bleiben bei der ID-Achse |
+| Freigewordene Plätze (`usage-stats-page.ts:1356`, `restore-confirm-dialog.ts:90`) | ein Löschlauf gibt **`slotCount`** Plätze je Zelle frei, nicht einen — `occupiedSlots` wird um die Summe der `slotCount` der gelöschten Zellen verringert, und die Restore-Projektion rechnet mit der Zahl der **`ADD`s** (Summe der `aliases`), nicht mit der Zahl der Namen. Sonst driftet die Kapazitätsanzeige einer nicht-aktiven Ansicht je Duplikat um eins und die Überlaufwarnung vor dem Restore kann ausbleiben |
 | `RunResult` (`seven-tv-run-engine.ts:117-118`) | `doneIds` entfällt (E2); `doneKeys` einzige Rückmelde-Identität |
 | Panel `deleted` (`mass-delete-panel.ts:297-303`) | emittiert `doneKeys` (E18); `usage-stats-page.ts:1349-1350` und `vote-session-detail-page.ts:690-695` filtern nach `sevenTvEmoteId` |
-| Protokoll (`purge-run-export.ts:37-42`, `:154-162`) | `PurgeRunRow.emoteId: string \| null` **und** `aliases: string[]` (alle Aliase, unter denen die Zelle im Set lag — bei `slotCount 1` genau einer); Panel-Filter `:344-352`/`:393-398` entfällt; Parser akzeptiert `null` **und** alte Protokolle mit Guid **und** solche ohne `aliases` (dann gilt `[emoteName]`) |
+| Protokoll (`purge-run-export.ts:37-42`, `:154-162`) | `PurgeRunRow.emoteId: string \| null` **und** `aliases: string[]` (alle Aliase, unter denen die Zelle im Set lag — bei `slotCount 1` genau einer); Panel-Filter `:344-352`/`:393-398` entfällt; Parser akzeptiert `null` **und** alte Protokolle mit Guid **und** solche ohne `aliases` (dann gilt `[row.name]` — `PurgeRunRow` trägt `name`, nicht `emoteName`) |
 | Restore aus Protokoll (`restore-flow.ts:82-86`) | `emoteId: row.emoteId ?? undefined`; `aliases` der Zeile werden durchgereicht, und der Restore-Dienst legt daraus je Alias eine Queue-Zeile an |
 | Delete-/Restore-Laufdatensatz (`DeleteRunInfo :79-83`, `RestoreRunInfo :62-66`) | `+ setId: string`, beim Start eingefroren; `reportDeleted`/`reportRestored` und beide Retries lesen Set-ID **und** Keys aus dem Datensatz |
 | `emote-admin.service.ts:55-68` | `syncDeleted(channelName, { emoteSetId, sevenTvEmoteIds })`, `syncRestored` ebenso; die Altform sendet der Client **nie** |
@@ -1946,7 +1967,7 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | Unit | `Unit/ForeignSevenTvBreakerPolicyTests.cs` | Operationskennung (6.1): getrennter `OtherFailure`-Zähler je Operation, getrennte Half-open-Probe, **geteilte** Rate-Limit-Sperre samt `Retry-After` | +4 | **12 von 12** (Signatur — jede Bestandsmethode nimmt die Kennung; mit genau einer Kennung ist das Verhalten unverändert, und genau das belegen die umgestellten Fälle) |
 | Unit | `Unit/SevenTvEmoteSetListServiceTests.cs` (neu) | Cache-Treffer, Miss, Redis-Ausfall fail-open, ein Permit je Request (AK 23/24); **Wächterkette aus 6.1**: *n* parallele kalte Misses ⇒ **ein** Upstream-Request (Singleflight); GraphQL-429 als HTTP 200 (`extensions.status: 429`) ⇒ `RateLimited`, nicht `Ok`; offener Breaker ⇒ 503 **ohne** Upstream-Request; negatives Ergebnis wird gehalten (zweiter Aufruf in der Frist ohne Upstream-Request), `NoSevenTvAccount` wie ein Treffer; **Kreuztest (AK 94)**: wiederholtes `Unavailable` der Liste sperrt den Vorschaupfad nicht, ein bestätigtes 429 sperrt beide | +12 | — |
 | Unit | `Unit/UsageStatMigrationChecksTests.cs` (neu, pur) | die **drei** Prüfbedingungen als pure Funktionen über die Wechselliste — je Prüfung 1–3 ein Abbruch- und ein Durchlauffall (6), dazu die **zweite Abbruchgestalt von Prüfung 1** (zwei Einträge desselben Kanals) = 7, dazu die **vier Zuordnungsfälle** `Date` → Set-ID: Kanal ohne Wechseleintrag ⇒ `ActiveEmoteSetId`, Zeile vor der Grenze ⇒ `OldEmoteSetId`, Zeile **am** Grenztag ⇒ `NewEmoteSetId`, Zeile nach der Grenze ⇒ `NewEmoteSetId` = 10 | +11 | — |
-| Integration | `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu) | Migration gegen Container: **Abbruch 1–3** (AK 5/6, drei Fälle), **Backfill, das jede Zeile genau einmal erfasst** (AK 7, ein Fall), Index (AK 8), Saat (AK 9), **Saat vergibt nie `ClosedBy = 'set-switch'`** (AK 9, eigener Fall — die Invariante, an der `Down`-Schranke 1 hängt), `Down` (AK 10 — drei Fälle, darunter **Set-Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab und hat nichts entfernt**); die Fälle stellen ihre Eingabe über die **Datenbank** her (ein Kanal mit der `TwitchChannelId` der Konstante), nicht über eine Fixture der Liste (4.2). Ausgezählt: 3 + 1 + 1 + 2 + 3 = 10 | +10 | — |
+| Integration | `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu) | Migration gegen Container: **Abbruch 1–3** (AK 5/6, drei Fälle), **Backfill, das jede Zeile genau einmal erfasst** (AK 7, ein Fall), Index (AK 8), Saat (AK 9), **Saat vergibt nie `ClosedBy = 'set-switch'`** (AK 9, eigener Fall — die Invariante, an der `Down`-Schranke 1 hängt), `Down` (AK 10 — drei Fälle, darunter **Set-Wechsel ohne `(EmoteId, Date)`-Kollision ⇒ `Down` bricht trotzdem ab und hat nichts entfernt**); die Fälle stellen ihre Eingabe über die **Datenbank** her (ein Kanal mit der `TwitchChannelId` der Konstante), nicht über eine Fixture der Liste (4.2). Ausgezählt: 3 + 1 + 1 + 2 + 3 = 10 | +11 | — |
 | Integration | `Integration/UsageStatFlushServiceTests.cs` | zwei Set-IDs an einem Tag, dreispaltiges Addieren, zurückgestellter Batch mit anderer Set-ID (AK 11) | +3 | **14 von 14** (Signatur) |
 | Integration | `Integration/UsageStatQueryServiceTests.cs` | Set-Filter in Context/Daily/Series/Totals, `null` = aktiv, `GetRowsAsync`-Summe, `/series` nach 7TV-Id (AK 19/20), `NameTwinEmoteSetIds`, nicht-aktive Grundmenge (archivierte mit Zahlen), Klasse 2b bleibt `null` in `/totals?emoteSetId=` nach dem Anlegen einer Set-Session (AK 63, T6.3) | +11 | die Fälle für `GetChannelSeriesAsync` und `GetRowsAsync` (Teilmenge der 54; Zahl nicht verifiziert — beim Umstellen zählen) |
 | Integration | `Integration/ChannelEmoteSetObservationServiceTests.cs` (neu) | Öffnen, Set-Wechsel in einer Transaktion (AK 16), fünf Schließstellen (AK 17), partieller Index (AK 18), Rejoin öffnet neu | +9 | — |
@@ -1989,9 +2010,9 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `core/emotes/emote-admin.service.spec.ts` | `targetEmoteSetId` immer gesendet (AK 44, ein Fall); neue Bodies für `syncDeleted`/`syncRestored` (T5.1, zwei Fälle) | +3 | 4 von 9 (`syncDeleted`/`syncRestored`/`syncImported`-Bodies) |
 | `core/seven-tv/seven-tv-emote-set.service.spec.ts` (neu) | drei Listen-Routen, `?emoteSetId=` | +4 | — |
 | `core/seven-tv/seven-tv-run-engine.spec.ts` | `doneKeys` einzige Identität; Delete-Lauf ohne `emoteId` (AK 68) | +2 | Fälle, die `doneIds` lesen (Teilmenge von 22; nicht verifiziert) |
-| `core/seven-tv/seven-tv-delete.service.spec.ts`, `seven-tv-restore.service.spec.ts` | Key `sevenTvEmoteId`, Set-ID im Datensatz, Retry (AK 71), Body neue Form; Duplikat-Zelle ⇒ **eine** Delete-Zeile mit **einem** `REMOVE`; Protokollzeile mit zwei Aliasen ⇒ **zwei** Restore-Zeilen `sevenTvEmoteId#alias` mit je einem `ADD`, aber einer 7TV-Id im Bericht (AK 68/69) | +8 | Teilmenge von 31 + 30 (Key- und Body-Assertions) |
+| `core/seven-tv/seven-tv-delete.service.spec.ts`, `seven-tv-restore.service.spec.ts` | Key `sevenTvEmoteId`, Set-ID im Datensatz, Retry (AK 71), Body neue Form; **Teil-Wiederholung einer Duplikat-Zelle: ein Alias liegt schon, der andere fehlt ⇒ die Zeile bleibt im Lauf** (Vorprüfung auf `(id, alias)`, 7.2); Duplikat-Zelle ⇒ **eine** Delete-Zeile mit **einem** `REMOVE`; Protokollzeile mit zwei Aliasen ⇒ **zwei** Restore-Zeilen `sevenTvEmoteId#alias` mit je einem `ADD`, aber einer 7TV-Id im Bericht (AK 68/69) | +9 | Teilmenge von 31 + 30 (Key- und Body-Assertions) |
 | `core/seven-tv/seven-tv-import.service.spec.ts` | set-zentrierter Report ohne Resync (AK 41) | +2 | 0 von 25 |
-| `shared/export/purge-run-export.spec.ts` | `emoteId: null`, altes Protokoll (AK 69); `aliases` geschrieben und gelesen; altes Protokoll **ohne** `aliases` ⇒ `[emoteName]` | +5 | Fälle mit `emoteId: string`-Pflicht (Teilmenge von 14) |
+| `shared/export/purge-run-export.spec.ts` | `emoteId: null`, altes Protokoll (AK 69); `aliases` geschrieben und gelesen; altes Protokoll **ohne** `aliases` ⇒ `[row.name]` | +5 | Fälle mit `emoteId: string`-Pflicht (Teilmenge von 14) |
 | `shared/export/usage-export.spec.ts`, `usage-export-purposes.spec.ts` | Set in Name/Meta, `null`-Zeile (AK 65) | +4 | Fixtures ohne Set (5 + 8, Signatur) |
 | `shared/seven-tv/mass-delete-panel.spec.ts` | `deleted` als Keys, kein Protokoll-Filter, Duplikat-Zelle geht in die Queue wie jede andere (keine Ausnahme mehr, AK 68), Setname in Dialogdaten (AK 72/73) | +4 | Fälle zu `doneIds`/Protokoll-Filter (Teilmenge von 29) |
 | `shared/seven-tv/import-target-dialog.spec.ts`, neu `import-target-choices.spec.ts` (ersetzt `import-target-options.spec.ts`) | Klassen, Vorauswahl, eigener Kanal, Bestätigung ungetrackt (AK 34/35) | +10 | **28 + 4** (Datenquelle wechselt von `listMine` auf 6.2) |
@@ -2002,7 +2023,7 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `shared/seven-tv/delete-confirm-dialog.spec.ts`, `restore-flow.spec.ts` | Setname, Zusatz nur bei nicht-aktivem Set, Duplikat-Zelle als **eine** Löschung ohne Ausnahmegruppe (AK 73); `emoteId` optional | +3 | Fixtures (Teilmenge von 14 + 16) |
 | `shared/selection/list-selection.spec.ts` | zwei Guid-lose Zeilen (AK 54) — als Konsument-Spec über `sevenTvEmoteId`-Keys | +2 | 0 von 26 |
 | `shared/datetime/date-range-menu.spec.ts` | Preset `'set-observed'` (AK 61) | +2 | 0 von 4 |
-| `features/usage-stats/usage-stats-page.spec.ts` | Dropdown, Reload-Regeln (AK 50–52, T4.2, vier Fälle); Schlüsselwechsel als Konsument (AK 54: Guid-lose Zeilen wählbar, `retainAmong`, Drilldown-Gate, Voting-Auflösung — T4.3, drei Fälle); `null`-Gruppe (AK 56), Badge (AK 57), Tatsachenangabe als **Matrix** (AK 60 — alle vier Fälle, darunter **Zahlen ohne Beobachtungsintervall: nur B−, keine Aussage über Zahlen**), Sperren (AK 62 — T4.4, zehn Fälle); Scope-Capture für Export/Import (AK 64 zweiter Teil, T4.5, zwei Fälle); `onDeleted` nach Key (T5.1, ein Fall) | +20 | Fälle, die `emoteId`-Keys oder `totalUseCount: number` voraussetzen (Teilmenge von 42) |
+| `features/usage-stats/usage-stats-page.spec.ts` | Dropdown, Reload-Regeln (AK 50–52, T4.2, vier Fälle); Schlüsselwechsel als Konsument (AK 54: Guid-lose Zeilen wählbar, `retainAmong`, Drilldown-Gate, Voting-Auflösung — T4.3, drei Fälle); `null`-Gruppe (AK 56), Badge (AK 57), Tatsachenangabe als **Matrix** (AK 60 — alle vier Fälle, darunter **Zahlen ohne Beobachtungsintervall: nur B−, keine Aussage über Zahlen**), Sperren (AK 62 — T4.4, zehn Fälle); Scope-Capture für Export/Import (AK 64 zweiter Teil, T4.5, zwei Fälle); `onDeleted` nach Key und **freigewordene Plätze nach `slotCount` statt nach Zeilenzahl** (T5.1, zwei Fälle) | +21 | Fälle, die `emoteId`-Keys oder `totalUseCount: number` voraussetzen (Teilmenge von 42) |
 | `features/usage-stats/create-vote-session-dialog.spec.ts` | Set-Session-Body | +2 | Fälle zu `emoteIds` (Teilmenge von 14) |
 | `features/voting/vote-session-detail-page.spec.ts` | `canSelectForDelete = canManage`, Panel-Set-ID, `eligible`, `onDeleted` nach 7TV-Id (AK 81/82) | +4 | 2 von 8 (`hasUsageData`-Gate) |
 | `shared/audit/audit-row.spec.ts` | `targetEmoteSet`-Zusatz (8.10) | +3 | 0 |
@@ -2016,7 +2037,7 @@ und **mit umgestellt** werden — keiner davon wird gelöscht, um grün zu werde
 | `e2e/emote-import.e2e.spec.ts` | gleicher Kanal, anderes Set (AK 43); ungetracktes Ziel mit Bestätigung und set-zentriertem Report; Quell-Set-Picker | +3 |
 | `e2e/vote-ballot.e2e.spec.ts` | Set-Session (AK 83) | +1 |
 
-**Summe: +280 Fälle** — **nachgerechnet am 2026-09-20**, zuletzt nach dem Rückschnitt der
+**Summe: +283 Fälle** — **nachgerechnet am 2026-09-20**, zuletzt nach dem Rückschnitt der
 Migrations-Absicherung (Nachtrag 31), Zeile für Zeile über die fünf Tabellen oben, nicht
 fortgeschrieben. (Frühere Zwischenstände dieses Nachrechnens und ihre Herkunft stehen in den
 Abschnitten 26 und 31.)
@@ -2029,8 +2050,8 @@ was eine fortgeschriebene Zahl nach drei Überarbeitungen tut. Ab hier gilt: **d
 Summe der Tabellen, und wer eine Zeile ändert, addiert neu.** Die alte Gegenrechnung ist damit
 gegenstandslos und wird nicht weitergeführt.
 
-Aufteilung der +280: `Infrastructure.Tests` **+118**, `Worker.Tests` **+3**, `Api.Tests` **+45**,
-Vitest **+107**, Playwright **+7**. Die beiden Zahlen, die sich am 2026-09-20 zuletzt bewegt haben,
+Aufteilung der +283: `Infrastructure.Tests` **+119**, `Worker.Tests` **+3**, `Api.Tests` **+45**,
+Vitest **+109**, Playwright **+7**. Die beiden Zahlen, die sich am 2026-09-20 zuletzt bewegt haben,
 sind die der Migration: `UsageStatMigrationChecksTests` trägt **+11** (drei Prüfungen × zwei
 Gestalten plus vier Zuordnungsfälle), `AddUsageStatEmoteSetIdMigrationTests` **+10** (3 + 1 + 1 + 2
 + 3). Beide sind ausgezählt, nicht fortgeschrieben.
@@ -2076,7 +2097,7 @@ Je Bauschritt, nicht als Summe zuerst. „CC" ist Wandzeit der Subagenten.
 | K6 Set-Session Anlage, Votable, Fehlercode (T6.1) | ~5 h | ~30 min |
 | K6 Worker-Wiederholung + Wettlauftest (T6.2) | ~4 h | ~25 min |
 | K6 Ergebnisse, Detailseite, Dialog, E2E, DECISIONS 3 (T6.3) | ~6 h | ~35 min |
-| Tests über alle Ebenen (**+280**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
+| Tests über alle Ebenen (**+283**, Bestand ≥ 88 umgestellt) — in den Zeilen oben enthalten | — | — |
 | T7 Coverage, Codex-Review, PR | ~2 h | ~15 min |
 | K7 Wartungsfenster inkl. Live-Verifikation Prod | ~1,5 h | — |
 | **Summe** | **~109 h** | **~11,75 h** |
@@ -2756,19 +2777,19 @@ Gegenrechnungen sind verboten — sind **zwei** Zeilen neu ausgezählt:
 
 | Datei | jetzt | Herleitung |
 |---|---|---|
-| `Unit/UsageStatMigrationChecksTests.cs` | **+10** | 3 Prüfungen × (ein Abbruch- und ein Durchlauffall) = 6, plus 4 Zuordnungsfälle (ohne Eintrag, vor der Grenze, am Grenztag, nach der Grenze) |
-| `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` | **+10** | 3 Abbrüche + 1 Backfill + 1 Index + 2 Saat + 3 `Down` |
+| `Unit/UsageStatMigrationChecksTests.cs` | **+11** | 3 Prüfungen × (ein Abbruch- und ein Durchlauffall) = 6, plus 4 Zuordnungsfälle (ohne Eintrag, vor der Grenze, am Grenztag, nach der Grenze) |
+| `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` | **+11** | leere Datenbank, 3 Abbrüche + 1 Backfill + 1 Index + 2 Saat + 3 `Down` |
 
 Die Summen der fünf Tabellen aus Abschnitt 15, jede nachgezählt:
 
 | Tabelle | Summe |
 |---|---|
-| 15.1 `Infrastructure.Tests` | **+117** |
+| 15.1 `Infrastructure.Tests` | **+119** |
 | 15.2 `Worker.Tests` | **+3** |
 | 15.3 `Api.Tests` | **+45** |
-| 15.4 Vitest | **+107** |
+| 15.4 Vitest | **+109** |
 | 15.5 Playwright | **+7** |
-| **Gesamt** | **+279** |
+| **Gesamt** | **+283** |
 
 „Bestand rot" bleibt bei **≥ 88** — keiner der entfallenen Fälle war ein Bestandstest.
 

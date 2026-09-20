@@ -425,11 +425,13 @@ Task ausführt, liest Spec 4.2 als Ganzes, nicht diesen Absatz.
 `PendingMigrationGuard.cs:11` bleibt unverändert.
 
 **Tests:** `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` (neu, gegen den ephemeren
-Container) **+10** (Zielwert aus Spec 15.1) über AK 5/6 (**drei** Abbruchfälle: veraltete Liste,
-leere `ActiveEmoteSetId`, unplausibles Grenzdatum), AK 7 (Backfill — ein Fall, der den Kanal mit
+Container) **+11** (Zielwert aus Spec 15.1) über AK 5/6 (**drei** Abbruchfälle: veraltete Liste,
+leere `ActiveEmoteSetId`, unplausibles Grenzdatum), **den Lauf gegen eine leere Datenbank** (`Up`
+läuft durch, obwohl die Liste einen Kanal nennt, den es dort nicht gibt — genau der Fall, den
+`PostgresFixture` bei jedem Suite-Start herstellt), AK 7 (Backfill — ein Fall, der den Kanal mit
 Wechseleintrag **und** einen ohne prüft), AK 8, AK 9 (Saat **und**, als eigener Fall, die
 `'set-switch'`-Invariante) und AK 10 (**drei**). Die Fälle selbst stehen in Spec 14 unter diesen
-Nummern; ausgezählt: 3 + 1 + 1 + 2 + 3 = 10.
+Nummern; ausgezählt: 3 + 1 + 1 + 1 + 2 + 3 = 11.
 `Integration/PendingMigrationGuardTests.cs` bleibt grün.
 
 **Gate:** BE grün; `dotnet ef migrations list` gegen die lokale Dev-DB zeigt genau eine Pending;
@@ -1177,7 +1179,7 @@ F12; Kriterien AK 67–69, 71, 72.
 **Tests — Teilaufgabe: alle Teilmengen zählen und im PR-Text nennen.** `seven-tv-run-engine.spec.ts`
 (Fälle, die `doneIds` lesen, von 22) **+2** (AK 68: `doneKeys` einzige Identität; Lauf ohne `emoteId`).
 `seven-tv-delete.service.spec.ts` (31) / `seven-tv-restore.service.spec.ts` (30) — Key- und
-Body-Assertions umgestellt, **+8** (AK 68, AK 71: Set-ID beim Start eingefroren, Erstbericht und
+Body-Assertions umgestellt, **+9** (AK 68, AK 71: Set-ID beim Start eingefroren, Erstbericht und
 `retrySyncReport` senden dieselbe Set-ID nach einem Dropdown-Wechsel; neue Body-Form; Altform wird
 **nie** gesendet; **Duplikat-Zelle ⇒ eine Delete-Zeile mit einem `REMOVE`**; **Protokollzeile mit
 zwei Aliasen ⇒ zwei Restore-Zeilen `sevenTvEmoteId#alias` mit je einem `ADD`, aber einer 7TV-Id im
@@ -1186,7 +1188,7 @@ altes Protokoll mit Guid, beides wiederherstellbar; **`aliases` geschrieben und 
 Protokoll ohne `aliases` ⇒ `[row.name]`**). `mass-delete-panel.spec.ts` (29) — `doneIds`- und
 Protokoll-Filter-Fälle umgestellt, **+3** (AK 72: `deleted` als Keys; kein Protokoll-Filter;
 **Duplikat-Zelle geht in die Queue wie jede andere** — die Ausnahme aus dem entfallenen 8.9 gibt es
-nicht). `restore-flow.spec.ts` (16) — Fixtures. `usage-stats-page.spec.ts` **+1**,
+nicht). `restore-flow.spec.ts` (16) — Fixtures. `usage-stats-page.spec.ts` **+2**,
 `vote-session-detail-page.spec.ts` **+1** (AK 72: Hosts filtern nach `sevenTvEmoteId`; Detailseite
 behält ihren Guid-Schlüssel — ein Test, der das festhält). `emote-admin.service.spec.ts` (4 von 9
 rot: Bodies) umgestellt, **+2**.
@@ -1501,15 +1503,15 @@ ist dieselbe Zuordnung wie in Spec 12.
 
 Vergleichspunkte auf `93af613`: 45 `SevenTvSyncServiceTests`, 54 `UsageStatQueryServiceTests`,
 14 `UsageStatFlushServiceTests`, 74 Harness-/Replay-Tests (müssen 0 rot bleiben), 42
-`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +280 neue Fälle und ≥ 88
+`usage-stats-page.spec.ts`, 30 `usage-atlas`-E2E-Fälle. **Zielwerte: +283 neue Fälle und ≥ 88
 umgestellte** — beide Zahlen stehen in Spec 15 und gelten als Summe der dortigen Tabellen, nicht als
 fortgeschriebene Gegenrechnung. Die Zählungen aus T1.2, T1.6, T2.5b, T4.3, T5.1, T5.2 und T6.3
 machen aus den offenen Teilmengen eine Zahl. **Die Zeilen der Spec-Tabellen, die mit der Summe der
 Task-Erwartungen dieses Plans nicht übereinstimmten, sind geklärt** — Abschnitt 9 nennt sie
 einzeln mit ihrem Ergebnis. Der Stand nach dem Rückschnitt der Migrations-Absicherung (Spec 31) ist
-die nachgezählte Summe **+280**: `Infrastructure.Tests` +118, `Worker.Tests` +3, `Api.Tests` +45,
-Vitest +107, Playwright +7. Bewegt haben sich dabei genau zwei Zeilen: `UsageStatMigrationChecksTests`
-(**+10**, T1.3a) und `AddUsageStatEmoteSetIdMigrationTests` (**+10**, T1.3b).
+die nachgezählte Summe **+283**: `Infrastructure.Tests` +119, `Worker.Tests` +3, `Api.Tests` +45,
+Vitest +109, Playwright +7. Die Zeilen, die der Zuschnitt und die
+anschließende Codex-Runde bewegt haben, stehen einzeln in Nachtrag 10.
 
 Der Merge gehört dem Nutzer; der Deploy ist ein getrenntes Wartungsfenster.
 
@@ -1677,18 +1679,20 @@ nicht nachträglich umgeschrieben.
 | **T7** | „sieben `RAISE`-Zweige" → **drei**. |
 | **Abschnitt 4** | V5 fällt aus dem Diagramm; auf den 01.10. wartet nur noch ein `chore:`-Einzeiler. |
 | **Abschnitt 5** | Auslöser im Fenster: Prüfung **1–3**; Sonde 6 als Auslöser entfällt. |
-| **Abschnitt 6** | **AK 90–92 entfallen**; K1-Gate ist AK 5–20 und 87–89, K7 ist AK 84–86 und 93. Zielwert **+279**. |
+| **Abschnitt 6** | **AK 90–92 entfallen**; K1-Gate ist AK 5–20 und 87–89, K7 ist AK 84–86 und 93. Zielwert **+283**. |
 
-**Testzahlen, nachgezählt (keine Gegenrechnung).** Bewegt haben sich genau zwei Zeilen — beide in
-`Infrastructure.Tests`:
+**Testzahlen, nachgezählt (keine Gegenrechnung).** Der Zuschnitt und die anschließende
+Codex-Runde haben zusammen **vier** Zeilen bewegt:
 
 | Datei | Task | jetzt | Herleitung |
 |---|---|---|---|
-| `Unit/UsageStatMigrationChecksTests.cs` | T1.3a | **+10** | 3 Prüfungen × (Abbruch + Durchlauf) = 6, plus 4 Zuordnungsfälle |
-| `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` | T1.3b | **+10** | 3 Abbrüche + 1 Backfill + 1 Index + 2 Saat + 3 `Down` |
+| `Unit/UsageStatMigrationChecksTests.cs` | T1.3a | **+11** | 3 Prüfungen × (Abbruch + Durchlauf) = 6, die zweite Abbruchgestalt von Prüfung 1 (zwei Einträge desselben Kanals) = 7, plus 4 Zuordnungsfälle |
+| `Integration/AddUsageStatEmoteSetIdMigrationTests.cs` | T1.3b | **+11** | leere Datenbank + 3 Abbrüche + 1 Backfill + 1 Index + 2 Saat + 3 `Down` |
+| `core/seven-tv/seven-tv-delete.service.spec.ts` / `seven-tv-restore.service.spec.ts` | T5.1 | **+9** | die acht bisherigen plus die Teil-Wiederholung einer Duplikat-Zelle (ein Alias liegt, der andere fehlt) |
+| `features/usage-stats/usage-stats-page.spec.ts` | T4.2/T4.3/T4.4/T4.5/T5.1 | **+21** | 4 + 3 + 10 + 2 + **2** (T5.1: `onDeleted` nach Key **und** freigewordene Plätze nach `slotCount`) |
 
-Damit: `Infrastructure.Tests` **+117**, `Worker.Tests` **+3**, `Api.Tests` **+45**, Vitest **+107**,
-Playwright **+7** — **Gesamt +280**. „Bestand rot" bleibt **≥ 88**.
+Damit: `Infrastructure.Tests` **+119**, `Worker.Tests` **+3**, `Api.Tests` **+45**, Vitest **+109**,
+Playwright **+7** — **Gesamt +283**. „Bestand rot" bleibt **≥ 88**.
 
 **Eine Stelle, die an etwas Gestrichenem hängt und deshalb hier steht statt still mitzugehen:** die
 zweistufige Backfill-Regel bildet genau **eine** Grenze je Kanal ab. Der Kettenschluss (alte
