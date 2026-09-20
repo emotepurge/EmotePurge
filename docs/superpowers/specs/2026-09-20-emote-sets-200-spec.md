@@ -818,9 +818,13 @@ Designsprache: `docs/UI-Designsprache.md` (verbindlich), `DESIGN.md`; Muster: `d
 - Die Wahl ist eine **Sicht** wie der Zeitraum: Set-Wechsel ⇒ `selection.retainAmong(payload)` mit
   der #94-Meldung, **kein** `clear()`; `clearSeriesCache()`; Live-Liste neu laden (E16);
   Set-Liste **nicht** neu laden (E19).
-- Zustand in der URL wie der Zeitraum (`core/routing/list-query-state` — nicht verifiziert, ob das
-  Muster dort passt; Prüfaufgabe in K4). Ein `emoteSetId` in der URL, das die Liste nicht kennt,
-  fällt still auf das aktive Set zurück.
+- Zustand in der URL — und zwar **nicht** analog zum Zeitraum, wie eine frühere Fassung dieser
+  Spec behauptet hat: der Zeitraum steht in keinem Query-Parameter, sondern in einem lokalen
+  Signal (`usage-stats-page.ts:333`), und die Seite kennt überhaupt keinen `ActivatedRoute`
+  (geprüft am 2026-09-20, null Treffer). Ob `core/routing/list-query-state` das Muster hergibt,
+  ist Prüfaufgabe T4.0; es bedient heute fünf paginierte Listenseiten (page + Filter, `replaceUrl`,
+  Defaults werden entfernt). Ein `emoteSetId` in der URL, das die Liste nicht kennt, fällt still
+  auf das aktive Set zurück.
 - Gates, die heute auf `activeEmoteSetId()` stehen (`.html:108` Kopfzeile, `:890` Dock;
   `vote-session-detail-page.html:155`), stehen auf `selectedEmoteSetId()`; Kopfzeile und Dock
   bleiben auf `!isCoarse()`.
