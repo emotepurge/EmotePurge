@@ -41,6 +41,29 @@ public readonly record struct ForeignSevenTvBreakerDecision(
     bool Allowed, bool OpenedByRateLimit, TimeSpan RemainingOpenTime, long Generation);
 
 /// <summary>
+/// The operations that share one <see cref="ForeignSevenTvBreakerPolicy"/> instance. Constants
+/// rather than free-form strings: an operation nobody named here is an operation nobody can find
+/// again, and a typo would silently open a third, private failure counter that no caller ever
+/// consults a second time.
+/// </summary>
+public static class ForeignSevenTvBreakerOperations
+{
+    /// <summary>The foreign-channel-import preview (spec 2026-09-09).</summary>
+    public const string ForeignPreview = "foreign-preview";
+
+    /// <summary>The emote-set list of a 7TV account (spec 2026-09-20, 6.1).</summary>
+    public const string EmoteSetList = "emote-set-list";
+
+    /// <summary>
+    /// The leaderboard import source (spec 2026-09-13). It runs on its own policy instance because
+    /// its upstream bucket is a different one, so this name only ever shares a dictionary with
+    /// itself — it exists because the operation parameter is mandatory, not because the leaderboard
+    /// has anything to share.
+    /// </summary>
+    public const string Leaderboard = "leaderboard";
+}
+
+/// <summary>
 /// Circuit breaker for the foreign-channel-import preview's 7TV calls (spec 2026-09-09, E4/AK 8) —
 /// handwritten and pure, no Polly, same shape as <c>TwitchReconnectBackoffPolicy</c>,
 /// <c>SevenTv.SevenTvBackoffPolicy</c> and <c>TwitchWatchdogPolicy</c> in <c>EmotePurge.Worker</c>: a
@@ -87,68 +110,130 @@ public readonly record struct ForeignSevenTvBreakerDecision(
 /// <see cref="TimeProvider"/> internally instead, the same shape <c>RateLimitTelemetryStore</c>
 /// already uses, and stays substitutable in tests through the same seam.
 /// </para>
+/// <para>
+/// <b>What each signal locks (spec 2026-09-20, 6.1).</b> One instance serves more than one
+/// operation, and the two signals do not reach equally far. A confirmed <c>RateLimited</c> — HTTP
+/// 429 or HTTP 200 with <c>extensions.status: 429</c> — locks the <i>provider</i>, with 7TV's own
+/// <c>Retry-After</c>: the bucket it describes is shared, so a 429 on one query says exactly as
+/// much about the other. The consecutive-<c>OtherFailure</c> streak and the one half-open probe are
+/// <i>per operation</i>, because a malformed or schema-drifted query of ours is indistinguishable
+/// from a real outage (F17) and would otherwise pull a perfectly healthy second read path into 503
+/// after five attempts — and then burn the one probe that path needed to prove itself. The earlier
+/// reasoning ("both paths share the budget, so they share the breaker") confused the budget with
+/// the failure counter; a second, keyed instance would have gone too far the other way and split
+/// the one signal that has to stay shared.
+/// </para>
 /// </remarks>
+
 public sealed class ForeignSevenTvBreakerPolicy(TimeProvider? timeProvider = null)
 {
-    /// <summary>Consecutive non-rate-limit failures required to open the breaker.</summary>
+    /// <summary>Consecutive non-rate-limit failures required to open the breaker, per operation.</summary>
     public const int FailureThreshold = 5;
 
     /// <summary>Used when no <c>retryAfter</c> was supplied.</summary>
     public static readonly TimeSpan DefaultOpenDuration = TimeSpan.FromSeconds(60);
 
+    // A probe slot nobody holds. Never equal to a real generation, which only ever counts upward
+    // from zero.
+    private const long NoProbe = long.MinValue;
+
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly Lock _gate = new();
 
-    private bool _open;
-    private bool _openedByRateLimit;
-    private DateTimeOffset _openUntil;
-    private bool _probeInFlight;
-    private int _consecutiveFailures;
+    // One entry per operation identifier, created on first use. Bounded by the number of named
+    // operations sharing this instance (two today), never by anything a request carries.
+    private readonly Dictionary<string, OperationState> _operations = new(StringComparer.Ordinal);
+
+    // Provider-wide, deliberately: 7TV limits the bucket, not the query. A confirmed 429 on one
+    // operation says exactly as much about the other one.
+    private bool _rateLimitOpen;
+    private DateTimeOffset _rateLimitOpenUntil;
 
     // Bumped on every open and every close, never on a failure that merely accumulates. A report
-    // carrying anything other than the current value describes a breaker state that no longer exists.
+    // carrying anything other than the current value describes a breaker state that no longer
+    // exists. Shared across operations rather than kept per operation, and that is what makes the
+    // probe slot self-releasing: a probe is held only for as long as the generation it was claimed
+    // against is still current, so a transition anywhere hands every stale slot back instead of
+    // leaving an operation jammed on a report that will never be applied.
     private long _generation;
 
     /// <summary>
-    /// Asks whether an upstream call may be made right now. Every caller that receives
-    /// <c>Allowed: true</c> for a would-be probe (breaker open, open duration elapsed) is obligated
-    /// to call <see cref="RecordSuccess"/>, <see cref="RecordFailure"/> or
-    /// <see cref="ReleaseProbeWithoutOutcome"/> exactly once with the outcome <i>and the decision's
-    /// generation</i> — otherwise the breaker never releases <see cref="_probeInFlight"/> and stays
-    /// stuck open past its own duration.
+    /// Asks whether an upstream call for <paramref name="operation"/> may be made right now. Every
+    /// caller that receives <c>Allowed: true</c> for a would-be probe (breaker open, open duration
+    /// elapsed) is obligated to call <see cref="RecordSuccess"/>, <see cref="RecordFailure"/> or
+    /// <see cref="ReleaseProbeWithoutOutcome"/> exactly once with the outcome, <i>the same
+    /// operation</i> <i>and the decision's generation</i> — otherwise the breaker holds that
+    /// operation's probe slot until the next transition frees it.
     /// </summary>
-    public ForeignSevenTvBreakerDecision TryAcquire()
+    /// <param name="operation">
+    /// One of <see cref="ForeignSevenTvBreakerOperations"/>. Mandatory on all four methods, and
+    /// deliberately without a default: a caller that omitted it would silently file its failures in
+    /// somebody else's streak, which is the exact confusion this parameter exists to end.
+    /// </param>
+    public ForeignSevenTvBreakerDecision TryAcquire(string operation)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+
         lock (_gate)
         {
-            if (!_open)
+            var state = StateOf(operation);
+            if (!state.Open && !_rateLimitOpen)
             {
                 return new ForeignSevenTvBreakerDecision(true, false, TimeSpan.Zero, _generation);
             }
 
-            var remaining = _openUntil - _timeProvider.GetUtcNow();
+            var now = _timeProvider.GetUtcNow();
+            var remaining = TimeSpan.Zero;
+            var openedByRateLimit = false;
+
+            if (state.Open)
+            {
+                remaining = state.OpenUntil - now;
+            }
+
+            if (_rateLimitOpen)
+            {
+                // Whichever blocker lasts longer is the one the caller is told about: it decides
+                // both how long to stay away and which error code the rejection maps to.
+                var rateLimitRemaining = _rateLimitOpenUntil - now;
+                if (!state.Open || rateLimitRemaining > remaining)
+                {
+                    remaining = rateLimitRemaining;
+                    openedByRateLimit = true;
+                }
+            }
+
             if (remaining > TimeSpan.Zero)
             {
-                return new ForeignSevenTvBreakerDecision(false, _openedByRateLimit, remaining, _generation);
+                return new ForeignSevenTvBreakerDecision(false, openedByRateLimit, remaining, _generation);
             }
 
-            if (_probeInFlight)
+            if (state.ProbeGeneration == _generation)
             {
-                return new ForeignSevenTvBreakerDecision(false, _openedByRateLimit, TimeSpan.Zero, _generation);
+                return new ForeignSevenTvBreakerDecision(false, openedByRateLimit, TimeSpan.Zero, _generation);
             }
 
-            _probeInFlight = true;
+            state.ProbeGeneration = _generation;
             return new ForeignSevenTvBreakerDecision(true, false, TimeSpan.Zero, _generation);
         }
     }
 
     /// <summary>
-    /// A 7TV call succeeded: closes the breaker (if open) and resets the failure streak — but only if
-    /// <paramref name="generation"/> is still the current one. A success reported from an older
-    /// generation is a straggler that started before the incident and proves nothing about it.
+    /// A 7TV call succeeded: closes this operation's own open state, clears the provider-wide rate
+    /// limit and resets this operation's failure streak — but only if <paramref name="generation"/>
+    /// is still the current one. A success reported from an older generation is a straggler that
+    /// started before the incident and proves nothing about it.
     /// </summary>
-    public ForeignSevenTvBreakerTransition RecordSuccess(long generation)
+    /// <remarks>
+    /// The rate limit is cleared whichever operation reports the success, and that is deliberate:
+    /// the bucket it describes is one bucket, so a call that got through proves it is no longer
+    /// closed, no matter who made it. The failure streak is the opposite — it describes one query's
+    /// health and is reset only for the operation that reported.
+    /// </remarks>
+    public ForeignSevenTvBreakerTransition RecordSuccess(string operation, long generation)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+
         lock (_gate)
         {
             if (generation != _generation)
@@ -156,11 +241,12 @@ public sealed class ForeignSevenTvBreakerPolicy(TimeProvider? timeProvider = nul
                 return ForeignSevenTvBreakerTransition.None;
             }
 
-            var wasOpen = _open;
-            _open = false;
-            _openedByRateLimit = false;
-            _probeInFlight = false;
-            _consecutiveFailures = 0;
+            var state = StateOf(operation);
+            var wasOpen = state.Open || _rateLimitOpen;
+            state.Open = false;
+            state.ProbeGeneration = NoProbe;
+            state.ConsecutiveFailures = 0;
+            _rateLimitOpen = false;
             if (wasOpen)
             {
                 _generation++;
@@ -172,18 +258,23 @@ public sealed class ForeignSevenTvBreakerPolicy(TimeProvider? timeProvider = nul
     }
 
     /// <summary>
-    /// A 7TV call failed. <paramref name="outcome"/> decides which of the two E4 triggers applies;
-    /// <paramref name="retryAfter"/> is only read when the breaker actually opens as a result. A
-    /// failure from an older <paramref name="generation"/> is ignored for the same reason a stale
-    /// success is: the incident it belongs to has already been acted on.
+    /// A 7TV call failed. <paramref name="outcome"/> decides which of the two E4 triggers applies —
+    /// and, since the correction of 2026-09-20 (spec 6.1), how far the consequence reaches: a
+    /// confirmed rate limit locks the whole provider, every other failure only ever accumulates
+    /// against <paramref name="operation"/>. <paramref name="retryAfter"/> is only read when the
+    /// breaker actually opens as a result. A failure from an older <paramref name="generation"/> is
+    /// ignored for the same reason a stale success is: the incident it belongs to has already been
+    /// acted on.
     /// </summary>
     public ForeignSevenTvBreakerTransition RecordFailure(
-        ForeignSevenTvBreakerOutcome outcome, TimeSpan? retryAfter, long generation)
+        string operation, ForeignSevenTvBreakerOutcome outcome, TimeSpan? retryAfter, long generation)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+
         if (outcome == ForeignSevenTvBreakerOutcome.Success)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(outcome), outcome, "RecordFailure() kann keinen Erfolg tragen — dafür ist RecordSuccess() zuständig.");
+                nameof(outcome), outcome, "RecordFailure() cannot carry a success — RecordSuccess() is for that.");
         }
 
         lock (_gate)
@@ -193,21 +284,22 @@ public sealed class ForeignSevenTvBreakerPolicy(TimeProvider? timeProvider = nul
                 return ForeignSevenTvBreakerTransition.None;
             }
 
-            _probeInFlight = false;
+            var state = StateOf(operation);
+            state.ProbeGeneration = NoProbe;
 
             if (outcome == ForeignSevenTvBreakerOutcome.RateLimited)
             {
                 // No threshold to accumulate — one confirmed 429 is proof enough (E4a). Pinned at the
                 // threshold rather than left untouched, so a rate limit immediately followed by an
                 // ordinary failure (once the breaker reopens) does not need four more to reopen again.
-                _consecutiveFailures = FailureThreshold;
-                return Open(retryAfter, rateLimited: true);
+                state.ConsecutiveFailures = FailureThreshold;
+                return OpenRateLimit(state, retryAfter);
             }
 
-            _consecutiveFailures++;
-            if (_open || _consecutiveFailures >= FailureThreshold)
+            state.ConsecutiveFailures++;
+            if (state.Open || _rateLimitOpen || state.ConsecutiveFailures >= FailureThreshold)
             {
-                return Open(retryAfter, rateLimited: false);
+                return OpenOperation(state, retryAfter);
             }
 
             return ForeignSevenTvBreakerTransition.None;
@@ -215,32 +307,77 @@ public sealed class ForeignSevenTvBreakerPolicy(TimeProvider? timeProvider = nul
     }
 
     /// <summary>
-    /// Releases the probe slot without reporting a health outcome — for a caller that
-    /// <see cref="TryAcquire"/> let through (open duration elapsed) but that never actually reached
-    /// 7TV, such as the provider-wide budget (<see cref="ForeignEmoteSetProviderBudget"/>) refusing a
-    /// permit first, or an upstream answer that never touched 7TV at all (the Twitch-side failures a
-    /// foreign lookup can also end in). Idempotent and safe to call unconditionally: a no-op whenever
-    /// the breaker has moved on to a newer generation, or was not actually mid-probe.
+    /// Releases <paramref name="operation"/>'s probe slot without reporting a health outcome — for a
+    /// caller that <see cref="TryAcquire"/> let through (open duration elapsed) but that never
+    /// actually reached 7TV, such as the provider-wide budget
+    /// (<see cref="ForeignEmoteSetProviderBudget"/>) refusing a permit first, or an upstream answer
+    /// that never touched 7TV at all (the Twitch-side failures a foreign lookup can also end in).
+    /// Idempotent and safe to call unconditionally: a no-op whenever the breaker has moved on to a
+    /// newer generation, or the operation was not actually mid-probe.
     /// </summary>
-    public void ReleaseProbeWithoutOutcome(long generation)
+    public void ReleaseProbeWithoutOutcome(string operation, long generation)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+
         lock (_gate)
         {
             if (generation == _generation)
             {
-                _probeInFlight = false;
+                StateOf(operation).ProbeGeneration = NoProbe;
             }
         }
     }
 
-    private ForeignSevenTvBreakerTransition Open(TimeSpan? retryAfter, bool rateLimited)
+    // A confirmed 429: the lock is the provider's, not the operation's. The operation's own open
+    // state is left exactly as it was — this incident is not its doing.
+    private ForeignSevenTvBreakerTransition OpenRateLimit(OperationState state, TimeSpan? retryAfter)
     {
-        var wasOpen = _open;
-        _open = true;
-        _openedByRateLimit = rateLimited;
-        var duration = retryAfter is { } ra && ra > TimeSpan.Zero ? ra : DefaultOpenDuration;
-        _openUntil = _timeProvider.GetUtcNow() + duration;
+        var wasOpen = state.Open || _rateLimitOpen;
+        _rateLimitOpen = true;
+        _rateLimitOpenUntil = _timeProvider.GetUtcNow() + Duration(retryAfter);
         _generation++;
         return wasOpen ? ForeignSevenTvBreakerTransition.None : ForeignSevenTvBreakerTransition.Opened;
+    }
+
+    // Five consecutive ordinary failures of one query, or a failed probe of one query: it says
+    // nothing about the others, so it locks nothing but itself. The provider-wide rate limit is
+    // deliberately left standing — an ordinary failure is not evidence that 7TV's bucket reopened.
+    private ForeignSevenTvBreakerTransition OpenOperation(OperationState state, TimeSpan? retryAfter)
+    {
+        var wasOpen = state.Open || _rateLimitOpen;
+        state.Open = true;
+        state.OpenUntil = _timeProvider.GetUtcNow() + Duration(retryAfter);
+        _generation++;
+        return wasOpen ? ForeignSevenTvBreakerTransition.None : ForeignSevenTvBreakerTransition.Opened;
+    }
+
+    // Called under _gate only.
+    private OperationState StateOf(string operation)
+    {
+        if (!_operations.TryGetValue(operation, out var state))
+        {
+            state = new OperationState();
+            _operations[operation] = state;
+        }
+
+        return state;
+    }
+
+    private static TimeSpan Duration(TimeSpan? retryAfter) =>
+        retryAfter is { } ra && ra > TimeSpan.Zero ? ra : DefaultOpenDuration;
+
+    /// <summary>
+    /// Everything the correction of 2026-09-20 made per-operation: the ordinary-failure streak and
+    /// the one half-open probe. The rate-limit lock is not in here, on purpose.
+    /// </summary>
+    private sealed class OperationState
+    {
+        public bool Open;
+        public DateTimeOffset OpenUntil;
+        public int ConsecutiveFailures;
+
+        // The generation this operation's probe was claimed against, or NoProbe. A probe counts as
+        // in flight only while that generation is still current — see the _generation comment.
+        public long ProbeGeneration = NoProbe;
     }
 }

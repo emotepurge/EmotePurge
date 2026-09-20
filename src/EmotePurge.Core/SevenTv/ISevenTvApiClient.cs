@@ -49,4 +49,15 @@ public interface ISevenTvApiClient
     // 7TV's rate-limit header sample.
     Task<SevenTvEmoteSearchPageResult> SearchEmotesAsync(
         SevenTvLeaderboardSort sortBy, int page, CancellationToken cancellationToken = default);
+
+    // Every emote set a 7TV account owns, by the Twitch id of its connection — the source behind
+    // all three set-list routes (spec 2026-09-20, 6.1/E6/E7). v4 rather than v3 because v3 is
+    // measurably incomplete: the same account answers with three sets there and four here, the
+    // missing one being the personal set a picker must be able to see in order to refuse it. One
+    // request carries the sets, their kind and owner, and the account's active set id, so the whole
+    // list costs a single permit. Never null; Listing is populated if and only if Status is Ok, and
+    // NoSevenTvAccount ("7TV carries no account for this connection") must stay distinct from
+    // Unavailable — an empty list standing in for a failed read is what 6.1 forbids outright.
+    Task<SevenTvEmoteSetListResult> GetEmoteSetListForTwitchUserAsync(
+        string twitchUserId, CancellationToken cancellationToken = default);
 }

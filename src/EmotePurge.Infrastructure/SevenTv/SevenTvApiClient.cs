@@ -67,6 +67,18 @@ public class SevenTvApiClient(
     private const string GqlEmoteSetPreviewQuery =
         "query($id: Id!, $page: Int!, $perPage: Int!) { emote_sets: emoteSets { emote_set: emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { total_count: totalCount page_count: pageCount items { alias emote { id default_name: defaultName flags { animated } scores { top_all_time: topAllTime trending_day: trendingDay } } } } } } }";
 
+    // v4 schema, the emote-set list of one account (spec 2026-09-20, E7/6.1) — the source behind
+    // all three set-list routes. This string is the query that was run live against
+    // https://7tv.io/v4/gql on 2026-09-20 (Sonde 7), character for character, analyzer complexity
+    // 14 / depth 6. It is deliberately NOT aliased to snake_case like GqlSetEntriesQuery and
+    // GqlEmoteSetPreviewQuery above: F17 is the reason — a wrong query does not look wrong, it
+    // looks like 7TV being permanently down, so the one thing worth keeping is that the text here
+    // is the text that was proven to answer. The DTOs carry [JsonPropertyName] for the camelCase
+    // members instead. Whoever changes this query changes it live first and in the fixture second,
+    // never the other way round.
+    private const string GqlEmoteSetListQuery =
+        "query($pid: String!) { users { userByConnection(platform: TWITCH, platformId: $pid) { id style { activeEmoteSetId } emoteSets { id name capacity kind owner { id mainConnection { platformDisplayName } } } } } }";
+
     // v4 schema, the leaderboard import source (spec 2026-09-13, F7): EmoteQuery.search — a
     // network-wide ranking, not a set's contents, so this takes a sort instead of a set id and
     // returns flat Emote objects (no per-set alias). Deliberately no query/filters/tags (E5) and
@@ -470,6 +482,106 @@ public class SevenTvApiClient(
             // cancellation while it buffers the body) — no response exists to read headers from.
             // JsonException stays in the guard defensively; FetchV4PageAsync handles a parse failure.
             return SevenTvEmoteSearchPageResult.Failed(SevenTvEmoteSearchLookupStatus.Unavailable, null, null, null);
+        }
+    }
+
+    public async Task<SevenTvEmoteSetListResult> GetEmoteSetListForTwitchUserAsync(
+        string twitchUserId, CancellationToken cancellationToken = default)
+    {
+        // Charged before the request is built, so that a refusal really does mean "nothing left this
+        // process" (F14, AK 24). One permit covers the whole list: unlike the preview, this query is
+        // a single unpaginated page.
+        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning(
+                "Provider-wide 7TV budget exhausted — emote-set list for Twitch id {TwitchId} not requested.",
+                twitchUserId);
+            return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.BudgetExhausted);
+        }
+
+        try
+        {
+            var payload = new { query = GqlEmoteSetListQuery, variables = new { pid = twitchUserId } };
+            var page = await FetchV4PageAsync<SevenTvGqlEmoteSetListResponseDto>(
+                payload, RateLimitCallSources.SevenTvEmoteSetList, cancellationToken);
+
+            // Both disguises of a 429 are already one outcome by the time they get here; checked
+            // before the "no usable data" branch, never folded into it (the mistake AK 7 is named
+            // after on the preview path).
+            if (page.Status == V4PageStatus.RateLimited)
+            {
+                logger.LogWarning(
+                    "7TV reports overload (429) while reading the emote-set list for Twitch id {TwitchId}.",
+                    twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(
+                    SevenTvEmoteSetListLookupStatus.RateLimited, page.RetryAfter);
+            }
+
+            var users = page.Dto?.Data?.Users;
+            if (page.Status == V4PageStatus.Unavailable || users is null)
+            {
+                if (page.ParseException is { } parseException)
+                {
+                    logger.LogWarning(parseException,
+                        "7TV emote-set list for Twitch id {TwitchId} returned an unparseable response body.",
+                        twitchUserId);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "7TV emote-set list for Twitch id {TwitchId} returned no usable data (GraphQL error response?).",
+                        twitchUserId);
+                }
+
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+            }
+
+            // The one measured distinction of this method (2026-09-20, platformId 999999999999):
+            // userByConnection null at HTTP 200 with no errors block is an answer — 7TV carries no
+            // account for this connection. A GraphQL error never reaches here; it leaves data null,
+            // which the branch above already reported as Unavailable.
+            if (users.UserByConnection is not { } user)
+            {
+                logger.LogDebug("No 7TV account carries the Twitch connection {TwitchId}.", twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.NoSevenTvAccount);
+            }
+
+            // An account we can see but whose sets we cannot read is a failure, not an account
+            // without sets — the empty list is reserved for a list 7TV actually reported as empty.
+            if (user.EmoteSets is not { } sets)
+            {
+                logger.LogWarning(
+                    "7TV emote-set list for Twitch id {TwitchId} carried a user but no emoteSets member.",
+                    twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+            }
+
+            var entries = sets
+                .Select(set => new SevenTvEmoteSetListEntry(
+                    set.Id,
+                    set.Name,
+                    // 0 reads as "not reported", exactly as on the channel-state path: an absent
+                    // field and a genuine zero are indistinguishable, and either one shown as a
+                    // capacity would make the UI claim the set is full.
+                    set.Capacity > 0 ? set.Capacity : null,
+                    set.Kind,
+                    string.IsNullOrEmpty(set.Owner?.MainConnection?.PlatformDisplayName)
+                        ? null
+                        : set.Owner.MainConnection.PlatformDisplayName))
+                .ToList();
+
+            var activeEmoteSetId = string.IsNullOrEmpty(user.Style?.ActiveEmoteSetId)
+                ? null
+                : user.Style.ActiveEmoteSetId;
+
+            return SevenTvEmoteSetListResult.Ok(new SevenTvEmoteSetListing(activeEmoteSetId, entries));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            // Reached only when SendAsync itself throws (connection/DNS/TLS failure, or a timeout
+            // while the body is buffered) — there is no response to read anything off.
+            logger.LogWarning(ex, "7TV emote-set list for Twitch id {TwitchId} failed.", twitchUserId);
+            return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
         }
     }
 

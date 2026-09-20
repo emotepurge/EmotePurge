@@ -117,6 +117,17 @@ public static class RateLimitCallSources
     /// <c>Ratelimit-*</c> ones the preview path (still) never reads.
     /// </summary>
     public const string SevenTvLeaderboard = "seventv-leaderboard";
+
+    /// <summary>
+    /// The emote-set list of a 7TV account (spec 2026-09-20, 6.1/E7) — one v4 <c>userByConnection</c>
+    /// request per account, reported by <c>SevenTvApiClient.GetEmoteSetListForTwitchUserAsync</c>
+    /// itself for the same reason as the two above: only the client sees the parsed GraphQL body,
+    /// and 7TV disguises an overload as HTTP 200 here too. Named apart from
+    /// <see cref="SevenTvForeignPreview"/> even though both sit on the same upstream budget,
+    /// because reading which of the two is failing is the whole point of separating their circuit
+    /// breaker counters.
+    /// </summary>
+    public const string SevenTvEmoteSetList = "seventv-emote-set-list";
 }
 
 /// <summary>

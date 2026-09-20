@@ -126,6 +126,16 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRateLimitTelemetry>(),
             sp.GetRequiredService<ILogger<HardenedForeignEmoteSetService>>()));
 
+        // The emote-set list of a 7TV account (spec 2026-09-20, 6.1/E6): one service behind three
+        // routes, and therefore one cache and one guard chain. It shares the preview's budget (the
+        // same object above, in both of its faces) and the preview's breaker instance — under its
+        // own operation name, which is what keeps a broken list query out of the preview's failure
+        // streak. Its coalescer is its own closed type: sharing one in-flight table across two
+        // result types is not a thing that can be made to typecheck, and would be wrong if it were.
+        services.AddSingleton<ISevenTvEmoteSetListCache, SevenTvEmoteSetListCache>();
+        services.AddSingleton<ForeignEmoteSetRequestCoalescer<EmoteSetListResult>>();
+        services.AddScoped<ISevenTvEmoteSetListService, SevenTvEmoteSetListService>();
+
         // Leaderboard import source (spec 2026-09-13, section 6, T3). Purely additive: the typed
         // ForeignSevenTvBreakerPolicy registration above is untouched, and the HardenedForeignEmoteSetService
         // factory above still takes that same typed instance through GetRequiredService, not a keyed

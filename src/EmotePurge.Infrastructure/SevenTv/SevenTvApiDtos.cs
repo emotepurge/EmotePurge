@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace EmotePurge.Infrastructure.SevenTv;
 
@@ -373,4 +374,75 @@ internal sealed class SevenTvGqlLeaderboardSearchItemDto
     public string DefaultName { get; set; } = string.Empty;
     public SevenTvGqlEmoteSetPreviewFlagsDto? Flags { get; set; }
     public SevenTvGqlEmoteSetPreviewScoresDto? Scores { get; set; }
+}
+
+// GQL v4 (host-absolute /v4/gql), the emote-set list of one account (spec 2026-09-20, E7, Sonde 7).
+// Deliberately NOT aliased to snake_case the way the older v4 queries in this client are: the query
+// text is the one that was measured live on 2026-09-20, character for character, and F17 makes that
+// worth protecting — a query we adjusted for our own deserializer's convenience is a query nobody
+// ever ran against 7TV. The camelCase members therefore carry [JsonPropertyName] instead, which the
+// shared SnakeCaseLower options honour.
+internal sealed class SevenTvGqlEmoteSetListResponseDto : ISevenTvGqlErrorEnvelope
+{
+    public SevenTvGqlEmoteSetListDataDto? Data { get; set; }
+
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteSetListDataDto
+{
+    public SevenTvGqlEmoteSetListUsersDto? Users { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteSetListUsersDto
+{
+    // Null at HTTP 200 without an errors block means "7TV carries no account for this Twitch
+    // connection" — the one case that is an answer rather than a failure (measured 2026-09-20).
+    [JsonPropertyName("userByConnection")]
+    public SevenTvGqlEmoteSetListUserDto? UserByConnection { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteSetListUserDto
+{
+    public string Id { get; set; } = string.Empty;
+
+    public SevenTvGqlEmoteSetListStyleDto? Style { get; set; }
+
+    // Absent (rather than empty) means we could not read the list, not that the account has no
+    // sets — the reason this is nullable and the mapper tells the two apart.
+    [JsonPropertyName("emoteSets")]
+    public List<SevenTvGqlEmoteSetListSetDto>? EmoteSets { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteSetListStyleDto
+{
+    [JsonPropertyName("activeEmoteSetId")]
+    public string? ActiveEmoteSetId { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteSetListSetDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public int Capacity { get; set; }
+
+    // 7TV's EmoteSetKind, passed through as the string it is — see EmoteSetSummary.Kind for why it
+    // is never parsed into an enum of ours.
+    public string Kind { get; set; } = string.Empty;
+
+    public SevenTvGqlEmoteSetListOwnerDto? Owner { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteSetListOwnerDto
+{
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("mainConnection")]
+    public SevenTvGqlEmoteSetListConnectionDto? MainConnection { get; set; }
+}
+
+internal sealed class SevenTvGqlEmoteSetListConnectionDto
+{
+    [JsonPropertyName("platformDisplayName")]
+    public string? PlatformDisplayName { get; set; }
 }

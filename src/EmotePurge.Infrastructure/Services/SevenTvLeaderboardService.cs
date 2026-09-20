@@ -168,7 +168,7 @@ public sealed class SevenTvLeaderboardService(
     private async Task<PageAttempt> FetchPageAsync(
         SevenTvLeaderboardSort sortBy, int page, CancellationToken cancellationToken)
     {
-        var decision = breaker.TryAcquire();
+        var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.Leaderboard);
         if (!decision.Allowed)
         {
             // Debug, not louder: this fires for every rejected request while the breaker is open,
@@ -198,7 +198,7 @@ public sealed class SevenTvLeaderboardService(
 
                 // Nothing reached 7TV, so the breaker learns nothing — but the probe slot this
                 // decision may have taken still has to be given back, or the breaker jams open.
-                breaker.ReleaseProbeWithoutOutcome(decision.Generation);
+                breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.Leaderboard, decision.Generation);
                 breakerResolved = true;
                 return PageAttempt.Failed(
                     SevenTvLeaderboardStatus.BudgetRefused, SevenTvLeaderboardFillOutcome.BudgetRefused());
@@ -245,7 +245,7 @@ public sealed class SevenTvLeaderboardService(
                 // exception on page 2 neither answers page 1's decision twice nor leaves its own
                 // unanswered. The exception itself keeps travelling: it faults the stock entry,
                 // which the store treats as expired on arrival.
-                breaker.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
+                breaker.RecordFailure(ForeignSevenTvBreakerOperations.Leaderboard, ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
             }
         }
     }
@@ -297,10 +297,10 @@ public sealed class SevenTvLeaderboardService(
     private ForeignSevenTvBreakerTransition ApplyBreakerFeedback(
         SevenTvEmoteSearchPageResult result, long generation) => result.Status switch
         {
-            SevenTvEmoteSearchLookupStatus.Ok => breaker.RecordSuccess(generation),
-            SevenTvEmoteSearchLookupStatus.RateLimited => breaker.RecordFailure(
+            SevenTvEmoteSearchLookupStatus.Ok => breaker.RecordSuccess(ForeignSevenTvBreakerOperations.Leaderboard, generation),
+            SevenTvEmoteSearchLookupStatus.RateLimited => breaker.RecordFailure(ForeignSevenTvBreakerOperations.Leaderboard,
                 ForeignSevenTvBreakerOutcome.RateLimited, result.RetryAfter, generation),
-            SevenTvEmoteSearchLookupStatus.Unavailable => breaker.RecordFailure(
+            SevenTvEmoteSearchLookupStatus.Unavailable => breaker.RecordFailure(ForeignSevenTvBreakerOperations.Leaderboard,
                 ForeignSevenTvBreakerOutcome.OtherFailure, null, generation),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(result), result.Status, "Unknown SevenTvEmoteSearchLookupStatus.")

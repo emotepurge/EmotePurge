@@ -98,7 +98,7 @@ public sealed class HardenedForeignEmoteSetService(
 
     private async Task<ForeignEmoteSetLookupResult> ExecuteGuardedAsync(string normalizedChannelName, CancellationToken cancellationToken)
     {
-        var decision = breaker.TryAcquire();
+        var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.ForeignPreview);
         if (!decision.Allowed)
         {
             // Deliberately not louder than Debug: this fires on every rejected request while the
@@ -125,7 +125,7 @@ public sealed class HardenedForeignEmoteSetService(
                     normalizedChannelName, BudgetWaitTimeout.TotalSeconds);
                 // Never reached the inner chain — nothing to tell the breaker about 7TV's health, but
                 // the probe slot (if this was one) still needs releasing.
-                breaker.ReleaseProbeWithoutOutcome(decision.Generation);
+                breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.ForeignPreview, decision.Generation);
                 breakerResolved = true;
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
             }
@@ -148,7 +148,7 @@ public sealed class HardenedForeignEmoteSetService(
                 // Backstop for a genuinely unexpected exception (including cancellation) that skipped
                 // every other resolution path above — treated as a plain failure, never a rate limit:
                 // whatever happened here is not something 7TV told us.
-                breaker.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
+                breaker.RecordFailure(ForeignSevenTvBreakerOperations.ForeignPreview, ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
             }
 
             permit?.Dispose();
@@ -170,11 +170,11 @@ public sealed class HardenedForeignEmoteSetService(
     {
         ForeignEmoteSetLookupStatus.Ok
             or ForeignEmoteSetLookupStatus.NoSevenTvAccount
-            or ForeignEmoteSetLookupStatus.NoActiveEmoteSet => breaker.RecordSuccess(generation),
+            or ForeignEmoteSetLookupStatus.NoActiveEmoteSet => breaker.RecordSuccess(ForeignSevenTvBreakerOperations.ForeignPreview, generation),
         ForeignEmoteSetLookupStatus.SevenTvRateLimited =>
-            breaker.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, result.RetryAfter, generation),
+            breaker.RecordFailure(ForeignSevenTvBreakerOperations.ForeignPreview, ForeignSevenTvBreakerOutcome.RateLimited, result.RetryAfter, generation),
         ForeignEmoteSetLookupStatus.SevenTvUnavailable =>
-            breaker.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, null, generation),
+            breaker.RecordFailure(ForeignSevenTvBreakerOperations.ForeignPreview, ForeignSevenTvBreakerOutcome.OtherFailure, null, generation),
         ForeignEmoteSetLookupStatus.ChannelNotOnTwitch
             or ForeignEmoteSetLookupStatus.TwitchUnavailable
             or ForeignEmoteSetLookupStatus.ProviderBudgetExhausted =>
@@ -184,7 +184,7 @@ public sealed class HardenedForeignEmoteSetService(
 
     private ForeignSevenTvBreakerTransition ReleaseProbeAsNoEvidence(long generation)
     {
-        breaker.ReleaseProbeWithoutOutcome(generation);
+        breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.ForeignPreview, generation);
         return ForeignSevenTvBreakerTransition.None;
     }
 

@@ -625,3 +625,111 @@ public sealed class SevenTvEmoteSearchPageResult
         return new SevenTvEmoteSearchPageResult(status, null, retryAfter, rateLimitLimit, rateLimitRemaining, rateLimitReset);
     }
 }
+
+/// <summary>
+/// Why <see cref="ISevenTvApiClient.GetEmoteSetListForTwitchUserAsync"/> produced no usable answer.
+/// Mirrors <see cref="SevenTvPreviewLookupStatus"/> — same four failure shapes, plus the one state
+/// that is not a failure at all.
+/// </summary>
+public enum SevenTvEmoteSetListLookupStatus
+{
+    Ok,
+
+    /// <summary>
+    /// <c>userByConnection: null</c> at HTTP 200 <b>without</b> an <c>errors</c> block — measured
+    /// 2026-09-20 against <c>platformId: 999999999999</c>. An answer, not a failure: 7TV knows the
+    /// connection and carries no account for it. Anything else that leaves <c>userByConnection</c>
+    /// empty (an <c>errors</c> block, a missing body) is <see cref="Unavailable"/> instead.
+    /// </summary>
+    NoSevenTvAccount,
+
+    /// <summary>A confirmed 7TV overload — HTTP 429, or HTTP 200 with <c>extensions.status: 429</c>.</summary>
+    RateLimited,
+
+    /// <summary>
+    /// Any other upstream failure: transport error, 5xx, unparseable body, a GraphQL error, or an
+    /// answer carrying <c>userByConnection</c> but no <c>emoteSets</c> member at all. Never an empty
+    /// list: a set list we could not read must not look like an account with no sets.
+    /// </summary>
+    Unavailable,
+
+    /// <summary>
+    /// The provider-wide request budget refused a permit, so nothing was requested. Kept apart from
+    /// <see cref="Unavailable"/> for the same reason the preview keeps it apart: it is our own
+    /// throttle, and feeding it to the circuit breaker would let self-inflicted congestion open a
+    /// breaker meant for 7TV's health (F14).
+    /// </summary>
+    BudgetExhausted
+}
+
+/// <summary>
+/// One entry of a 7TV account's emote-set list, exactly as v4 reports it (E7, Sonde 7). The raw
+/// read; <c>EmoteSetSummary</c> in <c>EmotePurge.Core.Services</c> is what the rest of the system
+/// consumes.
+/// </summary>
+/// <param name="Capacity"><c>0</c> is already normalised to <c>null</c> here, as on the preview path.</param>
+/// <param name="Kind">7TV's <c>EmoteSetKind</c> verbatim: <c>NORMAL</c>, <c>PERSONAL</c>, <c>GLOBAL</c>, <c>SPECIAL</c>.</param>
+/// <param name="OwnerDisplayName"><c>owner.mainConnection.platformDisplayName</c> — a display name, never a login.</param>
+public record SevenTvEmoteSetListEntry(
+    string Id, string Name, int? Capacity, string Kind, string? OwnerDisplayName);
+
+/// <summary>
+/// One v4 <c>userByConnection</c> answer: the account's sets, and the set 7TV considers active for
+/// it (<c>style.activeEmoteSetId</c>) — both from the same single request (E7), which is why the
+/// list path costs one permit per account rather than two.
+/// </summary>
+public sealed record SevenTvEmoteSetListing(
+    string? ActiveEmoteSetId, IReadOnlyList<SevenTvEmoteSetListEntry> Sets);
+
+/// <summary>
+/// <see cref="Listing"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEmoteSetListLookupStatus.Ok"/>. Same invariant-by-construction shape as the
+/// other result types in this file, for the same reason.
+/// </summary>
+public sealed class SevenTvEmoteSetListResult
+{
+    private SevenTvEmoteSetListResult(
+        SevenTvEmoteSetListLookupStatus status, SevenTvEmoteSetListing? listing, TimeSpan? retryAfter)
+    {
+        Status = status;
+        Listing = listing;
+        RetryAfter = retryAfter;
+    }
+
+    public SevenTvEmoteSetListLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="SevenTvEmoteSetListLookupStatus.Ok"/>.</summary>
+    public SevenTvEmoteSetListing? Listing { get; }
+
+    /// <summary>
+    /// What 7TV asked us to wait, on the answer that produced
+    /// <see cref="SevenTvEmoteSetListLookupStatus.RateLimited"/> and only when it said so — the
+    /// circuit breaker's open duration and the negative cache's shelf-life both read it, and both
+    /// fall back to their own defaults when it is <c>null</c>.
+    /// </summary>
+    public TimeSpan? RetryAfter { get; }
+
+    public static SevenTvEmoteSetListResult Ok(SevenTvEmoteSetListing listing)
+    {
+        ArgumentNullException.ThrowIfNull(listing);
+        return new SevenTvEmoteSetListResult(SevenTvEmoteSetListLookupStatus.Ok, listing, null);
+    }
+
+    public static SevenTvEmoteSetListResult Failed(
+        SevenTvEmoteSetListLookupStatus status, TimeSpan? retryAfter = null)
+    {
+        if (status == SevenTvEmoteSetListLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(listing) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Unknown SevenTvEmoteSetListLookupStatus.");
+        }
+
+        return new SevenTvEmoteSetListResult(status, null, retryAfter);
+    }
+}

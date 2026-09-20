@@ -13,19 +13,29 @@ namespace EmotePurge.Infrastructure.Tests.Unit;
 /// <c>EmotePurge.Worker.Tests</c>.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Every report goes through <see cref="Admit"/> first, exactly as production does: the policy hands
 /// out the state a caller was admitted against, and the caller hands it back with the outcome. Tests
 /// that reported an outcome without ever asking for permission would be describing a caller that
 /// cannot exist.
+/// </para>
+/// <para>
+/// Every case below names <see cref="Preview"/> as its operation, and that is the point: with
+/// exactly one operation in play, the operation parameter added on 2026-09-20 (spec 6.1) must
+/// change nothing at all. What it does change — a second operation's reach — is pinned separately
+/// in <see cref="ForeignSevenTvBreakerPolicyOperationScopeTests"/>.
+/// </para>
 /// </remarks>
 public class ForeignSevenTvBreakerPolicyTests
 {
+    private const string Preview = ForeignSevenTvBreakerOperations.ForeignPreview;
+
     [Fact]
     public void ClosedByDefault_AllowsEveryRequest()
     {
         var policy = new ForeignSevenTvBreakerPolicy(NewClock().Provider);
 
-        var decision = policy.TryAcquire();
+        var decision = policy.TryAcquire(Preview);
 
         Assert.True(decision.Allowed);
     }
@@ -36,10 +46,10 @@ public class ForeignSevenTvBreakerPolicyTests
     {
         var policy = new ForeignSevenTvBreakerPolicy(NewClock().Provider);
 
-        var transition = policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, retryAfter: null, Admit(policy));
+        var transition = policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, null, Admit(policy));
 
         Assert.Equal(ForeignSevenTvBreakerTransition.Opened, transition);
-        var decision = policy.TryAcquire();
+        var decision = policy.TryAcquire(Preview);
         Assert.False(decision.Allowed);
         Assert.True(decision.OpenedByRateLimit);
     }
@@ -52,15 +62,15 @@ public class ForeignSevenTvBreakerPolicyTests
 
         for (var i = 0; i < 4; i++)
         {
-            var transition = policy.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, retryAfter: null, Admit(policy));
+            var transition = policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, Admit(policy));
             Assert.Equal(ForeignSevenTvBreakerTransition.None, transition);
-            Assert.True(policy.TryAcquire().Allowed);
+            Assert.True(policy.TryAcquire(Preview).Allowed);
         }
 
-        var fifth = policy.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, retryAfter: null, Admit(policy));
+        var fifth = policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, Admit(policy));
 
         Assert.Equal(ForeignSevenTvBreakerTransition.Opened, fifth);
-        var decision = policy.TryAcquire();
+        var decision = policy.TryAcquire(Preview);
         Assert.False(decision.Allowed);
         Assert.False(decision.OpenedByRateLimit);
     }
@@ -72,17 +82,17 @@ public class ForeignSevenTvBreakerPolicyTests
     {
         var policy = new ForeignSevenTvBreakerPolicy(NewClock().Provider);
 
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, retryAfter: null, Admit(policy));
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, retryAfter: null, Admit(policy));
-        policy.RecordSuccess(Admit(policy));
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, Admit(policy));
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, Admit(policy));
+        policy.RecordSuccess(Preview, Admit(policy));
 
         for (var i = 0; i < 4; i++)
         {
-            var transition = policy.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, retryAfter: null, Admit(policy));
+            var transition = policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, Admit(policy));
             Assert.Equal(ForeignSevenTvBreakerTransition.None, transition);
         }
 
-        Assert.True(policy.TryAcquire().Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
     }
 
     [Fact]
@@ -91,13 +101,13 @@ public class ForeignSevenTvBreakerPolicyTests
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
 
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
 
         clock.Advance(TimeSpan.FromSeconds(9));
-        Assert.False(policy.TryAcquire().Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed);
 
         clock.Advance(TimeSpan.FromSeconds(2)); // total 11s > the 10s Retry-After
-        Assert.True(policy.TryAcquire().Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
     }
 
     [Fact]
@@ -106,13 +116,13 @@ public class ForeignSevenTvBreakerPolicyTests
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
 
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, retryAfter: null, Admit(policy));
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, null, Admit(policy));
 
         clock.Advance(TimeSpan.FromSeconds(59));
-        Assert.False(policy.TryAcquire().Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed);
 
         clock.Advance(TimeSpan.FromSeconds(2)); // total 61s > the 60s default
-        Assert.True(policy.TryAcquire().Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
     }
 
     /// <summary>Once the open duration elapses, exactly one caller gets through as a probe; a
@@ -122,11 +132,11 @@ public class ForeignSevenTvBreakerPolicyTests
     {
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
         clock.Advance(TimeSpan.FromSeconds(11));
 
-        var probe = policy.TryAcquire();
-        var concurrentSecondCaller = policy.TryAcquire();
+        var probe = policy.TryAcquire(Preview);
+        var concurrentSecondCaller = policy.TryAcquire(Preview);
 
         Assert.True(probe.Allowed);
         Assert.False(concurrentSecondCaller.Allowed);
@@ -138,21 +148,21 @@ public class ForeignSevenTvBreakerPolicyTests
     {
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
         clock.Advance(TimeSpan.FromSeconds(11));
-        var probe = policy.TryAcquire();
+        var probe = policy.TryAcquire(Preview);
         Assert.True(probe.Allowed); // claims the probe
 
-        var transition = policy.RecordSuccess(probe.Generation);
+        var transition = policy.RecordSuccess(Preview, probe.Generation);
 
         Assert.Equal(ForeignSevenTvBreakerTransition.Closed, transition);
-        Assert.True(policy.TryAcquire().Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
         // The streak really did reset: four more ordinary failures alone must not reopen it.
         for (var i = 0; i < 4; i++)
         {
             Assert.Equal(
                 ForeignSevenTvBreakerTransition.None,
-                policy.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, null, Admit(policy)));
+                policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, Admit(policy)));
         }
     }
 
@@ -168,22 +178,22 @@ public class ForeignSevenTvBreakerPolicyTests
     {
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
         clock.Advance(TimeSpan.FromSeconds(11));
-        var probe = policy.TryAcquire();
+        var probe = policy.TryAcquire(Preview);
         Assert.True(probe.Allowed); // claims the probe
 
-        var transition = policy.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, retryAfter: null, probe.Generation);
+        var transition = policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, probe.Generation);
 
         Assert.Equal(ForeignSevenTvBreakerTransition.None, transition);
-        Assert.False(policy.TryAcquire().Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed);
 
         // And the new open window uses the default duration again — no leftover Retry-After from the
         // first opening leaks into the second.
         clock.Advance(TimeSpan.FromSeconds(59));
-        Assert.False(policy.TryAcquire().Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed);
         clock.Advance(TimeSpan.FromSeconds(2));
-        Assert.True(policy.TryAcquire().Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
     }
 
     /// <summary>
@@ -200,29 +210,29 @@ public class ForeignSevenTvBreakerPolicyTests
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
 
-        var slowCaller = policy.TryAcquire();
-        var fastCaller = policy.TryAcquire();
+        var slowCaller = policy.TryAcquire(Preview);
+        var fastCaller = policy.TryAcquire(Preview);
         Assert.True(slowCaller.Allowed);
         Assert.True(fastCaller.Allowed);
 
         // The fast caller finishes first, with a 429 carrying 7TV's ~1 h search-bucket reset.
-        var opened = policy.RecordFailure(
+        var opened = policy.RecordFailure(Preview,
             ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromHours(1), fastCaller.Generation);
         Assert.Equal(ForeignSevenTvBreakerTransition.Opened, opened);
 
         // …and only now does the slow caller succeed.
-        var lateTransition = policy.RecordSuccess(slowCaller.Generation);
+        var lateTransition = policy.RecordSuccess(Preview, slowCaller.Generation);
 
         Assert.Equal(ForeignSevenTvBreakerTransition.None, lateTransition);
-        var afterwards = policy.TryAcquire();
+        var afterwards = policy.TryAcquire(Preview);
         Assert.False(afterwards.Allowed);
         Assert.True(afterwards.OpenedByRateLimit);
 
         // The full Retry-After still stands — it was neither discarded nor shortened to the default.
         clock.Advance(TimeSpan.FromMinutes(59));
-        Assert.False(policy.TryAcquire().Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed);
         clock.Advance(TimeSpan.FromMinutes(2));
-        Assert.True(policy.TryAcquire().Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
     }
 
     /// <summary>
@@ -237,18 +247,18 @@ public class ForeignSevenTvBreakerPolicyTests
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
 
-        var slowCaller = policy.TryAcquire();
-        var fastCaller = policy.TryAcquire();
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), fastCaller.Generation);
+        var slowCaller = policy.TryAcquire(Preview);
+        var fastCaller = policy.TryAcquire(Preview);
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), fastCaller.Generation);
 
         clock.Advance(TimeSpan.FromSeconds(5));
-        var lateTransition = policy.RecordFailure(
+        var lateTransition = policy.RecordFailure(Preview,
             ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromHours(1), slowCaller.Generation);
 
         Assert.Equal(ForeignSevenTvBreakerTransition.None, lateTransition);
         // Still the original 10 s window, not the straggler's hour.
         clock.Advance(TimeSpan.FromSeconds(6));
-        Assert.True(policy.TryAcquire().Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
     }
 
     /// <summary>
@@ -261,19 +271,152 @@ public class ForeignSevenTvBreakerPolicyTests
     {
         var clock = NewClock();
         var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
-        var straggler = policy.TryAcquire();
-        policy.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
+        var straggler = policy.TryAcquire(Preview);
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), Admit(policy));
         clock.Advance(TimeSpan.FromSeconds(11));
-        Assert.True(policy.TryAcquire().Allowed); // the real probe claims the slot
+        Assert.True(policy.TryAcquire(Preview).Allowed); // the real probe claims the slot
 
-        policy.ReleaseProbeWithoutOutcome(straggler.Generation);
+        policy.ReleaseProbeWithoutOutcome(Preview, straggler.Generation);
 
-        Assert.False(policy.TryAcquire().Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed);
     }
 
     // The generation a caller would be admitted against right now — production reads it off the
     // decision that admitted the call, and so does every test here.
-    private static long Admit(ForeignSevenTvBreakerPolicy policy) => policy.TryAcquire().Generation;
+    private static long Admit(ForeignSevenTvBreakerPolicy policy) => policy.TryAcquire(Preview).Generation;
+
+    private static FakeClock NewClock() => new(new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+    private sealed class FakeClock(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset _now = start;
+
+        public TimeProvider Provider => this;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan delta) => _now = _now.Add(delta);
+    }
+}
+
+/// <summary>
+/// The correction of 2026-09-20 (spec 6.1, AK 94): one policy instance serves more than one
+/// operation, and the two signals it carries do not reach equally far. An ordinary failure streak
+/// and the half-open probe belong to the operation that produced them — a malformed list query
+/// (F17) is indistinguishable from a real outage and would otherwise drag the healthy preview into
+/// 503 after five attempts, then burn the one probe the preview needed. A confirmed 429 is the
+/// opposite: it describes 7TV's bucket, which both share, so it locks both with the same
+/// <c>Retry-After</c>.
+/// </summary>
+public class ForeignSevenTvBreakerPolicyOperationScopeTests
+{
+    private const string Preview = ForeignSevenTvBreakerOperations.ForeignPreview;
+    private const string List = ForeignSevenTvBreakerOperations.EmoteSetList;
+
+    /// <summary>
+    /// The failure counter is the list's own: five consecutive <c>Unavailable</c> of the list query
+    /// open the list and nothing else, and the preview call that follows travels — it neither finds
+    /// a closed gate nor resets anything of the list's by reporting its own success.
+    /// </summary>
+    [Fact]
+    public void AnOperationsFailureStreak_LocksThatOperationAlone()
+    {
+        var policy = new ForeignSevenTvBreakerPolicy(NewClock().Provider);
+
+        for (var i = 0; i < ForeignSevenTvBreakerPolicy.FailureThreshold; i++)
+        {
+            policy.RecordFailure(
+                List, ForeignSevenTvBreakerOutcome.OtherFailure, null, policy.TryAcquire(List).Generation);
+        }
+
+        Assert.False(policy.TryAcquire(List).Allowed);
+
+        var preview = policy.TryAcquire(Preview);
+        Assert.True(preview.Allowed);
+
+        // …and the preview's own success closes nothing of the list's: the list stays open for as
+        // long as its own incident lasts.
+        Assert.Equal(ForeignSevenTvBreakerTransition.None, policy.RecordSuccess(Preview, preview.Generation));
+        Assert.False(policy.TryAcquire(List).Allowed);
+    }
+
+    /// <summary>
+    /// The half-open probe is per operation too. Once the list's open duration elapses it may send
+    /// exactly one probe — and a preview call arriving in the same moment travels on its own
+    /// account, without consuming the slot the list is holding.
+    /// </summary>
+    [Fact]
+    public void TheHalfOpenProbe_IsNotSharedBetweenOperations()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        for (var i = 0; i < ForeignSevenTvBreakerPolicy.FailureThreshold; i++)
+        {
+            policy.RecordFailure(
+                List, ForeignSevenTvBreakerOutcome.OtherFailure, null, policy.TryAcquire(List).Generation);
+        }
+
+        clock.Advance(ForeignSevenTvBreakerPolicy.DefaultOpenDuration + TimeSpan.FromSeconds(1));
+
+        Assert.True(policy.TryAcquire(List).Allowed); // the list claims its one probe
+        Assert.False(policy.TryAcquire(List).Allowed);
+
+        Assert.True(policy.TryAcquire(Preview).Allowed);
+
+        // The list's probe is still the list's: the preview neither took it nor gave it back.
+        Assert.False(policy.TryAcquire(List).Allowed);
+    }
+
+    /// <summary>
+    /// The one signal that has to stay shared (6.1, "Reichweite"): 7TV limits the bucket, not the
+    /// query, so a confirmed 429 on either path locks both — and tells both the same waiting time.
+    /// This is precisely what a second, keyed policy instance would have got wrong.
+    /// </summary>
+    [Fact]
+    public void AConfirmedRateLimit_LocksBothOperations_WithTheSameRetryAfter()
+    {
+        var policy = new ForeignSevenTvBreakerPolicy(NewClock().Provider);
+        var retryAfter = TimeSpan.FromMinutes(30);
+
+        var opened = policy.RecordFailure(
+            List, ForeignSevenTvBreakerOutcome.RateLimited, retryAfter, policy.TryAcquire(List).Generation);
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.Opened, opened);
+
+        var preview = policy.TryAcquire(Preview);
+        Assert.False(preview.Allowed);
+        Assert.True(preview.OpenedByRateLimit);
+        Assert.Equal(retryAfter, preview.RemainingOpenTime);
+
+        var list = policy.TryAcquire(List);
+        Assert.False(list.Allowed);
+        Assert.True(list.OpenedByRateLimit);
+        Assert.Equal(preview.RemainingOpenTime, list.RemainingOpenTime);
+    }
+
+    /// <summary>
+    /// The shared lock is shared, its probes are not: once 7TV's own waiting time has passed, each
+    /// operation may try once. Sharing the probe here would mean the path that happened to ask
+    /// second stays dark until the other one succeeds.
+    /// </summary>
+    [Fact]
+    public void AfterASharedRateLimitElapses_EachOperationGetsItsOwnProbe()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        policy.RecordFailure(
+            List,
+            ForeignSevenTvBreakerOutcome.RateLimited,
+            TimeSpan.FromSeconds(10),
+            policy.TryAcquire(List).Generation);
+
+        clock.Advance(TimeSpan.FromSeconds(11));
+
+        Assert.True(policy.TryAcquire(List).Allowed);
+        Assert.False(policy.TryAcquire(List).Allowed);
+        Assert.True(policy.TryAcquire(Preview).Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed);
+    }
 
     private static FakeClock NewClock() => new(new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
 
