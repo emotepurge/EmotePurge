@@ -533,6 +533,62 @@ describe('startImportFlow', () => {
       });
     });
 
+    // Third Codex round, P2: the 'trackedActive' path never fetches a set name of its own
+    // (loadImportTarget's own contract, `setName: null`) — the picker's own choice already carries
+    // one from the same click, and this is what makes it reach the confirm dialog header instead of
+    // the header falling back to the raw set id (spec 8.6/AK 39).
+    it('carries the picked setName into the ready state for a choice resolved as trackedActive', () => {
+      const { deps, dialogOpen, statusSubjects } = setup();
+
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({
+          emoteSetId: 'set-active',
+          activeEmoteSetId: 'set-active',
+          setName: 'Halloween',
+        }),
+      });
+
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-active' }));
+      statusSubjects[0].complete();
+
+      // No extra request grew out of carrying the name along — still exactly the "today" path's
+      // three requests (AK 36), pinned by the same `loadEmoteSetPreview` assertion the test above
+      // already makes.
+      expect(confirmData(dialogOpen).target()).toMatchObject({
+        status: 'ready',
+        setId: 'set-active',
+        setName: 'Halloween',
+      });
+    });
+
+    // The open question spec F5 leaves on record: the choice is a snapshot from before the dialog
+    // opened, and the account's active set can have moved on by the time getSetStatus actually
+    // answers. The honest response is to not use a name that may no longer belong to the loaded set
+    // — never to guess.
+    it('does not use the chosen name when the loaded active set id no longer matches the chosen one', () => {
+      const { deps, dialogOpen, statusSubjects } = setup();
+
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({
+          emoteSetId: 'set-active',
+          activeEmoteSetId: 'set-active',
+          setName: 'Halloween',
+        }),
+      });
+
+      // The account's active set changed between the picker closing and this answer arriving.
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-changed' }));
+      statusSubjects[0].complete();
+
+      expect(confirmData(dialogOpen).target()).toMatchObject({
+        status: 'ready',
+        setId: 'set-changed',
+        setName: null,
+      });
+    });
+
     it('checks set-warning for the chosen set id, not the channel active-set warning', () => {
       const { deps, loadEmoteSetPreview, getSetWarning } = setup();
       loadEmoteSetPreview.mockReturnValue(of(liveTarget()));

@@ -89,6 +89,44 @@ export type ImportFlowTarget =
  *  latter is a display name, unfit for a URL path segment and explicitly barred from any
  *  comparison/routing use (E7, spec 8.6) — `twitchLogin` is the machine-readable field 6.2 carries
  *  for exactly this. */
+/** The chosen set's own name, but only for the case where the picked set turns out to be the
+ *  account's active one (`toTargetSelection`'s `'trackedActive'` branch, spec F5/AK 36 above): that
+ *  branch fires the same three "today" requests as an `'activeSet'` target and never fetches a set
+ *  name at all (`loadImportTarget`'s own doc — `setName` stays `null` there by contract), so the
+ *  only name available for that set is the one the picker's own click already carried
+ *  (`ImportTargetChoice.setName`, third Codex round P2: "Preserve the selected active set name").
+ *  `null` for every other case — a non-active tracked choice or an untracked one both name their set
+ *  from the live list `loadImportTarget` itself reads, which already has a real answer to use. */
+function chosenActiveSetName(
+  target: ImportFlowTarget,
+): { emoteSetId: string; setName: string } | null {
+  if (target.kind !== 'chosen') {
+    return null;
+  }
+  const choice = target.choice;
+  if (!choice.isTracked || choice.emoteSetId !== choice.activeEmoteSetId) {
+    return null;
+  }
+  return { emoteSetId: choice.emoteSetId, setName: choice.setName };
+}
+
+/** Applies {@link chosenActiveSetName} to a freshly loaded state, guarded by an id comparison done
+ *  *here*, at the point the loaded answer actually exists — not any earlier. `choice` is a snapshot
+ *  taken when the picker closed; the account's active set can have moved on by the time
+ *  `getSetStatus` answers (the same stale-snapshot question spec F5 raised for the id itself), so
+ *  attaching the chosen name to a `setId` it no longer describes would show the wrong name for the
+ *  right set. When the ids disagree this leaves `state` untouched — `targetSetLabel` in the confirm
+ *  dialog then falls back to the id, exactly as it already does for every other unnamed case. */
+function withChosenSetName(
+  state: ImportTargetLoadState,
+  chosen: { emoteSetId: string; setName: string } | null,
+): ImportTargetLoadState {
+  if (chosen === null || state.status !== 'ready' || state.setName !== null) {
+    return state;
+  }
+  return state.setId === chosen.emoteSetId ? { ...state, setName: chosen.setName } : state;
+}
+
 function toTargetSelection(target: ImportFlowTarget): ImportTargetSelection {
   if (target.kind === 'activeSet') {
     return { kind: 'trackedActive', channelName: target.channelName };
@@ -146,6 +184,10 @@ export function startImportFlow(
   // the dialog bumps the generation too, so a late answer writes into nothing after that.
   let generation = 0;
 
+  // Computed once, from the choice the picker closed with — never re-derived per load/retry, since
+  // it names a set the picker already knew, not something a reload could learn anew.
+  const activeSetName = chosenActiveSetName(target);
+
   const load = (): void => {
     const mine = ++generation;
     targetState.set({ status: 'loading' });
@@ -155,7 +197,7 @@ export function startImportFlow(
       toTargetSelection(target),
     ).subscribe((state) => {
       if (mine === generation) {
-        targetState.set(state);
+        targetState.set(withChosenSetName(state, activeSetName));
       }
     });
   };

@@ -279,7 +279,11 @@ test.describe('push flow: picker to confirmation dialog', () => {
       '1 Emote nach aatrociity kopieren?',
     );
     await expect(confirm.getByText('Aus Kanal sensitron')).toBeVisible();
-    await expect(confirm.getByText('Ziel: aatrociity · Set target-set')).toBeVisible();
+    // The picked set is the target account's active one ('target-set'), so the load resolves via
+    // the 'trackedActive' path — which never fetches a set name of its own. Third Codex round P2:
+    // the picker's own choice already carries the name ('Main') from the very click that picked
+    // it, and the confirm header now shows that name instead of falling back to the raw set id.
+    await expect(confirm.getByText('Ziel: aatrociity · Set Main')).toBeVisible();
     await expect(
       confirm.getByText('1 Emote ist bereits im Zielset und wird übersprungen.'),
     ).toBeVisible();
