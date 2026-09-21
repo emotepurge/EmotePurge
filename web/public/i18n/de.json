@@ -153,7 +153,8 @@
     "menuLabel": "Set wählen",
     "loading": "Lädt …",
     "unavailable": "Set-Liste nicht verfügbar",
-    "active": "aktiv"
+    "active": "aktiv",
+    "lockedDuringDelete": "Set-Wechsel gesperrt, bis der Löschlauf abgeschlossen ist."
   },
   "datetimePicker": {
     "placeholder": "Jetzt (Standard)",

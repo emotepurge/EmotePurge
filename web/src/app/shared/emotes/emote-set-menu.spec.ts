@@ -1,7 +1,9 @@
+import { TestBed } from '@angular/core/testing';
+import { TranslocoTestingModule } from '@jsverse/transloco';
 import { describe, expect, it } from 'vitest';
 
 import { EmoteSetSummary } from '../../core/seven-tv/seven-tv-emote-set.model';
-import { selectableEmoteSets } from './emote-set-menu';
+import { EmoteSetMenu, selectableEmoteSets } from './emote-set-menu';
 
 function set(overrides: Partial<EmoteSetSummary> = {}): EmoteSetSummary {
   return {
@@ -51,5 +53,58 @@ describe('selectableEmoteSets', () => {
 
   it('returns an empty list for an empty input', () => {
     expect(selectableEmoteSets([])).toEqual([]);
+  });
+});
+
+/**
+ * #200 K4 fix round (finding G): the host locks the dropdown while a delete run is still writing
+ * into the set on screen. Only the blocking decision and its reason are pinned here (Regel 12) —
+ * never the trigger's styling.
+ */
+describe('EmoteSetMenu — a host lock disables the trigger and explains itself', () => {
+  function render(lockedReasonKey: string | null) {
+    TestBed.configureTestingModule({
+      imports: [
+        EmoteSetMenu,
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+    });
+    const fixture = TestBed.createComponent(EmoteSetMenu);
+    fixture.componentRef.setInput('sets', [set(), set({ id: 'set-2', isActive: false })]);
+    fixture.componentRef.setInput('selectedEmoteSetId', 'set-1');
+    fixture.componentRef.setInput('lockedReasonKey', lockedReasonKey);
+    fixture.detectChanges();
+    const trigger = (fixture.nativeElement as HTMLElement).querySelector('button')!;
+    return { fixture, trigger };
+  }
+
+  it('disables the trigger and points it at the visible reason', () => {
+    const { trigger } = render('emoteSetMenu.lockedDuringDelete');
+
+    expect(trigger.disabled).toBe(true);
+    const reason = trigger.ownerDocument.getElementById(trigger.getAttribute('aria-describedby')!);
+    expect(reason?.textContent).toContain('emoteSetMenu.lockedDuringDelete');
+  });
+
+  it('carries no reason and stays usable without a lock', () => {
+    const { trigger } = render(null);
+
+    expect(trigger.disabled).toBe(false);
+    expect(trigger.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('drops a choice made in a popover that was already open when the lock landed', () => {
+    const { fixture } = render(null);
+    const emitted: string[] = [];
+    fixture.componentInstance.emoteSetIdChange.subscribe((id) => emitted.push(id));
+
+    fixture.componentRef.setInput('lockedReasonKey', 'emoteSetMenu.lockedDuringDelete');
+    fixture.detectChanges();
+    fixture.componentInstance['select']('set-2');
+
+    expect(emitted).toEqual([]);
   });
 });

@@ -32,6 +32,10 @@ export function selectableEmoteSets(sets: readonly EmoteSetSummary[]): EmoteSetS
   return sets.filter((set) => set.kind === 'NORMAL');
 }
 
+/** Per-instance suffix for the lock reason's element id — an `aria-describedby` target has to be
+ *  unique in the document. */
+let nextLockReasonId = 0;
+
 /**
  * Set-dropdown in the usage page's header, next to {@link DateRangeMenu} and built after the same
  * pattern (`Popover` + `role="radiogroup"`, roving tabindex, arrow keys move focus only — Enter/
@@ -47,7 +51,7 @@ export function selectableEmoteSets(sets: readonly EmoteSetSummary[]): EmoteSetS
   selector: 'app-emote-set-menu',
   imports: [Button, Popover, TranslocoPipe],
   template: `
-    <div class="relative" data-popover-anchor>
+    <div class="relative flex flex-wrap items-center gap-x-2" data-popover-anchor>
       <button
         #trigger
         type="button"
@@ -56,6 +60,7 @@ export function selectableEmoteSets(sets: readonly EmoteSetSummary[]): EmoteSetS
         aria-haspopup="dialog"
         [attr.aria-expanded]="isOpen()"
         [disabled]="triggerDisabled()"
+        [attr.aria-describedby]="lockedReasonKey() !== null ? lockReasonId : null"
         [title]="unavailable() ? ('emoteSetMenu.unavailable' | transloco) : null"
         (click)="toggle()"
       >
@@ -72,6 +77,12 @@ export function selectableEmoteSets(sets: readonly EmoteSetSummary[]): EmoteSetS
         }
         <span aria-hidden="true" class="ml-1 text-fg-muted">▾</span>
       </button>
+      <!-- A lock the host imposes for a reason of its own (a delete run still writing) explains
+           itself as text next to the trigger (docs/UI-Designsprache.md §10, "Disabled explains
+           itself"). The list's own states need none: the trigger's label already says them. -->
+      @if (lockedReasonKey(); as reasonKey) {
+        <span [id]="lockReasonId" class="text-xs text-fg-muted">{{ reasonKey | transloco }}</span>
+      }
 
       @if (isOpen()) {
         <app-popover [ariaLabel]="'emoteSetMenu.menuLabel' | transloco" (closed)="close()">
@@ -133,12 +144,19 @@ export class EmoteSetMenu {
   /** The set list could not be read (6.1 answered 503) — trigger locked with a reason, no popover,
    *  no background retry (spec 8.1: "kein Banner, kein Wiederholen im Hintergrund"). */
   readonly unavailable = input(false);
+  /** Translation key of a reason the host locks the trigger for (the usage page: a delete run is
+   *  still writing into the set on screen), or `null` — shown next to the trigger and wired to it via
+   *  `aria-describedby`. A choice made in a popover that was already open when the lock landed is
+   *  dropped (`select`). */
+  readonly lockedReasonKey = input<string | null>(null);
 
   readonly emoteSetIdChange = output<string>();
 
   private readonly document = inject(DOCUMENT);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly trigger = viewChild<ElementRef<HTMLButtonElement>>('trigger');
+
+  protected readonly lockReasonId = `emote-set-menu-lock-reason-${nextLockReasonId++}`;
 
   protected readonly isOpen = signal(false);
   // Roving tabindex: null means "follow the selection", same convention as DateRangeMenu.
@@ -151,7 +169,11 @@ export class EmoteSetMenu {
   );
 
   protected readonly triggerDisabled = computed(
-    () => this.loading() || this.unavailable() || this.options().length === 0,
+    () =>
+      this.loading() ||
+      this.unavailable() ||
+      this.lockedReasonKey() !== null ||
+      this.options().length === 0,
   );
 
   protected toggle(): void {
@@ -179,6 +201,11 @@ export class EmoteSetMenu {
   }
 
   protected select(id: string): void {
+    // A lock can land while the popover is open — the choice is then not the user's to make.
+    if (this.lockedReasonKey() !== null) {
+      this.close();
+      return;
+    }
     this.emoteSetIdChange.emit(id);
     this.close();
   }

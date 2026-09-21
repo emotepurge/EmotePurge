@@ -153,7 +153,8 @@
     "menuLabel": "Choose a set",
     "loading": "Loading…",
     "unavailable": "Set list unavailable",
-    "active": "active"
+    "active": "active",
+    "lockedDuringDelete": "Switching sets is locked until the delete run has finished."
   },
   "datetimePicker": {
     "placeholder": "Now (default)",
