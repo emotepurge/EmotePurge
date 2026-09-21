@@ -264,6 +264,49 @@ public class SevenTvEmoteSetListServiceTests
     }
 
     /// <summary>
+    /// The third review round's P2 (F17), followed through to this service: a null user carrying a
+    /// non-rate-limit GraphQL error is the client's <c>Unavailable</c>, not <c>NoSevenTvAccount</c> —
+    /// so unlike the case right above, this one gets the short error shelf-life, not the full-minute
+    /// answer hold. Run against the real client so the fix at the client boundary is what this
+    /// service actually sees, the same way <see cref="ADisguisedRateLimit_IsRateLimited_NotAnEmptyOk"/>
+    /// does for the 429 disguise.
+    /// </summary>
+    [Fact]
+    public async Task ANullUserWithANonRateLimitError_IsUnavailable_HeldWithTheErrorShelfLife()
+    {
+        var cache = new FakeListCache();
+        var service = CreateService(
+            RealClient(_ => NullUserWithErrorPayload, new RecordingForeignUpstreamRequestBudget()), cache);
+
+        var result = await service.ListByTwitchIdAsync(TwitchId);
+
+        Assert.Equal(EmoteSetListStatus.Unavailable, result.Status);
+        Assert.Null(result.List);
+        Assert.Equal(SevenTvEmoteSetListService.UnavailableTimeToLive, cache.LastTimeToLive);
+    }
+
+    /// <summary>
+    /// The other half of the same fix: this outcome has to count against the breaker as a failure —
+    /// exactly as any other <c>Unavailable</c> does — rather than as evidence 7TV is healthy the way
+    /// the genuine <see cref="NoSevenTvAccount_IsHeldLikeAnAnswer_AndDoesNotCountAgainstTheBreaker"/>
+    /// case does. Five in a row open the breaker.
+    /// </summary>
+    [Fact]
+    public async Task ANullUserWithANonRateLimitError_CountsAsABreakerFailure_NotASuccess()
+    {
+        var breaker = new ForeignSevenTvBreakerPolicy();
+        var client = RealClient(_ => NullUserWithErrorPayload, new RecordingForeignUpstreamRequestBudget());
+        var service = CreateService(client, new FakeListCache { Outage = true }, breaker);
+
+        for (var i = 0; i < ForeignSevenTvBreakerPolicy.FailureThreshold; i++)
+        {
+            Assert.Equal(EmoteSetListStatus.Unavailable, (await service.ListByTwitchIdAsync(TwitchId)).Status);
+        }
+
+        Assert.False(breaker.TryAcquire(ForeignSevenTvBreakerOperations.EmoteSetList).Allowed);
+    }
+
+    /// <summary>
     /// <c>isPersonal</c> is the kind and nothing else (E7). It exists for the label alone — every
     /// kind other than <c>NORMAL</c> is equally unselectable (8.6) — which is also why an unknown
     /// kind 7TV adds later simply is not personal, rather than breaking anything.
@@ -348,6 +391,12 @@ public class SevenTvEmoteSetListServiceTests
 
     private const string RateLimitedPayload =
         """{"data":null,"errors":[{"message":"too many requests","extensions":{"code":"RATE_LIMITED","status":429}}]}""";
+
+    // A partial GraphQL answer: userByConnection: null next to a non-429 error, the shape the third
+    // review round's P2 named (F17) — indistinguishable from the genuine "no account" answer unless
+    // the errors block is checked.
+    private const string NullUserWithErrorPayload =
+        """{"data":{"users":{"userByConnection":null}},"errors":[{"message":"internal server error"}]}""";
 
     private static SevenTvEmoteSetListResult OkListing() => SevenTvEmoteSetListResult.Ok(
         new SevenTvEmoteSetListing(ActiveSetId, [

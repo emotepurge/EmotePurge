@@ -173,6 +173,25 @@ public class SevenTvApiClientEmoteSetListTests
     }
 
     /// <summary>
+    /// Third review round, P2, F17: <c>userByConnection: null</c> means "no account" only when it
+    /// comes back clean. Next to a non-429 <c>errors</c> block — a partial GraphQL answer, schema
+    /// drift on a sibling field, say — it is 7TV failing on this query, not naming an account
+    /// missing, and must not be cached as a hit or counted as evidence 7TV is healthy.
+    /// </summary>
+    [Fact]
+    public async Task NullUserWithANonRateLimitError_IsUnavailable_NotNoSevenTvAccount()
+    {
+        var handler = new StubHandler(_ =>
+            """{"data":{"users":{"userByConnection":null}},"errors":[{"message":"internal server error"}]}""");
+        var client = CreateClient(handler);
+
+        var result = await client.GetEmoteSetListForTwitchUserAsync(TwitchId);
+
+        Assert.Equal(SevenTvEmoteSetListLookupStatus.Unavailable, result.Status);
+        Assert.Null(result.Listing);
+    }
+
+    /// <summary>
     /// An account we can see whose sets we cannot read is <c>Unavailable</c>, never an account with
     /// no sets. Schema drift is exactly how this arrives — the member simply stops being there —
     /// and a silent empty list would tell a picker that a streamer has nothing to offer.

@@ -673,10 +673,24 @@ public class SevenTvApiClient(
 
             // The one measured distinction of this method (2026-09-20, platformId 999999999999):
             // userByConnection null at HTTP 200 with no errors block is an answer — 7TV carries no
-            // account for this connection. A GraphQL error never reaches here; it leaves data null,
-            // which the branch above already reported as Unavailable.
+            // account for this connection. A literal GraphQL error (data: null) never reaches here;
+            // it leaves users null, which the branch above already reported as Unavailable. But a
+            // *partial* GraphQL answer can: data.users.userByConnection: null alongside a non-429
+            // errors block (schema drift on a sibling field, say) is 7TV failing, not 7TV naming no
+            // account — third review round, P2, F17. Checked only here, right before the null user
+            // would otherwise be read as NoSevenTvAccount: the rate-limit disguise is already
+            // excluded by the RateLimited branch above, so anything left in Errors at this point is a
+            // genuine failure.
             if (users.UserByConnection is not { } user)
             {
+                if (page.Dto?.Errors is { Count: > 0 })
+                {
+                    logger.LogWarning(
+                        "7TV emote-set list for Twitch id {TwitchId} returned userByConnection: null together with a non-rate-limit GraphQL error.",
+                        twitchUserId);
+                    return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+                }
+
                 logger.LogDebug("No 7TV account carries the Twitch connection {TwitchId}.", twitchUserId);
                 return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.NoSevenTvAccount);
             }
