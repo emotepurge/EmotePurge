@@ -726,8 +726,8 @@
       "membersUnavailable": "This set’s member list is unavailable right now – only emotes with counts are shown.",
       "truncated": "This set’s member list is incomplete ({{total}} entries according to 7TV).",
       "lock": {
-        "membersUnavailable": "Deleting is locked: this set’s member list is unavailable.",
-        "truncated": "Deleting is locked: this set’s member list is incomplete.",
+        "membersUnavailable": "Deleting and voting are locked: this set’s member list is unavailable.",
+        "truncated": "Deleting and voting are locked: this set’s member list is incomplete.",
         "nonActiveSet": "For now, deleting and voting only work in the active set."
       }
     }

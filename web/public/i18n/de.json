@@ -726,8 +726,8 @@
       "membersUnavailable": "Die Mitgliederliste dieses Sets ist gerade nicht verfügbar – gezeigt werden nur Emotes mit Zählungen.",
       "truncated": "Die Mitgliederliste dieses Sets ist unvollständig (laut 7TV {{total}} Einträge).",
       "lock": {
-        "membersUnavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
-        "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
+        "membersUnavailable": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
+        "truncated": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
         "nonActiveSet": "Löschen und Abstimmen gehen vorerst nur im aktiven Set."
       }
     }

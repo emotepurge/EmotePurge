@@ -1153,6 +1153,16 @@ test.describe('set view (#200, K4)', () => {
     const voteButton = page.getByRole('button', { name: 'Zur Abstimmung stellen (1)' });
     await expect(voteButton).toBeVisible();
     await expect(voteButton).toBeDisabled();
+    // The a11y fix this test now also covers: the vote button used to have no aria-describedby at
+    // all, so a screen-reader user only ever heard "disabled" with no reason — only the delete
+    // button pointed at the paragraph above. Both buttons now share that one reason via
+    // aria-describedby rather than each carrying (or worse, duplicating) their own.
+    await expect(voteButton).toHaveAccessibleDescription(
+      'Löschen und Abstimmen gehen vorerst nur im aktiven Set.',
+    );
+    await expect(deleteButton).toHaveAccessibleDescription(
+      'Löschen und Abstimmen gehen vorerst nur im aktiven Set.',
+    );
 
     expect(consoleProblems, consoleProblems.join('\n')).toEqual([]);
   });

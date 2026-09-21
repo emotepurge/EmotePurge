@@ -250,7 +250,12 @@ export class MassDeletePanel {
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
 
-  protected readonly deleteLockReasonId = `mass-delete-lock-reason-${nextDeleteLockReasonId++}`;
+  /** Public (not `protected`) on purpose: a host page's own controls outside this component's
+   *  template — the usage page's dock vote button, gated on the same `voteLocked()` condition the
+   *  host derives from an equivalent set-view lock — reach this id through a template reference
+   *  variable on `<app-mass-delete-panel>` to describe themselves with the very same visible
+   *  reason paragraph, instead of duplicating it. */
+  readonly deleteLockReasonId = `mass-delete-lock-reason-${nextDeleteLockReasonId++}`;
   private readonly setWarning = signal<EmoteSetWarning | null>(null);
   private readonly warningLoading = signal(false);
   // Split by `hidden` for the delete-confirm dialog (Konzept "Auswahl überlebt Suche und Filter"

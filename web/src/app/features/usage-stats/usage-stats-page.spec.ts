@@ -3278,6 +3278,187 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 });
 
 /**
+ * The vote button's own `aria-describedby` (a11y fix, docs/UI-Designsprache.md §10 "Disabled
+ * explains itself"): before this fix only the delete button pointed at the mass-delete panel's
+ * visible reason paragraph, leaving the vote button's disabled state unexplained to a screen
+ * reader. Unlike every block above, this one keeps the real template rather than overriding it to
+ * two bare `<div>`s — the vote button and the paragraph it must reference (`MassDeletePanel`'s
+ * `deleteLockReasonId`, made public for exactly this) only exist there. The selection is still
+ * driven through `ListSelection` directly rather than a DOM click on a grid cell, same as the
+ * `openCreateVoteSession()` block above — `cdk-virtual-scroll-viewport` renders nothing meaningful
+ * in jsdom's zero-size layout, but the dock and its buttons sit outside the viewport and only need
+ * the selection *signal* to be non-empty, not a rendered cell to click.
+ */
+describe('UsageStatsPage — the locked vote button shares the delete lock reason paragraph (a11y fix)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function findVoteButton(): HTMLButtonElement | undefined {
+    return Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.trim().startsWith('usageStats.createVoteSession'));
+  }
+
+  it('points the disabled vote button at the exact same reason paragraph the delete button uses, in a non-active view whose member list is unreadable (AK 62 shape)', async () => {
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+      ]),
+    );
+    await settle();
+
+    // A real-looking imageUrl: this describe block renders the actual template, so
+    // NgOptimizedImage runs for real and rejects the shared emote() helper's default '' (NG02952,
+    // see the "toolbar mark-all" block's own comment on the same trap).
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    await settle();
+
+    // Same lock, same condition — see mass-delete-panel.ts's deleteLockReasonId comment: this is
+    // exactly why the vote button can reuse the delete button's paragraph instead of needing one of
+    // its own.
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.membersUnavailable');
+    expect(component['voteLocked']()).toBe(true);
+
+    // Nothing marked yet — the dock (panel and both buttons) does not exist until something is.
+    expect(findVoteButton()).toBeUndefined();
+
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    const button = findVoteButton();
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(true);
+
+    const reasonParagraph = fixture.nativeElement.querySelector(
+      'p[id^="mass-delete-lock-reason-"]',
+    ) as HTMLParagraphElement | null;
+    expect(reasonParagraph).not.toBeNull();
+    // The identical element the delete button already points at (mass-delete-panel.ts) — not a
+    // second, duplicated paragraph, and not some other panel instance's id.
+    expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
+    // The text itself now names both locked actions (this fix's locale change) rather than only
+    // "Löschen" — untranslated here (empty `de` dict), so this is the raw key, but the key itself
+    // is the "membersUnavailable" one whose copy this fix corrected in public/i18n/{de,en}.json.
+    expect(reasonParagraph!.textContent?.trim()).toBe('usageStats.setView.lock.membersUnavailable');
+  });
+
+  it('leaves the vote button without an aria-describedby in the active view, where nothing is locked', async () => {
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    // Genuine microtask tick, not just detectChanges(): canManage() reads permissionsResource, an
+    // rxResource whose value a bare synchronous detectChanges() right after flush() does not yet
+    // reflect (see this file's own header comment on rxResource vs. plain HttpClient flushes) — the
+    // vote button is entirely gated on it (`@if (canManage())`), unlike the mark-all button the
+    // "toolbar mark-all" block above checks, which does not depend on it.
+    await settle();
+
+    expect(component['voteLocked']()).toBe(false);
+    expect(component['canManage']()).toBe(true);
+
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    const button = findVoteButton();
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(false);
+    expect(button!.getAttribute('aria-describedby')).toBeNull();
+  });
+});
+
+/**
  * T4.5, AK 64 (second part): the export dialog and the push/import-target dialog each read the
  * *shown* set once, at the moment they open — the same capture discipline `CapturedExportScope`/
  * `CapturedImportScope`'s own docs describe, already exercised for a range change by the openExport()

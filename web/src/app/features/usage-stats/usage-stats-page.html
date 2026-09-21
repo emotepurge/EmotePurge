@@ -1077,6 +1077,7 @@
           </div>
         }
         <app-mass-delete-panel
+          #massDeletePanel
           [setId]="setId"
           [channelName]="channelName()"
           [selectedEmotes]="selectedForDelete()"
@@ -1113,7 +1114,15 @@
                as a curated vote-session ballot. Count in the label + disabled at zero, mirroring the
                delete button's conventions; managers only (the endpoint would 403 a 7TV editor).
                Projected into the panel's action row so both selection consumers share one line;
-               ngProjectAs because an @if block itself carries no selector attribute. -->
+               ngProjectAs because an @if block itself carries no selector attribute.
+               `aria-describedby` only while `voteLocked()` holds (docs/UI-Designsprache.md §10,
+               "Disabled explains itself") — an empty selection already says so via the button's own
+               accessible name (the count in the label), and needs no extra reason text. It points at
+               the delete button's own `deleteLockReasonId` (`#massDeletePanel`, now public for
+               exactly this) rather than a second paragraph: `voteLocked()` and `deleteLockReasonKey()
+               !== null` are the same condition (both keyed off `isNonActiveView()`, see
+               usage-stats-page.ts), so the reason already on screen for the delete button applies
+               here unchanged — nothing to duplicate, nothing that can drift out of sync. -->
           <ng-container ngProjectAs="[selection-actions]">
             @if (canManage()) {
               <button
@@ -1122,6 +1131,7 @@
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
                 [disabled]="selection.selectedItems().length === 0 || voteLocked()"
+                [attr.aria-describedby]="voteLocked() ? massDeletePanel.deleteLockReasonId : null"
                 (click)="openCreateVoteSession()"
               >
                 {{
