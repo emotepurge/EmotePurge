@@ -78,6 +78,58 @@ describe('buildImportPreview', () => {
     const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: 'Dupe' }]), target);
 
     expect(result.nameCollisions).toEqual(['Dupe']);
+    expect(result.nameCollisionRowCount).toBe(1);
+  });
+
+  it('counts every skipped row when two different source ids collide on the same target name', () => {
+    // Codex Sol P2: nameCollisions used to be the only signal for "how many rows were skipped" —
+    // but it dedupes by name, so two distinct source ids sharing one colliding alias both leave
+    // the run while the name list shows only one entry. The row count must not silently halve.
+    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'Dupe' }];
+
+    const result = buildImportPreview(
+      source([
+        { sevenTvEmoteId: 'new-1', name: 'Dupe' },
+        { sevenTvEmoteId: 'new-2', name: 'Dupe' },
+      ]),
+      target,
+    );
+
+    expect(result.nameCollisions).toEqual(['Dupe']);
+    expect(result.nameCollisionRowCount).toBe(2);
+    expect(result.toAdd).toEqual([]);
+  });
+
+  it('keeps the toAdd/alreadyPresent/nameCollisionRowCount/aliasMismatches sum equal to the source row count', () => {
+    // The prüfbare Invariante from the task: every source row lands in exactly one of the four
+    // groups (invalidNames is a subset of toAdd, not a fifth group), over a genuinely mixed list —
+    // two ids sharing a colliding name, one alias mismatch, one already-present row, two clean adds.
+    const target: EmoteListItem[] = [
+      { sevenTvEmoteId: 'present-1', name: 'Present' },
+      { sevenTvEmoteId: 'mismatch-1', name: 'TargetAlias' },
+      { sevenTvEmoteId: 'collision-target', name: 'Dupe' },
+    ];
+    const rows: ImportRow[] = [
+      { sevenTvEmoteId: 'present-1', name: 'Present' },
+      { sevenTvEmoteId: 'mismatch-1', name: 'SourceAlias' },
+      { sevenTvEmoteId: 'collision-source-1', name: 'Dupe' },
+      { sevenTvEmoteId: 'collision-source-2', name: 'Dupe' },
+      { sevenTvEmoteId: 'new-1', name: 'Kappa' },
+      { sevenTvEmoteId: 'new-2', name: 'PogU' },
+    ];
+
+    const result = buildImportPreview(source(rows), target);
+
+    expect(
+      result.toAdd.length +
+        result.alreadyPresent +
+        result.nameCollisionRowCount +
+        result.aliasMismatches.length,
+    ).toBe(rows.length);
+    expect(result.alreadyPresent).toBe(1);
+    expect(result.aliasMismatches.length).toBe(1);
+    expect(result.nameCollisionRowCount).toBe(2);
+    expect(result.toAdd.length).toBe(2);
   });
 
   it('returns an empty toAdd list when every source row is already present', () => {
@@ -264,6 +316,16 @@ describe('buildImportPreview', () => {
     expect(result.alreadyPresent).toBe(ALREADY_PRESENT_COUNT);
     expect(result.aliasMismatches.length).toBe(ALIAS_MISMATCH_COUNT);
     expect(result.nameCollisions.length).toBe(NAME_COLLISION_COUNT);
+    // Every collision here has a distinct name, so the deduplicated list and the row count agree —
+    // this is the case the AK 38 numbers were measured against, not the shared-alias case covered
+    // separately above.
+    expect(result.nameCollisionRowCount).toBe(NAME_COLLISION_COUNT);
     expect(result.toAdd.length).toBe(TO_ADD_COUNT);
+    expect(
+      result.toAdd.length +
+        result.alreadyPresent +
+        result.nameCollisionRowCount +
+        result.aliasMismatches.length,
+    ).toBe(sourceRows.length);
   });
 });

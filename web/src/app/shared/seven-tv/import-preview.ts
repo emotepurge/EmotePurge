@@ -22,12 +22,23 @@ export interface ImportPreview {
    *  duplicate id with two different target aliases counts here the moment *one* of them matches
    *  the source alias, never as a mismatch (spec 8.6, AK 37). */
   alreadyPresent: number;
-  /** Names `toAdd` would otherwise have carried that 7TV would reject outright — a different
-   *  `sevenTvEmoteId` in the target already owns that exact (case-sensitive) name. Pulled *out* of
-   *  `toAdd` since spec 2026-09-20 (revises the 2026-09-06 "informational only, 7TV decides"
-   *  reading, docs/DECISIONS.md): a run that still tried these would fail every one of them, and
-   *  counting a doomed row as "added" is worse than not offering it at all. */
+  /** Deduplicated names `toAdd` would otherwise have carried that 7TV would reject outright — a
+   *  different `sevenTvEmoteId` in the target already owns that exact (case-sensitive) name.
+   *  Pulled *out* of `toAdd` since spec 2026-09-20 (revises the 2026-09-06 "informational only,
+   *  7TV decides" reading, docs/DECISIONS.md): a run that still tried these would fail every one
+   *  of them, and counting a doomed row as "added" is worse than not offering it at all.
+   *
+   *  Deduplicated *by name*, for `app-name-preview-list` — never the right field for a user-facing
+   *  count: two distinct source ids can collide on the same target name, and both rows are still
+   *  excluded from the run even though the name only appears here once. Use
+   *  `nameCollisionRowCount` for any count. */
   nameCollisions: string[];
+  /** Row-accurate count of source rows excluded from `toAdd` for a name collision — always
+   *  `>= nameCollisions.length`, and strictly greater the moment two different source ids collide
+   *  on the same target name. This is what feeds the "N emotes… will not be copied" count and the
+   *  toAdd/alreadyPresent/nameCollisionRowCount/aliasMismatches sum-to-source-rows invariant;
+   *  `nameCollisions` itself stays deduplicated, purely for the name list under it. */
+  nameCollisionRowCount: number;
   /** Rows whose `sevenTvEmoteId` already exists in the target, but under a different alias —
    *  pulled out of `toAdd` for the same reason as `nameCollisions` (spec 8.6): 7TV already has
    *  this emote in the set, an ADD under a second alias is not what "already present" should mean
@@ -46,6 +57,13 @@ export interface ImportPreview {
  * would add, what it would skip outright (already present, under the same or a different alias, or
  * blocked by a name collision), and what it would add but 7TV will likely still reject for its
  * alias alone (`invalidNames`).
+ *
+ * Every source row lands in exactly one of `toAdd`, `alreadyPresent`, `nameCollisionRowCount` or
+ * `aliasMismatches`, so their sizes sum to the row count —
+ * `toAdd.length + alreadyPresent + nameCollisionRowCount + aliasMismatches.length ===
+ * source.rows.length`. `invalidNames` is not a fifth group here: it names a subset already
+ * counted inside `toAdd`. Every group counts by row, never by deduplicated name — see
+ * `nameCollisionRowCount`'s own doc for why that distinction matters.
  *
  * The identity comparison is ordinal (`sevenTvEmoteId`, exact string equality — these are 7TV
  * object ids, not display text); every name comparison is exact (`===`, case-sensitive) string
@@ -74,6 +92,7 @@ export function buildImportPreview(
 
   const toAdd: ImportRow[] = [];
   const nameCollisions = new Set<string>();
+  let nameCollisionRowCount = 0;
   const aliasMismatches: AliasMismatch[] = [];
   const invalidNames = new Set<string>();
   let alreadyPresent = 0;
@@ -89,7 +108,10 @@ export function buildImportPreview(
       continue;
     }
     if (targetNames.has(row.name)) {
+      // Deduplicated set for display, but every row still leaves the run — two different source
+      // ids colliding on the same target name must both count, not just the one name.
       nameCollisions.add(row.name);
+      nameCollisionRowCount++;
       continue;
     }
     toAdd.push(row);
@@ -102,6 +124,7 @@ export function buildImportPreview(
     toAdd,
     alreadyPresent,
     nameCollisions: [...nameCollisions],
+    nameCollisionRowCount,
     aliasMismatches,
     invalidNames: [...invalidNames],
   };
