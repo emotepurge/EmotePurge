@@ -13,6 +13,7 @@ import {
   mockChannelStatus,
   mockEmoteList,
   mockEmoteSetTargets,
+  mockForeignChannelEmoteSets,
   mockForeignEmoteSetPreview,
   mockMyChannels,
   mockSetWarning,
@@ -1160,12 +1161,18 @@ test.describe('import dialog: shell contract', () => {
       { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
     ]);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-source',
+      sets: [{ id: 'set-source', name: 'Hauptset' }],
+    });
     await page.route('**/api/seventv/channels/handofblood/emotes*', (route) =>
       route.fulfill({
         json: {
           channelName: 'handofblood',
-          sevenTvUserId: '7tv-user-1',
+          sevenTvUserId: null,
           emoteSetId: 'set-source',
+          emoteSetName: 'Hauptset',
+          capacity: 1000,
           totalCount: 60,
           truncated: false,
           emotes: Array.from({ length: 60 }, (_, index) => ({
@@ -1220,6 +1227,91 @@ test.describe('import dialog: shell contract', () => {
     // The other half of the same contract, and here it is more than reachability: the step exists
     // to be typed into, so it can be typed into at once.
     await expect(dialog.getByLabel('Kanalname')).toBeFocused();
+  });
+
+  /**
+   * K3's source-set picker (spec 8.7, AK 47–49): a radiogroup of the foreign channel's sets, the
+   * active one preselected, a non-`NORMAL` set offered but disabled and labelled, switching the
+   * selection re-fetches the preview for the newly picked set — and, the specific regression AK 48
+   * calls out, keeping the active set selected the whole time never issues a second preview request.
+   */
+  test('the source-set picker preselects the active set, disables a non-NORMAL one, and switches the preview on pick (K3, AK 47-49)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-active',
+      sets: [
+        { id: 'set-active', name: 'Hauptset' },
+        { id: 'set-alt', name: 'Zweitset' },
+        { id: 'set-personal', name: 'Persönlich', kind: 'PERSONAL', isPersonal: true },
+      ],
+    });
+    const previewRequests: string[] = [];
+    await page.route('**/api/seventv/channels/handofblood/emotes*', (route) => {
+      const url = new URL(route.request().url());
+      const emoteSetId = url.searchParams.get('emoteSetId')!;
+      previewRequests.push(emoteSetId);
+      const emotes =
+        emoteSetId === 'set-active'
+          ? [{ sevenTvEmoteId: '7tv-active', name: 'ActiveEmote' }]
+          : [{ sevenTvEmoteId: '7tv-alt', name: 'AltEmote' }];
+      return route.fulfill({
+        json: {
+          channelName: 'handofblood',
+          sevenTvUserId: null,
+          emoteSetId,
+          emoteSetName: emoteSetId === 'set-active' ? 'Hauptset' : 'Zweitset',
+          capacity: 1000,
+          totalCount: emotes.length,
+          truncated: false,
+          emotes: emotes.map((emote) => ({
+            ...emote,
+            defaultName: emote.name,
+            imageUrl: `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
+            topAllTime: null,
+            trending: null,
+          })),
+        },
+      });
+    });
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const dialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
+    await dialog.getByLabel('Kanalname').fill('handofblood');
+    await dialog.getByRole('button', { name: 'Set laden' }).click();
+
+    const radiogroup = dialog.getByRole('radiogroup', { name: 'Quell-Set' });
+    await expect(radiogroup.getByRole('radio', { name: /^Hauptset \(aktiv\)$/ })).toBeChecked();
+    await expect(radiogroup.getByRole('radio', { name: 'Zweitset' })).toBeEnabled();
+    await expect(
+      radiogroup.getByRole('radio', { name: /^Persönlich \(persönliches Set\)$/ }),
+    ).toBeDisabled();
+
+    // The active set's own preview loaded once, and only once — the "kein zweiter Request" case
+    // (AK 48). The initial resolve already fetched by set id, so nothing here ever re-requests it.
+    // Cell names live in the tile's accessible name/title (foreign-emote-grid.ts's cellLabel), not
+    // as visible text — getByRole('button', ...) is the matching locator, same idiom as the earlier
+    // cell()-locator tests in this file.
+    await expect(dialog.getByRole('button', { name: 'ActiveEmote' })).toBeVisible();
+    expect(previewRequests).toEqual(['set-active']);
+
+    // Switching to the other NORMAL set fires exactly one new request, for that set's own id, and
+    // the grid replaces the previous set's content with the new one's (AK 49: the picked set's
+    // preview, not the active one's).
+    await radiogroup.getByRole('radio', { name: 'Zweitset' }).check();
+    await expect(dialog.getByRole('button', { name: 'AltEmote' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'ActiveEmote' })).toHaveCount(0);
+    expect(previewRequests).toEqual(['set-active', 'set-alt']);
   });
 
   test('lists the three acceptable file sorts before the file control', async ({ page }) => {
@@ -1294,12 +1386,18 @@ test.describe('import dialog: animated emotes in the grid', () => {
       { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
     ]);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-source',
+      sets: [{ id: 'set-source', name: 'Hauptset' }],
+    });
     await page.route('**/api/seventv/channels/handofblood/emotes*', (route) =>
       route.fulfill({
         json: {
           channelName: 'handofblood',
-          sevenTvUserId: '7tv-user-1',
+          sevenTvUserId: null,
           emoteSetId: 'set-source',
+          emoteSetName: 'Hauptset',
+          capacity: 1000,
           totalCount: FOREIGN_EMOTES.length,
           truncated: false,
           emotes: FOREIGN_EMOTES,

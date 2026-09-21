@@ -876,6 +876,34 @@ export async function mockForeignEmoteSetPreview(
   });
 }
 
+/**
+ * GET /api/seventv/channels/{channelName}/emote-sets (spec 6.3, K3) — the source-set picker's list
+ * route `ForeignChannelStep` calls first, before it ever asks for a preview. Reuses
+ * {@link MockEmoteSetTargetSet}'s shape (same fields 6.3's `EmoteSetSummary` carries, minus
+ * `observations`, which this route always answers `[]` and no test here needs to see).
+ */
+export async function mockForeignChannelEmoteSets(
+  page: Page,
+  channelName: string,
+  response: { activeEmoteSetId: string; sets: MockEmoteSetTargetSet[] },
+): Promise<void> {
+  await page.route(`**/api/seventv/channels/${channelName}/emote-sets`, (route) =>
+    fulfillJson(route, 200, {
+      activeEmoteSetId: response.activeEmoteSetId,
+      sets: response.sets.map((set) => ({
+        id: set.id,
+        name: set.name,
+        capacity: set.capacity ?? 1000,
+        kind: set.kind ?? 'NORMAL',
+        isActive: set.id === response.activeEmoteSetId,
+        isPersonal: set.isPersonal ?? false,
+        ownerDisplayName: set.ownerDisplayName ?? null,
+        observations: [],
+      })),
+    }),
+  );
+}
+
 export interface MockLeaderboardEmote {
   sevenTvEmoteId: string;
   /** Sent as both `name` and `defaultName`: a leaderboard row is an `Emote`, not a set's aliased

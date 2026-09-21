@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LanguageService } from '../../core/i18n/language.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { SevenTvLeaderboardResponse } from '../../core/seven-tv/leaderboard.model';
+import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { FileImportStep } from './file-import-step';
 import { ForeignChannelStep } from './foreign-channel-step';
 import { LeaderboardStep } from './leaderboard-step';
@@ -59,6 +60,10 @@ const DE_TRANSLATIONS = {
       invalidChannelName: 'Kein gültiger Twitch-Kanalname.',
       load: 'Set laden',
       reload: 'Neu laden',
+      setsLabel: 'Quell-Set',
+      active: 'aktiv',
+      kindPersonal: 'persönliches Set',
+      kindUnavailable: 'kein Quellset',
       retry: 'Erneut versuchen',
       continue: 'Weiter',
       empty: 'Das aktive 7TV-Set dieses Kanals hat keine Emotes.',
@@ -88,9 +93,27 @@ class FakeResizeObserver {
   }
 }
 
+const FOREIGN_SETS: EmoteSetListResponse = {
+  activeEmoteSetId: 'set-1',
+  sets: [
+    {
+      id: 'set-1',
+      name: 'Main',
+      capacity: 250,
+      kind: 'NORMAL',
+      isActive: true,
+      isPersonal: false,
+      ownerDisplayName: 'Owner',
+      observations: [],
+    },
+  ],
+};
+
 const FOREIGN_SET: ForeignEmoteSetResponse = {
   channelName: 'handofblood',
-  sevenTvUserId: 'user-1',
+  // Always null since K3 (spec 2026-09-20, E8): the preview loads through the set-ID mode, which
+  // never resolves a 7TV identity.
+  sevenTvUserId: null,
   emoteSetId: 'set-1',
   emoteSetName: 'Main',
   capacity: 250,
@@ -215,12 +238,21 @@ describe('ImportSourceDialog', () => {
     };
   }
 
-  /** Answers "Set laden" with a set — the moment the grid appears. */
+  /** Answers "Set laden" with a set list, then its active set's preview — the moment the grid
+   *  appears (spec 8.7: the preview always loads by set id, never the plain login mode). */
   function loadSet(): void {
     const internals = channelStep();
     internals.channelNameControl.setValue('handofblood');
     internals.submit();
-    httpMock.expectOne('/api/seventv/channels/handofblood/emotes').flush(FOREIGN_SET);
+    httpMock.expectOne('/api/seventv/channels/handofblood/emote-sets').flush(FOREIGN_SETS);
+    fixture.detectChanges();
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-1',
+      )
+      .flush(FOREIGN_SET);
     fixture.detectChanges();
   }
 
@@ -425,7 +457,7 @@ describe('ImportSourceDialog', () => {
           kind: 'foreign',
           picked: {
             channelName: 'handofblood',
-            sevenTvUserId: 'user-1',
+            sevenTvUserId: null,
             emoteSetId: 'set-1',
             rows: FOREIGN_SET.emotes,
           },
