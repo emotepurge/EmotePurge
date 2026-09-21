@@ -95,11 +95,14 @@ type LoadState =
  * exists to be typed into, and this way it can be typed into at once.
  *
  * A fresh channel query re-renders the `@case ('ready')` branch from scratch (`load()` moves the
- * state back through `'loadingSets'`), which unmounts and remounts `ForeignEmoteGrid` — a new
- * `ListSelection` instance, i.e. a new query always starts unselected. That is deliberate: a
- * selection made against one channel's 7TV ids has no honest meaning carried over to a different
- * channel's set, and the same reasoning applies to switching the radiogroup to a different set of
- * the *same* channel (`selectSet`) — its rows have nothing in common with the previous set's either.
+ * state back through `'loadingSets'`), which unmounts and remounts `ForeignEmoteGrid`. A selection
+ * made against one channel's 7TV ids has no honest meaning carried over to a different channel's
+ * set, and the same reasoning applies to switching the radiogroup to a different set of the *same*
+ * channel (`selectSet`) — its rows have nothing in common with the previous set's either. Since the
+ * K3 follow-up fix (previewCache) can serve a switch straight from cache without a request, the grid
+ * no longer always gets unmounted for that: `ForeignEmoteGrid` itself now clears its selection
+ * whenever its `emotes` input changes to a new response (see that class's own doc), which covers
+ * both a remount (a fresh instance starts empty regardless) and a same-instance cache-served switch.
  */
 @Component({
   selector: 'app-foreign-channel-step',
@@ -292,6 +295,34 @@ export class ForeignChannelStep {
    *  that is no longer selected, not an older answer for the set that still is. */
   private latestPreviewRequestId = 0;
 
+  /**
+   * Successfully loaded previews, by set id, for the channel currently open — component state
+   * rather than a service-level cache, because it means nothing past this channel query. Found live
+   * (K3 follow-up): every radio switch re-fetched, including switching *back* to a set already
+   * shown, and all of it shares the per-user `ForeignEmoteLookup` rate limit (spec 6.10, 10/min)
+   * with the set-list call and K2's target list — toggling between HandOfBlood's 3 sets a few times
+   * hit 429 after ~8 switches.
+   *
+   * Populated in {@link loadPreview}'s success handler, gated by the *same* {@link
+   * latestPreviewRequestId} check {@link applyPreviewResult} uses for display — not by whether the
+   * response is still for the currently selected set. A response for a set the user has already
+   * left (P3-4) is the newest request either way and is worth caching: a later switch back to that
+   * set then costs no request, even though nothing was displayed the first time. What the guard
+   * rules out is the P3-5 shape — two requests for the very same set id racing — where an *older*
+   * response arrives after a newer one already resolved: without the requestId check it would
+   * silently overwrite the cache with content older than what is currently on screen, so the next
+   * switch away and back would regress to it with no request and no sign anything happened. An
+   * *error* is never cached (an error is not a preview), so retrying a failed set always requests
+   * again, cache or not.
+   *
+   * Cleared in {@link load} (a new/re-run channel query — a previous channel's set ids carry no
+   * meaning for this one, even on the rare chance one happens to collide) and in {@link reload} ("Neu
+   * laden" is the user's own signal that they no longer trust whatever is cached, not just for the
+   * one set on screen — keeping the rest around would let switching back to another set after a
+   * refresh show data the user just said they didn't trust).
+   */
+  private readonly previewCache = new Map<string, ForeignEmoteSetResponse>();
+
   protected readonly readyState = computed(() => {
     const current = this.state();
     return current.status === 'ready' ? current : null;
@@ -390,6 +421,9 @@ export class ForeignChannelStep {
     if (current.status !== 'ready' || current.selectedEmoteSetId === '') {
       return;
     }
+    // The user's own "I don't trust what's cached" signal — see previewCache's doc for why that
+    // clears every set's entry, not just the one being refreshed.
+    this.previewCache.clear();
     this.selectedRows.set([]);
     this.state.set({ ...current, preview: { status: 'loading' } });
     this.loadPreview(current.channelName, current.selectedEmoteSetId, true);
@@ -410,6 +444,10 @@ export class ForeignChannelStep {
    * itself already refuses this, but the guard stays here too — defence for a call site that is not
    * the template, and free given `set.kind` is not otherwise threaded through. Re-picking the
    * already-selected set is the "kein zweiter Request" case (spec 8.7, AK 48) and is a no-op below.
+   *
+   * A set whose preview already loaded successfully once (previewCache) is rendered straight from
+   * there — no request at all, which is the K3 follow-up fix. Anything else (never loaded yet, or
+   * loaded and then failed) falls through to the same request `loadPreview` always made.
    */
   protected selectSet(setId: string): void {
     const current = this.state();
@@ -419,6 +457,15 @@ export class ForeignChannelStep {
     // A different set's rows have no honest meaning carried over — same reasoning as a fresh
     // channel query (class doc).
     this.selectedRows.set([]);
+    const cached = this.previewCache.get(setId);
+    if (cached !== undefined) {
+      this.state.set({
+        ...current,
+        selectedEmoteSetId: setId,
+        preview: { status: 'loaded', response: cached },
+      });
+      return;
+    }
     this.state.set({ ...current, selectedEmoteSetId: setId, preview: { status: 'loading' } });
     this.loadPreview(current.channelName, setId, false);
   }
@@ -429,6 +476,8 @@ export class ForeignChannelStep {
 
   private load(): void {
     const channelName = normalizeChannelName(this.channelNameControl.value);
+    // A previous channel's set ids carry no meaning here — see previewCache's doc.
+    this.previewCache.clear();
     this.state.set({ status: 'loadingSets' });
     this.selectedRows.set([]);
     this.emoteSetService.listForeignChannelEmoteSets(channelName).subscribe({
@@ -473,8 +522,15 @@ export class ForeignChannelStep {
   private loadPreview(channelName: string, emoteSetId: string, refresh: boolean): void {
     const requestId = ++this.latestPreviewRequestId;
     this.emoteSetService.loadEmoteSetPreview(channelName, emoteSetId, { refresh }).subscribe({
-      next: (response) =>
-        this.applyPreviewResult(requestId, emoteSetId, { status: 'loaded', response }),
+      next: (response) => {
+        // Cached only if this is still the newest request issued at all — see previewCache's doc
+        // on why that guard (not "still selected") is the right one: it is exactly what keeps an
+        // older, later-arriving answer for a same-set race (P3-5) from clobbering a fresher one.
+        if (requestId === this.latestPreviewRequestId) {
+          this.previewCache.set(emoteSetId, response);
+        }
+        this.applyPreviewResult(requestId, emoteSetId, { status: 'loaded', response });
+      },
       error: (error: HttpErrorResponse) =>
         this.applyPreviewResult(requestId, emoteSetId, { status: 'error', error }),
     });

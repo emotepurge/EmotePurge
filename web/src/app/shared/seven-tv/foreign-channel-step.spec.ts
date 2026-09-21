@@ -621,6 +621,10 @@ describe('ForeignChannelStep', () => {
   // cannot tell apart.
 
   it('ignores a stale preview response for a set the user has already left, arriving after the newer pick resolved (P3-4)', () => {
+    // Three sets, not two: B must be a set that was never loaded before, or the K3 follow-up fix's
+    // cache would answer pick B from that cache instead of a real second request, and this test
+    // would stop exercising the race it is named for. Set-1 (loaded and cached by loadChannel
+    // itself) plays no further part here.
     loadChannel(
       'handofblood',
       setsResponse({
@@ -629,6 +633,16 @@ describe('ForeignChannelStep', () => {
           {
             id: 'set-2',
             name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+          {
+            id: 'set-3',
+            name: 'Drittset',
             capacity: 250,
             kind: 'NORMAL',
             isActive: false,
@@ -648,17 +662,31 @@ describe('ForeignChannelStep', () => {
         req.params.get('emoteSetId') === 'set-2',
     );
 
-    // Pick B (back to set-1) before A resolves — a second request fires.
-    component['selectSet']('set-1');
+    // Pick B (set-3, never loaded before) before A resolves — a second request fires.
+    component['selectSet']('set-3');
     const requestB = httpMock.expectOne(
       (req) =>
         req.url === '/api/seventv/channels/handofblood/emotes' &&
-        req.params.get('emoteSetId') === 'set-1',
+        req.params.get('emoteSetId') === 'set-3',
     );
 
     // B (the current pick) resolves; A's late answer for the set the user has already left arrives
     // after and must be ignored.
-    requestB.flush(previewResponse({ emoteSetId: 'set-1' }));
+    requestB.flush(
+      previewResponse({
+        emoteSetId: 'set-3',
+        emotes: [
+          {
+            sevenTvEmoteId: 'e3',
+            name: 'Kappa',
+            defaultName: 'Kappa',
+            imageUrl: 'https://cdn.7tv.app/e3/4x.webp',
+            topAllTime: null,
+            trending: null,
+          },
+        ],
+      }),
+    );
     fixture.detectChanges();
     requestA.flush(
       previewResponse({
@@ -677,7 +705,7 @@ describe('ForeignChannelStep', () => {
     );
     fixture.detectChanges();
 
-    expect(grid().emotes()[0].sevenTvEmoteId).toBe('e1');
+    expect(grid().emotes()[0].sevenTvEmoteId).toBe('e3');
     expect(component.result()).toBeNull(); // B's preview never got a selection, and A's never applied.
   });
 
@@ -733,5 +761,229 @@ describe('ForeignChannelStep', () => {
     fixture.detectChanges();
 
     expect(grid().emotes()[0].sevenTvEmoteId).toBe('newer');
+  });
+
+  // K3 follow-up fix: every radiogroup switch re-fetched, including switching *back* to a set
+  // already shown, and all of it shares the per-user ForeignEmoteLookup rate limit (spec 6.10,
+  // 10/min) with the set-list call and K2's target list. Found live: toggling between HandOfBlood's
+  // 3 sets a few times hit 429 after ~8 switches. A successfully loaded preview is now cached per
+  // set id within the open channel and served without a request when picked again.
+
+  it('reuses an already-loaded preview when switching back to it — A, B, A issues exactly two preview requests total', () => {
+    loadChannel(
+      'handofblood',
+      setsResponse({
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+    // loadChannel already issued and resolved the first (and, for this test, only expected)
+    // request for the active set-1.
+
+    component['selectSet']('set-2');
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-2',
+      )
+      .flush(
+        previewResponse({
+          emoteSetId: 'set-2',
+          emotes: [
+            {
+              sevenTvEmoteId: 'e2',
+              name: 'PogU',
+              defaultName: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/e2/4x.webp',
+              topAllTime: null,
+              trending: null,
+            },
+          ],
+        }),
+      );
+    fixture.detectChanges();
+    expect(grid().emotes()[0].sevenTvEmoteId).toBe('e2');
+
+    // Back to set-1 — no third request, its preview is already cached from the initial load.
+    component['selectSet']('set-1');
+    fixture.detectChanges();
+    httpMock.expectNone(() => true);
+    expect(grid().emotes()[0].sevenTvEmoteId).toBe('e1');
+  });
+
+  it('requests again for a set whose only load attempt failed, after switching away and back to it', () => {
+    loadChannel(
+      'handofblood',
+      setsResponse({
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+
+    component['selectSet']('set-2');
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-2',
+      )
+      .flush({ errorCode: 'not_a_known_code' }, { status: 404, statusText: 'Not Found' });
+    fixture.detectChanges();
+
+    // Back to set-1 (cached from the initial load) — no request.
+    component['selectSet']('set-1');
+    fixture.detectChanges();
+    httpMock.expectNone(() => true);
+
+    // Back to set-2 — an error is never cached, so this must request again rather than replay it.
+    component['selectSet']('set-2');
+    fixture.detectChanges();
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-2',
+      )
+      .flush(previewResponse({ emoteSetId: 'set-2' }));
+  });
+
+  it('clears cached previews when a new channel query starts, even if a set id happens to repeat', () => {
+    loadChannel(
+      'handofblood',
+      setsResponse({
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+    component['selectSet']('set-2');
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-2',
+      )
+      .flush(previewResponse({ emoteSetId: 'set-2' }));
+    fixture.detectChanges();
+
+    // A new channel query — its own active set happens to share the id "set-2" (an artificial
+    // clash for this test only; real 7TV set ids are unique) — must not serve the previous
+    // channel's cached preview for it.
+    component['channelNameControl'].setValue('otherchannel');
+    component['submit']();
+    httpMock.expectOne('/api/seventv/channels/otherchannel/emote-sets').flush(
+      setsResponse({
+        activeEmoteSetId: 'set-2',
+        sets: [
+          {
+            id: 'set-2',
+            name: 'Hauptset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: true,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+    fixture.detectChanges();
+
+    // Still requests the preview — nothing was skipped by a stale cache hit.
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/otherchannel/emotes' &&
+          req.params.get('emoteSetId') === 'set-2',
+      )
+      .flush(previewResponse({ channelName: 'otherchannel', emoteSetId: 'set-2' }));
+  });
+
+  it('"Neu laden" clears every cached preview, not just the set being refreshed', () => {
+    loadChannel(
+      'handofblood',
+      setsResponse({
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+    component['selectSet']('set-2');
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-2',
+      )
+      .flush(previewResponse({ emoteSetId: 'set-2' }));
+    fixture.detectChanges();
+
+    // "Neu laden" refreshes the currently selected set (set-2) with refresh=true...
+    button('Neu laden').click();
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-2' &&
+          req.params.get('refresh') === 'true',
+      )
+      .flush(previewResponse({ emoteSetId: 'set-2' }));
+    fixture.detectChanges();
+
+    // ...and wipes set-1's cached preview too, even though the refresh never touched it —
+    // switching back to it must request again, not replay what "Neu laden" was told not to trust.
+    component['selectSet']('set-1');
+    fixture.detectChanges();
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-1',
+      )
+      .flush(previewResponse({ emoteSetId: 'set-1' }));
   });
 });

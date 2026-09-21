@@ -308,6 +308,16 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
   host: { class: 'flex flex-col gap-3' },
 })
 export class ForeignEmoteGrid {
+  /**
+   * A new reference here always means a genuinely different list — a fresh fetch, a switch to
+   * another source set, or an explicit refresh, never the same list re-passed — so the constructor
+   * effect below clears {@link selection} whenever this changes, not only on this component's own
+   * (re)construction. That is what lets a host reuse one grid instance across a switch it can
+   * answer instantly from its own cache (`ForeignChannelStep.previewCache`, K3 follow-up fix)
+   * without falling back to destroying and recreating this whole component just to get a clean
+   * selection — the previous approach, back when every switch meant a real request and the host's
+   * `@switch` always passed through a `'loading'` case in between that tore this component down.
+   */
   readonly emotes = input.required<ForeignEmoteRow[]>();
   /** Whether the source's page cap was hit while 7TV reported more entries (spec F3) — never
    *  silently swallowed, see the notice above. */
@@ -475,6 +485,23 @@ export class ForeignEmoteGrid {
   });
 
   constructor() {
+    // Clears the selection whenever a *different* list arrives — see `emotes`'s own doc for why
+    // this is keyed off the input itself rather than left to construction/destruction: it is what
+    // makes a same-instance, cache-served switch (K3 follow-up fix) behave exactly like the
+    // destroy/recreate a host previously relied on to get a clean pick. Skips its own first run —
+    // a freshly constructed instance starts unselected regardless, and emitting on mount would be a
+    // pointless extra `selectionChange` a host has no reason to expect.
+    let sawFirstEmotes = false;
+    effect(() => {
+      this.emotes();
+      if (!sawFirstEmotes) {
+        sawFirstEmotes = true;
+        return;
+      }
+      this.selection.clear();
+      this.selectionChange.emit([]);
+    });
+
     // Same pattern as `usage-stats-page.ts`'s sheet-width effect: the column count follows the
     // element that actually holds the cells, not the viewport, and jsdom has no ResizeObserver at
     // all — specs stub the global the same way that page's do.

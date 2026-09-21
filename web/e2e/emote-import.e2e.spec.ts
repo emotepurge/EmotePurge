@@ -1392,6 +1392,15 @@ test.describe('import dialog: shell contract', () => {
     await expect(dialog.getByRole('button', { name: 'AltEmote' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'ActiveEmote' })).toHaveCount(0);
     expect(previewRequests).toEqual(['set-active', 'set-alt']);
+
+    // Switching back to the active set fires no third request — its preview was already loaded
+    // once and is served from the picker's own cache (K3 follow-up fix: found live, toggling
+    // between HandOfBlood's 3 sets a few times hit the shared ForeignEmoteLookup 429 after ~8
+    // unconditional switches).
+    await radiogroup.getByRole('radio', { name: /^Hauptset \(aktiv\)$/ }).check();
+    await expect(dialog.getByRole('button', { name: 'ActiveEmote' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'AltEmote' })).toHaveCount(0);
+    expect(previewRequests).toEqual(['set-active', 'set-alt']);
   });
 
   test('lists the three acceptable file sorts before the file control', async ({ page }) => {
