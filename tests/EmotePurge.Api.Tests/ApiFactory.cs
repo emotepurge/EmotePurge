@@ -99,6 +99,15 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public ISevenTvEmoteSetListService EmoteSetList { get; } = Substitute.For<ISevenTvEmoteSetListService>();
 
     /// <summary>
+    /// Substituted so <c>GET /emote-sets</c>' Ok branch never reaches the real Postgres-backed
+    /// implementation. Defaults to an empty map (no channel has observations unless a test
+    /// configures one) rather than leaving the substitute's un-stubbed result — an
+    /// <c>IReadOnlyDictionary</c> — as <c>null</c>, which the handler's <c>TryGetValue</c> call would
+    /// throw on.
+    /// </summary>
+    public IChannelEmoteSetObservationService EmoteSetObservations { get; } = CreateDefaultObservationService();
+
+    /// <summary>
     /// Substituted for <c>GET /emotes/set-warning</c>'s allow-path tests: the real implementation
     /// takes <c>AppDbContext</c>, <c>ISevenTvApiClient</c> and <c>IModeratedChannelsProvider</c>, and
     /// this factory has no real database behind the placeholder connection string below.
@@ -168,6 +177,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => Leaderboard);
             services.AddScoped(_ => Emotes);
             services.AddScoped(_ => EmoteSetList);
+            services.AddScoped(_ => EmoteSetObservations);
             services.AddScoped(_ => EmoteSetOwnership);
             services.AddScoped(_ => EditorService);
             services.AddScoped(_ => GuardedEditorGrants);
@@ -189,6 +199,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddAuthentication(TestAuthHandler.SchemeName)
                 .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
         });
+    }
+
+    private static IChannelEmoteSetObservationService CreateDefaultObservationService()
+    {
+        var service = Substitute.For<IChannelEmoteSetObservationService>();
+        service.ListIntervalsByChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<string, IReadOnlyList<ChannelEmoteSetObservationInterval>>());
+        return service;
     }
 }
 

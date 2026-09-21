@@ -390,6 +390,55 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.ForeignChannelSevenTvUnavailable, await ReadErrorCodeAsync(response));
     }
 
+    [Fact]
+    public async Task EmoteSets_FillsObservationsFromTheObservationService_OnePerSet_AndOmitsAnUnobservedSet()
+    {
+        // Spec 6.1's Ok branch: two sets on the same 7TV answer, only one of which the observation
+        // service has ever seen — the other must come back with [], not throw or borrow the first
+        // set's intervals.
+        const string activeSetId = "set-active";
+        const string otherSetId = "set-other";
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel, TwitchChannelId = "1234", ActiveEmoteSetId = activeSetId });
+        _factory.EmoteSetList.ListByTwitchIdAsync("1234", Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(activeSetId,
+            [
+                new EmoteSetSummary(activeSetId, "Active", 900, "NORMAL", false, "sensitron"),
+                new EmoteSetSummary(otherSetId, "Other", 600, "NORMAL", false, "sensitron"),
+            ])));
+        var fromUtc = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+        var toUtc = new DateTime(2026, 9, 10, 8, 0, 0, DateTimeKind.Utc);
+        _factory.EmoteSetObservations.ListIntervalsByChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<string, IReadOnlyList<ChannelEmoteSetObservationInterval>>
+            {
+                [activeSetId] =
+                [
+                    new ChannelEmoteSetObservationInterval(fromUtc, toUtc),
+                    new ChannelEmoteSetObservationInterval(toUtc, null),
+                ],
+            });
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var sets = body.GetProperty("sets").EnumerateArray().ToList();
+        Assert.Equal(2, sets.Count);
+
+        var active = sets.Single(set => set.GetProperty("id").GetString() == activeSetId);
+        var activeObservations = active.GetProperty("observations").EnumerateArray().ToList();
+        Assert.Equal(2, activeObservations.Count);
+        Assert.Equal(fromUtc, activeObservations[0].GetProperty("fromUtc").GetDateTime());
+        Assert.Equal(toUtc, activeObservations[0].GetProperty("toUtc").GetDateTime());
+        Assert.Equal(toUtc, activeObservations[1].GetProperty("fromUtc").GetDateTime());
+        Assert.True(activeObservations[1].GetProperty("toUtc").ValueKind == JsonValueKind.Null);
+
+        var other = sets.Single(set => set.GetProperty("id").GetString() == otherSetId);
+        Assert.Empty(other.GetProperty("observations").EnumerateArray());
+    }
+
     // AK 27 (spec 2026-09-20, E14): a malformed emoteSetId on any of the three /usage-stats/* routes
     // is a 400 the EmoteSetIdValidationFilter answers before the handler — and therefore before
     // IUsageStatQueryService is ever asked anything.

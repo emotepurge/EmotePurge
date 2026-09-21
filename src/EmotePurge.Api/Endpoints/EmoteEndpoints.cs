@@ -59,6 +59,7 @@ public static class EmoteEndpoints
             string channelName,
             IChannelService channelService,
             ISevenTvEmoteSetListService emoteSetListService,
+            IChannelEmoteSetObservationService observationService,
             CancellationToken ct) =>
         {
             var channel = await channelService.GetByNameAsync(channelName, ct);
@@ -78,7 +79,8 @@ public static class EmoteEndpoints
             var result = await emoteSetListService.ListByTwitchIdAsync(channel.TwitchChannelId, ct);
             return result.Status switch
             {
-                EmoteSetListStatus.Ok => Results.Ok(BuildEmoteSetListResponse(channel, result.List!)),
+                EmoteSetListStatus.Ok => Results.Ok(
+                    await BuildEmoteSetListResponseAsync(channel, result.List!, observationService, ct)),
                 // 7TV genuinely has no account for this Twitch id — an answer, not a failure (spec
                 // 6.1). Channel.ActiveEmoteSetId is still reported: for a tracked channel it is our
                 // own observed truth regardless of what 7TV currently says about the account (E21).
@@ -357,12 +359,16 @@ public static class EmoteEndpoints
     /// <summary>
     /// Assembles the wire response for <c>GET /emote-sets</c> (spec 6.1) from the shared list
     /// service's answer: <c>isActive</c> compares each set's id against <see cref="Channel.ActiveEmoteSetId"/>
-    /// — this route's own source of "active" (E21) — and <c>observations</c> is always empty (see
-    /// <see cref="EmoteSetSummaryDto"/>). Ordering: the active set first, then every other set ordinal
-    /// by name.
+    /// — this route's own source of "active" (E21) — and <c>observations</c> comes from one
+    /// channel-wide read of <see cref="IChannelEmoteSetObservationService.ListIntervalsByChannelAsync"/>
+    /// (see <see cref="EmoteSetSummaryDto"/>), not one query per set. Ordering: the active set first,
+    /// then every other set ordinal by name.
     /// </summary>
-    private static EmoteSetListResponse BuildEmoteSetListResponse(Channel channel, EmoteSetList list)
+    private static async Task<EmoteSetListResponse> BuildEmoteSetListResponseAsync(
+        Channel channel, EmoteSetList list, IChannelEmoteSetObservationService observationService, CancellationToken ct)
     {
+        var observationsBySetId = await observationService.ListIntervalsByChannelAsync(channel.Id, ct);
+
         var sets = list.Sets
             .Select(summary => new EmoteSetSummaryDto(
                 summary.Id,
@@ -372,7 +378,9 @@ public static class EmoteEndpoints
                 string.Equals(summary.Id, channel.ActiveEmoteSetId, StringComparison.Ordinal),
                 summary.IsPersonal,
                 summary.OwnerDisplayName,
-                []))
+                observationsBySetId.TryGetValue(summary.Id, out var intervals)
+                    ? intervals.Select(interval => new EmoteSetObservationDto(interval.FromUtc, interval.ToUtc)).ToList()
+                    : []))
             .OrderByDescending(summary => summary.IsActive)
             .ThenBy(summary => summary.Name, StringComparer.Ordinal)
             .ToList();
@@ -393,11 +401,10 @@ internal sealed record EmoteSetListResponse(string ActiveEmoteSetId, IReadOnlyLi
 /// each route's own response, not to the cached value underneath all three.
 /// </summary>
 /// <param name="Observations">
-/// Always <c>[]</c> on this branch: <c>ChannelEmoteSetObservation</c>, the entity this field is
-/// specified to read from (spec 6.1), is built in K1 (T1.3a/T1.5) and does not exist here yet. K4 is
-/// the only consumer (Konzept 8.4/8.5) and lands after both K1 and K2 have merged — so the field is
-/// part of the wire contract now, with a value nobody reads yet, rather than a name K1 might pick
-/// differently later (Vorentscheidung 1 of this task's brief).
+/// Every interval <c>ChannelEmoteSetObservation</c> (K1, T1.3a/T1.5) has recorded for this set on
+/// this channel, ascending, <c>[]</c> if the set has never been observed — read once per request via
+/// <see cref="IChannelEmoteSetObservationService.ListIntervalsByChannelAsync"/> (spec 6.1). K4 is the
+/// only consumer today (Konzept 8.4/8.5).
 /// </param>
 internal sealed record EmoteSetSummaryDto(
     string Id,
