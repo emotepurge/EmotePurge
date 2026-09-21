@@ -369,7 +369,17 @@ export class UsageStatsPage {
     params: () => this.channelName(),
     stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),
   });
-  protected readonly emoteSetList = computed(() => this.emoteSetListResource.value() ?? null);
+  /**
+   * `hasValue()` guards `.value()` deliberately: a `resource()`'s `.value()` *re-throws* the load
+   * error once `status()` is `'error'` (Angular's own contract for it — a plain `?? null` around it
+   * still crashes, because the throw happens before the `??` ever sees a value to fall back on).
+   * Found live (2026-09-21): a 503/502 on `/emote-sets` took the whole page down through this
+   * computed rather than degrading it — every `data-atlas-index` cell along with it, since the read
+   * happens inside a template binding and Angular has nothing to catch it with.
+   */
+  protected readonly emoteSetList = computed(() =>
+    this.emoteSetListResource.hasValue() ? this.emoteSetListResource.value() : null,
+  );
   protected readonly emoteSetListLoading = computed(() => this.emoteSetListResource.isLoading());
   protected readonly emoteSetListUnavailable = computed(
     () => this.emoteSetListResource.error() !== undefined,

@@ -2346,6 +2346,51 @@ describe('UsageStatsPage — set dropdown, URL fallback rules and retainAmong (T
     expect(component['isPinnedToActiveSet']()).toBe(true);
   });
 
+  /**
+   * Regression (found live via a coordinator-driven e2e run, 2026-09-21, matching MEMORY.md's own
+   * "unmocked route falls through the dev proxy" trap for `/api/**`): `resource()`'s `.value()`
+   * *re-throws* the load error once `status()` is `'error'` — a plain `emoteSetListResource.value()
+   * ?? null` still crashes on read, because the throw happens before `??` ever sees anything to fall
+   * back on. The real template reads `emoteSetList()` UNCONDITIONALLY (`[sets]="emoteSetList()?.sets
+   * ?? []"` on `<app-emote-set-menu>`), regardless of whether the URL carries an `emoteSetId` at all
+   * — every stub-template test in this block, and the "pins the display" test right above, happens
+   * to dodge the crash because `selectedEmoteSetId()`'s `param === ''` guard short-circuits before it
+   * ever reads `emoteSetList()`. This test calls it directly, the way the template does, and is what
+   * would have caught the regression before it reached e2e — a live channel with no `?emoteSetId=` in
+   * its URL at all (the ordinary case) still rendered nothing at all once `/emote-sets` answered
+   * 503, because reading the signal to feed the dropdown took the whole page's change detection down
+   * with it.
+   */
+  it('reading emoteSetList() does not throw once the set list has failed to load, and /totals still loads without any id in the URL (decision 2)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [emoteSet({ id: 'set-a', isActive: true })], { setsUnavailable: true });
+
+    // The exact read the real template performs unconditionally, regardless of the URL — must not
+    // throw, and must degrade to null rather than surface the resource's error.
+    expect(() => component['emoteSetList']()).not.toThrow();
+    expect(component['emoteSetList']()).toBeNull();
+
+    // No id in the URL at all (decision 2's own wording: "ohne id in der URL, don't wait") — /totals
+    // and /series fire despite the set list never having answered successfully.
+    expect(component['awaitingEmoteSetId']()).toBe(false);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['emotes']()).toHaveLength(1);
+  });
+
   it('retainAmong (not clear) survives a dropdown set switch, like a date-range change on the same channel (AK 51)', async () => {
     configure();
 
