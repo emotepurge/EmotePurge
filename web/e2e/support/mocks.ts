@@ -918,11 +918,18 @@ export async function mockForeignChannelEmoteSets(
 }
 
 export interface MockChannelEmoteSet extends MockEmoteSetTargetSet {
-  /** Observed-active intervals (spec 6.1) — only this route and 6.3's foreign-channel sibling
-   *  above carry them; empty by default, like every other caller here that is not exercising the
-   *  caption matrix (spec 8.4, T4.4). */
+  /** Observed-active intervals (spec 6.1, from `ChannelEmoteSetObservations`, ascending). Omitted,
+   *  the mock answers what the real route answers for a tracked channel (spec 4.3): the **active**
+   *  set carries one open interval — opened by the first successful sync or seeded by the
+   *  migration, here from {@link DEFAULT_TRACKED_SINCE} like `mockActiveEmoteSet`'s own default —
+   *  and every other set `[]` ("never observed"). Pass it to exercise the caption matrix (spec 8.4)
+   *  or the `'set-observed'` preset (8.5). */
   observations?: { fromUtc: string; toUtc: string | null }[];
 }
+
+/** `mockActiveEmoteSet`'s default `trackedSince` — the active set's default open observation
+ *  interval starts at the same moment, as it does for a channel tracked since then. */
+const DEFAULT_TRACKED_SINCE = '2026-06-12T09:14:00Z';
 
 /**
  * GET /api/channels/{channelName}/emote-sets (spec 6.1, K4) — the usage page's own set-dropdown
@@ -954,7 +961,11 @@ export async function mockChannelEmoteSetList(
         isActive: set.id === response.activeEmoteSetId,
         isPersonal: set.isPersonal ?? false,
         ownerDisplayName: set.ownerDisplayName ?? null,
-        observations: set.observations ?? [],
+        observations:
+          set.observations ??
+          (set.id === response.activeEmoteSetId
+            ? [{ fromUtc: DEFAULT_TRACKED_SINCE, toUtc: null }]
+            : []),
       })),
     });
   });
@@ -1046,7 +1057,7 @@ export async function mockActiveEmoteSet(
       activeEmoteSetId,
       capacity: status.capacity ?? 1000,
       occupiedSlots: status.occupiedSlots ?? 3,
-      trackedSince: status.trackedSince ?? '2026-06-12T09:14:00Z',
+      trackedSince: status.trackedSince ?? DEFAULT_TRACKED_SINCE,
       syncFailureReason: status.syncFailureReason ?? null,
       lastSyncAttemptAtUtc: status.lastSyncAttemptAtUtc ?? null,
       botsExcludedSince: status.botsExcludedSince ?? null,
