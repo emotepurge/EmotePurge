@@ -823,6 +823,55 @@ describe('ForeignChannelStep', () => {
     expect(grid().emotes()[0].sevenTvEmoteId).toBe('e1');
   });
 
+  it('drops a selection made on set A when switching to an already-cached set B, not just when B still needs a request', () => {
+    loadChannel(
+      'handofblood',
+      setsResponse({
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+
+    // Visit B once so its preview is cached too, then back to A (itself a cache hit, from the
+    // initial load) — both sets are now cached going into the part this test is actually about.
+    component['selectSet']('set-2');
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-2',
+      )
+      .flush(previewResponse({ emoteSetId: 'set-2' }));
+    fixture.detectChanges();
+    component['selectSet']('set-1');
+    fixture.detectChanges();
+
+    // Select rows on A (set-1).
+    component['onSelectionChange'](previewResponse().emotes);
+    fixture.detectChanges();
+    expect(component.result()).not.toBeNull();
+
+    // Switch to the already-cached B (set-2) — no request at all — and the pick made on A must
+    // not survive: it has no honest meaning for a different set (class doc), cache hit or not.
+    component['selectSet']('set-2');
+    fixture.detectChanges();
+    httpMock.expectNone(() => true);
+
+    expect(component['selectedRows']()).toEqual([]);
+    expect(component.result()).toBeNull();
+  });
+
   it('requests again for a set whose only load attempt failed, after switching away and back to it', () => {
     loadChannel(
       'handofblood',
