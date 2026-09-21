@@ -152,7 +152,13 @@ public class MyChannelsServiceTests(PostgresFixture fixture)
         // A 7TV editor grant is independent of the Twitch role axis, so it can introduce entirely
         // new channel keys rather than only annotating ones Helix already returned.
         await using var db = fixture.CreateDbContext();
-        var service = CreateService(db, moderated: Moderated(), grants: Grants(logins: ["mychannels6_edited"]));
+        var twitchId = NewTwitchId();
+        var service = CreateService(
+            db,
+            helix: HelixWithUsers([new TwitchUserIdentity(twitchId, "mychannels6_edited")]),
+            appTokenProvider: AppTokenProvider("app-token"),
+            moderated: Moderated(),
+            grants: GrantsWithEntries(("mychannels6_edited", twitchId)));
 
         var result = await service.GetMyChannelsAsync(Principal("mychannels6_self"));
 
@@ -166,10 +172,13 @@ public class MyChannelsServiceTests(PostgresFixture fixture)
     public async Task GetMyChannelsAsync_CombinesFlags_WhenOneChannelCarriesSeveralRoles()
     {
         await using var db = fixture.CreateDbContext();
+        var twitchId = NewTwitchId();
         var service = CreateService(
             db,
+            helix: HelixWithUsers([new TwitchUserIdentity(twitchId, "mychannels7_both")]),
+            appTokenProvider: AppTokenProvider("app-token"),
             moderated: Moderated("mychannels7_both"),
-            grants: Grants(logins: ["mychannels7_both"]));
+            grants: GrantsWithEntries(("mychannels7_both", twitchId)));
 
         var result = await service.GetMyChannelsAsync(Principal("mychannels7_self"));
 
@@ -377,26 +386,6 @@ public class MyChannelsServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task GetMyChannelsAsync_UsesLoginsDirectly_ForALegacyCacheEntryWithoutEntries_AndSkipsHelix()
-    {
-        // A grants object built the old way (two sets, no Entries) — exactly what ModRoleCache
-        // hands back for a cache entry written before this field existed.
-        await using var db = fixture.CreateDbContext();
-        var helix = Substitute.For<ITwitchHelixClient>();
-        var service = CreateService(
-            db,
-            helix: helix,
-            appTokenProvider: AppTokenProvider("app-token"),
-            grants: Grants(logins: ["mychannels18_legacy"], twitchIds: [NewTwitchId()]));
-
-        var result = await service.GetMyChannelsAsync(Principal("mychannels18_self"));
-
-        var legacy = Assert.Single(result.Channels, c => c.ChannelName == "mychannels18_legacy");
-        Assert.True(legacy.IsSevenTvEditor);
-        await helix.DidNotReceive().GetUsersAsync(Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
     public async Task GetMyChannelsAsync_ReportsTrackedState_ForAGrantWhoseChannelRowHasNoTwitchIdYet()
     {
         // Regression: a db row predating the id backfill has TwitchChannelId == null. The grant's id
@@ -448,8 +437,7 @@ public class MyChannelsServiceTests(PostgresFixture fixture)
 
     private static string NewTwitchId() => Guid.NewGuid().ToString("N")[..16];
 
-    private static SevenTvEditorGrants Grants(string[]? logins = null, string[]? twitchIds = null) =>
-        new(new HashSet<string>(logins ?? []), new HashSet<string>(twitchIds ?? []));
+    private static SevenTvEditorGrants Grants() => new(new HashSet<string>(), new HashSet<string>());
 
     private static SevenTvEditorGrants GrantsWithEntries(params (string Login, string TwitchId)[] pairs)
     {

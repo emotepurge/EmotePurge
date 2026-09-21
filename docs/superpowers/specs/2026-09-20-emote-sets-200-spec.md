@@ -2890,3 +2890,22 @@ Editor-Diensten; der Fehlerfall genau einen Request und ein Permit.
 läuft jetzt gegen die echte Prüfung (Zahl unverändert). Entfallen: die zwei AK-31-Fälle in
 `Integration/SevenTvEditorServiceTests.cs` und einer der zwei Fälle in `SevenTvApiClientEditorOfTests`.
 Die Summen aus Nachtrag 31 sind hier nicht neu gerechnet.
+
+### P2 — Legacy-Grant-Payloads wurden als „keine Grants" gelesen
+
+**Befund.** `ModRoleCache` gab einen `7tveditor:`-Eintrag von vor dem Feld `entries` absichtlich
+weiter — Grant-Mengen gefüllt, `Entries` leer. `MyChannelsService` erkannte diese Form
+(`isLegacyGrantPayload`), die beiden neuen Leser nicht: die Besitzer-Prüfung antwortete einem echten
+Editor mit 403 — **nach** der Mutation, der Eintrag war damit verloren —, und
+`/me/emote-set-targets` ließ die Konten still weg.
+
+**Eingearbeitet.** Erkannt wird die Form jetzt dort, wo sie entsteht: `ModRoleCache` liest einen
+Eintrag ohne `entries` als **Miss**. `GetEditorGrantsAsync` löst die Grants dann live auf und
+schreibt die aktuelle Form zurück — der Altbestand verschwindet beim ersten Lesen, nicht erst mit
+der TTL. Das wirkt für alle Leser zugleich; die eigene Erkennung in `MyChannelsService` war damit
+unerreichbar und ist entfernt (samt ihres Tests; zwei Übersichtstests, die Grants ohne `Entries`
+bauten, bauen sie jetzt mit). Preis: fällt 7TV genau in diesem Moment aus, ist die Antwort
+„unbekannt" statt der alten Login-Liste — für eine Form, die höchstens zehn Minuten nach einem
+Deploy existieren kann, und für die Besitzer-Prüfung ohnehin die richtige Antwort (503 statt 403).
+Tests: `ModRoleCacheTests` (Legacy ⇒ Miss, umgestellt), `Integration/SevenTvEditorServiceTests.cs`
++2 — je einer für die Angebotsliste und die Besitzer-Prüfung, gegen echtes Redis.

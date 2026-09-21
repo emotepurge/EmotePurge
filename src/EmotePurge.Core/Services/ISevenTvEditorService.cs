@@ -26,11 +26,11 @@ public record SevenTvEditorGrantEntry(string ChannelLogin, string TwitchChannelI
 /// the grant set" — deliberately kept independent of a second foreign system, since the auth path
 /// must not depend on Helix being reachable. <see cref="Entries"/> exists for the overview
 /// (<c>MyChannelsService</c>), which has to decide per grant whether 7TV's reported login is still
-/// current or needs resolving against Helix. Omitting this parameter yields an empty list, which is
-/// also what a cache entry written before this field existed deserializes to — see
-/// <c>ModRoleCache</c> for how that legacy shape is produced and <c>MyChannelsService</c> for how it
-/// is detected (empty <see cref="Entries"/> alongside a non-empty <see cref="ChannelLogins"/>) and
-/// handled.
+/// current or needs resolving against Helix — and for the target picker and the set-centric
+/// import's owner check, which walk the granted accounts one by one. Omitting this parameter yields
+/// an empty list, meaning "no grants". A cache entry written before this field existed never
+/// arrives in that shape: <c>ModRoleCache</c> reads it as a miss, so it is resolved live instead of
+/// being mistaken for an account that edits nothing.
 /// </param>
 public record SevenTvEditorGrants(IReadOnlySet<string> ChannelLogins, IReadOnlySet<string> TwitchChannelIds, IReadOnlyList<SevenTvEditorGrantEntry> Entries)
 {

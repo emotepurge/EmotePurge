@@ -89,20 +89,17 @@ public class ModRoleCacheTests(RedisFixture fixture)
     }
 
     [Fact]
-    public async Task TryGetSevenTvEditorGrantsAsync_ReadsALegacyPayloadWithoutEntries_AsEmptyEntries()
+    public async Task TryGetSevenTvEditorGrantsAsync_ReadsALegacyPayloadWithoutEntries_AsAMiss()
     {
         // Written by hand, not through SetSevenTvEditorGrantsAsync: this is exactly the shape a
         // cache entry from before the Entries field existed still has in Redis, up to its TTL.
+        // Handed on, its non-empty grant sets beside an empty Entries would read as "edits
+        // nothing" to every reader that walks Entries — so it is a miss, and the caller refreshes.
         var cache = new ModRoleCache(fixture.Connection, BuildConfiguration(), NullLogger<ModRoleCache>.Instance);
         const string legacyJson = """{"channelLogins":["legacy-channel"],"twitchChannelIds":["222"]}""";
         await fixture.Connection.GetDatabase().StringSetAsync("7tveditor:user-legacy-payload", legacyJson);
 
-        var result = await cache.TryGetSevenTvEditorGrantsAsync("user-legacy-payload");
-
-        Assert.NotNull(result);
-        Assert.Contains("legacy-channel", result.ChannelLogins);
-        Assert.Contains("222", result.TwitchChannelIds);
-        Assert.Empty(result.Entries);
+        Assert.Null(await cache.TryGetSevenTvEditorGrantsAsync("user-legacy-payload"));
     }
 
     // Written directly rather than through ModeratedChannelsProvider: this test is about the key

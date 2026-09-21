@@ -35,10 +35,21 @@ public class ModRoleCache(IConnectionMultiplexer connectionMultiplexer, IConfigu
         }
 
         // A pre-upgrade payload has no "entries" property at all, so the constructor's default
-        // applies and Entries comes back null here — never an exception, never read as "no grants".
-        // That maps to an empty list, which combined with a non-empty ChannelLogins is exactly the
-        // legacy signal MyChannelsService looks for.
-        return new SevenTvEditorGrants(ToSet(stored.ChannelLogins), ToSet(stored.TwitchChannelIds), stored.Entries ?? []);
+        // applies and Entries comes back null here. That is a miss, not a hit: handed on, it would
+        // read as grant sets without entries, and every reader that iterates Entries — the
+        // overview, the target picker, the set-centric import's owner check — would take it for
+        // "edits nothing". A miss makes the caller resolve the grants live and write the current
+        // shape back, so the legacy payload is replaced on first read instead of lingering for the
+        // rest of its TTL.
+        if (stored.Entries is null)
+        {
+            logger.LogInformation(
+                "7TV editor-grant cache entry for {UserId} predates the entries field — treated as a miss and refreshed live.",
+                twitchUserId);
+            return null;
+        }
+
+        return new SevenTvEditorGrants(ToSet(stored.ChannelLogins), ToSet(stored.TwitchChannelIds), stored.Entries);
     }
 
     public async Task SetSevenTvEditorGrantsAsync(string twitchUserId, SevenTvEditorGrants grants, CancellationToken cancellationToken = default)
@@ -147,6 +158,6 @@ public class ModRoleCache(IConnectionMultiplexer connectionMultiplexer, IConfigu
 
     // Entries defaults to null (not []) so a missing "entries" property in the JSON — the shape a
     // pre-upgrade cache entry has — is distinguishable from a current write that legitimately found
-    // zero grants: the caller of TryGetSevenTvEditorGrantsAsync maps null to [] itself.
+    // zero grants: TryGetSevenTvEditorGrantsAsync reads the former as a miss.
     private sealed record StoredEditorGrants(IReadOnlyList<string> ChannelLogins, IReadOnlyList<string> TwitchChannelIds, IReadOnlyList<SevenTvEditorGrantEntry>? Entries = null);
 }
