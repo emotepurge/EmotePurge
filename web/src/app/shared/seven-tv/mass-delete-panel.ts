@@ -1,6 +1,15 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { Component, computed, effect, inject, input, output, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  computed,
+  effect,
+  inject,
+  input,
+  output,
+  signal,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { EmoteAdminService, EmoteSetWarning } from '../../core/emotes/emote-admin.service';
@@ -113,6 +122,23 @@ export interface DeletableEmote {
       @if (deleteLockReasonKey(); as reasonKey) {
         <p [id]="deleteLockReasonId" class="text-xs text-fg-muted">
           {{ reasonKey | transloco }}
+        </p>
+      }
+      <!-- A confirmed delete that the host's lock stopped at the last moment (see startDelete): the
+           confirm dialog outlives the view it was opened on, so a set switch behind it must not
+           run — and must not fail silently either. Same two-element split as the vote dialog's
+           shrink notice (docs/UI-Designsprache.md §4.4/§4.5): a permanently mounted sr-only status
+           region whose text comes and goes, plus the visible line as an aria-hidden @if, so it
+           neither occupies the column's gap while empty nor is read twice. Cleared by the next
+           attempt. -->
+      <span role="status" class="sr-only">
+        @if (abortedByLockKey(); as reasonKey) {
+          {{ 'massDelete.abortedByLock' | transloco }} {{ reasonKey | transloco }}
+        }
+      </span>
+      @if (abortedByLockKey(); as reasonKey) {
+        <p aria-hidden="true" class="text-sm text-fg-secondary">
+          {{ 'massDelete.abortedByLock' | transloco }} {{ reasonKey | transloco }}
         </p>
       }
 
@@ -249,6 +275,7 @@ export class MassDeletePanel {
    *  this component goes through `emoteAdminService`. */
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
+  private readonly destroyRef = inject(DestroyRef);
 
   /** Public (not `protected`) on purpose: a host page's own controls outside this component's
    *  template — the usage page's dock vote button, gated on the same `voteLocked()` condition the
@@ -273,6 +300,11 @@ export class MassDeletePanel {
       .map((emote) => emote.name),
   );
 
+  /** The host lock that stopped the last confirmed delete right before it started (`startDelete`),
+   *  or `null` — shown until the next attempt. */
+  protected readonly abortedByLockKey = signal<string | null>(null);
+  private destroyed = false;
+
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next
    *  to Close, since reset() leaves the file as the only artifact. */
   protected readonly protocolSaved = signal(false);
@@ -295,6 +327,8 @@ export class MassDeletePanel {
   );
 
   constructor() {
+    this.destroyRef.onDestroy(() => (this.destroyed = true));
+
     // The queue settling is not on its own a reason to tell the host page anything: the backend only
     // learns about the deletion through the closing sync-deleted call, and that call can fail (rate
     // limit, session expired mid-run). Emitting on the isRunning edge alone therefore showed a
@@ -348,6 +382,7 @@ export class MassDeletePanel {
   }
 
   protected openConfirm(): void {
+    this.abortedByLockKey.set(null);
     // The button is already disabled under a host lock; this only guards a click that outraces the
     // lock arriving (a set switch landing while the pointer is on the button).
     if (this.deleteLockReasonKey() !== null) {
@@ -547,6 +582,19 @@ export class MassDeletePanel {
   }
 
   private startDelete(): void {
+    // Re-evaluated at confirm time, not only when the dialog opened: the dialog outlives the view
+    // it was opened on, and the host can lock deleting behind it (a set switch in the usage page's
+    // dropdown — the rows and the selection would then belong to a set other than `setId()`). Abort,
+    // visibly. A panel already torn down (its host's dock unmounted while the dialog was open) has
+    // no selection of its own left to vouch for, so it starts nothing either.
+    if (this.destroyed) {
+      return;
+    }
+    const lockKey = this.deleteLockReasonKey();
+    if (lockKey !== null) {
+      this.abortedByLockKey.set(lockKey);
+      return;
+    }
     const emotes: DeleteQueueEmote[] = this.selectedEmotes().map((emote) => ({
       emoteId: emote.emoteId,
       sevenTvEmoteId: emote.sevenTvEmoteId,

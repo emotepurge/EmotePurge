@@ -975,7 +975,8 @@
       "rateLimitedGaveUp": "7TV rate limit still active after several waits — emote skipped.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }})."
-    }
+    },
+    "abortedByLock": "Nothing was deleted – the view changed while the dialog was open."
   },
   "import": {
     "copyButton": "Transfer",
