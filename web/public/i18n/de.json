@@ -729,8 +729,11 @@
       "lock": {
         "membersUnavailable": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
         "truncated": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
-        "nonActiveSet": "Löschen und Abstimmen gehen vorerst nur im aktiven Set."
-      }
+        "nonActiveSet": "Löschen und Abstimmen gehen vorerst nur im aktiven Set.",
+        "switching": "Löschen und Abstimmen gesperrt, bis das gewählte Set geladen ist."
+      },
+      "loadFailedTitle": "Das gewählte Set konnte nicht geladen werden",
+      "retry": "Erneut versuchen"
     }
   },
   "sevenTvSync": {

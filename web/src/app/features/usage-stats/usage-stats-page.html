@@ -170,6 +170,7 @@
           [selectedEmoteSetId]="selectedEmoteSetId()"
           [loading]="emoteSetListLoading()"
           [unavailable]="emoteSetListUnavailable()"
+          [lockedReasonKey]="deleteRunActive() ? 'emoteSetMenu.lockedDuringDelete' : null"
           (emoteSetIdChange)="onEmoteSetSelected($event)"
         />
       }
@@ -436,8 +437,9 @@
   <!-- The ranked usage curve of the whole set, bucketed so it stays a curve rather than a smear at
        900 emotes. It answers the question the atlas cannot show at a glance — how steep the head is
        and how long the dead tail runs — and it is annotated with the two numbers that matter, so it
-       never has to be read as decoration. Not sticky: this is read once, on arrival. -->
-  @if (countedEmotes().length > 0 && !viewLoading()) {
+       never has to be read as decoration. Not sticky: this is read once, on arrival. Not after a
+       failed set switch either (setSwitchFailed): the rows still loaded belong to the previous set. -->
+  @if (countedEmotes().length > 0 && !viewLoading() && !setSwitchFailed()) {
     <div class="flex flex-wrap items-end gap-x-5 gap-y-2">
       <div class="w-28 shrink-0">
         <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
@@ -525,6 +527,17 @@
             }
           </div>
         </div>
+      } @else if (setSwitchFailed()) {
+        <!-- The chosen set's rows did not load (setSwitchFailed): the rows still held belong to the
+             previous set and must not stand here as if they were the chosen one's. What went wrong
+             is the error banner's job above (role="alert", announced); this names the consequence
+             and carries the one way forward. The header's refresh button is free again too
+             (viewLoading() is false by definition here). -->
+        <app-empty-state [title]="'usageStats.setView.loadFailedTitle' | transloco">
+          <button type="button" appButton="neutral" (click)="refresh()">
+            {{ 'usageStats.setView.retry' | transloco }}
+          </button>
+        </app-empty-state>
       } @else if (isAwaitingSync()) {
         <app-notice-banner variant="info">{{
           'usageStats.awaitingSync' | transloco

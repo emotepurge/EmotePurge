@@ -126,9 +126,9 @@ describe('ImportTrigger', () => {
     httpPost = vi.fn(() => of(emoteSetPage()));
     startRestore = vi.fn();
     startImport = vi.fn();
-    // Never reached by any test that leaves `activeSetId` at its default (`null`) — those always
-    // take the 'trackedActive' fast path (see `toImportTarget`'s own doc). Only the non-active-set
-    // describe block below overrides this.
+    // Never reached by any test that leaves `activeSetId` omitted (`undefined`) — those always take
+    // the 'trackedActive' fast path (see `resolveActiveSetId`). Only the non-active-set and the
+    // unknown-active-set describe blocks below override this.
     loadEmoteSetPreview = vi.fn();
     hasToken = signal(true);
     activeRun = signal<SevenTvRunKind | null>(null);
@@ -678,6 +678,62 @@ describe('ImportTrigger', () => {
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
         [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        0,
+        true,
+      );
+    });
+  });
+
+  describe('an unknown active set (#200, K4 fix round): nothing may assume the set on screen is the active one', () => {
+    function preview() {
+      return of({
+        channelName: CURRENT_CHANNEL,
+        sevenTvUserId: null,
+        emoteSetId: 'set-halloween',
+        emoteSetName: 'Halloween',
+        capacity: 1000,
+        totalCount: 0,
+        truncated: false,
+        emotes: [],
+      });
+    }
+
+    it('locks restore when the host passes activeSetId null (status unknown), unlike an omitted input', () => {
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: null });
+      dialog.click();
+
+      expect(dataAt(0)).toEqual({
+        channelName: CURRENT_CHANNEL,
+        setId: 'set-halloween',
+        restoreEnabled: false,
+      });
+    });
+
+    it("takes the explicit 'trackedSet' path for the selected set instead of the active-set fast path", () => {
+      loadEmoteSetPreview.mockReturnValue(preview());
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', {
+        activeSetId: null,
+        setName: 'Halloween',
+      });
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({ kind: 'import', source: importSource() });
+
+      // Read live by its id — never EmoteSetStatus, which would describe whatever the active set is.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+      });
+
+      // Not the active set: no post-run resync of the channel is implied either.
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
+        expect.objectContaining({ kind: 'file' }),
+        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
         0,
         true,
       );

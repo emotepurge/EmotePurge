@@ -1992,12 +1992,13 @@ test.describe('running import: channel switch', () => {
     await page.getByRole('link', { name: 'Zielkanal öffnen' }).click();
     await page.waitForURL(`**/channels/${TARGET_CHANNEL}/usage-stats`);
 
-    // Still mounted, because activeEmoteSetId() is the SOURCE channel's set — which is precisely
-    // the state that must not be copyable. The dock shortcut shares the same lock (importScopeCurrent)
-    // and must therefore be just as disabled, not only the header's own trigger.
-    await expect(copyButton(page)).toBeVisible();
-    await expect(copyButton(page)).toBeDisabled();
-    await expect(dockCopyButton(page, 1)).toBeDisabled();
+    // Not copyable while the target's set status is held. Since the #200 K4 fix round the page no
+    // longer derives an active set from the SOURCE channel's status once the URL names the target
+    // (`activeEmoteSetId` is guarded by `setStatusChannel`), so there is no set to copy from at all
+    // yet: the header's set-gated write paths and the dock's marking half are not rendered, rather
+    // than rendered over the previous channel's set id.
+    await expect(copyButton(page)).toHaveCount(0);
+    await expect(dockCopyButton(page, 1)).toHaveCount(0);
 
     // The totals request is only issued once the set status has resolved the "all time" range, so
     // waiting for it is exact proof that the set status half has landed and the rows half has not.
@@ -2006,6 +2007,9 @@ test.describe('running import: channel switch', () => {
     );
     releaseTargetStatus();
     await totalsRequested;
+    // The target's set is known now, the rows underneath are still the source's: mounted, but
+    // locked — header button and dock shortcut alike (both read importScopeCurrent).
+    await expect(copyButton(page)).toBeVisible();
     await expect(copyButton(page)).toBeDisabled();
     await expect(dockCopyButton(page, 1)).toBeDisabled();
 

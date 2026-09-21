@@ -17,13 +17,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/core/usage-stats/usage-stat.model.ts` · `web/src/app/core/usage-stats/merge-set-view.ts` ·
 `web/src/app/core/usage-stats/usage-stat.service.ts` · `web/src/app/core/routing/list-query-state.ts` ·
 `web/src/app/shared/emotes/emote-set-menu.ts` · `web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
 `web/src/app/shared/datetime/date-range-menu.ts` · `web/src/app/shared/grid/atlas-grid.ts` ·
 `web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
 `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/foreign-import-flow.ts` ·
 `web/src/app/shared/seven-tv/file-import-step.ts` · `web/src/app/shared/seven-tv/import-source-dialog.ts` ·
 `web/src/app/shared/export/usage-export.ts` · `web/src/app/shared/export/usage-export-purposes.ts` ·
 `web/e2e/support/mocks.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (7, 8.1–8.6, §35) ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (7, 8.1–8.6, §35, §36) ·
 `docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
@@ -88,8 +89,9 @@ signal, the page had no `ActivatedRoute` at all — plan 0.2). The set is the pa
 state, and the asymmetry is deliberate for this plan: Back/reload restores the set but not the range.
 An id the set list does not confirm falls back to the active set **silently**; with a **readable**
 list the parameter is also removed from the URL, with an **unreadable** list (6.1 answered 503) it is
-kept, and the display is pinned to the active set for the rest of that channel's session (a later
-successful read must not jump the view). Following the operator decision of 2026-09-21 (spec §35) the
+kept, and the display is pinned to the active set (a later successful read must not jump the view)
+— refined on 2026-09-22, see "Fix round" below: the pin applies only while the list has *never*
+been read for the channel, and an explicit choice in the dropdown lifts it. Following the operator decision of 2026-09-21 (spec §35) the
 dropdown hides every `kind != NORMAL` set entirely instead of showing it disabled (reversing 8.1/AK 50
 for this one dropdown), and a URL id naming such a set counts exactly like an unknown one.
 
@@ -150,6 +152,64 @@ annotation for `emoteSetId`: it stays `string | null`, because a channel with no
 7TV set can still export its usage numbers — a pre-K4 allowance `usage-stats-page.spec.ts`'s
 "mountWithoutActiveSet" case already exercised and that this task did not remove. `null` omits the
 filename segment entirely and nulls both meta fields, rather than inventing a placeholder set.
+
+**Fix round 2026-09-22 (independent reviews of the K4 branch) — what the page does while the view
+is not settled.** Five rules, each closing a path to a wrong write or a view that never settles:
+
+- **"Selected ≠ shown" locks delete and vote, visibly.** The dock stays mounted across a set switch
+  (it hangs on the selection), and before this round its delete and vote buttons stayed live because
+  every lock read the set the rows on screen belong to — still the old one — while the delete panel
+  targets the *active* set with the *live* selection. `viewSwitching` (the chosen set's rows are not
+  on screen yet, or their request failed, or the rows were merged for the other kind of view — see
+  the next-but-one bullet) is now the first reason `deleteLockReasonKey` names
+  (`usageStats.setView.lock.switching`), and `voteLocked` follows it; it is the same predicate the
+  push already used (`importScopeCurrent`). Because a confirm dialog outlives the view it was opened
+  on, both dialogs re-evaluate the lock when they are confirmed: `MassDeletePanel.startDelete`
+  aborts with a visible and announced notice (`massDelete.abortedByLock`), and
+  `CreateVoteSessionDialogData` gained an optional **live** `lockReasonKey` signal that blocks the
+  submit with the reason next to it — the same live-signal contract its ballot already had (#132).
+- **"Loading" means a request in flight, never "the member list does not match".** The old
+  derivation stayed `'loading'` forever once the rows' own request failed after a switch (the member
+  list then belonged to the new set, or was idle), so the skeleton never came down and the refresh
+  button — disabled while loading — offered no retry. A settled switch without the chosen set's rows
+  (`setSwitchFailed`) now shows an error state in the sheet with a retry, keeps the error banner, and
+  hides the previous set's rows, strip, sidecar and slot bar instead of presenting them as the chosen
+  set's. A successful `/totals` answer clears a standing error.
+- **Rows carry the kind of view they were requested for.** `totalsNonActive` is frozen at request
+  time next to `totalsSetId`; `isNonActiveView` reads it. When a sync makes the viewed set the active
+  one (or the reverse), `viewKindStale` locks through `viewSwitching` and triggers one silent reload,
+  so a delete is never offered over rows merged as a non-active view — no flash of an unlocked button.
+- **The pin, refined (operator decisions 2026-09-22).** The pin to the active set applies only if the
+  set list has *never* been read for the channel (a mount-time failure). Every successful read is
+  latched per channel (`lastReadSetList`); a later failed reload keeps serving it — no pin, no
+  silent fallback to the active set, no #94 prune, no totals reload caused by a background request.
+  An explicit choice in the dropdown lifts the pin for that channel and loads the chosen set: the pin
+  never moves the view unrequested, but a deliberate choice is never ignored. The latch resets with
+  the channel.
+- **An unknown active set is not the selected set.** `activeEmoteSetId()` is derived only once the
+  status on hand belongs to the channel in the URL (`setStatusChannel === channelName`), so a channel
+  switch can no longer request the new channel's rows for the old channel's set; a failed status
+  request un-claims the channel, which locks the push and the import doors (`importScopeCurrent`).
+  `ImportTrigger.activeSetId` now tells *omitted* (`undefined`: a legacy caller, folded onto `setId`
+  as before) from *known unknown* (`null`): unknown takes the explicit `'trackedSet'` path, which reads
+  the selected set live by its id and assumes nothing about the active set (no active-set request, no
+  post-run resync) — chosen over disabling the doors because it is just as safe and keeps the import
+  usable while a status request keeps failing; restore requires `activeSetId !== null && activeSetId
+  === setId`. Silent reloads (`usage.flushed`, the recheck poll, the sync wait) request no rows while
+  a URL-carried set is still unconfirmed.
+
+Two smaller rules of the same round: **the set dropdown is locked, with its reason shown next to the
+trigger, while a delete run is still writing or its `sync-deleted` report is still out**
+(`emoteSetMenu.lockedDuringDelete`) — `onDeleted` edits the rows on screen when that report
+answers, and additionally only when the run's set and channel are still the ones on screen (another
+channel's run is ignored, another set reloads); and **a loud reload of the member list** (refresh
+button, `channel.synced`) passes `refresh: true` to the preview route for exactly that request,
+while a params-driven load after a switch may use the Api's cache (spec 8.3). The E2E mock of 6.1
+now answers what the real route answers for a tracked channel (spec 4.3): the active set carries an
+open observation interval unless a test says otherwise. One visible side effect of the guarded
+active id: during a channel switch inside the route, the header's set-gated write paths and the
+dock's marking half are unmounted until the new channel's status lands, instead of staying mounted
+(disabled) over the previous channel's set id.
 
 **Two corrected sentences of the concept** (`docs/Konzept-Emote-Sets-2026-09-19.md`): 7.1 "engine and
 mutation need nothing new" was only true of the 7TV mutation itself — everything around the run

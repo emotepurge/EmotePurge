@@ -1166,4 +1166,63 @@ test.describe('set view (#200, K4)', () => {
 
     expect(consoleProblems, consoleProblems.join('\n')).toEqual([]);
   });
+
+  test('a set switch whose rows fail to load shows the error in place of the sheet — no endless skeleton — and retrying recovers (K4 fix round)', async ({
+    page,
+  }) => {
+    await mockSetViewChannel(page);
+    await mockUsageChannelSeries(page, CHANNEL, {});
+    let halloweenAttempts = 0;
+    await page.route(`**/api/channels/${CHANNEL}/usage-stats/totals**`, (route) => {
+      const emoteSetId = new URL(route.request().url()).searchParams.get('emoteSetId');
+      if (emoteSetId === HALLOWEEN_SET_ID && ++halloweenAttempts === 1) {
+        return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+      }
+      const row =
+        emoteSetId === HALLOWEEN_SET_ID
+          ? { emoteId: 'e-spooky', emoteName: 'Spooky', sevenTvEmoteId: '7tv-spooky' }
+          : { emoteId: 'e-cat', emoteName: 'CatJAM', sevenTvEmoteId: '7tv-cat' };
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            ...row,
+            imageUrl: 'https://cdn.7tv.app/emote/1/2x.webp',
+            totalUseCount: 40,
+            lastUsedDate: null,
+            previousWindowUseCount: 0,
+            firstSeenAt: null,
+            isArchived: false,
+            nameTwinEmoteSetIds: [],
+          },
+        ]),
+      });
+    });
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-spooky', name: 'Spooky' }],
+    });
+
+    await gotoSetView(page);
+    await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toBeVisible();
+
+    await setMenuTrigger(page).click();
+    await page.getByRole('radio', { name: 'Halloween' }).click();
+
+    // Settled into the error state: no skeleton left, the previous set's rows gone from the sheet,
+    // and both ways forward usable.
+    await expect(page.getByText('Das gewählte Set konnte nicht geladen werden')).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Aktualisieren' })).toBeEnabled();
+
+    await page.getByRole('button', { name: 'Erneut versuchen' }).click();
+    await expect(page.getByRole('button', { name: /^Spooky ·/ })).toBeVisible();
+    await expect(page.getByText('Das gewählte Set konnte nicht geladen werden')).toHaveCount(0);
+  });
 });

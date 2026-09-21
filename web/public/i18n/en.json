@@ -729,8 +729,11 @@
       "lock": {
         "membersUnavailable": "Deleting and voting are locked: this set’s member list is unavailable.",
         "truncated": "Deleting and voting are locked: this set’s member list is incomplete.",
-        "nonActiveSet": "For now, deleting and voting only work in the active set."
-      }
+        "nonActiveSet": "For now, deleting and voting only work in the active set.",
+        "switching": "Deleting and voting are locked until the chosen set has loaded."
+      },
+      "loadFailedTitle": "The chosen set could not be loaded",
+      "retry": "Try again"
     }
   },
   "sevenTvSync": {

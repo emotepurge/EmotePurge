@@ -17,13 +17,28 @@ import { ImportFlowTarget, startImportFlow } from './import-flow';
 import { startRestoreFlow } from './restore-flow';
 
 /**
+ * The channel's active set as far as this trigger may assume it: an *omitted* input (`undefined` —
+ * a caller with no "selected vs. active" distinction to offer, i.e. every caller that predates
+ * T4.5) folds onto `setId` itself, which keeps that caller byte-identical to before. A *known
+ * unknown* (`null` — the host knows the distinction but has no active id: the set status failed,
+ * e.g. 429, or the channel has no active set) stays `null`: then nothing may be assumed to be the
+ * active set.
+ */
+function resolveActiveSetId(setId: string, activeSetId: string | null | undefined): string | null {
+  return activeSetId === undefined ? setId : activeSetId;
+}
+
+/**
  * The file/foreign-channel/leaderboard doors' target (spec 8.6, T4.5) — a `'chosen'`
  * `ImportFlowTarget` built from what this trigger's own inputs already carry, without ever opening
- * a picker. `activeSetId === null` (no caller has told this trigger the channel's active set) folds
- * `resolvedActiveSetId` back onto `setId` itself, which makes `emoteSetId === activeEmoteSetId`
- * trivially true and keeps `toTargetSelection` (`import-flow.ts`) on the exact same `'trackedActive'`
- * fast path it always took — the one legacy caller with no such distinction to offer (a test that
- * never sets `activeSetId`) sees the identical behaviour it always has.
+ * a picker. With `activeSetId === setId` (or folded onto it, see `resolveActiveSetId`),
+ * `toTargetSelection` (`import-flow.ts`) takes the exact same `'trackedActive'` fast path it always
+ * took. With a different or an unknown (`null`) active set it takes the explicit `'trackedSet'`
+ * path, which reads the selected set live by its id — the safe choice when the active id is unknown:
+ * the write still lands exactly in the set on screen, and no step assumes it is the channel's active
+ * one (no active-set request, no post-run resync of the channel). Disabling the doors instead would
+ * have been just as safe but would take the import away for as long as a status request keeps
+ * failing, for no gain in correctness.
  *
  * `ownerDisplayName`/`twitchLogin` are placeholders that `toTargetSelection` never reads for a
  * tracked choice with a `channelName` (every choice this builds has one) — see that function's own
@@ -33,7 +48,7 @@ import { startRestoreFlow } from './restore-flow';
 function toImportTarget(
   channelName: string,
   setId: string,
-  activeSetId: string | null,
+  activeSetId: string | null | undefined,
   setName: string | null,
 ): ImportFlowTarget {
   return {
@@ -45,7 +60,7 @@ function toImportTarget(
       setName: setName ?? setId,
       isTracked: true,
       twitchLogin: channelName,
-      activeEmoteSetId: activeSetId ?? setId,
+      activeEmoteSetId: resolveActiveSetId(setId, activeSetId),
     },
   };
 }
@@ -111,11 +126,13 @@ export class ImportTrigger {
    *  the same word), and the only place "selected vs. active" matters is the comparison against
    *  {@link activeSetId} below. */
   readonly setId = input.required<string>();
-  /** The channel's actual active set, or `null` from a caller with no such distinction to offer
-   *  (every prior caller, and any test that predates T4.5) — folded back onto `setId` itself in
-   *  that case (`toImportTarget`), which keeps that caller's behaviour byte-identical to before
-   *  this input existed. Also what gates `FileImportStep.restoreEnabled` (see the class doc). */
-  readonly activeSetId = input<string | null>(null);
+  /** The channel's actual active set; `null` when the host knows it has none to offer (unknown —
+   *  status failed — or no active set at all); omitted (`undefined`) by a caller with no such
+   *  distinction (every caller that predates T4.5, and any test that never sets it), which folds
+   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Also
+   *  what gates `FileImportStep.restoreEnabled` (see the class doc) — restore needs a *known* active
+   *  set equal to `setId`. */
+  readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the import confirm dialog's title when it is not the
    *  active one (spec 8.6) — `null` falls back to the id, same as every other unnamed set there. */
   readonly setName = input<string | null>(null);
@@ -154,7 +171,10 @@ export class ImportTrigger {
     const setName = this.setName();
     // Restore stays locked to the active set until K5 (see the class doc) — computed once, here,
     // from the same frozen ids the rest of this click uses, never re-read once the dialog is open.
-    const restoreEnabled = activeSetId === null || activeSetId === setId;
+    // An unknown active set (`null`) locks it too: the legacy `sync-restored` call books into
+    // whatever the active set is, and nobody here knows that it is the one on screen.
+    const resolvedActiveSetId = resolveActiveSetId(setId, activeSetId);
+    const restoreEnabled = resolvedActiveSetId !== null && resolvedActiveSetId === setId;
 
     openImportSourceDialog(this.dialog, { channelName, setId, restoreEnabled }).closed.subscribe(
       (result) => {

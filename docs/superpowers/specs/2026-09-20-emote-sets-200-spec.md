@@ -3150,3 +3150,37 @@ aktive Set zurück, und bei lesbarer Set-Liste wird der Parameter aus der URL en
 Nachläufer läuft). Der DECISIONS-Eintrag dazu (Regel 3) folgt mit T4.3, zusammen mit dem
 Schlüsselwechsel-Commit — dort steht auch die vollständige Begründung neben den übrigen drei fälligen
 Einträgen.
+
+## 36. Nachtrag: Die Anheftung an das aktive Set, verfeinert (K4-Nachbesserung, Betreiber-Entscheidungen 2026-09-22)
+
+8.1 und die Entscheidung #3 vom 2026-09-21 hefteten die Nutzungsseite an das aktive Set, sobald die
+Set-Liste (6.1) für den Kanal **einmal** nicht lesbar war — und zwar für den Rest der Sitzung dieses
+Kanals, auch nach einem späteren erfolgreichen Lesen. Die unabhängigen Reviews des K4-Zweigs haben
+zwei Folgen davon gefunden, die niemand gewollt hat: Ein **fehlgeschlagener Hintergrund-Reload** (der
+laute `channel.synced`-Reload, typischerweise ein 503/429 von 7TV) warf eine bereits bestätigte
+Ansicht eines nicht-aktiven Sets still auf das aktive zurück — samt #94-Bereinigung der Auswahl und
+Neuladen der Zahlen, ausgelöst von einer Anfrage, die niemand gestellt hat. Und eine **bewusste Wahl
+im Dropdown** blieb wirkungslos, solange die Anheftung stand, obwohl die Liste in diesem Moment
+lesbar war.
+
+Der Betreiber hat am 2026-09-22 entschieden:
+
+1. **Angeheftet wird nur, wenn die Set-Liste für diesen Kanal noch nie lesbar war** (Fehler beim
+   ersten Laden). Wurde sie einmal erfolgreich gelesen, hält die Seite diese Antwort je Kanal fest
+   und bedient sie weiter, wenn ein späterer Reload scheitert — keine Anheftung, kein stiller
+   Rückfall auf das aktive Set, keine #94-Bereinigung, kein Neuladen der Zahlen. Ein Kanalwechsel
+   verwirft das Festgehaltene.
+2. **Eine ausdrückliche Wahl im Dropdown hebt die Anheftung für diesen Kanal auf** und lädt das
+   gewählte Set; die Liste ist in diesem Moment lesbar (sonst ließe sich das Dropdown nicht öffnen),
+   die Wahl wird wie jede andere geprüft. Das gilt auch dann, wenn sie genau die ID nennt, die noch
+   in der URL steht. Die Anheftung bewegt die Ansicht also nie ungefragt — aber sie übergeht auch nie
+   eine bewusste Wahl.
+
+**Im selben Zug festgelegt (Reviewbefunde, keine eigene Betreiber-Entscheidung):** Solange das
+gewählte Set nicht das gezeigte ist (Wechsel unterwegs oder gescheitert), sind Löschen und Abstimmen
+mit sichtbarem Grund gesperrt, und beide Bestätigungsdialoge prüfen die Sperre beim Bestätigen
+erneut; ein gescheiterter Wechsel zeigt einen Fehlerzustand mit Wiederholen statt eines endlosen
+Skeletts; ein unbekanntes aktives Set gilt nie als das gewählte (Import über den expliziten
+Set-Pfad, Wiederherstellen gesperrt); das Dropdown ist gesperrt, solange ein Löschlauf schreibt.
+Begründung und Einzelheiten im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is
+identified by its 7TV id …", Abschnitt „Fix round 2026-09-22".
