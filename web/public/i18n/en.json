@@ -982,9 +982,10 @@
       "loadFailed": "The offer list could not be loaded.",
       "retry": "Reload",
       "submit": "Continue",
-      "confirmUntracked": "Copy into the set ‚{{setName}}' from ‚{{ownerDisplayName}}'?",
+      "confirmUntracked": "The target is the set ‚{{setName}}' from ‚{{ownerDisplayName}}' — EmotePurge doesn't track this account.",
       "unknownOwner": "owner unknown",
-      "confirmUntrackedSubmit": "Copy"
+      "confirmUntrackedAccept": "Yes, this set",
+      "confirmUntrackedReject": "Choose another set"
     },
     "foreignChannel": {
       "title": "Import from a channel",
@@ -1029,6 +1030,10 @@
         "one": "Copy {{ count }} emote to {{ channel }}?",
         "other": "Copy {{ count }} emotes to {{ channel }}?"
       },
+      "titleSet": {
+        "one": "Copy {{ count }} emote into the set ‚{{ setName }}'?",
+        "other": "Copy {{ count }} emotes into the set ‚{{ setName }}'?"
+      },
       "originChannel": "From channel {{ channel }}",
       "originFile": "From file {{ fileName }}",
       "originFileDetails": "Exported from {{ channel }}, {{ date }}",
@@ -1042,6 +1047,8 @@
       "loadFailed": "The target channel's data could not be loaded.",
       "retry": "Reload",
       "staleHint": "The target channel's last sync failed — our copy may be stale, 7TV decides.",
+      "untrackedTarget": "EmotePurge doesn't track this account — 7TV only allows the copy if you're an editor there.",
+      "ownershipCheckUnavailable": "We couldn't check right now whether this set really belongs to this channel — please verify on 7tv.app yourself before copying.",
       "alreadyPresent": {
         "one": "{{ count }} emote is already in the target set and will be skipped.",
         "other": "{{ count }} emotes are already in the target set and will be skipped."
@@ -1086,8 +1093,10 @@
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",
       "target": "Target: {{ channel }}",
-      "targetSet": "Target: set {{ setId }} of {{ owner }}",
+      "targetWithSet": "Target: {{ channel }} · set {{ setName }}",
+      "targetSet": "Target: set {{ setName }} of {{ owner }}",
       "openTarget": "Open target channel",
+      "copiedNotActive": "Copied into the set ‚{{ setName }}' — it isn't {{ channel }}'s active set, so the channel page won't show it.",
       "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row."
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
