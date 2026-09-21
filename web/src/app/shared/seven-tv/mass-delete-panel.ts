@@ -31,6 +31,10 @@ import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-co
 import { RunProgressPanel } from './run-progress-panel';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
+/** Per-instance suffix for the lock reason's element id — the panel renders on two pages, and an
+ *  `aria-describedby` target has to be unique in the document. */
+let nextDeleteLockReasonId = 0;
+
 export interface DeletableEmote {
   emoteId: string;
   sevenTvEmoteId: string;
@@ -79,9 +83,11 @@ export interface DeletableEmote {
           class="disabled:cursor-not-allowed"
           [disabled]="
             selectedEmotes().length === 0 ||
+            deleteLockReasonKey() !== null ||
             deleteService.isRunning() ||
             arbiter.activeRun() !== null
           "
+          [attr.aria-describedby]="deleteLockReasonKey() !== null ? deleteLockReasonId : null"
           (click)="openConfirm()"
         >
           {{ 'massDelete.deleteButton' | transloco: { count: selectedEmotes().length } }}
@@ -100,6 +106,15 @@ export interface DeletableEmote {
           </button>
         }
       </div>
+      <!-- A lock the host page imposes for a reason of its own (spec #200, 8.3 — e.g. the chosen
+           set's live member list could not be read) explains itself as text next to the button,
+           not only by greying it out (docs/UI-Designsprache.md §10, "Disabled explains itself").
+           Unlike the run-in-progress lock above, nothing else on screen already says why. -->
+      @if (deleteLockReasonKey(); as reasonKey) {
+        <p [id]="deleteLockReasonId" class="text-xs text-fg-muted">
+          {{ reasonKey | transloco }}
+        </p>
+      }
 
       @if (deleteService.isRunning() || deleteService.queue().length > 0) {
         <app-run-progress-panel
@@ -190,6 +205,13 @@ export class MassDeletePanel {
   readonly setId = input.required<string>();
   readonly channelName = input.required<string>();
   readonly selectedEmotes = input.required<DeletableEmote[]>();
+  /**
+   * Translation key of a reason the host page locks the delete button for, or `null` for no such
+   * lock. The panel neither decides nor knows the reason — the usage page's set view does (spec
+   * #200, 8.3: a member list that could not be read, or was truncated, must not delete). Shown as
+   * visible text next to the button and wired to it via `aria-describedby`.
+   */
+  readonly deleteLockReasonKey = input<string | null>(null);
 
   /**
    * Whether the `[selection-actions]` slot actually has something projected into it — the panel
@@ -228,6 +250,7 @@ export class MassDeletePanel {
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
 
+  protected readonly deleteLockReasonId = `mass-delete-lock-reason-${nextDeleteLockReasonId++}`;
   private readonly setWarning = signal<EmoteSetWarning | null>(null);
   private readonly warningLoading = signal(false);
   // Split by `hidden` for the delete-confirm dialog (Konzept "Auswahl überlebt Suche und Filter"
@@ -320,6 +343,11 @@ export class MassDeletePanel {
   }
 
   protected openConfirm(): void {
+    // The button is already disabled under a host lock; this only guards a click that outraces the
+    // lock arriving (a set switch landing while the pointer is on the button).
+    if (this.deleteLockReasonKey() !== null) {
+      return;
+    }
     // No stored 7TV token yet: ask for it first. The prompt closes itself with `true` the moment
     // the token is saved, which chains straight into the confirm dialog — the flow the old
     // hand-built overlay produced via its reactive template switch.

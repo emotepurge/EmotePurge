@@ -143,6 +143,7 @@
     "preset7Days": "7 Tage",
     "preset30Days": "30 Tage",
     "presetAll": "Seit Beginn",
+    "presetSetObserved": "Während dieses Set beobachtet wurde",
     "presetCustom": "Eigener Zeitraum",
     "from": "Von",
     "to": "Bis"
@@ -636,7 +637,11 @@
       "share": "{{share}} der Nutzung",
       "count": "{{count}} Emotes",
       "countOne": "1 Emote",
-      "selectAll": "alle markieren"
+      "selectAll": "alle markieren",
+      "uncounted": {
+        "title": "Keine Zählungen",
+        "hint": "unter diesem Set"
+      }
     },
     "sidecar": {
       "share": "Anteil",
@@ -707,6 +712,24 @@
     },
     "errors": {
       "loadFailed": "Nutzungsdaten konnten nicht geladen werden."
+    },
+    "setView": {
+      "noCounts": "keine Zählungen unter diesem Set",
+      "leftBadge": "Nicht mehr im Set",
+      "slots": "{{count}} Plätze im Set: {{aliases}}",
+      "nameTwin": "Unter diesem Namen liegt in „{{sets}}“ ein anderes Emote.",
+      "facts": {
+        "notObserved": "Dieses Set war im gewählten Zeitraum nicht als aktiv beobachtet.",
+        "countedSince": "Für dieses Set gezählt seit dem {{date}}.",
+        "noCounts": "Für dieses Set liegen im gewählten Zeitraum keine Zählungen vor."
+      },
+      "membersUnavailable": "Die Mitgliederliste dieses Sets ist gerade nicht verfügbar – gezeigt werden nur Emotes mit Zählungen.",
+      "truncated": "Die Mitgliederliste dieses Sets ist unvollständig (laut 7TV {{total}} Einträge).",
+      "lock": {
+        "membersUnavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
+        "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
+        "nonActiveSet": "Löschen und Abstimmen gehen vorerst nur im aktiven Set."
+      }
     }
   },
   "sevenTvSync": {

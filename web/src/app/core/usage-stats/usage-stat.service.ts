@@ -55,12 +55,9 @@ export class UsageStatService {
     emoteId: string,
     from: string,
     to: string,
-    /**
-     * Defaults to `null` (omitted, active set) so the one existing caller not yet threaded onto the
-     * selected set (`emote-drilldown-dialog.ts` — that wiring is spec #200's 7.2, task T4.3, not
-     * this one) keeps compiling and keeps its prior behaviour unchanged.
-     */
-    emoteSetId: string | null = null,
+    /** `null` omits the parameter (the channel's active set) — see {@link getTotals}. The drilldown
+     *  passes the set frozen into its dialog data, never a live read (spec #200, 7.2, F4). */
+    emoteSetId: string | null,
   ): Observable<EmoteUsageSeries> {
     const key = `${channelName}|${emoteSetId ?? ''}|${emoteId}|${from}|${to}`;
     let series$ = this.seriesCache.get(key);

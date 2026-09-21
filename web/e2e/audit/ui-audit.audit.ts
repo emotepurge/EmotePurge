@@ -146,15 +146,18 @@ function usageEmotes(count: number) {
 }
 
 /**
- * Daily curves for the sidecar sparkline, keyed like the real /series response. Only the emotes the
- * sidecar can land on need one — it opens on the busiest, which is `e1`.
+ * Daily curves for the sidecar sparkline, keyed by 7TV id like the real /series response. Only the emotes the
+ * sidecar can land on need one — it opens on the busiest, which is `7tv-1` (`e1`).
  */
 function usageSeries(): Record<string, [number, number][]> {
   return {
-    e1: Array.from({ length: 18 }, (_, i) => [i * 1.5 + 1, 40 + Math.round(90 * Math.sin(i / 2.2))])
+    '7tv-1': Array.from({ length: 18 }, (_, i) => [
+      i * 1.5 + 1,
+      40 + Math.round(90 * Math.sin(i / 2.2)),
+    ])
       .filter(([, count]) => count > 0)
       .map(([day, count]) => [Math.round(day), count] as [number, number]),
-    e2: [
+    '7tv-2': [
       [3, 12],
       [4, 30],
       [11, 4],

@@ -104,8 +104,14 @@
            0 && selection.selectedItems().length === 0`, Konzept "Auswahl überlebt Suche und
            Filter" nachtrag, 2026-09-19): the push sends either the visible grid or the marked
            selection and has nothing to send only once both are empty, whereas every import source
-           brings its own rows and needs neither a visible row nor a selection to exist. -->
-      @if (!isCoarse() && activeEmoteSetId(); as activeSetId) {
+           brings its own rows and needs neither a visible row nor a selection to exist.
+           Gated on the SELECTED set since spec #200 (8.1): the push copies the rows on screen and
+           names their set as the source, so it works from any set's view. The import trigger does
+           not yet — its file, foreign-channel and leaderboard doors still write into the channel's
+           ACTIVE set, and its restore door would book against the active set too — so it stays
+           locked while a non-active set is on screen, until T4.5 points the doors at the selected
+           set (the restore bookkeeping additionally waits for K5). -->
+      @if (!isCoarse() && selectedEmoteSetId(); as selectedSetId) {
         <button
           type="button"
           appButton="neutral"
@@ -117,14 +123,14 @@
         </button>
         <app-import-trigger
           [channelName]="channelName()"
-          [setId]="activeSetId"
-          [importScopeCurrent]="importScopeCurrent()"
+          [setId]="selectedSetId"
+          [importScopeCurrent]="importScopeCurrent() && !isNonActiveView()"
         />
       }
       <button
         type="button"
         appButton="neutral"
-        [disabled]="isLoading()"
+        [disabled]="viewLoading()"
         (click)="refresh()"
         [title]="'usageStats.reloadTitle' | transloco"
       >
@@ -150,6 +156,7 @@
         [(to)]="to"
         [(preset)]="rangePreset"
         [earliest]="trackedSinceDate()"
+        [setObservedRange]="setObservedPresetRange()"
       />
       <!-- Only once there is an active set at all — before that the set list has nothing to offer,
            and the page already shows its own "awaiting sync"/empty state elsewhere (spec #200,
@@ -302,6 +309,9 @@
           />
         </span>
         <span class="font-medium text-fg">{{ emote.emoteName }}</span>
+        @if (emote.membership === 'left') {
+          <span class="text-warning-fg">{{ 'usageStats.setView.leftBadge' | transloco }}</span>
+        }
         @if (inspectedRank(); as rank) {
           <span class="font-mono">#{{ rank }}</span>
         }
@@ -309,12 +319,29 @@
              the pointer is here, and "is this still the regular cast or already the tail" is the
              whole question the atlas is scanned for. -->
         <span>{{ 'usageStats.bands.' + inspectedBand() + '.title' | transloco }}</span>
-        <span class="font-mono text-fg-body">
-          {{ formatCount(emote.totalUseCount) }}×
-          @if (inspectedShare(); as share) {
-            <span class="text-fg-muted">({{ formatPercent(share) }})</span>
-          }
-        </span>
+        @if (emote.totalUseCount !== null) {
+          <span class="font-mono text-fg-body">
+            {{ formatCount(emote.totalUseCount) }}×
+            @if (inspectedShare(); as share) {
+              <span class="text-fg-muted">({{ formatPercent(share) }})</span>
+            }
+          </span>
+        } @else {
+          <span>{{ 'usageStats.setView.noCounts' | transloco }}</span>
+        }
+        @if (emote.slotCount > 1) {
+          <span>
+            {{
+              'usageStats.setView.slots'
+                | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+            }}
+          </span>
+        }
+        @if (emote.nameTwinEmoteSetIds.length > 0) {
+          <span>{{
+            'usageStats.setView.nameTwin' | transloco: { sets: nameTwinSetNames(emote) }
+          }}</span>
+        }
         <!-- Suppressed entirely rather than rendered as "stable" when the comparison would be an
              artefact — a wrong direction is worse than none. -->
         @if (trendFor(emote); as trend) {
@@ -378,6 +405,12 @@
             | transloco: { date: formatDate(setStatus()?.sharedChatSeparatedSince ?? null) }
         }}
       }
+      <!-- A non-active set's view queues its own statements at the end (spec #200, 8.4/8.3): was the
+           set observed in the range, are there counts at all, and is the member list whole. Each is
+           a sentence only where it applies — never a banner, never a control (§2.5). -->
+      @for (sentence of setViewCaptions(); track sentence.key) {
+        {{ sentence.key | transloco: sentence.params }}
+      }
     </p>
     @if (rangeStartsBeforeTracking()) {
       <!-- Named openly rather than hidden: on incomplete data nobody deletes anything, and a
@@ -389,11 +422,11 @@
     }
   }
 
-  @if (setStatus(); as status) {
+  @if (slotBudget(); as budget) {
     <app-slot-budget-bar
-      [capacity]="status.capacity"
-      [occupied]="status.occupiedSlots"
-      [pendingRemoval]="selection.selectedItems().length"
+      [capacity]="budget.capacity"
+      [occupied]="budget.occupied"
+      [pendingRemoval]="pendingRemovalSlots()"
     />
   }
 
@@ -401,7 +434,7 @@
        900 emotes. It answers the question the atlas cannot show at a glance — how steep the head is
        and how long the dead tail runs — and it is annotated with the two numbers that matter, so it
        never has to be read as decoration. Not sticky: this is read once, on arrival. -->
-  @if (emotes().length > 0 && !isLoading()) {
+  @if (countedEmotes().length > 0 && !viewLoading()) {
     <div class="flex flex-wrap items-end gap-x-5 gap-y-2">
       <div class="w-28 shrink-0">
         <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
@@ -479,7 +512,7 @@
     <!-- The element the column count is measured against (see atlasColumns). It wraps every result
        state, so it exists from the first frame and the ResizeObserver never has nothing to watch. -->
     <div #sheet>
-      @if (isLoading()) {
+      @if (viewLoading()) {
         <!-- Atlas-shaped skeleton (NN/g: skeleton for page loads); one status element carries the
            accessible loading text, the shimmer blocks are decorative. -->
         <div role="status" [attr.aria-label]="'usageStats.loading' | transloco">
@@ -555,6 +588,8 @@
                   <span class="whitespace-nowrap">
                     @if (row.band === 'dead') {
                       {{ 'usageStats.bands.dead.hint' | transloco }}
+                    } @else if (row.band === 'uncounted') {
+                      {{ 'usageStats.bands.uncounted.hint' | transloco }}
                     } @else {
                       {{
                         'usageStats.bands.share' | transloco: { share: formatBandShare(row.share) }
@@ -594,7 +629,9 @@
                 class="grid gap-1"
                 [style.grid-template-columns]="'repeat(' + columns() + ', ' + cellPx + 'px)'"
               >
-                @for (emote of row.items; track emote.emoteId; let i = $index) {
+                <!-- Keyed by the 7TV id (spec #200, 7.2): a set view's live member without a counted
+                     row has no Emote.Id, and two of those tracked by a null would collide (NG0955). -->
+                @for (emote of row.items; track emote.sevenTvEmoteId; let i = $index) {
                   <!-- Wrapper, not a nested button: the history trigger has to sit ON the cell, and a
                      <button> inside a <button> is invalid HTML. Both are siblings inside a
                      positioned box instead, so the trigger overlays the cell without nesting. -->
@@ -621,6 +658,7 @@
                       type="button"
                       [class]="
                         'app-sprite-cell relative block h-full w-full scroll-mt-48 transition-shadow ' +
+                        (emote.membership === 'left' ? 'app-sprite-cell-void ' : '') +
                         (selection.isSelected(emote)
                           ? ''
                           : 'hover:inset-ring-1 hover:inset-ring-border-strong')
@@ -628,32 +666,94 @@
                       [attr.data-atlas-index]="row.startIndex + i"
                       [attr.tabindex]="activeIndex() === row.startIndex + i ? 0 : -1"
                       [attr.aria-pressed]="isCoarse() ? null : selection.isSelected(emote)"
-                      [attr.aria-haspopup]="isCoarse() ? 'dialog' : null"
+                      [attr.aria-haspopup]="isCoarse() && canDrilldown(emote) ? 'dialog' : null"
                       [attr.aria-label]="
-                        isCoarse()
-                          ? ('usageStats.drilldown.openWithCount'
-                            | transloco
-                              : { name: emote.emoteName, count: formatCount(emote.totalUseCount) })
-                          : emote.emoteName + ' · ' + formatCount(emote.totalUseCount) + '×'
+                        (emote.totalUseCount === null
+                          ? emote.emoteName + ' · ' + ('usageStats.setView.noCounts' | transloco)
+                          : isCoarse()
+                            ? ('usageStats.drilldown.openWithCount'
+                              | transloco
+                                : {
+                                    name: emote.emoteName,
+                                    count: formatCount(emote.totalUseCount),
+                                  })
+                            : emote.emoteName + ' · ' + formatCount(emote.totalUseCount) + '×') +
+                        (emote.membership === 'left'
+                          ? ' · ' + ('usageStats.setView.leftBadge' | transloco)
+                          : '') +
+                        (emote.slotCount > 1
+                          ? ' · ' +
+                            ('usageStats.setView.slots'
+                              | transloco
+                                : { count: emote.slotCount, aliases: emote.aliases.join(', ') })
+                          : '') +
+                        (emote.nameTwinEmoteSetIds.length > 0
+                          ? ' · ' +
+                            ('usageStats.setView.nameTwin'
+                              | transloco: { sets: nameTwinSetNames(emote) })
+                          : '')
                       "
                       (click)="onCellClick(emote, row.startIndex + i, $event)"
                       (mousedown)="$event.shiftKey && $event.preventDefault()"
                       (mouseenter)="inspect(emote)"
                       (focus)="onCellFocus(emote, row.startIndex + i)"
                     >
-                      <app-emote-sprite [url]="emote.imageUrl" [size]="64" />
+                      <!-- A 'left' row (spec #200, 8.2, E23) keeps its numbers but is no longer in the
+                       set: the ballot's archived treatment (void plate, dimmed sprite), because it
+                       sits mixed among live cells with no heading to say it — the one case §2.4
+                       keeps the plate for. -->
+                      <app-emote-sprite
+                        [url]="emote.imageUrl"
+                        [size]="64"
+                        [dimmed]="emote.membership === 'left'"
+                      />
                       <!-- The figure is printed onto the sprite rather than under it: a caption row
                        would cost a third of the cell, and the scrim is what makes it legible over
-                       whatever the artwork puts beneath. -->
-                      <span
-                        class="absolute bottom-0 left-0 px-1 font-mono text-[9px] leading-[1.4] font-medium"
-                        [style.background-color]="'var(--ep-sprite-scrim)'"
-                        [style.color]="'var(--ep-sprite-scrim-fg)'"
-                        >{{ shortCount(emote.totalUseCount) }}</span
-                      >
+                       whatever the artwork puts beneath. A row without counts prints nothing — its
+                       group heading already says why, and a "0" would be false (E17). -->
+                      @if (emote.totalUseCount !== null) {
+                        <span
+                          class="absolute bottom-0 left-0 px-1 font-mono text-[9px] leading-[1.4] font-medium"
+                          [style.background-color]="'var(--ep-sprite-scrim)'"
+                          [style.color]="'var(--ep-sprite-scrim-fg)'"
+                          >{{ shortCount(emote.totalUseCount) }}</span
+                        >
+                      }
+                      <!-- Two set-view markers, bottom right, both decorative: the cell's accessible
+                       label and the inspector already say them in words; the title is the pointer
+                       user's tooltip (spec 8.2 — slot count with both aliases for a #74 duplicate;
+                       the name-twin mark naming the other set, E24). -->
+                      @if (emote.slotCount > 1 || emote.nameTwinEmoteSetIds.length > 0) {
+                        <span
+                          class="absolute right-0 bottom-0 flex gap-0.5 px-1 font-mono text-[9px] leading-[1.4] font-medium"
+                          [style.background-color]="'var(--ep-sprite-scrim)'"
+                          [style.color]="'var(--ep-sprite-scrim-fg)'"
+                          aria-hidden="true"
+                        >
+                          @if (emote.nameTwinEmoteSetIds.length > 0) {
+                            <span
+                              [title]="
+                                'usageStats.setView.nameTwin'
+                                  | transloco: { sets: nameTwinSetNames(emote) }
+                              "
+                              >≈</span
+                            >
+                          }
+                          @if (emote.slotCount > 1) {
+                            <span
+                              [title]="
+                                'usageStats.setView.slots'
+                                  | transloco
+                                    : { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+                              "
+                              >×{{ emote.slotCount }}</span
+                            >
+                          }
+                        </span>
+                      }
                       <!-- Weight without a change of size: the bar is the only thing on the cell that
                        differs by usage, measured against its own band's peak. -->
-                      @if (emote.totalUseCount > 0) {
+                      @if ((emote.totalUseCount ?? 0) > 0) {
                         <span class="absolute inset-x-0 bottom-0 block h-0.5 bg-border">
                           <i
                             class="block h-full bg-accent-fg/75"
@@ -692,7 +792,7 @@
                        button, which for keyboard and touch is perfectly reachable.
                        On a coarse pointer this is gone: with no selection left to compete with, the
                        whole 64 px cell is the trigger, which beats a 20 px overlay by every measure. -->
-                    @if (!isCoarse()) {
+                    @if (!isCoarse() && canDrilldown(emote)) {
                       <button
                         type="button"
                         [class]="
@@ -744,6 +844,11 @@
             </span>
             <div class="min-w-0">
               <p class="text-sm font-semibold break-all text-fg">{{ emote.emoteName }}</p>
+              @if (emote.membership === 'left') {
+                <p class="mt-0.5 text-[11px] text-warning-fg">
+                  {{ 'usageStats.setView.leftBadge' | transloco }}
+                </p>
+              }
               <p class="mt-0.5 font-mono text-[11px] text-fg-muted">
                 @if (inspectedRank(); as rank) {
                   #{{ rank }} ·
@@ -817,7 +922,7 @@
               {{ 'usageStats.sortByUsage' | transloco }}
             </dt>
             <dd class="text-right font-mono text-xs text-fg-body">
-              {{ formatCount(emote.totalUseCount) }}
+              {{ emote.totalUseCount !== null ? formatCount(emote.totalUseCount) : '—' }}
             </dd>
             @if (inspectedShare(); as share) {
               <dt class="text-[10px] font-semibold tracking-[0.11em] text-fg-muted uppercase">
@@ -859,6 +964,22 @@
               {{ observationLabelKey(emote) | transloco: { days: observationDays(emote) } }}
             </p>
           }
+          @if (emote.totalUseCount === null) {
+            <p class="text-xs text-fg-muted">{{ 'usageStats.setView.noCounts' | transloco }}</p>
+          }
+          @if (emote.slotCount > 1) {
+            <p class="text-xs text-fg-muted">
+              {{
+                'usageStats.setView.slots'
+                  | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+              }}
+            </p>
+          }
+          @if (emote.nameTwinEmoteSetIds.length > 0) {
+            <p class="text-xs text-fg-muted">
+              {{ 'usageStats.setView.nameTwin' | transloco: { sets: nameTwinSetNames(emote) } }}
+            </p>
+          }
         </div>
       </aside>
     }
@@ -898,8 +1019,13 @@
     <div class="mx-auto flex max-w-7xl flex-col gap-2 overflow-y-auto px-4 py-3 max-h-[70vh]">
       <!-- The marking half of the dock acts on THIS channel's set, so it needs one. The import
            section below does not (see its own comment), which is why the set gate sits here and
-           not around the whole bar. -->
-      @if (activeEmoteSetId(); as setId) {
+           not around the whole bar. Gated on the SELECTED set since spec #200 (8.1) — the marks
+           belong to whichever set is on screen. The panel itself stays bound to the ACTIVE set:
+           a delete (and the restore offered on its summary) can so far only start from the active
+           set's view (deleteLockReasonKey locks every other view), so every run this panel shows
+           belongs to the active set, even after the dropdown moved on. K5 freezes the set into the
+           run record and lifts that. -->
+      @if (selectedEmoteSetId() && activeEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <!-- Reachable in the accessibility tree again (Opus review, 2026-09-19 — was aria-hidden
                before): the permanently mounted app-dock-outcome-announcer above no longer mirrors
@@ -951,6 +1077,7 @@
           [setId]="setId"
           [channelName]="channelName()"
           [selectedEmotes]="selectedForDelete()"
+          [deleteLockReasonKey]="deleteLockReasonKey()"
           [leadingActionsPresent]="true"
           (deleted)="onDeleted($event)"
           (reloadRequested)="onReloadRequested()"
@@ -960,8 +1087,8 @@
                second entry point, not a doubled command). Rendered unconditionally rather than
                behind an @if: it only ever exists here because the dock is already gated on
                !isCoarse() (usage-stats-page.html's `@if (dockVisible() && !isCoarse())`) and this
-               branch is already gated on an active set (`@if (activeEmoteSetId(); as setId)`
-               above) — the header's own two rendering gates, so repeating either would test a
+               branch is already gated on a set (`@if (selectedEmoteSetId() &&
+               activeEmoteSetId(); as setId)` above) — the header's own two rendering gates, so repeating either would test a
                condition that can never be false at this point. The remaining locks
                (importScopeCurrent, any active 7TV run, plus the empty-selection case that only
                applies to this forced-scope entry point) are extracted in importShortcutDisabled —
@@ -991,7 +1118,7 @@
                 appButton="primary"
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
-                [disabled]="selection.selectedItems().length === 0"
+                [disabled]="selection.selectedItems().length === 0 || voteLocked()"
                 (click)="openCreateVoteSession()"
               >
                 {{

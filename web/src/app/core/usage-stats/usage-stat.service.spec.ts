@@ -74,18 +74,6 @@ describe('UsageStatService', () => {
     req.flush(SERIES);
   });
 
-  it('getDailySeries defaults emoteSetId to null (omitted) for a caller that does not pass one', () => {
-    service.getDailySeries('sensitron', 'e1', '2026-07-01', '2026-07-28').subscribe();
-
-    httpMock
-      .expectOne(
-        (r) =>
-          r.url === '/api/channels/sensitron/usage-stats/daily' &&
-          r.params.get('emoteSetId') === null,
-      )
-      .flush(SERIES);
-  });
-
   it('serves a second identical getDailySeries call from the cache', () => {
     service.getDailySeries('sensitron', 'e1', '2026-07-01', '2026-07-28', null).subscribe();
     httpMock.expectOne((r) => r.url === '/api/channels/sensitron/usage-stats/daily').flush(SERIES);

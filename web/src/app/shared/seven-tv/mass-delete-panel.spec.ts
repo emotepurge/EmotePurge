@@ -1034,7 +1034,10 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
   let isRunning: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
 
-  async function render(selectedEmotes: DeletableEmote[]): Promise<HTMLButtonElement> {
+  async function render(
+    selectedEmotes: DeletableEmote[],
+    deleteLockReasonKey: string | null = null,
+  ): Promise<HTMLButtonElement> {
     await TestBed.configureTestingModule({
       imports: [
         MassDeletePanel,
@@ -1055,6 +1058,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     fixture.componentRef.setInput('setId', 'set-1');
     fixture.componentRef.setInput('channelName', 'somechannel');
     fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    fixture.componentRef.setInput('deleteLockReasonKey', deleteLockReasonKey);
     fixture.detectChanges();
 
     return findButtonByLabel(fixture.nativeElement, deleteButtonLabel(selectedEmotes.length));
@@ -1089,6 +1093,16 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     const button = await render(EMOTES);
 
     expect(button.disabled).toBe(false);
+  });
+
+  it('a host lock disables the button and names its reason as text the button is described by (spec #200, 8.3)', async () => {
+    const button = await render(EMOTES, 'usageStats.setView.lock.membersUnavailable');
+
+    expect(button.disabled).toBe(true);
+    const reasonId = button.getAttribute('aria-describedby');
+    expect(reasonId).not.toBeNull();
+    const reason = button.ownerDocument.getElementById(reasonId!);
+    expect(reason?.textContent).toContain('usageStats.setView.lock.membersUnavailable');
   });
 });
 

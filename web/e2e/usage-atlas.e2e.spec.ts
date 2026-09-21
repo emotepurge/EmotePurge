@@ -342,7 +342,7 @@ test.describe('emote atlas', () => {
       page,
       'sensitron',
       {
-        e1: [
+        '7tv-1': [
           [1, 200],
           [3, 700],
         ],
@@ -365,7 +365,7 @@ test.describe('emote atlas', () => {
 
   test('the channel-wide live count is stated once, above the sheet', async ({ page }) => {
     // It answers a question about the stream, not about any one emote, so it belongs to the page.
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[3, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[3, 700]] }, [3, 4, 5, 9]);
     await openAtlas(page);
 
     await expect(
@@ -376,7 +376,7 @@ test.describe('emote atlas', () => {
   test('names the bot-exclusion date when the Api reports one, alongside the other honesty statements', async ({
     page,
   }) => {
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[3, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[3, 700]] }, [3, 4, 5, 9]);
     await openAtlas(page, EMOTES, '2026-08-15');
 
     await expect(
@@ -400,7 +400,7 @@ test.describe('emote atlas', () => {
   test('names the shared-chat separation date when the Api reports one, alongside the other honesty statements', async ({
     page,
   }) => {
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[3, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[3, 700]] }, [3, 4, 5, 9]);
     await openAtlas(page, EMOTES, '2026-08-15', '2026-09-07');
 
     await expect(
@@ -429,7 +429,7 @@ test.describe('emote atlas', () => {
     // "0 of 57 days" would report an absence we never measured: a range older than the live poll has
     // no coverage data at all, which is not the same as a channel that never went live.
     await mockUsageChannelSeries(page, 'sensitron', {
-      e1: [
+      '7tv-1': [
         [1, 200],
         [3, 700],
       ],
@@ -448,7 +448,7 @@ test.describe('emote atlas', () => {
     // The usage sits on day 10, inside that lifetime: a count *before* the 20. would be drawn on
     // purpose (a re-added emote keeps its history, see firstDrawableIndex) and would say nothing
     // about the leading silence this test is here for.
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[10, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[10, 700]] }, [3, 4, 5, 9]);
     await openAtlas(
       page,
       EMOTES.map((emote) =>

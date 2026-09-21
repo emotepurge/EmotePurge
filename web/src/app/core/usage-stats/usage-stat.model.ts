@@ -118,6 +118,17 @@ export interface EmoteUsageSeries {
 
 /** One emote inside {@link ChannelUsageSeries}: `[dayOffset, useCount]` pairs, ascending. */
 export interface EmoteSeriesEntry {
+  /**
+   * The key the page matches an entry to its grid row by (spec #200, 6.5 step 1, 7.2) — a set view's
+   * row may have no `Emote.Id` at all, but it always has this.
+   */
+  sevenTvEmoteId: string;
+  /**
+   * The row's `Emote.Id` Guid — transitional only: `/series` still sends it next to
+   * `sevenTvEmoteId` (additive, 6.5 step 1) so an older open tab keeps reading what it knows, but no
+   * frontend reader keys on it any more. Drops with follow-up issue 5 (spec section 21), behind the
+   * same gate as the legacy `sync-deleted` body form (E3).
+   */
   emoteId: string;
   /** Offsets count days from the response's `from`; only days with usage are present. */
   days: [number, number][];

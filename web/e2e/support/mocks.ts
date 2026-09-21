@@ -648,6 +648,11 @@ export async function mockUsageTotals(
         lastUsedDate: emote.lastUsedDate ?? null,
         previousWindowUseCount: emote.previousWindowUseCount ?? 0,
         firstSeenAt: emote.firstSeenAt ?? null,
+        // The two fields `/totals` gained with spec #200 (6.5, K1) — part of the contract the page
+        // reads, so the mock sends them like the endpoint does: the active set never returns an
+        // archived row, and a name twin is the exception.
+        isArchived: false,
+        nameTwinEmoteSetIds: [],
       })),
     ),
   );
@@ -680,7 +685,8 @@ export async function mockUsageDaily(
  * GET /api/channels/{channelName}/usage-stats/series — the whole set's daily curves in one
  * response, which is what feeds the atlas sidecar's sparkline.
  *
- * `days` is keyed by emote id and holds `[dayOffset, useCount]` pairs counted from the range's
+ * `days` is keyed by the emote's **7TV id** — the key the page matches a curve to its cell by since
+ * spec #200 (7.2) — and holds `[dayOffset, useCount]` pairs counted from the range's
  * `from` — the encoding the real endpoint uses, deliberately not prettied up here, because a mock
  * that speaks a friendlier dialect than the server is a mock that cannot catch a decoding bug.
  * Emotes absent from the map get no entry at all, which is how the server says "no usage".
@@ -697,7 +703,14 @@ export async function mockUsageChannelSeries(
       from: url.searchParams.get('from') ?? '2026-07-01',
       to: url.searchParams.get('to') ?? '2026-07-28',
       liveDays,
-      emotes: Object.entries(days).map(([emoteId, entries]) => ({ emoteId, days: entries })),
+      // Both fields, because the endpoint sends both (spec 6.5 step 1: `sevenTvEmoteId` added,
+      // `emoteId` kept until follow-up issue 5). The mock mirrors the contract, not the reader: the
+      // page no longer reads `emoteId`, so its value here only has to be a string.
+      emotes: Object.entries(days).map(([sevenTvEmoteId, entries]) => ({
+        sevenTvEmoteId,
+        emoteId: `emote-of-${sevenTvEmoteId}`,
+        days: entries,
+      })),
     });
   });
 }

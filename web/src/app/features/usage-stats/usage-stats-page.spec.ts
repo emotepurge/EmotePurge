@@ -34,7 +34,11 @@
  */
 import { Dialog } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  TestRequest,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
@@ -46,11 +50,17 @@ import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
 import {
+  ForeignEmoteRow,
+  ForeignEmoteSetResponse,
+} from '../../core/seven-tv/foreign-emote-set.model';
+import {
   EmoteSetListResponse,
   EmoteSetSummary,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
-import { EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
+import { mergeSetView } from '../../core/usage-stats/merge-set-view';
+import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
+import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { CSV_MIME } from '../../shared/export/csv';
 import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
@@ -170,6 +180,15 @@ function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotalDto
     isArchived: false,
     nameTwinEmoteSetIds: [],
   };
+}
+
+/**
+ * The page's grid row for a `/totals` fixture in the ACTIVE set's view — the lossless 1:1 mapping
+ * `mergeSetView` does there (spec #200, 7.1). The selection and every grid-facing method take the
+ * merged row type; the rows the page builds from a flushed payload are exactly this shape.
+ */
+function asRow(dto: EmoteUsageTotalDto): EmoteUsageTotal {
+  return mergeSetView([dto], null, true)[0];
 }
 
 /** Fixture for the set-dropdown's own list (spec #200, 6.1) — one entry, override for anything else
@@ -718,9 +737,9 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     const c = emote('c', 'PeepoC');
 
     mount([a, b, c]);
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(c), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
 
     // The silent reload comes back without 'c' — deleted externally on 7TV between loads.
@@ -728,7 +747,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
 
     // 'a' survives, 'c' is gone from the authoritative key set, and the transient feedback names
     // exactly one dropped emote.
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toEqual({
       key: 'usageStats.selectionPruned.one',
       count: 1,
@@ -744,11 +763,11 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     const b = emote('b', 'PeepoB');
 
     mount([a, b]);
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
 
     silentReload([a, b]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 
@@ -767,9 +786,9 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     // (Konzept "Auswahl überlebt Suche und Filter"), so this is only here to narrow atlasOrder()
     // for the reload assertion below, not to exercise any pruning of its own.
     component['usageFilter'].setRange(5, null);
-    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['c']);
-    expect(component['atlasOrder']().map((e: EmoteUsageTotalDto) => e.emoteId)).toContain('c');
+    component['selection'].onRowClick(asRow(c), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-c']);
+    expect(component['atlasOrder']().map((e: EmoteUsageTotal) => e.emoteId)).toContain('c');
 
     // The reload drops 'c's count under the filter's floor — atlasOrder() will no longer include
     // it — but 'c' itself is still present in the reloaded payload.
@@ -777,10 +796,10 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
 
     // Confirms the filter really did narrow atlasOrder() past 'c' — otherwise this test would not
     // be exercising the case it claims to.
-    expect(component['atlasOrder']().map((e: EmoteUsageTotalDto) => e.emoteId)).not.toContain('c');
+    expect(component['atlasOrder']().map((e: EmoteUsageTotal) => e.emoteId)).not.toContain('c');
     // ...yet the selection and the feedback are both untouched: 'c' was never actually removed
     // from the set, only filtered out of the current view.
-    expect(component['selection'].selectedKeys()).toEqual(['c']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-c']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 });
@@ -867,8 +886,8 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
 
     component['from'].set('2026-02-01');
     component['to'].set('2026-02-28');
@@ -877,7 +896,7 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     // requestedSetStatusFor's channel-keyed guard), only a fresh totals/series round trip.
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 
@@ -886,9 +905,9 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
 
     component['from'].set('2026-02-01');
     component['to'].set('2026-02-28');
@@ -898,7 +917,7 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     // surfaced through the same #94 notice a silent reload would show.
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toEqual({
       key: 'usageStats.selectionPruned.one',
       count: 1,
@@ -909,22 +928,22 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     const a = emote('a', 'PeepoA');
     mount([a]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
 
     component['refresh']();
     fixture.detectChanges();
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
   });
 
   it('clears the selection outright on a channel switch, even when the new channel reuses the same emote id', () => {
     const a = emote('a', 'PeepoA');
     mount([a]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
 
     fixture.componentRef.setInput('channelName', 'b');
     fixture.detectChanges();
@@ -1021,14 +1040,14 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const c = emote('c', 'PeepoC');
     mount([a, b, c]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(c), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
 
     // Narrows atlasOrder() to just 'b' — both marked rows drop out of view.
     component['usageFilter'].setNameFilter('PeepoB');
 
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
     expect(component['selection'].hiddenSelectedCount()).toBe(2);
     expect(
       component['selectedForDelete']()
@@ -1047,7 +1066,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     // Nothing hidden yet — the template gates the whole row on this, no permanent control
     // (Frontend-Zurückhaltung).
     expect(component['selection'].hiddenSelectedCount()).toBe(0);
@@ -1073,7 +1092,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     expect(component['dockHiddenSelectedCount']()).toBe(0);
 
     component['usageFilter'].setNameFilter('PeepoB');
@@ -1106,8 +1125,8 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
 
     component['markAll']();
 
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
-    expect(component['selection'].isSelected(c)).toBe(false);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+    expect(component['selection'].isSelected(asRow(c))).toBe(false);
   });
 
   it('is disabled once the current view is fully marked, and re-enables the moment a row is unmarked', () => {
@@ -1120,7 +1139,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     component['markAll']();
     expect(component['markAllDisabled']()).toBe(true);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     expect(component['markAllDisabled']()).toBe(false);
   });
 
@@ -1129,7 +1148,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     expect(component['markAllDisabled']()).toBe(false);
 
     // Narrows atlasOrder() to just the already-marked 'a' — mark-all over that view could add
@@ -1218,13 +1237,13 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
       const b = emote('b', 'PeepoB');
       mount([a, b]);
 
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(1);
       // An individual mark already announces itself via its own cell — this region must stay
       // silent for it, unlike the pre-review behaviour that mirrored the live count here too.
       expect(component['dockMarkedCount']()).toBe(0);
 
-      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(2);
       expect(component['dockMarkedCount']()).toBe(0);
     });
@@ -1238,8 +1257,8 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
       expect(component['dockMarkedCount']()).toBe(2);
 
       // Unmarked by hand, down to nothing — no further bulk gesture in between.
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(0);
       expect(component['dockMarkedCount']()).toBe(0);
 
@@ -1253,7 +1272,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
       // bulk count back to 0 while the selection was empty, this would read 2 again — the stale
       // "mark all" outcome — instead of staying silent for what is, on its own, just another
       // individual mark.
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(1);
       expect(component['dockMarkedCount']()).toBe(0);
     });
@@ -1268,7 +1287,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
 
       // A single deselect is not a bulk gesture — it must retire the announcement even though the
       // selection stays non-empty, unlike the fully-emptied case above.
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(1);
       expect(component['dockMarkedCount']()).toBe(0);
 
@@ -1290,17 +1309,17 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
 
     // "select all" on the dead band while nothing is filtered.
     component['selectBand']('dead');
-    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2']);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-d1', '7tv-d2']);
 
     // Narrows to the heavy emote (an unrelated band) and marks it too — the filter change above
     // must not have dropped 'd1'/'d2' for this to still be additive.
     component['usageFilter'].setNameFilter('Heavy1');
-    component['selection'].onRowClick(heavy, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2', 'h1']);
+    component['selection'].onRowClick(asRow(heavy), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-d1', '7tv-d2', '7tv-h1']);
 
     component['usageFilter'].reset();
 
-    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2', 'h1']);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-d1', '7tv-d2', '7tv-h1']);
   });
 
   it('a sort-key change keeps the selection and only resets the shift anchor', () => {
@@ -1309,15 +1328,15 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const c = emote('c', 'PeepoC', 15);
     mount([a, b, c]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent); // anchor 'a'
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent); // anchor 'a'
 
     component['setSortKey']('lastUsed');
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     // The anchor is gone — a further shift-click degrades to a plain toggle instead of ranging
     // from 'a' in the (now differently ordered) list.
-    component['selection'].onRowClick(c, { shiftKey: true } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    component['selection'].onRowClick(asRow(c), { shiftKey: true } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
   });
 });
 
@@ -1396,7 +1415,7 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     component['usageFilter'].setNameFilter('does-not-match-anything');
 
     expect(component['atlasOrder']()).toHaveLength(0);
@@ -1776,7 +1795,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
     // Suche und Filter"), which is exactly what this exercises for the export path: the selection
     // scope must carry 'b' through even though the filter is currently hiding it.
     component['usageFilter'].setMinCount('10');
-    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
 
     openSpy.mockReturnValue({ closed: of({ optionId: 'usage-json', scope: 'selection' }) });
     component['openExport']();
@@ -1883,24 +1902,25 @@ describe('UsageStatsPage — openCreateVoteSession() (#132)', () => {
     const a = emote('a', 'PeepoA');
     const b = emote('b', 'PeepoB');
     mount([a, b]);
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
 
     openSpy.mockReturnValue({ closed: of(undefined) });
     component['openCreateVoteSession']();
 
     expect(openSpy).toHaveBeenCalledTimes(1);
     const data = openSpy.mock.calls[0][1].data as CreateVoteSessionDialogData;
-    // The exact same signal reference the page's own selection exposes — not a copy taken at call
-    // time — is what makes a later prune of the selection visible to an already-open dialog.
-    expect(data.emoteIds).toBe(component['selection'].selectedKeys);
+    // A live signal derived from the page's selection — not a copy taken at call time — is what
+    // makes a later prune of the selection visible to an already-open dialog. Its values are the
+    // rows' Emote.Id Guids, resolved from the 7TV-keyed selection when read (spec #200, E4, 7.2).
+    expect(data.emoteIds).toBe(component['voteBallotEmoteIds']);
     expect(data.emoteIds()).toEqual(['a', 'b']);
 
     // A silent reload that prunes 'b' (e.g. archived on 7TV) after the dialog has already opened —
     // ListSelection.retainAmong() directly, the same call loadTotals()'s preserveSelection branch
     // makes; the full live-event pipeline that reaches it is #94's own describe block's job.
-    component['selection'].retainAmong([a]);
+    component['selection'].retainAmong([asRow(a)]);
 
     expect(data.emoteIds()).toEqual(['a']);
   });
@@ -2414,8 +2434,8 @@ describe('UsageStatsPage — set dropdown, URL fallback rules and retainAmong (T
       emotes: [],
     });
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
 
     component['onEmoteSetSelected']('set-b');
     await settle();
@@ -2434,7 +2454,7 @@ describe('UsageStatsPage — set dropdown, URL fallback rules and retainAmong (T
       emotes: [],
     });
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
   });
 
   it('clears the series cache and does not re-fetch the set list on a dropdown set switch (AK 51, E19)', async () => {
@@ -2750,5 +2770,509 @@ describe('UsageStatsPage — set dropdown renders the radiogroup with the active
 
     const checked = radios.find((radio) => radio.getAttribute('aria-checked') === 'true');
     expect(checked?.textContent).toContain('Hauptset');
+  });
+});
+
+/**
+ * Spec #200, T4.3 + T4.4: the grid keyed by 7TV id, and a non-active set's view — the member list
+ * loaded beside `/totals`/`/series`, the row classes it produces (8.2), the caption's two
+ * independent statements (8.4, AK 60 as a matrix), the delete locks with their reasons (8.3, AK 62)
+ * and the preset (8.5). Real timers like the T4.2 block above (the query-param navigation and the
+ * resources settle on microtasks), fake ones only where a live event has to fire.
+ */
+describe('UsageStatsPage — set view: row identity, non-active loading, classes, captions, locks (T4.3/T4.4)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+
+  function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
+    return {
+      sevenTvEmoteId,
+      name,
+      defaultName: name,
+      imageUrl: '',
+      topAllTime: null,
+      trending: null,
+    };
+  }
+
+  function memberList(
+    emotes: ForeignEmoteRow[],
+    overrides: Partial<ForeignEmoteSetResponse> = {},
+  ): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: emotes.length,
+      truncated: false,
+      emotes,
+      ...overrides,
+    };
+  }
+
+  function configure(): void {
+    // Several tests open more than one view; each gets a fresh module, not a reconfigured one.
+    TestBed.resetTestingModule();
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function liveListRequests(): TestRequest[] {
+    return httpMock.match((r) => r.url === '/api/seventv/channels/a/emotes');
+  }
+
+  /**
+   * Mounts channel 'a' (active set `set-a`, tracked since 2026-01-01) with the given set in the URL
+   * and drives it up to the point where the rows are on screen: permissions, status, set list,
+   * `/totals`, `/series` and — for a non-active set — its member list. `members: 'unavailable'`
+   * answers the member list with a 503. Returns nothing; the tests read the page's state.
+   */
+  async function openView(options: {
+    emoteSetId?: string;
+    totals: EmoteUsageTotalDto[];
+    members?: ForeignEmoteSetResponse | 'unavailable';
+    observations?: EmoteSetSummary['observations'];
+  }): Promise<void> {
+    configure();
+    router = TestBed.inject(Router);
+    if (options.emoteSetId) {
+      await router.navigate([], { queryParams: { emoteSetId: options.emoteSetId } });
+    }
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        capacity: 600,
+        occupiedSlots: 10,
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-02T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-02T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({
+          id: 'set-b',
+          name: 'Halloween',
+          isActive: false,
+          observations: options.observations ?? [],
+        }),
+      ]),
+    );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', options.totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    if (options.members === 'unavailable') {
+      liveListRequests().forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    } else if (options.members) {
+      const members = options.members;
+      liveListRequests().forEach((request) => request.flush(members));
+    }
+    await settle();
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // --- T4.3: the key switch ------------------------------------------------------------------
+
+  it('keeps two Guid-less live members as two separate, individually selectable rows, and retainAmong keeps the right one (AK 54)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX'), member('7tv-y', 'PumpkinY')]),
+    });
+    const [x, y] = component['emotes']();
+    expect(x.emoteId).toBeNull();
+    expect(y.emoteId).toBeNull();
+
+    component['selection'].onRowClick(x, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-x']);
+    expect(component['selection'].isSelected(y)).toBe(false);
+    component['selection'].onRowClick(y, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-x', '7tv-y']);
+
+    // A reconciliation against a view where only 'y' survived drops exactly 'x'.
+    component['selection'].retainAmong(component['emotes']().filter((row) => row === y));
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-y']);
+    // AK 55 at the model level: the inner @for tracks sevenTvEmoteId, unique per row.
+    const keys = component['atlasOrder']().map((row) => row.sevenTvEmoteId);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('opens the drilldown only for a row with a Guid and counts, freezing the shown set into its data (7.2 drilldown gate)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('gone', 'OldPumpkin', 30)],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+    });
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: of(undefined),
+    } as ReturnType<Dialog['open']>);
+
+    const uncounted = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-x')!;
+    const left = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-gone')!;
+
+    expect(component['canDrilldown'](uncounted)).toBe(false);
+    component['openDrilldown'](uncounted);
+    expect(openSpy).not.toHaveBeenCalled();
+
+    expect(component['canDrilldown'](left)).toBe(true);
+    component['openDrilldown'](left);
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
+    expect(data.emoteId).toBe('gone');
+    expect(data.emoteSetId).toBe('set-b');
+  });
+
+  it('resolves a null-session ballot to Guids from the 7TV-keyed selection, and offers none in a non-active view (E4, K6 interim)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA'), emote('b', 'PeepoB')] });
+    const [a, b] = component['emotes']();
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+
+    // Keys are 7TV ids, the ballot the dialog would submit is Guids.
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+    expect([...component['voteBallotEmoteIds']()].sort()).toEqual(['a', 'b']);
+    expect(component['voteLocked']()).toBe(false);
+
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    expect(component['voteLocked']()).toBe(true);
+  });
+
+  // --- T4.4: loading and reloads ---------------------------------------------------------------
+
+  it('loads the member list beside /totals and /series for a non-active set, and holds the union until it is there (8.3, AK 51)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    const liveRequest = httpMock.expectOne(
+      (r) => r.url === '/api/seventv/channels/a/emotes' && r.params.get('emoteSetId') === 'set-b',
+    );
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    fixture.detectChanges();
+
+    // The counted rows are in, the member list is not — skeleton, not a half-built union.
+    expect(component['liveMembersState']()).toBe('loading');
+    expect(component['viewLoading']()).toBe(true);
+
+    liveRequest.flush(memberList([member('7tv-a', 'PeepoA'), member('7tv-x', 'PumpkinX')]));
+    await settle();
+
+    expect(component['viewLoading']()).toBe(false);
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a', '7tv-x']);
+  });
+
+  it('usage.flushed reloads only the numbers, channel.synced the member list too (AK 52)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    vi.useFakeTimers();
+    const source = FakeEventSource.instances[0];
+
+    source.emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+    httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-b',
+    );
+    expect(liveListRequests()).toHaveLength(0);
+
+    source.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    const reloaded = liveListRequests();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+  });
+
+  // --- T4.4: row classes (8.2) ----------------------------------------------------------------
+
+  it('keeps rows without counts out of sums, bands and the strip, as a trailing group in name order (AK 56)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 40), emote('z', 'Zulu', 60)],
+      members: memberList([
+        member('7tv-a', 'Alpha'),
+        member('7tv-z', 'Zulu'),
+        member('7tv-q', 'Quebec'),
+        member('7tv-c', 'Charlie'),
+      ]),
+    });
+
+    expect(component['totalUsage']()).toBe(100);
+    expect(component['bands']().flatMap((band) => band.items.map((row) => row.emoteName))).toEqual([
+      'Zulu',
+      'Alpha',
+    ]);
+    expect(component['distribution']()).toHaveLength(2);
+    // The null group comes last, alphabetical, whatever the toolbar's sort says.
+    expect(component['atlasOrder']().map((row) => row.emoteName)).toEqual([
+      'Zulu',
+      'Alpha',
+      'Charlie',
+      'Quebec',
+    ]);
+    const groups = component['rows']().filter((row) => row.kind === 'band');
+    expect(groups.at(-1)).toMatchObject({ kind: 'band', band: 'uncounted', count: 2 });
+    // The label hangs on the missing count (E17), not on the missing Guid.
+    component['inspect'](component['atlasOrder']()[2]);
+    expect(component['inspectedBand']()).toBe('uncounted');
+    expect(component['inspectedShare']()).toBeNull();
+    // …and no curve: a zero-filled baseline would claim "counted, never used".
+    expect(component['inspectedPoints']()).toEqual([]);
+    component['inspect'](component['atlasOrder']()[0]);
+    expect(component['inspectedPoints']().length).toBeGreaterThan(0);
+  });
+
+  it("marks a counted row that left the set as 'left', keeps it in the sums, and never hands it to the delete run (AK 57)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('gone', 'OldPumpkin', 30), emote('a', 'Alpha', 70)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+    });
+    const left = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-gone')!;
+    expect(left.membership).toBe('left');
+    expect(component['totalUsage']()).toBe(100);
+
+    const alpha = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-a')!;
+    component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(alpha, { shiftKey: false } as MouseEvent);
+    expect(component['selectedForDelete']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+  });
+
+  it("counts a #74 duplicate cell as two slots of the shown set's own budget (AK 58)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('d', 'Dupe', 5)],
+      members: memberList(
+        [member('7tv-d', 'Dupe'), member('7tv-d', 'DupeAlias'), member('7tv-e', 'Echo')],
+        { capacity: 1000, totalCount: 3 },
+      ),
+    });
+    const dupe = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-d')!;
+    expect(dupe.slotCount).toBe(2);
+    expect(dupe.aliases).toEqual(['Dupe', 'DupeAlias']);
+
+    component['selection'].onRowClick(dupe, { shiftKey: false } as MouseEvent);
+    expect(component['pendingRemovalSlots']()).toBe(2);
+    // The budget is the member list's, not the active set's status (600 / 10).
+    expect(component['slotBudget']()).toEqual({ capacity: 1000, occupied: 3 });
+    expect(component['projectedSlots']()).toEqual({ projected: 1, capacity: 1000 });
+  });
+
+  it('names a name twin by the set the dropdown list calls it, and never adds its numbers (AK 59)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [{ ...emote('a', 'Alpha', 12), nameTwinEmoteSetIds: ['set-a', 'zzzzzz-unknown'] }],
+      members: memberList([member('7tv-a', 'Alpha')]),
+    });
+    const twin = component['emotes']()[0];
+
+    expect(component['nameTwinSetNames'](twin)).toBe('Hauptset, nknown');
+    expect(component['totalUsage']()).toBe(12);
+  });
+
+  // --- T4.4: the caption matrix (8.4, AK 60) ----------------------------------------------------
+
+  function captionKeys(): string[] {
+    return component['setViewCaptions']().map((sentence) => sentence.key);
+  }
+
+  it('not observed and no counts: B− then Z− (AK 60, case 1)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+      observations: [],
+    });
+
+    expect(captionKeys()).toEqual([
+      'usageStats.setView.facts.notObserved',
+      'usageStats.setView.facts.noCounts',
+    ]);
+  });
+
+  it('not observed but with counts: B− alone, nothing said about the numbers (AK 60, case 2 — the migration/rejoin case)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 12)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+      observations: [],
+    });
+
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.notObserved']);
+  });
+
+  it('observed from inside the range: B~ with the interval start; plus Z− when there are no counts (AK 60, case 3)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 0)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+      observations: [{ fromUtc: '2026-03-01T12:00:00Z', toUtc: null }],
+    });
+
+    expect(captionKeys()).toEqual([
+      'usageStats.setView.facts.countedSince',
+      'usageStats.setView.facts.noCounts',
+    ]);
+    expect(component['setViewCaptions']()[0].params).toEqual({
+      date: component['formatDate']('2026-03-01T12:00:00Z'),
+    });
+  });
+
+  it('the active set with an open interval since tracking start: no set sentence at all, as today (AK 60, case 4)', async () => {
+    await openView({ totals: [emote('a', 'Alpha', 0)] });
+
+    expect(component['isNonActiveView']()).toBe(false);
+    expect(captionKeys()).toEqual([]);
+  });
+
+  // --- T4.4: locks (8.3, AK 62) and the preset (8.5) -------------------------------------------
+
+  it('shows the counted rows without a readable member list, says so, and locks deleting with that reason (AK 62)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 12)],
+      members: 'unavailable',
+      observations: [{ fromUtc: '2025-12-01T00:00:00Z', toUtc: null }],
+    });
+
+    expect(component['liveMembersState']()).toBe('unavailable');
+    expect(component['viewLoading']()).toBe(false);
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.membersUnavailable');
+    expect(captionKeys()).toEqual(['usageStats.setView.membersUnavailable']);
+    // No budget to project against — never the active set's numbers under this set's name.
+    expect(component['slotBudget']()).toBeNull();
+  });
+
+  it('a truncated member list locks deleting with its own reason; a whole one still carries the K5 interim lock; the active view carries none', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-a', 'Alpha')], { truncated: true, totalCount: 1200 }),
+    });
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+    expect(captionKeys()).toContain('usageStats.setView.truncated');
+
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-a', 'Alpha')]),
+    });
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+
+    await openView({ totals: [emote('a', 'Alpha')] });
+    expect(component['deleteLockReasonKey']()).toBeNull();
+  });
+
+  it("offers the 'set-observed' range of the chosen set only, and follows a set switch while that preset is on (8.5)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([]),
+      observations: [],
+    });
+    expect(component['setObservedPresetRange']()).toBeNull();
+
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+    expect(component['setObservedPresetRange']()).toMatchObject({ from: '2026-01-01' });
+
+    component['rangePreset'].set('set-observed');
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    // Halloween was never observed: the dates stay, the preset turns into what they now are.
+    expect(component['rangePreset']()).toBe('custom');
   });
 });

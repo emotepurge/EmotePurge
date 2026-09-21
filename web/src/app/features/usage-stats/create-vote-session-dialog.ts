@@ -34,8 +34,11 @@ export interface CreateVoteSessionDialogData {
   // The LIVE selection, not a snapshot (#132) — the host page keeps reloading while this dialog is
   // open (a silent usage.flushed/channel.synced reload can prune an emote that got archived from
   // outside the tab), and a frozen array would keep offering ids the backend's all-or-nothing check
-  // (VoteSessionService.CreateAsync) would reject with emote_ids_invalid. Passed as the page's own
-  // `selection.selectedKeys` signal, so a shrink is visible to the dialog the instant it happens.
+  // (VoteSessionService.CreateAsync) would reject with emote_ids_invalid. Passed as a signal the page
+  // derives from its selection, so a shrink is visible to the dialog the instant it happens. The
+  // values are `Emote.Id` Guids: the page's grid is keyed by 7TV id since spec #200 (7.2), and it
+  // resolves those keys into Guids whenever this signal is read — which, for `create()`, is the
+  // moment of submitting (E4: a null session keeps speaking Guids).
   emoteIds: Signal<readonly string[]>;
   // ISO date (YYYY-MM-DD): the from-date of the range filter active when the dialog was opened.
   // Prefills the "count usage from" picker so the session's usage figures cover the same window

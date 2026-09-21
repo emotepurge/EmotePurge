@@ -38,6 +38,12 @@ export interface EmoteDrilldownData {
   emoteId: string;
   emoteName: string;
   imageUrl: string;
+  /**
+   * The set the host page's numbers are counted under, frozen when the dialog opens (spec #200,
+   * 7.2/F4, AK 64): a dropdown switch behind an open dialog must not re-point its request. `null` or
+   * absent means "the channel's active set" — the vote page's case, whose sessions predate sets.
+   */
+  emoteSetId?: string | null;
   /** Usage page only — trend and time-in-set need these. */
   firstSeenAt?: string | null;
   previousWindowUseCount?: number;
@@ -318,7 +324,13 @@ export class EmoteDrilldownDialog {
 
   constructor() {
     this.usageStatService
-      .getDailySeries(this.data.channelName, this.data.emoteId, this.data.from, this.data.to)
+      .getDailySeries(
+        this.data.channelName,
+        this.data.emoteId,
+        this.data.from,
+        this.data.to,
+        this.data.emoteSetId ?? null,
+      )
       .subscribe({
         next: (series) => this.series.set(series),
         error: (error: unknown) =>

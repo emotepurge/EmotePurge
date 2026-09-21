@@ -47,12 +47,18 @@ import {
 import { SetStatusFlushProbeGate } from './set-status-flush-probe-gate';
 import { LIVE_EVENT_TYPES, channelLiveUrl } from '../../core/live/live-event.model';
 import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload } from '../../core/live/live-reload';
-import { ChannelUsageSeries, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
+import { mergeSetView } from '../../core/usage-stats/merge-set-view';
+import {
+  ChannelUsageSeries,
+  EmoteUsageTotal,
+  EmoteUsageTotalDto,
+} from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import {
   DateRangeMenu,
   DateRangePreset,
   allTimeStart,
+  setObservedRange,
   toIsoDate,
 } from '../../shared/datetime/date-range-menu';
 import {
@@ -133,6 +139,28 @@ type SortDirection = 'asc' | 'desc';
 type SortKey = 'usage' | 'lastUsed';
 
 /**
+ * The atlas's group headings: the four usage bands, plus the set view's own trailing group of rows
+ * with no counts under the shown set (spec #200, 8.2, E17 — "keine Zählungen unter diesem Set").
+ * That group is deliberately not a band: `null` is not a small number, it has no share of usage and
+ * no place in the Pareto cut, so it can never be `usageBandOf`'s answer.
+ */
+type AtlasGroupKey = UsageBandKey | 'uncounted';
+
+/** A row that has a count under the shown set — the only kind bands, sort, sums and fill bars may
+ *  ever see (spec F16: every one of them would turn a `null` into a silent `NaN`). */
+type CountedEmote = EmoteUsageTotal & { totalUseCount: number };
+
+/** One sentence of the set view's caption line: a translation key plus its parameters. */
+interface CaptionSentence {
+  readonly key: string;
+  readonly params?: Record<string, string | number>;
+}
+
+/** Where the non-active view's live 7TV member list stands (spec #200, 8.3). `'none'` = the rows on
+ *  screen belong to the active set, which never fetches one (E16). */
+type LiveMembersState = 'none' | 'loading' | 'ready' | 'unavailable';
+
+/**
  * Everything the target picker's continuation is allowed to know, frozen at the moment the picker
  * opened: both scopes' rows, the set they came from and the channel that owns it. Held together in
  * one object so no later addition can accidentally re-read a live signal for just one of them —
@@ -148,7 +176,7 @@ interface CapturedImportScope {
 /**
  * `openExport`'s counterpart to `CapturedImportScope` — same reasoning (see `openImportTarget`'s
  * docstring), now applying to the export dialog too since the emote-list purpose put a file path
- * that reads `emoteSetId` behind it. Holds the raw `EmoteUsageTotalDto` rows rather than `ImportRow`s
+ * that reads `emoteSetId` behind it. Holds the page's `EmoteUsageTotal` rows rather than `ImportRow`s
  * because the two usage branches (CSV/JSON) need the full totals; only the emote-list purpose
  * narrows them, inside `buildUsageExportPurposeDownload`.
  *
@@ -164,8 +192,8 @@ interface CapturedExportScope {
   readonly from: string;
   readonly to: string;
   readonly filtered: boolean;
-  readonly selection: readonly EmoteUsageTotalDto[];
-  readonly visible: readonly EmoteUsageTotalDto[];
+  readonly selection: readonly EmoteUsageTotal[];
+  readonly visible: readonly EmoteUsageTotal[];
 }
 
 // Sorting a never-used emote needs a position, not a crash. It is the deadest thing in the list, so
@@ -211,6 +239,14 @@ const DISTRIBUTION_BUCKETS = 96;
 // Long enough to read, short enough that a stale notice never lingers — same value and reasoning as
 // channel-workspace-layout's RESYNC_FEEDBACK_MS and admin-channels-page's own feedback timer.
 const SELECTION_PRUNED_FEEDBACK_MS = 4000;
+
+function isCounted(emote: EmoteUsageTotal): emote is CountedEmote {
+  return emote.totalUseCount !== null;
+}
+
+function byName(a: EmoteUsageTotal, b: EmoteUsageTotal): number {
+  return a.emoteName.localeCompare(b.emoteName, undefined, { sensitivity: 'base' });
+}
 
 function sortableLastUsed(lastUsedDate: string | null): number {
   if (!lastUsedDate) {
@@ -341,7 +377,33 @@ export class UsageStatsPage {
   // name the range it is showing without reaching into a child; must match from()/to() above.
   protected readonly rangePreset = signal<DateRangePreset>('all');
 
-  protected readonly emotes = signal<EmoteUsageTotalDto[]>([]);
+  /**
+   * The `/totals` rows exactly as the last successful request returned them, and the set they were
+   * requested for (`null` = no explicit set, the endpoint's active-set fallback). Written together,
+   * in `loadTotals`' success branch only, so the pair always describes one answer — the same
+   * discipline as `totalsChannel`/`totalsRange` below.
+   */
+  private readonly totalsRows = signal<EmoteUsageTotalDto[]>([]);
+  private readonly totalsSetId = signal<string | null>(null);
+
+  /**
+   * The grid's rows: the `/totals` rows unioned with the shown set's live 7TV membership
+   * (`mergeSetView`, spec #200 7.1, E16). In the active set's view this is a lossless 1:1 mapping —
+   * no live list is ever fetched there — so every consumer that predates set views sees exactly the
+   * rows it always did. In a non-active view the union only happens once the member list is there
+   * (`liveMembers`); until then `viewLoading()` keeps the skeleton up (8.3), and without a readable
+   * list the rows stay the DB rows alone.
+   *
+   * Keyed by `sevenTvEmoteId` everywhere below (7.2): a live member without a counted row has no
+   * `Emote.Id` at all, and two of those must still be two distinct cells (NG0955, AK 54/55).
+   */
+  protected readonly emotes = computed<EmoteUsageTotal[]>(() => {
+    const rows = this.totalsRows();
+    if (this.liveMembersState() === 'none') {
+      return mergeSetView(rows, null, true);
+    }
+    return mergeSetView(rows, this.liveMembers()?.emotes ?? null, false);
+  });
   protected readonly setStatus = signal<EmoteSetStatus | null>(null);
   protected readonly activeEmoteSetId = computed(() => this.setStatus()?.activeEmoteSetId || null);
   protected readonly trackedSince = computed(() => this.setStatus()?.trackedSince ?? null);
@@ -455,6 +517,173 @@ export class UsageStatsPage {
     return !list.sets.some((set) => set.id === param && set.kind === 'NORMAL');
   });
 
+  // --- Set view (spec #200, 8.2-8.5) -----------------------------------------------------------
+
+  /** The set the rows on screen belong to. Rows requested without an explicit set (`null` — no
+   *  active set was known yet) were answered for the channel's active set by the endpoint itself
+   *  (spec 6.5), so they count as the active set's. */
+  private readonly shownSetId = computed(() => this.totalsSetId() ?? this.activeEmoteSetId());
+
+  /**
+   * Whether the rows on screen belong to a set other than the channel's active one. Read off the set
+   * the loaded rows were requested for (`totalsSetId`), not off `selectedEmoteSetId()`: between a
+   * dropdown switch and the new rows landing, the sheet still shows the previous set's rows, and
+   * every lock and caption below has to describe what is on screen.
+   */
+  protected readonly isNonActiveView = computed(() => {
+    const shown = this.shownSetId();
+    return shown !== null && shown !== this.activeEmoteSetId();
+  });
+
+  /**
+   * The chosen non-active set's live 7TV member list (spec 8.3, E16) — requested beside `/totals`
+   * and `/series` when a non-active set is selected, never for the active set. Bound to the selected
+   * set, not to any reload: a silent `usage.flushed` reload never touches it; the loud ones
+   * (`channel.synced`, the refresh button) reload it explicitly. Read through `liveMembers`/
+   * `liveMembersState` only — `.value()` re-throws in the error state (see `emoteSetList`).
+   */
+  private readonly liveMembersResource = rxResource({
+    params: () => {
+      const emoteSetId = this.selectedEmoteSetId();
+      return emoteSetId !== null && emoteSetId !== this.activeEmoteSetId()
+        ? { channelName: this.channelName(), emoteSetId }
+        : undefined;
+    },
+    stream: ({ params }) =>
+      this.emoteSetService.loadEmoteSetPreview(params.channelName, params.emoteSetId),
+  });
+
+  protected readonly liveMembersState = computed<LiveMembersState>(() => {
+    if (!this.isNonActiveView()) {
+      return 'none';
+    }
+    const resource = this.liveMembersResource;
+    // Matched against the set the rows belong to, so a list still held from the previously chosen
+    // set can never be unioned with the new set's rows.
+    if (resource.hasValue() && resource.value().emoteSetId === this.shownSetId()) {
+      return 'ready';
+    }
+    return resource.status() === 'error' ? 'unavailable' : 'loading';
+  });
+
+  private readonly liveMembers = computed(() =>
+    this.liveMembersState() === 'ready' ? this.liveMembersResource.value() : null,
+  );
+
+  /** The sheet's loading state: the rows' own request, plus — in a non-active view — the member list
+   *  they are unioned with (8.3: "die Vereinigung erst, wenn beide da sind"). A loud reload keeps the
+   *  previous list on screen while it refetches, so it never flashes the skeleton. */
+  protected readonly viewLoading = computed(
+    () => this.isLoading() || this.liveMembersState() === 'loading',
+  );
+
+  /** The shown set's entry in the dropdown's list — its name and observation intervals. */
+  private readonly shownSetSummary = computed(
+    () => this.emoteSetList()?.sets.find((set) => set.id === this.shownSetId()) ?? null,
+  );
+
+  /**
+   * Why deleting is locked in the view on screen, as a translation key, or `null` when it is not
+   * (spec 8.3). Only ever non-null in a non-active view:
+   *
+   * - the member list could not be read (503/429) — a list that knows half the set must not delete;
+   * - the member list came back `truncated` — same rule;
+   * - otherwise, **for now**, every non-active view: the delete run still reports its bookkeeping in
+   *   the legacy `sync-deleted { emoteIds }` form, which archives `Emote` rows as if they had left the
+   *   *active* set, and still keys its queue and protocol by `Emote.Id`. Both become set-aware in K5
+   *   (T5.1/T5.2, spec 6.6/7.2), which is what lifts this last lock — until then a delete here would
+   *   run against the active set's bookkeeping while a different set is on screen.
+   */
+  protected readonly deleteLockReasonKey = computed<string | null>(() => {
+    switch (this.liveMembersState()) {
+      case 'none':
+        return null;
+      case 'unavailable':
+        return 'usageStats.setView.lock.membersUnavailable';
+      case 'ready':
+        if (this.liveMembers()?.truncated) {
+          return 'usageStats.setView.lock.truncated';
+        }
+        return 'usageStats.setView.lock.nonActiveSet';
+      default:
+        return 'usageStats.setView.lock.nonActiveSet';
+    }
+  });
+
+  /**
+   * Set names by id, for the name-twin marker's tooltip (E24, AK 59). A twin in a set the list does
+   * not (or no longer) name still gets a stable handle: the id's last six characters, the same
+   * short form the audit view uses for a set.
+   */
+  private readonly emoteSetNames = computed(
+    () => new Map((this.emoteSetList()?.sets ?? []).map((set) => [set.id, set.name])),
+  );
+
+  /**
+   * The honesty sentences a non-active view adds to the caption line under the sheet (spec 8.4 and
+   * 8.3), in this order: whether the set was observed in the range, whether any counts exist, then
+   * the member list's own caveat. Empty in the active view — "für das aktive Set … bleibt alles wie
+   * heute" (AK 60) — and while the view is still loading.
+   *
+   * **Two independent statements, never one derived from the other** (8.4): *observed yes/no* comes
+   * from the shown set's `observations` against the loaded range alone, *counts yes/no* from the
+   * loaded `/totals` rows alone. A range with counts but without an observation interval is real
+   * (an inactive channel's rows backfilled onto a set id by the migration, then rejoined) and gets
+   * B− only — the numbers stand, nothing relativises them.
+   */
+  protected readonly setViewCaptions = computed<CaptionSentence[]>(() => {
+    if (!this.isNonActiveView() || this.viewLoading()) {
+      return [];
+    }
+    const sentences: CaptionSentence[] = [];
+    const summary = this.shownSetSummary();
+    const range = this.totalsRange();
+    if (summary && range) {
+      const rangeStart = Date.parse(`${range.from}T00:00:00Z`);
+      const rangeEnd = Date.parse(`${range.to}T23:59:59.999Z`);
+      const now = Date.now();
+      // Ascending by the Api's own contract (6.1); the first intersecting interval is therefore the
+      // one that decides whether counting began inside the range.
+      const firstIntersecting = summary.observations.find((interval) => {
+        const intervalStart = Date.parse(interval.fromUtc);
+        const intervalEnd = interval.toUtc === null ? now : Date.parse(interval.toUtc);
+        return intervalStart <= rangeEnd && intervalEnd >= rangeStart;
+      });
+      if (!firstIntersecting) {
+        sentences.push({ key: 'usageStats.setView.facts.notObserved' });
+      } else if (Date.parse(firstIntersecting.fromUtc) > rangeStart) {
+        // The rangeStartsBeforeTracking idiom, with the interval's start in trackedSince's place.
+        sentences.push({
+          key: 'usageStats.setView.facts.countedSince',
+          params: { date: this.formatDate(firstIntersecting.fromUtc) },
+        });
+      }
+    }
+    if (!this.totalsRows().some((row) => row.totalUseCount > 0)) {
+      sentences.push({ key: 'usageStats.setView.facts.noCounts' });
+    }
+
+    const state = this.liveMembersState();
+    const members = this.liveMembers();
+    if (state === 'unavailable') {
+      sentences.push({ key: 'usageStats.setView.membersUnavailable' });
+    } else if (members?.truncated) {
+      sentences.push({
+        key: 'usageStats.setView.truncated',
+        params: { total: this.formatCount(members.totalCount) },
+      });
+    }
+    return sentences;
+  });
+
+  /** What the date menu's `'set-observed'` preset selects for the chosen set (8.5), or `null` when
+   *  the set was never observed — which also keeps the preset out of the menu. */
+  protected readonly setObservedPresetRange = computed(() => {
+    const selected = this.selectedEmoteSetId();
+    const summary = this.emoteSetList()?.sets.find((set) => set.id === selected);
+    return summary ? setObservedRange(summary.observations) : null;
+  });
+
   /** Date-only form, which is what the range menu and the vote-session ballot both speak. */
   protected readonly trackedSinceDate = computed(() => this.trackedSince()?.slice(0, 10) ?? null);
 
@@ -535,37 +764,49 @@ export class UsageStatsPage {
   // Survives search and filter (supersedes S2-16, 2026-09-18): a filter change narrows what is on
   // screen, never what is selected — the filter lost its onChange hook entirely, there is nothing
   // left for it to call. What used to be pruned here now only shows up as selection.hiddenSelectedCount().
-  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotalDto>();
+  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotal>();
 
   protected readonly filteredEmotes = computed(() => this.usageFilter.apply(this.emotes()));
+
+  /**
+   * Every row that has a count under the shown set — the only rows bands, sort, sums, the Pareto
+   * denominator, the distribution strip and the fill bars may see (spec 8.2, F16). A `null` row is
+   * split off *before* any of them, never coerced: `null` means "no counts under this set", which is
+   * not the same statement as 0 (E17). `'left'` rows do have counts and stay (E23, AK 57).
+   */
+  protected readonly countedEmotes = computed(() => this.emotes().filter(isCounted));
 
   protected readonly sortedEmotes = computed(() => {
     const key = this.sortKey();
     const factor = this.sortDirection() === 'desc' ? -1 : 1;
-    const value = (emote: EmoteUsageTotalDto) =>
+    const value = (emote: CountedEmote) =>
       key === 'usage' ? emote.totalUseCount : sortableLastUsed(emote.lastUsedDate);
 
-    const items = [...this.filteredEmotes()];
+    const items = this.filteredEmotes().filter(isCounted);
     // Name as the tiebreaker: "last used" collapses to a handful of distinct days, and without it
     // equal-day emotes would reshuffle on every refetch.
-    items.sort(
-      (a, b) =>
-        factor * (value(a) - value(b)) ||
-        a.emoteName.localeCompare(b.emoteName, undefined, { sensitivity: 'base' }),
-    );
+    items.sort((a, b) => factor * (value(a) - value(b)) || byName(a, b));
     return items;
   });
+
+  /** The rows with no counts under the shown set, as their own trailing group in name order
+   *  (AK 56) — independent of the sort toolbar, which orders by numbers these rows do not have. */
+  private readonly uncountedEmotes = computed(() =>
+    this.filteredEmotes()
+      .filter((emote) => emote.totalUseCount === null)
+      .sort(byName),
+  );
 
   // Derived from the WHOLE set, not from the filtered view: the weight classes are a property of
   // the channel, and they must not move under the user because they typed three letters into the
   // name filter. Otherwise an emote would change band while nothing about it changed.
   private readonly bandThresholds = computed(() =>
-    usageBandThresholds(this.emotes().map((emote) => emote.totalUseCount)),
+    usageBandThresholds(this.countedEmotes().map((emote) => emote.totalUseCount)),
   );
 
   /** Usage of the whole set — the denominator every band share is measured against. */
   private readonly totalUsage = computed(() =>
-    this.emotes().reduce((sum, emote) => sum + emote.totalUseCount, 0),
+    this.countedEmotes().reduce((sum, emote) => sum + emote.totalUseCount, 0),
   );
 
   protected readonly bands = computed(() =>
@@ -586,7 +827,7 @@ export class UsageStatsPage {
    */
   protected readonly usageSegments = computed(() =>
     groupIntoUsageBands(
-      this.emotes(),
+      this.countedEmotes(),
       (emote) => emote.totalUseCount,
       this.bandThresholds(),
       this.totalUsage(),
@@ -598,16 +839,33 @@ export class UsageStatsPage {
    * position-dependent — shift-click ranges, keyboard navigation, the export — reads this rather
    * than sortedEmotes(), or a shift-click would select a range the user never saw as contiguous.
    */
-  protected readonly atlasOrder = computed(() => this.bands().flatMap((band) => band.items));
+  /** The bands, then — only in a set view that has any — the trailing "no counts under this set"
+   *  group (spec 8.2, AK 56). */
+  private readonly atlasGroups = computed(() => {
+    const groups: { key: AtlasGroupKey; items: readonly EmoteUsageTotal[]; share: number }[] = [
+      ...this.bands(),
+    ];
+    const uncounted = this.uncountedEmotes();
+    if (uncounted.length > 0) {
+      groups.push({ key: 'uncounted', items: uncounted, share: 0 });
+    }
+    return groups;
+  });
 
-  protected readonly rows = computed(() => packAtlasRows(this.bands(), this.columns()).rows);
+  protected readonly atlasOrder = computed(() =>
+    this.atlasGroups().flatMap((group) => group.items),
+  );
 
-  /** Fill-bar width per emote id — precomputed per band peak so the template stays a lookup. */
+  protected readonly rows = computed(
+    () => packAtlasRows<EmoteUsageTotal, AtlasGroupKey>(this.atlasGroups(), this.columns()).rows,
+  );
+
+  /** Fill-bar width per 7TV id — precomputed per band peak so the template stays a lookup. */
   protected readonly fillPercents = computed(() => {
     const map = new Map<string, number>();
     for (const band of this.bands()) {
       for (const emote of band.items) {
-        map.set(emote.emoteId, usageFillPercent(emote.totalUseCount, band.peak));
+        map.set(emote.sevenTvEmoteId, usageFillPercent(emote.totalUseCount, band.peak));
       }
     }
     return map;
@@ -616,7 +874,7 @@ export class UsageStatsPage {
   /** Ranked usage curve of the whole set — the orientation device above the sheet. */
   protected readonly distribution = computed(() =>
     usageDistribution(
-      this.emotes().map((emote) => emote.totalUseCount),
+      this.countedEmotes().map((emote) => emote.totalUseCount),
       DISTRIBUTION_BUCKETS,
     ),
   );
@@ -628,30 +886,31 @@ export class UsageStatsPage {
    */
   protected readonly bandBars = computed(() =>
     usageBandBars(
-      this.emotes().map((emote) => emote.totalUseCount),
+      this.countedEmotes().map((emote) => emote.totalUseCount),
       this.bandThresholds(),
       this.distribution().length,
     ),
   );
 
   protected readonly concentration = computed(() =>
-    topFifthShare(this.emotes().map((emote) => emote.totalUseCount)),
+    topFifthShare(this.countedEmotes().map((emote) => emote.totalUseCount)),
   );
 
   protected readonly deadCount = computed(
-    () => this.emotes().filter((emote) => emote.totalUseCount === 0).length,
+    () => this.countedEmotes().filter((emote) => emote.totalUseCount === 0).length,
   );
 
   private readonly totalUses = computed(() =>
-    this.emotes().reduce((sum, emote) => sum + emote.totalUseCount, 0),
+    this.countedEmotes().reduce((sum, emote) => sum + emote.totalUseCount, 0),
   );
 
-  /** Position in the set's usage ranking — the inspector's "#003", stable across sort changes. */
+  /** Position in the set's usage ranking — the inspector's "#003", stable across sort changes.
+   *  Counted rows only: a row without counts has no place in a ranking by counts. */
   private readonly usageRank = computed(() => {
     const ranks = new Map<string, number>();
-    [...this.emotes()]
+    [...this.countedEmotes()]
       .sort((a, b) => b.totalUseCount - a.totalUseCount)
-      .forEach((emote, index) => ranks.set(emote.emoteId, index + 1));
+      .forEach((emote, index) => ranks.set(emote.sevenTvEmoteId, index + 1));
     return ranks;
   });
 
@@ -664,9 +923,13 @@ export class UsageStatsPage {
   // visibility); universe is the unfiltered emotes() (Konzept "Auswahl überlebt Suche und Filter"
   // 1) — selectedItems() resolves against the latter, so a filter change can no longer make a
   // marked-but-hidden row unresolvable to the delete/export/vote-session run that reads it.
+  //
+  // Keyed by the 7TV id, not `Emote.Id` (spec #200, 7.2, AK 54): a set view's live member without a
+  // counted row has no Guid, and keying on a `null` would fold every such row into one selection
+  // entry. The class itself is untouched — it has always been generic over its key.
   protected readonly selection = new ListSelection(
     this.atlasOrder,
-    (emote) => emote.emoteId,
+    (emote) => emote.sevenTvEmoteId,
     this.emotes,
   );
 
@@ -676,27 +939,35 @@ export class UsageStatsPage {
    * a row that no longer exists. Falls back to the busiest emote so the line is never empty —
    * before the first hover, the top of the set is the honest thing to be looking at.
    */
+  // Held by 7TV id, like the selection (7.2).
   private readonly inspectedId = signal<string | null>(null);
   protected readonly inspected = computed(() => {
     const order = this.atlasOrder();
     const id = this.inspectedId();
-    return (id ? order.find((emote) => emote.emoteId === id) : undefined) ?? order[0] ?? null;
+    return (
+      (id ? order.find((emote) => emote.sevenTvEmoteId === id) : undefined) ?? order[0] ?? null
+    );
   });
 
   protected readonly inspectedRank = computed(() => {
     const emote = this.inspected();
-    return emote ? (this.usageRank().get(emote.emoteId) ?? null) : null;
+    return emote ? (this.usageRank().get(emote.sevenTvEmoteId) ?? null) : null;
   });
 
-  protected readonly inspectedBand = computed(() => {
+  protected readonly inspectedBand = computed<AtlasGroupKey>(() => {
     const emote = this.inspected();
-    return emote ? usageBandOf(emote.totalUseCount, this.bandThresholds()) : 'dead';
+    if (!emote) {
+      return 'dead';
+    }
+    return emote.totalUseCount === null
+      ? 'uncounted'
+      : usageBandOf(emote.totalUseCount, this.bandThresholds());
   });
 
   protected readonly inspectedShare = computed(() => {
     const emote = this.inspected();
     const total = this.totalUses();
-    return emote && total > 0 ? emote.totalUseCount / total : null;
+    return emote && emote.totalUseCount !== null && total > 0 ? emote.totalUseCount / total : null;
   });
 
   /**
@@ -723,6 +994,14 @@ export class UsageStatsPage {
   // faster one, and the sidecar cannot even notice: it takes its axis from the range echoed by the
   // response (see inspectedPoints), so a superseded answer draws a silently wrong span.
   private readonly latestTotals = latestOnly<EmoteUsageTotalDto[]>();
+
+  /**
+   * Set when a same-channel reload's rows landed while the non-active view's member list was still
+   * loading: reconciling the selection (#94's `retainAmong`) against the half-built view would prune
+   * a marked live member that merely has no counted row yet. The constructor's effect runs the
+   * reconciliation once the list has settled (loaded or failed). See `reconcileSelection`.
+   */
+  private readonly selectionReconcilePending = signal(false);
   private readonly latestSeries = latestOnly<ChannelUsageSeries>();
 
   /** The channel whose set status has come back *successfully*. Held as a channel rather than a
@@ -793,8 +1072,13 @@ export class UsageStatsPage {
     return this.setStatusFailedChannel() === this.channelName();
   });
 
+  // Keyed by 7TV id (spec 6.5 step 1, 7.2): `/series` still carries `emoteId` beside it, but a set
+  // view's row need not have one.
   private readonly seriesByEmote = computed(
-    () => new Map(this.channelSeries()?.emotes.map((entry) => [entry.emoteId, entry.days]) ?? []),
+    () =>
+      new Map(
+        this.channelSeries()?.emotes.map((entry) => [entry.sevenTvEmoteId, entry.days]) ?? [],
+      ),
   );
 
   /** Channel-level, so converted once per response rather than per emote inspected. */
@@ -806,12 +1090,18 @@ export class UsageStatsPage {
   protected readonly inspectedPoints = computed(() => {
     const series = this.channelSeries();
     const emote = this.inspected();
-    if (!series || !emote) {
+    // A row without counts under the shown set has no curve either: zero-filling it would draw a
+    // flat baseline, i.e. claim "counted, never used" — the one statement E17 rules out.
+    if (!series || !emote || emote.totalUseCount === null) {
       return [];
     }
     // An emote absent from the response had no usage in the range — the same statement its absent
     // days would make, one level up. Zero-filling here is what turns that into a flat baseline.
-    return fillOffsetSeries(this.seriesByEmote().get(emote.emoteId) ?? [], series.from, series.to);
+    return fillOffsetSeries(
+      this.seriesByEmote().get(emote.sevenTvEmoteId) ?? [],
+      series.from,
+      series.to,
+    );
   });
 
   /**
@@ -859,17 +1149,79 @@ export class UsageStatsPage {
   // clears or prunes the selection at all (Konzept "Auswahl überlebt Suche und Filter"). What
   // cannot resolve is a key that was actually removed from emotes() (reload, finished delete),
   // which retainAmong()/clear() already keep out of selectedKeys() before this ever reads it.
+  //
+  // Two kinds of row never reach the delete run (spec #200, 8.2), and both only exist in a
+  // non-active set's view: a `'left'` row is no longer in the set, so there is nothing to remove
+  // (E23, AK 57); a row without `Emote.Id` stays out *for now* — the run still keys its queue and its
+  // protocol by that Guid until T5.1 moves them onto the 7TV id. `DeletableEmote.emoteId` therefore
+  // stays a required `string`, which makes this filter a compile-time guarantee rather than a
+  // convention. While the non-active view's own delete lock stands (`deleteLockReasonKey`) neither
+  // exclusion is reachable anyway.
   protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
-    this.selection.selectedItems().map((emote) => ({
-      emoteId: emote.emoteId,
-      sevenTvEmoteId: emote.sevenTvEmoteId,
-      name: emote.emoteName,
-      // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
-      // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
-      // hiddenSelectedCount is built from, so the two numbers can never disagree.
-      hidden: !this.selection.isVisible(emote),
-    })),
+    this.selection.selectedItems().flatMap((emote) =>
+      emote.membership === 'live' && emote.emoteId !== null
+        ? [
+            {
+              emoteId: emote.emoteId,
+              sevenTvEmoteId: emote.sevenTvEmoteId,
+              name: emote.emoteName,
+              // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl
+              // überlebt Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the
+              // dock's own hiddenSelectedCount is built from, so the two numbers can never disagree.
+              hidden: !this.selection.isVisible(emote),
+            },
+          ]
+        : [],
+    ),
   );
+
+  /**
+   * How many slots of the shown set deleting the marked rows would free (spec 8.2, AK 58): a #74
+   * duplicate cell is one row but two set entries, and one `REMOVE` takes both (Sonde 5, branch A).
+   * `'left'` rows occupy no slot of the set any more and free none. In the active set's view every
+   * `slotCount` is 1, so this is the selection size, exactly as before.
+   */
+  protected readonly pendingRemovalSlots = computed(() =>
+    this.selection
+      .selectedItems()
+      .reduce((sum, emote) => sum + (emote.membership === 'live' ? emote.slotCount : 0), 0),
+  );
+
+  /**
+   * Capacity and occupied slots of the shown set, for the slot bar and the dock's projection. The
+   * active set's come from its status (`Channel.ActiveEmoteSetCapacity`); a non-active set's only
+   * from its own member list (`capacity`/`totalCount`, spec 8.3) — never the active set's numbers
+   * under another set's name. `null` while that list is loading or unreadable.
+   */
+  protected readonly slotBudget = computed<{ capacity: number | null; occupied: number } | null>(
+    () => {
+      if (this.liveMembersState() === 'none') {
+        const status = this.setStatus();
+        return status ? { capacity: status.capacity, occupied: status.occupiedSlots } : null;
+      }
+      const members = this.liveMembers();
+      return members ? { capacity: members.capacity, occupied: members.totalCount } : null;
+    },
+  );
+
+  /**
+   * The ballot a vote session created from the selection would carry: `Emote.Id` Guids, resolved
+   * from the selected rows at the moment it is read — which, handed to the dialog as a signal, is
+   * the moment it submits (spec E4, 7.2: the grid's keys are 7TV ids, a null session still speaks
+   * Guids). Live, not a snapshot, for the same reason the dialog always took a live signal (#132).
+   * In the active set's view every row has a Guid; a non-active view does not offer the button yet
+   * (set sessions are K6), see `voteLocked`.
+   */
+  private readonly voteBallotEmoteIds = computed(() =>
+    this.selection
+      .selectedItems()
+      .flatMap((emote) => (emote.emoteId !== null ? [emote.emoteId] : [])),
+  );
+
+  /** A vote session is a session over the channel's **active** set until set sessions exist (K6,
+   *  spec 9) — so a non-active view cannot create one from its selection yet. The dock's lock line
+   *  (`deleteLockReasonKey`'s interim reason) names this together with the delete lock. */
+  protected readonly voteLocked = computed(() => this.isNonActiveView());
 
   /**
    * The action bar is bound to the selection, but it must not disappear the moment a finished
@@ -890,7 +1242,7 @@ export class UsageStatsPage {
    */
   protected readonly dockVisible = computed(() =>
     actionDockHasContent({
-      hasActiveSet: this.activeEmoteSetId() !== null,
+      hasActiveSet: this.selectedEmoteSetId() !== null,
       markedCount: this.selection.selectedKeys().length,
       deleteShown: this.deleteService.isRunning() || this.deleteService.queue().length > 0,
       restoreShown: this.restoreService.isRunning() || this.restoreService.queue().length > 0,
@@ -912,8 +1264,14 @@ export class UsageStatsPage {
    * status alone would do it. Gates the copy button visibly (a silently inert button reads as a
    * broken one) and openImportTarget itself.
    */
-  protected readonly importScopeCurrent = computed(() =>
-    importScopeIsCurrent(this.channelName(), this.setStatusChannel(), this.totalsChannel()),
+  //
+  // Plus one condition of the set view's own (spec #200, 7.3): the loaded rows must belong to the
+  // set now selected. Between a dropdown switch and the new rows landing the grid still shows the
+  // previous set, and a capture there would pair one set's rows with the other set's id.
+  protected readonly importScopeCurrent = computed(
+    () =>
+      importScopeIsCurrent(this.channelName(), this.setStatusChannel(), this.totalsChannel()) &&
+      this.shownSetId() === this.selectedEmoteSetId(),
   );
 
   /**
@@ -950,7 +1308,7 @@ export class UsageStatsPage {
    *  query until `loadTotals()`'s response lands (see that method's own comment) — which is exactly
    *  the state this excludes. */
   protected readonly sheetShowsRows = computed(
-    () => !this.isLoading() && !this.isAwaitingSync() && this.atlasOrder().length > 0,
+    () => !this.viewLoading() && !this.isAwaitingSync() && this.atlasOrder().length > 0,
   );
 
   /** Whether the toolbar's mark-all control exists at all — a fine pointer (no write path off a
@@ -1018,13 +1376,15 @@ export class UsageStatsPage {
    * implied by an active set plus a non-zero marked count and is therefore not repeated here.
    */
   protected readonly dockHiddenSelectedCount = computed(() =>
-    !this.isCoarse() && this.activeEmoteSetId() !== null ? this.selection.hiddenSelectedCount() : 0,
+    !this.isCoarse() && this.selectedEmoteSetId() !== null
+      ? this.selection.hiddenSelectedCount()
+      : 0,
   );
 
   /**
    * The dock's own marked-count row (`usageStats.dock.marked`, next to `selection.selectedItems()
-   * .length`) is created by the same `@if (activeEmoteSetId(); as setId)` that fills it — the exact
-   * case §4.5 describes for `dockHiddenSelectedCount` above: appearing content does not announce
+   * .length`) is created by the same set gate (`@if (selectedEmoteSetId() && activeEmoteSetId();
+   * as setId)`) that fills it — the exact case §4.5 describes for `dockHiddenSelectedCount` above: appearing content does not announce
    * itself. This used to feed the announcer the raw, continuously live `selection.selectedItems()
    * .length`, which meant an individual mark or unmark — already announced by its own cell's
    * `aria-pressed` flip — spoke a *second* time here, one paragraph per click; ten keyboard marks
@@ -1060,7 +1420,7 @@ export class UsageStatsPage {
   protected readonly dockMarkedCount = computed(() =>
     !this.isCoarse() &&
     this.dockVisible() &&
-    this.activeEmoteSetId() !== null &&
+    this.selectedEmoteSetId() !== null &&
     this.selection.selectedItems().length > 0 &&
     this.matchesBulkMarkSnapshot()
       ? this.bulkMarkAnnouncement()
@@ -1071,8 +1431,8 @@ export class UsageStatsPage {
    * Whether the dock's copy shortcut (Designsprache §8.7, an allowance on revocation rather than a
    * requirement) is disabled.
    * `!isCoarse()` and an active 7TV set are deliberately not part of this — the shortcut only ever
-   * renders inside the dock's own `!isCoarse()` gate and the marking half's `activeEmoteSetId()`
-   * gate, so re-checking either here would test a condition it can never actually violate. See
+   * renders inside the dock's own `!isCoarse()` gate and the marking half's set gate, so
+   * re-checking either here would test a condition it can never actually violate. See
    * importShortcutDisabled for why the remaining three locks are exactly the header button's, and
    * importShortcutSelectionCount for why the count feeding it is not the raw selection size.
    */
@@ -1084,16 +1444,16 @@ export class UsageStatsPage {
     }),
   );
 
-  /** Occupied slots after the pending selection would be deleted — the dock's one number.
-   *  `selectedItems().length`, like every other displayed count (Konzept 1). */
+  /** Occupied slots after the pending selection would be deleted — the dock's one number. Counted
+   *  in slots, not rows (`pendingRemovalSlots`, AK 58), against the shown set's own budget. */
   protected readonly projectedSlots = computed(() => {
-    const status = this.setStatus();
-    if (status?.capacity == null) {
+    const budget = this.slotBudget();
+    if (budget?.capacity == null) {
       return null;
     }
     return {
-      projected: Math.max(status.occupiedSlots - this.selection.selectedItems().length, 0),
-      capacity: status.capacity,
+      projected: Math.max(budget.occupied - this.pendingRemovalSlots(), 0),
+      capacity: budget.capacity,
     };
   });
 
@@ -1129,6 +1489,33 @@ export class UsageStatsPage {
         const channelName = this.channelName();
         untracked(() => this.pinnedToActiveChannel.set(channelName));
       }
+    });
+
+    // #94's reconciliation, deferred: a same-channel reload's rows landed while a non-active view's
+    // member list was still loading (see selectionReconcilePending). Runs once the list settles.
+    effect(() => {
+      if (this.selectionReconcilePending() && this.liveMembersState() !== 'loading') {
+        untracked(() => this.reconcileSelection());
+      }
+    });
+
+    // The 'set-observed' preset (spec 8.5) describes the chosen set, so a set switch must move the
+    // range with it — otherwise the menu would keep claiming "while this set was observed" over the
+    // previous set's interval. A set that was never observed has no such range; the dates stay and
+    // the menu names them as a custom range instead of a preset they no longer are.
+    effect(() => {
+      const range = this.setObservedPresetRange();
+      untracked(() => {
+        if (this.rangePreset() !== 'set-observed') {
+          return;
+        }
+        if (range) {
+          this.from.set(range.from);
+          this.to.set(range.to);
+        } else {
+          this.rangePreset.set('custom');
+        }
+      });
     });
 
     // Keyed on channelName() alone, deliberately separate from load()'s effect above: that one also
@@ -1223,6 +1610,9 @@ export class UsageStatsPage {
         // created on 7TV, one renamed) — and this is the one loud signal spec E19 ties a re-fetch
         // to. Never on the silent `usage.flushed` branch below.
         this.emoteSetListResource.reload();
+        // Same rule one level down (spec 8.3): a non-active view's member list follows the loud
+        // reload, never the silent one. A no-op while no non-active set is selected.
+        this.liveMembersResource.reload();
       } else if (
         seen.has(LIVE_EVENT_TYPES.usageFlushed) &&
         this.setStatusFlushProbeGate.shouldRefreshOn(this.setStatus())
@@ -1280,8 +1670,8 @@ export class UsageStatsPage {
 
   // See VoteSessionDetailPage.trackRow for the full reasoning: rows() rebuilds fresh row arrays on
   // every recompute, so tracking by index (not identity) keeps the row views stable and avoids
-  // rebuilding every cell — the inner @for (… track emote.emoteId) still reconciles row content
-  // correctly on a resize.
+  // rebuilding every cell — the inner @for (… track emote.sevenTvEmoteId) still reconciles row
+  // content correctly on a resize (DECISIONS 2026-08-30; the inner key is the 7TV id since #200).
   protected trackRow(index: number): number {
     return index;
   }
@@ -1291,6 +1681,8 @@ export class UsageStatsPage {
     // above only exists to stop a bare range correction from asking twice, and must not also
     // swallow the one deliberate retry a previously failed request needs.
     this.requestedSetStatusFor = null;
+    // A loud reload (spec 8.3): the member list too, not just the numbers. No-op in the active view.
+    this.liveMembersResource.reload();
     this.load(
       this.channelName(),
       this.from(),
@@ -1337,14 +1729,29 @@ export class UsageStatsPage {
     this.sortDirection.set(direction as SortDirection);
   }
 
-  protected inspect(emote: EmoteUsageTotalDto): void {
-    this.inspectedId.set(emote.emoteId);
+  protected inspect(emote: EmoteUsageTotal): void {
+    this.inspectedId.set(emote.sevenTvEmoteId);
   }
 
   /** Pointer or focus landing on a cell makes it both the inspected row and the grid's tab stop. */
-  protected onCellFocus(emote: EmoteUsageTotalDto, index: number): void {
-    this.inspectedId.set(emote.emoteId);
+  protected onCellFocus(emote: EmoteUsageTotal, index: number): void {
+    this.inspectedId.set(emote.sevenTvEmoteId);
     this.activeIndex.set(index);
+  }
+
+  /**
+   * Whether a row has a history to open (spec #200, 7.2, drilldown gate): `/daily` asks by
+   * `Emote.Id` and answers in counts, so a row without either — a live member with no counts under
+   * the shown set — has nothing the dialog could show. `'left'` rows do have both and keep it.
+   */
+  protected canDrilldown(emote: EmoteUsageTotal): boolean {
+    return emote.emoteId !== null && emote.totalUseCount !== null;
+  }
+
+  /** The name-twin marker's set names (E24, AK 59) — see `emoteSetNames`. */
+  protected nameTwinSetNames(emote: EmoteUsageTotal): string {
+    const names = this.emoteSetNames();
+    return emote.nameTwinEmoteSetIds.map((id) => names.get(id) ?? id.slice(-6)).join(', ');
   }
 
   /**
@@ -1357,8 +1764,8 @@ export class UsageStatsPage {
    * no matter what the user tapped. Safari also does not focus a button on click, so relying on the
    * focus handler alone would leave the same gap on a desktop browser.
    */
-  protected onCellClick(emote: EmoteUsageTotalDto, index: number, event: MouseEvent): void {
-    this.inspectedId.set(emote.emoteId);
+  protected onCellClick(emote: EmoteUsageTotal, index: number, event: MouseEvent): void {
+    this.inspectedId.set(emote.sevenTvEmoteId);
     this.activeIndex.set(index);
 
     // On a coarse pointer the cell has only one meaning left. Returning before the selection call
@@ -1416,8 +1823,8 @@ export class UsageStatsPage {
     this.recordBulkMarkAnnouncement();
   }
 
-  protected fillPercent(emote: EmoteUsageTotalDto): number {
-    return this.fillPercents().get(emote.emoteId) ?? 0;
+  protected fillPercent(emote: EmoteUsageTotal): number {
+    return this.fillPercents().get(emote.sevenTvEmoteId) ?? 0;
   }
 
   /** Compact figure printed onto the sprite — "9,4k" fits a 64 px cell, "9412" does not. */
@@ -1455,13 +1862,19 @@ export class UsageStatsPage {
     return share.toLocaleString(locale, { style: 'percent', maximumFractionDigits: 0 });
   }
 
-  protected bandFill(band: UsageBandKey): string {
-    return USAGE_BAND_FILL[band];
+  /** The "no counts" group gets an outline instead of a band fill: it is not a fifth band on the
+   *  lightness ramp (§2.5), and a filled chip would claim a place on it. */
+  protected bandFill(band: AtlasGroupKey): string {
+    return band === 'uncounted' ? 'inset-ring-1 inset-ring-border-strong' : USAGE_BAND_FILL[band];
   }
 
-  protected trendFor(emote: EmoteUsageTotalDto): UsageTrend {
+  protected trendFor(
+    emote: Pick<EmoteUsageTotal, 'totalUseCount' | 'previousWindowUseCount' | 'firstSeenAt'>,
+  ): UsageTrend {
     const trackedSince = this.trackedSince();
-    if (!trackedSince) {
+    // No counts under the shown set means no trend either — "unknown" is the one honest answer, and
+    // never a "falling" computed from a coerced 0.
+    if (!trackedSince || emote.totalUseCount === null || emote.previousWindowUseCount === null) {
       return 'unknown';
     }
 
@@ -1475,17 +1888,17 @@ export class UsageStatsPage {
     });
   }
 
-  protected isUnderObservation(emote: EmoteUsageTotalDto): boolean {
+  protected isUnderObservation(emote: EmoteUsageTotal): boolean {
     return isUnderObservation(emote.firstSeenAt, new Date());
   }
 
   /** Whole days the emote has been in the set; floored at 0 so a clock skew cannot read as "-1". */
-  protected observationDays(emote: EmoteUsageTotalDto): number {
+  protected observationDays(emote: EmoteUsageTotal): number {
     return Math.max(daysInSet(emote.firstSeenAt, new Date()) ?? 0, 0);
   }
 
   // Day zero gets its own wording: "seit 0 Tagen" is not a sentence anyone writes.
-  protected observationLabelKey(emote: EmoteUsageTotalDto): string {
+  protected observationLabelKey(emote: EmoteUsageTotal): string {
     const days = this.observationDays(emote);
     return days === 0
       ? 'usageStats.observationToday'
@@ -1516,8 +1929,10 @@ export class UsageStatsPage {
     });
   }
 
+  // `deletedIds` are still `Emote.Id` Guids until T5.1 switches the panel's output to 7TV ids (E18);
+  // a delete run only ever starts from the active set's view today, whose rows all carry one.
   protected onDeleted(deletedIds: string[]): void {
-    this.emotes.update((items) => items.filter((item) => !deletedIds.includes(item.emoteId)));
+    this.totalsRows.update((items) => items.filter((item) => !deletedIds.includes(item.emoteId)));
     // Freed slots are shown right away rather than waiting for the channel.synced round trip the
     // bookkeeping call triggers — the emptied bar is the feedback the delete was run for. The
     // refetch that follows a moment later confirms or corrects it.
@@ -1536,13 +1951,15 @@ export class UsageStatsPage {
   // channel/date-range change — that path is unreachable while a modal dialog has focus, so it is
   // not a case the dialog itself needs to guard against.
   protected openCreateVoteSession(): void {
-    if (this.selection.selectedKeys().length === 0) {
+    // voteLocked: the dock's button is disabled in a non-active view; this guards a click that
+    // outraces that (see voteLocked).
+    if (this.selection.selectedKeys().length === 0 || this.voteLocked()) {
       return;
     }
 
     const data: CreateVoteSessionDialogData = {
       channelName: this.channelName(),
-      emoteIds: this.selection.selectedKeys,
+      emoteIds: this.voteBallotEmoteIds,
       // The dialog turns this into the session's "count usage from" prefill. On the "all time"
       // preset from() already equals the tracking start (the constructor effect keeps it there),
       // so it is a date a human would recognise on every path.
@@ -1560,16 +1977,24 @@ export class UsageStatsPage {
   // 64 px sprite has no room for a second control that would not be a mis-click waiting to happen.
   // The dialog loads the series on its own through the service cache, so nothing is fetched until
   // the user explicitly asks for the history.
-  protected openDrilldown(emote: EmoteUsageTotalDto): void {
+  protected openDrilldown(emote: EmoteUsageTotal): void {
+    // The drilldown gate (spec 7.2): the trigger is not rendered for such a row, and Enter/a coarse
+    // tap land here too — both must be a no-op rather than a request for a Guid that does not exist.
+    if (emote.emoteId === null || emote.totalUseCount === null) {
+      return;
+    }
     const data: EmoteDrilldownData = {
       channelName: this.channelName(),
       from: this.from(),
       to: this.to(),
       emoteId: emote.emoteId,
+      // The set these numbers were counted under, frozen into the dialog (F4, AK 64) — the set of
+      // the rows on screen, not a dropdown value that may already be moving.
+      emoteSetId: this.shownSetId(),
       emoteName: emote.emoteName,
       imageUrl: emote.imageUrl,
       firstSeenAt: emote.firstSeenAt,
-      previousWindowUseCount: emote.previousWindowUseCount,
+      previousWindowUseCount: emote.previousWindowUseCount ?? undefined,
       trackedSince: this.trackedSince(),
     };
     openEmoteDrilldownDialog(this.dialog, data);
@@ -1619,7 +2044,9 @@ export class UsageStatsPage {
     const range = this.totalsRange();
     const captured: CapturedExportScope = {
       channelName: this.totalsChannel() ?? this.channelName(),
-      emoteSetId: this.activeEmoteSetId(),
+      // The set the rows on screen belong to (spec 7.3). `importScopeCurrent` below — which gates
+      // the one purpose that reads this — also requires it to be the selected set.
+      emoteSetId: this.shownSetId(),
       from: range?.from ?? this.from(),
       to: range?.to ?? this.to(),
       filtered: this.usageFilter.isAnyActive(),
@@ -1688,7 +2115,9 @@ export class UsageStatsPage {
    * channel name) with rows that may no longer belong to it.
    */
   protected openImportTarget(forcedScope?: ExportScope): void {
-    const emoteSetId = this.activeEmoteSetId();
+    // The selected set — the one the rows below were loaded for (importScopeCurrent checks exactly
+    // that), so the picker disables the right set as "the source" (spec 7.3, 8.6).
+    const emoteSetId = this.selectedEmoteSetId();
     if (emoteSetId === null || !this.importScopeCurrent()) {
       // The header button is gated on both of these, so this only guards against a click that
       // outraces a channel switch. The scope check is what keeps a mid-switch capture from pairing
@@ -1973,6 +2402,25 @@ export class UsageStatsPage {
     }
   }
 
+  /**
+   * #94's reconciliation of the selection against the rows now loaded. In a non-active set's view
+   * the rows are only complete once the member list is there too (a marked live member without a
+   * counted row has no `/totals` row to survive on), so while that list is still loading this only
+   * records that a reconciliation is owed — the constructor's effect pays it once the list settles,
+   * whichever way. A failed list reconciles against the DB rows alone: that is the view on screen.
+   */
+  private reconcileSelection(): void {
+    if (this.liveMembersState() === 'loading') {
+      this.selectionReconcilePending.set(true);
+      return;
+    }
+    this.selectionReconcilePending.set(false);
+    const removedCount = this.selection.retainAmong(this.emotes());
+    if (removedCount > 0) {
+      this.showSelectionPrunedFeedback(removedCount);
+    }
+  }
+
   // Ends the wait for the first sync, the in-flight probe included, and takes the banner down with
   // it. Called both when something else has answered the question (a `channel.synced` event) and
   // when the question no longer applies (a channel switch).
@@ -2047,17 +2495,19 @@ export class UsageStatsPage {
           // `preserveSelection` is off. `null` on the very first load for this component instance
           // always takes the channel-switch branch, which is correct: there is nothing to retain yet.
           const previousTotalsChannel = this.totalsChannel();
-          this.emotes.set(emotes);
+          this.totalsRows.set(emotes);
+          this.totalsSetId.set(emoteSetId);
           // Written next to the rows themselves, never before: until this line runs, the grid still
           // shows the previous channel's emotes (see totalsChannel's declaration).
           this.totalsChannel.set(channelName);
           this.totalsRange.set({ from, to });
           if (options.preserveSelection || previousTotalsChannel === channelName) {
-            // Reconciles against the freshly loaded, UNFILTERED `emotes` — not atlasOrder()/
+            // Reconciles against the freshly loaded, UNFILTERED view — not atlasOrder()/
             // retainVisible(), which read the filtered view and would wrongly drop a row that
             // merely fell outside the current min/max-usage or name filter this reload changed the
-            // numbers under (#94). `emotes` is the response payload itself, not the signal, so the
-            // reconciliation cannot read a half-updated view no matter where the set() calls land.
+            // numbers under (#94). Against the merged view (`emotes()`), not the bare payload: in a
+            // non-active set's view a marked live member without a counted row exists only there
+            // (spec #200, 7.1) — see reconcileSelection for the one case that has to wait.
             //
             // The `previousTotalsChannel === channelName` arm is what makes a date-range change and
             // the refresh button reconcile too, not just a pushed reload: both are a different SIGHT
@@ -2065,16 +2515,16 @@ export class UsageStatsPage {
             // a mod checks whether a marked-dead emote is still dead under a wider or narrower
             // window (live-test finding, 2026-09-19 — the Konzept originally kept these on `clear()`
             // and was corrected after this feedback). An emote the narrower range does not return is
-            // pruned here like any other data-driven removal, with the existing #94 notice.
-            const removedCount = this.selection.retainAmong(emotes);
-            if (removedCount > 0) {
-              this.showSelectionPrunedFeedback(removedCount);
-            }
+            // pruned here like any other data-driven removal, with the existing #94 notice. A set
+            // switch in the dropdown is the same kind of change — a different sight of the same
+            // channel — and lands here too (AK 51).
+            this.reconcileSelection();
           } else {
             // A genuine channel switch: different emotes, different grounding set entirely — nothing
             // in the old selection can even resolve against the new payload in a meaningful sense
             // (see the Konzept, same section: an id collision across channels is coincidence, not
             // continuity), so it is not a pruning case but a hard reset.
+            this.selectionReconcilePending.set(false);
             this.selection.clear();
           }
           if (!options.silent) {
