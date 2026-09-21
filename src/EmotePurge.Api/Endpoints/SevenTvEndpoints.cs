@@ -83,6 +83,47 @@ public static class SevenTvEndpoints
         // above.
         .AddEndpointFilter<EmoteSetIdValidationFilter>();
 
+        // GET /api/seventv/channels/{channelName}/emote-sets (spec 6.3/K3): the source-set picker's
+        // list route. A route sibling of the /emotes group above (registered on `app`, not `group`)
+        // for the same reason EmoteEndpoints' own tracked-channel /emote-sets route is a sibling of
+        // its /emotes group rather than nested under it — the group's own prefix would otherwise turn
+        // this into /emotes/emote-sets. Same filter chain and policy as the group above, because it
+        // is the same "any logged-in caller, no role in the channel" contract, just for the set list
+        // instead of the active set's preview.
+        app.MapGet("/api/seventv/channels/{channelName}/emote-sets", async (
+            string channelName,
+            IForeignEmoteSetService foreignEmoteSetService,
+            CancellationToken ct) =>
+        {
+            var result = await foreignEmoteSetService.GetForeignEmoteSetListAsync(channelName, ct);
+
+            // Mirrors the state table this route shares with GET …/emotes above (spec 6.3: "Zustände
+            // wie GET …/emotes") — including NoSevenTvAccount answering 404 here, not the 200-with-
+            // empty-list a *tracked* channel's own /emote-sets route (EmoteEndpoints, spec 6.1)
+            // answers for the same underlying EmoteSetListStatus.NoSevenTvAccount.
+            return result.Status switch
+            {
+                ForeignEmoteSetListLookupStatus.Ok => Results.Ok(BuildForeignEmoteSetListResponse(result.List!)),
+                ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch =>
+                    Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotOnTwitch }),
+                ForeignEmoteSetListLookupStatus.TwitchUnavailable => Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelTwitchUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
+                ForeignEmoteSetListLookupStatus.NoSevenTvAccount =>
+                    Results.NotFound(new { errorCode = ApiErrorCodes.ForeignChannelNoSevenTvAccount }),
+                ForeignEmoteSetListLookupStatus.SevenTvUnavailable
+                    or ForeignEmoteSetListLookupStatus.SevenTvRateLimited
+                    or ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted => Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
+                _ => throw new UnreachableException(
+                    $"Unexpected {nameof(ForeignEmoteSetListLookupStatus)} value: {result.Status}.")
+            };
+        })
+        .RequireAuthorization()
+        .AddEndpointFilter<ChannelNameValidationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.ForeignEmoteLookup);
+
         // GET /api/seventv/me/emote-set-targets (spec 6.2/E6): the target picker's own offer list —
         // the caller's own account plus every channel they hold a 7TV editor grant for. No channel
         // name in the route at all (RequireAuthorization only, like /api/channels/mine), so no
@@ -310,7 +351,52 @@ public static class SevenTvEndpoints
 
     private static EmoteSetTargetSummaryDto ToEmoteSetTargetSummary(EmoteSetSummary summary, bool isActive) => new(
         summary.Id, summary.Name, summary.Capacity, summary.Kind, isActive, summary.IsPersonal, summary.OwnerDisplayName);
+
+    /// <summary>
+    /// Assembles the wire response for <c>GET /api/seventv/channels/{channelName}/emote-sets</c>
+    /// (spec 6.3) from the shared list service's answer — deliberately the same shape as
+    /// <c>EmoteEndpoints.EmoteSetListResponse</c> (6.1), reusing that file's <c>EmoteSetSummaryDto</c>
+    /// (both <c>internal</c>, same assembly) rather than a parallel type, so the frontend's single
+    /// <c>EmoteSetListResponse</c> TypeScript model serves both routes without knowing which produced
+    /// it. <c>isActive</c> compares each set's id against <c>list.SevenTvActiveEmoteSetId</c> — 7TV's
+    /// own opinion (E21), never a <c>Channel</c> row, which this path never resolves at all (spec
+    /// 6.3). <c>observations</c> is always <c>[]</c>: <c>ChannelEmoteSetObservation</c> only exists
+    /// for channels we track, and this route by definition never is one. A <c>null</c>
+    /// <see cref="EmoteSetList.SevenTvActiveEmoteSetId"/> becomes <c>""</c> on the wire — the same
+    /// "no known active set" spelling 6.1 already uses for <c>Channel.ActiveEmoteSetId</c> before the
+    /// first sync — so the frontend's non-nullable <c>activeEmoteSetId: string</c> holds for both
+    /// routes without a second, nullable variant.
+    /// </summary>
+    private static ForeignEmoteSetListResponse BuildForeignEmoteSetListResponse(EmoteSetList list)
+    {
+        var activeEmoteSetId = list.SevenTvActiveEmoteSetId ?? string.Empty;
+        var sets = list.Sets
+            .Select(summary => new EmoteSetSummaryDto(
+                summary.Id,
+                summary.Name,
+                summary.Capacity,
+                summary.Kind,
+                string.Equals(summary.Id, activeEmoteSetId, StringComparison.Ordinal),
+                summary.IsPersonal,
+                summary.OwnerDisplayName,
+                []))
+            .OrderByDescending(summary => summary.IsActive)
+            .ThenBy(summary => summary.Name, StringComparer.Ordinal)
+            .ToList();
+
+        return new ForeignEmoteSetListResponse(activeEmoteSetId, sets);
+    }
 }
+
+/// <summary>
+/// Wire shape of <c>GET /api/seventv/channels/{channelName}/emote-sets</c> (spec 6.3) — see
+/// <see cref="SevenTvEndpoints.BuildForeignEmoteSetListResponse"/> for why this mirrors
+/// <c>EmoteEndpoints.EmoteSetListResponse</c> (6.1) rather than sharing its literal C# type (the two
+/// are top-level types in the same namespace and file-scoped elsewhere in this codebase, so the name
+/// cannot be reused verbatim — only the wire shape has to match, which it does property for
+/// property).
+/// </summary>
+internal sealed record ForeignEmoteSetListResponse(string ActiveEmoteSetId, IReadOnlyList<EmoteSetSummaryDto> Sets);
 
 /// <summary>Wire shape of <c>GET /api/seventv/me/emote-set-targets</c> (spec 6.2).</summary>
 internal sealed record EmoteSetTargetsResponse(IReadOnlyList<EmoteSetTargetAccount> Accounts, bool SevenTvUnavailable);

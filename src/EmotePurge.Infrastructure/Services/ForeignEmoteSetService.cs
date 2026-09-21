@@ -18,6 +18,7 @@ public class ForeignEmoteSetService(
     IChannelIdentityService channelIdentityService,
     ISevenTvApiClient sevenTvApiClient,
     IForeignUpstreamRequestBudget requestBudget,
+    ISevenTvEmoteSetListService emoteSetListService,
     ILogger<ForeignEmoteSetService> logger) : IForeignEmoteSetService
 {
     // refresh (T2, spec E3) is meaningless here: this implementation never caches anything, so there
@@ -199,5 +200,62 @@ public class ForeignEmoteSetService(
         return ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
             normalized, null, emoteSetId, preview.TotalCount, preview.Truncated, emotes,
             preview.Name, preview.Capacity));
+    }
+
+    // The K3 source-set list (spec 2026-09-20, 6.3): step 1 is a byte-for-byte repeat of
+    // GetForeignEmoteSetAsync's own step 1 above (Helix by login, one budget permit) — deliberately
+    // not factored into a shared private helper, matching how the set-ID mode above stays its own
+    // method rather than partially sharing GetForeignEmoteSetAsync's body. Step 2 never resolves a
+    // 7TV identity or reads a preview at all: it hands the resolved Twitch id straight to the shared
+    // list service, which charges and guards its own upstream request end to end (cache, coalescing,
+    // breaker, budget — spec 6.1's "Härtung des Listen-Dienstes"), so this method charges no permit
+    // of its own beyond the Helix call.
+    public async Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
+        string channelName, CancellationToken cancellationToken = default)
+    {
+        var normalized = ChannelName.Normalize(channelName);
+
+        if (!await requestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning(
+                "Fremdkanal-Set-Liste für {ChannelName}: providerweites Request-Budget erschöpft, Helix wurde nicht gefragt.", normalized);
+            return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted);
+        }
+
+        var twitchLookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
+        if (twitchLookup.Status == TwitchUserLookupStatus.NotFound)
+        {
+            logger.LogInformation(
+                "Fremdkanal-Set-Liste für {ChannelName}: Twitch kennt diesen Login nicht.", normalized);
+            return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch);
+        }
+
+        if (twitchLookup.Status == TwitchUserLookupStatus.Unavailable)
+        {
+            logger.LogInformation(
+                "Fremdkanal-Set-Liste für {ChannelName}: Twitch/Helix nicht erreichbar.", normalized);
+            return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.TwitchUnavailable);
+        }
+
+        var twitchUserId = twitchLookup.User!.Id;
+
+        var listResult = await emoteSetListService.ListByTwitchIdAsync(twitchUserId, cancellationToken);
+        return listResult.Status switch
+        {
+            EmoteSetListStatus.Ok => ForeignEmoteSetListLookupResult.Ok(listResult.List!),
+            // An answer, not a failure, at the list service's own level — but 6.3's state table
+            // (shared with the singular preview) answers 404 here, not 200 with an empty list (see
+            // the status enum's own doc for why).
+            EmoteSetListStatus.NoSevenTvAccount =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.NoSevenTvAccount),
+            EmoteSetListStatus.RateLimited =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.SevenTvRateLimited),
+            EmoteSetListStatus.Unavailable =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.SevenTvUnavailable),
+            EmoteSetListStatus.BudgetExhausted =>
+                ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted),
+            _ => throw new UnreachableException(
+                $"Unexpected {nameof(EmoteSetListStatus)} value: {listResult.Status}.")
+        };
     }
 }

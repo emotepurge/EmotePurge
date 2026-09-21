@@ -360,6 +360,87 @@ public class ForeignEmoteSetServiceTests
         Assert.Equal(ForeignEmoteSetLookupStatus.NoActiveEmoteSet, result.Status);
     }
 
+    // GetForeignEmoteSetListAsync (spec 2026-09-20, 6.3/K3): step 1 reuses the exact Helix resolution
+    // above, step 2 hands the resolved Twitch id straight to the shared list service instead of
+    // resolving a 7TV identity or reading a preview.
+
+    [Fact]
+    public async Task List_ChannelNotOnTwitch_MapsToChannelNotOnTwitch_AndNeverAsksTheListService()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        identityService.LookupByLoginAsync(NormalizedChannel, Arg.Any<CancellationToken>())
+            .Returns(TwitchUserLookup.Failed(TwitchUserLookupStatus.NotFound));
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        var service = CreateService(identityService, Substitute.For<ISevenTvApiClient>(), emoteSetListService: listService);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch, result.Status);
+        Assert.Null(result.List);
+        await listService.DidNotReceive().ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task List_TwitchUnavailable_MapsToTwitchUnavailable()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        identityService.LookupByLoginAsync(NormalizedChannel, Arg.Any<CancellationToken>())
+            .Returns(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable));
+        var service = CreateService(identityService, Substitute.For<ISevenTvApiClient>());
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.TwitchUnavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task List_NoPermitAtAll_StopsBeforeHelix()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        var service = CreateService(
+            identityService, Substitute.For<ISevenTvApiClient>(), new RecordingForeignUpstreamRequestBudget(grantCount: 0));
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted, result.Status);
+        await identityService.DidNotReceive().LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(EmoteSetListStatus.NoSevenTvAccount, ForeignEmoteSetListLookupStatus.NoSevenTvAccount)]
+    [InlineData(EmoteSetListStatus.RateLimited, ForeignEmoteSetListLookupStatus.SevenTvRateLimited)]
+    [InlineData(EmoteSetListStatus.Unavailable, ForeignEmoteSetListLookupStatus.SevenTvUnavailable)]
+    [InlineData(EmoteSetListStatus.BudgetExhausted, ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted)]
+    public async Task List_EveryListServiceFailure_MapsToItsOwnStatus(
+        EmoteSetListStatus upstreamStatus, ForeignEmoteSetListLookupStatus expectedStatus)
+    {
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        listService.ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Failed(upstreamStatus));
+        var service = CreateService(FoundIdentityService(), Substitute.For<ISevenTvApiClient>(), emoteSetListService: listService);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(expectedStatus, result.Status);
+        Assert.Null(result.List);
+    }
+
+    [Fact]
+    public async Task List_Ok_PassesTheResolvedTwitchIdThrough_AndReturnsTheListVerbatim()
+    {
+        var expectedList = new EmoteSetList(EmoteSetId, [new EmoteSetSummary("set-a", "Alpha", 1000, "NORMAL", false, "Owner")], SevenTvUserId);
+        var listService = Substitute.For<ISevenTvEmoteSetListService>();
+        listService.ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(expectedList));
+        var service = CreateService(FoundIdentityService(), Substitute.For<ISevenTvApiClient>(), emoteSetListService: listService);
+
+        var result = await service.GetForeignEmoteSetListAsync(Channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, result.Status);
+        Assert.Same(expectedList, result.List);
+        await listService.Received(1).ListByTwitchIdAsync(TwitchUserId, Arg.Any<CancellationToken>());
+    }
+
     private static IChannelIdentityService FoundIdentityService()
     {
         var identityService = Substitute.For<IChannelIdentityService>();
@@ -378,11 +459,13 @@ public class ForeignEmoteSetServiceTests
     private static ForeignEmoteSetService CreateService(
         IChannelIdentityService identityService,
         ISevenTvApiClient sevenTvApiClient,
-        IForeignUpstreamRequestBudget? requestBudget = null) =>
+        IForeignUpstreamRequestBudget? requestBudget = null,
+        ISevenTvEmoteSetListService? emoteSetListService = null) =>
         new(
             identityService,
             sevenTvApiClient,
             requestBudget ?? new RecordingForeignUpstreamRequestBudget(),
+            emoteSetListService ?? Substitute.For<ISevenTvEmoteSetListService>(),
             NullLogger<ForeignEmoteSetService>.Instance);
 
     // The real budget, asked not to wait: TryChargeRequestAsync's own default would block this test

@@ -43,6 +43,93 @@ public interface IForeignEmoteSetService
     /// <param name="refresh">Same meaning as on <see cref="GetForeignEmoteSetAsync"/>.</param>
     Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetBySetIdAsync(
         string channelName, string emoteSetId, bool refresh = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The set list of a foreign channel by Twitch login (spec 2026-09-20, 6.3/K3 — the source-set
+    /// picker of the "aus einem Kanal" import branch). Resolution mirrors
+    /// <see cref="GetForeignEmoteSetAsync"/>'s first step exactly (Helix by login, then a Twitch id) —
+    /// but the second half never touches <see cref="ISevenTvApiClient.ResolveSevenTvIdentityAsync"/>
+    /// or the paginated preview at all. Instead it reads the shared
+    /// <see cref="ISevenTvEmoteSetListService"/> — the same list every tracked channel's dropdown
+    /// (6.1) and the target picker's own accounts (6.2) already read — so this method needs no guard
+    /// chain of its own around the 7TV half: that hardening already lives entirely inside the list
+    /// service.
+    /// </summary>
+    /// <param name="channelName">A Twitch login, in any casing — normalized inside.</param>
+    Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
+        string channelName, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Every way <see cref="IForeignEmoteSetService.GetForeignEmoteSetListAsync"/> can end — the state
+/// table of spec 6.3, which reuses the failure vocabulary of <see cref="ForeignEmoteSetLookupStatus"/>
+/// one-to-one except for <see cref="ForeignEmoteSetLookupStatus.NoActiveEmoteSet"/>: a set *list*
+/// needs no active set to answer with, only a 7TV account to list sets for.
+/// </summary>
+public enum ForeignEmoteSetListLookupStatus
+{
+    Ok,
+    ChannelNotOnTwitch,
+    TwitchUnavailable,
+
+    /// <summary>
+    /// 7TV has no account for this Twitch id. Deliberately **not** the 200-with-an-empty-list answer
+    /// 6.1's tracked-channel route gives the same underlying <c>EmoteSetListStatus.NoSevenTvAccount</c>
+    /// — 6.3's own state table (identical to the singular preview's) answers 404 here, because an
+    /// empty radiogroup is not a usable picker state (spec 6.3, "Zustände wie GET …/emotes").
+    /// </summary>
+    NoSevenTvAccount,
+
+    SevenTvUnavailable,
+
+    /// <summary>Mirrors <see cref="ForeignEmoteSetLookupStatus.SevenTvRateLimited"/> — kept apart from
+    /// <see cref="SevenTvUnavailable"/> only so the underlying guard chain can react differently;
+    /// invisible on the wire (same 503 code as every other 7TV-side failure here).</summary>
+    SevenTvRateLimited,
+
+    /// <summary>Our own provider-wide budget refused a permit — never anything 7TV said.</summary>
+    ProviderBudgetExhausted
+}
+
+/// <summary>
+/// <see cref="List"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="ForeignEmoteSetListLookupStatus.Ok"/> — the same invariant-by-construction shape as
+/// <see cref="ForeignEmoteSetLookupResult"/> and <see cref="EmoteSetListResult"/>.
+/// </summary>
+public sealed class ForeignEmoteSetListLookupResult
+{
+    private ForeignEmoteSetListLookupResult(ForeignEmoteSetListLookupStatus status, EmoteSetList? list)
+    {
+        Status = status;
+        List = list;
+    }
+
+    public ForeignEmoteSetListLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="ForeignEmoteSetListLookupStatus.Ok"/>.</summary>
+    public EmoteSetList? List { get; }
+
+    public static ForeignEmoteSetListLookupResult Ok(EmoteSetList list)
+    {
+        ArgumentNullException.ThrowIfNull(list);
+        return new ForeignEmoteSetListLookupResult(ForeignEmoteSetListLookupStatus.Ok, list);
+    }
+
+    public static ForeignEmoteSetListLookupResult Failed(ForeignEmoteSetListLookupStatus status)
+    {
+        if (status == ForeignEmoteSetListLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(list) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown ForeignEmoteSetListLookupStatus.");
+        }
+
+        return new ForeignEmoteSetListLookupResult(status, null);
+    }
 }
 
 /// <summary>

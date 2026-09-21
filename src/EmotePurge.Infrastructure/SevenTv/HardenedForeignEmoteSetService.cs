@@ -135,6 +135,23 @@ public sealed class HardenedForeignEmoteSetService(
     }
 
     /// <summary>
+    /// The K3 source-set list (spec 2026-09-20, 6.3) — a direct pass-through to <c>inner</c>, with
+    /// none of this decorator's own cache, coalescer or breaker wrapped around it. That is
+    /// deliberate, not an oversight: <see cref="IForeignEmoteSetService.GetForeignEmoteSetListAsync"/>'s
+    /// entire 7TV-facing half already runs behind <see cref="ISevenTvEmoteSetListService"/>'s own full
+    /// guard chain (spec 6.1, "Härtung des Listen-Dienstes" — cache, single-flight, breaker under its
+    /// own <c>EmoteSetList</c> operation, provider budget), which this class's collaborators know
+    /// nothing about. Wrapping it a second time here would not harden it further: the cache holds the
+    /// wrong payload shape for this method entirely, and layering this decorator's
+    /// <see cref="ForeignSevenTvBreakerOperations.ForeignPreview"/> breaker on top would let an
+    /// unrelated preview failure spuriously reject a healthy list call (and vice versa) — exactly the
+    /// cross-contamination 6.1's per-operation breaker split exists to prevent.
+    /// </summary>
+    public Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
+        string channelName, CancellationToken cancellationToken = default) =>
+        inner.GetForeignEmoteSetListAsync(channelName, cancellationToken);
+
+    /// <summary>
     /// Set-ID cache entries and coalesced executions are shared across every channel that happens to
     /// ask about the same set (cache key <c>7tvforeign:set:{setId}</c>, coalescing key
     /// <c>set:{setId}</c> — both deliberately channel-free, spec E12) — so a reused entry carries
