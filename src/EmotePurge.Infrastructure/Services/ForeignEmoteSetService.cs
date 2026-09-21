@@ -19,6 +19,7 @@ public class ForeignEmoteSetService(
     ISevenTvApiClient sevenTvApiClient,
     IForeignUpstreamRequestBudget requestBudget,
     ISevenTvEmoteSetListService emoteSetListService,
+    IForeignChannelIdentityCache identityCache,
     ILogger<ForeignEmoteSetService> logger) : IForeignEmoteSetService
 {
     // refresh (T2, spec E3) is meaningless here: this implementation never caches anything, so there
@@ -209,35 +210,41 @@ public class ForeignEmoteSetService(
     // 7TV identity or reads a preview at all: it hands the resolved Twitch id straight to the shared
     // list service, which charges and guards its own upstream request end to end (cache, coalescing,
     // breaker, budget — spec 6.1's "Härtung des Listen-Dienstes"), so this method charges no permit
-    // of its own beyond the Helix call.
+    // of its own beyond the Helix call — and, since the K3 review (P3-1), not even that once
+    // identityCache already knows this channel's Twitch id.
     public async Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
         string channelName, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
 
-        if (!await requestBudget.TryChargeRequestAsync(cancellationToken))
+        var twitchUserId = await identityCache.TryGetTwitchUserIdAsync(normalized, cancellationToken);
+        if (twitchUserId is null)
         {
-            logger.LogWarning(
-                "Fremdkanal-Set-Liste für {ChannelName}: providerweites Request-Budget erschöpft, Helix wurde nicht gefragt.", normalized);
-            return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted);
-        }
+            if (!await requestBudget.TryChargeRequestAsync(cancellationToken))
+            {
+                logger.LogWarning(
+                    "Foreign-channel set list for {ChannelName}: provider-wide request budget exhausted, Helix was not asked.", normalized);
+                return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted);
+            }
 
-        var twitchLookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
-        if (twitchLookup.Status == TwitchUserLookupStatus.NotFound)
-        {
-            logger.LogInformation(
-                "Fremdkanal-Set-Liste für {ChannelName}: Twitch kennt diesen Login nicht.", normalized);
-            return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch);
-        }
+            var twitchLookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
+            if (twitchLookup.Status == TwitchUserLookupStatus.NotFound)
+            {
+                logger.LogInformation(
+                    "Foreign-channel set list for {ChannelName}: Twitch does not know this login.", normalized);
+                return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch);
+            }
 
-        if (twitchLookup.Status == TwitchUserLookupStatus.Unavailable)
-        {
-            logger.LogInformation(
-                "Fremdkanal-Set-Liste für {ChannelName}: Twitch/Helix nicht erreichbar.", normalized);
-            return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.TwitchUnavailable);
-        }
+            if (twitchLookup.Status == TwitchUserLookupStatus.Unavailable)
+            {
+                logger.LogInformation(
+                    "Foreign-channel set list for {ChannelName}: Twitch/Helix unreachable.", normalized);
+                return ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.TwitchUnavailable);
+            }
 
-        var twitchUserId = twitchLookup.User!.Id;
+            twitchUserId = twitchLookup.User!.Id;
+            await identityCache.SetTwitchUserIdAsync(normalized, twitchUserId, cancellationToken);
+        }
 
         var listResult = await emoteSetListService.ListByTwitchIdAsync(twitchUserId, cancellationToken);
         return listResult.Status switch

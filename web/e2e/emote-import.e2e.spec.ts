@@ -1209,6 +1209,79 @@ test.describe('import dialog: shell contract', () => {
     expect(gridScrolls).toBe(true);
   });
 
+  /**
+   * K3 review finding P2-1: the always-visible source-set radiogroup (spec addendum 2026-09-21)
+   * eats into the grid's fixed 26rem allowance, and a four-row radiogroup (HandOfBlood's own shape)
+   * ate through the whole ~4rem slack on any but the tallest windows — the exact double-scrollbar
+   * defect the height expression exists to prevent, just triggered by the step's own chrome instead
+   * of the window. `reservedRem` folds the radiogroup's measured height into the allowance (see
+   * `foreign-emote-grid.ts`'s class doc), so the pane must hold at every one of these heights with
+   * four sets, the same way the single-set case above holds at 500 px.
+   */
+  test('a multi-set radiogroup does not grow a second scrollbar, at several window heights (K3 review, P2-1)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Set eins' },
+        { id: 'set-2', name: 'Set zwei' },
+        { id: 'set-3', name: 'Set drei' },
+        { id: 'set-4', name: 'Set vier' },
+      ],
+    });
+    await page.route('**/api/seventv/channels/handofblood/emotes*', (route) =>
+      route.fulfill({
+        json: {
+          channelName: 'handofblood',
+          sevenTvUserId: null,
+          emoteSetId: 'set-1',
+          emoteSetName: 'Set eins',
+          capacity: 1000,
+          totalCount: 60,
+          truncated: false,
+          emotes: Array.from({ length: 60 }, (_, index) => ({
+            sevenTvEmoteId: `foreign-${index}`,
+            name: `ForeignEmote${index}`,
+            defaultName: `ForeignEmote${index}`,
+            imageUrl: `https://cdn.7tv.app/emote/foreign-${index}/2x.webp`,
+            topAllTime: null,
+            trending: null,
+          })),
+        },
+      }),
+    );
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const dialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
+    await dialog.getByLabel('Kanalname').fill('handofblood');
+    await dialog.getByRole('button', { name: 'Set laden' }).click();
+    await expect(
+      dialog.getByRole('radiogroup', { name: 'Quell-Set' }).getByRole('radio'),
+    ).toHaveCount(4);
+    await expect(dialog.getByRole('group', { name: 'Emote-Auswahl' })).toBeVisible();
+
+    // dvh follows the window size on its own (pure CSS) — no reload or re-interaction needed
+    // between resizes, only a re-measurement of the pane.
+    for (const height of [700, 800, 960]) {
+      await page.setViewportSize({ width: 1280, height });
+      const paneOverflow = await page
+        .locator('.cdk-overlay-pane.app-dialog-panel')
+        .evaluate((pane) => pane.scrollHeight - pane.clientHeight);
+      expect(paneOverflow, `pane overflow at ${height}px with 4 sets`).toBeLessThanOrEqual(1);
+    }
+  });
+
   test('entering the channel branch focuses the channel field', async ({ page }) => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);

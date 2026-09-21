@@ -300,6 +300,9 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
     [InlineData(ForeignEmoteSetListLookupStatus.NoSevenTvAccount, HttpStatusCode.NotFound, ApiErrorCodes.ForeignChannelNoSevenTvAccount)]
     [InlineData(ForeignEmoteSetListLookupStatus.SevenTvUnavailable, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable)]
     [InlineData(ForeignEmoteSetListLookupStatus.SevenTvRateLimited, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable)]
+    // K3 review, P3-4: the theory was missing this row — our own throttle is reported the same as a
+    // 7TV outage (Regel 7: an internal budget is not part of the public error vocabulary).
+    [InlineData(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable)]
     public async Task EmoteSets_EveryFailureStatus_MapsToItsDocumentedResponse(
         ForeignEmoteSetListLookupStatus status, HttpStatusCode expectedStatusCode, string expectedErrorCode)
     {

@@ -94,6 +94,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ChannelSyncGate>();
         services.AddScoped<ISevenTvSyncService, SevenTvSyncService>();
 
+        // The K3 source-set list's own Helix login resolution (spec 2026-09-20 K3 review, P3-1): a
+        // short-lived cache so a picker reopened for the same channel does not pay a fresh Helix
+        // request and a budget permit on every call, on top of everything ISevenTvEmoteSetListService
+        // already caches downstream of the resolved Twitch id. Singleton, same reasoning as every
+        // other cache on this path — a scoped instance would cache nothing across requests.
+        services.AddSingleton<IForeignChannelIdentityCache, ForeignChannelIdentityCache>();
+
         // Foreign-channel-import read path (spec 2026-09-09). The raw resolution chain (T1) is
         // registered under a key so the hardening decorator (T2, below) can depend on
         // IForeignEmoteSetService for its inner collaborator without resolving itself — the two

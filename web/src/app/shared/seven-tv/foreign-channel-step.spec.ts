@@ -25,10 +25,11 @@ const DE_TRANSLATIONS = {
       reload: 'Neu laden',
       setsLabel: 'Quell-Set',
       active: 'aktiv',
+      noActiveSet: 'Kein aktives Set.',
       kindPersonal: 'persönliches Set',
       kindUnavailable: 'kein Quellset',
       retry: 'Erneut versuchen',
-      empty: 'Das aktive 7TV-Set dieses Kanals hat keine Emotes.',
+      empty: 'Dieses Set hat keine Emotes.',
       truncated: 'Nur ein Teil des Sets konnte geladen werden ({{ loaded }} von {{ totalCount }}).',
       selectedCount: '{{ count }} ausgewählt',
       grid: { ariaLabel: 'Emote-Auswahl' },
@@ -398,6 +399,82 @@ describe('ForeignChannelStep', () => {
     expect(host.textContent).toContain('persönliches Set');
   });
 
+  // P2-2 (K3 review finding): no active set must not dead-end the step.
+
+  it('preselects the lone selectable set when 7TV reports no active set at all', () => {
+    component['channelNameControl'].setValue('handofblood');
+    component['submit']();
+    httpMock.expectOne('/api/seventv/channels/handofblood/emote-sets').flush(
+      setsResponse({
+        activeEmoteSetId: '',
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-global',
+            name: 'Globales Set',
+            capacity: 1000,
+            kind: 'GLOBAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+    fixture.detectChanges();
+
+    // Two sets render (the radiogroup shows whenever there is more than one) — only the lone
+    // NORMAL one is a real choice, and it is the one auto-picked; the non-selectable GLOBAL set
+    // never is, active-set-report or not.
+    const radios = Array.from(host.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+    expect(radios).toHaveLength(2);
+    expect(radios[0].checked).toBe(true);
+    expect(radios[1].checked).toBe(false);
+
+    httpMock
+      .expectOne(
+        (req) =>
+          req.url === '/api/seventv/channels/handofblood/emotes' &&
+          req.params.get('emoteSetId') === 'set-1',
+      )
+      .flush(previewResponse());
+    fixture.detectChanges();
+
+    expect(host.querySelector('app-foreign-emote-grid')).not.toBeNull();
+  });
+
+  it('shows a notice and preselects nothing when there is no active set and more than one selectable set', () => {
+    component['channelNameControl'].setValue('handofblood');
+    component['submit']();
+    httpMock.expectOne('/api/seventv/channels/handofblood/emote-sets').flush(
+      setsResponse({
+        activeEmoteSetId: '',
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+    fixture.detectChanges();
+
+    // No preview request at all — nothing was auto-picked.
+    httpMock.expectNone(() => true);
+    const radios = Array.from(host.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+    expect(radios.some((radio) => radio.checked)).toBe(false);
+    expect(host.querySelector('app-foreign-emote-grid')).toBeNull();
+    expect(host.textContent).toContain('Kein aktives Set.');
+  });
+
   it('keeps the active set selected without a second preview request (AK 48)', () => {
     loadChannel(
       'handofblood',
@@ -489,5 +566,124 @@ describe('ForeignChannelStep', () => {
     fixture.detectChanges();
 
     expect(component.result()?.emoteSetId).toBe('set-2');
+  });
+
+  // P3-4/P3-5 (K3 review): a stale preview response must never overwrite a fresher one — including
+  // when both requests target the very same set id, which comparing `selectedEmoteSetId` alone
+  // cannot tell apart.
+
+  it('ignores a stale preview response for a set the user has already left, arriving after the newer pick resolved (P3-4)', () => {
+    loadChannel(
+      'handofblood',
+      setsResponse({
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Zweitset',
+            capacity: 250,
+            kind: 'NORMAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+
+    // Pick A (set-2) — request fires, left unresolved.
+    component['selectSet']('set-2');
+    const requestA = httpMock.expectOne(
+      (req) =>
+        req.url === '/api/seventv/channels/handofblood/emotes' &&
+        req.params.get('emoteSetId') === 'set-2',
+    );
+
+    // Pick B (back to set-1) before A resolves — a second request fires.
+    component['selectSet']('set-1');
+    const requestB = httpMock.expectOne(
+      (req) =>
+        req.url === '/api/seventv/channels/handofblood/emotes' &&
+        req.params.get('emoteSetId') === 'set-1',
+    );
+
+    // B (the current pick) resolves; A's late answer for the set the user has already left arrives
+    // after and must be ignored.
+    requestB.flush(previewResponse({ emoteSetId: 'set-1' }));
+    fixture.detectChanges();
+    requestA.flush(
+      previewResponse({
+        emoteSetId: 'set-2',
+        emotes: [
+          {
+            sevenTvEmoteId: 'e2',
+            name: 'PogU',
+            defaultName: 'PogU',
+            imageUrl: 'https://cdn.7tv.app/e2/4x.webp',
+            topAllTime: null,
+            trending: null,
+          },
+        ],
+      }),
+    );
+    fixture.detectChanges();
+
+    expect(grid().emotes()[0].sevenTvEmoteId).toBe('e1');
+    expect(component.result()).toBeNull(); // B's preview never got a selection, and A's never applied.
+  });
+
+  it('a same-set race: an older response for the currently selected set does not overwrite a newer one (P3-5)', () => {
+    loadChannel(); // single set 'set-1', already resolved once by the initial load.
+
+    // Two requests for the very same set id — e.g. a double-clicked retry. The old guard
+    // (selectedEmoteSetId only) could never tell these two apart, since both target 'set-1'.
+    component['retryPreview']();
+    const first = httpMock.expectOne(
+      (req) =>
+        req.url === '/api/seventv/channels/handofblood/emotes' &&
+        req.params.get('emoteSetId') === 'set-1',
+    );
+    component['retryPreview']();
+    const second = httpMock.expectOne(
+      (req) =>
+        req.url === '/api/seventv/channels/handofblood/emotes' &&
+        req.params.get('emoteSetId') === 'set-1',
+    );
+
+    // The newer request (second) resolves first; the older one (first) then arrives late with
+    // different content and must be ignored.
+    second.flush(
+      previewResponse({
+        emotes: [
+          {
+            sevenTvEmoteId: 'newer',
+            name: 'Newer',
+            defaultName: 'Newer',
+            imageUrl: 'https://cdn.7tv.app/newer/4x.webp',
+            topAllTime: null,
+            trending: null,
+          },
+        ],
+      }),
+    );
+    fixture.detectChanges();
+    first.flush(
+      previewResponse({
+        emotes: [
+          {
+            sevenTvEmoteId: 'older',
+            name: 'Older',
+            defaultName: 'Older',
+            imageUrl: 'https://cdn.7tv.app/older/4x.webp',
+            topAllTime: null,
+            trending: null,
+          },
+        ],
+      }),
+    );
+    fixture.detectChanges();
+
+    expect(grid().emotes()[0].sevenTvEmoteId).toBe('newer');
   });
 });

@@ -17,6 +17,17 @@ import { SkeletonRows } from '../ui/skeleton-rows';
 import { ForeignEmoteGrid } from './foreign-emote-grid';
 
 /**
+ * Per-row height of one radiogroup option, in rem — a labelled `py-1` row at the app's `text-sm` line
+ * height (K3 review finding P2-1). Folded into {@link ForeignChannelStep.gridReservedRem} so
+ * {@link ForeignEmoteGrid}'s own height budget accounts for however many rows this step's radiogroup
+ * actually renders, instead of assuming a fixed shape.
+ */
+const RADIO_ROW_REM = 1.75;
+/** The one extra `gap-3` the radiogroup's own flex item costs the step's host stack, on top of the
+ *  `gap-1` between its own rows (already folded into {@link RADIO_ROW_REM}) — see gridReservedRem. */
+const RADIOGROUP_GAP_REM = 0.75;
+
+/**
  * What this step yields once the user has picked emotes to bring over — a self-contained payload,
  * not an `ImportSource`/`ImportOrigin`. Those types (`core/seven-tv/import-source.ts`) carry the
  * third `'seventv-channel'` variant, and `buildForeignImportSource` turns this result into one; the
@@ -41,8 +52,9 @@ export interface ForeignChannelImportResult {
 /** The picked set's preview, nested under the resolved set list below — a separate, smaller state
  *  machine because switching the radiogroup selection (or retrying just the preview) must not
  *  re-fetch the set list itself (spec 8.7, "kein zweiter Request, wenn das aktive Set gewählt
- *  bleibt"). `'none'` is the one state that fires no HTTP request at all: 7TV reported no active set
- *  for this account (`activeEmoteSetId === ''`) and nothing has been picked yet. */
+ *  bleibt"). `'none'` is the one state that fires no HTTP request at all and renders a notice instead
+ *  of the grid (K3 review finding P2-2): 7TV reported no active set for this account at all, and
+ *  nothing has been picked yet either. */
 type PreviewState =
   | { status: 'none' }
   | { status: 'loading' }
@@ -217,6 +229,14 @@ type LoadState =
           }
 
           @switch (ready.preview.status) {
+            @case ('none') {
+              <!-- P2-2: no usable active set, and either zero or more than one selectable set to
+                   fall back to automatically — the radiogroup above (if anything renders in it at
+                   all) is where the choice is made; this notice is what used to be silence. -->
+              <app-notice-banner variant="info">
+                {{ 'import.foreignChannel.noActiveSet' | transloco }}
+              </app-notice-banner>
+            }
             @case ('loading') {
               <app-skeleton-rows [count]="3" />
             }
@@ -233,6 +253,7 @@ type LoadState =
                 [emotes]="ready.preview.response.emotes"
                 [truncated]="ready.preview.response.truncated"
                 [totalCount]="ready.preview.response.totalCount"
+                [reservedRem]="gridReservedRem()"
                 (selectionChange)="onSelectionChange($event)"
               />
             }
@@ -261,9 +282,27 @@ export class ForeignChannelStep {
   protected readonly state = signal<LoadState>({ status: 'idle' });
   protected readonly selectedRows = signal<ForeignEmoteRow[]>([]);
 
+  /** Bumped on every {@link loadPreview} call — the only way {@link applyPreviewResult} tells a
+   *  stale answer from the latest one when two requests target the very same set id (review finding
+   *  P3-5: a double-fired retry, or a fast pick-A-then-B-then-A-again), which comparing
+   *  `selectedEmoteSetId` alone cannot distinguish — that guard only rules out an answer for a set
+   *  that is no longer selected, not an older answer for the set that still is. */
+  private latestPreviewRequestId = 0;
+
   protected readonly readyState = computed(() => {
     const current = this.state();
     return current.status === 'ready' ? current : null;
+  });
+
+  /** Extra vertical rem the radiogroup above the grid takes inside the same scrolling pane, passed
+   *  straight through to {@link ForeignEmoteGrid.reservedRem} (K3 review finding P2-1) — see that
+   *  input's own doc for the height-budget reasoning. `0` when the radiogroup does not render at all
+   *  (the template's own `ready.sets.length > 1` gate, mirrored here rather than read back off the
+   *  DOM). */
+  protected readonly gridReservedRem = computed(() => {
+    const ready = this.readyState();
+    const count = ready === null || ready.sets.length <= 1 ? 0 : ready.sets.length;
+    return count === 0 ? 0 : count * RADIO_ROW_REM + RADIOGROUP_GAP_REM;
   });
 
   protected readonly setsErrorMessageKey = computed(() => {
@@ -385,17 +424,28 @@ export class ForeignChannelStep {
     this.selectedRows.set([]);
     this.emoteSetService.listForeignChannelEmoteSets(channelName).subscribe({
       next: (listResponse) => {
+        const sets = listResponse.sets;
         const activeEmoteSetId = listResponse.activeEmoteSetId;
+        // P2-2: no active set must not dead-end the step. Exactly one selectable (NORMAL) set is an
+        // unambiguous choice and gets preselected automatically; anything else — none, or more than
+        // one — leaves the pick to the radiogroup and shows a notice instead of nothing.
+        const selectableSets = sets.filter((set) => set.kind === 'NORMAL');
+        const selectedEmoteSetId =
+          activeEmoteSetId !== ''
+            ? activeEmoteSetId
+            : selectableSets.length === 1
+              ? selectableSets[0].id
+              : '';
         this.state.set({
           status: 'ready',
           channelName,
-          sets: listResponse.sets,
+          sets,
           activeEmoteSetId,
-          selectedEmoteSetId: activeEmoteSetId,
-          preview: activeEmoteSetId === '' ? { status: 'none' } : { status: 'loading' },
+          selectedEmoteSetId,
+          preview: selectedEmoteSetId === '' ? { status: 'none' } : { status: 'loading' },
         });
-        if (activeEmoteSetId !== '') {
-          this.loadPreview(channelName, activeEmoteSetId, false);
+        if (selectedEmoteSetId !== '') {
+          this.loadPreview(channelName, selectedEmoteSetId, false);
         }
       },
       error: (error: HttpErrorResponse) => this.state.set({ status: 'setsError', error }),
@@ -403,21 +453,30 @@ export class ForeignChannelStep {
   }
 
   private loadPreview(channelName: string, emoteSetId: string, refresh: boolean): void {
+    const requestId = ++this.latestPreviewRequestId;
     this.emoteSetService.loadEmoteSetPreview(channelName, emoteSetId, { refresh }).subscribe({
-      next: (response) => this.applyPreviewResult(emoteSetId, { status: 'loaded', response }),
+      next: (response) =>
+        this.applyPreviewResult(requestId, emoteSetId, { status: 'loaded', response }),
       error: (error: HttpErrorResponse) =>
-        this.applyPreviewResult(emoteSetId, { status: 'error', error }),
+        this.applyPreviewResult(requestId, emoteSetId, { status: 'error', error }),
     });
   }
 
   /**
-   * Applies a preview response/error only if it still matches the currently selected set — a guard
-   * against a stale answer landing after the caller has already switched to a different set (the
-   * radiogroup issues a fresh request per click, with no cancellation of the previous one).
+   * Applies a preview response/error only if it is both the latest request issued at all *and*
+   * still matches the currently selected set. The set-id check alone used to be the whole guard,
+   * against a stale answer landing after the caller switched to a different set — but it let an
+   * older answer for the very same set id win a race against a newer one for that same id (P3-5),
+   * since two different requests can share an emoteSetId. The request id closes that gap regardless
+   * of which set either request was for.
    */
-  private applyPreviewResult(emoteSetId: string, preview: PreviewState): void {
+  private applyPreviewResult(requestId: number, emoteSetId: string, preview: PreviewState): void {
     const current = this.state();
-    if (current.status !== 'ready' || current.selectedEmoteSetId !== emoteSetId) {
+    if (
+      requestId !== this.latestPreviewRequestId ||
+      current.status !== 'ready' ||
+      current.selectedEmoteSetId !== emoteSetId
+    ) {
       return;
     }
     this.state.set({ ...current, preview });
