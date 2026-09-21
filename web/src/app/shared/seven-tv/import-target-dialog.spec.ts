@@ -42,9 +42,11 @@ const DE_TRANSLATIONS = {
       loadFailed: 'Die Angebotsliste konnte nicht geladen werden.',
       retry: 'Erneut laden',
       submit: 'Weiter',
-      confirmUntracked: "In das Set ‚{{setName}}' von ‚{{ownerDisplayName}}' kopieren?",
+      confirmUntracked:
+        "Ziel ist das Set ‚{{setName}}' von ‚{{ownerDisplayName}}' — dieses Konto trackt EmotePurge nicht.",
       unknownOwner: 'Besitzer unbekannt',
-      confirmUntrackedSubmit: 'Kopieren',
+      confirmUntrackedAccept: 'Ja, dieses Set',
+      confirmUntrackedReject: 'Anderes Set wählen',
     },
   },
 };
@@ -52,6 +54,8 @@ const DE_TRANSLATIONS = {
 const CANCEL = 'Abbrechen';
 const SUBMIT = 'Weiter';
 const RETRY = 'Erneut laden';
+const CONFIRM_ACCEPT = 'Ja, dieses Set';
+const CONFIRM_REJECT = 'Anderes Set wählen';
 const SOURCE_SET_ID = 'set-source';
 
 function targetsResult(overrides: Partial<EmoteSetTargetsResponse> = {}): EmoteSetTargetsResponse {
@@ -126,10 +130,10 @@ interface Harness {
    *  tests also trigger the load-failed/offer-incomplete banners, so "the one `app-notice-banner`
    *  in the DOM" is unambiguous; a future test that combines both would need a more specific query. */
   confirmationBanner(): HTMLElement | undefined;
-  /** The banner's own cancel button — scoped to the banner rather than the generic {@link button}
-   *  lookup, because both it and the dialog's own cancel button share the exact same label
-   *  ("Abbrechen") and the generic lookup would otherwise always resolve to whichever renders
-   *  first in document order. */
+  /** The banner's own reject button ("Anderes Set wählen", finding 7) — scoped to the banner rather
+   *  than the generic {@link button} lookup purely for locality; unlike before finding 7's rewording
+   *  it no longer shares a label with the dialog's own cancel button ("Abbrechen"), but scoping it
+   *  to the banner still reads as "the banner's own reject action" at each call site. */
   confirmationCancelButton(): HTMLButtonElement | undefined;
 }
 
@@ -595,8 +599,8 @@ describe('ImportTargetDialog', () => {
     });
   });
 
-  describe('preselection — the active set of the first tracked account (Ein-Klick-Weg "in Kanal X")', () => {
-    it('preselects the active, selectable set of the first tracked account once the data loads', async () => {
+  describe('preselection — the caller\'s own account\'s active set (Ein-Klick-Weg "in Kanal X", finding 4)', () => {
+    it("preselects the active, selectable set of the caller's own account once the data loads", async () => {
       const dialog = render();
       await resolve(
         dialog,
@@ -606,6 +610,7 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '1',
               trackedChannelName: 'chan',
+              isOwnAccount: true,
               sets: [set({ id: 'set-a', name: 'Main', isActive: true })],
             }),
           ],
@@ -618,7 +623,43 @@ describe('ImportTargetDialog', () => {
       expect(dialog.button(SUBMIT).disabled).toBe(false);
     });
 
-    it('does not preselect the source set even when it is the account`s active set', async () => {
+    // Finding 4 (Live-Verifikation K2 2026-09-21): a first draft walked the tracked list in order
+    // and preselected the first account whose header was selectable — which fell straight through
+    // to a *different* tracked account's active set the moment the caller's own one was disabled
+    // (observed live as an unrelated, merely moderated channel getting preselected). The fix looks
+    // up the account by isOwnAccount specifically, never by list position, so a disabled own set now
+    // falls through to "nothing preselected" instead.
+    it("falls through to nothing when the caller's own active set is disabled (the source) — never to a different tracked account's active set", async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'own-channel',
+              isOwnAccount: true,
+              activeEmoteSetId: SOURCE_SET_ID,
+              sets: [set({ id: SOURCE_SET_ID, name: 'Main', isActive: true })],
+            }),
+            account({
+              twitchChannelId: '2',
+              trackedChannelName: 'moderated-channel',
+              isOwnAccount: false,
+              activeEmoteSetId: 'set-mod',
+              sets: [set({ id: 'set-mod', name: 'ModMain', isActive: true })],
+            }),
+          ],
+        }),
+      );
+
+      expect(dialog.accountInput('moderated-channel')?.checked).toBe(false);
+      expect(dialog.setInput('Main')?.checked).toBe(false);
+      expect(dialog.button(SUBMIT).disabled).toBe(true);
+    });
+
+    it('does not preselect the source set even when it is the own account`s active set', async () => {
       const dialog = render();
       await resolve(
         dialog,
@@ -628,6 +669,7 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '1',
               trackedChannelName: 'chan',
+              isOwnAccount: true,
               sets: [set({ id: SOURCE_SET_ID, name: 'Main', isActive: true })],
             }),
           ],
@@ -638,7 +680,7 @@ describe('ImportTargetDialog', () => {
       expect(dialog.button(SUBMIT).disabled).toBe(true);
     });
 
-    it('does not preselect an untracked account`s active set', async () => {
+    it('does not preselect an untracked own account`s active set', async () => {
       const dialog = render();
       await resolve(
         dialog,
@@ -648,6 +690,7 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '1',
               trackedChannelName: null,
+              isOwnAccount: true,
               sets: [set({ id: 'set-a', name: 'Main', isActive: true })],
             }),
           ],
@@ -656,6 +699,49 @@ describe('ImportTargetDialog', () => {
 
       expect(dialog.setInput('Main')?.checked).toBe(false);
       expect(dialog.button(SUBMIT).disabled).toBe(true);
+    });
+
+    it('does not preselect a non-own tracked account`s active set at all', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'moderated-channel',
+              isOwnAccount: false,
+              sets: [set({ id: 'set-a', name: 'Main', isActive: true })],
+            }),
+          ],
+        }),
+      );
+
+      expect(dialog.accountInput('moderated-channel')?.checked).toBe(false);
+      expect(dialog.button(SUBMIT).disabled).toBe(true);
+    });
+
+    // The picker can be opened from any channel page — the preselection must land on the caller's
+    // own account regardless, never on whichever channel the picker happened to be opened from.
+    it("preselects the own channel's active set even when the picker was opened from a different channel", async () => {
+      const dialog = render(defaultData({ currentChannelName: 'brudivoeller_tv' }));
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'sensitron',
+              isOwnAccount: true,
+              sets: [set({ id: 'set-a', name: 'Main', isActive: true })],
+            }),
+          ],
+        }),
+      );
+
+      expect(dialog.accountInput('sensitron')?.checked).toBe(true);
     });
 
     it('never overrides a manual pick the user already made', async () => {
@@ -668,6 +754,7 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '1',
               trackedChannelName: 'chan',
+              isOwnAccount: true,
               sets: [
                 set({ id: 'set-a', name: 'Main', isActive: true }),
                 set({ id: 'set-b', name: 'Halloween' }),
@@ -686,7 +773,7 @@ describe('ImportTargetDialog', () => {
       expect(dialog.accountInput('chan')?.checked).toBe(false);
     });
 
-    it("lands on a second tracked account's active set in one click — not just the first (AK 34 correction)", async () => {
+    it("a manual click still lands on a second (non-own) tracked account's active set in one click", async () => {
       const dialog = render();
       await resolve(
         dialog,
@@ -696,6 +783,7 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '1',
               trackedChannelName: 'chan1',
+              isOwnAccount: true,
               // activeEmoteSetId matches the set marked isActive below — server-derived (E21),
               // never independent of it (T2.6 straightened out a predecessor fixture where the two
               // disagreed; see the T2.6 handover note).
@@ -705,6 +793,7 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '2',
               trackedChannelName: 'chan2',
+              isOwnAccount: false,
               activeEmoteSetId: 'set-2',
               sets: [
                 set({ id: 'set-2', name: 'Main2', ownerDisplayName: 'Chan2Owner', isActive: true }),
@@ -714,12 +803,13 @@ describe('ImportTargetDialog', () => {
         }),
       );
 
-      // The load-time default already landed on the first tracked account (chan1) — that half is
-      // covered by the earlier tests in this describe block.
+      // The load-time default already landed on the own account (chan1) — that half is covered by
+      // the earlier tests in this describe block.
       expect(dialog.accountInput('chan1')?.checked).toBe(true);
 
       // One click on chan2's header is enough to land on *its* active set too — not "expand, then
-      // click a nested set radio". Each tracked account's header is its own one-click shortcut.
+      // click a nested set radio". Each tracked account's header is its own one-click shortcut,
+      // regardless of isOwnAccount — that field only gates the automatic load-time default.
       dialog.accountInput('chan2')?.click();
       dialog.detect();
 
@@ -928,7 +1018,7 @@ describe('ImportTargetDialog', () => {
       dialog.detect();
 
       expect(dialog.confirmationBanner()?.textContent).toContain(
-        "In das Set ‚Halloween' von ‚Stranger' kopieren?",
+        "Ziel ist das Set ‚Halloween' von ‚Stranger' — dieses Konto trackt EmotePurge nicht.",
       );
       // The radio shows the pending candidate (it is what the banner is asking to confirm), but
       // nothing is decided yet (AK 35: "ohne Bestätigung keine Wahl") — "Weiter" cannot be used to
@@ -936,6 +1026,11 @@ describe('ImportTargetDialog', () => {
       expect(dialog.setInput('Halloween')?.checked).toBe(true);
       expect(dialog.button(SUBMIT).disabled).toBe(true);
       expect(closed).toEqual([]);
+      // Finding 7: the banner's own buttons name what they actually do — confirm this target, or go
+      // back to choosing — not a second, differently-labelled "copy" action next to "Weiter".
+      expect(dialog.hasButton(CONFIRM_ACCEPT)).toBe(true);
+      expect(dialog.hasButton(CONFIRM_REJECT)).toBe(true);
+      expect(dialog.hasButton('Kopieren')).toBe(false);
     });
 
     // Codex round 3 P2: a selectable untracked NORMAL set with no owner.mainConnection carries
@@ -962,7 +1057,7 @@ describe('ImportTargetDialog', () => {
       dialog.detect();
 
       expect(dialog.confirmationBanner()?.textContent).toContain(
-        "In das Set ‚Halloween' von ‚stranger' kopieren?",
+        "Ziel ist das Set ‚Halloween' von ‚stranger' — dieses Konto trackt EmotePurge nicht.",
       );
     });
 
@@ -989,7 +1084,7 @@ describe('ImportTargetDialog', () => {
       dialog.detect();
 
       expect(dialog.confirmationBanner()?.textContent).toContain(
-        "In das Set ‚Halloween' von ‚Besitzer unbekannt' kopieren?",
+        "Ziel ist das Set ‚Halloween' von ‚Besitzer unbekannt' — dieses Konto trackt EmotePurge nicht.",
       );
     });
 
@@ -1003,6 +1098,7 @@ describe('ImportTargetDialog', () => {
             account({
               twitchChannelId: '1',
               trackedChannelName: 'chan',
+              isOwnAccount: true,
               activeEmoteSetId: 'set-tracked',
               sets: [set({ id: 'set-tracked', name: 'Main', isActive: true })],
             }),
@@ -1016,7 +1112,8 @@ describe('ImportTargetDialog', () => {
         }),
       );
 
-      // A tracked choice already stands (the load-time preselection, spec 8.6) — cancelling an
+      // A tracked choice already stands (the load-time preselection of the caller's own account,
+      // finding 4) — cancelling an
       // untracked confirmation attempt must leave it exactly as it is.
       expect(dialog.accountInput('chan')?.checked).toBe(true);
 
@@ -1058,7 +1155,7 @@ describe('ImportTargetDialog', () => {
 
       dialog.setInput('Halloween')?.click();
       dialog.detect();
-      dialog.button('Kopieren').click();
+      dialog.button(CONFIRM_ACCEPT).click();
       dialog.detect();
 
       expect(closed).toEqual([

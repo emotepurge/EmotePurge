@@ -32,8 +32,11 @@ const DE_TRANSLATIONS = {
     summary: {
       counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
       target: 'Ziel: {{ channel }}',
-      targetSet: 'Ziel: Set {{ setId }} von {{ owner }}',
+      targetWithSet: 'Ziel: {{ channel }} · Set {{ setName }}',
+      targetSet: 'Ziel: Set {{ setName }} von {{ owner }}',
       openTarget: 'Zielkanal öffnen',
+      copiedNotActive:
+        "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       insufficientPrivileges: 'Das 7TV-Token hat im Zielset kein Schreibrecht.',
     },
     resync: {
@@ -50,6 +53,10 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     targetChannelName: 'zielkanal',
     targetOwnerDisplayName: null,
     targetSetId: 'set-1',
+    targetSetName: 'Set-1',
+    // Active by default so the existing "Ziel: zielkanal" behaviour keeps working unchanged —
+    // findings 2/3 tests below override this explicitly.
+    targetIsActiveSet: true,
     origin: { kind: 'channel', channelName: 'quellkanal' },
     result: null,
     ...overrides,
@@ -157,19 +164,101 @@ describe('ImportProgressSection', () => {
           targetChannelName: null,
           targetOwnerDisplayName: 'Stranger',
           targetSetId: 'set-untracked',
+          // Named by its resolved name, not the raw id (finding 2, Live-Verifikation K2 2026-09-21).
+          targetSetName: 'Wegwerf-Set',
         }),
       );
 
       const fixture = render();
 
       const host: HTMLElement = fixture.nativeElement;
-      expect(host.textContent).toContain('Ziel: Set set-untracked von Stranger');
+      expect(host.textContent).toContain('Ziel: Set Wegwerf-Set von Stranger');
       expect(host.textContent).not.toContain('zielkanal');
       expect(
         Array.from(host.querySelectorAll<HTMLAnchorElement>('a')).some(
           (a) => a.textContent?.trim() === 'Zielkanal öffnen',
         ),
       ).toBe(false);
+    });
+  });
+
+  // Finding 2/3 (Live-Verifikation K2 2026-09-21): a tracked target whose set is *not* the channel's
+  // active one — the run writes into it, but the channel page (and its resync) never shows it.
+  describe('tracked non-active target (targetIsActiveSet: false)', () => {
+    it("names the channel and the set together, mirroring the confirm dialog's own line", () => {
+      importService.isRunning.set(true);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+        }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Ziel: zielkanal · Set wegwerf');
+    });
+
+    it('offers no "open target channel" link once the run has settled', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneIds: [], doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+
+      const fixture = render();
+      const host: HTMLElement = fixture.nativeElement;
+
+      expect(
+        Array.from(host.querySelectorAll<HTMLAnchorElement>('a')).some(
+          (a) => a.textContent?.trim() === 'Zielkanal öffnen',
+        ),
+      ).toBe(false);
+    });
+
+    it('shows the copied-not-active notice instead of a resync notice once the run has settled', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneIds: [], doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      // The service never sets resyncTrigger away from 'idle' for a non-active target
+      // (SevenTvImportService.onRunComplete) — pinned here too, not just assumed.
+      importService.resyncTrigger.set('idle');
+
+      const fixture = render();
+
+      const notice = fixture.nativeElement.querySelector('[aria-hidden="true"]');
+      expect(notice?.textContent.trim()).toBe(
+        "In Set ‚wegwerf' kopiert — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
+      );
+      expect(fixture.nativeElement.textContent).not.toContain('Abgleich');
+    });
+
+    it('shows nothing yet while the run is still in flight (no settled result)', () => {
+      importService.isRunning.set(true);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+        }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('kopiert —');
     });
   });
 

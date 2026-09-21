@@ -37,6 +37,15 @@ export interface ImportTargetAccountGroup {
    *  reads (spec 6.2, 8.6). `null` for an untracked account. */
   channelName: string | null;
   isTracked: boolean;
+  /** `EmoteSetTargetAccount.isOwnAccount` — "is this the caller's own Twitch identity", passed
+   *  through unchanged. Answers a different question from `isTracked` and can disagree with it in
+   *  either direction (the account's doc explains why) — the picker's load-time preselection
+   *  (`import-target-dialog.ts`'s `firstPreselectableTarget`) is the one consumer that needs it: a
+   *  live bug (finding 4, Live-Verifikation K2 2026-09-21) fell through to a *different* tracked
+   *  account's active set whenever the caller's own one was disabled (it being the copy's source),
+   *  because the old code preselected "whichever tracked account comes first", not "the caller's
+   *  own account specifically". */
+  isOwnAccount: boolean;
   /** `EmoteSetTargetAccount.activeEmoteSetId` (spec 6.2) — carried through so `ImportTargetChoice`
    *  can tell a click on this account's active set apart from any other, *without* re-deriving it
    *  from `ImportTargetSetChoice.isActive` a second time at the point that decision actually
@@ -126,6 +135,7 @@ function toAccountGroup(
     twitchLogin: account.twitchLogin,
     channelName: account.trackedChannelName,
     isTracked: account.trackedChannelName !== null,
+    isOwnAccount: account.isOwnAccount,
     activeEmoteSetId: account.activeEmoteSetId,
     setsUnavailable: account.setsUnavailable,
     sets: account.sets.map((set) => ({

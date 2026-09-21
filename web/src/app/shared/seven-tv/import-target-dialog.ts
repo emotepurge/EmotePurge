@@ -177,7 +177,16 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
            outright — it stays pending here until confirmed. Cancelling leaves target(), and
            therefore every radio's checked state, exactly as it was before this click; nothing is
            blanked (see cancelUntrackedConfirmation()'s doc). A tracked pick never reaches this
-           banner at all ("kein zweiter Schritt"). -->
+           banner at all ("kein zweiter Schritt").
+
+           Wording is a target *confirmation*, not an action verb (finding 7, Live-Verifikation K2
+           2026-09-21): the live text used to read "In das Set '…' kopieren?" with a "Kopieren"
+           button next to the picker's own disabled "Weiter" — two differently-labelled "copy"
+           affordances side by side, when this button copies nothing at all, it only locks in the
+           target and closes the picker (confirmUntrackedTarget() does exactly what the old
+           "Kopieren" button did). "Ja, dieses Set" / "Anderes Set wählen" name what each button
+           actually does — confirm this target, or go back to choosing — without echoing "kopieren"
+           a second time before the confirm dialog (the actual copy step) has even opened. -->
       @if (pendingUntrackedTarget(); as pending) {
         <app-notice-banner variant="info">
           {{
@@ -190,7 +199,7 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
             appButton="outline"
             (click)="cancelUntrackedConfirmation()"
           >
-            {{ 'common.cancel' | transloco }}
+            {{ 'import.target.confirmUntrackedReject' | transloco }}
           </button>
           <button
             notice-action
@@ -199,7 +208,7 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
             [disabled]="emptyScopeChosen()"
             (click)="confirmUntrackedTarget()"
           >
-            {{ 'import.target.confirmUntrackedSubmit' | transloco }}
+            {{ 'import.target.confirmUntrackedAccept' | transloco }}
           </button>
         </app-notice-banner>
       }
@@ -392,14 +401,16 @@ export class ImportTargetDialog {
     // Baustein 2, "das aktive Set beschriftet und vorausgewählt, damit der heutige Ein-Klick-Weg
     // 'in Kanal X' unverändert bleibt") is per-account and lives in headerSet(): every tracked
     // account's own header is already a one-click shortcut to its active set, on its own, without
-    // this effect. This effect only supplies the "nothing chosen yet" starting point — the eigene
-    // bzw. erste getrackte Account's active set — so the common case still needs zero clicks, not
-    // just one. Scoped to *tracked* accounts (via firstPreselectableTarget → headerSet) — an
-    // untracked target always needs the confirmation step T2.6 adds, so auto-selecting one here
-    // would let a submit skip it. Runs once data arrives and only while nothing has been chosen
-    // yet; a user's own click always wins and is never overwritten, including across a later
-    // `targetsResource.reload()` — the `target() !== null` guard is exactly what keeps this from
-    // re-firing once a choice, theirs or this effect's own, already exists.
+    // this effect. This effect only supplies the "nothing chosen yet" starting point — the caller's
+    // own account's active set, never any other tracked account's (finding 4, Live-Verifikation K2
+    // 2026-09-21 — see firstPreselectableTarget's own doc for the bug this replaced) — so the common
+    // case still needs zero clicks, not just one. Scoped to *tracked* accounts (via
+    // firstPreselectableTarget → headerSet) — an untracked target always needs the confirmation step
+    // T2.6 adds, so auto-selecting one here would let a submit skip it. Runs once data arrives and
+    // only while nothing has been chosen yet; a user's own click always wins and is never
+    // overwritten, including across a later `targetsResource.reload()` — the `target() !== null`
+    // guard is exactly what keeps this from re-firing once a choice, theirs or this effect's own,
+    // already exists.
     effect(() => {
       if (this.target() !== null || !this.targetsResource.hasValue()) {
         return;
@@ -514,28 +525,44 @@ export class ImportTargetDialog {
 
   /**
    * The dialog's initial `target` (spec 8.6 / Konzept 7.5 Baustein 2: "ein Anfangszustand beim
-   * Laden: der eigene bzw. erste getrackte Account mit seinem aktiven Set"). Reuses
-   * {@link headerSet} deliberately — the account this picks is exactly the one whose header is
-   * already a live one-click shortcut to the same set, so the initial state and the "choose account
-   * X" shortcut always agree on what "X's active set" means, by construction rather than by keeping
-   * two rules in sync by hand.
+   * Laden: der eigene Account mit seinem aktiven Set"). Reuses {@link headerSet} deliberately — the
+   * account this picks is exactly the one whose header is already a live one-click shortcut to the
+   * same set, so the initial state and the "choose account X" shortcut always agree on what "X's
+   * active set" means, by construction rather than by keeping two rules in sync by hand.
+   *
+   * Looks up the account by `isOwnAccount`, never by list position (finding 4, Live-Verifikation K2
+   * 2026-09-21): a first draft walked `choices().tracked` in order and returned the first group
+   * whose header was selectable, which reads as "the caller's own account" only as long as that
+   * account's own active set happens to be selectable. The moment it is not — because it is the
+   * copy's own source set, disabled by {@link ImportTargetSetChoice.disabled} — the loop fell
+   * through to the *next* tracked account instead, silently landing the preselection on a different
+   * streamer's channel (observed live: opening the picker from the caller's own channel with its
+   * active set as the source preselected an unrelated moderated channel). `isOwnAccount` answers
+   * "is this the caller's own Twitch identity" regardless of where 6.2 placed it in the response and
+   * regardless of which channel page the picker was opened from (its own `data.currentChannelName`
+   * plays no role here at all) — so a disabled own active set now falls through to "nothing
+   * preselected", never to someone else's channel. No own account in the tracked list (it is
+   * untracked, or absent — a moderator's own channel need not be tracked) is the same "nothing
+   * preselected" outcome, unchanged from before.
    */
   private firstPreselectableTarget(): TargetSelection {
-    for (const group of this.choices().tracked) {
-      const header = this.headerSet(group);
-      if (header !== null) {
-        return {
-          emoteSetId: header.emoteSetId,
-          channelName: group.channelName,
-          ownerDisplayName: header.ownerDisplayName,
-          setName: header.setName,
-          isTracked: group.isTracked,
-          twitchLogin: group.twitchLogin,
-          activeEmoteSetId: group.activeEmoteSetId,
-        };
-      }
+    const own = this.choices().tracked.find((group) => group.isOwnAccount);
+    if (own === undefined) {
+      return null;
     }
-    return null;
+    const header = this.headerSet(own);
+    if (header === null) {
+      return null;
+    }
+    return {
+      emoteSetId: header.emoteSetId,
+      channelName: own.channelName,
+      ownerDisplayName: header.ownerDisplayName,
+      setName: header.setName,
+      isTracked: own.isTracked,
+      twitchLogin: own.twitchLogin,
+      activeEmoteSetId: own.activeEmoteSetId,
+    };
   }
 }
 

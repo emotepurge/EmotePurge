@@ -484,7 +484,8 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
     });
     await mockSetWarning(page, TARGET_CHANNEL);
     await mockSyncImported(page, TARGET_CHANNEL);
-    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    // No mockChannelScopedResync here (finding 3, Live-Verifikation K2 2026-09-21): a non-active
+    // target must never trigger it at all — the test below asserts that directly via its own route.
 
     let capturedSetId: unknown;
     await mockSevenTvGql(page, (request) => {
@@ -508,11 +509,20 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
     await picker.getByRole('button', { name: 'Weiter' }).click();
 
     const confirm = page.getByRole('dialog');
+    // Finding 1 (Live-Verifikation K2 2026-09-21): the title names the SET, not "nach aatrociity" —
+    // that wording would claim the channel's active set, which this run does not write to.
     await expect(confirm.locator('#app-dialog-title')).toHaveText(
-      '1 Emote nach aatrociity kopieren?',
+      "1 Emote in Set ‚Halloween' kopieren?",
     );
     // The confirm header names the CHOSEN set, never the account's active one (AK 39/F5).
     await expect(confirm.getByText('Ziel: aatrociity · Set Halloween')).toBeVisible();
+
+    let resyncCalled = false;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/resync`, async (route) => {
+      resyncCalled = true;
+      await route.fulfill({ status: 202 });
+    });
+
     await confirm.getByRole('button', { name: 'Kopieren' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
@@ -521,6 +531,23 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
 
     // AK 43: the GQL mutation's own setId is the chosen set, never 'target-set' (the active one).
     expect(capturedSetId).toBe('target-set-halloween');
+
+    // Finding 2: the dock's own "Ziel: …" line now names the set too, mirroring the confirm
+    // dialog's own line above.
+    await expect(page.getByText('Ziel: aatrociity · Set Halloween')).toBeVisible();
+    // Finding 3: a non-active target never resyncs the channel and never offers to open it — the
+    // channel page shows its own active set, never this one.
+    await expect(page.getByRole('link', { name: 'Zielkanal öffnen' })).toHaveCount(0);
+    // The same text exists twice by design (§4.5): the visible, aria-hidden span in the dock, and
+    // DockOutcomeAnnouncer's own spoken paragraph — target the visible one specifically, same
+    // pattern as usage-stats-page.e2e.spec.ts's visiblePrunedNotice.
+    await expect(
+      page.locator('[aria-hidden="true"]').filter({
+        hasText:
+          "In Set ‚Halloween' kopiert — es ist nicht das aktive Set von aatrociity, die Kanalseite zeigt es deshalb nicht.",
+      }),
+    ).toBeVisible();
+    expect(resyncCalled).toBe(false);
   });
 
   test('untracked target: the picker asks for confirmation, then reports through the set-centric endpoint (AK 35/41)', async ({
@@ -579,22 +606,26 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
     await expect(picker.getByText('nicht getrackt')).toBeVisible();
 
     // AK 35: choosing the untracked set does not select it outright — a confirmation names the
-    // set and its owner first, and "Weiter" cannot be used to skip past it.
+    // set and its owner first, and "Weiter" cannot be used to skip past it. Finding 7
+    // (Live-Verifikation K2 2026-09-21): worded as a target confirmation, not a second, differently
+    // labelled "copy" action next to the picker's own disabled "Weiter".
     await picker.getByRole('radio', { name: 'Wegwerf-Set' }).check();
     await expect(
-      picker.getByText("In das Set ‚Wegwerf-Set' von ‚Stranger' kopieren?"),
+      picker.getByText(
+        "Ziel ist das Set ‚Wegwerf-Set' von ‚Stranger' — dieses Konto trackt EmotePurge nicht.",
+      ),
     ).toBeVisible();
     await expect(picker.getByRole('button', { name: 'Weiter' })).toBeDisabled();
 
     // Confirming closes the whole picker directly (AK 35: "Bestätigung schließt den Picker mit
     // channelName: null") — there is no separate "Weiter" click for this class.
-    await picker.getByRole('button', { name: 'Kopieren' }).click();
+    await picker.getByRole('button', { name: 'Ja, dieses Set' }).click();
 
     const confirm = page.getByRole('dialog');
-    // The header names the owner, not a channel (AK 39: there is none) — titleTargetLabel falls
-    // back to targetOwnerDisplayName.
+    // Finding 1: the title names the SET, not "nach Stranger" — an untracked target is never the
+    // channel's active set (there is no channel at all).
     await expect(confirm.locator('#app-dialog-title')).toHaveText(
-      '1 Emote nach Stranger kopieren?',
+      "1 Emote in Set ‚Wegwerf-Set' kopieren?",
     );
     await expect(confirm.getByText('Ziel: Set Wegwerf-Set von Stranger')).toBeVisible();
     await confirm.getByRole('button', { name: 'Kopieren' }).click();
@@ -603,9 +634,13 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
     await page.clock.runFor(1000);
     await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
     // T2.6/8.6: the dock's own summary line has no channel to name either, and offers no "open
-    // target channel" link — there is no channel page behind an untracked target.
-    await expect(page.getByText('Ziel: Set set-untracked von Stranger')).toBeVisible();
+    // target channel" link — there is no channel page behind an untracked target. Finding 2: named
+    // by its resolved set NAME now, not the raw id.
+    await expect(page.getByText('Ziel: Set Wegwerf-Set von Stranger')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Zielkanal öffnen' })).toHaveCount(0);
+    // Finding 3: an untracked target must not claim the channel shows anything either — it already
+    // showed nothing before this fix, still true after.
+    await expect(page.getByText(/Abgleich/)).toHaveCount(0);
 
     // AK 41: the set-centric endpoint, POSTed without a targetEmoteSetId (the route already names
     // the set) — never the channel-scoped .../emotes/sync-imported.

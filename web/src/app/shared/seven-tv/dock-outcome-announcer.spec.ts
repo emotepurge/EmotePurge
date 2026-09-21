@@ -4,7 +4,7 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import {
   ResyncTriggerState,
   SevenTvRestoreService,
@@ -54,6 +54,10 @@ const DE_TRANSLATIONS = {
       cooldown: 'Abgleich beim nächsten Mal.',
       failed: 'Abgleich fehlgeschlagen.',
     },
+    summary: {
+      copiedNotActive:
+        "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+    },
   },
 };
 
@@ -62,6 +66,10 @@ interface FakeOutcomeSource {
   skippedDuplicates: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  /** Only `SevenTvImportService` actually has this (finding 3, Live-Verifikation K2 2026-09-21,
+   *  `copiedNotActiveNotice`) — carried on the shared fake shape anyway since both services are
+   *  built from the same factory; the restore fake's copy is simply never read. */
+  run: WritableSignal<ImportRunInfo | null>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
@@ -70,6 +78,7 @@ function createFakeSource(): FakeOutcomeSource {
     skippedDuplicates: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    run: signal<ImportRunInfo | null>(null),
   };
 }
 
@@ -216,6 +225,27 @@ describe('DockOutcomeAnnouncer', () => {
       '3 Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
       'Import-Prüfung nicht möglich.',
       'Abgleich angestoßen.',
+    ]);
+  });
+
+  // Finding 3 (Live-Verifikation K2 2026-09-21): a copy into a tracked non-active set never sets
+  // resyncTrigger away from 'idle' (SevenTvImportService.onRunComplete skips the call outright) —
+  // this notice takes the resync acknowledgement's own slot in the reading order instead.
+  it('speaks the copied-not-active notice in the resync slot when the run settled on a non-active target', () => {
+    importService.run.set({
+      targetChannelName: 'zielkanal',
+      targetOwnerDisplayName: null,
+      targetSetId: 'set-1',
+      targetSetName: 'wegwerf',
+      targetIsActiveSet: false,
+      origin: { kind: 'channel', channelName: 'quellkanal' },
+      result: { doneIds: [], doneKeys: ['7tv-1'], items: [], startedAt: 0, finishedAt: 1 },
+    });
+    importService.resyncTrigger.set('idle');
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual([
+      "In Set ‚wegwerf' kopiert — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
     ]);
   });
 

@@ -52,6 +52,14 @@ const DE_TRANSLATIONS = {
         one: '{{ count }} Emote nach {{ channel }} kopieren?',
         other: '{{ count }} Emotes nach {{ channel }} kopieren?',
       },
+      titleSet: {
+        one: "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
+        other: "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?",
+      },
+      untrackedTarget:
+        'EmotePurge trackt diesen Account nicht — 7TV lässt das Kopieren nur zu, wenn du dort Editor bist.',
+      ownershipCheckUnavailable:
+        'Wir konnten gerade nicht prüfen, ob dieses Set wirklich diesem Channel gehört — bitte vor dem Kopieren selbst kontrollieren.',
       originChannel: 'Aus Kanal {{ channel }}',
       originFile: 'Aus Datei {{ fileName }}',
       originFileDetails: 'Export aus {{ channel }}, {{ date }}',
@@ -222,6 +230,12 @@ interface RenderOptions {
   source?: ImportSource;
   targetChannelName?: string | null;
   targetOwnerDisplayName?: string | null;
+  /** Defaults to `true` — every existing test in this file predates findings 1/3 and exercises the
+   *  active-set target, whose title/dock behaviour must stay exactly as it was. */
+  targetIsActiveSet?: boolean;
+  /** Only meaningful together with `targetIsActiveSet: false` — defaults to `null`, matching an
+   *  active target's title, which never names the set. */
+  titleSetName?: string | null;
   target?: ImportTargetLoadState;
   runBlocked?: boolean;
 }
@@ -286,6 +300,8 @@ describe('ImportConfirmDialog', () => {
       targetChannelName:
         options.targetChannelName === undefined ? 'targetchannel' : options.targetChannelName,
       targetOwnerDisplayName: options.targetOwnerDisplayName ?? null,
+      targetIsActiveSet: options.targetIsActiveSet ?? true,
+      titleSetName: options.titleSetName ?? null,
       target,
       retry: () => {
         retryCalls += 1;
@@ -505,6 +521,7 @@ describe('ImportConfirmDialog', () => {
       expect(closed).toEqual([
         {
           targetSetId: 'set-42',
+          targetSetName: 'set-42',
           rows: [row('new-1', 'Kappa')],
         },
       ]);
@@ -548,6 +565,36 @@ describe('ImportConfirmDialog', () => {
       // Settles to the rest list, and picks the singular sibling key for it.
       expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
     });
+
+    // Finding 1 (Live-Verifikation K2 2026-09-21): "nach {channel}" claims the channel's active
+    // set — wrong whenever the target is not that active set (a non-active tracked pick, or any
+    // untracked one), since finding 3 is the direct consequence of that claim being false.
+    it('names the set instead of the channel for a non-active tracked target', () => {
+      const dialog = render({
+        targetChannelName: 'targetchannel',
+        targetIsActiveSet: false,
+        titleSetName: 'Wegwerf',
+      });
+
+      expect(dialog.title()).toBe("1 Emote in Set ‚Wegwerf' kopieren?");
+    });
+
+    it('names the set instead of the owner for an untracked target', () => {
+      const dialog = render({
+        targetChannelName: null,
+        targetOwnerDisplayName: 'Stranger',
+        targetIsActiveSet: false,
+        titleSetName: 'Wegwerf',
+      });
+
+      expect(dialog.title()).toBe("1 Emote in Set ‚Wegwerf' kopieren?");
+    });
+
+    it('keeps the "nach {channel}" wording for the active-set target — the one-click path stays', () => {
+      const dialog = render({ targetChannelName: 'targetchannel', targetIsActiveSet: true });
+
+      expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+    });
   });
 
   describe('set-ownership findings', () => {
@@ -585,15 +632,38 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.text()).not.toContain('Das aktive Set gehört nicht dem eigenen 7TV-Account');
     });
 
-    it('downgrades to "could not check" when the check itself failed — not a confirmed finding', () => {
-      const dialog = render({ target: readyTarget({ warning: UNAVAILABLE_WARNING }) });
+    it('downgrades to "could not check" for a TRACKED target whose check itself failed — not a confirmed finding', () => {
+      const dialog = render({
+        targetChannelName: 'targetchannel',
+        target: readyTarget({ warning: UNAVAILABLE_WARNING }),
+      });
 
       // `isOwnSet: false` is part of the fallback shape and must not be read as evidence: an
       // unavailable check is amber ("unknown"), never the red "this set is foreign".
       expect(dialog.text()).toContain('Wir konnten gerade nicht prüfen');
       expect(dialog.text()).not.toContain('Achtung: Das aktive Emote-Set');
       expect(dialog.text()).not.toContain('Das aktive Set gehört nicht dem eigenen 7TV-Account');
+      // Finding 5: this branch keeps the delete flow's amber warning styling, worded for a copy
+      // rather than a deletion — never the untracked branch's neutral hint below.
+      expect(dialog.text()).not.toContain('EmotePurge trackt diesen Account nicht');
       // And it blocks nothing.
+      expect(dialog.button(EXECUTE).disabled).toBe(false);
+    });
+
+    // Finding 5: an UNTRACKED target's warning is `UNAVAILABLE_WARNING` by contract, always — there
+    // is no channel for `EmoteSetOwnershipService` to check at all (spec 8.6), so this is never a
+    // check that "failed"; the delete flow's alarm text (`massDelete.ownershipCheckUnavailable`)
+    // misdescribed it as one. A short, neutral hint instead, and no warning-styled banner.
+    it('shows a neutral hint instead of an alarm for an UNTRACKED target — the ownership check never applies there', () => {
+      const dialog = render({
+        targetChannelName: null,
+        targetOwnerDisplayName: 'SomeEditor',
+        target: readyTarget({ warning: UNAVAILABLE_WARNING }),
+      });
+
+      expect(dialog.text()).toContain('EmotePurge trackt diesen Account nicht');
+      expect(dialog.text()).not.toContain('Wir konnten gerade nicht prüfen');
+      expect(dialog.text()).not.toContain('Achtung: Das aktive Emote-Set');
       expect(dialog.button(EXECUTE).disabled).toBe(false);
     });
   });
@@ -791,6 +861,7 @@ describe('ImportConfirmDialog', () => {
       expect(closed).toEqual([
         {
           targetSetId: 'set-42',
+          targetSetName: 'set-42',
           rows: [row('new-1', 'Kappa')],
         },
       ]);

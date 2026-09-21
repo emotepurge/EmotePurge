@@ -330,8 +330,9 @@ describe('ImportTrigger', () => {
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
       expect(startImport).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
+        targetSetName: CURRENT_SET,
         rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
       });
 
@@ -343,7 +344,13 @@ describe('ImportTrigger', () => {
 
       // The target is always the frozen (current) channel, never the file's own origin.
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL, ownerDisplayName: null },
+        {
+          setId: CURRENT_SET,
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: CURRENT_SET,
+          isActiveSet: true,
+        },
         expect.objectContaining({ kind: 'file' }),
         [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
         0,
@@ -362,8 +369,9 @@ describe('ImportTrigger', () => {
       });
       expect(dialogOpen).toHaveBeenCalledTimes(2);
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
+        targetSetName: CURRENT_SET,
         rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
       });
 
@@ -417,13 +425,20 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
+        targetSetName: CURRENT_SET,
         rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL, ownerDisplayName: null },
+        {
+          setId: CURRENT_SET,
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: CURRENT_SET,
+          isActiveSet: true,
+        },
         { kind: 'seventv-channel', channelName: 'handofblood' },
         [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
         0,
@@ -460,13 +475,20 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
+        targetSetName: CURRENT_SET,
         rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL, ownerDisplayName: null },
+        {
+          setId: CURRENT_SET,
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: CURRENT_SET,
+          isActiveSet: true,
+        },
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
         [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
         0,

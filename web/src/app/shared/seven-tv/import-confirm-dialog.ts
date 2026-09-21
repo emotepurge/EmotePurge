@@ -35,6 +35,22 @@ export interface ImportConfirmDialogData {
    *  names the channel instead (spec 8.6, AK 39). Never compared against anything (E7) — display
    *  only. */
   targetOwnerDisplayName: string | null;
+  /** Whether this run's target is the tracked channel's currently *active* 7TV set — true for the
+   *  "today" path (an `'activeSet'` door, or a `'chosen'` tracked pick whose set equals
+   *  `activeEmoteSetId`, spec 8.6 fourth bullet), false for a tracked *non*-active set and for every
+   *  untracked one. Drives the title wording (finding 1, Live-Verifikation K2 2026-09-21): an active
+   *  target keeps today's "N Emotes nach {channel} kopieren?", unchanged, because that copy still
+   *  lands where the channel's active-set resync (and therefore the channel page) actually shows
+   *  it. A non-active target's title instead names the set via {@link titleSetName} — "nach
+   *  {channel}" would otherwise claim the active-set destination the run does *not* write to
+   *  (finding 3 is the same confusion one step further down, in the dock). */
+  targetIsActiveSet: boolean;
+  /** The chosen set's display name, but only when {@link targetIsActiveSet} is `false` — `null` for
+   *  an active target, whose title never names the set at all. Sourced synchronously from the
+   *  picker's own choice (`ImportTargetChoice.setName`, already resolved with an id fallback by
+   *  `import-target-choices.ts`), not from the live target load: the title renders before that load
+   *  ever answers, and the picker already knows this name from the same click that chose the set. */
+  titleSetName: string | null;
   /** Live view of the target's data: the dialog opens on `loading` and fills in (R8). */
   target: Signal<ImportTargetLoadState>;
   /** Re-runs the target load; the flow owns the request, the dialog only asks for it. */
@@ -47,6 +63,11 @@ export interface ImportConfirmDialogData {
 /** What the caller starts a run with — the rows as of the moment the user confirmed. */
 export interface ImportConfirmOutcome {
   targetSetId: string;
+  /** The resolved display name of {@link targetSetId} (falls back to the id, same as
+   *  {@link ImportConfirmDialog.targetSetLabel}) — threaded onto `ImportRunInfo` so the dock's own
+   *  "Ziel: …" line (finding 2, Live-Verifikation K2 2026-09-21) can name the set without a second,
+   *  independent lookup after this dialog is already gone. */
+  targetSetName: string;
   rows: ImportRow[];
 }
 
@@ -78,7 +99,11 @@ type BlockReason = string | null;
   imports: [Button, DialogShell, NamePreviewList, NoticeBanner, TranslocoPipe],
   template: `
     <app-dialog-shell
-      [dialogTitle]="titleKey() | transloco: { count: titleCount(), channel: titleTargetLabel() }"
+      [dialogTitle]="
+        titleKey()
+          | transloco
+            : { count: titleCount(), channel: titleTargetLabel(), setName: data.titleSetName ?? '' }
+      "
     >
       <!-- Branches on the three computeds below, never on origin.kind: with a fourth origin
            "not a channel" and "is a file" stopped being the same question, and a template test is
@@ -178,9 +203,25 @@ type BlockReason = string | null;
             </span>
           </app-notice-banner>
         } @else if (ownershipCheckUnavailable()) {
-          <app-notice-banner variant="warning">
-            {{ 'massDelete.ownershipCheckUnavailable' | transloco }}
-          </app-notice-banner>
+          <!-- Two different reasons share ownershipCheckUnavailable(), and finding 5
+               (Live-Verifikation K2 2026-09-21) is that they used to share the delete flow's alarm
+               text too — wrong on both counts for an untracked target: loadImportTarget never even
+               attempts a check there (spec 8.6, there is no channel of ours to run
+               EmoteSetOwnershipService against), so "we couldn't check" misdescribes a check that was
+               never applicable, and the picker's own confirmation step (AK 35) already named this
+               exact owner. A short, neutral hint instead — not a warning banner, and never the
+               delete-flow's wording (massDelete.* stays delete-only, import.confirm.* keeps its own
+               copy). A *tracked* target whose check genuinely failed keeps the amber warning, worded
+               for a copy rather than a deletion. -->
+          @if (data.targetChannelName === null) {
+            <app-notice-banner variant="info">
+              {{ 'import.confirm.untrackedTarget' | transloco }}
+            </app-notice-banner>
+          } @else {
+            <app-notice-banner variant="warning">
+              {{ 'import.confirm.ownershipCheckUnavailable' | transloco }}
+            </app-notice-banner>
+          }
         }
 
         @if (projection(); as slots) {
@@ -362,8 +403,16 @@ export class ImportConfirmDialog {
     () => this.preview()?.toAdd.length ?? this.data.source.rows.length,
   );
 
+  // Two base keys, chosen by `targetIsActiveSet` (finding 1, Live-Verifikation K2 2026-09-21) —
+  // "nach {channel}" for the active-set target (today's one-click path, unchanged), "in Set
+  // '{setName}'" for a non-active tracked target or any untracked one, both of which write into a
+  // set the channel page's active-set resync does not show (finding 3 is the same fact one layer
+  // down, in the dock).
   protected readonly titleKey = computed(() =>
-    pluralKey(this.titleCount(), 'import.confirm.title'),
+    pluralKey(
+      this.titleCount(),
+      this.data.targetIsActiveSet ? 'import.confirm.title' : 'import.confirm.titleSet',
+    ),
   );
 
   // Falls back to the owner's display name for an untracked target (spec 8.6, AK 39/35) — the
@@ -541,7 +590,11 @@ export class ImportConfirmDialog {
     if (target === null || preview === null || preview.toAdd.length === 0) {
       return;
     }
-    this.dialogRef.close({ targetSetId: target.setId, rows: preview.toAdd });
+    this.dialogRef.close({
+      targetSetId: target.setId,
+      targetSetName: this.targetSetLabel(target),
+      rows: preview.toAdd,
+    });
   }
 
   /** The header's `setName` param (spec 8.6 AK 39) — falls back to the raw id when 7TV reported no

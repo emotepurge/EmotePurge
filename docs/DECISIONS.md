@@ -10,6 +10,56 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-21 — An import into a tracked channel's non-active set no longer resyncs the channel, and the dock stops claiming it does
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-target-choices.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+Live-Verifikation K2 2026-09-21 (the K2 target-set picker from the 2026-09-20 entry, checked against
+a running dev stack, not just its own test suite) found six bugs the tests had not caught, because
+none of them pins a *live* run into a **non-active** tracked set end to end. This entry covers the
+one with an actual behaviour change; the other five are wording/preselection fixes with no new
+`**Betrifft:**`-worthy contract (title now names the set for a non-active target, the dock target line
+now always names the set by name rather than sometimes by raw id, the picker's load-time
+preselection now looks up the caller's own account by `isOwnAccount` instead of "whichever tracked
+account comes first", the untracked confirmation banner is reworded as a target confirmation instead
+of echoing "kopieren" a second time, and the confirm dialog's ownership-check-unavailable banner now
+has import-flavoured copy of its own instead of borrowing the delete flow's).
+
+**The bug:** `SevenTvImportService.onRunComplete` fired the target channel's `POST
+/api/channels/{c}/resync` — and the dock showed "Abgleich angestoßen — der Zielkanal zeigt die
+Emotes gleich" plus an "open target channel" link — for *every* tracked target, regardless of
+whether the copy actually went into that channel's *active* 7TV set. A resync only ever re-syncs the
+channel's active set (that is what the endpoint does); a copy into a tracked but non-active set (the
+2026-09-20 entry's whole point — K2 lets the picker choose *any* set of an account the user edits,
+active or not) triggered a resync that read the *wrong* set, succeeded, and told the user the channel
+page would show emotes it never would.
+
+**The fix:** `ImportRunInfo` gains `targetIsActiveSet: boolean` (default `true` for every caller that
+predates this — they only ever targeted the active set) alongside a `targetSetName: string`
+(previously only the untracked branch had reason to carry a set-facing name, and even that one was
+the raw id). `onRunComplete` now skips the resync call whenever `!targetIsActiveSet`, on top of the
+existing `targetChannelName === null` (untracked) check — the `sync-imported` report itself is
+unaffected either way, it is the audit trail for the copy regardless of which set received it.
+`import-flow.ts` computes `isActiveSet` once per run, from the exact condition `import-target-choices.ts`'s
+loader fork already uses (`target.kind === 'activeSet'`, or a `'chosen'` pick whose `emoteSetId`
+equals the account's `activeEmoteSetId`), and threads it into both the confirm dialog (for the title,
+finding 1) and `startImport` (for the run record). The dock (`import-progress-section.ts`) and its
+screen-reader twin (`dock-outcome-announcer.ts`) both gate the "open target channel" link and the
+post-run resync notice on the same flag, replacing it with a new `import.summary.copiedNotActive`
+notice ("In Set '…' kopiert — es ist nicht das aktive Set von …") whenever a settled run's target
+was not the active set — sourced from a single shared helper (`copiedNotActiveNotice`) so the visible
+and the spoken text cannot drift apart, mirroring the existing `resyncNoticeKey` pattern for the
+notice it replaces.
+
+---
+
 ### 2026-09-20 — An import may target any set of an account the user edits; the confirm dialog keeps collisions out of the run
 
 **Betrifft:** `web/src/app/core/emotes/import-target-loader.ts` ·

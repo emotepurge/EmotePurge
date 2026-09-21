@@ -267,6 +267,37 @@ describe('SevenTvImportService', () => {
     expect(service.resyncTrigger()).toBe('idle');
   });
 
+  // Finding 3 (Live-Verifikation K2 2026-09-21): a resync only ever syncs the channel's *active*
+  // set — firing it for a copy into a tracked but non-active set would read the wrong set, succeed,
+  // and tell the user a channel page that will never show these emotes just did.
+  it('reports a tracked non-active target through the channel-scoped endpoint but never resyncs', () => {
+    const targetNonActive = { setId: 'set-b', channelName: 'kanal_b', isActiveSet: false };
+    service.startImport(targetNonActive, CHANNEL_ORIGIN, ROWS);
+    expect(service.run()?.targetIsActiveSet).toBe(false);
+    runTwoRowsToDone();
+
+    // The report is unaffected — the audit trail for the copy is correct regardless of which set
+    // received it.
+    const reportReq = httpMock.expectOne(SYNC_IMPORTED_B);
+    expect(reportReq.request.body.targetEmoteSetId).toBe('set-b');
+    reportReq.flush(null, { status: 204, statusText: 'No Content' });
+    expect(service.syncReport()).toBe('succeeded');
+
+    // Never even touched — afterEach's httpMock.verify() proves no resync request went out at all.
+    expect(service.resyncTrigger()).toBe('idle');
+  });
+
+  it('defaults isActiveSet to true and setName to the id when a caller omits both', () => {
+    service.startImport(TARGET_B, CHANNEL_ORIGIN, ROWS);
+
+    expect(service.run()?.targetIsActiveSet).toBe(true);
+    expect(service.run()?.targetSetName).toBe('set-b');
+
+    runTwoRowsToDone();
+    httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+    httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
   it('aborts the whole run on a 7TV privileges rejection and reports nothing', () => {
     const threeRows = [...ROWS, { sevenTvEmoteId: '7tv-3', name: 'Sadge' }];
     service.startImport(TARGET_B, CHANNEL_ORIGIN, threeRows);
