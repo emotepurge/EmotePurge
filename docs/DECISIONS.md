@@ -10,6 +10,169 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-20 — Usage is counted per emote set; the observed set travels with the match cache (#200)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IEmoteMatchCache.cs` ·
+`src/EmotePurge.Core/Services/IUsageStatFlushService.cs` ·
+`src/EmotePurge.Core/Entities/UsageStat.cs` · `src/EmotePurge.Core/Entities/VoteSession.cs` ·
+`src/EmotePurge.Core/Entities/VoteSessionEmote.cs` ·
+`src/EmotePurge.Core/Entities/ChannelEmoteSetObservation.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteMatchCache.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatFlushService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/AppDbContextModelSnapshot.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20260920191131_AddUsageStatEmoteSetId.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20260920191131_AddUsageStatEmoteSetId.Designer.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/SetSwitchAssignments.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/UsageStatMigrationChecks.cs` ·
+`src/EmotePurge.Worker/EmoteUsageCounter.cs` · `src/EmotePurge.Worker/IEmoteUsageCounter.cs` ·
+`src/EmotePurge.Worker/TwitchChatManager.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceRenameHandoverTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatFlushServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AddUsageStatEmoteSetIdMigrationTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/EmoteMatchCacheTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/UsageStatMigrationChecksTests.cs` ·
+`tests/EmotePurge.Worker.Tests/EmoteUsageCounterTests.cs`
+
+Chat usage used to be counted per `Emote.Id` alone. `UsageStat` now also carries `EmoteSetId`: the
+7TV emote set the match cache was built for at the moment a message was matched — our **locally
+observed** state, not necessarily what 7TV reports right now, and offset from it by however long it
+takes us to notice a switch (seconds via the `user.*` EventAPI push, up to 60 s in the periodic REST
+case, 10–30 min during a 7TV REST-cache lag, unbounded for as long as the #76 implausible-wipe guard
+blocks a sync). `TwitchChatManager` reads one snapshot object — dictionary, set id and generation
+timestamp together — per chat message, so a cache swap between two messages can separate them but
+never split one message's matches across two sets; two separate reads of dictionary and set id could
+have raced a swap in between and paired one swap's dictionary with another's id, which is why the
+match cache hands both out as a single object instead. The flush's `ON CONFLICT` target is now
+`(EmoteId, EmoteSetId, Date)`, and the unique index backing it was swapped to match. `VoteSession`
+gets a nullable `EmoteSetId` and `VoteSessionEmote` gets nullable `NameAtCreation`/`ImageUrlAtCreation`
+for set-scoped ballots, both consumed starting with a later commit in this epic.
+
+**The migration (`AddUsageStatEmoteSetId`) is the first change to this table that an old, still-running
+image cannot tolerate.** The two earlier counter migrations (bot use count, shared-chat use count)
+were additive and said so explicitly; this one drops the two-column unique index the flush's raw SQL
+upserts against, so an old worker's `ON CONFLICT ("EmoteId", "Date")` statement stops resolving,
+requeues its batch five times, and drops it. It runs once, by hand, inside a maintenance window with
+both the worker and the api stopped — not just a `pg_dump`-safe schema change — because from the
+step that drops the old index onward the migration holds `ACCESS EXCLUSIVE` on `UsageStats` until it
+commits, and anything still serving requests would hang on it for however long that takes. The 15
+minutes budgeted for the whole window (worker stop through new images up) is a planning value with an
+explicit abort point, not a measurement: if the `Up` step itself has not returned after 10 minutes,
+the operator cancels it (the transaction rolls back cleanly; a 5-second `lock_timeout`, set as the
+migration's first statement, rules out an indefinite wait on a lock — a `Up` still running past 10
+minutes is genuinely computing, not stuck), confirms with `dotnet ef migrations list` that the
+migration is still pending, and restarts the old images as a null run rather than waiting longer at a
+down site. Both the window's actual duration and the measured duration of the `Up` step itself are not
+part of this entry — a later commit appends them once the window has actually run.
+
+**Backfilling the existing rows needs to know, per channel, which set they were counted under before
+this column existed — and the input for that is a list of *switches*, not a directory of channels.**
+`SetSwitchAssignments` is a committed constant next to the migration (`internal static class`, one
+entry type: `(TwitchChannelId, OldEmoteSetId, NewEmoteSetId, BoundaryUtc)`), and in this round it
+carries exactly **one** entry — HandOfBlood, from `01GV88A38G0006FW5TVZVMG507` to
+`01J94NYQR0000D15QN0BDGN85E`, `BoundaryUtc` still a clearly marked placeholder the operator replaces
+with the real day in its own `chore:` commit once it has happened. A channel with no entry gets no
+entry at all, and its rows are backfilled with its channel's current `ActiveEmoteSetId` — a default,
+not a statement anyone confirmed. Three checks run inside the migration, before anything destructive,
+so that an abort costs no lock and leaves nothing behind: (1) for every entry whose channel exists in
+this database, its `NewEmoteSetId` must equal that channel's current active set id, and no channel may
+carry more than one entry — catches both a stale list and a duplicate; (2) no `UsageStats` row may
+belong to a channel with an empty active set id, because the backfill would otherwise hand it one; (3)
+`BoundaryUtc` must fall inside the usage-date range the channel's own rows actually cover — catches a
+mistyped month or year. No default, no `COALESCE`, no guessing: a failing check aborts with the
+offending channel (and, for check 3, the boundary and the range) named in the exception text. All
+three checks only ever see channels that exist in the target database (checks 1 and 3 additionally
+only those with at least one `UsageStats` row) — on an empty database every one of them passes
+trivially, which is what lets the test suite run the full migration chain against a fresh,
+channel-less container on every start. The backfill itself is two `UPDATE`s in a fixed order: first
+every row gets its channel's current active set id, then every row strictly before `BoundaryUtc` for
+a listed channel is corrected to `OldEmoteSetId`. That models exactly **one** boundary per channel; a
+second entry for the same channel is an inadmissible input, not a case this rule handles, and whoever
+ever adds one changes the backfill rule first. The boundary day itself is a known, named fuzziness of
+up to one day: it can contain usage from both the old and the new set and goes entirely to the new
+one.
+
+**The safety net around this backfill was deliberately cut back on 2026-09-20, after two rounds of
+adversarial review, on the operator's own call.** The design on the table before that cut was a
+*complete* classification of every channel with at least one usage row — a second entry kind for
+"confirmed, never switched", an acknowledged mass-archival signature, a data-cutoff timestamp, a
+chain-closure rule across multiple boundaries, and the whole list living in a gitignored file outside
+the repo because, at that size, it amounted to the service's user list. The operator judged that
+disproportionate for a closed beta of 20 channels and 62,771 usage rows: "we shouldn't overengineer
+this just to protect the usage stats against a thousand edge cases," and, on scope, "as far as I'm
+concerned, we do the migration, but only for HandOfBlood. For the rest, it doesn't exist." What
+that leaves genuinely uncovered, stated plainly rather than papered over: a channel that switched sets
+without a listed entry gets its **entire** history silently reassigned to whatever set is active
+today, and nothing detects it anymore — no completeness check, no archival-count signature, no
+acknowledged data cutoff, no chain closure. The remaining damage is lost attribution of usage numbers,
+not lost data, and the chat-log backfill (#69) can regenerate those numbers once it lands after
+2026-10-08. A second, related decision the same day: with the classification cut down to a single
+entry, the list is no longer the service's user directory the way an 18-entry version would have
+been — one entry names one public streamer and two 7TV sets that are themselves publicly visible — so
+it moved back into the repository as ordinary committed source instead of a gitignored file, which
+means it is readable in the PR diff again, the way a reviewer can actually check it. The project's own
+test channel is purged from the admin channel list before the maintenance window regardless of any of
+this, and a throwaway channel considered as a stopgap (never tracked, purged after any use) never
+appears in `SetSwitchAssignments` either way — neither is a case this list needs to carry.
+
+**`ChannelEmoteSetObservation` is a new, narrowly scoped table: intervals during which EmotePurge
+observed a given 7TV set as active for a channel**, timestamped by when we noticed, not by when the
+switch actually happened, and at most one interval per channel may be open at a time — enforced by a
+partial unique index on `ChannelId` where `ObservedToUtc IS NULL`. A successful sync without an open
+interval opens one; an observed `emoteSetSwitched` closes the old interval (`ClosedBy = 'set-switch'`)
+and opens a new one in the same transaction; leaving, renaming and merging each close their own way; a
+purge cascades via the foreign key; and the #76 implausible-wipe guard leaves the open interval
+untouched, because it never lets the switch happen in the first place. Both writing paths — the open
+and the switch — first re-check that the channel is still active, because a sync already in flight can
+otherwise land after a leave and reopen an interval on a channel nothing is tracking anymore. No lock
+is needed for this: `LeaveAsync` commits the interval's close and the `IsBotActive` flip in one
+`SaveChangesAsync`, so any read that no longer sees the open interval also sees the flag. One ordering
+remains a documented residual — a switch that commits *before* a concurrent leave can still leave its
+new interval open on a channel that has since left. The migration seeds one row per channel with a
+non-empty active set id (an open interval from when tracking last resumed, split at `BoundaryUtc` for the one listed
+channel) but **never** assigns `ClosedBy = 'set-switch'` to a seeded row — that distinction is load
+-bearing, not incidental: it's what lets a later migration rollback treat any `'set-switch'` row as
+proof that a switch has been observed since the deploy. The table's purpose is deliberately limited to
+things like a "while this set was active" date-range preset and a factual statement on the usage page,
+plus a future backfill automation window (#69) — it does **not** decide which set a usage number
+belongs to; that is `UsageStat.EmoteSetId` itself, fixed at count time.
+
+**Rolling the migration back (`Down`) is unrestricted only until the first observed set switch after
+deploy, and then blocked by two independent guards, neither of which supersedes the other.** The first
+checks directly for any `ChannelEmoteSetObservation` row with `ClosedBy = 'set-switch'` and aborts
+before touching anything — this catches switches the second guard would miss entirely: a switch
+landing between two calendar days, two sets with no emote in common, or a shared emote used on only
+one side never produces two rows under the same `(EmoteId, Date)`, so the old two-column unique index
+could be recreated without complaint and `Down` would silently discard `EmoteSetId`. The second guard
+is the older one: recreating `(EmoteId, Date)` fails outright if any pair of rows collides under it,
+catching sources the observation log doesn't know about (a hand-set channel, a seed with two
+intervals, anything upstream of the `emoteSetSwitched` path). Past that point, rolling back is a manual
+job for the operator — summing colliding rows per `(EmoteId, Date)` and deleting the duplicate to clear
+the index guard, deleting the `'set-switch'` rows to clear the log guard — and it deliberately throws
+away exactly the attribution this whole change exists to keep.
+
+**This migration touches the flush's conflict target and every read query on `UsageStats` for a
+different reason than the one the #69 chat-log-backfill design explicitly rejected doing that for**
+(`docs/designs/Chat-Log-Backfill-69-2026-09-05.md:306-308`, its "Approach C"): that design turned down
+a provenance column with a changed unique key because it would touch the hot live path's conflict
+target and every read query just to answer a question its chosen approach could answer in two days
+without any schema change at all. Here the question is different — which set a count belongs to, not
+where it came from — and the answer genuinely requires exactly that touch; it isn't the same tradeoff
+revisited, it's a different one that happens to cost the same shape of change. `GetRowsAsync`, read by
+the #69 harness, now sums `UseCount` across `EmoteSetId` per `(EmoteId, Date)` and keeps its DTO
+unchanged — the harness compares counted chat usage against rows, not against sets, so the sum is the
+number it needs regardless of how many sets a day's usage is split across.
+
+**Left as an open source of error, not addressed here:** as long as the #76 implausible-wipe guard
+(`SevenTvSyncService.cs:351-370`) blocks a sync, the line that would update `ActiveEmoteSetId` and
+open a new observation interval is never reached — the match cache keeps its stale generation, and
+both chat counting and the observation log keep booking against the old set indefinitely, even though
+7TV has genuinely switched. That is correct under this feature's own model ("the set we believe is
+active"), but it is a real, unbounded fork between our and 7TV's state in the field, and it is not
+this migration's job to close.
+
 ### 2026-09-19 — The selection survives search and filter changes; the safety moves to the point of action (supersedes S2-16)
 
 **Betrifft:** `web/src/app/shared/selection/list-selection.ts` ·

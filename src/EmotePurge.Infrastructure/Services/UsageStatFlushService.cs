@@ -9,7 +9,7 @@ namespace EmotePurge.Infrastructure.Services;
 
 public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushService> logger) : IUsageStatFlushService
 {
-    public async Task<IReadOnlyCollection<string>> FlushAsync(IReadOnlyDictionary<string, EmoteUsageCounts> usageCounts, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyCollection<string>> FlushAsync(IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> usageCounts, CancellationToken cancellationToken = default)
     {
         if (usageCounts.Count == 0)
         {
@@ -17,7 +17,11 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
         }
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var emoteIds = usageCounts.Keys.ToList();
+
+        // Validation still runs over Emote.Id alone (spec section 5, rule 4): a set switch does not
+        // change which emotes exist, so the distinct id list for the FK check collapses the set
+        // dimension back out — nothing here decides between two keys of the same emote.
+        var emoteIds = usageCounts.Keys.Select(k => k.EmoteId).Distinct(StringComparer.Ordinal).ToList();
 
         // A channel leave deactivates instead of deleting nowadays, but archived emotes can still
         // be hard-deleted by an admin purge — and a count buffered before that would otherwise
@@ -31,7 +35,7 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
             .Select(e => new { e.Id, e.Channel.ChannelName })
             .ToListAsync(cancellationToken);
 
-        var validIds = validEmotes.Select(e => e.Id).ToList();
+        var validIds = validEmotes.Select(e => e.Id).ToHashSet(StringComparer.Ordinal);
 
         if (validIds.Count < emoteIds.Count)
         {
@@ -45,9 +49,18 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
             return [];
         }
 
-        var useCounts = validIds.Select(id => usageCounts[id].Human).ToArray();
-        var botUseCounts = validIds.Select(id => usageCounts[id].Bot).ToArray();
-        var sharedChatUseCounts = validIds.Select(id => usageCounts[id].SharedChat).ToArray();
+        // The projection now yields one row per key (spec section 5, rule 4), not per emote id: two
+        // keys that share an EmoteId but differ in EmoteSetId (a cache swap between two chat
+        // messages) write two separate rows instead of being summed together.
+        var validEntries = usageCounts
+            .Where(kvp => validIds.Contains(kvp.Key.EmoteId))
+            .ToList();
+
+        var entryEmoteIds = validEntries.Select(e => e.Key.EmoteId).ToArray();
+        var entryEmoteSetIds = validEntries.Select(e => e.Key.EmoteSetId).ToArray();
+        var useCounts = validEntries.Select(e => e.Value.Human).ToArray();
+        var botUseCounts = validEntries.Select(e => e.Value.Bot).ToArray();
+        var sharedChatUseCounts = validEntries.Select(e => e.Value.SharedChat).ToArray();
 
         // Atomic upsert rather than read-then-insert. The previous version decided per emote between
         // += and Add based on a prior SELECT, which is only correct while there is exactly one
@@ -65,10 +78,10 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
         // this is the negative probe from the #73 design's B6, not an edge case to special-case
         // away.
         const string sql = """
-            INSERT INTO "UsageStats" ("EmoteId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount")
-            SELECT input."EmoteId", @date, input."UseCount", input."BotUseCount", input."SharedChatUseCount"
-            FROM UNNEST(@emoteIds, @useCounts, @botUseCounts, @sharedChatUseCounts) AS input("EmoteId", "UseCount", "BotUseCount", "SharedChatUseCount")
-            ON CONFLICT ("EmoteId", "Date")
+            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount")
+            SELECT input."EmoteId", input."EmoteSetId", @date, input."UseCount", input."BotUseCount", input."SharedChatUseCount"
+            FROM UNNEST(@emoteIds, @emoteSetIds, @useCounts, @botUseCounts, @sharedChatUseCounts) AS input("EmoteId", "EmoteSetId", "UseCount", "BotUseCount", "SharedChatUseCount")
+            ON CONFLICT ("EmoteId", "EmoteSetId", "Date")
             DO UPDATE SET
                 "UseCount" = "UsageStats"."UseCount" + EXCLUDED."UseCount",
                 "BotUseCount" = "UsageStats"."BotUseCount" + EXCLUDED."BotUseCount",
@@ -79,7 +92,8 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
             sql,
             [
                 new NpgsqlParameter("date", NpgsqlDbType.Date) { Value = today },
-                new NpgsqlParameter("emoteIds", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = validIds.ToArray() },
+                new NpgsqlParameter("emoteIds", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = entryEmoteIds },
+                new NpgsqlParameter("emoteSetIds", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = entryEmoteSetIds },
                 new NpgsqlParameter("useCounts", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = useCounts },
                 new NpgsqlParameter("botUseCounts", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = botUseCounts },
                 new NpgsqlParameter("sharedChatUseCounts", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = sharedChatUseCounts },

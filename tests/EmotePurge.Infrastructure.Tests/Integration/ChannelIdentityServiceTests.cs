@@ -106,6 +106,28 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenRenaming_ClosesTheOpenObservationInterval()
+    {
+        // Spec 4.3, F9, AK 17: the periodic-reconcile RenameAsync is one of the observation log's
+        // closing sites. Asserts the call into the service, not a row in the table — same as the
+        // merge case above.
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityrenameobs1old", "10015");
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var harness = CreateHarness(
+            db,
+            [new TwitchUserIdentity("10015", "IdentityRenameObs1New")],
+            emoteSetObservationService: emoteSetObservationService);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Renamed);
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            seeded.Id, ChannelEmoteSetObservationClosedBy.Rename, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ReconcileActiveChannelsAsync_WhenTheTargetNameIsHeldByARowWithItsOwnDifferentId_SkipsBothRows()
     {
         await using var db = fixture.CreateDbContext();
@@ -203,6 +225,33 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Equal(
             ["channel:bot:commands|LEAVE:identitymergeold", "channel:bot:commands|JOIN:identitymergenew"],
             harness.Redis.Messages);
+    }
+
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenMerging_ClosesTheSurvivorsOpenObservationInterval()
+    {
+        // Spec 4.3, F9: the surviving channel of a merge is one of the observation log's five
+        // closing sites. Asserts the call into the service, not a row in the table — the loser needs
+        // no call at all (its row cascades away with db.Channels.Remove), which this also proves by
+        // never expecting a call for the loser's id.
+        await using var db = fixture.CreateDbContext();
+        var survivor = await SeedChannelAsync(db, "identitymergeobs1old", "10014");
+        var loser = await SeedChannelAsync(db, "identitymergeobs1new", twitchChannelId: null);
+        await db.SaveChangesAsync();
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var harness = CreateHarness(
+            db,
+            [new TwitchUserIdentity("10014", "IdentityMergeObs1New")],
+            emoteSetObservationService: emoteSetObservationService);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Merged);
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            survivor.Id, ChannelEmoteSetObservationClosedBy.Merge, Arg.Any<CancellationToken>());
+        await emoteSetObservationService.DidNotReceive().CloseOpenIntervalAsync(
+            loser.Id, Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -593,7 +642,8 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         IReadOnlyList<TwitchUserIdentity>? identities,
         string? token = "identity-app-token",
         ChannelIdentityWarningState? warningState = null,
-        bool failPublishes = false)
+        bool failPublishes = false,
+        IChannelEmoteSetObservationService? emoteSetObservationService = null)
     {
         var helix = Substitute.For<ITwitchHelixClient>();
         helix.GetUsersAsync(
@@ -609,18 +659,21 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         var publisher = new RecordingPublisher(failPublishes);
         var logger = new RecordingLogger<ChannelIdentityService>();
         var state = warningState ?? new ChannelIdentityWarningState();
+        var emoteSetObservations = emoteSetObservationService ?? Substitute.For<IChannelEmoteSetObservationService>();
 
         return new Harness(
             helix,
             publisher,
             logger,
-            new ChannelIdentityService(db, helix, appTokenProvider, publisher, state, logger));
+            emoteSetObservations,
+            new ChannelIdentityService(db, helix, appTokenProvider, publisher, emoteSetObservations, state, logger));
     }
 
     private sealed record Harness(
         ITwitchHelixClient Helix,
         RecordingPublisher Redis,
         RecordingLogger<ChannelIdentityService> Logger,
+        IChannelEmoteSetObservationService EmoteSetObservations,
         ChannelIdentityService Service);
 
     // Order matters here in a way NSubstitute's Received() cannot express as clearly: LEAVE has to

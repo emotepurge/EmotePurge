@@ -23,6 +23,12 @@ public class VoteSession
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public DateTime? EndedAt { get; set; }
 
+    // The 7TV emote set this session's ballot is scoped to. Null means today's behavior: a
+    // channel-wide ("null") session whose ballot is either dynamic (all non-archived channel
+    // emotes) or a fixed set of local Emote guids (spec section 9). Non-null marks a set-session,
+    // whose SessionEmotes carry 7TV emote ids instead and freeze NameAtCreation/ImageUrlAtCreation.
+    public string? EmoteSetId { get; set; }
+
     public Channel Channel { get; set; } = null!;
     public ICollection<Vote> Votes { get; set; } = new List<Vote>();
     // Empty = dynamic "all non-archived channel emotes"; non-empty = fixed explicit ballot.

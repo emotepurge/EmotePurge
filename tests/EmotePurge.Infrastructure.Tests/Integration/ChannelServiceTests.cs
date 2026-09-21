@@ -72,6 +72,25 @@ public class ChannelServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task LeaveAsync_ClosesTheOpenObservationInterval()
+    {
+        // Spec 4.3, F9: LeaveAsync is one of the observation log's five closing sites. This asserts
+        // the *call* into the service, not a row in the table — the table-level behaviour of
+        // CloseOpenIntervalAsync (which ClosedBy value it writes, that it no-ops with nothing open)
+        // is ChannelEmoteSetObservationServiceTests' job.
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var service = CreateService(db, redisPublisher, emoteSetObservationService: emoteSetObservationService);
+        var channel = await JoinChannelAsync(service, "channelservicetest3close");
+
+        await service.LeaveAsync("channelservicetest3close", Actor);
+
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            channel.Id, ChannelEmoteSetObservationClosedBy.Leave, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task JoinAsync_AfterLeave_ReactivatesTheSameRow()
     {
         // The whole point of the soft deactivate: rejoining must bring the channel and its history
@@ -195,6 +214,26 @@ public class ChannelServiceTests(PostgresFixture fixture)
             redisPublisher.PublishAsync(BotCommands.Channel, "LEAVE:channelserviceidold2", Arg.Any<CancellationToken>());
             redisPublisher.PublishAsync(BotCommands.Channel, "JOIN:channelserviceidnew2", Arg.Any<CancellationToken>());
         });
+    }
+
+    [Fact]
+    public async Task JoinAsync_WhenTwitchReportsANewLogin_ClosesTheOpenObservationInterval()
+    {
+        // Spec 4.3, F9: a rename discovered at join is one of the observation log's five closing
+        // sites. Asserts the call into the service, not a row in the table (see the leave test above
+        // for why).
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "channelserviceidold2close", "770012");
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var service = CreateService(
+            db,
+            identityService: IdentityFound("770012", "ChannelServiceIdNew2Close"),
+            emoteSetObservationService: emoteSetObservationService);
+
+        await service.JoinAsync("ChannelServiceIdNew2Close", Actor);
+
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            seeded.Id, ChannelEmoteSetObservationClosedBy.Rename, Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -406,7 +445,7 @@ public class ChannelServiceTests(PostgresFixture fixture)
         var logger = new RecordingLogger<ChannelService>();
         var idRow = await SeedChannelAsync(db, "channelserviceidold6", "770006");
         var occupant = await SeedChannelAsync(db, "channelserviceidnew6", twitchChannelId: null);
-        var service = CreateService(db, redisPublisher, IdentityFound("770006", "channelserviceidnew6"), logger);
+        var service = CreateService(db, redisPublisher, IdentityFound("770006", "channelserviceidnew6"), logger: logger);
 
         var result = await service.JoinAsync("channelserviceidnew6", Actor);
 
@@ -652,12 +691,14 @@ public class ChannelServiceTests(PostgresFixture fixture)
         AppDbContext db,
         IRedisPublisher? redisPublisher = null,
         IChannelIdentityService? identityService = null,
+        IChannelEmoteSetObservationService? emoteSetObservationService = null,
         ILogger<ChannelService>? logger = null)
     {
         return new ChannelService(
             db,
             redisPublisher ?? Substitute.For<IRedisPublisher>(),
             identityService ?? IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable)),
+            emoteSetObservationService ?? Substitute.For<IChannelEmoteSetObservationService>(),
             logger ?? NullLogger<ChannelService>.Instance);
     }
 

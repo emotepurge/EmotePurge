@@ -23,16 +23,21 @@ public class ChannelUsageSeriesWireFormatTests
     [Fact]
     public void Days_SerializeAsPairsOfNumbers_NotObjects()
     {
+        // Both identity fields are pinned here, not just the encoding. From #200 on an entry is
+        // named by its 7TV id — the only key our own rows and 7TV's live membership list share —
+        // and carries the Emote.Id guid alongside it for the length of one transition (spec 6.5,
+        // step 1). Dropping either one early breaks a client that is still reading it, so this
+        // case fails if either goes missing.
         var dto = new ChannelUsageSeriesDto(
             new DateOnly(2026, 7, 1),
             new DateOnly(2026, 7, 7),
             [0, 6],
-            [new EmoteSeriesEntryDto("emote-1", [[0, 3], [4, 8]])]);
+            [new EmoteSeriesEntryDto("01JB8QK3X0000000000000000", "emote-1", [[0, 3], [4, 8]])]);
 
         var json = JsonSerializer.Serialize(dto, Options);
 
         Assert.Equal(
-            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"emoteId":"emote-1","days":[[0,3],[4,8]]}]}""",
+            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","days":[[0,3],[4,8]]}]}""",
             json);
     }
 

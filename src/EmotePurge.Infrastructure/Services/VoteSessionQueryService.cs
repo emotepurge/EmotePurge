@@ -98,10 +98,13 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
         // skipped entirely for everyone else. Scoped to the ballot rather than to the channel: a
         // subset session may hold twenty emotes out of a thousand, and asking for the channel's
         // totals meant zero-filling all thousand only to discard the rest here.
+        // The channel's active set for now: every session that exists today was created against it,
+        // and a session that names its own set does not exist yet. When it does, this reads that
+        // one and falls back to the active one.
         var usageByEmoteId = !includeRawUsage || candidateEmotes.Count == 0
             ? new Dictionary<string, int>()
             : await usageStatQueryService.GetTotalsByEmoteIdsAsync(
-                candidateEmotes.Select(e => e.Id).ToList(), from, to, cancellationToken);
+                candidateEmotes.Select(e => e.Id).ToList(), from, to, channel.ActiveEmoteSetId, cancellationToken);
 
         // Same as the usage totals above: not computed at all for a viewer who may not see them.
         var voteTallies = !includeTallies
