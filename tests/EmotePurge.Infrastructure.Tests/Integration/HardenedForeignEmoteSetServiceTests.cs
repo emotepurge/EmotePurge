@@ -408,6 +408,95 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
         await inner.Received(1).GetForeignEmoteSetBySetIdAsync(Arg.Any<string>(), sharedString, Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
+    /// <summary>
+    /// Codex P2 (PR #215): the set-ID cache is keyed on the set alone (E12), so a cache entry a first
+    /// channel's lookup wrote is reused, unchanged, for a second channel asking about the same set —
+    /// but the interface's contract is that <c>ChannelName</c> always echoes the <i>current</i> route
+    /// channel (spec 6.4), not whichever channel happened to populate the shared entry. Channel A
+    /// primes the cache; channel B then reads the same set and must see its own channel echoed back,
+    /// from a single upstream call.
+    /// </summary>
+    [Fact]
+    public async Task CacheHitForASetId_EchoesTheCurrentCallersChannel_NotTheFirstCallersChannel()
+    {
+        var channelA = NewChannel();
+        var channelB = NewChannel();
+        var setId = $"set-{Guid.NewGuid():N}";
+        var calls = 0;
+        var inner = Substitute.For<IForeignEmoteSetService>();
+        inner.GetForeignEmoteSetBySetIdAsync(Arg.Any<string>(), setId, Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                Interlocked.Increment(ref calls);
+                return Task.FromResult(ForeignEmoteSetLookupResult.Ok(NewEmoteSetBySetId(ci.ArgAt<string>(0), setId)));
+            });
+        var service = CreateService(inner);
+
+        var first = await service.GetForeignEmoteSetBySetIdAsync(channelA, setId);
+        var second = await service.GetForeignEmoteSetBySetIdAsync(channelB, setId);
+
+        Assert.Equal(ChannelName.Normalize(channelA), first.EmoteSet!.ChannelName);
+        Assert.Equal(ChannelName.Normalize(channelB), second.EmoteSet!.ChannelName);
+        Assert.Equal(1, calls);
+    }
+
+    /// <summary>
+    /// The other half of the same finding: concurrent misses for the same set coalesce onto one
+    /// shared execution (coalescing key <c>set:{id}</c>, channel-free by design), so without the fix
+    /// both callers would receive whichever channel the shared execution happened to resolve for —
+    /// the first caller's. Genuinely overlapping, proven with an inner chain that blocks until both
+    /// callers have arrived.
+    /// </summary>
+    [Fact]
+    public async Task CoalescedMissForASetId_EchoesEachCallersOwnChannel()
+    {
+        var channelA = NewChannel();
+        var channelB = NewChannel();
+        var setId = $"set-{Guid.NewGuid():N}";
+        var gate = new TaskCompletionSource();
+        var calls = 0;
+        var inner = Substitute.For<IForeignEmoteSetService>();
+        inner.GetForeignEmoteSetBySetIdAsync(Arg.Any<string>(), setId, Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(async ci =>
+            {
+                Interlocked.Increment(ref calls);
+                await gate.Task;
+                return ForeignEmoteSetLookupResult.Ok(NewEmoteSetBySetId(ci.ArgAt<string>(0), setId));
+            });
+        var service = CreateService(inner);
+
+        var taskA = service.GetForeignEmoteSetBySetIdAsync(channelA, setId);
+        var taskB = service.GetForeignEmoteSetBySetIdAsync(channelB, setId);
+        await Task.Delay(200); // let both callers genuinely coalesce before releasing
+        gate.SetResult();
+        var resultA = await taskA;
+        var resultB = await taskB;
+
+        Assert.Equal(ChannelName.Normalize(channelA), resultA.EmoteSet!.ChannelName);
+        Assert.Equal(ChannelName.Normalize(channelB), resultB.EmoteSet!.ChannelName);
+        Assert.Equal(1, calls);
+    }
+
+    /// <summary>
+    /// The echoed channel is the normalized route channel (Regel 9), not whatever casing the caller
+    /// happened to type — proven on the cache-hit path, where the echo actually has work to do.
+    /// </summary>
+    [Fact]
+    public async Task SetIdEcho_NormalizesTheRouteChannel()
+    {
+        var channelLower = NewChannel();
+        var setId = $"set-{Guid.NewGuid():N}";
+        var inner = Substitute.For<IForeignEmoteSetService>();
+        inner.GetForeignEmoteSetBySetIdAsync(Arg.Any<string>(), setId, Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ci => Task.FromResult(ForeignEmoteSetLookupResult.Ok(NewEmoteSetBySetId(ci.ArgAt<string>(0), setId))));
+        var service = CreateService(inner);
+
+        await service.GetForeignEmoteSetBySetIdAsync(channelLower, setId);
+        var second = await service.GetForeignEmoteSetBySetIdAsync(channelLower.ToUpperInvariant(), setId);
+
+        Assert.Equal(ChannelName.Normalize(channelLower), second.EmoteSet!.ChannelName);
+    }
+
     private HardenedForeignEmoteSetService CreateService(IForeignEmoteSetService inner) => new(
         inner,
         new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance),

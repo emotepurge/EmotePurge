@@ -112,7 +112,7 @@ public sealed class HardenedForeignEmoteSetService(
             telemetry.RecordCacheLookup(RateLimitCacheNames.ForeignEmoteSetBySetId, hit: cached is not null);
             if (cached is not null)
             {
-                return ForeignEmoteSetLookupResult.Ok(cached);
+                return EchoRouteChannel(ForeignEmoteSetLookupResult.Ok(cached), normalizedChannel);
             }
         }
 
@@ -123,13 +123,37 @@ public sealed class HardenedForeignEmoteSetService(
         // account's active set never share one in-flight entry, and neither ever coalesces onto the
         // other's cache write (AK 26, spec 19's Prüfaufgabe).
         var coalesceKey = $"set:{emoteSetId}";
-        return await coalescer.CoalesceAsync(
+        var result = await coalescer.CoalesceAsync(
             coalesceKey,
             () => ExecuteGuardedAsync(
                 emoteSetId,
                 () => inner.GetForeignEmoteSetBySetIdAsync(normalizedChannel, emoteSetId, refresh: false, CancellationToken.None),
                 emoteSet => cache.SetBySetIdAsync(emoteSetId, emoteSet, CancellationToken.None)),
             cancellationToken);
+
+        return EchoRouteChannel(result, normalizedChannel);
+    }
+
+    /// <summary>
+    /// Set-ID cache entries and coalesced executions are shared across every channel that happens to
+    /// ask about the same set (cache key <c>7tvforeign:set:{setId}</c>, coalescing key
+    /// <c>set:{setId}</c> — both deliberately channel-free, spec E12) — so a reused entry carries
+    /// whichever caller's <see cref="ForeignEmoteSet.ChannelName"/> happened to populate it, not this
+    /// caller's route channel. <see cref="IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync"/>'s
+    /// contract is that <c>ChannelName</c> always echoes the current route (spec 6.4), so every reuse
+    /// — a cache hit and a coalesced miss alike — corrects it here before the result leaves this
+    /// method. A first, uncoalesced miss for a set nobody else is asking about needs no correction
+    /// (the inner chain already echoed this same caller's channel), which is why this stays a no-op
+    /// rather than an unconditional allocation.
+    /// </summary>
+    private static ForeignEmoteSetLookupResult EchoRouteChannel(ForeignEmoteSetLookupResult result, string normalizedChannel)
+    {
+        if (result.Status != ForeignEmoteSetLookupStatus.Ok || result.EmoteSet!.ChannelName == normalizedChannel)
+        {
+            return result;
+        }
+
+        return ForeignEmoteSetLookupResult.Ok(result.EmoteSet with { ChannelName = normalizedChannel });
     }
 
     /// <summary>
