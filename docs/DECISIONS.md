@@ -60,6 +60,57 @@ notice it replaces.
 
 ---
 
+### 2026-09-21 — Source-set picker: one radio per set even for a single set, and PERSONAL sets hidden entirely (#217)
+
+**Betrifft:** `web/src/app/shared/seven-tv/foreign-channel-step.ts` ·
+`web/src/app/shared/seven-tv/foreign-channel-step.spec.ts` ·
+`web/src/app/shared/seven-tv/foreign-emote-grid.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§34 addendum)
+
+Issue #217 raised two operator decisions for K2's *target* picker during its 2026-09-21 live re-check
+(see the entry above). The operator decided both apply to K3's *source* picker too; implemented here
+for the source, with the target picker's own implementation left to a separate K2 follow-up.
+
+**One layout regardless of set count.** The source-set radiogroup used to render only once an account
+had more than one set (`ready.sets.length > 1`), so a single-set account — the common case — got a
+bare, non-interactive list of nothing to choose, with the active set's name appearing only in the
+channel/reload row above it. The radiogroup now always renders once there is at least one offerable
+set: a single set is one radio, checked and labelled "(aktiv)", the same shape every other account
+gets. Spec 8.7 already asked for this; §8.6's original text did not.
+
+**PERSONAL sets are hidden from this picker entirely, not shown disabled.** This reverses spec 8.6's
+"sichtbar, aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet" for the
+`PERSONAL` kind specifically: a personal 7TV set holds a handful of emotes at most and is not a
+plausible import source, so nothing is gained by showing it, disabled, next to the sets that are real
+choices. `GLOBAL`/`SPECIAL` keep 8.6's original treatment unchanged — visible, disabled, labelled. The
+now-unused `import.foreignChannel.kindPersonal` i18n key is removed; the sibling
+`import.target.kindPersonal` on the target picker is untouched — it still shows PERSONAL disabled,
+pending that picker's own follow-up. A reported active set that turns out to be `PERSONAL` is now
+treated exactly like no active set at all, since it can no longer be surfaced as the checked radio
+(see the P2-2 fix below).
+
+**Scope.** Both decisions are implemented here only for the source picker (`foreign-channel-step.ts`).
+The target picker (`import-target-dialog.ts`) still shows PERSONAL disabled and still varies its
+layout by set count, per issue #217's own description of its current shape — the separate follow-up
+applies the same two decisions there.
+
+**Also fixed while touching this picker (K3 review, unrelated to #217 itself):** no usable active set
+(none reported, or a `PERSONAL` one) no longer dead-ends the step with a loaded grid that renders
+nothing — a lone selectable (`NORMAL`) set is auto-picked, anything else shows a new
+`import.foreignChannel.noActiveSet` notice instead of silence. `ForeignEmoteGrid`'s fixed-height
+viewport now takes a `reservedRem` input so the radiogroup's own height — which that fixed
+calculation had no way to know about — is folded into its allowance; without this, an account with
+several sets grew the dialog pane a second, nested scrollbar below moderate window heights, the exact
+defect that height expression exists to prevent. A stale preview response can no longer win a race
+against a fresher one for the same set id (a request counter closes a gap the previous
+`selectedEmoteSetId`-only guard missed), and `import.foreignChannel.empty`'s text ("Das aktive
+7TV-Set dieses Kanals hat keine Emotes.") is reworded set-neutral ("Dieses Set hat keine Emotes."),
+since it renders for whichever set is picked, active or not.
+
+---
+
 ### 2026-09-20 — An import may target any set of an account the user edits; the confirm dialog keeps collisions out of the run
 
 **Betrifft:** `web/src/app/core/emotes/import-target-loader.ts` ·

@@ -1308,7 +1308,7 @@ test.describe('import dialog: shell contract', () => {
    * selection re-fetches the preview for the newly picked set — and, the specific regression AK 48
    * calls out, keeping the active set selected the whole time never issues a second preview request.
    */
-  test('the source-set picker preselects the active set, disables a non-NORMAL one, and switches the preview on pick (K3, AK 47-49)', async ({
+  test('the source-set picker preselects the active set, disables a non-NORMAL one, hides PERSONAL entirely, and switches the preview on pick (K3, AK 47-49, spec addendum 2026-09-21)', async ({
     page,
   }) => {
     await mockAuthMe(page, AUTH_USER);
@@ -1323,6 +1323,10 @@ test.describe('import dialog: shell contract', () => {
       sets: [
         { id: 'set-active', name: 'Hauptset' },
         { id: 'set-alt', name: 'Zweitset' },
+        // GLOBAL keeps 8.6's original treatment: visible, disabled, labelled.
+        { id: 'set-global', name: 'Globales Set', kind: 'GLOBAL' },
+        // PERSONAL is hidden from this picker entirely since the spec addendum — never rendered,
+        // not even disabled (asserted below by its absence, not by a disabled/labelled state).
         { id: 'set-personal', name: 'Persönlich', kind: 'PERSONAL', isPersonal: true },
       ],
     });
@@ -1367,8 +1371,11 @@ test.describe('import dialog: shell contract', () => {
     await expect(radiogroup.getByRole('radio', { name: /^Hauptset \(aktiv\)$/ })).toBeChecked();
     await expect(radiogroup.getByRole('radio', { name: 'Zweitset' })).toBeEnabled();
     await expect(
-      radiogroup.getByRole('radio', { name: /^Persönlich \(persönliches Set\)$/ }),
+      radiogroup.getByRole('radio', { name: /^Globales Set \(kein Quellset\)$/ }),
     ).toBeDisabled();
+    // PERSONAL is absent, not merely disabled — no radio, no name anywhere in the radiogroup.
+    await expect(radiogroup.getByRole('radio')).toHaveCount(3);
+    await expect(radiogroup.getByText('Persönlich')).toHaveCount(0);
 
     // The active set's own preview loaded once, and only once — the "kein zweiter Request" case
     // (AK 48). The initial resolve already fetched by set id, so nothing here ever re-requests it.
@@ -1490,6 +1497,14 @@ test.describe('import dialog: animated emotes in the grid', () => {
     await dialog.getByRole('button', { name: 'Set laden' }).click();
     const grid = dialog.getByRole('group', { name: 'Emote-Auswahl' });
     await expect(grid).toBeVisible();
+    // K3 review, P2-1: the always-visible source-set radiogroup moved the grid down from where it
+    // used to render, and "Set laden"'s own on-screen position — where .click() leaves the cursor —
+    // now happens to fall inside a cell's box once the grid mounts under it. Chromium recomputes
+    // :hover on layout changes even with no further pointer movement, so that stray leftover
+    // position played a real animation before any of this test's own explicit hovers ran. Parking
+    // the pointer off the grid entirely closes that gap for good, regardless of where a future
+    // reflow happens to leave "Set laden".
+    await page.mouse.move(0, 0);
 
     const viewport = dialog.locator('cdk-virtual-scroll-viewport');
     return {

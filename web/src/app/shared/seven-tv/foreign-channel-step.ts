@@ -18,9 +18,9 @@ import { ForeignEmoteGrid } from './foreign-emote-grid';
 
 /**
  * Per-row height of one radiogroup option, in rem — a labelled `py-1` row at the app's `text-sm` line
- * height (K3 review finding P2-1). Folded into {@link ForeignChannelStep.gridReservedRem} so
- * {@link ForeignEmoteGrid}'s own height budget accounts for however many rows this step's radiogroup
- * actually renders, instead of assuming a fixed shape.
+ * height (spec addendum 2026-09-21, review finding P2-1). Folded into {@link ForeignChannelStep.gridReservedRem}
+ * so {@link ForeignEmoteGrid}'s own height budget accounts for however many rows this step's
+ * radiogroup actually renders, instead of assuming a fixed shape.
  */
 const RADIO_ROW_REM = 1.75;
 /** The one extra `gap-3` the radiogroup's own flex item costs the step's host stack, on top of the
@@ -53,8 +53,9 @@ export interface ForeignChannelImportResult {
  *  machine because switching the radiogroup selection (or retrying just the preview) must not
  *  re-fetch the set list itself (spec 8.7, "kein zweiter Request, wenn das aktive Set gewählt
  *  bleibt"). `'none'` is the one state that fires no HTTP request at all and renders a notice instead
- *  of the grid (K3 review finding P2-2): 7TV reported no active set for this account at all, and
- *  nothing has been picked yet either. */
+ *  of the grid (review finding P2-2): 7TV reported no active set for this account at all, or the
+ *  reported one is not a usable import source (a `PERSONAL` set — spec addendum 2026-09-21, hidden
+ *  from this picker entirely), and nothing has been picked yet either. */
 type PreviewState =
   | { status: 'none' }
   | { status: 'loading' }
@@ -69,8 +70,10 @@ type LoadState =
       status: 'ready';
       channelName: string;
       sets: EmoteSetSummary[];
-      /** `''` when 7TV reports no active set for this account at all (rare) — spec 6.3's own
-       *  "" spelling, the same one `Channel.ActiveEmoteSetId` uses before a first sync (E21). */
+      /** `''` when there is no *usable* active set: 7TV reports no active set for this account at
+       *  all (rare — spec 6.3's own "" spelling, the same one `Channel.ActiveEmoteSetId` uses before
+       *  a first sync, E21), or it reports one that is `PERSONAL` (review finding P2-2 — treated the
+       *  same as "none" because the spec addendum hides `PERSONAL` sets from this picker outright). */
       activeEmoteSetId: string;
       selectedEmoteSetId: string;
       preview: PreviewState;
@@ -184,17 +187,20 @@ type LoadState =
             </button>
           </div>
 
-          <!-- Only when there is genuinely something to pick between: a single-set account (the
-               common case — most channels have exactly one 7TV emote set) would otherwise show a
-               permanently-checked, unchangeable radio for no benefit (P5', Frontend-Zurückhaltung).
-               With one set the preview simply loads that one, same as before K3 existed. -->
-          @if (ready.sets.length > 1) {
+          <!-- Always rendered once there is at least one offerable set (spec addendum 2026-09-21,
+               review finding: one layout regardless of set count — a single-set account no longer
+               gets a bare "one click on the channel" shortcut, it gets the same one-row radiogroup
+               every other account gets, active preselected and labelled). PERSONAL sets are
+               filtered out of selectableRadioSets entirely (spec addendum, reversing 8.6's "nie
+               ausgeblendet" for PERSONAL only) — never rendered, not even disabled. GLOBAL/SPECIAL
+               keep 8.6's original treatment: visible, disabled, labelled. -->
+          @if (selectableRadioSets().length > 0) {
             <div
               class="flex flex-col gap-1"
               role="radiogroup"
               [attr.aria-label]="'import.foreignChannel.setsLabel' | transloco"
             >
-              @for (set of ready.sets; track set.id) {
+              @for (set of selectableRadioSets(); track set.id) {
                 <label
                   class="flex items-center gap-2 py-1"
                   [class.opacity-60]="set.kind !== 'NORMAL'"
@@ -214,13 +220,10 @@ type LoadState =
                     >
                   }
                   @if (set.kind !== 'NORMAL') {
+                    <!-- Never PERSONAL here — selectableRadioSets already excludes it, so the only
+                         non-NORMAL kinds left are GLOBAL/SPECIAL, both labelled the same way. -->
                     <span class="text-xs text-fg-muted">
-                      ({{
-                        (set.isPersonal
-                          ? 'import.foreignChannel.kindPersonal'
-                          : 'import.foreignChannel.kindUnavailable'
-                        ) | transloco
-                      }})
+                      ({{ 'import.foreignChannel.kindUnavailable' | transloco }})
                     </span>
                   }
                 </label>
@@ -294,14 +297,20 @@ export class ForeignChannelStep {
     return current.status === 'ready' ? current : null;
   });
 
-  /** Extra vertical rem the radiogroup above the grid takes inside the same scrolling pane, passed
-   *  straight through to {@link ForeignEmoteGrid.reservedRem} (K3 review finding P2-1) — see that
-   *  input's own doc for the height-budget reasoning. `0` when the radiogroup does not render at all
-   *  (the template's own `ready.sets.length > 1` gate, mirrored here rather than read back off the
-   *  DOM). */
-  protected readonly gridReservedRem = computed(() => {
+  /** The sets the radiogroup renders — every set except `PERSONAL` (spec addendum 2026-09-21):
+   *  `GLOBAL`/`SPECIAL` still render, disabled and labelled (8.6, unchanged); `PERSONAL` is hidden
+   *  entirely, not merely disabled. Empty (and therefore no radiogroup at all — see the template)
+   *  when the account has nothing but personal sets, the same shape as an account with no sets. */
+  protected readonly selectableRadioSets = computed<EmoteSetSummary[]>(() => {
     const ready = this.readyState();
-    const count = ready === null || ready.sets.length <= 1 ? 0 : ready.sets.length;
+    return ready === null ? [] : ready.sets.filter((set) => !set.isPersonal);
+  });
+
+  /** Extra vertical rem the radiogroup above the grid takes inside the same scrolling pane, passed
+   *  straight through to {@link ForeignEmoteGrid.reservedRem} (review finding P2-1) — see that
+   *  input's own doc for the height-budget reasoning. `0` when nothing renders. */
+  protected readonly gridReservedRem = computed(() => {
+    const count = this.selectableRadioSets().length;
     return count === 0 ? 0 : count * RADIO_ROW_REM + RADIOGROUP_GAP_REM;
   });
 
@@ -425,10 +434,19 @@ export class ForeignChannelStep {
     this.emoteSetService.listForeignChannelEmoteSets(channelName).subscribe({
       next: (listResponse) => {
         const sets = listResponse.sets;
-        const activeEmoteSetId = listResponse.activeEmoteSetId;
-        // P2-2: no active set must not dead-end the step. Exactly one selectable (NORMAL) set is an
-        // unambiguous choice and gets preselected automatically; anything else — none, or more than
-        // one — leaves the pick to the radiogroup and shows a notice instead of nothing.
+        const reportedActive = sets.find((set) => set.id === listResponse.activeEmoteSetId) ?? null;
+        // A PERSONAL active set is no more usable than no active set at all (spec addendum
+        // 2026-09-21: PERSONAL is hidden from this picker outright, so nothing here may point the
+        // initial selection at one) — folded into the same '' the "genuinely no active set" case
+        // already used, rather than a second sentinel the rest of the class would have to know
+        // about too.
+        const activeEmoteSetId =
+          reportedActive !== null && !reportedActive.isPersonal
+            ? listResponse.activeEmoteSetId
+            : '';
+        // P2-2: no usable active set must not dead-end the step. Exactly one selectable (NORMAL)
+        // set is an unambiguous choice and gets preselected automatically; anything else — none, or
+        // more than one — leaves the pick to the radiogroup and shows a notice instead of nothing.
         const selectableSets = sets.filter((set) => set.kind === 'NORMAL');
         const selectedEmoteSetId =
           activeEmoteSetId !== ''

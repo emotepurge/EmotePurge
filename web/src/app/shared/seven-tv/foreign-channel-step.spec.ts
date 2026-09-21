@@ -26,7 +26,6 @@ const DE_TRANSLATIONS = {
       setsLabel: 'Quell-Set',
       active: 'aktiv',
       noActiveSet: 'Kein aktives Set.',
-      kindPersonal: 'persönliches Set',
       kindUnavailable: 'kein Quellset',
       retry: 'Erneut versuchen',
       empty: 'Dieses Set hat keine Emotes.',
@@ -347,29 +346,27 @@ describe('ForeignChannelStep', () => {
 
   // K3 (spec 8.7, AK 47-49): the source-set radiogroup.
 
-  it('shows no radiogroup at all when the account has only one set — nothing to pick between', () => {
+  it('always shows a radiogroup, even with exactly one set — active preselected and labelled (spec addendum 2026-09-21)', () => {
     loadChannel();
 
-    expect(host.querySelector('[role="radiogroup"]')).toBeNull();
-    expect(host.querySelectorAll('input[type="radio"]')).toHaveLength(0);
+    const group = host.querySelector('[role="radiogroup"]');
+    expect(group).not.toBeNull();
+    expect(group?.getAttribute('aria-label')).toBe('Quell-Set');
+
+    const radios = Array.from(host.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+    expect(radios).toHaveLength(1);
+    expect(radios[0].checked).toBe(true);
+    expect(host.textContent).toContain('Hauptset');
+    expect(host.textContent).toContain('aktiv');
   });
 
-  it('shows a radiogroup with the active set preselected and labelled, and a non-NORMAL set disabled and labelled', () => {
+  it('hides a PERSONAL set from the radiogroup entirely, not merely disabled (spec addendum 2026-09-21)', () => {
     loadChannel(
       'handofblood',
       setsResponse({
         activeEmoteSetId: 'set-1',
         sets: [
-          {
-            id: 'set-1',
-            name: 'Hauptset',
-            capacity: 250,
-            kind: 'NORMAL',
-            isActive: true,
-            isPersonal: false,
-            ownerDisplayName: 'Owner',
-            observations: [],
-          },
+          setsResponse().sets[0],
           {
             id: 'set-2',
             name: 'Persönlich',
@@ -384,19 +381,40 @@ describe('ForeignChannelStep', () => {
       }),
     );
 
-    const group = host.querySelector('[role="radiogroup"]');
-    expect(group).not.toBeNull();
-    expect(group?.getAttribute('aria-label')).toBe('Quell-Set');
+    // Not just "disabled" — absent. No radio, no name, no label anywhere in the step.
+    const radios = Array.from(host.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+    expect(radios).toHaveLength(1);
+    expect(radios[0].checked).toBe(true);
+    expect(host.textContent).not.toContain('Persönlich');
+  });
+
+  it('still shows a non-NORMAL, non-PERSONAL set disabled and labelled — 8.6 unchanged for GLOBAL/SPECIAL', () => {
+    loadChannel(
+      'handofblood',
+      setsResponse({
+        activeEmoteSetId: 'set-1',
+        sets: [
+          setsResponse().sets[0],
+          {
+            id: 'set-2',
+            name: 'Globales Set',
+            capacity: 1000,
+            kind: 'GLOBAL',
+            isActive: false,
+            isPersonal: false,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
 
     const radios = Array.from(host.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
     expect(radios).toHaveLength(2);
-    expect(radios[0].checked).toBe(true);
     expect(radios[0].disabled).toBe(false);
-    expect(radios[1].checked).toBe(false);
     expect(radios[1].disabled).toBe(true);
-    expect(host.textContent).toContain('Hauptset');
-    expect(host.textContent).toContain('aktiv');
-    expect(host.textContent).toContain('persönliches Set');
+    expect(host.textContent).toContain('Globales Set');
+    expect(host.textContent).toContain('kein Quellset');
   });
 
   // P2-2 (K3 review finding): no active set must not dead-end the step.
@@ -471,6 +489,36 @@ describe('ForeignChannelStep', () => {
     httpMock.expectNone(() => true);
     const radios = Array.from(host.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
     expect(radios.some((radio) => radio.checked)).toBe(false);
+    expect(host.querySelector('app-foreign-emote-grid')).toBeNull();
+    expect(host.textContent).toContain('Kein aktives Set.');
+  });
+
+  it('treats a PERSONAL active set exactly like no active set at all', () => {
+    component['channelNameControl'].setValue('handofblood');
+    component['submit']();
+    httpMock.expectOne('/api/seventv/channels/handofblood/emote-sets').flush(
+      setsResponse({
+        activeEmoteSetId: 'set-personal',
+        sets: [
+          {
+            id: 'set-personal',
+            name: 'Persönlich',
+            capacity: 5,
+            kind: 'PERSONAL',
+            isActive: true,
+            isPersonal: true,
+            ownerDisplayName: 'Owner',
+            observations: [],
+          },
+        ],
+      }),
+    );
+    fixture.detectChanges();
+
+    // PERSONAL is hidden from the radiogroup entirely, so there is nothing left to pick between —
+    // and, being the only set, nothing to auto-preselect either.
+    httpMock.expectNone(() => true);
+    expect(host.querySelector('[role="radiogroup"]')).toBeNull();
     expect(host.querySelector('app-foreign-emote-grid')).toBeNull();
     expect(host.textContent).toContain('Kein aktives Set.');
   });

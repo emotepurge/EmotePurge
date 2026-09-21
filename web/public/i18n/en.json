@@ -997,7 +997,6 @@
       "setsLabel": "Source set",
       "active": "active",
       "noActiveSet": "No active 7TV set. Pick a selectable set above to load a preview.",
-      "kindPersonal": "personal set",
       "kindUnavailable": "not a source set",
       "retry": "Retry",
       "continue": "Continue",

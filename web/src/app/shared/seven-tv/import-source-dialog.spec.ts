@@ -63,7 +63,6 @@ const DE_TRANSLATIONS = {
       setsLabel: 'Quell-Set',
       active: 'aktiv',
       noActiveSet: 'Kein aktives Set.',
-      kindPersonal: 'persönliches Set',
       kindUnavailable: 'kein Quellset',
       retry: 'Erneut versuchen',
       continue: 'Weiter',
