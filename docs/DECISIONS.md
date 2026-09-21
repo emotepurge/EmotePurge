@@ -101,8 +101,8 @@ adversarial review, on the operator's own call.** The design on the table before
 chain-closure rule across multiple boundaries, and the whole list living in a gitignored file outside
 the repo because, at that size, it amounted to the service's user list. The operator judged that
 disproportionate for a closed beta of 20 channels and 62,771 usage rows: "we shouldn't overengineer
-this just to protect the usage stats against a thousand edge cases," and, on scope, "let's do the
-migration, but only for HandOfBlood — for the rest, treat it as if the switch never happened." What
+this just to protect the usage stats against a thousand edge cases," and, on scope, "as far as I'm
+concerned, we do the migration, but only for HandOfBlood. For the rest, it doesn't exist." What
 that leaves genuinely uncovered, stated plainly rather than papered over: a channel that switched sets
 without a listed entry gets its **entire** history silently reassigned to whatever set is active
 today, and nothing detects it anymore — no completeness check, no archival-count signature, no
@@ -119,12 +119,19 @@ appears in `SetSwitchAssignments` either way — neither is a case this list nee
 
 **`ChannelEmoteSetObservation` is a new, narrowly scoped table: intervals during which EmotePurge
 observed a given 7TV set as active for a channel**, timestamped by when we noticed, not by when the
-switch actually happened. A successful sync without an open interval opens one; an observed
-`emoteSetSwitched` closes the old interval (`ClosedBy = 'set-switch'`) and opens a new one in the same
-transaction; leaving, renaming and merging each close their own way; a purge cascades via the foreign
-key; and the #76 implausible-wipe guard leaves the open interval untouched, because it never lets the
-switch happen in the first place. The migration seeds one row per channel with a non-empty active set
-id (an open interval from when tracking last resumed, split at `BoundaryUtc` for the one listed
+switch actually happened, and at most one interval per channel may be open at a time — enforced by a
+partial unique index on `ChannelId` where `ObservedToUtc IS NULL`. A successful sync without an open
+interval opens one; an observed `emoteSetSwitched` closes the old interval (`ClosedBy = 'set-switch'`)
+and opens a new one in the same transaction; leaving, renaming and merging each close their own way; a
+purge cascades via the foreign key; and the #76 implausible-wipe guard leaves the open interval
+untouched, because it never lets the switch happen in the first place. Both writing paths — the open
+and the switch — first re-check that the channel is still active, because a sync already in flight can
+otherwise land after a leave and reopen an interval on a channel nothing is tracking anymore. No lock
+is needed for this: `LeaveAsync` commits the interval's close and the `IsBotActive` flip in one
+`SaveChangesAsync`, so any read that no longer sees the open interval also sees the flag. One ordering
+remains a documented residual — a switch that commits *before* a concurrent leave can still leave its
+new interval open on a channel that has since left. The migration seeds one row per channel with a
+non-empty active set id (an open interval from when tracking last resumed, split at `BoundaryUtc` for the one listed
 channel) but **never** assigns `ClosedBy = 'set-switch'` to a seeded row — that distinction is load
 -bearing, not incidental: it's what lets a later migration rollback treat any `'set-switch'` row as
 proof that a switch has been observed since the deploy. The table's purpose is deliberately limited to
