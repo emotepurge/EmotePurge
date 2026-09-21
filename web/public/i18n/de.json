@@ -1070,6 +1070,10 @@
         "one": "Das einzige Emote ist bereits im Zielset.",
         "other": "Alle {{ count }} Emotes sind bereits im Zielset."
       },
+      "nothingToAddBlocked": {
+        "one": "Das einzige Emote kann nicht hinzugefügt werden — es ist bereits im Zielset, durch eine Namenskollision blockiert oder dort unter einem anderen Alias vorhanden.",
+        "other": "Keines der {{ count }} Emotes kann hinzugefügt werden — jedes ist bereits im Zielset, durch eine Namenskollision blockiert oder dort unter einem anderen Alias vorhanden."
+      },
       "sameChannelFile": "Diese Liste stammt aus diesem Kanal.",
       "runNotice": "Das Hinzufügen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
       "execute": "Kopieren"

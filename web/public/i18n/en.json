@@ -1070,6 +1070,10 @@
         "one": "The only emote is already in the target set.",
         "other": "All {{ count }} emotes are already in the target set."
       },
+      "nothingToAddBlocked": {
+        "one": "The only emote cannot be added — it is already in the target set, blocked by a name collision there, or listed under a different alias.",
+        "other": "None of the {{ count }} emotes can be added — each is already in the target set, blocked by a name collision there, or listed under a different alias."
+      },
       "sameChannelFile": "This list comes from this channel.",
       "runNotice": "Adding then runs automatically, one emote at a time, with a short delay between each.",
       "execute": "Copy"

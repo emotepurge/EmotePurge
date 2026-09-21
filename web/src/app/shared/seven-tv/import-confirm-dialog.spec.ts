@@ -94,6 +94,11 @@ const DE_TRANSLATIONS = {
         one: 'Das einzige Emote ist bereits im Zielset.',
         other: 'Alle {{ count }} Emotes sind bereits im Zielset.',
       },
+      nothingToAddBlocked: {
+        one: 'Das einzige Emote kann nicht hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+        other:
+          'Keines der {{ count }} Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      },
       sameChannelFile: 'Diese Liste stammt aus diesem Kanal.',
       runNotice: 'Das Hinzufügen läuft danach automatisch nacheinander.',
       execute: 'Kopieren',
@@ -378,6 +383,65 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.element('import-confirm-nothing-to-add')?.textContent).toContain(
         'Alle 2 Emotes sind bereits im Zielset.',
       );
+    });
+
+    it('says why nothing is left to add when name collisions took every row — not the "already present" wording', () => {
+      // Codex Sol P2: before the fix this banner always used the `nothingToAdd` key regardless of
+      // reason, so a run blocked entirely by collisions still claimed every emote was "already in
+      // the target set" — false, and contradicting the collision group shown just above it.
+      const dialog = render({
+        source: channelSource([row('new-1', 'Collides'), row('new-2', 'AlsoCollides')]),
+        target: readyTarget({
+          emotes: [
+            { sevenTvEmoteId: 'existing-1', name: 'Collides' },
+            { sevenTvEmoteId: 'existing-2', name: 'AlsoCollides' },
+          ],
+        }),
+      });
+
+      const execute = dialog.button(EXECUTE);
+      expect(execute.disabled).toBe(true);
+      expect(execute.getAttribute('aria-describedby')).toBe('import-confirm-nothing-to-add');
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain(
+        'Keines der 2 Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      );
+      expect(banner).not.toContain('Alle 2 Emotes sind bereits im Zielset.');
+
+      dialog.button(EXECUTE).click();
+      expect(closed).toEqual([]);
+    });
+
+    it('says why nothing is left to add on a mixed reason — some present, some collided', () => {
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU'), row('new-1', 'Collides')]),
+        target: readyTarget({
+          emotes: [
+            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
+            { sevenTvEmoteId: 'existing-2', name: 'Collides' },
+          ],
+        }),
+      });
+
+      const execute = dialog.button(EXECUTE);
+      expect(execute.disabled).toBe(true);
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain(
+        'Keines der 2 Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      );
+      expect(banner).not.toContain('Alle 2 Emotes sind bereits im Zielset.');
+    });
+
+    it('keeps the plain "already present" wording when that is the only reason', () => {
+      // Regression: the mixed/collision wording above must not swallow the existing, more specific
+      // case — every row present under the same alias still gets the original sentence.
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU')]),
+        target: readyTarget({ emotes: [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }] }),
+      });
+
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain('Das einzige Emote ist bereits im Zielset.');
     });
 
     it('releases it once the target is ready and something is left to add', () => {

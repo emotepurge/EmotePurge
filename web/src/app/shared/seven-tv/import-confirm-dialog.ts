@@ -217,10 +217,10 @@ type BlockReason = string | null;
             {{ alreadyPresentKey() | transloco: { count: preview.alreadyPresent } }}
           </p>
         }
-        @if (preview.nameCollisions.length > 0) {
+        @if (preview.nameCollisionRowCount > 0) {
           <div class="flex flex-col gap-1">
             <p class="text-sm text-fg-secondary">
-              {{ nameCollisionsKey() | transloco: { count: preview.nameCollisions.length } }}
+              {{ nameCollisionsKey() | transloco: { count: preview.nameCollisionRowCount } }}
             </p>
             <app-name-preview-list [names]="preview.nameCollisions" />
           </div>
@@ -260,7 +260,7 @@ type BlockReason = string | null;
 
       @if (nothingToAdd()) {
         <app-notice-banner id="import-confirm-nothing-to-add" variant="info">
-          {{ nothingToAddKey | transloco: { count: data.source.rows.length } }}
+          {{ nothingToAddKey() | transloco: { count: data.source.rows.length } }}
         </app-notice-banner>
       }
 
@@ -378,7 +378,7 @@ export class ImportConfirmDialog {
   );
 
   protected readonly nameCollisionsKey = computed(() =>
-    pluralKey(this.preview()?.nameCollisions.length ?? 0, 'import.confirm.nameCollisions'),
+    pluralKey(this.preview()?.nameCollisionRowCount ?? 0, 'import.confirm.nameCollisions'),
   );
 
   protected readonly aliasMismatchesKey = computed(() =>
@@ -404,10 +404,23 @@ export class ImportConfirmDialog {
 
   // Selected on the offered row count, not on `toAdd` — the banner only shows when nothing is
   // left to add, so `toAdd` is always 0 here and would always pick the plural form.
-  protected readonly nothingToAddKey = pluralKey(
-    this.data.source.rows.length,
-    'import.confirm.nothingToAdd',
-  );
+  //
+  // Two wordings, not one: `nothingToAdd` claims every offered row is already in the target set,
+  // which is only true when `alreadyPresent` alone accounts for all of them. The moment a name
+  // collision or an alias mismatch contributes — alone or mixed in with some already-present rows
+  // — that claim is false, so this falls back to the honest, reason-agnostic `nothingToAddBlocked`
+  // instead of inventing a third and fourth wording for "collision-only" and "mixed" (a signal
+  // computed on `preview()`, unlike the sibling `*Key` fields below, because the answer depends on
+  // the target load that only arrives after the dialog opens).
+  protected readonly nothingToAddKey = computed(() => {
+    const total = this.data.source.rows.length;
+    const preview = this.preview();
+    const allAlreadyPresent = preview !== null && preview.alreadyPresent === total;
+    return pluralKey(
+      total,
+      allAlreadyPresent ? 'import.confirm.nothingToAdd' : 'import.confirm.nothingToAddBlocked',
+    );
+  });
 
   protected readonly discardedRowsKey = pluralKey(
     this.data.source.discardedRows,
@@ -495,7 +508,7 @@ export class ImportConfirmDialog {
       case 'no-set':
         return 'import.confirm.noTargetSet';
       default:
-        return this.nothingToAdd() ? this.nothingToAddKey : null;
+        return this.nothingToAdd() ? this.nothingToAddKey() : null;
     }
   });
 
