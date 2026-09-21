@@ -21,17 +21,18 @@ export interface SyncImportedToSetBody {
 /**
  * The frontend counterpart of `ISevenTvEmoteSetListService.ListByTwitchIdAsync` (spec 2026-09-20,
  * E6) — one service behind the three "list emote sets" routes, plus the set-ID preview (6.4), which
- * shares the same underlying endpoint as `ForeignEmoteSetService.load()` but adds the query
- * parameter that method never needed.
+ * shares the same underlying endpoint `loadEmoteSetPreview` below reads but adds the query parameter
+ * the plain login-mode preview never needed.
  *
- * Deliberately not scoped to the target picker (K2) alone: K3's source-set picker
- * (`listForeignChannelEmoteSets`) and K4's usage-stats dropdown (`listChannelEmoteSets`) read the
- * same three routes this service exposes, and land in later kind-issues against this same file
- * rather than a second one.
+ * Not scoped to the target picker (K2) alone: `ForeignChannelStep` (K3's source-set picker) reads
+ * `listForeignChannelEmoteSets` and `loadEmoteSetPreview` together to resolve a foreign channel's
+ * sets and preview the chosen one — always by set id (spec 8.7), never through the login-only mode
+ * `ForeignEmoteSetService` used to serve before it was retired in favour of this always-by-set-id
+ * flow. K4's usage-stats dropdown (`listChannelEmoteSets`) reads the third route the same way.
  *
- * Thin like its `ForeignEmoteSetService` sibling: the backend owns caching, coalescing and the
- * breaker for every route here (spec 6.1's guard chain); this only shapes requests. Error mapping is
- * left to callers via `apiErrorTranslationKey`, same as the rest of `core/`.
+ * Thin by design: the backend owns caching, coalescing and the breaker for every route here (spec
+ * 6.1's guard chain); this only shapes requests. Error mapping is left to callers via
+ * `apiErrorTranslationKey`, same as the rest of `core/`.
  */
 @Injectable({ providedIn: 'root' })
 export class SevenTvEmoteSetService {
@@ -60,8 +61,10 @@ export class SevenTvEmoteSetService {
   /**
    * 6.4's set-ID read mode: a preview of one specific (possibly non-active) set of `channelName`.
    * No identity resolution runs on this path (E8) — `emoteSetId` alone selects the cache entry and
-   * the upstream query. `refresh: true` bypasses the backend's 60 s cache, same escape hatch as
-   * `ForeignEmoteSetService.load()`.
+   * the upstream query. `refresh: true` bypasses the backend's 60 s cache. `ForeignChannelStep`
+   * (K3, spec 8.7) calls this for *every* preview it loads, active set included — never the plain
+   * login-mode `GET …/emotes` (no `emoteSetId`) this same route also answers — so a source channel's
+   * radiogroup selection and its preview request always name the same set explicitly.
    */
   loadEmoteSetPreview(
     channelName: string,

@@ -13,6 +13,7 @@ import {
   mockChannelStatus,
   mockEmoteList,
   mockEmoteSetTargets,
+  mockForeignChannelEmoteSets,
   mockForeignEmoteSetPreview,
   mockMyChannels,
   mockSetWarning,
@@ -1160,12 +1161,18 @@ test.describe('import dialog: shell contract', () => {
       { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
     ]);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-source',
+      sets: [{ id: 'set-source', name: 'Hauptset' }],
+    });
     await page.route('**/api/seventv/channels/handofblood/emotes*', (route) =>
       route.fulfill({
         json: {
           channelName: 'handofblood',
-          sevenTvUserId: '7tv-user-1',
+          sevenTvUserId: null,
           emoteSetId: 'set-source',
+          emoteSetName: 'Hauptset',
+          capacity: 1000,
           totalCount: 60,
           truncated: false,
           emotes: Array.from({ length: 60 }, (_, index) => ({
@@ -1202,6 +1209,79 @@ test.describe('import dialog: shell contract', () => {
     expect(gridScrolls).toBe(true);
   });
 
+  /**
+   * K3 review finding P2-1: the always-visible source-set radiogroup (spec addendum 2026-09-21)
+   * eats into the grid's fixed 26rem allowance, and a four-row radiogroup (HandOfBlood's own shape)
+   * ate through the whole ~4rem slack on any but the tallest windows — the exact double-scrollbar
+   * defect the height expression exists to prevent, just triggered by the step's own chrome instead
+   * of the window. `reservedRem` folds the radiogroup's measured height into the allowance (see
+   * `foreign-emote-grid.ts`'s class doc), so the pane must hold at every one of these heights with
+   * four sets, the same way the single-set case above holds at 500 px.
+   */
+  test('a multi-set radiogroup does not grow a second scrollbar, at several window heights (K3 review, P2-1)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Set eins' },
+        { id: 'set-2', name: 'Set zwei' },
+        { id: 'set-3', name: 'Set drei' },
+        { id: 'set-4', name: 'Set vier' },
+      ],
+    });
+    await page.route('**/api/seventv/channels/handofblood/emotes*', (route) =>
+      route.fulfill({
+        json: {
+          channelName: 'handofblood',
+          sevenTvUserId: null,
+          emoteSetId: 'set-1',
+          emoteSetName: 'Set eins',
+          capacity: 1000,
+          totalCount: 60,
+          truncated: false,
+          emotes: Array.from({ length: 60 }, (_, index) => ({
+            sevenTvEmoteId: `foreign-${index}`,
+            name: `ForeignEmote${index}`,
+            defaultName: `ForeignEmote${index}`,
+            imageUrl: `https://cdn.7tv.app/emote/foreign-${index}/2x.webp`,
+            topAllTime: null,
+            trending: null,
+          })),
+        },
+      }),
+    );
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const dialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
+    await dialog.getByLabel('Kanalname').fill('handofblood');
+    await dialog.getByRole('button', { name: 'Set laden' }).click();
+    await expect(
+      dialog.getByRole('radiogroup', { name: 'Quell-Set' }).getByRole('radio'),
+    ).toHaveCount(4);
+    await expect(dialog.getByRole('group', { name: 'Emote-Auswahl' })).toBeVisible();
+
+    // dvh follows the window size on its own (pure CSS) — no reload or re-interaction needed
+    // between resizes, only a re-measurement of the pane.
+    for (const height of [700, 800, 960]) {
+      await page.setViewportSize({ width: 1280, height });
+      const paneOverflow = await page
+        .locator('.cdk-overlay-pane.app-dialog-panel')
+        .evaluate((pane) => pane.scrollHeight - pane.clientHeight);
+      expect(paneOverflow, `pane overflow at ${height}px with 4 sets`).toBeLessThanOrEqual(1);
+    }
+  });
+
   test('entering the channel branch focuses the channel field', async ({ page }) => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
@@ -1220,6 +1300,107 @@ test.describe('import dialog: shell contract', () => {
     // The other half of the same contract, and here it is more than reachability: the step exists
     // to be typed into, so it can be typed into at once.
     await expect(dialog.getByLabel('Kanalname')).toBeFocused();
+  });
+
+  /**
+   * K3's source-set picker (spec 8.7, AK 47–49): a radiogroup of the foreign channel's sets, the
+   * active one preselected, a non-`NORMAL` set offered but disabled and labelled, switching the
+   * selection re-fetches the preview for the newly picked set — and, the specific regression AK 48
+   * calls out, keeping the active set selected the whole time never issues a second preview request.
+   */
+  test('the source-set picker preselects the active set, disables a non-NORMAL one, hides PERSONAL entirely, and switches the preview on pick (K3, AK 47-49, spec addendum 2026-09-21)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-active',
+      sets: [
+        { id: 'set-active', name: 'Hauptset' },
+        { id: 'set-alt', name: 'Zweitset' },
+        // GLOBAL keeps 8.6's original treatment: visible, disabled, labelled.
+        { id: 'set-global', name: 'Globales Set', kind: 'GLOBAL' },
+        // PERSONAL is hidden from this picker entirely since the spec addendum — never rendered,
+        // not even disabled (asserted below by its absence, not by a disabled/labelled state).
+        { id: 'set-personal', name: 'Persönlich', kind: 'PERSONAL', isPersonal: true },
+      ],
+    });
+    const previewRequests: string[] = [];
+    await page.route('**/api/seventv/channels/handofblood/emotes*', (route) => {
+      const url = new URL(route.request().url());
+      const emoteSetId = url.searchParams.get('emoteSetId')!;
+      previewRequests.push(emoteSetId);
+      const emotes =
+        emoteSetId === 'set-active'
+          ? [{ sevenTvEmoteId: '7tv-active', name: 'ActiveEmote' }]
+          : [{ sevenTvEmoteId: '7tv-alt', name: 'AltEmote' }];
+      return route.fulfill({
+        json: {
+          channelName: 'handofblood',
+          sevenTvUserId: null,
+          emoteSetId,
+          emoteSetName: emoteSetId === 'set-active' ? 'Hauptset' : 'Zweitset',
+          capacity: 1000,
+          totalCount: emotes.length,
+          truncated: false,
+          emotes: emotes.map((emote) => ({
+            ...emote,
+            defaultName: emote.name,
+            imageUrl: `https://cdn.7tv.app/emote/${emote.sevenTvEmoteId}/2x.webp`,
+            topAllTime: null,
+            trending: null,
+          })),
+        },
+      });
+    });
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const dialog = page.getByRole('dialog');
+    await page.locator('main header button').nth(2).click();
+    await dialog.getByRole('button', { name: /^Aus einem Kanal/ }).click();
+    await dialog.getByLabel('Kanalname').fill('handofblood');
+    await dialog.getByRole('button', { name: 'Set laden' }).click();
+
+    const radiogroup = dialog.getByRole('radiogroup', { name: 'Quell-Set' });
+    await expect(radiogroup.getByRole('radio', { name: /^Hauptset \(aktiv\)$/ })).toBeChecked();
+    await expect(radiogroup.getByRole('radio', { name: 'Zweitset' })).toBeEnabled();
+    await expect(
+      radiogroup.getByRole('radio', { name: /^Globales Set \(kein Quellset\)$/ }),
+    ).toBeDisabled();
+    // PERSONAL is absent, not merely disabled — no radio, no name anywhere in the radiogroup.
+    await expect(radiogroup.getByRole('radio')).toHaveCount(3);
+    await expect(radiogroup.getByText('Persönlich')).toHaveCount(0);
+
+    // The active set's own preview loaded once, and only once — the "kein zweiter Request" case
+    // (AK 48). The initial resolve already fetched by set id, so nothing here ever re-requests it.
+    // Cell names live in the tile's accessible name/title (foreign-emote-grid.ts's cellLabel), not
+    // as visible text — getByRole('button', ...) is the matching locator, same idiom as the earlier
+    // cell()-locator tests in this file.
+    await expect(dialog.getByRole('button', { name: 'ActiveEmote' })).toBeVisible();
+    expect(previewRequests).toEqual(['set-active']);
+
+    // Switching to the other NORMAL set fires exactly one new request, for that set's own id, and
+    // the grid replaces the previous set's content with the new one's (AK 49: the picked set's
+    // preview, not the active one's).
+    await radiogroup.getByRole('radio', { name: 'Zweitset' }).check();
+    await expect(dialog.getByRole('button', { name: 'AltEmote' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'ActiveEmote' })).toHaveCount(0);
+    expect(previewRequests).toEqual(['set-active', 'set-alt']);
+
+    // Switching back to the active set fires no third request — its preview was already loaded
+    // once and is served from the picker's own cache (K3 follow-up fix: found live, toggling
+    // between HandOfBlood's 3 sets a few times hit the shared ForeignEmoteLookup 429 after ~8
+    // unconditional switches).
+    await radiogroup.getByRole('radio', { name: /^Hauptset \(aktiv\)$/ }).check();
+    await expect(dialog.getByRole('button', { name: 'ActiveEmote' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'AltEmote' })).toHaveCount(0);
+    expect(previewRequests).toEqual(['set-active', 'set-alt']);
   });
 
   test('lists the three acceptable file sorts before the file control', async ({ page }) => {
@@ -1294,12 +1475,18 @@ test.describe('import dialog: animated emotes in the grid', () => {
       { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
     ]);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignChannelEmoteSets(page, 'handofblood', {
+      activeEmoteSetId: 'set-source',
+      sets: [{ id: 'set-source', name: 'Hauptset' }],
+    });
     await page.route('**/api/seventv/channels/handofblood/emotes*', (route) =>
       route.fulfill({
         json: {
           channelName: 'handofblood',
-          sevenTvUserId: '7tv-user-1',
+          sevenTvUserId: null,
           emoteSetId: 'set-source',
+          emoteSetName: 'Hauptset',
+          capacity: 1000,
           totalCount: FOREIGN_EMOTES.length,
           truncated: false,
           emotes: FOREIGN_EMOTES,
@@ -1319,6 +1506,14 @@ test.describe('import dialog: animated emotes in the grid', () => {
     await dialog.getByRole('button', { name: 'Set laden' }).click();
     const grid = dialog.getByRole('group', { name: 'Emote-Auswahl' });
     await expect(grid).toBeVisible();
+    // K3 review, P2-1: the always-visible source-set radiogroup moved the grid down from where it
+    // used to render, and "Set laden"'s own on-screen position — where .click() leaves the cursor —
+    // now happens to fall inside a cell's box once the grid mounts under it. Chromium recomputes
+    // :hover on layout changes even with no further pointer movement, so that stray leftover
+    // position played a real animation before any of this test's own explicit hovers ran. Parking
+    // the pointer off the grid entirely closes that gap for good, regardless of where a future
+    // reflow happens to leave "Set laden".
+    await page.mouse.move(0, 0);
 
     const viewport = dialog.locator('cdk-virtual-scroll-viewport');
     return {

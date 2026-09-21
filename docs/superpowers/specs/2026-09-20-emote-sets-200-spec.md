@@ -3092,3 +3092,34 @@ nicht.") mit den Knöpfen „Ja, dieses Set" (bestätigt, schließt den Picker �
 Verhalten von „Kopieren") und „Anderes Set wählen" (verwirft die Auswahl, stellt den vorherigen Stand
 wieder her — exakt das bisherige Verhalten des inneren „Abbrechen", AK 35 bleibt unverändert
 verpflichtend).
+
+## 34. Nachtrag: Einheitliches Radiogruppen-Layout und PERSONAL-Ausblendung für Quell- und Ziel-Set-Picker (#217, 2026-09-21)
+
+Issue #217 wurde am 2026-09-21 während der Live-Nachprüfung der K2-Fixes (Abschnitt 33) für den
+*Ziel*-Picker aufgemacht. Der Betreiber hat entschieden, dass beide Punkte darin gleichermaßen für den
+*Quell*-Picker (K3, dieser Abschnitt) gelten — umgesetzt hier für die Quelle; die Umsetzung für das
+Ziel folgt als eigener Nachläufer zu K2, ohne eigene Ticketnummer an dieser Stelle.
+
+**1. Ein Layout für jede Kontogröße.** Die Radiogruppe des Quell-Pickers rendert jetzt **immer**,
+sobald mindestens ein anbietbares Set existiert — auch bei genau einem Set: ein Radio, angehakt,
+mit „(aktiv)" beschriftet. Vorher zeigte ein Konto mit nur einem Set gar keine Radiogruppe
+(`ready.sets.length > 1`-Schranke), und der Name des aktiven Sets stand nur in der Kanal-/Neu-laden-
+Zeile darüber. Spec 8.7 verlangte diese Einheitlichkeit bereits; §8.6 tat es an dieser Stelle nicht.
+
+**2. PERSONAL-Sets werden ganz ausgeblendet, nicht deaktiviert gezeigt.** Das dreht §8.6 („sichtbar,
+aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet") für `PERSONAL` um:
+ein persönliches 7TV-Set trägt höchstens eine Handvoll Emotes und ist als Importquelle nicht plausibel,
+also bringt eine deaktivierte Zeile daneben nichts. `GLOBAL`/`SPECIAL` bleiben bei §8.6s ursprünglicher
+Behandlung — sichtbar, deaktiviert, beschriftet. Der jetzt ungenutzte Schlüssel
+`import.foreignChannel.kindPersonal` ist entfernt; der gleichnamige `import.target.kindPersonal` des
+Ziel-Pickers bleibt unangetastet, bis dessen eigener Nachläufer läuft. Ein gemeldetes aktives Set, das
+`PERSONAL` ist, zählt seitdem wie „kein aktives Set" (Reviewbefund P2-2 der K3-Umsetzung).
+
+**Geltungsbereich dieses Nachtrags.** Beide Entscheidungen sind hier **nur** für den Quell-Picker
+(`foreign-channel-step.ts`) umgesetzt. Der Ziel-Picker (`import-target-dialog.ts`) zeigt PERSONAL
+weiterhin deaktiviert und variiert sein Layout weiterhin nach Set-Zahl — Issue #217 beschreibt genau
+diesen Ist-Zustand als das, was der Nachläufer dort noch ändern muss.
+
+Details (betroffene Dateien, die begleitenden Reviewfixes P2-1/P2-2/P3-4/P3-5 an derselben Stelle) im
+Entscheidungslog, Eintrag 2026-09-21 „Source-set picker: one radio per set even for a single set, and
+PERSONAL sets hidden entirely (#217)".

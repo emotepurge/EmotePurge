@@ -199,6 +199,59 @@ describe('ForeignEmoteGrid', () => {
     expect(emitted.at(-1)).toEqual([]);
   });
 
+  // K3 follow-up fix: a host (ForeignChannelStep) can now serve a switch straight from its own
+  // cache, reusing this same grid instance instead of destroying and recreating it — the
+  // recreate used to be what cleared a stale selection. These three cases pin the replacement
+  // mechanism directly, without a host in the loop.
+
+  it('clears the selection and emits [] when a different emotes array arrives', () => {
+    const a = row({ sevenTvEmoteId: 'a' });
+    const b = row({ sevenTvEmoteId: 'b' });
+    render([a]);
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    const emitted: ForeignEmoteRow[][] = [];
+    component.selectionChange.subscribe((rows) => emitted.push(rows));
+
+    fixture.componentRef.setInput('emotes', [b]);
+    fixture.detectChanges();
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+    expect(emitted).toEqual([[]]);
+  });
+
+  it("emits nothing on the component's own first render — only a later change to `emotes` counts", () => {
+    const a = row({ sevenTvEmoteId: 'a' });
+    const emitted: ForeignEmoteRow[][] = [];
+    // Subscribed before the very first `detectChanges()`/effect flush, so a spurious emission on
+    // construction (rather than on an actual list change) would show up here.
+    component.selectionChange.subscribe((rows) => emitted.push(rows));
+
+    render([a]);
+
+    expect(emitted).toEqual([]);
+  });
+
+  it('does not clear the selection when the very same emotes array reference is set again', () => {
+    const a = row({ sevenTvEmoteId: 'a' });
+    const emotes = [a];
+    render(emotes);
+    component['onCellClick'](a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    const emitted: ForeignEmoteRow[][] = [];
+    component.selectionChange.subscribe((rows) => emitted.push(rows));
+
+    // Angular's signal input never becomes dirty for an `Object.is`-equal value — the effect does
+    // not even re-run, so this is not merely "the clear happened to be a no-op".
+    fixture.componentRef.setInput('emotes', emotes);
+    fixture.detectChanges();
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(emitted).toEqual([]);
+  });
+
   it('shows the clear-selection button only while at least one emote is selected', () => {
     const a = row({ sevenTvEmoteId: 'a' });
     render([a]);

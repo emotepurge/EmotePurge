@@ -225,6 +225,113 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
         Assert.Equal(JsonValueKind.Null, body.GetProperty("sevenTvUserId").ValueKind);
     }
 
+    // AK 47 (spec 2026-09-20, 6.3): GET /api/seventv/channels/{c}/emote-sets — the K3 source-set
+    // picker's list route.
+
+    [Fact]
+    public async Task EmoteSets_AnonymousCaller_Gets401()
+    {
+        var response = await SendSetsAsync(Channel, userId: null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task EmoteSets_InvalidChannelName_Gets400()
+    {
+        var response = await SendSetsAsync(InvalidChannel, NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task EmoteSets_Ok_ReturnsSetsSortedActiveFirstThenOrdinalByName()
+    {
+        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetListLookupResult.Ok(new EmoteSetList(
+                "set-b",
+                [
+                    new EmoteSetSummary("set-a", "Alpha", 1000, "NORMAL", false, "Owner"),
+                    new EmoteSetSummary("set-b", "Beta", 1000, "NORMAL", false, "Owner"),
+                    new EmoteSetSummary("set-c", "Personal", 5, "PERSONAL", true, "Owner"),
+                ],
+                "7tv-owner-1")));
+
+        var response = await SendSetsAsync(Channel, NewUserId());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("set-b", body.GetProperty("activeEmoteSetId").GetString());
+
+        var sets = body.GetProperty("sets").EnumerateArray().ToList();
+        Assert.Equal(3, sets.Count);
+        // The active set first, regardless of name — then ordinal by name among the rest.
+        Assert.Equal("set-b", sets[0].GetProperty("id").GetString());
+        Assert.True(sets[0].GetProperty("isActive").GetBoolean());
+        Assert.Equal("set-a", sets[1].GetProperty("id").GetString());
+        Assert.Equal("set-c", sets[2].GetProperty("id").GetString());
+        // observations is always [] on this route — no Channel row, no ChannelEmoteSetObservation
+        // rows, ever (spec 6.3).
+        Assert.Empty(sets[0].GetProperty("observations").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task EmoteSets_NullSevenTvActiveEmoteSetId_MapsToEmptyStringOnTheWire_NotNull()
+    {
+        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetListLookupResult.Ok(new EmoteSetList(
+                null, [new EmoteSetSummary("set-a", "Alpha", 1000, "NORMAL", false, "Owner")], "7tv-owner-1")));
+
+        var response = await SendSetsAsync(Channel, NewUserId());
+
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(JsonValueKind.String, body.GetProperty("activeEmoteSetId").ValueKind);
+        Assert.Equal(string.Empty, body.GetProperty("activeEmoteSetId").GetString());
+        // No set can ever have id "", so none of them is reported active.
+        Assert.False(body.GetProperty("sets")[0].GetProperty("isActive").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData(ForeignEmoteSetListLookupStatus.ChannelNotOnTwitch, HttpStatusCode.NotFound, ApiErrorCodes.ChannelNotOnTwitch)]
+    [InlineData(ForeignEmoteSetListLookupStatus.TwitchUnavailable, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelTwitchUnavailable)]
+    // Deliberately 404, not the 200-with-empty-list a tracked channel's own /emote-sets route (6.1)
+    // gives the same underlying EmoteSetListStatus.NoSevenTvAccount — see the status enum's own doc.
+    [InlineData(ForeignEmoteSetListLookupStatus.NoSevenTvAccount, HttpStatusCode.NotFound, ApiErrorCodes.ForeignChannelNoSevenTvAccount)]
+    [InlineData(ForeignEmoteSetListLookupStatus.SevenTvUnavailable, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable)]
+    [InlineData(ForeignEmoteSetListLookupStatus.SevenTvRateLimited, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable)]
+    // K3 review, P3-4: the theory was missing this row — our own throttle is reported the same as a
+    // 7TV outage (Regel 7: an internal budget is not part of the public error vocabulary).
+    [InlineData(ForeignEmoteSetListLookupStatus.ProviderBudgetExhausted, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable)]
+    public async Task EmoteSets_EveryFailureStatus_MapsToItsDocumentedResponse(
+        ForeignEmoteSetListLookupStatus status, HttpStatusCode expectedStatusCode, string expectedErrorCode)
+    {
+        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetListLookupResult.Failed(status));
+
+        var response = await SendSetsAsync(Channel, NewUserId());
+
+        Assert.Equal(expectedStatusCode, response.StatusCode);
+        Assert.Equal(expectedErrorCode, await ReadErrorCodeAsync(response));
+    }
+
+    private async Task<HttpResponseMessage> SendSetsAsync(string channelName, string? userId)
+    {
+        var client = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+
+        var request = new HttpRequestMessage(HttpMethod.Get, $"/api/seventv/channels/{channelName}/emote-sets");
+        if (userId is not null)
+        {
+            request.Headers.Add(TestAuthHandler.UserIdHeader, userId);
+            request.Headers.Add(TestAuthHandler.LoginHeader, "someuser");
+        }
+
+        return await client.SendAsync(request);
+    }
+
     // AK 25 (spec 2026-09-20, 6.2): GET /api/seventv/me/emote-set-targets.
 
     [Fact]

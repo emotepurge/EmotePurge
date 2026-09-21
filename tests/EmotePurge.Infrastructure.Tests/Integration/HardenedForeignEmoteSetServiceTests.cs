@@ -497,6 +497,36 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
         Assert.Equal(ChannelName.Normalize(channelLower), second.EmoteSet!.ChannelName);
     }
 
+    /// <summary>
+    /// K3's source-set list (spec 2026-09-20, 6.3) deliberately gets none of this decorator's own
+    /// hardening — its 7TV-facing half already runs behind <c>ISevenTvEmoteSetListService</c>'s own
+    /// full guard chain (see the method's own doc). Proven here rather than assumed: two calls for
+    /// the same channel both reach <c>inner</c>, which a cache (like every other method in this
+    /// class) would have prevented after the first.
+    /// </summary>
+    [Fact]
+    public async Task GetForeignEmoteSetListAsync_ForwardsEveryCallDirectlyToInner_NoCachingOfItsOwn()
+    {
+        var channel = NewChannel();
+        var calls = 0;
+        var inner = Substitute.For<IForeignEmoteSetService>();
+        inner.GetForeignEmoteSetListAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                Interlocked.Increment(ref calls);
+                return Task.FromResult(ForeignEmoteSetListLookupResult.Ok(new EmoteSetList(null, [])));
+            });
+        var service = CreateService(inner);
+
+        var first = await service.GetForeignEmoteSetListAsync(channel);
+        var second = await service.GetForeignEmoteSetListAsync(channel);
+
+        Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, first.Status);
+        Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, second.Status);
+        Assert.Equal(2, calls);
+        await inner.Received(2).GetForeignEmoteSetListAsync(channel, Arg.Any<CancellationToken>());
+    }
+
     private HardenedForeignEmoteSetService CreateService(IForeignEmoteSetService inner) => new(
         inner,
         new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance),

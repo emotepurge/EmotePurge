@@ -9,11 +9,23 @@ import {
   ForeignEmoteRow,
   ForeignEmoteSetResponse,
 } from '../../core/seven-tv/foreign-emote-set.model';
-import { ForeignEmoteSetService } from '../../core/seven-tv/foreign-emote-set.service';
+import { EmoteSetSummary } from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 import { SkeletonRows } from '../ui/skeleton-rows';
 import { ForeignEmoteGrid } from './foreign-emote-grid';
+
+/**
+ * Per-row height of one radiogroup option, in rem — a labelled `py-1` row at the app's `text-sm` line
+ * height (spec addendum 2026-09-21, review finding P2-1). Folded into {@link ForeignChannelStep.gridReservedRem}
+ * so {@link ForeignEmoteGrid}'s own height budget accounts for however many rows this step's
+ * radiogroup actually renders, instead of assuming a fixed shape.
+ */
+const RADIO_ROW_REM = 1.75;
+/** The one extra `gap-3` the radiogroup's own flex item costs the step's host stack, on top of the
+ *  `gap-1` between its own rows (already folded into {@link RADIO_ROW_REM}) — see gridReservedRem. */
+const RADIOGROUP_GAP_REM = 0.75;
 
 /**
  * What this step yields once the user has picked emotes to bring over — a self-contained payload,
@@ -25,7 +37,11 @@ import { ForeignEmoteGrid } from './foreign-emote-grid';
 export interface ForeignChannelImportResult {
   /** Normalized (Regel 9) — what the resolved channel is actually called. */
   channelName: string;
-  /** `null` in the set-ID read mode (spec 2026-09-20, E8) — see `ForeignEmoteSetResponse`. */
+  /**
+   * Always `null` since K3 (spec 2026-09-20, E8): every preview this step loads goes through the
+   * set-ID read mode (8.7), which never resolves a 7TV identity at all. Nothing downstream reads
+   * this field — it is carried only because the payload shape predates the set-ID-only flow.
+   */
   sevenTvUserId: string | null;
   emoteSetId: string;
   /** Only the rows the user marked, in the grid's selection order. Never the full set — the whole
@@ -33,31 +49,60 @@ export interface ForeignChannelImportResult {
   rows: ForeignEmoteRow[];
 }
 
-type LoadState =
-  | { status: 'idle' }
+/** The picked set's preview, nested under the resolved set list below — a separate, smaller state
+ *  machine because switching the radiogroup selection (or retrying just the preview) must not
+ *  re-fetch the set list itself (spec 8.7, "kein zweiter Request, wenn das aktive Set gewählt
+ *  bleibt"). `'none'` is the one state that fires no HTTP request at all and renders a notice instead
+ *  of the grid (review finding P2-2): 7TV reported no active set for this account at all, or the
+ *  reported one is not a usable import source (a `PERSONAL` set — spec addendum 2026-09-21, hidden
+ *  from this picker entirely), and nothing has been picked yet either. */
+type PreviewState =
+  | { status: 'none' }
   | { status: 'loading' }
   | { status: 'error'; error: HttpErrorResponse }
   | { status: 'loaded'; response: ForeignEmoteSetResponse };
 
+type LoadState =
+  | { status: 'idle' }
+  | { status: 'loadingSets' }
+  | { status: 'setsError'; error: HttpErrorResponse }
+  | {
+      status: 'ready';
+      channelName: string;
+      sets: EmoteSetSummary[];
+      /** `''` when there is no *usable* active set: 7TV reports no active set for this account at
+       *  all (rare — spec 6.3's own "" spelling, the same one `Channel.ActiveEmoteSetId` uses before
+       *  a first sync, E21), or it reports one that is `PERSONAL` (review finding P2-2 — treated the
+       *  same as "none" because the spec addendum hides `PERSONAL` sets from this picker outright). */
+      activeEmoteSetId: string;
+      selectedEmoteSetId: string;
+      preview: PreviewState;
+    };
+
 /**
- * The "Aus einem Kanal" branch of the one import dialog (spec §7): a logged-in user types an
- * arbitrary Twitch login, loads that channel's active 7TV set — no role in that channel required —
- * and marks individual emotes in the `ForeignEmoteGrid` below.
+ * The "Aus einem Kanal" branch of the one import dialog (spec §7, extended by K3/spec 8.7): a
+ * logged-in user types an arbitrary Twitch login, resolves that channel's 7TV emote sets — no role
+ * in that channel required — picks one (the active one preselected) in a radiogroup, and marks
+ * individual emotes of its preview in the `ForeignEmoteGrid` below.
  *
- * It reports its state rather than closing anything: {@link result} is `null` until a set is loaded
- * *and* something is selected, and `ImportSourceDialog` renders the "Weiter" button of the shared
- * action row against it (§7 keeps the action row with the dialog, not with the step).
+ * It reports its state rather than closing anything: {@link result} is `null` until a set's preview
+ * is loaded *and* something is selected, and `ImportSourceDialog` renders the "Weiter" button of the
+ * shared action row against it (§7 keeps the action row with the dialog, not with the step).
  *
  * {@link focusFirstControl} is how the dialog puts the caret in the channel field on the way in —
  * CDK's autofocus fires once when the overlay opens and never again for a swap inside it (#147), so
  * the contract has to be spoken. Here it also earns its keep beyond mere reachability: the step
  * exists to be typed into, and this way it can be typed into at once.
  *
- * A fresh channel query re-renders the `@case ('loaded')` branch from scratch (`load()` moves the
- * state back through `'loading'`), which unmounts and remounts `ForeignEmoteGrid` — a new
- * `ListSelection` instance, i.e. a new query always starts unselected. That is deliberate: a
- * selection made against one channel's 7TV ids has no honest meaning carried over to a different
- * channel's set. The same happens on "neu laden" (E3's cache-bypass).
+ * A fresh channel query re-renders the `@case ('ready')` branch from scratch (`load()` moves the
+ * state back through `'loadingSets'`), which unmounts and remounts `ForeignEmoteGrid`. A selection
+ * made against one channel's 7TV ids has no honest meaning carried over to a different channel's
+ * set, and the same reasoning applies to switching the radiogroup to a different set of the *same*
+ * channel (`selectSet`) — its rows have nothing in common with the previous set's either. Since the
+ * K3 follow-up fix (previewCache) can serve a switch straight from cache without a request, the grid
+ * no longer always gets unmounted for that: `ForeignEmoteGrid` itself now clears its selection
+ * whenever its `emotes` input changes to a new response (see that class's own doc), which covers
+ * both a remount (a fresh instance starts empty regardless) and a same-instance cache-served switch.
  */
 @Component({
   selector: 'app-foreign-channel-step',
@@ -112,7 +157,7 @@ type LoadState =
           type="submit"
           appButton="outline"
           buttonSize="lg"
-          [disabled]="state().status === 'loading'"
+          [disabled]="state().status === 'loadingSets'"
         >
           {{ 'import.foreignChannel.load' | transloco }}
         </button>
@@ -125,31 +170,100 @@ type LoadState =
     </form>
 
     @switch (state().status) {
-      @case ('loading') {
+      @case ('loadingSets') {
         <app-skeleton-rows [count]="3" />
       }
-      @case ('error') {
+      @case ('setsError') {
         <app-notice-banner variant="error">
-          {{ errorMessageKey() | transloco }}
+          {{ setsErrorMessageKey() | transloco }}
           <button notice-action type="button" appButton="outline" (click)="submit()">
             {{ 'import.foreignChannel.retry' | transloco }}
           </button>
         </app-notice-banner>
       }
-      @case ('loaded') {
-        @if (loadedResponse(); as response) {
+      @case ('ready') {
+        @if (readyState(); as ready) {
           <div class="flex items-center justify-between gap-2">
-            <span class="text-xs text-fg-muted">#{{ response.channelName }}</span>
+            <span class="text-xs text-fg-muted">#{{ ready.channelName }}</span>
             <button type="button" appButton="neutral" (click)="reload()">
               {{ 'import.foreignChannel.reload' | transloco }}
             </button>
           </div>
-          <app-foreign-emote-grid
-            [emotes]="response.emotes"
-            [truncated]="response.truncated"
-            [totalCount]="response.totalCount"
-            (selectionChange)="onSelectionChange($event)"
-          />
+
+          <!-- Always rendered once there is at least one offerable set (spec addendum 2026-09-21,
+               review finding: one layout regardless of set count — a single-set account no longer
+               gets a bare "one click on the channel" shortcut, it gets the same one-row radiogroup
+               every other account gets, active preselected and labelled). PERSONAL sets are
+               filtered out of selectableRadioSets entirely (spec addendum, reversing 8.6's "nie
+               ausgeblendet" for PERSONAL only) — never rendered, not even disabled. GLOBAL/SPECIAL
+               keep 8.6's original treatment: visible, disabled, labelled. -->
+          @if (selectableRadioSets().length > 0) {
+            <div
+              class="flex flex-col gap-1"
+              role="radiogroup"
+              [attr.aria-label]="'import.foreignChannel.setsLabel' | transloco"
+            >
+              @for (set of selectableRadioSets(); track set.id) {
+                <label
+                  class="flex items-center gap-2 py-1"
+                  [class.opacity-60]="set.kind !== 'NORMAL'"
+                >
+                  <input
+                    type="radio"
+                    class="h-4 w-4 accent-accent-solid"
+                    name="foreign-channel-set"
+                    [disabled]="set.kind !== 'NORMAL'"
+                    [checked]="ready.selectedEmoteSetId === set.id"
+                    (change)="selectSet(set.id)"
+                  />
+                  {{ set.name }}
+                  @if (set.id === ready.activeEmoteSetId) {
+                    <span class="text-xs text-fg-muted"
+                      >({{ 'import.foreignChannel.active' | transloco }})</span
+                    >
+                  }
+                  @if (set.kind !== 'NORMAL') {
+                    <!-- Never PERSONAL here — selectableRadioSets already excludes it, so the only
+                         non-NORMAL kinds left are GLOBAL/SPECIAL, both labelled the same way. -->
+                    <span class="text-xs text-fg-muted">
+                      ({{ 'import.foreignChannel.kindUnavailable' | transloco }})
+                    </span>
+                  }
+                </label>
+              }
+            </div>
+          }
+
+          @switch (ready.preview.status) {
+            @case ('none') {
+              <!-- P2-2: no usable active set, and either zero or more than one selectable set to
+                   fall back to automatically — the radiogroup above (if anything renders in it at
+                   all) is where the choice is made; this notice is what used to be silence. -->
+              <app-notice-banner variant="info">
+                {{ 'import.foreignChannel.noActiveSet' | transloco }}
+              </app-notice-banner>
+            }
+            @case ('loading') {
+              <app-skeleton-rows [count]="3" />
+            }
+            @case ('error') {
+              <app-notice-banner variant="error">
+                {{ previewErrorMessageKey() | transloco }}
+                <button notice-action type="button" appButton="outline" (click)="retryPreview()">
+                  {{ 'import.foreignChannel.retry' | transloco }}
+                </button>
+              </app-notice-banner>
+            }
+            @case ('loaded') {
+              <app-foreign-emote-grid
+                [emotes]="ready.preview.response.emotes"
+                [truncated]="ready.preview.response.truncated"
+                [totalCount]="ready.preview.response.totalCount"
+                [reservedRem]="gridReservedRem()"
+                (selectionChange)="onSelectionChange($event)"
+              />
+            }
+          }
         }
       }
     }
@@ -157,7 +271,7 @@ type LoadState =
   host: { class: 'flex min-h-0 flex-col gap-3' },
 })
 export class ForeignChannelStep {
-  private readonly emoteSetService = inject(ForeignEmoteSetService);
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
 
   // Validates the *normalized* value (Regel 9) — same reasoning and the same validator the admin
   // "join channel" form uses (`admin-channels-page.ts`): an admin/user can paste "HandOfBlood" the
@@ -174,26 +288,93 @@ export class ForeignChannelStep {
   protected readonly state = signal<LoadState>({ status: 'idle' });
   protected readonly selectedRows = signal<ForeignEmoteRow[]>([]);
 
-  protected readonly loadedResponse = computed<ForeignEmoteSetResponse | null>(() => {
+  /** Bumped on every {@link loadPreview} call — the only way {@link applyPreviewResult} tells a
+   *  stale answer from the latest one when two requests target the very same set id (review finding
+   *  P3-5: a double-fired retry, or a fast pick-A-then-B-then-A-again), which comparing
+   *  `selectedEmoteSetId` alone cannot distinguish — that guard only rules out an answer for a set
+   *  that is no longer selected, not an older answer for the set that still is. */
+  private latestPreviewRequestId = 0;
+
+  /**
+   * Successfully loaded previews, by set id, for the channel currently open — component state
+   * rather than a service-level cache, because it means nothing past this channel query. Found live
+   * (K3 follow-up): every radio switch re-fetched, including switching *back* to a set already
+   * shown, and all of it shares the per-user `ForeignEmoteLookup` rate limit (spec 6.10, 10/min)
+   * with the set-list call and K2's target list — toggling between HandOfBlood's 3 sets a few times
+   * hit 429 after ~8 switches.
+   *
+   * Populated in {@link loadPreview}'s success handler, gated by the *same* {@link
+   * latestPreviewRequestId} check {@link applyPreviewResult} uses for display — not by whether the
+   * response is still for the currently selected set. A response for a set the user has already
+   * left (P3-4) is the newest request either way and is worth caching: a later switch back to that
+   * set then costs no request, even though nothing was displayed the first time. What the guard
+   * rules out is the P3-5 shape — two requests for the very same set id racing — where an *older*
+   * response arrives after a newer one already resolved: without the requestId check it would
+   * silently overwrite the cache with content older than what is currently on screen, so the next
+   * switch away and back would regress to it with no request and no sign anything happened. An
+   * *error* is never cached (an error is not a preview), so retrying a failed set always requests
+   * again, cache or not.
+   *
+   * Cleared in {@link load} (a new/re-run channel query — a previous channel's set ids carry no
+   * meaning for this one, even on the rare chance one happens to collide) and in {@link reload} ("Neu
+   * laden" is the user's own signal that they no longer trust whatever is cached, not just for the
+   * one set on screen — keeping the rest around would let switching back to another set after a
+   * refresh show data the user just said they didn't trust).
+   */
+  private readonly previewCache = new Map<string, ForeignEmoteSetResponse>();
+
+  protected readonly readyState = computed(() => {
     const current = this.state();
-    return current.status === 'loaded' ? current.response : null;
+    return current.status === 'ready' ? current : null;
   });
 
-  protected readonly errorMessageKey = computed(() => {
+  /** The sets the radiogroup renders — every set except `PERSONAL` (spec addendum 2026-09-21):
+   *  `GLOBAL`/`SPECIAL` still render, disabled and labelled (8.6, unchanged); `PERSONAL` is hidden
+   *  entirely, not merely disabled. Empty (and therefore no radiogroup at all — see the template)
+   *  when the account has nothing but personal sets, the same shape as an account with no sets. */
+  protected readonly selectableRadioSets = computed<EmoteSetSummary[]>(() => {
+    const ready = this.readyState();
+    return ready === null ? [] : ready.sets.filter((set) => !set.isPersonal);
+  });
+
+  /** Extra vertical rem the radiogroup above the grid takes inside the same scrolling pane, passed
+   *  straight through to {@link ForeignEmoteGrid.reservedRem} (review finding P2-1) — see that
+   *  input's own doc for the height-budget reasoning. `0` when nothing renders. */
+  protected readonly gridReservedRem = computed(() => {
+    const count = this.selectableRadioSets().length;
+    return count === 0 ? 0 : count * RADIO_ROW_REM + RADIOGROUP_GAP_REM;
+  });
+
+  protected readonly setsErrorMessageKey = computed(() => {
     const current = this.state();
-    return current.status === 'error' ? apiErrorTranslationKey(current.error) : null;
+    return current.status === 'setsError' ? apiErrorTranslationKey(current.error) : null;
+  });
+
+  protected readonly previewErrorMessageKey = computed(() => {
+    const current = this.state();
+    return current.status === 'ready' && current.preview.status === 'error'
+      ? apiErrorTranslationKey(current.preview.error)
+      : null;
+  });
+
+  private readonly loadedResponse = computed<ForeignEmoteSetResponse | null>(() => {
+    const current = this.state();
+    return current.status === 'ready' && current.preview.status === 'loaded'
+      ? current.preview.response
+      : null;
   });
 
   /**
    * Whether the emote grid is on screen. The dialog widens its pane against exactly this and
    * nothing else (§7.3): entering this step is a form, and a form does not need 72rem — the grid
-   * does, and it arrives with "Set laden".
+   * does, and it arrives once a set's preview has actually loaded (not merely once the set list
+   * resolved — the radiogroup alone fits the narrow pane).
    */
   readonly showsGrid = computed(() => this.loadedResponse() !== null);
 
   /**
    * The step's whole outward contract: `null` while there is nothing to carry forward, the payload
-   * as soon as a loaded set has at least one marked emote. A signal rather than a method so the
+   * as soon as a loaded preview has at least one marked emote. A signal rather than a method so the
    * dialog's own `computed()` over a `viewChild` reacts to it (Regel 14).
    */
   readonly result = computed<ForeignChannelImportResult | null>(() => {
@@ -226,24 +407,152 @@ export class ForeignChannelStep {
       this.channelNameControl.markAsTouched();
       return;
     }
-    this.load(false);
+    this.load();
   }
 
+  /**
+   * Re-fetches only the currently selected set's preview with `refresh: true` — never the set list,
+   * which has no such bypass on the backend (`ISevenTvEmoteSetListService.ListByTwitchIdAsync` takes
+   * no `refresh` parameter at all, spec 6.1/6.3: its own 60 s cache is not client-bypassable). "Neu
+   * laden" therefore means "bypass the preview cache for this set", not "start over".
+   */
   protected reload(): void {
-    this.load(true);
+    const current = this.state();
+    if (current.status !== 'ready' || current.selectedEmoteSetId === '') {
+      return;
+    }
+    // The user's own "I don't trust what's cached" signal — see previewCache's doc for why that
+    // clears every set's entry, not just the one being refreshed.
+    this.previewCache.clear();
+    this.selectedRows.set([]);
+    this.state.set({ ...current, preview: { status: 'loading' } });
+    this.loadPreview(current.channelName, current.selectedEmoteSetId, true);
+  }
+
+  /** The same request without the cache bypass — offered after a preview (not a set-list) failure. */
+  protected retryPreview(): void {
+    const current = this.state();
+    if (current.status !== 'ready' || current.selectedEmoteSetId === '') {
+      return;
+    }
+    this.state.set({ ...current, preview: { status: 'loading' } });
+    this.loadPreview(current.channelName, current.selectedEmoteSetId, false);
+  }
+
+  /**
+   * A radiogroup click. `kind !== 'NORMAL'` sets are rendered disabled (8.6) so the native radio
+   * itself already refuses this, but the guard stays here too — defence for a call site that is not
+   * the template, and free given `set.kind` is not otherwise threaded through. Re-picking the
+   * already-selected set is the "kein zweiter Request" case (spec 8.7, AK 48) and is a no-op below.
+   *
+   * A set whose preview already loaded successfully once (previewCache) is rendered straight from
+   * there — no request at all, which is the K3 follow-up fix. Anything else (never loaded yet, or
+   * loaded and then failed) falls through to the same request `loadPreview` always made.
+   */
+  protected selectSet(setId: string): void {
+    const current = this.state();
+    if (current.status !== 'ready' || current.selectedEmoteSetId === setId) {
+      return;
+    }
+    // A different set's rows have no honest meaning carried over — same reasoning as a fresh
+    // channel query (class doc).
+    this.selectedRows.set([]);
+    const cached = this.previewCache.get(setId);
+    if (cached !== undefined) {
+      this.state.set({
+        ...current,
+        selectedEmoteSetId: setId,
+        preview: { status: 'loaded', response: cached },
+      });
+      return;
+    }
+    this.state.set({ ...current, selectedEmoteSetId: setId, preview: { status: 'loading' } });
+    this.loadPreview(current.channelName, setId, false);
   }
 
   protected onSelectionChange(rows: ForeignEmoteRow[]): void {
     this.selectedRows.set(rows);
   }
 
-  private load(refresh: boolean): void {
+  private load(): void {
     const channelName = normalizeChannelName(this.channelNameControl.value);
-    this.state.set({ status: 'loading' });
+    // A previous channel's set ids carry no meaning here — see previewCache's doc.
+    this.previewCache.clear();
+    this.state.set({ status: 'loadingSets' });
     this.selectedRows.set([]);
-    this.emoteSetService.load(channelName, { refresh }).subscribe({
-      next: (response) => this.state.set({ status: 'loaded', response }),
-      error: (error: HttpErrorResponse) => this.state.set({ status: 'error', error }),
+    this.emoteSetService.listForeignChannelEmoteSets(channelName).subscribe({
+      next: (listResponse) => {
+        const sets = listResponse.sets;
+        const reportedActive = sets.find((set) => set.id === listResponse.activeEmoteSetId) ?? null;
+        // A PERSONAL active set is no more usable than no active set at all (spec addendum
+        // 2026-09-21: PERSONAL is hidden from this picker outright, so nothing here may point the
+        // initial selection at one) — folded into the same '' the "genuinely no active set" case
+        // already used, rather than a second sentinel the rest of the class would have to know
+        // about too.
+        const activeEmoteSetId =
+          reportedActive !== null && !reportedActive.isPersonal
+            ? listResponse.activeEmoteSetId
+            : '';
+        // P2-2: no usable active set must not dead-end the step. Exactly one selectable (NORMAL)
+        // set is an unambiguous choice and gets preselected automatically; anything else — none, or
+        // more than one — leaves the pick to the radiogroup and shows a notice instead of nothing.
+        const selectableSets = sets.filter((set) => set.kind === 'NORMAL');
+        const selectedEmoteSetId =
+          activeEmoteSetId !== ''
+            ? activeEmoteSetId
+            : selectableSets.length === 1
+              ? selectableSets[0].id
+              : '';
+        this.state.set({
+          status: 'ready',
+          channelName,
+          sets,
+          activeEmoteSetId,
+          selectedEmoteSetId,
+          preview: selectedEmoteSetId === '' ? { status: 'none' } : { status: 'loading' },
+        });
+        if (selectedEmoteSetId !== '') {
+          this.loadPreview(channelName, selectedEmoteSetId, false);
+        }
+      },
+      error: (error: HttpErrorResponse) => this.state.set({ status: 'setsError', error }),
     });
+  }
+
+  private loadPreview(channelName: string, emoteSetId: string, refresh: boolean): void {
+    const requestId = ++this.latestPreviewRequestId;
+    this.emoteSetService.loadEmoteSetPreview(channelName, emoteSetId, { refresh }).subscribe({
+      next: (response) => {
+        // Cached only if this is still the newest request issued at all — see previewCache's doc
+        // on why that guard (not "still selected") is the right one: it is exactly what keeps an
+        // older, later-arriving answer for a same-set race (P3-5) from clobbering a fresher one.
+        if (requestId === this.latestPreviewRequestId) {
+          this.previewCache.set(emoteSetId, response);
+        }
+        this.applyPreviewResult(requestId, emoteSetId, { status: 'loaded', response });
+      },
+      error: (error: HttpErrorResponse) =>
+        this.applyPreviewResult(requestId, emoteSetId, { status: 'error', error }),
+    });
+  }
+
+  /**
+   * Applies a preview response/error only if it is both the latest request issued at all *and*
+   * still matches the currently selected set. The set-id check alone used to be the whole guard,
+   * against a stale answer landing after the caller switched to a different set — but it let an
+   * older answer for the very same set id win a race against a newer one for that same id (P3-5),
+   * since two different requests can share an emoteSetId. The request id closes that gap regardless
+   * of which set either request was for.
+   */
+  private applyPreviewResult(requestId: number, emoteSetId: string, preview: PreviewState): void {
+    const current = this.state();
+    if (
+      requestId !== this.latestPreviewRequestId ||
+      current.status !== 'ready' ||
+      current.selectedEmoteSetId !== emoteSetId
+    ) {
+      return;
+    }
+    this.state.set({ ...current, preview });
   }
 }
