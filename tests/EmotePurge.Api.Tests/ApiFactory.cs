@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using EmotePurge.Api.Auth;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -113,6 +114,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public ISevenTvEditorService EditorService { get; } = Substitute.For<ISevenTvEditorService>();
 
     /// <summary>
+    /// Substituted for the set-centric <c>sync-imported</c>'s owner check (spec 2026-09-20, section
+    /// 32), which runs for real here: its one direct owner lookup is the only thing in this factory
+    /// that would otherwise reach 7TV. The check's breaker and budget stay the real singletons.
+    /// </summary>
+    public ISevenTvApiClient SevenTvApi { get; } = Substitute.For<ISevenTvApiClient>();
+
+    /// <summary>
     /// Substituted because Program.cs now runs the S3-34 migration guard at startup — the real
     /// implementation would open a connection to the placeholder database configured below.
     /// The substitute simply completes, which is the "fully migrated" answer.
@@ -154,6 +162,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => EmoteSetList);
             services.AddScoped(_ => EmoteSetOwnership);
             services.AddScoped(_ => EditorService);
+            services.AddScoped(_ => SevenTvApi);
             services.AddScoped(_ => _migrationGuard);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected

@@ -24,8 +24,14 @@ namespace EmotePurge.Core.Services;
 /// <c>owner.mainConnection.platformDisplayName</c> (E7) — a display name, never a login, and never
 /// compared against anything: every identity check in this codebase runs on ids.
 /// </param>
+/// <param name="OwnerSevenTvUserId">
+/// <c>owner.id</c> of the same answer — what the set-centric import's owner check compares against
+/// (spec 2026-09-20, section 32), never shown anywhere. <c>null</c> when 7TV reported no owner; the
+/// check then asks 7TV about that one set instead of guessing.
+/// </param>
 public record EmoteSetSummary(
-    string Id, string Name, int? Capacity, string Kind, bool IsPersonal, string? OwnerDisplayName);
+    string Id, string Name, int? Capacity, string Kind, bool IsPersonal, string? OwnerDisplayName,
+    string? OwnerSevenTvUserId = null);
 
 /// <summary>
 /// The sets of one 7TV account, plus the set 7TV itself considers active for it.
@@ -38,7 +44,15 @@ public record EmoteSetSummary(
 /// <see cref="EmoteSetSummary"/>: one cached answer serves three routes whose notion of "active"
 /// differs, so the flag belongs to the response each route assembles, not to the shared value.
 /// </param>
-public sealed record EmoteSetList(string? SevenTvActiveEmoteSetId, IReadOnlyList<EmoteSetSummary> Sets);
+/// <param name="SevenTvUserId">
+/// The 7TV account id of the account whose sets these are (<c>userByConnection.id</c>, E7) — the
+/// other half of the set-centric import's owner check (section 32): a set is admissible when its
+/// <see cref="EmoteSetSummary.OwnerSevenTvUserId"/> is the id of one of the checked accounts. Always
+/// set on a list read from 7TV; <c>null</c> only on a list built by hand, which the owner check
+/// treats as unreadable rather than as "owns nothing".
+/// </param>
+public sealed record EmoteSetList(
+    string? SevenTvActiveEmoteSetId, IReadOnlyList<EmoteSetSummary> Sets, string? SevenTvUserId = null);
 
 /// <summary>
 /// Why <see cref="ISevenTvEmoteSetListService.ListByTwitchIdAsync"/> produced what it produced —

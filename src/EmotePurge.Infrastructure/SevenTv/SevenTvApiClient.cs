@@ -54,11 +54,8 @@ public class SevenTvApiClient(
     // circuit breaker shut for years.
     private const int MaxResetHintSeconds = 6 * 60 * 60;
 
-    // "id" on the inner user added spec 2026-09-20 (E22/T0.6, measured live against
-    // https://7tv.io/v3/gql: editor_of { user { id connections { ... } } } resolves) — the
-    // set-centric import's owner check (6.7) needs each grant expressed as a 7TV account id.
     private const string GqlEditorOfQuery =
-        "query($id: ObjectID!) { user(id: $id) { editor_of { user { id connections { platform id username } } } } }";
+        "query($id: ObjectID!) { user(id: $id) { editor_of { user { connections { platform id username } } } } }";
 
     // v4 schema, foreign-channel-import spec (F1 step 3): a set-agnostic, paginated preview of an
     // arbitrary emote set's entries, including the set-local alias, the emote's global default name,
@@ -338,6 +335,65 @@ public class SevenTvApiClient(
         }
     }
 
+    public async Task<SevenTvEmoteSetOwnerLookupResult> LookUpEmoteSetOwnerAsync(
+        string emoteSetId, CancellationToken cancellationToken = default)
+    {
+        // Charged before the request is built, like the list path (F14): a refusal means nothing
+        // left this process.
+        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning(
+                "Provider-wide 7TV budget exhausted — owner of emote set {SetId} not requested.", emoteSetId);
+            return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.BudgetExhausted);
+        }
+
+        try
+        {
+            var payload = new { query = GqlEmoteSetOwnerQuery, variables = new { id = emoteSetId } };
+            var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                logger.LogWarning("7TV reports overload (429) while reading the owner of emote set {SetId}.", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(
+                    SevenTvEmoteSetOwnerLookupStatus.RateLimited,
+                    ToRetryAfter(ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response)));
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "7TV answered HTTP {StatusCode} while reading the owner of emote set {SetId}.",
+                    (int)response.StatusCode, emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable);
+            }
+
+            var dto = await response.Content.ReadFromJsonAsync<SevenTvGqlEmoteSetOwnerResponseDto>(
+                SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+
+            // The disguised 429 (HTTP 200, extensions.status: 429) is checked before the "no owner"
+            // reading, never folded into it — otherwise an overload would answer 404.
+            if (IsRateLimited(dto?.Errors))
+            {
+                logger.LogWarning("7TV reports overload (429 in the body) while reading the owner of emote set {SetId}.", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.RateLimited);
+            }
+
+            var ownerId = dto?.Data?.EmoteSet?.OwnerId;
+            if (string.IsNullOrEmpty(ownerId))
+            {
+                logger.LogInformation("7TV names no owner for emote set {SetId}.", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.NotFound);
+            }
+
+            return SevenTvEmoteSetOwnerLookupResult.Ok(ownerId);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            logger.LogWarning(ex, "Reading the owner of 7TV emote set {SetId} failed.", emoteSetId);
+            return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable);
+        }
+    }
+
     public async Task<SevenTvEditorGrantsResult> GetEditorOfChannelsAsync(string sevenTvUserId, CancellationToken cancellationToken = default)
     {
         try
@@ -370,14 +426,10 @@ public class SevenTvApiClient(
                 return SevenTvEditorGrantsResult.Failed(SevenTvLookupStatus.Unavailable);
             }
 
-            // g.User.Id (E22) has to travel alongside its own connections, not get flattened away
-            // with SelectMany first and looked up again afterwards — it is the 7TV account id of the
-            // channel this grant belongs to, and every Twitch connection of that one user shares it.
             var result = grants
-                .Where(g => g.User is not null)
-                .SelectMany(g => g.User!.Connections
-                    .Where(c => c.Platform == TwitchPlatform)
-                    .Select(c => new SevenTvEditorGrant(c.Username, c.Id, g.User!.Id)))
+                .SelectMany(g => g.User?.Connections ?? [])
+                .Where(c => c.Platform == TwitchPlatform)
+                .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
                 .ToList();
             return SevenTvEditorGrantsResult.Ok(result);
         }
@@ -568,6 +620,17 @@ public class SevenTvApiClient(
                 return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.NoSevenTvAccount);
             }
 
+            // An account without an id cannot be the owner of anything, and the owner check (spec
+            // section 32) compares against exactly this id — so an answer without it is a failure,
+            // not an account that owns nothing.
+            if (string.IsNullOrEmpty(user.Id))
+            {
+                logger.LogWarning(
+                    "7TV emote-set list for Twitch id {TwitchId} carried a user without an id.",
+                    twitchUserId);
+                return SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable);
+            }
+
             // An account we can see but whose sets we cannot read is a failure, not an account
             // without sets — the empty list is reserved for a list 7TV actually reported as empty.
             if (user.EmoteSets is not { } sets)
@@ -589,14 +652,17 @@ public class SevenTvApiClient(
                     set.Kind,
                     string.IsNullOrEmpty(set.Owner?.MainConnection?.PlatformDisplayName)
                         ? null
-                        : set.Owner.MainConnection.PlatformDisplayName))
+                        : set.Owner.MainConnection.PlatformDisplayName,
+                    // Already part of the measured query (E7) and read here since the owner check
+                    // moved onto these lists (spec section 32) — no request of its own.
+                    string.IsNullOrEmpty(set.Owner?.Id) ? null : set.Owner.Id))
                 .ToList();
 
             var activeEmoteSetId = string.IsNullOrEmpty(user.Style?.ActiveEmoteSetId)
                 ? null
                 : user.Style.ActiveEmoteSetId;
 
-            return SevenTvEmoteSetListResult.Ok(new SevenTvEmoteSetListing(activeEmoteSetId, entries));
+            return SevenTvEmoteSetListResult.Ok(new SevenTvEmoteSetListing(activeEmoteSetId, entries, user.Id));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {

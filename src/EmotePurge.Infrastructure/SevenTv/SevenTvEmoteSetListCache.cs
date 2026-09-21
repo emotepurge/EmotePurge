@@ -28,6 +28,13 @@ namespace EmotePurge.Infrastructure.SevenTv;
 /// and a payload that does not fit them — a status the deserializer produced out of range, a
 /// success with no list — is treated as a miss rather than handed on.
 /// </para>
+/// <para>
+/// <b>A success without the account's 7TV id is a miss, too.</b> The id (and each set's owner id
+/// next to it) entered the payload when the set-centric import's owner check moved onto these lists
+/// (spec 2026-09-20, section 32). A payload written before that has neither, and reading it as a hit
+/// would hand the owner check a list that seems to own nothing — so it is read as absent and
+/// re-fetched, which the 60 s shelf-life makes a one-minute transition at most.
+/// </para>
 /// </remarks>
 public class SevenTvEmoteSetListCache(IConnectionMultiplexer connectionMultiplexer, ILogger<SevenTvEmoteSetListCache> logger)
     : ISevenTvEmoteSetListCache
@@ -69,7 +76,8 @@ public class SevenTvEmoteSetListCache(IConnectionMultiplexer connectionMultiplex
                 new CachedEmoteSetList(
                     result.Status,
                     result.List?.SevenTvActiveEmoteSetId,
-                    result.List?.Sets.ToList()),
+                    result.List?.Sets.ToList(),
+                    result.List?.SevenTvUserId),
                 JsonSerializerOptions.Web);
             await connectionMultiplexer.GetDatabase().StringSetAsync(BuildKey(twitchChannelId), payload, timeToLive);
         }
@@ -85,15 +93,17 @@ public class SevenTvEmoteSetListCache(IConnectionMultiplexer connectionMultiplex
     // holds on the way out of the cache too.
     private static EmoteSetListResult? Rehydrate(CachedEmoteSetList payload) => payload.Status switch
     {
-        EmoteSetListStatus.Ok when payload.Sets is { } sets => EmoteSetListResult.Ok(
-            new EmoteSetList(payload.ActiveEmoteSetId, sets)),
+        EmoteSetListStatus.Ok when payload.Sets is { } sets && !string.IsNullOrEmpty(payload.SevenTvUserId) =>
+            EmoteSetListResult.Ok(new EmoteSetList(payload.ActiveEmoteSetId, sets, payload.SevenTvUserId)),
         EmoteSetListStatus.Ok => null,
         _ => EmoteSetListResult.Failed(payload.Status)
     };
 
     private static string BuildKey(string twitchChannelId) => $"{KeyPrefix}{twitchChannelId}";
 
-    // Null Sets is what every negative outcome stores; Ok always carries a list, even an empty one.
+    // Null Sets is what every negative outcome stores; Ok always carries a list, even an empty one,
+    // and — since section 32 — the account's 7TV id. SevenTvUserId defaults to null so that a payload
+    // written before it existed deserializes instead of throwing, and Rehydrate reads it as a miss.
     private sealed record CachedEmoteSetList(
-        EmoteSetListStatus Status, string? ActiveEmoteSetId, List<EmoteSetSummary>? Sets);
+        EmoteSetListStatus Status, string? ActiveEmoteSetId, List<EmoteSetSummary>? Sets, string? SevenTvUserId = null);
 }

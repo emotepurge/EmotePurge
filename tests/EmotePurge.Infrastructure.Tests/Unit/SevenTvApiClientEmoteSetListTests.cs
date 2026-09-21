@@ -108,6 +108,52 @@ public class SevenTvApiClientEmoteSetListTests
     }
 
     /// <summary>
+    /// Spec section 32: the set-centric import's owner check answers from these lists, so the two
+    /// ids it compares — the account's own (<c>userByConnection.id</c>) and each set's owner
+    /// (<c>owner.id</c>) — have to survive the mapping. Both were in the measured query all along
+    /// and cost no extra field.
+    /// </summary>
+    [Fact]
+    public async Task TheMeasuredAnswer_CarriesTheAccountId_AndEverySetsOwnerId()
+    {
+        var client = CreateClient(new StubHandler(_ => MeasuredAnswer()));
+
+        var result = await client.GetEmoteSetListForTwitchUserAsync(TwitchId);
+
+        Assert.Equal(AccountId, result.Listing!.SevenTvUserId);
+        Assert.All(result.Listing.Sets, set => Assert.Equal(AccountId, set.OwnerSevenTvUserId));
+    }
+
+    /// <summary>
+    /// An account without an id cannot vouch for owning anything — the owner check compares against
+    /// exactly that id — so the answer is a failure, not an account that owns nothing.
+    /// </summary>
+    [Fact]
+    public async Task AUserWithoutAnId_IsUnavailable()
+    {
+        var handler = new StubHandler(_ => new JsonObject
+        {
+            ["data"] = new JsonObject
+            {
+                ["users"] = new JsonObject
+                {
+                    ["userByConnection"] = new JsonObject
+                    {
+                        ["style"] = new JsonObject { ["activeEmoteSetId"] = ActiveSetId },
+                        ["emoteSets"] = new JsonArray(),
+                    },
+                },
+            },
+        }.ToJsonString());
+        var client = CreateClient(handler);
+
+        var result = await client.GetEmoteSetListForTwitchUserAsync(TwitchId);
+
+        Assert.Equal(SevenTvEmoteSetListLookupStatus.Unavailable, result.Status);
+        Assert.Null(result.Listing);
+    }
+
+    /// <summary>
     /// The one failure shape that is not a failure (measured 2026-09-20 with
     /// <c>platformId: 999999999999</c>): <c>userByConnection: null</c> at HTTP 200 with no
     /// <c>errors</c> block means 7TV knows the connection and carries no account for it. It must

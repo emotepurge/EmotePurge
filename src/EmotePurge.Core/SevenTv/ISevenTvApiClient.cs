@@ -24,6 +24,12 @@ public interface ISevenTvApiClient
     // active, since 7TV lets an editor point a channel's active set at someone else's set entirely.
     Task<string?> GetEmoteSetOwnerIdAsync(string emoteSetId, CancellationToken cancellationToken = default);
 
+    // The same owner question behind the provider-wide request budget, with the failure kept apart
+    // from "no such set" — the fallback of the set-centric import's owner check (spec 2026-09-20,
+    // section 32), which must not reach 7TV unbudgeted. Charges one permit before the request is
+    // built; a refusal is BudgetExhausted and nothing is sent. Never null.
+    Task<SevenTvEmoteSetOwnerLookupResult> LookUpEmoteSetOwnerAsync(string emoteSetId, CancellationToken cancellationToken = default);
+
     // Channels (by their Twitch connection) that the given 7TV account holds editor rights on. Never
     // null; Grants is populated if and only if Status is Ok — an account with zero grants still
     // answers Ok with an empty list, since only a genuinely unusable response reaches Unavailable.

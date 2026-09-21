@@ -25,7 +25,10 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/shared/seven-tv/import-target-choices.ts` ·
 `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` ·
 `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`src/EmotePurge.Infrastructure/SevenTv/ForeignSevenTvBreakerPolicy.cs`
+`src/EmotePurge.Infrastructure/SevenTv/ForeignSevenTvBreakerPolicy.cs` ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvEmoteSetListCache.cs`
 
 Revises the 2026-09-09 entry's "the target set stays a tracked channel out of `listMine()`" into the
 weakened form: tracked stays the default and needs no extra step; an untracked target (a 7TV account
@@ -163,6 +166,27 @@ A's own success proves nothing about the incident path B just reported. Keeping 
 whole provider, with only the probe *slot* itself tracked per operation, is what lets a stale report
 release its slot on any transition without ever being able to undo a lock a different operation is
 still holding.
+
+**Owner-check clause, added 2026-09-21 after the second opinion on K2 (spec section 32).** The
+set-centric endpoint's owner check (`POST /api/seventv/emote-sets/{id}/sync-imported`, step 4 of the
+6.7 ladder) no longer asks 7TV directly. It answers from the cached set lists of
+`ISevenTvEmoteSetListService` — the actor's own and every `editor_of` account's, the same lists the
+picker was built from, behind the full guard chain of 6.1: a set is admissible when it appears in one
+of those lists *and* its `owner.id` is the `userByConnection.id` of one of the checked accounts, so
+E22's "owner ∈ {actor} ∪ {editor_of}" holds exactly, compared on ids only. Both ids were already part
+of the measured E7 query and are now passed through, at no extra request. Why: this check does not
+guard access — the report runs *after* the import, whose 7TV mutation already happened with the
+user's own token — it keeps the audit log honest. Its previous form made uncached set-owner and
+identity requests on every call under the `Bookkeeping` policy (120/min per user, documented as
+database-only work), outside the provider budget and breaker the list and preview paths share, so a
+single caller could drain the shared bucket. The one case that still asks 7TV — a set in none of the
+lists — is budgeted: one permit, a concurrency slot and its own breaker operation (`emote-set-owner`),
+with 503 and no audit entry when refused. A partial outage without an admissible find answers 503,
+not 403, because the unreadable list may be the owner's. Rejected: moving the route to
+`ForeignEmoteLookup` (bounds each user, but still bypasses the provider budget) and putting the
+existing direct calls behind the budget (trades abuse for a lost paper trail: a 503 *after* the
+mutation writes no entry, and the frontend does not retry). The 7TV account id on editor grants and
+the live re-resolution of legacy grants had no other reader and were removed with it.
 
 ---
 

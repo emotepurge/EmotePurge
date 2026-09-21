@@ -55,9 +55,12 @@ internal sealed class SevenTvGqlIdentityConnectionDto
 }
 
 // GQL: emoteSet(id) { owner_id }
-internal sealed class SevenTvGqlEmoteSetOwnerResponseDto
+internal sealed class SevenTvGqlEmoteSetOwnerResponseDto : ISevenTvGqlErrorEnvelope
 {
     public SevenTvGqlEmoteSetOwnerDataDto? Data { get; set; }
+
+    // Read only by the budgeted owner lookup, to tell a disguised 429 apart from "no owner".
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
 }
 
 internal sealed class SevenTvGqlEmoteSetOwnerDataDto
@@ -70,10 +73,7 @@ internal sealed class SevenTvGqlEmoteSetOwnerDto
     public string? OwnerId { get; set; }
 }
 
-// GQL: user(id) { editor_of { user { id connections { platform id username } } } }
-// "id" on the inner user added spec 2026-09-20 (E22/T0.6): the set-centric import's owner check
-// (6.7) needs each grant's channel expressed as a 7TV account id, not just Twitch identifiers — see
-// SevenTvGqlEditorOfOwnerDto.Id below.
+// GQL: user(id) { editor_of { user { connections { platform id username } } } }
 internal sealed class SevenTvGqlEditorOfResponseDto
 {
     public SevenTvGqlEditorOfDataDto? Data { get; set; }
@@ -96,11 +96,6 @@ internal sealed class SevenTvGqlEditorOfGrantDto
 
 internal sealed class SevenTvGqlEditorOfOwnerDto
 {
-    // The 7TV account id of the channel being edited (E22) — nullable because a response captured
-    // before this field was added to the query (or a 7TV oddity) must map to "unknown", never to an
-    // empty string that could accidentally string-equal something.
-    public string? Id { get; set; }
-
     public List<SevenTvGqlConnectionDto> Connections { get; set; } = [];
 }
 

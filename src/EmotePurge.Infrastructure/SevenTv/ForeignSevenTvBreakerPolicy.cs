@@ -55,6 +55,13 @@ public static class ForeignSevenTvBreakerOperations
     public const string EmoteSetList = "emote-set-list";
 
     /// <summary>
+    /// The one budgeted owner lookup the set-centric import's owner check falls back to when the
+    /// set is in none of the checked accounts' lists (spec 2026-09-20, section 32). Its own failure
+    /// counter and probe, like the list: a broken owner query must not take the list down with it.
+    /// </summary>
+    public const string EmoteSetOwner = "emote-set-owner";
+
+    /// <summary>
     /// The leaderboard import source (spec 2026-09-13). It runs on its own policy instance because
     /// its upstream bucket is a different one, so this name only ever shares a dictionary with
     /// itself — it exists because the operation parameter is mandatory, not because the leaderboard
@@ -141,7 +148,7 @@ public sealed class ForeignSevenTvBreakerPolicy(TimeProvider? timeProvider = nul
     private readonly Lock _gate = new();
 
     // One entry per operation identifier, created on first use. Bounded by the number of named
-    // operations sharing this instance (two today), never by anything a request carries.
+    // operations sharing this instance (three today), never by anything a request carries.
     private readonly Dictionary<string, OperationState> _operations = new(StringComparer.Ordinal);
 
     // Provider-wide, deliberately: 7TV limits the bucket, not the query. A confirmed 429 on one

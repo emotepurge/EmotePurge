@@ -136,6 +136,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ForeignEmoteSetRequestCoalescer<EmoteSetListResult>>();
         services.AddScoped<ISevenTvEmoteSetListService, SevenTvEmoteSetListService>();
 
+        // The set-centric import's owner check (spec 2026-09-20, section 32): answers from the lists
+        // above and only falls back to one direct owner lookup — under the same budget and breaker
+        // instance, with an operation name of its own.
+        services.AddScoped<IImportTargetOwnershipService, ImportTargetOwnershipService>();
+
         // Leaderboard import source (spec 2026-09-13, section 6, T3). Purely additive: the typed
         // ForeignSevenTvBreakerPolicy registration above is untouched, and the HardenedForeignEmoteSetService
         // factory above still takes that same typed instance through GetRequiredService, not a keyed

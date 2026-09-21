@@ -203,10 +203,8 @@ public sealed class SevenTvDeltaResult
 public record SevenTvIdentity(string SevenTvUserId, string? ActiveEmoteSetId);
 
 // One entry in a 7TV user's editor_of list, reduced to the Twitch identity of the channel they can
-// edit. SevenTvUserId (E22, spec 2026-09-20) is additive and nullable: it is the 7TV-internal id of
-// that channel's own account, needed by the set-centric import's owner check (6.7) to compare a
-// grant against an arbitrary set's owner id without a Twitch-only identity in the way.
-public record SevenTvEditorGrant(string TwitchChannelLogin, string TwitchChannelId, string? SevenTvUserId = null);
+// edit — the 7TV-internal user id of the owner isn't needed by any current consumer.
+public record SevenTvEditorGrant(string TwitchChannelLogin, string TwitchChannelId);
 
 // Why a 7TV lookup produced no usable answer. Four outcomes used to collapse onto one `null`
 // (issue #32): "no 7TV account", "account but no active emote set", "7TV unreachable" and "never
@@ -699,16 +697,25 @@ public enum SevenTvEmoteSetListLookupStatus
 /// <param name="Capacity"><c>0</c> is already normalised to <c>null</c> here, as on the preview path.</param>
 /// <param name="Kind">7TV's <c>EmoteSetKind</c> verbatim: <c>NORMAL</c>, <c>PERSONAL</c>, <c>GLOBAL</c>, <c>SPECIAL</c>.</param>
 /// <param name="OwnerDisplayName"><c>owner.mainConnection.platformDisplayName</c> — a display name, never a login.</param>
+/// <param name="OwnerSevenTvUserId">
+/// <c>owner.id</c> of the same answer — the id the set-centric import's owner check compares
+/// against (spec 2026-09-20, section 32). <c>null</c> when 7TV reported no owner for the set.
+/// </param>
 public record SevenTvEmoteSetListEntry(
-    string Id, string Name, int? Capacity, string Kind, string? OwnerDisplayName);
+    string Id, string Name, int? Capacity, string Kind, string? OwnerDisplayName, string? OwnerSevenTvUserId = null);
 
 /// <summary>
 /// One v4 <c>userByConnection</c> answer: the account's sets, and the set 7TV considers active for
 /// it (<c>style.activeEmoteSetId</c>) — both from the same single request (E7), which is why the
 /// list path costs one permit per account rather than two.
 /// </summary>
+/// <param name="SevenTvUserId">
+/// <c>userByConnection.id</c> — the 7TV account id behind the Twitch connection that was asked
+/// about. The client always fills it on a successful read; the parameter defaults only so that a
+/// test building a listing by hand need not invent one.
+/// </param>
 public sealed record SevenTvEmoteSetListing(
-    string? ActiveEmoteSetId, IReadOnlyList<SevenTvEmoteSetListEntry> Sets);
+    string? ActiveEmoteSetId, IReadOnlyList<SevenTvEmoteSetListEntry> Sets, string? SevenTvUserId = null);
 
 /// <summary>
 /// <see cref="Listing"/> is non-null if and only if <see cref="Status"/> is
@@ -760,5 +767,82 @@ public sealed class SevenTvEmoteSetListResult
         }
 
         return new SevenTvEmoteSetListResult(status, null, retryAfter);
+    }
+}
+
+/// <summary>
+/// Why <see cref="ISevenTvApiClient.LookUpEmoteSetOwnerAsync"/> produced what it produced — the
+/// budgeted twin of <see cref="ISevenTvApiClient.GetEmoteSetOwnerIdAsync"/>, which folds every
+/// failure into <c>null</c>. The set-centric import's owner check needs the difference: "7TV knows
+/// no such set" is a 404, "7TV did not answer" is a 503 (spec 2026-09-20, section 32).
+/// </summary>
+public enum SevenTvEmoteSetOwnerLookupStatus
+{
+    Ok,
+
+    /// <summary>
+    /// A readable answer that names no owner — an unknown set id, as far as this query can tell.
+    /// The same "one outcome for a missing owner" reading the set-warning check's Tier 1 makes.
+    /// </summary>
+    NotFound,
+
+    /// <summary>A confirmed 7TV overload — HTTP 429, or HTTP 200 with <c>extensions.status: 429</c>.</summary>
+    RateLimited,
+
+    /// <summary>Transport failure, a non-success status other than 429, or an unreadable body.</summary>
+    Unavailable,
+
+    /// <summary>
+    /// The provider-wide request budget refused a permit, so nothing was requested. Kept apart
+    /// from <see cref="Unavailable"/> for the circuit breaker's sake, as on the list path (F14).
+    /// </summary>
+    BudgetExhausted
+}
+
+/// <summary>
+/// <see cref="OwnerSevenTvUserId"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEmoteSetOwnerLookupStatus.Ok"/> — the same invariant-by-construction shape as
+/// the other result types in this file.
+/// </summary>
+public sealed class SevenTvEmoteSetOwnerLookupResult
+{
+    private SevenTvEmoteSetOwnerLookupResult(
+        SevenTvEmoteSetOwnerLookupStatus status, string? ownerSevenTvUserId, TimeSpan? retryAfter)
+    {
+        Status = status;
+        OwnerSevenTvUserId = ownerSevenTvUserId;
+        RetryAfter = retryAfter;
+    }
+
+    public SevenTvEmoteSetOwnerLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="SevenTvEmoteSetOwnerLookupStatus.Ok"/>.</summary>
+    public string? OwnerSevenTvUserId { get; }
+
+    /// <summary>What 7TV asked us to wait, on a <see cref="SevenTvEmoteSetOwnerLookupStatus.RateLimited"/> answer that said so.</summary>
+    public TimeSpan? RetryAfter { get; }
+
+    public static SevenTvEmoteSetOwnerLookupResult Ok(string ownerSevenTvUserId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(ownerSevenTvUserId);
+        return new SevenTvEmoteSetOwnerLookupResult(SevenTvEmoteSetOwnerLookupStatus.Ok, ownerSevenTvUserId, null);
+    }
+
+    public static SevenTvEmoteSetOwnerLookupResult Failed(
+        SevenTvEmoteSetOwnerLookupStatus status, TimeSpan? retryAfter = null)
+    {
+        if (status == SevenTvEmoteSetOwnerLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(ownerSevenTvUserId) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Unknown SevenTvEmoteSetOwnerLookupStatus.");
+        }
+
+        return new SevenTvEmoteSetOwnerLookupResult(status, null, retryAfter);
     }
 }

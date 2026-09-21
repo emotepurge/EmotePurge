@@ -52,7 +52,7 @@ public interface IEmoteService
     // The set-centric counterpart (spec 6.7): the import's target is an arbitrary 7TV emote set, not
     // necessarily one belonging to any channel EmotePurge tracks — so there is no Channel row to load
     // and no "unknown target" failure the way MarkImportedAsync has one. The caller (the endpoint's
-    // owner check, ISevenTvEditorService.CheckEmoteSetOwnershipAsync) has already resolved
+    // owner check, IImportTargetOwnershipService.CheckAsync) has already resolved
     // ownerSevenTvUserId/ownerTwitchLogin by the time this runs; this call only ever writes the audit
     // entry — ChannelName = null (so the row surfaces in the global admin log, not a channel's own
     // activity feed — a deliberate rest, not a bug, since the target may not be a channel at all),

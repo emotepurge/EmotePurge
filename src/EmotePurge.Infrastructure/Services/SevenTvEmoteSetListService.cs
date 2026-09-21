@@ -227,7 +227,8 @@ public sealed class SevenTvEmoteSetListService(
     {
         SevenTvEmoteSetListLookupStatus.Ok => EmoteSetListResult.Ok(new EmoteSetList(
             upstream.Listing!.ActiveEmoteSetId,
-            upstream.Listing.Sets.Select(ToSummary).ToList())),
+            upstream.Listing.Sets.Select(ToSummary).ToList(),
+            upstream.Listing.SevenTvUserId)),
         SevenTvEmoteSetListLookupStatus.NoSevenTvAccount => EmoteSetListResult.Failed(EmoteSetListStatus.NoSevenTvAccount),
         SevenTvEmoteSetListLookupStatus.RateLimited => EmoteSetListResult.Failed(EmoteSetListStatus.RateLimited),
         SevenTvEmoteSetListLookupStatus.Unavailable => EmoteSetListResult.Failed(EmoteSetListStatus.Unavailable),
@@ -245,7 +246,8 @@ public sealed class SevenTvEmoteSetListService(
         // other than NORMAL is equally unselectable (8.6), so an unknown fifth kind needs no branch
         // here — it simply is not personal, and is not selectable either.
         string.Equals(entry.Kind, PersonalKind, StringComparison.Ordinal),
-        entry.OwnerDisplayName);
+        entry.OwnerDisplayName,
+        entry.OwnerSevenTvUserId);
 
     private static TimeSpan TimeToLiveFor(SevenTvEmoteSetListResult upstream) => upstream.Status switch
     {

@@ -21,9 +21,9 @@ public class SevenTvEmoteSetListCacheTests(RedisFixture fixture)
         const string twitchId = "emote-set-list-cache-answer";
         var cache = NewCache();
         var stored = EmoteSetListResult.Ok(new EmoteSetList("01ACTIVE", [
-            new EmoteSetSummary("01ACTIVE", "Emotes", 1000, "NORMAL", false, "HandOfBlood"),
-            new EmoteSetSummary("01PERSONAL", "Personal Emotes", null, "PERSONAL", true, null),
-        ]));
+            new EmoteSetSummary("01ACTIVE", "Emotes", 1000, "NORMAL", false, "HandOfBlood", "01OWNER"),
+            new EmoteSetSummary("01PERSONAL", "Personal Emotes", null, "PERSONAL", true, null, null),
+        ], "01OWNER"));
 
         await cache.SetAsync(twitchId, stored, TimeSpan.FromSeconds(60));
         var read = await cache.TryGetAsync(twitchId);
@@ -33,6 +33,26 @@ public class SevenTvEmoteSetListCacheTests(RedisFixture fixture)
         Assert.Equal(["01ACTIVE", "01PERSONAL"], read.List.Sets.Select(s => s.Id));
         Assert.Equal([false, true], read.List.Sets.Select(s => s.IsPersonal));
         Assert.Null(read.List.Sets[1].Capacity);
+        // The two ids the set-centric import's owner check compares (spec section 32).
+        Assert.Equal("01OWNER", read.List.SevenTvUserId);
+        Assert.Equal(["01OWNER", null], read.List.Sets.Select(s => s.OwnerSevenTvUserId));
+    }
+
+    /// <summary>
+    /// Spec section 32: a success written before the payload carried the account's 7TV id has
+    /// neither that id nor any set's owner id. Read as a hit, it would hand the owner check a list
+    /// that seems to own nothing, so it has to read as a miss — never as "no owner".
+    /// </summary>
+    [Fact]
+    public async Task AnAnswerWrittenBeforeTheOwnerIds_ReadsAsAMiss()
+    {
+        const string twitchId = "emote-set-list-cache-pre-owner-ids";
+        var cache = NewCache();
+        const string previousShape =
+            """{"status":0,"activeEmoteSetId":"01ACTIVE","sets":[{"id":"01ACTIVE","name":"Emotes","capacity":1000,"kind":"NORMAL","isPersonal":false,"ownerDisplayName":"HandOfBlood"}]}""";
+        await fixture.Connection.GetDatabase().StringSetAsync($"7tvsets:{twitchId}", previousShape);
+
+        Assert.Null(await cache.TryGetAsync(twitchId));
     }
 
     /// <summary>

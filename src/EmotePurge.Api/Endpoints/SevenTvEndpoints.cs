@@ -149,8 +149,11 @@ public static class SevenTvEndpoints
         // need not be a channel EmotePurge tracks at all, and the channel-scoped route 404s without a
         // Channel row (F7). Bookkeeping, not ForeignEmoteLookup: like its channel-scoped sibling, the
         // 7TV mutation already happened by the time this call runs, so a spent read budget must not
-        // drop the paper trail. EmoteSetIdValidationFilter here validates the *route* value, not a
-        // query string — see the filter's own remarks.
+        // drop the paper trail. That policy only fits because the owner check below costs no
+        // unguarded 7TV request (spec section 32): it answers from the cached, budgeted set lists,
+        // and its one direct lookup runs under the provider budget and breaker.
+        // EmoteSetIdValidationFilter here validates the *route* value, not a query string — see the
+        // filter's own remarks.
         var emoteSetGroup = app.MapGroup("/api/seventv/emote-sets/{emoteSetId}")
             .RequireAuthorization()
             .AddEndpointFilter<EmoteSetIdValidationFilter>()
@@ -160,7 +163,7 @@ public static class SevenTvEndpoints
             string emoteSetId,
             SyncImportedToSetRequest request,
             HttpContext httpContext,
-            ISevenTvEditorService editorService,
+            IImportTargetOwnershipService ownershipService,
             IEmoteService emoteService,
             CancellationToken ct) =>
         {
@@ -180,8 +183,7 @@ public static class SevenTvEndpoints
             }
 
             // Step 4: does the actor own emoteSetId, or hold a 7TV editor grant on its owner?
-            var ownership = await editorService.CheckEmoteSetOwnershipAsync(
-                actor.TwitchUserId, actor.Login, emoteSetId, ct);
+            var ownership = await ownershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId, ct);
 
             switch (ownership.Status)
             {
