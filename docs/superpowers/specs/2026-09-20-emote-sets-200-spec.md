@@ -3123,3 +3123,30 @@ diesen Ist-Zustand als das, was der Nachläufer dort noch ändern muss.
 Details (betroffene Dateien, die begleitenden Reviewfixes P2-1/P2-2/P3-4/P3-5 an derselben Stelle) im
 Entscheidungslog, Eintrag 2026-09-21 „Source-set picker: one radio per set even for a single set, and
 PERSONAL sets hidden entirely (#217)".
+
+## 35. Nachtrag: Set-Dropdown der Nutzungsseite blendet `kind != NORMAL` ganz aus (T4.2, Betreiber-Entscheidung 2026-09-21)
+
+Während der Umsetzung von T4.2 (K4, #208 — Set-Dropdown der Nutzungsseite, spec 8.1) hat der
+Betreiber entschieden, dass das Dropdown auf `usage-stats-page.ts` Sets mit `kind != NORMAL`
+**vollständig ausblendet**, statt sie sichtbar, aber deaktiviert mit Beschriftung zu zeigen. Das
+dreht 8.1s eigenen Wortlaut („Sets mit `kind != NORMAL` deaktiviert mit Beschriftung … dasselbe
+Idiom wie ungetrackte Kanäle heute") sowie AK 50 in genau diesem einen Punkt um und ist derselbe
+Schnitt, den §34 bereits für den Quell- und (als Auflage) den Ziel-Picker gezogen hat: ein Set, das
+nicht `NORMAL` ist, trägt für diesen Kanal ohnehin nur eine Handvoll Emotes oder ist gar keins, das
+der Kanalbetreiber sinnvoll beobachten will — eine deaktivierte Zeile daneben lehrt nichts, was das
+Weglassen nicht auch sagt. Anders als bei §34 wird hier nicht nur `PERSONAL` behandelt, sondern
+jeder Wert außer `NORMAL` gleich (also auch `GLOBAL`/`SPECIAL`), weil die Nutzungsseite ohnehin nur
+Zahlen zu einem beobachteten Kanal-Set zeigt und kein Grund ersichtlich ist, warum ein `GLOBAL`- oder
+`SPECIAL`-Set hier anders behandelt gehörte als ein `PERSONAL`-Set.
+
+**Konsequenz für die URL.** Eine `emoteSetId` in der URL, die ein solches verstecktes Set nennt,
+zählt exakt wie eine unbekannte ID (8.1s eigene Fallback-Regel): das Dropdown fällt still auf das
+aktive Set zurück, und bei lesbarer Set-Liste wird der Parameter aus der URL entfernt (`setParams`,
+`replaceUrl`) — dieselbe Behandlung, die eine ID bekäme, die in der Set-Liste gar nicht vorkommt.
+
+**Geltungsbereich.** Diese Entscheidung gilt **nur** für das Set-Dropdown der Nutzungsseite
+(`shared/emotes/emote-set-menu.ts`). Quell- und Ziel-Picker bleiben bei §34s eigener Regelung
+(`PERSONAL` versteckt, `GLOBAL`/`SPECIAL` weiterhin sichtbar-deaktiviert dort, bis der Ziel-Picker-
+Nachläufer läuft). Der DECISIONS-Eintrag dazu (Regel 3) folgt mit T4.3, zusammen mit dem
+Schlüsselwechsel-Commit — dort steht auch die vollständige Begründung neben den übrigen drei fälligen
+Einträgen.
