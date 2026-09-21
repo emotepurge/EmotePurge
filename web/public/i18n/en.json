@@ -983,6 +983,7 @@
       "retry": "Reload",
       "submit": "Continue",
       "confirmUntracked": "Copy into the set ‚{{setName}}' from ‚{{ownerDisplayName}}'?",
+      "unknownOwner": "owner unknown",
       "confirmUntrackedSubmit": "Copy"
     },
     "foreignChannel": {

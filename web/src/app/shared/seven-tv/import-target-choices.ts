@@ -14,7 +14,12 @@ export type ImportTargetDisabledReason = 'notNormalKind' | 'isSourceSet';
 export interface ImportTargetSetChoice {
   emoteSetId: string;
   setName: string;
-  ownerDisplayName: string | null;
+  /** Already resolved (see {@link resolveOwnerLabel}) — never `null` and never blank, unlike the
+   *  wire `EmoteSetTargetSummary.ownerDisplayName` this is built from. Every later consumer of an
+   *  `ImportTargetChoice` (the picker's own untracked-confirmation banner, the copy confirm dialog,
+   *  the progress section) reads this field rather than the raw one, so the fallback only has to be
+   *  decided once, here, instead of at each place that renders an owner (Codex round 3 P2). */
+  ownerDisplayName: string;
   /** Labeled "aktiv" (spec 8.6) — `EmoteSetTargetSummary.isActive`, from `activeEmoteSetId` (E21). */
   isActive: boolean;
   /** Only feeds the label, never selectability by itself (E7) — see {@link disabledReason}. */
@@ -51,6 +56,34 @@ export interface ImportTargetChoices {
 }
 
 /**
+ * Resolves one set's displayed owner (Codex round 3 P2: "Provide a label when the owner display
+ * name is absent"). 7TV intentionally omits `ownerDisplayName` for an account with no
+ * `owner.mainConnection` (E7) — the caller of this transform (`ImportTargetDialog`) still has to
+ * offer that set, so falling straight through to a blank quote (`"from '' "`) is not an option.
+ *
+ * Order of preference: the display name, if it is genuinely there (a value present but only
+ * whitespace counts as absent, same treatment); otherwise the account's own Twitch login
+ * (`EmoteSetTargetAccount.twitchLogin`, spec 6.2) — it identifies the account uniquely and is never
+ * compared against anything here, only shown (E7 bars that role for identity checks, not display);
+ * otherwise `unknownOwnerLabel`, the one case 6.2 says "sollte es laut Vertrag nicht geben" (an
+ * empty login), so the caller supplies its own translated text rather than this pure function
+ * inventing untranslated wording.
+ */
+function resolveOwnerLabel(
+  ownerDisplayName: string | null,
+  twitchLogin: string,
+  unknownOwnerLabel: string,
+): string {
+  if (ownerDisplayName !== null && ownerDisplayName.trim().length > 0) {
+    return ownerDisplayName;
+  }
+  if (twitchLogin.trim().length > 0) {
+    return twitchLogin;
+  }
+  return unknownOwnerLabel;
+}
+
+/**
  * Pure transform from 6.2's wire response into the picker's two account groups (spec 8.6, first
  * three bullets). Replaces `import-target-options.ts`'s `importTargetOptions` — the picker chooses
  * *sets*, not *channels*, so the unit of selection changed, not just the data source.
@@ -63,12 +96,20 @@ export interface ImportTargetChoices {
  *
  * Grouping (tracked vs. untracked) is a stable partition, not a re-sort: each side keeps the API's
  * own ordering (own account first, then `editor_of` ordinal by login, spec 6.2) among its members.
+ *
+ * `unknownOwnerLabel` is threaded through to {@link resolveOwnerLabel} — a translated string, since
+ * this function itself has no `TranslocoService` to call (`core/` layering, and this file has no
+ * Angular DI of its own either); the caller (`ImportTargetDialog`) is the one place that already has
+ * one.
  */
 export function importTargetChoices(
   response: EmoteSetTargetsResponse,
   sourceEmoteSetId: string,
+  unknownOwnerLabel: string,
 ): ImportTargetChoices {
-  const groups = response.accounts.map((account) => toAccountGroup(account, sourceEmoteSetId));
+  const groups = response.accounts.map((account) =>
+    toAccountGroup(account, sourceEmoteSetId, unknownOwnerLabel),
+  );
   return {
     tracked: groups.filter((group) => group.isTracked),
     untracked: groups.filter((group) => !group.isTracked),
@@ -78,6 +119,7 @@ export function importTargetChoices(
 function toAccountGroup(
   account: EmoteSetTargetAccount,
   sourceEmoteSetId: string,
+  unknownOwnerLabel: string,
 ): ImportTargetAccountGroup {
   return {
     twitchChannelId: account.twitchChannelId,
@@ -89,7 +131,11 @@ function toAccountGroup(
     sets: account.sets.map((set) => ({
       emoteSetId: set.id,
       setName: set.name,
-      ownerDisplayName: set.ownerDisplayName,
+      ownerDisplayName: resolveOwnerLabel(
+        set.ownerDisplayName,
+        account.twitchLogin,
+        unknownOwnerLabel,
+      ),
       isActive: set.isActive,
       isPersonal: set.isPersonal,
       disabled: set.id === sourceEmoteSetId || set.kind !== 'NORMAL',

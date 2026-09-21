@@ -2,8 +2,9 @@ import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, computed, effect, inject, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
+import { LanguageService } from '../../core/i18n/language.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { ExportScope } from '../export/export-dialog';
 import { Button } from '../ui/button';
@@ -39,11 +40,18 @@ export interface ImportTargetDialogData {
  *  replaces the channel-only shape). `channelName` is the tracked class's attribute — `null` for an
  *  untracked target, where `ownerDisplayName`/`setName` are what names the destination instead.
  *
- *  `twitchLogin` (spec 6.2) is the account's own — never compared against anything and never shown
- *  (E7 bars that role for any account identifier here); its one job is routing `loadImportTarget`'s
- *  live-list read to the right URL for an *untracked* target, which has no `channelName` to route
- *  with instead (`import-flow.ts`'s `toTargetSelection`). Carried for every choice, tracked or not,
- *  so the shape does not have to change again the day a tracked choice needs it too.
+ *  `ownerDisplayName` is never `null` and never blank — `import-target-choices.ts`'s
+ *  `resolveOwnerLabel` has already fallen back to the account's Twitch login (or, failing that, a
+ *  translated "unknown owner" text) by the time a set reaches this shape, so every later consumer
+ *  (the picker's own untracked-confirmation banner, the confirm dialog header, the progress section)
+ *  can read it directly without inventing its own `?? ''` (Codex round 3 P2).
+ *
+ *  `twitchLogin` (spec 6.2) is the account's own — never compared against anything as an *identity*
+ *  here (E7 bars that role); its primary job is routing `loadImportTarget`'s live-list read to the
+ *  right URL for an *untracked* target, which has no `channelName` to route with instead
+ *  (`import-flow.ts`'s `toTargetSelection`) — and it is also `resolveOwnerLabel`'s fallback source
+ *  for `ownerDisplayName` above. Carried for every choice, tracked or not, so the shape does not
+ *  have to change again the day a tracked choice needs it too.
  *
  *  `activeEmoteSetId` (spec 6.2, `EmoteSetTargetAccount.activeEmoteSetId`) is the account's current
  *  active set — `null` for an untracked account. This is what lets `import-flow.ts`'s
@@ -56,7 +64,7 @@ export interface ImportTargetChoice {
   scope: ExportScope;
   emoteSetId: string;
   channelName: string | null;
-  ownerDisplayName: string | null;
+  ownerDisplayName: string;
   setName: string;
   isTracked: boolean;
   twitchLogin: string;
@@ -291,6 +299,8 @@ export class ImportTargetDialog {
   protected readonly dialogRef = inject<DialogRef<ImportTargetChoice | undefined>>(DialogRef);
 
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
+  private readonly languageService = inject(LanguageService);
+  private readonly translocoService = inject(TranslocoService);
 
   // Pre-selected to 'selection' when a selection exists (R12) — see the class doc for why this is
   // the opposite default from the export dialog. Without a selection there is no radiogroup at all
@@ -345,14 +355,28 @@ export class ImportTargetDialog {
     () => this.targetsResource.hasValue() && this.targetsResource.value().sevenTvUnavailable,
   );
 
+  // Codex round 3 P2: the one translated fallback resolveOwnerLabel needs for the case 6.2 says
+  // "should not happen" (an owner with neither a display name nor a login) — reads lang() first so
+  // a language switch while the dialog is open re-resolves it, same reasoning as
+  // import-confirm-dialog.ts's fileDetails/aliasMismatchRows.
+  protected readonly unknownOwnerLabel = computed(() => {
+    this.languageService.lang();
+    return this.translocoService.translate('import.target.unknownOwner');
+  });
+
   // Empty on every non-ready state (loading is handled by its own branch above; a failed load has
-  // nothing to show either). importTargetChoices does the tracked/untracked split and the
-  // per-set disabling (spec 8.6) — this component only renders its output and tracks a selection.
+  // nothing to show either). importTargetChoices does the tracked/untracked split, the per-set
+  // disabling (spec 8.6), and the owner-label fallback (Codex round 3 P2) — this component only
+  // renders its output and tracks a selection.
   protected readonly choices = computed<ImportTargetChoices>(() => {
     if (!this.targetsResource.hasValue()) {
       return { tracked: [], untracked: [] };
     }
-    return importTargetChoices(this.targetsResource.value(), this.data.sourceEmoteSetId);
+    return importTargetChoices(
+      this.targetsResource.value(),
+      this.data.sourceEmoteSetId,
+      this.unknownOwnerLabel(),
+    );
   });
 
   protected readonly hasAnySet = computed(() => {

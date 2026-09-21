@@ -43,6 +43,7 @@ const DE_TRANSLATIONS = {
       retry: 'Erneut laden',
       submit: 'Weiter',
       confirmUntracked: "In das Set ‚{{setName}}' von ‚{{ownerDisplayName}}' kopieren?",
+      unknownOwner: 'Besitzer unbekannt',
       confirmUntrackedSubmit: 'Kopieren',
     },
   },
@@ -935,6 +936,61 @@ describe('ImportTargetDialog', () => {
       expect(dialog.setInput('Halloween')?.checked).toBe(true);
       expect(dialog.button(SUBMIT).disabled).toBe(true);
       expect(closed).toEqual([]);
+    });
+
+    // Codex round 3 P2: a selectable untracked NORMAL set with no owner.mainConnection carries
+    // ownerDisplayName: null from the API (E7) — the banner must never render the empty quote
+    // "von ''" that a raw interpolation of that null would produce.
+    it('falls back to the account twitchLogin in the confirmation banner when ownerDisplayName is null', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              twitchLogin: 'stranger',
+              trackedChannelName: null,
+              sets: [set({ id: 'set-a', name: 'Halloween', ownerDisplayName: null })],
+            }),
+          ],
+        }),
+      );
+
+      dialog.setInput('Halloween')?.click();
+      dialog.detect();
+
+      expect(dialog.confirmationBanner()?.textContent).toContain(
+        "In das Set ‚Halloween' von ‚stranger' kopieren?",
+      );
+    });
+
+    // The case spec 6.2 says should not happen (an empty login too) — a neutral, translated label
+    // rather than a second empty quote.
+    it('falls back to the neutral unknown-owner label when both ownerDisplayName and twitchLogin are absent', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              twitchLogin: '',
+              trackedChannelName: null,
+              sets: [set({ id: 'set-a', name: 'Halloween', ownerDisplayName: null })],
+            }),
+          ],
+        }),
+      );
+
+      dialog.setInput('Halloween')?.click();
+      dialog.detect();
+
+      expect(dialog.confirmationBanner()?.textContent).toContain(
+        "In das Set ‚Halloween' von ‚Besitzer unbekannt' kopieren?",
+      );
     });
 
     it('leaves the previous choice unchanged when the confirmation is cancelled', async () => {

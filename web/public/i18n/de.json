@@ -983,6 +983,7 @@
       "retry": "Erneut laden",
       "submit": "Weiter",
       "confirmUntracked": "In das Set ‚{{setName}}' von ‚{{ownerDisplayName}}' kopieren?",
+      "unknownOwner": "Besitzer unbekannt",
       "confirmUntrackedSubmit": "Kopieren"
     },
     "foreignChannel": {
