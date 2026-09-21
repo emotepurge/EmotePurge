@@ -199,6 +199,22 @@ describe('importTargetChoices', () => {
     });
   });
 
+  it('carries isOwnAccount through per account group, for the picker preselection to key on', () => {
+    const result = importTargetChoices(
+      response([
+        account({ twitchChannelId: '1', trackedChannelName: 'own', isOwnAccount: true }),
+        account({ twitchChannelId: '2', trackedChannelName: 'editorof', isOwnAccount: false }),
+      ]),
+      'source-set',
+      UNKNOWN_OWNER,
+    );
+
+    expect(result.tracked).toEqual([
+      expect.objectContaining({ twitchChannelId: '1', isOwnAccount: true }),
+      expect.objectContaining({ twitchChannelId: '2', isOwnAccount: false }),
+    ]);
+  });
+
   it('carries setsUnavailable through per account, without dropping the account', () => {
     const result = importTargetChoices(
       response([
