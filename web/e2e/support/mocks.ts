@@ -917,6 +917,49 @@ export async function mockForeignChannelEmoteSets(
   );
 }
 
+export interface MockChannelEmoteSet extends MockEmoteSetTargetSet {
+  /** Observed-active intervals (spec 6.1) — only this route and 6.3's foreign-channel sibling
+   *  above carry them; empty by default, like every other caller here that is not exercising the
+   *  caption matrix (spec 8.4, T4.4). */
+  observations?: { fromUtc: string; toUtc: string | null }[];
+}
+
+/**
+ * GET /api/channels/{channelName}/emote-sets (spec 6.1, K4) — the usage page's own set-dropdown
+ * list (`emote-set-menu.ts`, `usage-stats-page.ts`'s `emoteSetListResource`). Distinct from
+ * {@link mockForeignChannelEmoteSets}'s `/api/seventv/channels/{c}/emote-sets` sibling above (K3's
+ * source-set picker): same wire shape, but `isActive` here is `Channel.ActiveEmoteSetId` — our own
+ * observed state (E21) — never 7TV's `style.activeEmoteSetId`.
+ *
+ * A numeric `response` answers with that HTTP status and the usual `foreign_channel_seventv_
+ * unavailable` body instead of a set list — the 6.1-unreadable case the dropdown locks itself for
+ * (spec 8.1, AK 62 second half).
+ */
+export async function mockChannelEmoteSetList(
+  page: Page,
+  channelName: string,
+  response: { activeEmoteSetId: string; sets: MockChannelEmoteSet[] } | number,
+): Promise<void> {
+  await page.route(`**/api/channels/${channelName}/emote-sets`, (route) => {
+    if (typeof response === 'number') {
+      return fulfillJson(route, response, { errorCode: 'foreign_channel_seventv_unavailable' });
+    }
+    return fulfillJson(route, 200, {
+      activeEmoteSetId: response.activeEmoteSetId,
+      sets: response.sets.map((set) => ({
+        id: set.id,
+        name: set.name,
+        capacity: set.capacity ?? 1000,
+        kind: set.kind ?? 'NORMAL',
+        isActive: set.id === response.activeEmoteSetId,
+        isPersonal: set.isPersonal ?? false,
+        ownerDisplayName: set.ownerDisplayName ?? null,
+        observations: set.observations ?? [],
+      })),
+    });
+  });
+}
+
 export interface MockLeaderboardEmote {
   sevenTvEmoteId: string;
   /** Sent as both `name` and `defaultName`: a leaderboard row is an `Emote`, not a set's aliased

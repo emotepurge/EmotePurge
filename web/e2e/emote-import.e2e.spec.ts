@@ -8,6 +8,7 @@ import {
   installLiveStub,
   mockActiveEmoteSet,
   mockAuthMe,
+  mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelScopedResync,
   mockChannelStatus,
@@ -2479,5 +2480,159 @@ test.describe('dock outcomes: announced from a region that outlives the dock (#1
     await expect(notice).toHaveCount(1);
     await expect(notice).toHaveAttribute(AT_REST, '', { timeout: 1000 });
     await expect(page.locator('[aria-hidden="true"]').filter({ hasText: text })).toBeVisible();
+  });
+});
+
+/**
+ * The import trigger's three plain doors follow the page's SELECTED set, not the channel's active
+ * one (#200, T4.5/T4.6, spec 8.6 last point) — this is the same channel's header import button
+ * used throughout `push flow: the file path` above, just opened while a non-active set is on
+ * screen. Restore is the one door K4 does not make set-aware (K5 does): it is locked the moment a
+ * purge-run protocol is read, never silently.
+ */
+test.describe('set view: the import doors follow the selected set (#200, K4/T4.5)', () => {
+  const HALLOWEEN_SET_ID = 'set-halloween';
+
+  async function mockNonActiveSetView(page: Page): Promise<void> {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockChannelEmoteSetList(page, SOURCE_CHANNEL, {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Hauptset' },
+        { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+      ],
+    });
+    await mockForeignEmoteSetPreview(page, SOURCE_CHANNEL, {
+      channelName: SOURCE_CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 0,
+      emotes: [],
+    });
+  }
+
+  async function gotoHalloweenView(page: Page): Promise<void> {
+    await page.goto(`/channels/${SOURCE_CHANNEL}/usage-stats?emoteSetId=${HALLOWEEN_SET_ID}`);
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+    // Proves the non-active set really is what is on screen, not just what the mock intended.
+    await expect(page.getByRole('button', { name: /^Set: Halloween/ })).toBeVisible();
+  }
+
+  test('an emote-list file import writes into the shown non-active set, not the channel’s active one (AK 66)', async ({
+    page,
+  }) => {
+    await mockNonActiveSetView(page);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    let reportedTargetSetId: unknown;
+    await page.route(`**/api/channels/${SOURCE_CHANNEL}/emotes/sync-imported`, async (route) => {
+      reportedTargetSetId = (route.request().postDataJSON() as { targetEmoteSetId?: string })
+        .targetEmoteSetId;
+      await route.fulfill({ status: 204 });
+    });
+
+    let capturedSetId: unknown;
+    await mockSevenTvGql(page, (request) => {
+      capturedSetId = request.variables['setId'];
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+      };
+    });
+    await page.clock.install();
+
+    await gotoHalloweenView(page);
+
+    const fileInput = await openFileImportDialog(page);
+    await fileInput.setInputFiles({
+      name: 'emotepurge_sensitron_emote-list_2026-09-21.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          source: 'emotepurge',
+          kind: 'emote-list',
+          formatVersion: 1,
+          exportedAt: '2026-09-21T09:00:00Z',
+          channelName: 'sensitron',
+          withheld: [],
+          meta: { sourceEmoteSetId: 'set-1', rowCount: 1, scope: 'visible' },
+          rows: [{ sevenTvEmoteId: '7tv-spooky-new', name: 'SpookyNew' }],
+        }),
+        'utf-8',
+      ),
+    });
+
+    const confirm = await waitForImportConfirmDialog(page);
+    // The title and the "Ziel: …" line both name the SET, exactly like the K2 target-set picker's
+    // own non-active run (same `import.confirm.titleSet`/`target` keys) — proof this is not the
+    // one-click "into the active set" path.
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      "1 Emote in Set ‚Halloween' kopieren?",
+    );
+    await expect(confirm.getByText('Ziel: sensitron · Set Halloween')).toBeVisible();
+
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(1000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    // Both the 7TV write itself (AK 43's own assertion, mirrored here) and the closing bookkeeping
+    // report the CHOSEN, non-active set — never `set-1`, the channel's active one.
+    expect(capturedSetId).toBe(HALLOWEEN_SET_ID);
+    expect(reportedTargetSetId).toBe(HALLOWEEN_SET_ID);
+  });
+
+  test('a purge-run protocol is refused the moment it is read, with the non-active-set reason, and never reaches the set/channel match check (AK 66)', async ({
+    page,
+  }) => {
+    await mockNonActiveSetView(page);
+    await gotoHalloweenView(page);
+
+    const fileInput = await openFileImportDialog(page);
+    const dialog = page.getByRole('dialog');
+    // The protocol names the very set on screen — proof the rejection is the non-active-set lock,
+    // not the unrelated wrongSet check (`file-import-step.ts`'s `restoreEnabled` is read before
+    // `setId`'s own match check ever runs).
+    await fileInput.setInputFiles({
+      name: 'emotepurge_sensitron_purge_202609211200.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          source: 'emotepurge',
+          kind: 'purge-run',
+          formatVersion: 1,
+          exportedAt: '2026-09-21T12:00:00Z',
+          channelName: 'sensitron',
+          withheld: [],
+          meta: {
+            emoteSetId: HALLOWEEN_SET_ID,
+            startedAt: '2026-09-21T12:00:00Z',
+            finishedAt: '2026-09-21T12:05:00Z',
+            counts: { requested: 1, succeeded: 1, failed: 0, cancelled: 0 },
+          },
+          rows: [
+            {
+              emoteId: 'i1',
+              sevenTvEmoteId: '7tv-1',
+              name: 'PogU',
+              status: 'done',
+              errorMessage: null,
+            },
+          ],
+        }),
+        'utf-8',
+      ),
+    });
+
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(dialog.getByRole('alert')).toContainText(
+      'Wiederherstellen geht vorerst nur im aktiven Set — dieses Set ist gerade nicht aktiv.',
+    );
   });
 });
