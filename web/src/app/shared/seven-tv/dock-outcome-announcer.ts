@@ -2,7 +2,7 @@ import { Component, computed, inject, input } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
-import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import {
   ResyncTriggerState,
   SevenTvRestoreService,
@@ -16,6 +16,28 @@ export function resyncNoticeKey(
   family: 'import' | 'restore',
 ): string | null {
   return state === 'idle' ? null : `${family}.resync.${state}`;
+}
+
+/** The `import.summary.copiedNotActive` transloco params, or `null` while the notice does not apply
+ *  (finding 3, Live-Verifikation K2 2026-09-21) — shared by this announcer and the visible (but
+ *  aria-hidden) notice it speaks for (`ImportProgressSection`), same reason as {@link resyncNoticeKey}
+ *  above. A copy into a tracked *non*-active set never fires `SevenTvImportService.onRunComplete`'s
+ *  resync (there is nothing for `resyncTrigger` to become but 'idle'), so this notice fills the gap
+ *  that would otherwise leave the run's actual outcome unstated once it settles. `run.result !==
+ *  null` gates it to a *settled* run, mirroring `resyncTrigger`'s own only-set-after-completion
+ *  timing — a run still in flight has nothing to report here yet. */
+export function copiedNotActiveNotice(
+  run: ImportRunInfo | null,
+): { channel: string; setName: string } | null {
+  if (
+    run === null ||
+    run.result === null ||
+    run.targetChannelName === null ||
+    run.targetIsActiveSet
+  ) {
+    return null;
+  }
+  return { channel: run.targetChannelName, setName: run.targetSetName };
 }
 
 /** Translation key for the dock's "n of them hidden by the filter" line, shared by this announcer
@@ -119,7 +141,9 @@ export function markedCountNoticeKey(count: number): string {
       @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
         <p>{{ 'import.duplicateCheckUnavailable' | transloco }}</p>
       }
-      @if (importResyncKey(); as key) {
+      @if (importCopiedNotActive(); as notActive) {
+        <p>{{ 'import.summary.copiedNotActive' | transloco: notActive }}</p>
+      } @else if (importResyncKey(); as key) {
         <p>{{ key | transloco }}</p>
       }
     }
@@ -156,5 +180,8 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importResyncKey = computed(() =>
     resyncNoticeKey(this.importService.resyncTrigger(), 'import'),
+  );
+  protected readonly importCopiedNotActive = computed(() =>
+    copiedNotActiveNotice(this.importService.run()),
   );
 }

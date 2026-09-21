@@ -222,6 +222,17 @@ describe('startImportFlow', () => {
     expect(statusSubjects).toHaveLength(1);
   });
 
+  // Findings 1/3 (Live-Verifikation K2 2026-09-21): an 'activeSet' door is always the channel's
+  // active set — the confirm dialog keeps today's title wording and never names the set.
+  it("marks an 'activeSet' target as the active set, with no title set name", () => {
+    const { deps, dialogOpen } = setup();
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+    const data = confirmData(dialogOpen);
+    expect(data.targetIsActiveSet).toBe(true);
+    expect(data.titleSetName).toBeNull();
+  });
+
   it('resolves the target to ready once the load answers', () => {
     const { deps, dialogOpen, statusSubjects } = setup();
     startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
@@ -302,6 +313,7 @@ describe('startImportFlow', () => {
 
     const outcome: ImportConfirmOutcome = {
       targetSetId: 'set-1',
+      targetSetName: 'set-1',
       rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
     };
     confirmClosed(dialogOpen).next(outcome);
@@ -309,8 +321,16 @@ describe('startImportFlow', () => {
     // Fourth argument is the fresh #149/T5 re-check's skip count — 0 here because the harness's
     // default 7TV read (`httpPost`) reports an empty target set, so nothing gets filtered a second
     // time. Fifth is whether that check actually ran — true, since the fetch succeeded (#149).
+    // `setName`/`isActiveSet` (findings 2/3) mirror the outcome's own name and this 'activeSet'
+    // door's always-active nature.
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-1', channelName: 'target-channel', ownerDisplayName: null },
+      {
+        setId: 'set-1',
+        channelName: 'target-channel',
+        ownerDisplayName: null,
+        setName: 'set-1',
+        isActiveSet: true,
+      },
       src.origin,
       outcome.rows,
       0,
@@ -335,6 +355,7 @@ describe('startImportFlow', () => {
 
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
+        targetSetName: 'set-1',
         rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
       });
 
@@ -359,11 +380,18 @@ describe('startImportFlow', () => {
 
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
+        targetSetName: 'set-1',
         rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-1', channelName: 'target-channel', ownerDisplayName: null },
+        {
+          setId: 'set-1',
+          channelName: 'target-channel',
+          ownerDisplayName: null,
+          setName: 'set-1',
+          isActiveSet: true,
+        },
         source().origin,
         [],
         1,
@@ -382,11 +410,18 @@ describe('startImportFlow', () => {
 
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
+        targetSetName: 'set-1',
         rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-1', channelName: 'target-channel', ownerDisplayName: null },
+        {
+          setId: 'set-1',
+          channelName: 'target-channel',
+          ownerDisplayName: null,
+          setName: 'set-1',
+          isActiveSet: true,
+        },
         source().origin,
         [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
         0,
@@ -408,6 +443,7 @@ describe('startImportFlow', () => {
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
+      targetSetName: 'set-1',
       rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
     });
 
@@ -436,6 +472,7 @@ describe('startImportFlow', () => {
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
+      targetSetName: 'set-1',
       rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
     });
 
@@ -449,6 +486,7 @@ describe('startImportFlow', () => {
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
+      targetSetName: 'set-1',
       rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
     });
 
@@ -467,6 +505,7 @@ describe('startImportFlow', () => {
 
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
+      targetSetName: 'set-1',
       rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
     });
     tokenPromptClosed(dialogOpen).next(false);
@@ -604,14 +643,26 @@ describe('startImportFlow', () => {
       startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
 
       // The confirm dialog would close with `target.setId` from the ready state above — simulated
-      // here exactly as the earlier `'activeSet'` tests simulate a confirm.
+      // here exactly as the earlier `'activeSet'` tests simulate a confirm. `targetSetName` mirrors
+      // `liveTarget()`'s own `emoteSetName` ('Halloween') — the resolved name a real dialog would
+      // have closed with (`ImportConfirmDialog.targetSetLabel`).
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
         rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
       });
 
+      // setName/isActiveSet (findings 2/3): the picked set is not the account's active one
+      // (choice()'s default), so isActiveSet is false — this is exactly the case `onRunComplete`
+      // must not resync for.
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-halloween', channelName: 'handofblood', ownerDisplayName: null },
+        {
+          setId: 'set-halloween',
+          channelName: 'handofblood',
+          ownerDisplayName: null,
+          setName: 'Halloween',
+          isActiveSet: false,
+        },
         source().origin,
         [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
         0,
@@ -627,6 +678,56 @@ describe('startImportFlow', () => {
       const data = confirmData(dialogOpen);
       expect(data.targetChannelName).toBe('handofblood');
       expect(data.targetOwnerDisplayName).toBeNull();
+    });
+
+    // Findings 1/3: a non-active tracked choice (choice()'s default) is not the active set — the
+    // confirm dialog data says so, and carries the picker's own choice.setName synchronously (the
+    // title must not wait for the live-list load to answer).
+    it('marks a non-active tracked choice as not the active set, with the picked setName for the title', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ setName: 'Halloween' }),
+      });
+
+      const data = confirmData(dialogOpen);
+      expect(data.targetIsActiveSet).toBe(false);
+      expect(data.titleSetName).toBe('Halloween');
+    });
+
+    // The mirror: a choice on the account's own active set resolves exactly like an 'activeSet'
+    // target for the title too (spec 8.6 fourth bullet) — no set name, today's wording.
+    it('marks a choice resolved as trackedActive as the active set, with no title set name', () => {
+      const { deps, dialogOpen } = setup();
+      startImportFlow(deps, source(), {
+        kind: 'chosen',
+        choice: choice({ emoteSetId: 'set-active', activeEmoteSetId: 'set-active' }),
+      });
+
+      const data = confirmData(dialogOpen);
+      expect(data.targetIsActiveSet).toBe(true);
+      expect(data.titleSetName).toBeNull();
+    });
+
+    it('marks an untracked choice as not the active set, with the picked setName for the title', () => {
+      const { deps, loadEmoteSetPreview, dialogOpen } = setup();
+      loadEmoteSetPreview.mockReturnValue(
+        of(liveTarget({ channelName: 'stranger', emoteSetId: 'set-x' })),
+      );
+      const untracked = choice({
+        channelName: null,
+        isTracked: false,
+        twitchLogin: 'stranger',
+        ownerDisplayName: 'Stranger',
+        setName: 'Wegwerf-Set',
+      });
+
+      startImportFlow(deps, source(), { kind: 'chosen', choice: untracked });
+
+      const data = confirmData(dialogOpen);
+      expect(data.targetIsActiveSet).toBe(false);
+      expect(data.titleSetName).toBe('Wegwerf-Set');
     });
 
     it('routes an untracked choice through its twitchLogin, never its display name', () => {
@@ -669,14 +770,24 @@ describe('startImportFlow', () => {
       startImportFlow(deps, src, { kind: 'chosen', choice: untracked });
       const outcome: ImportConfirmOutcome = {
         targetSetId: 'set-x',
+        // Mirrors liveTarget()'s default emoteSetName ('Halloween') — the mocked response above
+        // only overrides channelName/emoteSetId, not the name.
+        targetSetName: 'Halloween',
         rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
       };
       confirmClosed(dialogOpen).next(outcome);
 
       // The owner name rides along too (T2.6) — import-progress-section.ts's own "Ziel: …" line
-      // needs it once the confirm dialog (which showed the same name, AK 39) is gone.
+      // needs it once the confirm dialog (which showed the same name, AK 39) is gone. isActiveSet
+      // is false for every untracked choice (no account-scoped "active" notion exists at all).
       expect(startImport).toHaveBeenCalledWith(
-        { setId: 'set-x', channelName: null, ownerDisplayName: 'Stranger' },
+        {
+          setId: 'set-x',
+          channelName: null,
+          ownerDisplayName: 'Stranger',
+          setName: 'Halloween',
+          isActiveSet: false,
+        },
         src.origin,
         outcome.rows,
         0,

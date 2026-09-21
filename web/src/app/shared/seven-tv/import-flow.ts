@@ -188,6 +188,21 @@ export function startImportFlow(
   // it names a set the picker already knew, not something a reload could learn anew.
   const activeSetName = chosenActiveSetName(target);
 
+  // True for every legacy "today" door and for a 'chosen' pick that turned out to equal the
+  // account's own active set (the same condition `activeSetName` above is already non-null for) —
+  // false for a tracked non-active pick and for every untracked one (findings 1/2/3,
+  // Live-Verifikation K2 2026-09-21). Drives the confirm dialog's title wording, the run's own
+  // `targetIsActiveSet` flag, and therefore whether `onRunComplete` may resync the channel at all.
+  const isActiveSet = target.kind === 'activeSet' || activeSetName !== null;
+
+  // The set's own name for the title (finding 1), but only when the title needs to say so — an
+  // active target keeps "nach {channel}" and never names the set at all. Read synchronously from
+  // the picker's own choice, never from the (still loading) target state: `target.kind === 'chosen'`
+  // is implied whenever `isActiveSet` is false (an 'activeSet' door is always active), but the
+  // ternary spells that out for the type checker rather than asserting it.
+  const titleSetName: string | null =
+    !isActiveSet && target.kind === 'chosen' ? target.choice.setName : null;
+
   const load = (): void => {
     const mine = ++generation;
     targetState.set({ status: 'loading' });
@@ -239,11 +254,17 @@ export function startImportFlow(
           // choice final before this flow ever opened, so there is nothing left to gate here.
           // `targetOwnerDisplayName` (already computed above for the confirm dialog's own header,
           // AK 39) rides along so the dock's post-run summary can name the same owner once the
-          // confirm dialog itself is gone (`import-progress-section.ts`).
+          // confirm dialog itself is gone (`import-progress-section.ts`). `setName` is the outcome's
+          // own resolved name (`ImportConfirmOutcome.targetSetName`, already id-falls-back) — not
+          // re-derived here, for the same "the load already resolved it" reason as `setId` above.
+          // `isActiveSet` is this function's own `isActiveSet` (findings 2/3): it decides whether
+          // `onRunComplete` may resync the channel once this run finishes.
           {
             setId: outcome.targetSetId,
             channelName: targetChannelName,
             ownerDisplayName: targetOwnerDisplayName,
+            setName: outcome.targetSetName,
+            isActiveSet,
           },
           source.origin,
           rows,
@@ -260,6 +281,8 @@ export function startImportFlow(
     source,
     targetChannelName,
     targetOwnerDisplayName,
+    targetIsActiveSet: isActiveSet,
+    titleSetName,
     target: targetState.asReadonly(),
     retry: load,
     runBlocked: computed(() => deps.arbiter.activeRun() !== null),

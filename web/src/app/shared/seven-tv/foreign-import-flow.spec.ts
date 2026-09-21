@@ -161,6 +161,7 @@ describe('startForeignChannelImportFlow', () => {
     startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), 'my_channel');
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',
+      targetSetName: 'set-target',
       rows: [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
     });
 
@@ -168,7 +169,13 @@ describe('startForeignChannelImportFlow', () => {
     // read (`httpClient.post`) defaults to an empty target set. Fifth is whether that check
     // actually ran — true, since the fetch succeeded (#149).
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-target', channelName: 'my_channel', ownerDisplayName: null },
+      {
+        setId: 'set-target',
+        channelName: 'my_channel',
+        ownerDisplayName: null,
+        setName: 'set-target',
+        isActiveSet: true,
+      },
       { kind: 'seventv-channel', channelName: 'handofblood' },
       [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
       0,
@@ -264,11 +271,18 @@ describe('startLeaderboardImportFlow', () => {
     );
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',
+      targetSetName: 'set-target',
       rows: [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
     });
 
     expect(startImport).toHaveBeenCalledWith(
-      { setId: 'set-target', channelName: 'my_channel', ownerDisplayName: null },
+      {
+        setId: 'set-target',
+        channelName: 'my_channel',
+        ownerDisplayName: null,
+        setName: 'set-target',
+        isActiveSet: true,
+      },
       { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
       [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
       0,

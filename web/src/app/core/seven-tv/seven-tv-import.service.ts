@@ -95,6 +95,21 @@ export interface ImportRunInfo {
    *  channel" link both need a different, channel-free way to say what this run wrote into. */
   targetOwnerDisplayName: string | null;
   targetSetId: string;
+  /** Resolved display name of `targetSetId` (falls back to the id) — what the dock's own "Ziel: …"
+   *  line names alongside the channel/owner (finding 2, Live-Verifikation K2 2026-09-21), instead of
+   *  the earlier untracked branch's raw `targetSetId`. */
+  targetSetName: string;
+  /** Whether this run's target is the tracked channel's currently *active* 7TV set — `true` for
+   *  every legacy "today" door and for a picker choice whose set equals the account's own
+   *  `activeEmoteSetId` (spec 8.6 fourth bullet), `false` for a tracked non-active set and for every
+   *  untracked one. Decides two things downstream (finding 3, Live-Verifikation K2 2026-09-21):
+   *  whether `onRunComplete` may fire the channel's active-set resync at all (a resync only ever
+   *  syncs the *active* set — firing it for a non-active target would claim a channel-page update
+   *  that never happens), and, together with `targetChannelName`, which post-run message and which
+   *  "open target channel" affordance the dock shows. Defaults to `true` in `startImport` when a
+   *  caller omits it, matching every caller that predates this flag (the resync always fired for
+   *  them, correctly, since they only ever targeted the active set). */
+  targetIsActiveSet: boolean;
   origin: ImportOrigin;
   /** `null` while the run is in flight; set once, when the engine reports the run complete. */
   result: RunResult | null;
@@ -196,13 +211,23 @@ export class SevenTvImportService {
   /** `rows` are expected deduplicated (`dedupeImportRows`) and already filtered against the
    *  dialog-time target snapshot (`buildImportPreview`); this method does no filtering of its own.
    *  `target.channelName` is `null` for an untracked target (T2.6, spec 8.6) — see
-   *  `ImportRunInfo.targetChannelName` for what that changes downstream. `skippedDuplicates` is the
-   *  caller's own count from the *fresh* re-check it ran just before this call (see
+   *  `ImportRunInfo.targetChannelName` for what that changes downstream. `target.setName` and
+   *  `target.isActiveSet` default to the id and to `true` respectively (finding 2/3,
+   *  Live-Verifikation K2 2026-09-21) — every caller written before those findings omits both and
+   *  keeps reading exactly as it did (an active-set target, named by its id until a real name is
+   *  known), since every one of them only ever targeted the channel's active set. `skippedDuplicates`
+   *  is the caller's own count from the *fresh* re-check it ran just before this call (see
    *  `already-present-filter.ts`) — defaults to 0 so existing callers/tests that pass only three
    *  arguments are unaffected. `duplicateCheckAvailable` mirrors the same call's `available` and
    *  defaults to `true` for the same reason. */
   startImport(
-    target: { setId: string; channelName: string | null; ownerDisplayName?: string | null },
+    target: {
+      setId: string;
+      channelName: string | null;
+      ownerDisplayName?: string | null;
+      setName?: string;
+      isActiveSet?: boolean;
+    },
     origin: ImportOrigin,
     rows: ImportRow[],
     skippedDuplicates = 0,
@@ -222,6 +247,8 @@ export class SevenTvImportService {
       targetChannelName: target.channelName,
       targetOwnerDisplayName: target.ownerDisplayName ?? null,
       targetSetId: target.setId,
+      targetSetName: target.setName ?? target.setId,
+      targetIsActiveSet: target.isActiveSet ?? true,
       origin,
       result: null,
     };
@@ -291,12 +318,18 @@ export class SevenTvImportService {
       return;
     }
 
-    // The report is the audit trail for exactly these ids, always sent. The resync is what
-    // actually pulls the new emote rows in from 7TV — only meaningful for a *tracked* target
-    // (T2.6/8.6): an untracked one has no `Channel` of ours to resync at all, so `targetChannelName`
-    // being `null` is the one signal that decides whether this second step runs.
+    // The report is the audit trail for exactly these ids, always sent — this call is never gated
+    // on `targetIsActiveSet` (finding 3, Live-Verifikation K2 2026-09-21): the audit entry and the
+    // "which set did this land in" bookkeeping (`targetEmoteSetId`) are correct regardless of which
+    // set that is. The resync is what actually pulls the new emote rows into the *channel's active*
+    // set view — only meaningful for a *tracked target on its active set* (T2.6/8.6 for the channel
+    // half, finding 3 for the active-set half): an untracked target has no `Channel` of ours to
+    // resync at all, and a tracked *non*-active target has one, but resyncing it would re-sync the
+    // channel's active set, not the set this run actually wrote to — a request that succeeds while
+    // confirming nothing the user cares about, and previously left the dock claiming "der Zielkanal
+    // zeigt die Emotes gleich" for a channel page that would never show them.
     this.reportImported(finished);
-    if (finished.targetChannelName === null) {
+    if (finished.targetChannelName === null || !finished.targetIsActiveSet) {
       return;
     }
     this.resyncTrigger.set('pending');

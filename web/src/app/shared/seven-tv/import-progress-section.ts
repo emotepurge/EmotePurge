@@ -6,7 +6,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
-import { resyncNoticeKey } from './dock-outcome-announcer';
+import { copiedNotActiveNotice, resyncNoticeKey } from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
 
 /**
@@ -57,13 +57,27 @@ import { RunProgressPanel } from './run-progress-panel';
           <p class="text-xs text-fg-muted">
             <!-- targetChannelName is null for an untracked run (T2.6, spec 8.6) — there is no
                  channel of ours to name, so this reads off the set/owner the picker's own
-                 confirmation already named instead (import-target-dialog.ts). -->
+                 confirmation already named instead (import-target-dialog.ts). Both branches now
+                 name the set too (finding 2, Live-Verifikation K2 2026-09-21): a tracked *active*
+                 target keeps the plain "Ziel: channel" wording (the one-click path's own set is
+                 never in question there), a tracked *non*-active one adds the set name — mirroring
+                 the confirm dialog's own "Ziel: channel · Set setName" line — and the untracked
+                 branch now names the set by its resolved *name* (run.targetSetName, id-falls-back)
+                 rather than the raw id it used to show. -->
             @if (run.targetChannelName; as targetChannelName) {
-              {{ 'import.summary.target' | transloco: { channel: targetChannelName } }}
+              @if (run.targetIsActiveSet) {
+                {{ 'import.summary.target' | transloco: { channel: targetChannelName } }}
+              } @else {
+                {{
+                  'import.summary.targetWithSet'
+                    | transloco: { channel: targetChannelName, setName: run.targetSetName }
+                }}
+              }
             } @else {
               {{
                 'import.summary.targetSet'
-                  | transloco: { setId: run.targetSetId, owner: run.targetOwnerDisplayName ?? '' }
+                  | transloco
+                    : { setName: run.targetSetName, owner: run.targetOwnerDisplayName ?? '' }
               }}
             }
           </p>
@@ -83,15 +97,25 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ 'import.summary.insufficientPrivileges' | transloco }}
                 </app-notice-banner>
               }
-              <!-- aria-hidden for the same reason as the duplicate notices above. -->
-              @if (resyncNoticeKey(); as noticeKey) {
+              <!-- A tracked *non*-active target never gets the resync notice (onRunComplete skips
+                   the resync itself, finding 3, Live-Verifikation K2 2026-09-21) — this notice takes
+                   its place, naming what actually happened instead of claiming a channel-page update
+                   that never comes. aria-hidden for the same reason as the duplicate notices above,
+                   and as the resync notice it replaces. -->
+              @if (copiedNotActiveNotice(); as notActive) {
+                <span aria-hidden="true" class="text-xs text-fg-muted">
+                  {{ 'import.summary.copiedNotActive' | transloco: notActive }}
+                </span>
+              } @else if (resyncNoticeKey(); as noticeKey) {
                 <span aria-hidden="true" class="text-xs text-fg-muted">
                   {{ noticeKey | transloco }}
                 </span>
               }
-              <!-- No channel of ours to open for an untracked run (T2.6) — the link simply does
-                   not render rather than pointing at '/channels/null/usage-stats'. -->
-              @if (run.targetChannelName; as targetChannelName) {
+              <!-- No channel of ours to open for an untracked run (T2.6), and none for a tracked
+                   *non*-active run either (finding 3): the channel page shows its active set, never
+                   the one this run actually wrote to, so the link would point at a page that does
+                   not show the result — the notice above says so instead. -->
+              @if (run.targetIsActiveSet && run.targetChannelName; as targetChannelName) {
                 <a
                   appButton="outline"
                   [routerLink]="['/channels', targetChannelName, 'usage-stats']"
@@ -121,5 +145,10 @@ export class ImportProgressSection {
   /** Same key the page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
   protected readonly resyncNoticeKey = computed(() =>
     resyncNoticeKey(this.importService.resyncTrigger(), 'import'),
+  );
+
+  /** Same params the page's DockOutcomeAnnouncer speaks — see `copiedNotActiveNotice`. */
+  protected readonly copiedNotActiveNotice = computed(() =>
+    copiedNotActiveNotice(this.importService.run()),
   );
 }
