@@ -45,7 +45,7 @@ import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.mod
 import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
-import { EmoteUsageTotal } from '../../core/usage-stats/usage-stat.model';
+import { EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { CSV_MIME } from '../../shared/export/csv';
 import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
@@ -152,7 +152,7 @@ function setStatus(overrides: Partial<EmoteSetStatus>): EmoteSetStatus {
   };
 }
 
-function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotal {
+function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotalDto {
   return {
     emoteId: id,
     emoteName: name,
@@ -162,6 +162,8 @@ function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotal {
     lastUsedDate: null,
     previousWindowUseCount: 0,
     firstSeenAt: null,
+    isArchived: false,
+    nameTwinEmoteSetIds: [],
   };
 }
 
@@ -648,7 +650,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
    * short-circuits to `false` and the reload each test fires afterwards produces no extra
    * `/emotes/active-set` request — the scenario under test is the totals reconciliation alone.
    */
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -675,7 +677,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
   /** Fires one `usageFlushed` burst (the silent, `preserveSelection`d reload path) and flushes its
    *  totals response — the same round trip `loadTotals(..., {preserveSelection: true, silent:
    *  true})` produces from the live subscription in the constructor. */
-  function silentReload(totals: EmoteUsageTotal[]): void {
+  function silentReload(totals: EmoteUsageTotalDto[]): void {
     FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
     vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
     fixture.detectChanges();
@@ -739,7 +741,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     component['usageFilter'].setRange(5, null);
     component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
     expect(component['selection'].selectedKeys()).toEqual(['c']);
-    expect(component['atlasOrder']().map((e: EmoteUsageTotal) => e.emoteId)).toContain('c');
+    expect(component['atlasOrder']().map((e: EmoteUsageTotalDto) => e.emoteId)).toContain('c');
 
     // The reload drops 'c's count under the filter's floor — atlasOrder() will no longer include
     // it — but 'c' itself is still present in the reloaded payload.
@@ -747,7 +749,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
 
     // Confirms the filter really did narrow atlasOrder() past 'c' — otherwise this test would not
     // be exercising the case it claims to.
-    expect(component['atlasOrder']().map((e: EmoteUsageTotal) => e.emoteId)).not.toContain('c');
+    expect(component['atlasOrder']().map((e: EmoteUsageTotalDto) => e.emoteId)).not.toContain('c');
     // ...yet the selection and the feedback are both untouched: 'c' was never actually removed
     // from the set, only filtered out of the current view.
     expect(component['selection'].selectedKeys()).toEqual(['c']);
@@ -816,7 +818,7 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
   /** Mounts channel 'a' with the given totals under the fixed 2026-01-01..2026-01-31 range set in
    *  beforeEach — all four requests `load()` fires are already pending after the constructor's
    *  first tick, since a `'custom'` preset never waits on trackedSince to resolve the range. */
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -967,7 +969,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1343,7 +1345,7 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1602,7 +1604,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
 
   /** Mounts channel 'a' with an active 7TV set (E3 offers the emote-list purpose) and given
    *  totals — otherwise identical to the "silent reload" describe block's own `mount()`. */
-  function mountWithActiveSet(totals: EmoteUsageTotal[]): void {
+  function mountWithActiveSet(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1622,7 +1624,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
 
   /** Same mount, but the channel has no active 7TV set — E3 must not offer the emote-list
    *  purpose, and `openExport()` must not fail trying to build it. */
-  function mountWithoutActiveSet(totals: EmoteUsageTotal[]): void {
+  function mountWithoutActiveSet(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1824,7 +1826,7 @@ describe('UsageStatsPage — openCreateVoteSession() (#132)', () => {
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1938,7 +1940,7 @@ describe('UsageStatsPage — mark-all does not exist on a coarse pointer (2026-0
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -2020,7 +2022,7 @@ describe("UsageStatsPage — the toolbar mark-all button's template binding (Opu
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });

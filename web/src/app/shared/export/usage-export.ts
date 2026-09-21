@@ -1,4 +1,4 @@
-import { EmoteUsageTotal } from '../../core/usage-stats/usage-stat.model';
+import { EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageTrend } from '../emotes/emote-context';
 import { CsvColumn, toCsv } from './csv';
 import { ExportScope } from './export-dialog';
@@ -14,13 +14,13 @@ export interface UsageExportInput {
    * The rows the user chose in the export dialog: the visible (filtered + sorted) list, or the
    * grid selection — exporting rows the user is not looking at surprises.
    */
-  rows: readonly EmoteUsageTotal[];
+  rows: readonly EmoteUsageTotalDto[];
   /** Which of the two `rows` is; recorded in the JSON meta so the file says what subset it holds. */
   scope: ExportScope;
   /** Whether a grid filter was active — independent of `scope`, a selection can coexist with it. */
   filtered: boolean;
   /** The page owns the trend derivation (it knows `trackedSince`) — injected, not re-derived. */
-  trendFor: (row: EmoteUsageTotal) => UsageTrend;
+  trendFor: (row: EmoteUsageTotalDto) => UsageTrend;
 }
 
 export interface UsageExportRow {
@@ -47,7 +47,7 @@ export function usageExportFilename(input: UsageExportInput, ext: 'csv' | 'json'
 }
 
 export function usageCsv(input: UsageExportInput): string {
-  const columns: CsvColumn<EmoteUsageTotal>[] = [
+  const columns: CsvColumn<EmoteUsageTotalDto>[] = [
     { header: 'emote_name', value: (row) => row.emoteName },
     { header: 'seven_tv_emote_id', value: (row) => row.sevenTvEmoteId },
     { header: 'total_use_count', value: (row) => row.totalUseCount },

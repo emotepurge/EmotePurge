@@ -45,7 +45,7 @@ import {
 import { SetStatusFlushProbeGate } from './set-status-flush-probe-gate';
 import { LIVE_EVENT_TYPES, channelLiveUrl } from '../../core/live/live-event.model';
 import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload } from '../../core/live/live-reload';
-import { ChannelUsageSeries, EmoteUsageTotal } from '../../core/usage-stats/usage-stat.model';
+import { ChannelUsageSeries, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import {
   DateRangeMenu,
@@ -145,7 +145,7 @@ interface CapturedImportScope {
 /**
  * `openExport`'s counterpart to `CapturedImportScope` — same reasoning (see `openImportTarget`'s
  * docstring), now applying to the export dialog too since the emote-list purpose put a file path
- * that reads `emoteSetId` behind it. Holds the raw `EmoteUsageTotal` rows rather than `ImportRow`s
+ * that reads `emoteSetId` behind it. Holds the raw `EmoteUsageTotalDto` rows rather than `ImportRow`s
  * because the two usage branches (CSV/JSON) need the full totals; only the emote-list purpose
  * narrows them, inside `buildUsageExportPurposeDownload`.
  *
@@ -161,8 +161,8 @@ interface CapturedExportScope {
   readonly from: string;
   readonly to: string;
   readonly filtered: boolean;
-  readonly selection: readonly EmoteUsageTotal[];
-  readonly visible: readonly EmoteUsageTotal[];
+  readonly selection: readonly EmoteUsageTotalDto[];
+  readonly visible: readonly EmoteUsageTotalDto[];
 }
 
 // Sorting a never-used emote needs a position, not a crash. It is the deadest thing in the list, so
@@ -336,7 +336,7 @@ export class UsageStatsPage {
   // name the range it is showing without reaching into a child; must match from()/to() above.
   protected readonly rangePreset = signal<DateRangePreset>('all');
 
-  protected readonly emotes = signal<EmoteUsageTotal[]>([]);
+  protected readonly emotes = signal<EmoteUsageTotalDto[]>([]);
   protected readonly setStatus = signal<EmoteSetStatus | null>(null);
   protected readonly activeEmoteSetId = computed(() => this.setStatus()?.activeEmoteSetId || null);
   protected readonly trackedSince = computed(() => this.setStatus()?.trackedSince ?? null);
@@ -421,14 +421,14 @@ export class UsageStatsPage {
   // Survives search and filter (supersedes S2-16, 2026-09-18): a filter change narrows what is on
   // screen, never what is selected — the filter lost its onChange hook entirely, there is nothing
   // left for it to call. What used to be pruned here now only shows up as selection.hiddenSelectedCount().
-  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotal>();
+  protected readonly usageFilter = new EmoteUsageFilter<EmoteUsageTotalDto>();
 
   protected readonly filteredEmotes = computed(() => this.usageFilter.apply(this.emotes()));
 
   protected readonly sortedEmotes = computed(() => {
     const key = this.sortKey();
     const factor = this.sortDirection() === 'desc' ? -1 : 1;
-    const value = (emote: EmoteUsageTotal) =>
+    const value = (emote: EmoteUsageTotalDto) =>
       key === 'usage' ? emote.totalUseCount : sortableLastUsed(emote.lastUsedDate);
 
     const items = [...this.filteredEmotes()];
@@ -608,7 +608,7 @@ export class UsageStatsPage {
   // a live-event refetch overtaking the initial one. Without this, the slower answer overwrites the
   // faster one, and the sidecar cannot even notice: it takes its axis from the range echoed by the
   // response (see inspectedPoints), so a superseded answer draws a silently wrong span.
-  private readonly latestTotals = latestOnly<EmoteUsageTotal[]>();
+  private readonly latestTotals = latestOnly<EmoteUsageTotalDto[]>();
   private readonly latestSeries = latestOnly<ChannelUsageSeries>();
 
   /** The channel whose set status has come back *successfully*. Held as a channel rather than a
@@ -1171,12 +1171,12 @@ export class UsageStatsPage {
     this.sortDirection.set(direction as SortDirection);
   }
 
-  protected inspect(emote: EmoteUsageTotal): void {
+  protected inspect(emote: EmoteUsageTotalDto): void {
     this.inspectedId.set(emote.emoteId);
   }
 
   /** Pointer or focus landing on a cell makes it both the inspected row and the grid's tab stop. */
-  protected onCellFocus(emote: EmoteUsageTotal, index: number): void {
+  protected onCellFocus(emote: EmoteUsageTotalDto, index: number): void {
     this.inspectedId.set(emote.emoteId);
     this.activeIndex.set(index);
   }
@@ -1191,7 +1191,7 @@ export class UsageStatsPage {
    * no matter what the user tapped. Safari also does not focus a button on click, so relying on the
    * focus handler alone would leave the same gap on a desktop browser.
    */
-  protected onCellClick(emote: EmoteUsageTotal, index: number, event: MouseEvent): void {
+  protected onCellClick(emote: EmoteUsageTotalDto, index: number, event: MouseEvent): void {
     this.inspectedId.set(emote.emoteId);
     this.activeIndex.set(index);
 
@@ -1250,7 +1250,7 @@ export class UsageStatsPage {
     this.recordBulkMarkAnnouncement();
   }
 
-  protected fillPercent(emote: EmoteUsageTotal): number {
+  protected fillPercent(emote: EmoteUsageTotalDto): number {
     return this.fillPercents().get(emote.emoteId) ?? 0;
   }
 
@@ -1293,7 +1293,7 @@ export class UsageStatsPage {
     return USAGE_BAND_FILL[band];
   }
 
-  protected trendFor(emote: EmoteUsageTotal): UsageTrend {
+  protected trendFor(emote: EmoteUsageTotalDto): UsageTrend {
     const trackedSince = this.trackedSince();
     if (!trackedSince) {
       return 'unknown';
@@ -1309,17 +1309,17 @@ export class UsageStatsPage {
     });
   }
 
-  protected isUnderObservation(emote: EmoteUsageTotal): boolean {
+  protected isUnderObservation(emote: EmoteUsageTotalDto): boolean {
     return isUnderObservation(emote.firstSeenAt, new Date());
   }
 
   /** Whole days the emote has been in the set; floored at 0 so a clock skew cannot read as "-1". */
-  protected observationDays(emote: EmoteUsageTotal): number {
+  protected observationDays(emote: EmoteUsageTotalDto): number {
     return Math.max(daysInSet(emote.firstSeenAt, new Date()) ?? 0, 0);
   }
 
   // Day zero gets its own wording: "seit 0 Tagen" is not a sentence anyone writes.
-  protected observationLabelKey(emote: EmoteUsageTotal): string {
+  protected observationLabelKey(emote: EmoteUsageTotalDto): string {
     const days = this.observationDays(emote);
     return days === 0
       ? 'usageStats.observationToday'
@@ -1394,7 +1394,7 @@ export class UsageStatsPage {
   // 64 px sprite has no room for a second control that would not be a mis-click waiting to happen.
   // The dialog loads the series on its own through the service cache, so nothing is fetched until
   // the user explicitly asks for the history.
-  protected openDrilldown(emote: EmoteUsageTotal): void {
+  protected openDrilldown(emote: EmoteUsageTotalDto): void {
     const data: EmoteDrilldownData = {
       channelName: this.channelName(),
       from: this.from(),

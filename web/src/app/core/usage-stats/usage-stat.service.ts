@@ -2,7 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable, shareReplay } from 'rxjs';
 
-import { ChannelUsageSeries, EmoteUsageSeries, EmoteUsageTotal } from './usage-stat.model';
+import { ChannelUsageSeries, EmoteUsageSeries, EmoteUsageTotalDto } from './usage-stat.model';
 
 @Injectable({ providedIn: 'root' })
 export class UsageStatService {
@@ -18,8 +18,8 @@ export class UsageStatService {
   /** The same, one level up: per (channel, range), because /series answers for the whole set. */
   private readonly channelSeriesCache = new Map<string, Observable<ChannelUsageSeries>>();
 
-  getTotals(channelName: string, from: string, to: string): Observable<EmoteUsageTotal[]> {
-    return this.http.get<EmoteUsageTotal[]>(`/api/channels/${channelName}/usage-stats/totals`, {
+  getTotals(channelName: string, from: string, to: string): Observable<EmoteUsageTotalDto[]> {
+    return this.http.get<EmoteUsageTotalDto[]>(`/api/channels/${channelName}/usage-stats/totals`, {
       params: { from, to },
     });
   }

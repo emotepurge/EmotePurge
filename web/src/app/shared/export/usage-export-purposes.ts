@@ -1,5 +1,5 @@
 import { ImportRow, dedupeImportRows } from '../../core/seven-tv/import-source';
-import { EmoteUsageTotal } from '../../core/usage-stats/usage-stat.model';
+import { EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageTrend } from '../emotes/emote-context';
 import { CSV_MIME } from './csv';
 import { ExportDialogOption, ExportScope } from './export-dialog';
@@ -32,10 +32,10 @@ export interface UsageExportPurposeScope {
   /** Whether a grid filter was active — independent of `scope`, a selection can coexist with it. */
   readonly filtered: boolean;
   /** The rows the caller already resolved for the chosen `scope` (visible list or grid selection). */
-  readonly rows: readonly EmoteUsageTotal[];
+  readonly rows: readonly EmoteUsageTotalDto[];
   readonly scope: ExportScope;
   /** The page owns the trend derivation (it knows `trackedSince`) — injected, not re-derived. */
-  readonly trendFor: (row: EmoteUsageTotal) => UsageTrend;
+  readonly trendFor: (row: EmoteUsageTotalDto) => UsageTrend;
 }
 
 /**
@@ -43,7 +43,7 @@ export interface UsageExportPurposeScope {
  * in `usage-stats-page.ts` needs the identical mapping — two private copies would drift silently
  * the first time `ImportRow` gains a field.
  */
-export const toImportRow = (emote: EmoteUsageTotal): ImportRow => ({
+export const toImportRow = (emote: EmoteUsageTotalDto): ImportRow => ({
   sevenTvEmoteId: emote.sevenTvEmoteId,
   name: emote.emoteName,
 });

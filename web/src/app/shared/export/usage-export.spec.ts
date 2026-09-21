@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { EmoteUsageTotal } from '../../core/usage-stats/usage-stat.model';
+import { EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageExportInput, usageCsv, usageExportFilename, usageJson } from './usage-export';
 
-function usageRow(overrides: Partial<EmoteUsageTotal> = {}): EmoteUsageTotal {
+function usageRow(overrides: Partial<EmoteUsageTotalDto> = {}): EmoteUsageTotalDto {
   return {
     emoteId: 'guid-1',
     emoteName: 'PogU',
@@ -13,6 +13,8 @@ function usageRow(overrides: Partial<EmoteUsageTotal> = {}): EmoteUsageTotal {
     lastUsedDate: '2026-08-01',
     previousWindowUseCount: 12,
     firstSeenAt: '2026-06-01T00:00:00Z',
+    isArchived: false,
+    nameTwinEmoteSetIds: [],
     ...overrides,
   };
 }
