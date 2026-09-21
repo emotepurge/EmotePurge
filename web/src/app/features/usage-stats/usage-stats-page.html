@@ -151,6 +151,18 @@
         [(preset)]="rangePreset"
         [earliest]="trackedSinceDate()"
       />
+      <!-- Only once there is an active set at all — before that the set list has nothing to offer,
+           and the page already shows its own "awaiting sync"/empty state elsewhere (spec #200,
+           8.1). -->
+      @if (activeEmoteSetId()) {
+        <app-emote-set-menu
+          [sets]="emoteSetList()?.sets ?? []"
+          [selectedEmoteSetId]="selectedEmoteSetId()"
+          [loading]="emoteSetListLoading()"
+          [unavailable]="emoteSetListUnavailable()"
+          (emoteSetIdChange)="onEmoteSetSelected($event)"
+        />
+      }
       <!-- Two segmented controls instead of two toggle buttons that flipped direction when you
            clicked the already-active one. That re-click was the only way to sort ascending and
            nothing on screen said so; the arrow appeared afterwards, as the sole evidence of a state

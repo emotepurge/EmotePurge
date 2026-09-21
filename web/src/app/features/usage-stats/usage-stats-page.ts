@@ -11,6 +11,7 @@ import {
   inject,
   input,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
@@ -31,6 +32,7 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { listQueryState } from '../../core/routing/list-query-state';
 import { dedupeImportRows, ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
@@ -63,6 +65,7 @@ import {
   isUnderObservation,
   usageTrend,
 } from '../../shared/emotes/emote-context';
+import { EmoteSetMenu } from '../../shared/emotes/emote-set-menu';
 import { EmoteSprite } from '../../shared/emotes/emote-sprite';
 import { EmoteSpriteAnimated } from '../../shared/emotes/emote-sprite-animated';
 import { EmoteUsageFilter } from '../../shared/emotes/emote-usage-filter';
@@ -234,6 +237,7 @@ function sortableLastUsed(lastUsedDate: string | null): number {
     ImportTrigger,
     SlotBudgetBar,
     DateRangeMenu,
+    EmoteSetMenu,
     SegmentedControl,
     UsageRangeMenu,
     UsageSparkline,
@@ -246,8 +250,9 @@ export class UsageStatsPage {
 
   private readonly usageStatService = inject(UsageStatService);
   private readonly emoteAdminService = inject(EmoteAdminService);
-  /** Only threaded through to `ImportFlowDeps` — `loadImportTarget`'s live-list collaborator for a
-   *  non-active/untracked target, not otherwise exercised from this page yet (spec F5). */
+  /** Threaded through to `ImportFlowDeps` (`loadImportTarget`'s live-list collaborator for a
+   *  non-active/untracked target, spec F5) and, since T4.2, used directly here for the set-dropdown's
+   *  own list request (`emoteSetListResource` below). */
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix, via `import-flow.ts`)
    *  — every other read on this page goes through `emoteAdminService`. */
@@ -340,6 +345,105 @@ export class UsageStatsPage {
   protected readonly setStatus = signal<EmoteSetStatus | null>(null);
   protected readonly activeEmoteSetId = computed(() => this.setStatus()?.activeEmoteSetId || null);
   protected readonly trackedSince = computed(() => this.setStatus()?.trackedSince ?? null);
+
+  // --- Set dropdown (spec #200, 8.1) --------------------------------------------------------
+  //
+  // `emoteSetId` in the URL means "follow the active set" when empty (T4.0 decision (a), operator
+  // decision 2026-09-21) — never the active id written out. `listQueryState` is built for paginated
+  // lists, but this page has exactly the shape it already solves (a filter value that must survive
+  // reload/deep-link/back, replace rather than push, defaults stripped from the URL), so this reuses
+  // it as a plain field rather than hand-rolling those same rules a sixth time
+  // (core/routing/list-query-state.ts's own doc comment).
+  private readonly setQuery = listQueryState({ emoteSetId: '' });
+  private readonly emoteSetIdParam = computed(() => this.setQuery.params().emoteSetId);
+
+  /**
+   * The channel's set list for the dropdown — loaded once per channel (E19: never re-triggered by a
+   * set switch, and the constructor's live-reload subscription never touches it either, only a loud
+   * `channel.synced` reload does, explicitly, further down). `rxResource` rather than a hand-rolled
+   * subscription because nothing here needs the bespoke channel/range bookkeeping `setStatus`/
+   * `emotes` carry — a stale answer surviving one tick into a channel switch is the same acceptable
+   * staleness `permissionsResource` above already has.
+   */
+  private readonly emoteSetListResource = rxResource({
+    params: () => this.channelName(),
+    stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),
+  });
+  protected readonly emoteSetList = computed(() => this.emoteSetListResource.value() ?? null);
+  protected readonly emoteSetListLoading = computed(() => this.emoteSetListResource.isLoading());
+  protected readonly emoteSetListUnavailable = computed(
+    () => this.emoteSetListResource.error() !== undefined,
+  );
+
+  /**
+   * Sticks once the set list has failed to load for the channel now on screen (operator decision
+   * 2026-09-21, #3): an unreadable list can neither confirm nor reject a `emoteSetId` from the URL,
+   * so the page shows the active set for the rest of THIS channel's session — even once a later
+   * read (the loud `channel.synced` reload) succeeds. Jumping the view to a set nobody just chose,
+   * mid-session, would be worse than staying on the degraded but stable answer.
+   */
+  private readonly pinnedToActiveChannel = signal<string | null>(null);
+  protected readonly isPinnedToActiveSet = computed(
+    () => this.pinnedToActiveChannel() === this.channelName(),
+  );
+
+  /**
+   * The set this page actually shows. Resolves the URL's `emoteSetId` against the set list and every
+   * fallback rule spec 8.1 and the operator's 2026-09-21 decisions name: `''` (or a pinned channel)
+   * follows the active set; while the list is still loading this already answers with the active set
+   * as a safe default ({@link awaitingEmoteSetId} is what actually holds the totals/series request
+   * back, not this); an id the list does not confirm as `kind === 'NORMAL'` — unknown, or hidden
+   * (decision #4, a `PERSONAL`/`GLOBAL`/`SPECIAL` id counts exactly like unknown) — falls back to
+   * the active set, silently.
+   */
+  protected readonly selectedEmoteSetId = computed<string | null>(() => {
+    const active = this.activeEmoteSetId();
+    const param = this.emoteSetIdParam();
+    if (param === '' || this.isPinnedToActiveSet()) {
+      return active;
+    }
+    const list = this.emoteSetList();
+    if (list === null) {
+      return active;
+    }
+    const match = list.sets.find((set) => set.id === param && set.kind === 'NORMAL');
+    return match ? match.id : active;
+  });
+
+  /**
+   * True only while a `emoteSetId` the URL actually carries cannot yet be trusted or rejected,
+   * because the set list for this channel has not answered — holds the totals/series load back the
+   * same way `rangeResolved` already holds it back for "all time" (T4.2 decision #2), so a fresh
+   * mount/deep-link never fires one request for the active set only to immediately refetch for the
+   * URL's real target, and never shows a spurious #94 selection-pruned notice for that first, wrong
+   * answer. `false` whenever there is nothing in the URL to wait for (decision #2: "ohne id in der
+   * URL, don't wait").
+   */
+  protected readonly awaitingEmoteSetId = computed(() => {
+    if (this.emoteSetIdParam() === '' || this.isPinnedToActiveSet()) {
+      return false;
+    }
+    return this.emoteSetList() === null;
+  });
+
+  /**
+   * True once the list has answered and the URL's id is confirmed neither the active set nor a
+   * selectable (`NORMAL`) member of it — the one case that must silently clean the URL rather than
+   * just fall back for this render (decision #3: a *readable* list that rejects the id removes it;
+   * an *unreadable* one keeps it, because removing it would discard information a later successful
+   * read could still have used).
+   */
+  private readonly shouldClearStaleEmoteSetIdParam = computed(() => {
+    const param = this.emoteSetIdParam();
+    if (param === '' || this.isPinnedToActiveSet()) {
+      return false;
+    }
+    const list = this.emoteSetList();
+    if (list === null) {
+      return false;
+    }
+    return !list.sets.some((set) => set.id === param && set.kind === 'NORMAL');
+  });
 
   /** Date-only form, which is what the range menu and the vote-session ballot both speak. */
   protected readonly trackedSinceDate = computed(() => this.trackedSince()?.slice(0, 10) ?? null);
@@ -985,7 +1089,36 @@ export class UsageStatsPage {
 
   constructor() {
     effect(() => {
-      this.load(this.channelName(), this.from(), this.to(), this.rangeResolved());
+      this.load(
+        this.channelName(),
+        this.from(),
+        this.to(),
+        this.rangeResolved(),
+        this.selectedEmoteSetId(),
+        this.awaitingEmoteSetId(),
+      );
+    });
+
+    // Decision #3: a *readable* set list that rejects the URL's id (unknown, or hidden per decision
+    // #4) removes it — silently and without a history step (setParams always replaces). A pinned
+    // channel (list unreadable) or an empty param never reaches shouldClearStaleEmoteSetIdParam as
+    // true in the first place, so this cannot fight the pin logic below.
+    effect(() => {
+      if (this.shouldClearStaleEmoteSetIdParam()) {
+        untracked(() => this.setQuery.setParams({ emoteSetId: '' }));
+      }
+    });
+
+    // Decision #3, other half: once the set list has failed to load for the channel now on screen,
+    // pin the display to the active set for the rest of THIS channel's session, so a later
+    // successful read (the loud channel.synced reload below) cannot jump the view out from under
+    // someone reading it. Reading channelName() here, not just emoteSetListUnavailable(), is what
+    // makes the pin channel-scoped rather than global.
+    effect(() => {
+      if (this.emoteSetListUnavailable()) {
+        const channelName = this.channelName();
+        untracked(() => this.pinnedToActiveChannel.set(channelName));
+      }
     });
 
     // Keyed on channelName() alone, deliberately separate from load()'s effect above: that one also
@@ -1062,7 +1195,7 @@ export class UsageStatsPage {
       accept: [LIVE_EVENT_TYPES.usageFlushed, LIVE_EVENT_TYPES.channelSynced],
       debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
     }).subscribe((seen) => {
-      this.loadTotals(this.channelName(), this.from(), this.to(), {
+      this.loadTotals(this.channelName(), this.from(), this.to(), this.selectedEmoteSetId(), {
         preserveSelection: true,
         silent: true,
       });
@@ -1076,6 +1209,10 @@ export class UsageStatsPage {
         // bounded "did the flush catch up yet" question the gate answers.
         this.stopAwaitingSync();
         this.refreshSetStatus();
+        // The set LIST changes far less often than status/totals, but it does change (a new set
+        // created on 7TV, one renamed) — and this is the one loud signal spec E19 ties a re-fetch
+        // to. Never on the silent `usage.flushed` branch below.
+        this.emoteSetListResource.reload();
       } else if (
         seen.has(LIVE_EVENT_TYPES.usageFlushed) &&
         this.setStatusFlushProbeGate.shouldRefreshOn(this.setStatus())
@@ -1121,7 +1258,7 @@ export class UsageStatsPage {
           // because the range can change while this keeps polling (see the comment above — range
           // changes do not re-run this effect) and a stale from/to would fetch the wrong window.
           if (status.activeEmoteSetId) {
-            this.loadTotals(channelName, this.from(), this.to(), {
+            this.loadTotals(channelName, this.from(), this.to(), this.selectedEmoteSetId(), {
               preserveSelection: true,
               silent: true,
             });
@@ -1144,7 +1281,26 @@ export class UsageStatsPage {
     // above only exists to stop a bare range correction from asking twice, and must not also
     // swallow the one deliberate retry a previously failed request needs.
     this.requestedSetStatusFor = null;
-    this.load(this.channelName(), this.from(), this.to(), this.rangeResolved());
+    this.load(
+      this.channelName(),
+      this.from(),
+      this.to(),
+      this.rangeResolved(),
+      this.selectedEmoteSetId(),
+      this.awaitingEmoteSetId(),
+    );
+  }
+
+  /**
+   * Handles a choice from `<app-emote-set-menu>`. Writes the URL, nothing else (T4.0/T4.2 decision
+   * #1) — every consequence of a set switch (clearSeriesCache, retainAmong, the totals/series
+   * refetch) already follows from `selectedEmoteSetId()` changing under the constructor's load
+   * effect. Choosing the active set writes `''`, not its own id (setParams already treats a value
+   * equal to the default as "remove the param" — see list-query-state.ts), so the URL never spells
+   * out an id it would just have to recognise as "the active one" again on the next read.
+   */
+  protected onEmoteSetSelected(id: string): void {
+    this.setQuery.setParams({ emoteSetId: id === this.activeEmoteSetId() ? '' : id });
   }
 
   /** Signature takes `string` because SegmentedControl is untyped by design — one control for every
@@ -1677,7 +1833,14 @@ export class UsageStatsPage {
     });
   }
 
-  private load(channelName: string, from: string, to: string, rangeResolved: boolean): void {
+  private load(
+    channelName: string,
+    from: string,
+    to: string,
+    rangeResolved: boolean,
+    emoteSetId: string | null,
+    awaitingEmoteSetId: boolean,
+  ): void {
     // A drilldown series cached against the previous channel or range must not survive into this one.
     this.usageStatService.clearSeriesCache();
     this.isLoading.set(true);
@@ -1739,22 +1902,32 @@ export class UsageStatsPage {
     // tracking start. Asking now would aggregate a year of rows for a channel counted for days and
     // then discard the answer the moment the corrected range re-runs this effect. The subscription
     // above is what flips rangeResolved, so this always resumes.
-    if (!rangeResolved) {
+    //
+    // awaitingEmoteSetId is the same idea for the set dropdown (T4.2 decision #2): a URL carrying a
+    // `emoteSetId` this page cannot yet confirm or reject must not fire one request for the active
+    // set only to immediately refetch for the URL's real target the moment the set list answers —
+    // selectedEmoteSetId() re-running is what resumes this once it does.
+    if (!rangeResolved || awaitingEmoteSetId) {
       return;
     }
 
-    this.loadTotals(channelName, from, to);
-    this.loadChannelSeries(channelName, from, to);
+    this.loadTotals(channelName, from, to, emoteSetId);
+    this.loadChannelSeries(channelName, from, to, emoteSetId);
   }
 
   // No error surface of its own: the sidecar simply carries no curve, and the page's numbers are
   // unaffected. Raising a banner here would report a failure of the secondary readout as a failure
   // of the page.
-  private loadChannelSeries(channelName: string, from: string, to: string): void {
+  private loadChannelSeries(
+    channelName: string,
+    from: string,
+    to: string,
+    emoteSetId: string | null,
+  ): void {
     this.channelSeries.set(null);
     this.seriesFailed.set(false);
     this.usageStatService
-      .getChannelSeries(channelName, from, to)
+      .getChannelSeries(channelName, from, to, emoteSetId)
       .pipe(this.latestSeries)
       .subscribe({
         next: (series) => this.channelSeries.set(series),
@@ -1832,7 +2005,7 @@ export class UsageStatsPage {
         // wait alive (see load()), and a stale from/to would fetch the wrong window — the same
         // reasoning as in the failure-reason recheck.
         if (status.activeEmoteSetId) {
-          this.loadTotals(channelName, this.from(), this.to());
+          this.loadTotals(channelName, this.from(), this.to(), this.selectedEmoteSetId());
         }
       });
   }
@@ -1850,10 +2023,11 @@ export class UsageStatsPage {
     channelName: string,
     from: string,
     to: string,
+    emoteSetId: string | null,
     options: { preserveSelection?: boolean; silent?: boolean } = {},
   ): void {
     this.usageStatService
-      .getTotals(channelName, from, to)
+      .getTotals(channelName, from, to, emoteSetId)
       .pipe(this.latestTotals)
       .subscribe({
         next: (emotes) => {

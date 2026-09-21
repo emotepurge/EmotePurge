@@ -147,6 +147,13 @@
     "from": "From",
     "to": "To"
   },
+  "emoteSetMenu": {
+    "label": "Set",
+    "menuLabel": "Choose a set",
+    "loading": "Loading…",
+    "unavailable": "Set list unavailable",
+    "active": "active"
+  },
   "datetimePicker": {
     "placeholder": "Now (default)",
     "reset": "Reset",

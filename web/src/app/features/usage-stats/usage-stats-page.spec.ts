@@ -36,7 +36,7 @@ import { Dialog } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
 import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,7 +45,12 @@ import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.mod
 import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
+import {
+  EmoteSetListResponse,
+  EmoteSetSummary,
+} from '../../core/seven-tv/seven-tv-emote-set.model';
 import { EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
+import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { CSV_MIME } from '../../shared/export/csv';
 import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
@@ -164,6 +169,29 @@ function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotalDto
     firstSeenAt: null,
     isArchived: false,
     nameTwinEmoteSetIds: [],
+  };
+}
+
+/** Fixture for the set-dropdown's own list (spec #200, 6.1) — one entry, override for anything else
+ *  (a second set, a `kind` other than `NORMAL`, an inactive one). */
+function emoteSet(overrides: Partial<EmoteSetSummary> = {}): EmoteSetSummary {
+  return {
+    id: 'set-a',
+    name: 'Hauptset',
+    capacity: 250,
+    kind: 'NORMAL',
+    isActive: true,
+    isPersonal: false,
+    ownerDisplayName: null,
+    observations: [],
+    ...overrides,
+  };
+}
+
+function emoteSetList(sets: EmoteSetSummary[]): EmoteSetListResponse {
+  return {
+    activeEmoteSetId: sets.find((set) => set.isActive)?.id ?? '',
+    sets,
   };
 }
 
@@ -2088,5 +2116,594 @@ describe("UsageStatsPage — the toolbar mark-all button's template binding (Opu
 
     expect(component['isLoading']()).toBe(false);
     expect(markAllButton()).not.toBeUndefined();
+  });
+});
+
+/**
+ * T4.2 (spec #200, 8.1; operator decisions 2026-09-21): the set dropdown's URL state, its fallback
+ * rules and everything a set switch triggers. Stub template like most of this file — none of these
+ * assertions read the DOM, they read the state the dropdown is built on top of (Regel 12).
+ *
+ * `router.navigate([], { queryParams })` reaches `ActivatedRoute.queryParamMap` even for a component
+ * created directly via `TestBed.createComponent` rather than through a routed outlet — query params
+ * live on the router's root state, which every injected `ActivatedRoute` in the same injector shares.
+ * Seeding them *before* `TestBed.createComponent` is what lets a test simulate a deep link (the URL
+ * already carries `?emoteSetId=…` the moment `listQueryState`'s field initializer first reads it).
+ *
+ * `settle()` does double duty: it lets a fire-and-forget `router.navigate` (setParams,
+ * onEmoteSetSelected) finish, the same as core/routing/list-query-state.spec.ts's own helper, AND it
+ * gives `emoteSetListResource` (an `rxResource`, unlike the plain `HttpClient` calls the rest of this
+ * file flushes) the extra microtask its status/value need after a synchronous `.flush()` — a bare
+ * `fixture.detectChanges()` right after `flush()` observably still reports `status() === 'loading'`
+ * (checked directly against a minimal `rxResource` in isolation while writing this suite).
+ */
+describe('UsageStatsPage — set dropdown, URL fallback rules and retainAmong (T4.2)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  function configure(): void {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  /** Flushes permissions + active-set + the set list, then settles — the same choreography every
+   *  other describe block in this file drives by hand, plus the new set-list request T4.2 adds.
+   *  Totals/series are NOT flushed here: whether/when they even fire is what half of this block's
+   *  tests are about. */
+  async function mountUpTo(
+    channelName: string,
+    sets: EmoteSetSummary[],
+    options: { setsUnavailable?: boolean } = {},
+  ): Promise<void> {
+    httpMock
+      .expectOne(`/api/channels/${channelName}/permissions`)
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne(`/api/channels/${channelName}/emotes/active-set`).flush(
+      setStatus({
+        activeEmoteSetId: sets.find((set) => set.isActive)?.id ?? '',
+        trackedSince: '2026-01-01T00:00:00Z',
+      }),
+    );
+    // The "all time" correction against trackedSince reruns the load effect a second time (see that
+    // effect's own comment in usage-stats-page.ts).
+    fixture.detectChanges();
+
+    const setsReq = httpMock.expectOne(`/api/channels/${channelName}/emote-sets`);
+    if (options.setsUnavailable) {
+      setsReq.flush(
+        { errorCode: 'foreign_channel_seventv_unavailable' },
+        { status: 503, statusText: 'Service Unavailable' },
+      );
+    } else {
+      setsReq.flush(emoteSetList(sets));
+    }
+    await settle();
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('an unknown emoteSetId in the URL silently falls back to the active set and cleans the URL (T4.0 decision 3)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'does-not-exist' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [emoteSet({ id: 'set-a', isActive: true })]);
+    // The list is readable and rejects the id — /totals fires for the active set right away, the
+    // same tick, not held back (only a still-pending list holds it, see the waiting-phase test).
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+
+    await settle();
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBeNull();
+  });
+
+  it('a PERSONAL set id in the URL is treated exactly like an unknown id (decision 4)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-personal' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-personal', name: 'Personal Emotes', kind: 'PERSONAL', isPersonal: true }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+
+    await settle();
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBeNull();
+  });
+
+  it('holds the totals/series request while the set list for a URL-carried emoteSetId is still pending (decision 2)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    void router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    // The query-param navigation above is fire-and-forget too — let it land before relying on it.
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+
+    // Range is resolved and the channel is known, but the set list itself has not answered yet —
+    // no premature request for the active set, no #94 notice for an answer nobody asked for.
+    expect(component['awaitingEmoteSetId']()).toBe(true);
+    httpMock.expectNone('/api/channels/a/usage-stats/totals');
+    httpMock.expectNone('/api/channels/a/usage-stats/series');
+
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    expect(component['awaitingEmoteSetId']()).toBe(false);
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    const totalsReq = httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-b',
+    );
+    totalsReq.flush([]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  });
+
+  it('pins the display to the active set for the rest of the channel session once the set list fails to load (decision 3)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [emoteSet({ id: 'set-a', isActive: true })], { setsUnavailable: true });
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+    expect(component['emoteSetListUnavailable']()).toBe(true);
+    expect(component['isPinnedToActiveSet']()).toBe(true);
+  });
+
+  it('retainAmong (not clear) survives a dropdown set switch, like a date-range change on the same channel (AK 51)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    // Only 'a' has a row under set-b — a genuine channel switch would have cleared the whole
+    // selection outright instead of reconciling it.
+    const totalsReq = httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-b',
+    );
+    totalsReq.flush([a]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+  });
+
+  it('clears the series cache and does not re-fetch the set list on a dropdown set switch (AK 51, E19)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    const clearSeriesCache = vi.spyOn(TestBed.inject(UsageStatService), 'clearSeriesCache');
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    clearSeriesCache.mockClear();
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    expect(clearSeriesCache).toHaveBeenCalledTimes(1);
+    // No second /emote-sets request pending — the list is bound to the channel (E19), not to the
+    // chosen set.
+    httpMock.expectNone('/api/channels/a/emote-sets');
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  });
+
+  it('choosing the active set writes no emoteSetId back into the URL', async () => {
+    configure();
+    router = TestBed.inject(Router);
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    // Switch away, then explicitly back to the active set — not a no-op click, the URL genuinely
+    // carries an id at this point that the second choice must remove again.
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBe('set-b');
+
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBeNull();
+  });
+});
+
+/**
+ * E19 / AK 52 (partial): the set list is bound to the channel, never to a reload cadence. Its own
+ * describe block because it needs the FakeEventSource + fake-timer choreography every live-reload
+ * test in this file uses, which the block above deliberately avoids (real timers, for the
+ * `setTimeout(0)` `settle()` helper).
+ */
+describe('UsageStatsPage — usage.flushed never reloads the set list, channel.synced does (T4.2, E19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Fake-timer counterpart of the other block's `settle()` — an `rxResource`'s status/value need a
+   *  microtask after a synchronous `.flush()`, and under `vi.useFakeTimers()` a bare `setTimeout(0)`
+   *  never fires on its own. */
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+  }
+
+  it('counts /emote-sets requests across a usage.flushed burst (none) and a channel.synced burst (one)', async () => {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        trackedSince: '2026-01-01T00:00:00Z',
+        // Both dates set so SetStatusFlushProbeGate.shouldRefreshOn short-circuits to false — this
+        // test is about the SET LIST's own request count, not about the status probe's, which the
+        // usageFlushed branch would otherwise also fire (see the #94 mount() helper's own comment
+        // further up in this file for the same fix).
+        botsExcludedSince: '2026-01-01T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-01T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    const source = FakeEventSource.instances[0];
+
+    source.emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+
+    // The silent reload's own totals refetch — draining it is not what this test is about.
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    httpMock.expectNone('/api/channels/a/emote-sets');
+
+    source.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-01T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-01T00:00:00Z',
+      }),
+    );
+    // The loud reload's own re-fetch — E19: channel.synced DOES reload the set list, unlike
+    // usage.flushed above.
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+    await settle();
+  });
+});
+
+/**
+ * AK 50: the one DOM-level assertion in this file's T4.2 coverage — everything else reads state, not
+ * markup (Regel 12), but "the dropdown offers these sets, this one preselected, that one hidden" is
+ * genuinely about what renders. Real template, like the mark-all block above, for the same reason:
+ * the dropdown is a real descendant of it, not something a stub template could stand in for.
+ */
+describe('UsageStatsPage — set dropdown renders the radiogroup with the active set preselected and PERSONAL hidden (AK 50)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+  }
+
+  it('offers only the NORMAL sets, active one checked and named', async () => {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({ id: 'set-a', name: 'Hauptset', isActive: true }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        emoteSet({
+          id: 'set-personal',
+          name: 'Personal Emotes',
+          kind: 'PERSONAL',
+          isPersonal: true,
+          isActive: false,
+        }),
+      ]),
+    );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    fixture.detectChanges();
+
+    // Scoped by its own trigger label — `aria-haspopup="dialog"` alone would also match
+    // DateRangeMenu's trigger sitting right next to it in the same toolbar row.
+    const trigger = Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.includes('emoteSetMenu.label'));
+    expect(trigger).not.toBeUndefined();
+    trigger!.click();
+    fixture.detectChanges();
+
+    const radios = Array.from(
+      fixture.nativeElement.querySelectorAll(
+        '[role="radiogroup"][aria-label="emoteSetMenu.menuLabel"] [role="radio"]',
+      ) as NodeListOf<HTMLElement>,
+    );
+    // Two, not three — the PERSONAL set is hidden entirely, not shown disabled (decision 4).
+    expect(radios).toHaveLength(2);
+    expect(radios.map((radio) => radio.textContent?.trim())).toEqual([
+      expect.stringContaining('Hauptset'),
+      expect.stringContaining('Halloween'),
+    ]);
+
+    const checked = radios.find((radio) => radio.getAttribute('aria-checked') === 'true');
+    expect(checked?.textContent).toContain('Hauptset');
   });
 });
