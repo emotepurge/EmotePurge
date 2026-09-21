@@ -99,6 +99,19 @@ public sealed class SevenTvEmoteSetListService(
 
     private async Task<EmoteSetListResult> ExecuteGuardedAsync(string twitchChannelId, CancellationToken cancellationToken)
     {
+        // The coalescer only shares work that is still in flight: caller A can finish, write the
+        // cache and leave the in-flight table before caller B — a genuine cold miss when it first
+        // looked — ever reaches this factory. Without this second look, B would run the whole guard
+        // chain again for an answer that has been sitting in the cache the entire time, which is
+        // exactly the extra upstream request AK 23 promises will not happen. A held negative outcome
+        // is an answer too (see the identical comment on the first look above), and a cache outage
+        // here is a miss like any other — TryGetAsync already fails open.
+        var recheck = await cache.TryGetAsync(twitchChannelId, cancellationToken);
+        if (recheck is not null)
+        {
+            return recheck;
+        }
+
         var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.EmoteSetList);
         if (!decision.Allowed)
         {

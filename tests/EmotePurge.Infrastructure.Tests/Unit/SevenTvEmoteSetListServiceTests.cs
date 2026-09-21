@@ -127,6 +127,68 @@ public class SevenTvEmoteSetListServiceTests
     }
 
     /// <summary>
+    /// AK 23, the race the coalescer alone does not close: caller A can finish the whole guard chain,
+    /// write the cache and leave the coalescer's in-flight table before caller B — who read a genuine
+    /// cold miss on the outer cache check — ever reaches the coalesced factory. Without a second cache
+    /// look inside that factory, B would run the whole guard chain again for an answer that has been
+    /// sitting in the cache the entire time, which is exactly the extra upstream request AK 23
+    /// forbids. <see cref="GatedListCache"/> holds B's outer miss open past A's entire run to force
+    /// this exact interleaving instead of leaving it to chance.
+    /// </summary>
+    [Fact]
+    public async Task ARaceWhereAFinishesBeforeBEntersTheCoalescer_SharesTheSingleUpstreamRequest()
+    {
+        var client = ClientReturning(OkListing());
+        var cache = new GatedListCache();
+        var service = CreateService(client, cache);
+
+        // B's outer cache read happens now, while the cache is still empty — a genuine miss — but is
+        // held from returning to ListByTwitchIdAsync until the gate below is released.
+        cache.PauseFirstCallUntilReleased();
+        var bTask = service.ListByTwitchIdAsync(TwitchId);
+
+        // A runs the whole guard chain to completion: one upstream request, the cache filled with the
+        // answer, and its in-flight coalescer entry removed — all of it finished before B is let go.
+        var aResult = await service.ListByTwitchIdAsync(TwitchId);
+        Assert.Equal(EmoteSetListStatus.Ok, aResult.Status);
+        await client.Received(1).GetEmoteSetListForTwitchUserAsync(TwitchId, Arg.Any<CancellationToken>());
+
+        cache.Release();
+        var bResult = await bTask;
+
+        Assert.Equal(EmoteSetListStatus.Ok, bResult.Status);
+        Assert.Equal(aResult.List!.SevenTvActiveEmoteSetId, bResult.List!.SevenTvActiveEmoteSetId);
+        // The fix under test: B's recheck inside the coalesced factory found A's answer, so the guard
+        // chain — breaker, budget and client alike — never ran a second time for B.
+        await client.Received(1).GetEmoteSetListForTwitchUserAsync(TwitchId, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The same race, but A's answer is a held negative outcome rather than a hit — negative results
+    /// live in the same key space (6.1) and the recheck has to see them too, not just successes.
+    /// </summary>
+    [Fact]
+    public async Task ARaceWhereAFinishesBeforeBEntersTheCoalescer_SharesAHeldNegativeResultToo()
+    {
+        var client = ClientReturning(SevenTvEmoteSetListResult.Failed(SevenTvEmoteSetListLookupStatus.Unavailable));
+        var cache = new GatedListCache();
+        var service = CreateService(client, cache);
+
+        cache.PauseFirstCallUntilReleased();
+        var bTask = service.ListByTwitchIdAsync(TwitchId);
+
+        var aResult = await service.ListByTwitchIdAsync(TwitchId);
+        Assert.Equal(EmoteSetListStatus.Unavailable, aResult.Status);
+        await client.Received(1).GetEmoteSetListForTwitchUserAsync(TwitchId, Arg.Any<CancellationToken>());
+
+        cache.Release();
+        var bResult = await bTask;
+
+        Assert.Equal(EmoteSetListStatus.Unavailable, bResult.Status);
+        await client.Received(1).GetEmoteSetListForTwitchUserAsync(TwitchId, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
     /// The disguise that has cost this codebase a feature before (F17/E4a): 7TV answers an overload
     /// with HTTP 200 and a GraphQL error carrying <c>extensions.status: 429</c>. Read as a success
     /// it would look like an account with no sets at all.
@@ -374,6 +436,51 @@ public class SevenTvEmoteSetListServiceTests
             }
 
             return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// A cache that can hold one caller's read open past an arbitrary amount of other work, to force
+    /// the exact interleaving <see cref="ARaceWhereAFinishesBeforeBEntersTheCoalescer_SharesTheSingleUpstreamRequest"/>
+    /// needs instead of leaving it to scheduler luck. <see cref="PauseFirstCallUntilReleased"/> arms a
+    /// one-shot gate: the very next <see cref="TryGetAsync"/> call reads the dictionary immediately
+    /// (so it sees a genuine miss if the dictionary is still empty at that moment) but does not return
+    /// to its caller until <see cref="Release"/> is called — every call after that first one, armed or
+    /// not, resolves synchronously, exactly like <see cref="FakeListCache"/>.
+    /// </summary>
+    private sealed class GatedListCache : ISevenTvEmoteSetListCache
+    {
+        private readonly Dictionary<string, EmoteSetListResult> _entries = new(StringComparer.Ordinal);
+        private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool _pauseNextCall;
+
+        public void PauseFirstCallUntilReleased() => _pauseNextCall = true;
+
+        public void Release() => _gate.SetResult();
+
+        public Task<EmoteSetListResult?> TryGetAsync(string twitchChannelId, CancellationToken cancellationToken = default)
+        {
+            var captured = _entries.TryGetValue(twitchChannelId, out var entry) ? entry : null;
+            if (!_pauseNextCall)
+            {
+                return Task.FromResult(captured);
+            }
+
+            _pauseNextCall = false;
+            return AwaitGateThenReturn(captured);
+        }
+
+        public Task SetAsync(
+            string twitchChannelId, EmoteSetListResult result, TimeSpan timeToLive, CancellationToken cancellationToken = default)
+        {
+            _entries[twitchChannelId] = result;
+            return Task.CompletedTask;
+        }
+
+        private async Task<EmoteSetListResult?> AwaitGateThenReturn(EmoteSetListResult? captured)
+        {
+            await _gate.Task;
+            return captured;
         }
     }
 
