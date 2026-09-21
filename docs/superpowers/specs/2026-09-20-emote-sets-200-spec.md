@@ -2909,3 +2909,53 @@ bauten, bauen sie jetzt mit). Preis: fällt 7TV genau in diesem Moment aus, ist 
 Deploy existieren kann, und für die Besitzer-Prüfung ohnehin die richtige Antwort (503 statt 403).
 Tests: `ModRoleCacheTests` (Legacy ⇒ Miss, umgestellt), `Integration/SevenTvEditorServiceTests.cs`
 +2 — je einer für die Angebotsliste und die Besitzer-Prüfung, gegen echtes Redis.
+
+### P2 — Eine operationslokale Transition verwarf das 429 des anderen Pfads
+
+**Befund.** T2.1 hatte die Generation des Breakers bewusst **providerweit** gelassen (DECISIONS,
+Eintrag vom 2026-09-20, Absatz zum Generationszähler): mit einer Generation je Operation hätte ein
+verspäteter Erfolg auf Pfad A die Rate-Limit-Sperre löschen können, die Pfad B gerade eingefangen
+hat. Die eine Generation machte dafür den umgekehrten Fehler. `OpenOperation` zählte denselben
+Zähler hoch wie das Öffnen der providerweiten Sperre. Öffnet die Liste ihren **eigenen** Breaker
+(fünf `Unavailable`), während eine vorher zugelassene Vorschau-Anfrage noch läuft, passt deren
+Generation danach nicht mehr — ihr bestätigtes 429 wird verworfen, die providerweite Sperre öffnet
+nicht, und 7TVs `Retry-After` geht verloren. Genau diese Aussperrung soll E4 respektieren.
+
+**Eingearbeitet: zwei Epochen.** Die **Provider-Epoche** bewegt sich nur, wenn die providerweite
+Rate-Limit-Sperre öffnet oder schließt. Die **Operations-Epoche** bewegt sich nur, wenn der Breaker
+dieser Operation öffnet oder schließt. Beide sind Stempel einer gemeinsamen, monoton steigenden
+Übergangsuhr. Die Entscheidung trägt deshalb weiter **einen** `long` (den Uhrstand bei der
+Zulassung), und die Frage „hat sich diese Epoche seit meiner Zulassung bewegt?" lautet: „ist ihr
+Stempel jünger als meine Zulassung?". Form der Entscheidung, die vier Methoden und alle Aufrufer
+bleiben unverändert. Eine Rückmeldung wird an der Epoche des Zustands geprüft, den sie ändern will:
+
+- **Rate-Limit-Sperre öffnen oder löschen:** nur die Provider-Epoche muss aktuell sein. Eine
+  operationslokale Transition, gleich auf welchem Pfad, entwertet kein 429 mehr.
+- **Streak, offener Zustand und Probe der Operation:** die eigene Operations-Epoche **und** die
+  Provider-Epoche müssen aktuell sein. Ob ein Aufruf eine Probe war und ob ein gewöhnlicher Fehler
+  zu einem schon behandelten Rate-Limit-Vorfall gehört, hängt am Provider-Zustand der Zulassung.
+  Sonst würde ein Nachzügler-`OtherFailure` aus einem 429-Schwall das Fenster wieder dehnen.
+- **Probe:** Sie bleibt je Operation und gilt als unterwegs, solange sich keine der beiden Epochen,
+  die ihre Operation sieht, seit der Beanspruchung bewegt hat. Jede Transition, die den eigenen
+  Bericht der Probe veraltet, gibt also auch ihren Platz frei — ein Deadlock ist ausgeschlossen. Eine
+  Transition der **anderen** Operation gibt ihn weder frei noch entwertet sie den Bericht.
+
+Der ursprüngliche Grund von T2.1 gilt weiter und wird jetzt von der Provider-Epoche gehalten: ein
+verspäteter Erfolg auf Pfad A löscht keine Sperre, die Pfad B eingefangen hat, weil deren Öffnen
+die Provider-Epoche über die Zulassung von A hinausgeschoben hat.
+
+**Verhältnis zu 6.1.** Die Reichweitentabelle in 6.1 ist damit in ihrer ursprünglichen Absicht
+erfüllt: Half-open-Probe und `OtherFailure`-Zähler je Operation, `RateLimited` samt `Retry-After`
+providerweit. Hinzu kommt die providerweite Epoche, die die Spec nicht vorsah; die Tabellenzeile
+„Half-open-Probe (`_probeInFlight`, `_generation`) je Operation" bleibt als Stand des Entwurfs
+stehen. Eine Operation allein verhält sich in allen Bestandsfällen wie vor K2. Einzige gewollte
+Abweichung: ein 429, das nach einer lokalen Transition **derselben** Operation zurückkommt, öffnet
+die Sperre jetzt ebenfalls, statt verworfen zu werden.
+
+**Tests.** `Unit/ForeignSevenTvBreakerPolicyTests.cs`, neue Klasse
+`ForeignSevenTvBreakerPolicyEpochTests` (+12). Die Fälle decken ab: den Befund in beiden Richtungen
+(lokales Öffnen und lokales Schließen der Liste, vor der Änderung rot), den T2.1-Fall, das
+Streak- und Probe-Übergreifen, vier Folgen, in denen eine Epoche die andere überholt, eine
+geseedete Zufallsfolge (2000 Folgen, nach Abschluss aller Berichte bekommt jede Operation eine
+Probe) und AK 94 mit mehr als `FailureThreshold` Listenfehlern. Die 12 Bestandsfälle und die
+Klasse `ForeignSevenTvBreakerPolicyOperationScopeTests` sind unverändert.

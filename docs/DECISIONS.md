@@ -165,7 +165,30 @@ rate-limit lock, would unconditionally clear that lock if generations were scope
 A's own success proves nothing about the incident path B just reported. Keeping one generation for the
 whole provider, with only the probe *slot* itself tracked per operation, is what lets a stale report
 release its slot on any transition without ever being able to undo a lock a different operation is
-still holding.
+still holding. (Superseded 2026-09-21 — see the correction below.)
+
+**Correction 2026-09-21 (second opinion on K2, spec section 32).** The single provider-wide
+generation got the opposite case wrong. `OpenOperation` bumped the same counter a provider-wide
+lock did, so an *operation-local* transition invalidated every report in flight on every other
+operation: the list opens its own breaker after five bad queries while a preview request admitted
+before that is still running; the preview then comes back with a confirmed 429, its generation no
+longer matches, and the report is discarded — the provider-wide rate-limit lock is never opened and
+7TV's `Retry-After` is lost, which is exactly the lockout E4 exists to honour. What holds now is two
+epochs. The **provider epoch** moves only when the provider-wide rate-limit lock opens or closes;
+each **operation epoch** moves only when that operation's own breaker opens or closes. Both are
+stamps from one monotonic transition clock, so a decision still carries a single `long` (the clock
+at admission), and "has this epoch moved since I was admitted" is "is its stamp newer than my
+admission". A report is checked against the epoch of the state it wants to change: opening or
+clearing the rate-limit lock needs only a current provider epoch; the operation's own streak, open
+state and probe slot need its own epoch and the provider epoch, because whether a call was a probe,
+and whether an ordinary failure belonged to a rate-limit incident already acted on, depends on the
+provider state it was admitted under. The probe slot stays per operation and is held only while
+neither of the two epochs its operation sees has moved since the claim, so every transition that
+makes a probe's own report stale also hands its slot back — and a transition of *another*
+operation no longer frees or invalidates it. The original reason for keeping the counter
+provider-wide still holds and is now kept by the provider epoch: a success straggling in late on
+path A cannot clear a rate-limit lock path B has just caught, because that lock's opening moved the
+provider epoch past A's admission.
 
 **Owner-check clause, added 2026-09-21 after the second opinion on K2 (spec section 32).** The
 set-centric endpoint's owner check (`POST /api/seventv/emote-sets/{id}/sync-imported`, step 4 of the

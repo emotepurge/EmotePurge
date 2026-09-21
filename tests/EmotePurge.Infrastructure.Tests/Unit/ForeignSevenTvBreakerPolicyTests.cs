@@ -431,3 +431,440 @@ public class ForeignSevenTvBreakerPolicyOperationScopeTests
         public void Advance(TimeSpan delta) => _now = _now.Add(delta);
     }
 }
+
+/// <summary>
+/// The correction of 2026-09-21 (spec section 32, second opinion on K2): the breaker keeps two
+/// epochs, not one. The provider epoch moves only when the provider-wide rate-limit lock opens or
+/// closes; each operation's epoch moves only when that operation's own breaker opens or closes. A
+/// report is checked against the epoch of the state it wants to change — so an operation-local
+/// transition on one path can no longer discard the confirmed 429 another path brings back, and a
+/// late success on one path still cannot clear the lock another path caught (the reason the single
+/// generation existed in the first place).
+/// </summary>
+public class ForeignSevenTvBreakerPolicyEpochTests
+{
+    private const string Preview = ForeignSevenTvBreakerOperations.ForeignPreview;
+    private const string List = ForeignSevenTvBreakerOperations.EmoteSetList;
+
+    /// <summary>
+    /// Invariant 1, the finding itself: a preview call is admitted, the list then opens its own
+    /// breaker after five bad queries, and only afterwards does the preview come back with a
+    /// confirmed 429. The list's local opening says nothing about 7TV's bucket, so the 429 must still
+    /// lock the provider — with its own <c>Retry-After</c>, for both paths.
+    /// </summary>
+    [Fact]
+    public void AnOperationLocalOpening_DoesNotDiscardAnotherOperationsConfirmedRateLimit()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        var retryAfter = TimeSpan.FromMinutes(30);
+
+        var inFlightPreview = policy.TryAcquire(Preview);
+        Assert.True(inFlightPreview.Allowed);
+
+        OpenLocally(policy, List);
+        Assert.False(policy.TryAcquire(List).Allowed);
+
+        var transition = policy.RecordFailure(
+            Preview, ForeignSevenTvBreakerOutcome.RateLimited, retryAfter, inFlightPreview.Generation);
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.Opened, transition);
+        AssertLockedByRateLimit(policy, Preview, retryAfter);
+        AssertLockedByRateLimit(policy, List, retryAfter);
+
+        // The whole Retry-After stands, not the list's 60 s and not nothing.
+        clock.Advance(retryAfter - TimeSpan.FromSeconds(1));
+        Assert.False(policy.TryAcquire(Preview).Allowed);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        Assert.True(policy.TryAcquire(Preview).Allowed);
+    }
+
+    /// <summary>
+    /// Invariant 1, the other direction of an operation-local transition: the list's probe closes
+    /// the list's own breaker while a preview call is in flight. That closing is just as local, and
+    /// the preview's 429 still locks the provider.
+    /// </summary>
+    [Fact]
+    public void AnOperationLocalClosing_DoesNotDiscardAnotherOperationsConfirmedRateLimit()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        OpenLocally(policy, List);
+        clock.Advance(ForeignSevenTvBreakerPolicy.DefaultOpenDuration + TimeSpan.FromSeconds(1));
+
+        var inFlightPreview = policy.TryAcquire(Preview);
+        var listProbe = policy.TryAcquire(List);
+        Assert.True(inFlightPreview.Allowed);
+        Assert.True(listProbe.Allowed);
+        Assert.Equal(ForeignSevenTvBreakerTransition.Closed, policy.RecordSuccess(List, listProbe.Generation));
+
+        var transition = policy.RecordFailure(
+            Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromMinutes(20), inFlightPreview.Generation);
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.Opened, transition);
+        AssertLockedByRateLimit(policy, Preview, TimeSpan.FromMinutes(20));
+        AssertLockedByRateLimit(policy, List, TimeSpan.FromMinutes(20));
+    }
+
+    /// <summary>
+    /// Invariant 2, what the single generation was introduced for and must not come back: the
+    /// preview is admitted while everything is closed, the list catches a 429 for an hour, and the
+    /// preview's success arrives only afterwards. It proves nothing about the incident the list
+    /// reported, so the lock stays — for both paths, for the full hour.
+    /// </summary>
+    [Fact]
+    public void ALateSuccessOnOneOperation_DoesNotClearTheRateLimitAnotherOperationCaught()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+
+        var slowPreview = policy.TryAcquire(Preview);
+        var fastList = policy.TryAcquire(List);
+        Assert.Equal(
+            ForeignSevenTvBreakerTransition.Opened,
+            policy.RecordFailure(List, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromHours(1), fastList.Generation));
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.None, policy.RecordSuccess(Preview, slowPreview.Generation));
+
+        AssertLockedByRateLimit(policy, Preview, TimeSpan.FromHours(1));
+        AssertLockedByRateLimit(policy, List, TimeSpan.FromHours(1));
+        clock.Advance(TimeSpan.FromMinutes(59));
+        Assert.False(policy.TryAcquire(Preview).Allowed);
+        Assert.False(policy.TryAcquire(List).Allowed);
+    }
+
+    /// <summary>
+    /// Invariant 2 where the two epochs part ways: the late preview's own operation epoch is still
+    /// current (the preview never transitioned), only the provider epoch moved. The success may
+    /// touch what belongs to the preview, but not the lock.
+    /// </summary>
+    [Fact]
+    public void ALateSuccess_WithACurrentOperationEpoch_StillCannotClearAMovedProviderLock()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        var slowPreview = policy.TryAcquire(Preview);
+
+        // The list opens locally first (its own epoch), then catches the 429 (the provider epoch).
+        OpenLocally(policy, List);
+        clock.Advance(ForeignSevenTvBreakerPolicy.DefaultOpenDuration + TimeSpan.FromSeconds(1));
+        var listProbe = policy.TryAcquire(List);
+        Assert.True(listProbe.Allowed);
+        policy.RecordFailure(List, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromMinutes(10), listProbe.Generation);
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.None, policy.RecordSuccess(Preview, slowPreview.Generation));
+
+        AssertLockedByRateLimit(policy, Preview, TimeSpan.FromMinutes(10));
+    }
+
+    /// <summary>
+    /// Invariant 3, the failure streak: late reports on the preview — a success and an ordinary
+    /// failure — neither reset nor extend the list's streak. Four list failures stay four, and the
+    /// fifth is the one that opens.
+    /// </summary>
+    [Fact]
+    public void LateReportsOnOneOperation_LeaveTheOtherOperationsStreakAlone()
+    {
+        var policy = new ForeignSevenTvBreakerPolicy(NewClock().Provider);
+        var lateSuccess = policy.TryAcquire(Preview);
+        var lateFailure = policy.TryAcquire(Preview);
+
+        for (var i = 0; i < ForeignSevenTvBreakerPolicy.FailureThreshold - 1; i++)
+        {
+            policy.RecordFailure(List, ForeignSevenTvBreakerOutcome.OtherFailure, null, policy.TryAcquire(List).Generation);
+        }
+
+        policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.OtherFailure, null, lateFailure.Generation);
+        Assert.True(policy.TryAcquire(List).Allowed); // the preview's failure did not count as the list's fifth
+        policy.RecordSuccess(Preview, lateSuccess.Generation);
+
+        var fifth = policy.RecordFailure(
+            List, ForeignSevenTvBreakerOutcome.OtherFailure, null, policy.TryAcquire(List).Generation);
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.Opened, fifth); // …and its success did not reset the list's four
+    }
+
+    /// <summary>
+    /// Invariant 3, the probe: while the list's probe is out, the preview opens its own breaker and
+    /// a straggler of the preview reports late. Neither frees the list's slot for a second probe,
+    /// and neither makes the list's own probe report stale — it still closes the list.
+    /// </summary>
+    [Fact]
+    public void AnotherOperationsTransition_NeitherFreesNorInvalidatesAProbe()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        var previewStraggler = policy.TryAcquire(Preview);
+        OpenLocally(policy, List);
+        clock.Advance(ForeignSevenTvBreakerPolicy.DefaultOpenDuration + TimeSpan.FromSeconds(1));
+
+        var listProbe = policy.TryAcquire(List);
+        Assert.True(listProbe.Allowed);
+
+        OpenLocally(policy, Preview);
+        policy.RecordSuccess(Preview, previewStraggler.Generation);
+
+        Assert.False(policy.TryAcquire(List).Allowed); // still exactly one probe out
+        Assert.Equal(ForeignSevenTvBreakerTransition.Closed, policy.RecordSuccess(List, listProbe.Generation));
+        Assert.True(policy.TryAcquire(List).Allowed);
+        Assert.False(policy.TryAcquire(Preview).Allowed); // the preview's own incident is untouched
+    }
+
+    /// <summary>
+    /// Invariant 4: the provider epoch overtakes an operation's probe. The list's probe is out when
+    /// the preview's 429 locks the provider; the probe then fails late. Nothing may stay held — once
+    /// every wait is over, both operations get a probe.
+    /// </summary>
+    [Fact]
+    public void ProviderOpeningOvertakingAnOperationProbe_LeavesNoSlotHeld()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        OpenLocally(policy, List);
+        clock.Advance(ForeignSevenTvBreakerPolicy.DefaultOpenDuration + TimeSpan.FromSeconds(1));
+        var listProbe = policy.TryAcquire(List);
+        Assert.True(listProbe.Allowed);
+
+        policy.RecordFailure(
+            Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), policy.TryAcquire(Preview).Generation);
+        policy.RecordFailure(List, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromHours(1), listProbe.Generation);
+
+        // The list's late 429 belonged to a provider state that no longer exists: it neither
+        // stretched the preview's ten seconds to an hour …
+        clock.Advance(TimeSpan.FromSeconds(11));
+        var previewProbe = policy.TryAcquire(Preview);
+        Assert.True(previewProbe.Allowed);
+        policy.RecordSuccess(Preview, previewProbe.Generation);
+
+        // … nor kept the list's slot: its own late report handed it back.
+        AssertEveryOperationCanProbeEventually(policy, clock);
+    }
+
+    /// <summary>
+    /// Invariant 4: an operation epoch moves while another operation's provider probe is out. The
+    /// preview's probe stays the one probe, and its success still closes the provider.
+    /// </summary>
+    [Fact]
+    public void OperationOpeningDuringAProviderProbe_LeavesNoSlotHeld()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        policy.RecordFailure(
+            List, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), policy.TryAcquire(List).Generation);
+        clock.Advance(TimeSpan.FromSeconds(11));
+
+        var previewProbe = policy.TryAcquire(Preview);
+        var listProbe = policy.TryAcquire(List);
+        Assert.True(previewProbe.Allowed);
+        Assert.True(listProbe.Allowed);
+
+        // The list's probe fails in an ordinary way: the list reopens locally, the provider stays.
+        policy.RecordFailure(List, ForeignSevenTvBreakerOutcome.OtherFailure, null, listProbe.Generation);
+        Assert.False(policy.TryAcquire(Preview).Allowed); // the preview's probe is still out
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.Closed, policy.RecordSuccess(Preview, previewProbe.Generation));
+        Assert.True(policy.TryAcquire(Preview).Allowed);
+        Assert.False(policy.TryAcquire(List).Allowed); // its own 60 s
+
+        AssertEveryOperationCanProbeEventually(policy, clock);
+    }
+
+    /// <summary>
+    /// Invariant 4: the provider closes while another operation's probe is out, and that probe then
+    /// reports a 429 against the lock that no longer exists. Its report is stale for the provider,
+    /// and its slot went back with the transition — traffic resumes on both paths.
+    /// </summary>
+    [Fact]
+    public void ProviderClosingOvertakingAnotherProbe_LeavesNoSlotHeld()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        policy.RecordFailure(
+            Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromSeconds(10), policy.TryAcquire(Preview).Generation);
+        clock.Advance(TimeSpan.FromSeconds(11));
+        var previewProbe = policy.TryAcquire(Preview);
+        var listProbe = policy.TryAcquire(List);
+
+        Assert.Equal(ForeignSevenTvBreakerTransition.Closed, policy.RecordSuccess(List, listProbe.Generation));
+        Assert.Equal(
+            ForeignSevenTvBreakerTransition.None,
+            policy.RecordFailure(Preview, ForeignSevenTvBreakerOutcome.RateLimited, TimeSpan.FromHours(1), previewProbe.Generation));
+
+        Assert.True(policy.TryAcquire(Preview).Allowed);
+        Assert.True(policy.TryAcquire(List).Allowed);
+    }
+
+    /// <summary>
+    /// Invariant 4: a probe that never reached 7TV gives its slot back even after another
+    /// operation's epoch has moved in the meantime.
+    /// </summary>
+    [Fact]
+    public void ReleasingAProbe_AfterAnotherOperationsTransition_StillFreesTheSlot()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+        OpenLocally(policy, List);
+        clock.Advance(ForeignSevenTvBreakerPolicy.DefaultOpenDuration + TimeSpan.FromSeconds(1));
+        var listProbe = policy.TryAcquire(List);
+        Assert.True(listProbe.Allowed);
+
+        OpenLocally(policy, Preview);
+        policy.ReleaseProbeWithoutOutcome(List, listProbe.Generation);
+
+        Assert.True(policy.TryAcquire(List).Allowed);
+    }
+
+    /// <summary>
+    /// Invariant 4, for any sequence: random admissions, reports (in any order, late or not), probe
+    /// releases and clock steps over both operations. Once every admitted call has reported — the
+    /// contract every caller keeps — and every wait is over, each operation gets a call through.
+    /// Seeded, so a failure names a reproducible sequence.
+    /// </summary>
+    [Fact]
+    public void AfterAnySequenceOfTransitions_EveryOperationGetsAProbeOnceAllCallsReported()
+    {
+        string[] operations = [Preview, List];
+
+        for (var seed = 0; seed < 2000; seed++)
+        {
+            var random = new Random(seed);
+            var clock = NewClock();
+            var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+            var inFlight = new List<(string Operation, long Generation)>();
+
+            for (var step = 0; step < 60; step++)
+            {
+                switch (random.Next(4))
+                {
+                    case 0:
+                    case 1:
+                        var operation = operations[random.Next(operations.Length)];
+                        var decision = policy.TryAcquire(operation);
+                        if (decision.Allowed)
+                        {
+                            inFlight.Add((operation, decision.Generation));
+                        }
+
+                        break;
+                    case 2 when inFlight.Count > 0:
+                        var index = random.Next(inFlight.Count);
+                        Report(policy, random, inFlight[index]);
+                        inFlight.RemoveAt(index);
+                        break;
+                    default:
+                        clock.Advance(TimeSpan.FromSeconds(random.Next(0, 90)));
+                        break;
+                }
+            }
+
+            while (inFlight.Count > 0)
+            {
+                var index = random.Next(inFlight.Count);
+                Report(policy, random, inFlight[index]);
+                inFlight.RemoveAt(index);
+            }
+
+            clock.Advance(TimeSpan.FromHours(2));
+            foreach (var operation in operations)
+            {
+                Assert.True(policy.TryAcquire(operation).Allowed, $"seed {seed}: {operation} stayed locked");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Invariant 5 (AK 94), under the new epochs: far more than <c>FailureThreshold</c> list
+    /// failures — including failed probes that reopen the list — never lock the preview; a confirmed
+    /// 429 on the preview then locks both with the same <c>Retry-After</c>.
+    /// </summary>
+    [Fact]
+    public void ManyListFailures_NeverLockThePreview_AndAPreview429LocksBoth()
+    {
+        var clock = NewClock();
+        var policy = new ForeignSevenTvBreakerPolicy(clock.Provider);
+
+        for (var round = 0; round < 3 * ForeignSevenTvBreakerPolicy.FailureThreshold; round++)
+        {
+            var list = policy.TryAcquire(List);
+            if (list.Allowed)
+            {
+                policy.RecordFailure(List, ForeignSevenTvBreakerOutcome.OtherFailure, null, list.Generation);
+            }
+            else
+            {
+                clock.Advance(ForeignSevenTvBreakerPolicy.DefaultOpenDuration + TimeSpan.FromSeconds(1));
+            }
+
+            var preview = policy.TryAcquire(Preview);
+            Assert.True(preview.Allowed);
+            policy.RecordSuccess(Preview, preview.Generation);
+        }
+
+        var retryAfter = TimeSpan.FromMinutes(20);
+        policy.RecordFailure(
+            Preview, ForeignSevenTvBreakerOutcome.RateLimited, retryAfter, policy.TryAcquire(Preview).Generation);
+
+        AssertLockedByRateLimit(policy, Preview, retryAfter);
+        AssertLockedByRateLimit(policy, List, retryAfter);
+    }
+
+    private static void OpenLocally(ForeignSevenTvBreakerPolicy policy, string operation)
+    {
+        for (var i = 0; i < ForeignSevenTvBreakerPolicy.FailureThreshold; i++)
+        {
+            policy.RecordFailure(
+                operation, ForeignSevenTvBreakerOutcome.OtherFailure, null, policy.TryAcquire(operation).Generation);
+        }
+    }
+
+    private static void AssertLockedByRateLimit(ForeignSevenTvBreakerPolicy policy, string operation, TimeSpan remaining)
+    {
+        var decision = policy.TryAcquire(operation);
+        Assert.False(decision.Allowed);
+        Assert.True(decision.OpenedByRateLimit);
+        Assert.Equal(remaining, decision.RemainingOpenTime);
+    }
+
+    private static void AssertEveryOperationCanProbeEventually(ForeignSevenTvBreakerPolicy policy, FakeClock clock)
+    {
+        clock.Advance(TimeSpan.FromHours(2));
+        Assert.True(policy.TryAcquire(Preview).Allowed);
+        Assert.True(policy.TryAcquire(List).Allowed);
+    }
+
+    private static void Report(ForeignSevenTvBreakerPolicy policy, Random random, (string Operation, long Generation) call)
+    {
+        switch (random.Next(4))
+        {
+            case 0:
+                policy.RecordSuccess(call.Operation, call.Generation);
+                break;
+            case 1:
+                policy.RecordFailure(
+                    call.Operation,
+                    ForeignSevenTvBreakerOutcome.RateLimited,
+                    TimeSpan.FromSeconds(random.Next(1, 900)),
+                    call.Generation);
+                break;
+            case 2:
+                policy.RecordFailure(call.Operation, ForeignSevenTvBreakerOutcome.OtherFailure, null, call.Generation);
+                break;
+            default:
+                policy.ReleaseProbeWithoutOutcome(call.Operation, call.Generation);
+                break;
+        }
+    }
+
+    private static FakeClock NewClock() => new(new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+    private sealed class FakeClock(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset _now = start;
+
+        public TimeProvider Provider => this;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan delta) => _now = _now.Add(delta);
+    }
+}
