@@ -6,7 +6,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LanguageService } from '../../core/i18n/language.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
@@ -523,5 +523,71 @@ describe('ImportSourceDialog', () => {
 
       expect(button('Weiter').disabled).toBe(false);
     });
+  });
+});
+
+/**
+ * `restoreEnabled` (spec #200, T4.5): the dialog forwards it to the file step verbatim, defaulting
+ * to `true` when the caller omits it entirely — every caller of this dialog that predates T4.5
+ * (and this file's own main `describe` above) never sets it, and must see no change.
+ */
+describe('ImportSourceDialog — restoreEnabled forwarding (#200, T4.5)', () => {
+  async function render(data: { channelName: string; setId: string; restoreEnabled?: boolean }) {
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    await TestBed.configureTestingModule({
+      imports: [
+        ImportSourceDialog,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: DIALOG_DATA, useValue: data },
+        {
+          provide: DialogRef,
+          useValue: {
+            close: () => undefined,
+            overlayRef: { addPanelClass: vi.fn(), removePanelClass: vi.fn() },
+          },
+        },
+        {
+          provide: LanguageService,
+          useValue: { lang: signal('de') } as unknown as LanguageService,
+        },
+      ],
+    }).compileComponents();
+    await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
+
+    const fixture = TestBed.createComponent(ImportSourceDialog);
+    fixture.detectChanges();
+    const host: HTMLElement = fixture.nativeElement;
+    Array.from(host.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim().startsWith('Aus einer Datei'))
+      ?.click();
+    fixture.detectChanges();
+
+    return fixture.debugElement.query(By.directive(FileImportStep))
+      .componentInstance as FileImportStep;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('defaults to true when the caller omits it', async () => {
+    const step = await render({ channelName: 'somechannel', setId: 'set-current' });
+    expect(step.restoreEnabled()).toBe(true);
+  });
+
+  it('forwards false while the caller says restoring is locked (a non-active set on screen)', async () => {
+    const step = await render({
+      channelName: 'somechannel',
+      setId: 'set-halloween',
+      restoreEnabled: false,
+    });
+    expect(step.restoreEnabled()).toBe(false);
   });
 });

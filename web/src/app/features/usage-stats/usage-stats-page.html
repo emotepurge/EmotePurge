@@ -106,11 +106,12 @@
            selection and has nothing to send only once both are empty, whereas every import source
            brings its own rows and needs neither a visible row nor a selection to exist.
            Gated on the SELECTED set since spec #200 (8.1): the push copies the rows on screen and
-           names their set as the source, so it works from any set's view. The import trigger does
-           not yet — its file, foreign-channel and leaderboard doors still write into the channel's
-           ACTIVE set, and its restore door would book against the active set too — so it stays
-           locked while a non-active set is on screen, until T4.5 points the doors at the selected
-           set (the restore bookkeeping additionally waits for K5). -->
+           names their set as the source, so it works from any set's view. Since T4.5 the import
+           trigger's file, foreign-channel and leaderboard doors do too — `setId`/`activeSetId`
+           below let `ImportTrigger` build the right target itself (`toImportTarget`). Only the
+           restore branch stays locked while a non-active set is on screen: a finished restore
+           still books its un-archive through the legacy, set-agnostic `sync-restored` call (K5
+           makes it set-aware) — `activeSetId` also gates that lock, inside the trigger. -->
       @if (!isCoarse() && selectedEmoteSetId(); as selectedSetId) {
         <button
           type="button"
@@ -124,7 +125,9 @@
         <app-import-trigger
           [channelName]="channelName()"
           [setId]="selectedSetId"
-          [importScopeCurrent]="importScopeCurrent() && !isNonActiveView()"
+          [activeSetId]="activeEmoteSetId()"
+          [setName]="selectedEmoteSetName()"
+          [importScopeCurrent]="importScopeCurrent()"
         />
       }
       <button

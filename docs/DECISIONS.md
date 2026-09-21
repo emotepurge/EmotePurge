@@ -18,11 +18,13 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/core/usage-stats/usage-stat.service.ts` · `web/src/app/core/routing/list-query-state.ts` ·
 `web/src/app/shared/emotes/emote-set-menu.ts` · `web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
 `web/src/app/shared/datetime/date-range-menu.ts` · `web/src/app/shared/grid/atlas-grid.ts` ·
-`web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/shared/export/usage-export.ts` ·
-`web/src/app/shared/export/usage-export-purposes.ts` · `web/e2e/support/mocks.ts` ·
-`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (7, 8.1–8.5, §35) ·
-`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.4)
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/foreign-import-flow.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` · `web/src/app/shared/seven-tv/import-source-dialog.ts` ·
+`web/src/app/shared/export/usage-export.ts` · `web/src/app/shared/export/usage-export-purposes.ts` ·
+`web/e2e/support/mocks.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (7, 8.1–8.6, §35) ·
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
 part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
@@ -108,12 +110,46 @@ keys queue and protocol by `Emote.Id` (the Guid-less-row lock of plan T4.3 is co
 same reason `DeletableEmote`/`DeleteQueueEmote.emoteId` stay required here and the page filters
 Guid-less and `'left'` rows out itself; the panel stays bound to the active set, since every run it can
 show started there. Creating a vote session is locked in a non-active view until set sessions exist
-(K6). The import trigger stays disabled in a non-active view until T4.5 points its doors at the
-selected set (its file, foreign-channel and leaderboard doors still target the active set). The push
-("Übertragen") and the export already capture the shown set. The usage export serializes a `null`
-count as an empty CSV cell / JSON `null` with trend `unknown`, never 0; set id and name in the file
-name and meta follow with T4.5 and are appended here. The null-session ballot is resolved from the
-7TV-keyed selection into Guids when the dialog reads it, i.e. at submit (E4).
+(K6). The push ("Übertragen") and the export already capture the shown set (T4.4). The usage export
+serializes a `null` count as an empty CSV cell / JSON `null` with trend `unknown`, never 0. The
+null-session ballot is resolved from the 7TV-keyed selection into Guids when the dialog reads it,
+i.e. at submit (E4).
+
+**T4.5 — the import trigger's three channel-only doors now follow the selected set; restore is the
+one door that still does not (K5 closes it).** `import-trigger.ts`'s `setId` input was always bound
+to `selectedEmoteSetId()` (T4.4), but the file/foreign-channel/leaderboard doors ignored it and
+hardcoded `{ kind: 'activeSet' }` — the header comment said so outright ("its file, foreign-channel
+and leaderboard doors still write into the channel's ACTIVE set"). They now build a `'chosen'`
+`ImportFlowTarget` (`toImportTarget`) from `setId` plus a new `activeSetId` input: when the two
+agree, `toTargetSelection` (`import-flow.ts`, unchanged) still takes the identical `'trackedActive'`
+fast path a plain `'activeSet'` target always did (AK 36 — same request contract, not a new one);
+when they differ, it reads the target live via `SevenTvEmoteSetService.loadEmoteSetPreview` instead
+of assuming the channel's active set, the same `'trackedSet'` path the K2 target picker's own
+non-active choice already used. `startForeignChannelImportFlow`/`startLeaderboardImportFlow`
+(`foreign-import-flow.ts`) take that target as a parameter now instead of building `{ kind:
+'activeSet' }` themselves. `activeSetId` defaults to `null`, which folds back onto `setId` and
+keeps every caller that predates this task (including tests that never pass it) byte-identical.
+
+**Restore stays locked while a non-active set is on screen, with a visible reason shown at the
+exact moment a file is picked.** A finished restore still books its un-archive through the legacy,
+set-agnostic `EmoteAdminService.syncRestored(channelName, emoteIds)` call (`restore-flow.ts`) — K5
+(T5.2) is what makes it set-aware. `FileImportStep` gained a `restoreEnabled` input (`true` unless
+the caller says otherwise) that `import-trigger.ts` sets to `setId === activeSetId`; when `false`, a
+purge-run protocol never reaches `parsePurgeRunProtocol` at all — `handlePurgeRunProtocol` reports
+`restore.import.errors.restoreNonActiveSet` immediately instead. The protocol's own *match* check
+(`setId` against the file's `meta.emoteSetId`) needed no change to support this: it was already
+generic over whichever set it is handed, so a protocol naming a non-active set is accepted while
+that set is shown and rejected while another is (AK 66) — independent of whether restoring is
+currently locked at all.
+
+**The usage export now names its set.** `UsageExportInput`/`UsageExportMeta` gained
+`emoteSetId`/`emoteSetName`; the filename gets the set id's last six characters as a segment (the
+same "Kurzform" idiom the audit view and the name-twin tooltip already use), so two set exports of
+the same channel no longer share a filename. One deliberate deviation from the spec's own `string`
+annotation for `emoteSetId`: it stays `string | null`, because a channel with no active/selected
+7TV set can still export its usage numbers — a pre-K4 allowance `usage-stats-page.spec.ts`'s
+"mountWithoutActiveSet" case already exercised and that this task did not remove. `null` omits the
+filename segment entirely and nulls both meta fields, rather than inventing a placeholder set.
 
 **Two corrected sentences of the concept** (`docs/Konzept-Emote-Sets-2026-09-19.md`): 7.1 "engine and
 mutation need nothing new" was only true of the 7TV mutation itself — everything around the run

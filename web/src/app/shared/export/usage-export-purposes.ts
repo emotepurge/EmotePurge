@@ -30,8 +30,14 @@ export interface UsageExportPurposeDownload {
 /** Everything a download needs beyond the purpose id and which rows to use. */
 export interface UsageExportPurposeScope {
   readonly channelName: string;
-  /** `null` when the channel has no active 7TV set — the emote-list purpose is unreachable then. */
+  /** `null` when the channel has no active/selected 7TV set — the emote-list purpose is
+   *  unreachable then; the usage purposes still work (spec 7.4, `UsageExportInput.emoteSetId`'s
+   *  own doc). */
   readonly emoteSetId: string | null;
+  /** The same set's display name, threaded straight into the usage purposes' `emoteSetName`
+   *  (spec 7.4) — unused by `emote-list`, which names its set only in `meta`, not in a filename
+   *  segment (`emote-list-export.ts`). */
+  readonly emoteSetName: string | null;
   /** ISO dates (`yyyy-MM-dd`) of the selected range, both inclusive — only the usage purposes use these. */
   readonly from: string;
   readonly to: string;
@@ -100,6 +106,8 @@ export function buildUsageExportPurposeDownload(
     case 'usage-json': {
       const input: UsageExportInput = {
         channelName: scope.channelName,
+        emoteSetId: scope.emoteSetId,
+        emoteSetName: scope.emoteSetName,
         from: scope.from,
         to: scope.to,
         rows: scope.rows,

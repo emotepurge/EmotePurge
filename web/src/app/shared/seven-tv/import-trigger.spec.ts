@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
 import { ImportSource } from '../../core/seven-tv/import-source';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -106,6 +107,7 @@ describe('ImportTrigger', () => {
   let httpPost: ReturnType<typeof vi.fn>;
   let startRestore: ReturnType<typeof vi.fn>;
   let startImport: ReturnType<typeof vi.fn>;
+  let loadEmoteSetPreview: ReturnType<typeof vi.fn>;
   let hasToken: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
   let dialogOpen: ReturnType<typeof vi.fn>;
@@ -124,6 +126,10 @@ describe('ImportTrigger', () => {
     httpPost = vi.fn(() => of(emoteSetPage()));
     startRestore = vi.fn();
     startImport = vi.fn();
+    // Never reached by any test that leaves `activeSetId` at its default (`null`) — those always
+    // take the 'trackedActive' fast path (see `toImportTarget`'s own doc). Only the non-active-set
+    // describe block below overrides this.
+    loadEmoteSetPreview = vi.fn();
     hasToken = signal(true);
     activeRun = signal<SevenTvRunKind | null>(null);
     dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
@@ -150,6 +156,10 @@ describe('ImportTrigger', () => {
           provide: SevenTvImportService,
           useValue: { startImport } as unknown as SevenTvImportService,
         },
+        {
+          provide: SevenTvEmoteSetService,
+          useValue: { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService,
+        },
         { provide: SevenTvTokenService, useValue: { hasToken } as unknown as SevenTvTokenService },
         { provide: SevenTvRunArbiter, useValue: { activeRun } as unknown as SevenTvRunArbiter },
         { provide: Dialog, useValue: { open: dialogOpen } as unknown as Dialog },
@@ -159,10 +169,20 @@ describe('ImportTrigger', () => {
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
   });
 
-  function render(channelName = CURRENT_CHANNEL, setId = CURRENT_SET): Harness {
+  function render(
+    channelName = CURRENT_CHANNEL,
+    setId = CURRENT_SET,
+    options: { activeSetId?: string | null; setName?: string | null } = {},
+  ): Harness {
     const fixture = TestBed.createComponent(ImportTrigger);
     fixture.componentRef.setInput('channelName', channelName);
     fixture.componentRef.setInput('setId', setId);
+    if (options.activeSetId !== undefined) {
+      fixture.componentRef.setInput('activeSetId', options.activeSetId);
+    }
+    if (options.setName !== undefined) {
+      fixture.componentRef.setInput('setName', options.setName);
+    }
     fixture.detectChanges();
     const host: HTMLElement = fixture.nativeElement;
 
@@ -204,7 +224,11 @@ describe('ImportTrigger', () => {
       dialog.click();
 
       expect(dialogOpen).toHaveBeenCalledTimes(1);
-      expect(dataAt(0)).toEqual({ channelName: 'achannel', setId: 'aset' });
+      expect(dataAt(0)).toEqual({
+        channelName: 'achannel',
+        setId: 'aset',
+        restoreEnabled: true,
+      });
     });
 
     it('does nothing further when the import dialog closes with no result (cancel/Escape/backdrop)', () => {
@@ -489,6 +513,169 @@ describe('ImportTrigger', () => {
           setName: CURRENT_SET,
           isActiveSet: true,
         },
+        { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
+        [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        0,
+        true,
+      );
+    });
+  });
+
+  describe('a non-active set on screen (#200, T4.5): the three import doors follow it, restore stays locked', () => {
+    it('marks the source-dialog data as restore-locked when setId differs from activeSetId', () => {
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: CURRENT_SET });
+      dialog.click();
+
+      expect(dataAt(0)).toEqual({
+        channelName: CURRENT_CHANNEL,
+        setId: 'set-halloween',
+        restoreEnabled: false,
+      });
+    });
+
+    it('reads the non-active set live instead of assuming it is the channel’s active one — the file/import door', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 0,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      hasToken.set(true);
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', {
+        activeSetId: CURRENT_SET,
+        setName: 'Halloween',
+      });
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({ kind: 'import', source: importSource() });
+
+      // Not the "today" path: a non-active target reads the live preview instead of
+      // EmoteSetStatus/listEmotes/getSetWarning (spec F5).
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        {
+          setId: 'set-halloween',
+          channelName: CURRENT_CHANNEL,
+          ownerDisplayName: null,
+          setName: 'Halloween',
+          isActiveSet: false,
+        },
+        expect.objectContaining({ kind: 'file' }),
+        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        0,
+        true,
+      );
+    });
+
+    it('targets the non-active set for a foreign-channel pick too', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 0,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: CURRENT_SET });
+      dialog.click();
+
+      closedAt<ImportSourceDialogResult | undefined>(0).next({
+        kind: 'foreign',
+        picked: {
+          channelName: 'handofblood',
+          sevenTvUserId: 'user-1',
+          emoteSetId: 'set-source',
+          rows: [
+            {
+              sevenTvEmoteId: '7tv-1',
+              name: 'HandLuL',
+              defaultName: 'LuL',
+              imageUrl: 'https://cdn.7tv.app/7tv-1/2x.webp',
+              topAllTime: null,
+              trending: null,
+            },
+          ],
+        },
+      });
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
+        { kind: 'seventv-channel', channelName: 'handofblood' },
+        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        0,
+        true,
+      );
+    });
+
+    it('targets the non-active set for a leaderboard pick too', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 0,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: CURRENT_SET });
+      dialog.click();
+
+      closedAt<ImportSourceDialogResult | undefined>(0).next({
+        kind: 'leaderboard',
+        picked: {
+          sortBy: 'TOP_ALL_TIME',
+          rows: [
+            {
+              sevenTvEmoteId: '7tv-2',
+              name: 'Dance',
+              defaultName: 'Dance',
+              imageUrl: 'https://cdn.7tv.app/7tv-2/2x.webp',
+              topAllTime: 99,
+              trending: 12,
+            },
+          ],
+        },
+      });
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+
+      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+        targetSetId: 'set-halloween',
+        targetSetName: 'Halloween',
+        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+      });
+
+      expect(startImport).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
         [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
         0,

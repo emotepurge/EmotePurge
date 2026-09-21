@@ -42,7 +42,7 @@ import {
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
@@ -1711,7 +1711,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
     ]);
     expect(downloads).toHaveLength(1);
     expect(downloads[0].filename).toMatch(
-      /^emotepurge_a_usage_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.csv$/,
+      /^emotepurge_a_usage_set-a_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.csv$/,
     );
     expect(downloads[0].mimeType).toBe(CSV_MIME);
   });
@@ -1724,7 +1724,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
 
     expect(downloads).toHaveLength(1);
     expect(downloads[0].filename).toMatch(
-      /^emotepurge_a_usage_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$/,
+      /^emotepurge_a_usage_set-a_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$/,
     );
     expect(downloads[0].mimeType).toBe(JSON_MIME);
   });
@@ -1783,7 +1783,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
     expect(downloads).toHaveLength(1);
     // The filename embeds from/to verbatim (usageExportFilename) — proves the download describes
     // the range the rows actually came from, not '2026-03-01'/'2026-03-31' set above.
-    expect(downloads[0].filename).toBe(`emotepurge_a_usage_${loadedFrom}_${loadedTo}.csv`);
+    expect(downloads[0].filename).toBe(`emotepurge_a_usage_set-a_${loadedFrom}_${loadedTo}.csv`);
   });
 
   it('the "selection" export scope ignores an active filter and reports filtered = false, unlike "visible" (Konzept 2.6)', async () => {
@@ -3274,5 +3274,162 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     await settle();
     // Halloween was never observed: the dates stay, the preset turns into what they now are.
     expect(component['rangePreset']()).toBe('custom');
+  });
+});
+
+/**
+ * T4.5, AK 64 (second part): the export dialog and the push/import-target dialog each read the
+ * *shown* set once, at the moment they open — the same capture discipline `CapturedExportScope`/
+ * `CapturedImportScope`'s own docs describe, already exercised for a range change by the openExport()
+ * block above (#143 P2) but not yet for a *set* switch, which is what T4.5 adds. A set switch while
+ * either dialog is still on screen must not retarget what it already captured — the header's own
+ * dropdown keeps working underneath it, and only the *next* open sees the new set.
+ */
+describe('UsageStatsPage — export/import scope capture reads the shown set once, at open (#200, T4.5, AK 64)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+
+  function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
+    return {
+      sevenTvEmoteId,
+      name,
+      defaultName: name,
+      imageUrl: '',
+      topAllTime: null,
+      trending: null,
+    };
+  }
+
+  function memberList(emotes: ForeignEmoteRow[]): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: emotes.length,
+      truncated: false,
+      emotes,
+    };
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  /** Same shape as the T4.3/T4.4 block's own `openView` — mounts channel 'a' (active set `set-a`)
+   *  on the Halloween set `set-b`, with a matching live member list, and settles every request the
+   *  set-b view needs before the test drives a dialog open. */
+  async function openHalloweenView(): Promise<void> {
+    TestBed.resetTestingModule();
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PumpkinA', 5)]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    httpMock
+      .match((r) => r.url === '/api/seventv/channels/a/emotes')
+      .forEach((request) => request.flush(memberList([member('7tv-a', 'PumpkinA')])));
+    await settle();
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('captures the export scope once, at open — a set switch while the dialog is still open does not retarget the download (AK 64)', async () => {
+    await openHalloweenView();
+    const closedSubject = new Subject<
+      { optionId: ExportPurposeId; scope: 'visible' } | undefined
+    >();
+    vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: closedSubject,
+    } as unknown as ReturnType<Dialog['open']>);
+    const downloads = captureDownloads();
+
+    component['openExport']();
+
+    // The header dropdown keeps working underneath the still-open dialog (#94's own reasoning).
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+
+    closedSubject.next({ optionId: 'usage-csv', scope: 'visible' });
+
+    expect(downloads).toHaveLength(1);
+    // Names Halloween's set — the one the dialog was opened for — not the one the header now shows.
+    expect(downloads[0].filename).toContain('set-b');
+  });
+
+  it('captures the push/import-target scope once, at open — a set switch while it is still open does not retarget the source (AK 64)', async () => {
+    await openHalloweenView();
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: new Subject<unknown>(),
+    } as unknown as ReturnType<Dialog['open']>);
+
+    component['openImportTarget']();
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const data = openSpy.mock.calls[0][1]?.data as { sourceEmoteSetId: string };
+    expect(data.sourceEmoteSetId).toBe('set-b');
+
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+
+    // Still the set the dialog was opened for — the capture never re-reads a live signal.
+    expect(data.sourceEmoteSetId).toBe('set-b');
   });
 });

@@ -35,6 +35,8 @@ const DE_TRANSLATIONS = {
         wrongChannel: 'Das Protokoll gehört zu einem anderen Channel.',
         wrongSet:
           'Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.',
+        restoreNonActiveSet:
+          'Wiederherstellen geht vorerst nur im aktiven Set — dieses Set ist gerade nicht aktiv.',
         noRestorableRows:
           'Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.',
       },
@@ -152,11 +154,12 @@ describe('FileImportStep', () => {
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
   });
 
-  function render(): Harness {
+  function render(restoreEnabled = true): Harness {
     const fixture = TestBed.createComponent(FileImportStep);
     // Frozen values handed in by the trigger, never read in a constructor (Regel 13).
     fixture.componentRef.setInput('channelName', channelName);
     fixture.componentRef.setInput('setId', setId);
+    fixture.componentRef.setInput('restoreEnabled', restoreEnabled);
     fixture.componentInstance.picked.subscribe((result) => closed.push(result));
     fixture.detectChanges();
     const host: HTMLElement = fixture.nativeElement;
@@ -260,6 +263,78 @@ describe('FileImportStep', () => {
 
       expect(closed).toHaveLength(1);
       expect(closed[0]?.kind).toBe('import');
+    });
+  });
+
+  describe('the set match is generic over whichever set is shown, not hardcoded to "active" (spec #200, AK 66)', () => {
+    it('accepts a protocol naming the Halloween set while the Halloween set is shown', async () => {
+      channelName = CURRENT_CHANNEL;
+      setId = 'set-halloween';
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText({ emoteSetId: 'set-halloween' })));
+
+      expect(closed).toEqual([
+        {
+          kind: 'restore',
+          rows: [
+            {
+              emoteId: 'e1',
+              sevenTvEmoteId: '7tv-1',
+              name: 'PogU',
+              status: 'done',
+              errorMessage: null,
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('rejects that same Halloween-set protocol while the main set is shown instead', async () => {
+      channelName = CURRENT_CHANNEL;
+      setId = 'set-main';
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText({ emoteSetId: 'set-halloween' })));
+
+      expect(closed).toEqual([]);
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.wrongSet);
+    });
+  });
+
+  describe('restoreEnabled locks the restore branch without touching the import one (spec #200, T4.5)', () => {
+    it('shows a locked-reason banner instead of a restore result when disabled, even for a matching protocol', async () => {
+      const dialog = render(false);
+
+      await dialog.selectFile(file(purgeRunText()));
+
+      expect(closed).toEqual([]);
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.restoreNonActiveSet);
+    });
+
+    it('never reaches the set-match check while locked — a WRONG-set protocol reports the same lock reason, not wrongSet', async () => {
+      const dialog = render(false);
+
+      await dialog.selectFile(file(purgeRunText({ emoteSetId: 'set-old' })));
+
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.restoreNonActiveSet);
+    });
+
+    it('leaves the import path untouched while restore is locked', async () => {
+      const dialog = render(false);
+
+      await dialog.selectFile(file(emoteListText()));
+
+      expect(closed).toHaveLength(1);
+      expect(closed[0]?.kind).toBe('import');
+    });
+
+    it('defaults to enabled when the caller does not pass it', async () => {
+      const fixture = TestBed.createComponent(FileImportStep);
+      fixture.componentRef.setInput('channelName', channelName);
+      fixture.componentRef.setInput('setId', setId);
+      fixture.detectChanges();
+      expect(fixture.componentInstance.restoreEnabled()).toBe(true);
     });
   });
 

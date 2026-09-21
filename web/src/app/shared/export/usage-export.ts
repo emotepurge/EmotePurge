@@ -24,6 +24,18 @@ export type UsageExportSourceRow = Pick<
 
 export interface UsageExportInput {
   channelName: string;
+  /**
+   * The set the rows came from (spec 7.4), captured once when the export dialog opens
+   * (`CapturedExportScope.emoteSetId`, `usage-stats-page.ts`) and never re-read afterwards. `null`
+   * only for a channel with no active/selected 7TV set at all — a usage export needs no 7TV set to
+   * exist and this allowance predates K4 (`usage-stats-page.spec.ts`'s "mountWithoutActiveSet"
+   * case still exercises it); this is the one deliberate deviation from the spec's own `string`
+   * annotation for this field.
+   */
+  emoteSetId: string | null;
+  /** The same set's display name, or `null` when it is not known (same cases as `emoteSetId`, plus
+   *  a set the dropdown's list has not (or no longer) named). */
+  emoteSetName: string | null;
   /** ISO dates (`yyyy-MM-dd`) of the selected range, both inclusive. */
   from: string;
   to: string;
@@ -52,6 +64,8 @@ export interface UsageExportRow {
 }
 
 export interface UsageExportMeta {
+  emoteSetId: string | null;
+  emoteSetName: string | null;
   from: string;
   to: string;
   rowCount: number;
@@ -60,7 +74,12 @@ export interface UsageExportMeta {
 }
 
 export function usageExportFilename(input: UsageExportInput, ext: 'csv' | 'json'): string {
-  return `emotepurge_${sanitizeFilenamePart(input.channelName)}_usage_${input.from}_${input.to}.${ext}`;
+  // The set's last six characters (the same "Kurzform" idiom the audit view and the name-twin
+  // tooltip use, `usage-stats-page.ts`'s nameTwinTooltip) disambiguate two set exports of the same
+  // channel (spec 7.4) — omitted entirely when there is no set (see `emoteSetId`'s own doc above),
+  // which keeps that case's filename exactly as it was before this field existed.
+  const setSuffix = input.emoteSetId === null ? '' : `_${input.emoteSetId.slice(-6)}`;
+  return `emotepurge_${sanitizeFilenamePart(input.channelName)}_usage${setSuffix}_${input.from}_${input.to}.${ext}`;
 }
 
 export function usageCsv(input: UsageExportInput): string {
@@ -83,6 +102,8 @@ export function usageJson(input: UsageExportInput): string {
     // Every usage figure is visible to whoever can open this page — nothing is withheld here.
     withheld: [],
     meta: {
+      emoteSetId: input.emoteSetId,
+      emoteSetName: input.emoteSetName,
       from: input.from,
       to: input.to,
       rowCount: input.rows.length,

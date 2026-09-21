@@ -189,6 +189,10 @@ interface CapturedImportScope {
 interface CapturedExportScope {
   readonly channelName: string;
   readonly emoteSetId: string | null;
+  /** The same set's display name (spec 7.4), read from the dropdown's own list
+   *  (`shownSetSummary`) at the same moment as `emoteSetId` — `null` alongside it whenever there
+   *  is no set, and also whenever the list simply has not (or no longer) named that id. */
+  readonly emoteSetName: string | null;
   readonly from: string;
   readonly to: string;
   readonly filtered: boolean;
@@ -481,6 +485,14 @@ export class UsageStatsPage {
     const match = list.sets.find((set) => set.id === param && set.kind === 'NORMAL');
     return match ? match.id : active;
   });
+
+  /** The selected set's own name, for `app-import-trigger`'s confirm-dialog title (spec 8.6, T4.5)
+   *  — `null` when the list has not (or no longer) named it, which `toImportTarget`
+   *  (`import-trigger.ts`) then falls back to the id for, same as every other unnamed set. */
+  protected readonly selectedEmoteSetName = computed(
+    () =>
+      this.emoteSetList()?.sets.find((set) => set.id === this.selectedEmoteSetId())?.name ?? null,
+  );
 
   /**
    * True only while a `emoteSetId` the URL actually carries cannot yet be trusted or rejected,
@@ -2047,6 +2059,7 @@ export class UsageStatsPage {
       // The set the rows on screen belong to (spec 7.3). `importScopeCurrent` below — which gates
       // the one purpose that reads this — also requires it to be the selected set.
       emoteSetId: this.shownSetId(),
+      emoteSetName: this.shownSetSummary()?.name ?? null,
       from: range?.from ?? this.from(),
       to: range?.to ?? this.to(),
       filtered: this.usageFilter.isAnyActive(),
@@ -2076,6 +2089,7 @@ export class UsageStatsPage {
       const download = buildUsageExportPurposeDownload(choice.optionId, {
         channelName: captured.channelName,
         emoteSetId: captured.emoteSetId,
+        emoteSetName: captured.emoteSetName,
         from: captured.from,
         to: captured.to,
         // The filter describes the VISIBLE list, not the content of a selection (Konzept "Auswahl

@@ -45,17 +45,25 @@ export interface ImportFlowDeps {
  * What `startImportFlow` targets (spec F5, 8.6). Two shapes, not one, because the flow has two
  * different callers with two different amounts of knowledge:
  *
- * - `'activeSet'` — the three channel-only doors (file, foreign channel, leaderboard), which have
- *   never asked *which* set, only *which channel* (K4 is what will eventually let the page itself
- *   pick a non-active set for these too — not this task). Resolves exactly like before this spec:
- *   `EmoteSetStatus`/`listEmotes`/`getSetWarning`, unchanged requests (AK 36).
- * - `'chosen'` — the K2 target picker's own answer, a full `ImportTargetChoice` (minus the `scope`
- *   the picker also returns, which the flow never needs — the caller has already turned that into
- *   `source`'s rows before calling here). Carries a tracked channel's *specific* set (active or
- *   not) or an untracked account's set; `loadImportTarget`'s `'trackedSet'`/`'untrackedSet'` cases
- *   read it live rather than assume it is the channel's active one — that assumption is exactly
- *   the bug this type exists to close (F5: "der Ziel-Loader liest das aktive Set, und der Dialog
- *   schließt mit dessen ID", the reason T2.5a and T2.5b were one commit to begin with).
+ * - `'activeSet'` — a caller with no set of its own to name, always the channel's active one.
+ *   Resolves exactly like before this spec: `EmoteSetStatus`/`listEmotes`/`getSetWarning`,
+ *   unchanged requests (AK 36). Nothing on this page still uses it (T4.5 gave the three
+ *   channel-only doors — file, foreign channel, leaderboard — a real set to name, see below), but
+ *   it stays: a caller that genuinely has no more specific answer than "this channel's active set"
+ *   is not a wrong caller.
+ * - `'chosen'` — a full `ImportTargetChoice` (minus the `scope` the picker also returns, which the
+ *   flow never needs — the caller has already turned that into `source`'s rows before calling
+ *   here). Carries a tracked channel's *specific* set (active or not) or an untracked account's
+ *   set; `loadImportTarget`'s `'trackedSet'`/`'untrackedSet'` cases read it live rather than assume
+ *   it is the channel's active one — that assumption is exactly the bug this type exists to close
+ *   (F5: "der Ziel-Loader liest das aktive Set, und der Dialog schließt mit dessen ID", the reason
+ *   T2.5a and T2.5b were one commit to begin with). Two callers build one now: the K2 target
+ *   picker's own answer, and — since T4.5 — `import-trigger.ts`'s own `toImportTarget`, which
+ *   fabricates the same shape for the page's *selected* set (active or not) without ever having
+ *   asked a picker. `emoteSetId === activeEmoteSetId` still takes the identical `'trackedActive'`
+ *   fast path below regardless of which of the two built the choice — the picker's "getracktes
+ *   Ziel und aktiv" case and the page's "selected set happens to be the active one" case are the
+ *   same request contract (AK 36), not two.
  *
  * A plain `Omit<ImportTargetChoice, 'scope'>` (no `kind` tag) was the first draft, distinguished
  * from `'activeSet'` structurally (an `emoteSetId` field's presence). The explicit tag reads better

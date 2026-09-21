@@ -13,8 +13,42 @@ import { Button } from '../ui/button';
 import { startForeignChannelImportFlow, startLeaderboardImportFlow } from './foreign-import-flow';
 import { importTriggerDisabled } from './import-trigger-gate';
 import { openImportSourceDialog } from './import-source-dialog';
-import { startImportFlow } from './import-flow';
+import { ImportFlowTarget, startImportFlow } from './import-flow';
 import { startRestoreFlow } from './restore-flow';
+
+/**
+ * The file/foreign-channel/leaderboard doors' target (spec 8.6, T4.5) — a `'chosen'`
+ * `ImportFlowTarget` built from what this trigger's own inputs already carry, without ever opening
+ * a picker. `activeSetId === null` (no caller has told this trigger the channel's active set) folds
+ * `resolvedActiveSetId` back onto `setId` itself, which makes `emoteSetId === activeEmoteSetId`
+ * trivially true and keeps `toTargetSelection` (`import-flow.ts`) on the exact same `'trackedActive'`
+ * fast path it always took — the one legacy caller with no such distinction to offer (a test that
+ * never sets `activeSetId`) sees the identical behaviour it always has.
+ *
+ * `ownerDisplayName`/`twitchLogin` are placeholders that `toTargetSelection` never reads for a
+ * tracked choice with a `channelName` (every choice this builds has one) — see that function's own
+ * doc for why. `setName` falls back to the id, the same convention `targetSetLabel`
+ * (`import-confirm-dialog.ts`) already uses for every other unnamed set.
+ */
+function toImportTarget(
+  channelName: string,
+  setId: string,
+  activeSetId: string | null,
+  setName: string | null,
+): ImportFlowTarget {
+  return {
+    kind: 'chosen',
+    choice: {
+      emoteSetId: setId,
+      channelName,
+      ownerDisplayName: channelName,
+      setName: setName ?? setId,
+      isTracked: true,
+      twitchLogin: channelName,
+      activeEmoteSetId: activeSetId ?? setId,
+    },
+  };
+}
 
 /**
  * The header button that opens the import path — **all of it** (#91, #147). It freezes
@@ -42,6 +76,17 @@ import { startRestoreFlow } from './restore-flow';
  * for the neighbouring "Übertragen" button (`importScopeIsCurrent`). `atlasOrder().length === 0`
  * and `!isCoarse()` deliberately do NOT appear here: both are already enforced by the `@if` block
  * this trigger is placed inside on the page, alongside "Übertragen" (plan §1.2 point 3).
+ *
+ * **The file, foreign-channel and leaderboard doors target `setId` itself (spec 8.6, T4.5)** — the
+ * page's *selected* set, active or not (`toImportTarget` above). **Restore does not**: a finished
+ * restore still books its un-archive through the legacy, set-agnostic
+ * `EmoteAdminService.syncRestored(channelName, emoteIds)` call (`restore-flow.ts`), which K5/T5.2
+ * makes set-aware. Until then, `FileImportStep`'s `restoreEnabled` input — `true` only while
+ * `setId` names the channel's active set (`activeSetId`) — keeps a purge-run protocol from ever
+ * reaching `startRestoreFlow` while a non-active set is on screen, with a visible reason shown at
+ * the exact moment the file is read (never a silent no-op). The protocol *match* check itself
+ * (`setId` vs. the file's own `meta.emoteSetId`) was already generic over whichever set it is given
+ * — it needed no change to accept a non-active set's own protocol while that set is shown (AK 66).
  */
 @Component({
   selector: 'app-import-trigger',
@@ -60,8 +105,20 @@ import { startRestoreFlow } from './restore-flow';
 })
 export class ImportTrigger {
   readonly channelName = input.required<string>();
-  /** The channel's *current* active set — a purge-run protocol is validated against it. */
+  /** The set this trigger's doors target and a purge-run protocol is validated against — the page's
+   *  *selected* set (spec #200, T4.5), active or not. Named `setId`, not `selectedSetId`: every
+   *  caller of this component names its one set the same way (`file-import-step.ts`'s own input is
+   *  the same word), and the only place "selected vs. active" matters is the comparison against
+   *  {@link activeSetId} below. */
   readonly setId = input.required<string>();
+  /** The channel's actual active set, or `null` from a caller with no such distinction to offer
+   *  (every prior caller, and any test that predates T4.5) — folded back onto `setId` itself in
+   *  that case (`toImportTarget`), which keeps that caller's behaviour byte-identical to before
+   *  this input existed. Also what gates `FileImportStep.restoreEnabled` (see the class doc). */
+  readonly activeSetId = input<string | null>(null);
+  /** The selected set's display name, for the import confirm dialog's title when it is not the
+   *  active one (spec 8.6) — `null` falls back to the id, same as every other unnamed set there. */
+  readonly setName = input<string | null>(null);
   /** See `importScopeIsCurrent` on the page; defaults to true so a caller that has no such window
    *  to guard against (there is currently only one, the usage-stats page) need not pass it. */
   readonly importScopeCurrent = input(true);
@@ -69,9 +126,9 @@ export class ImportTrigger {
   private readonly arbiter = inject(SevenTvRunArbiter);
   private readonly dialog = inject(Dialog);
   private readonly emoteAdminService = inject(EmoteAdminService);
-  /** Only threaded through to `ImportFlowDeps` — `loadImportTarget`'s live-list collaborator for a
-   *  non-active/untracked target, not exercised from any of this component's three chains, which
-   *  all target the current channel's active set (spec F5). */
+  /** `loadImportTarget`'s live-list collaborator for a non-active/untracked target (spec F5) —
+   *  reached from here whenever `setId` names a set other than `activeSetId` (T4.5); the restore
+   *  chain never touches it (see the class doc). */
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read
    *  reached from here goes through `emoteAdminService`. */
@@ -89,53 +146,59 @@ export class ImportTrigger {
 
   protected openDialog(): void {
     // Frozen here, at the click — never read again from the live inputs below, so a channel switch
-    // while a dialog further down either chain is still open cannot retarget what gets read,
-    // validated or restored/imported (plan §1.5).
+    // (or a set switch, T4.5) while a dialog further down either chain is still open cannot
+    // retarget what gets read, validated or restored/imported (plan §1.5).
     const channelName = this.channelName();
     const setId = this.setId();
+    const activeSetId = this.activeSetId();
+    const setName = this.setName();
+    // Restore stays locked to the active set until K5 (see the class doc) — computed once, here,
+    // from the same frozen ids the rest of this click uses, never re-read once the dialog is open.
+    const restoreEnabled = activeSetId === null || activeSetId === setId;
 
-    openImportSourceDialog(this.dialog, { channelName, setId }).closed.subscribe((result) => {
-      if (!result) {
-        return;
-      }
-      if (result.kind === 'restore') {
-        startRestoreFlow(
-          {
-            dialog: this.dialog,
-            emoteAdminService: this.emoteAdminService,
-            httpClient: this.httpClient,
-            tokenService: this.tokenService,
-            restoreService: this.restoreService,
-            arbiter: this.arbiter,
-          },
-          channelName,
-          setId,
-          result.rows,
-        );
-        return;
-      }
-      const importDeps = {
-        dialog: this.dialog,
-        emoteAdminService: this.emoteAdminService,
-        emoteSetService: this.emoteSetService,
-        httpClient: this.httpClient,
-        tokenService: this.tokenService,
-        importService: this.importService,
-        arbiter: this.arbiter,
-      };
-      if (result.kind === 'foreign') {
-        // The target is this page's channel, exactly as it is for the file path — no target picker
-        // in between any more (#147).
-        startForeignChannelImportFlow(importDeps, result.picked, channelName);
-        return;
-      }
-      if (result.kind === 'leaderboard') {
-        // Same target rule, and even less to ask for: a leaderboard row belongs to no channel at
-        // all. Foreign is the source, never the target.
-        startLeaderboardImportFlow(importDeps, result.picked, channelName);
-        return;
-      }
-      startImportFlow(importDeps, result.source, { kind: 'activeSet', channelName });
-    });
+    openImportSourceDialog(this.dialog, { channelName, setId, restoreEnabled }).closed.subscribe(
+      (result) => {
+        if (!result) {
+          return;
+        }
+        if (result.kind === 'restore') {
+          startRestoreFlow(
+            {
+              dialog: this.dialog,
+              emoteAdminService: this.emoteAdminService,
+              httpClient: this.httpClient,
+              tokenService: this.tokenService,
+              restoreService: this.restoreService,
+              arbiter: this.arbiter,
+            },
+            channelName,
+            setId,
+            result.rows,
+          );
+          return;
+        }
+        const importDeps = {
+          dialog: this.dialog,
+          emoteAdminService: this.emoteAdminService,
+          emoteSetService: this.emoteSetService,
+          httpClient: this.httpClient,
+          tokenService: this.tokenService,
+          importService: this.importService,
+          arbiter: this.arbiter,
+        };
+        const target = toImportTarget(channelName, setId, activeSetId, setName);
+        if (result.kind === 'foreign') {
+          startForeignChannelImportFlow(importDeps, result.picked, target);
+          return;
+        }
+        if (result.kind === 'leaderboard') {
+          // Same target rule, and even less to ask for: a leaderboard row belongs to no channel at
+          // all. Foreign is the source, never the target.
+          startLeaderboardImportFlow(importDeps, result.picked, target);
+          return;
+        }
+        startImportFlow(importDeps, result.source, target);
+      },
+    );
   }
 }
