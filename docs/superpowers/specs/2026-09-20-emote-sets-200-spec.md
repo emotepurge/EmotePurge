@@ -108,7 +108,7 @@ rollt eine Entscheidung A–M des Betreibers neu auf.
 | E19 | Set-Liste im Dropdown und stille Reloads | Die Set-Liste (`/emote-sets`) wird **einmal je Kanal-Aufruf** und bei lautem Reload geladen, nie bei `usage.flushed` | Sonst kostete jeder Betrachter einer Nutzungsseite 2 Permits/min für eine Liste, die sich pro Tag einmal ändert. Der 60-s-Cache dämpft, die Regel verhindert |
 | E20 | Duplikat-Zelle (#74) in der **aktiven** Ansicht | **Nur in nicht-aktiven Ansichten.** Die aktive Ansicht holt keine Live-Liste (E16) und kennt je ID einen Alias (`SevenTvSyncService.cs:515-517`); dort bleibt es beim heutigen Bild | Slot-Zahl und beide Aliase kommen allein aus der Live-Liste. Das Duplikat-Banner (Namen, nicht IDs — `EmoteSetStatusService.cs:66-71`) ist ein anderer Fall und bleibt |
 | E21 | Wo `isActive` der Set-Liste herkommt | Für getrackte Kanäle **aus `Channel.ActiveEmoteSetId`** (unser beobachteter Zustand), für ungetrackte Accounts aus **`style.activeEmoteSetId` derselben v4-Antwort** (E7) — kein zweiter Request, kein v3-Aufruf | Die Zahlen der Nutzungsseite hängen am beobachteten Set (Konzept 5.2); ein Dropdown, das 7TVs Sicht als „aktiv" markiert, während der Cache noch die alte Generation zählt, widerspräche der Seite unter ihm. **Seit dem 2026-09-20 ist die Aufteilung eine Wahl, keine Notlage:** v4 trägt die aktive Set-ID an `style.activeEmoteSetId` und liefert für `platformId: 49140130` denselben Wert wie v3 `.emote_set_id` (`01GV88A38G0006FW5TVZVMG507`, am selben Tag gegengeprüft). Für getrackte Kanäle ignorieren wir sie trotzdem, weil dort der beobachtete Zustand zählt; genommen wird sie genau dort, wo es keinen gibt |
-| E22 | `sync-imported`-Papier für ungetrackte Ziele: Besitzer-Prüfung | `GqlEditorOfQuery` liest zusätzlich `user { id }`; `SevenTvEditorGrant`/`SevenTvEditorGrantEntry` bekommen `SevenTvUserId` (nullbar, additiv). Der set-zentrierte Endpunkt vergleicht `GetEmoteSetOwnerIdAsync(setId)` (`SevenTvApiClient.cs:32-33`) mit der 7TV-ID des Akteurs (`ResolveSevenTvIdentityAsync`) und den 7TV-IDs seiner Grants; ein Grant-Eintrag **ohne** 7TV-ID (Cache-Payload von vor dem Deploy, F10) wird live nachgelöst | Die Besitzer-Prüfung ist eine Prüfung auf 7TV-IDs, die Grants tragen heute nur Twitch-IDs (`:355-360`). Additiv im selben Request, kein Zusatzaufruf im Normalfall |
+| E22 | `sync-imported`-Papier für ungetrackte Ziele: Besitzer-Prüfung | *Seit dem 2026-09-21 durch Abschnitt 32 aufgehoben: die Prüfung läuft über die gecachten Set-Listen, `SevenTvUserId` am Grant und das Nachlösen entfallen.* `GqlEditorOfQuery` liest zusätzlich `user { id }`; `SevenTvEditorGrant`/`SevenTvEditorGrantEntry` bekommen `SevenTvUserId` (nullbar, additiv). Der set-zentrierte Endpunkt vergleicht `GetEmoteSetOwnerIdAsync(setId)` (`SevenTvApiClient.cs:32-33`) mit der 7TV-ID des Akteurs (`ResolveSevenTvIdentityAsync`) und den 7TV-IDs seiner Grants; ein Grant-Eintrag **ohne** 7TV-ID (Cache-Payload von vor dem Deploy, F10) wird live nachgelöst | Die Besitzer-Prüfung ist eine Prüfung auf 7TV-IDs, die Grants tragen heute nur Twitch-IDs (`:355-360`). Additiv im selben Request, kein Zusatzaufruf im Normalfall |
 | E23 | Wo die Set-Ansicht das „nicht mehr im Set"-Badge herleitet | Zeile in `/totals?emoteSetId=X`, aber **nicht** in der Live-Liste ⇒ Badge, nicht wählbar zum Löschen, zählt in Summe und Pareto-Nenner | Konzept 6.2, Zeile 3 der Tabelle; das Idiom ist `archivedBadge` (`de.json:781`) |
 | E24 | Namensvetter-Merkmal: Datenquelle | `/totals?emoteSetId=X` liefert je Zeile `nameTwinEmoteSetIds: string[]` — Set-IDs, unter denen eine **andere** `SevenTvEmoteId` **desselben Kanals mit demselben `Emote.Name`** mindestens eine `UsageStat` trägt. Setnamen dazu mappt die Seite aus der Dropdown-Liste | Eine Datenbankfrage (Regel 10: ID-Liste zuerst, dann `UsageStats`), kein 7TV-Request, ordinal wie das Chat-Matching (`EmoteNameMatching.cs:89`, nicht verifiziert — Zeile aus dem Konzept) |
 | E25 | Kind-Issue-Schnitt | **Sechs Code-Issues K1–K6 entlang der Bauschritte 3–8, plus K0 (Sonden, Wechseldatum, Purges — Betreiber, kein Code) und K7 (Wartungsfenster — Runbook, kein Code)** | Kein belegbar besserer Schnitt gefunden: Schritt 6 ist der größte, aber das Konzept begründet, warum Schlüsselwechsel und Vereinigungsliste nicht trennbar sind (NG0955 ab der ersten Guid-losen Zeile). Ein Backend/Frontend-Split innerhalb von Schritt 6 hätte zusätzlich eine Issue-Grenze quer durch die Identität gelegt. **Nachtrag 2026-09-20:** das frühere Zusatzargument „der `/series`-Wire-Bruch läge dann in einem Zwischenzustand, in dem das ausgelieferte Frontend gegen ein umgebautes Backend rennt" ist gegenstandslos — `/series` liefert seit 6.5 (Schritt 1) `sevenTvEmoteId` **additiv** neben `emoteId`, es gibt keinen Bruch mehr, der in einem Zwischenzustand liegen könnte. Der Schnitt steht damit allein auf NG0955, und das genügt. Details in Abschnitt 12 |
@@ -903,7 +903,7 @@ sie nicht zweimal existiert).
 | 1 Middleware | nicht eingeloggt → 401; Bookkeeping-Budget → 429 |
 | 2 `EmoteSetIdValidationFilter` | ungültige Set-ID → 400 `invalid_emote_set_id` |
 | 3 Body-Vokabeltabelle | wie `:129-195` (400 `emote_ids_empty` / `invalid_source_kind` / `invalid_channel_name` / `invalid_leaderboard_sort`) |
-| 4 Besitzer-Prüfung (E22) | `GetEmoteSetOwnerIdAsync(emoteSetId)` null → 404 `emote_set_not_found`; Besitzer ∉ {7TV-ID des Akteurs} ∪ {7TV-IDs der `editor_of`-Grants} → **403 bare** (`Results.Forbid()`, wie die vier Autorisierungsfilter); 7TV nicht erreichbar → 503 `foreign_channel_seventv_unavailable`, **kein** Eintrag |
+| 4 Besitzer-Prüfung (E22) | *Seit dem 2026-09-21 durch Abschnitt 32 aufgehoben — die Prüfung fragt die gecachten Set-Listen statt 7TV direkt, und bei Teilausfall ohne zulässigen Fund ist die Antwort 503 statt 403.* `GetEmoteSetOwnerIdAsync(emoteSetId)` null → 404 `emote_set_not_found`; Besitzer ∉ {7TV-ID des Akteurs} ∪ {7TV-IDs der `editor_of`-Grants} → **403 bare** (`Results.Forbid()`, wie die vier Autorisierungsfilter); 7TV nicht erreichbar → 503 `foreign_channel_seventv_unavailable`, **kein** Eintrag |
 | 5 Service | `IEmoteService.MarkImportedToSetAsync(emoteSetId, ownerSevenTvUserId, sevenTvEmoteIds, sourceChannelName, sourceKind, leaderboardSort, actor)` → `AuditLogEntry` mit `ChannelName = null`, `TargetType = "emoteSet"`, `TargetId = emoteSetId`, Details `{ emoteCount, sourceKind, sourceChannelName, leaderboardSort, targetEmoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin }` → 204 |
 
 `targetOwnerTwitchLogin` ist der Login des passenden Grants bzw. des Akteurs; ein 7TV-Name wird
@@ -1722,8 +1722,10 @@ Nummeriert, pass/fail. Gruppiert nach Kind-Issue.
     gespiegelt); 404 `emote_set_not_found` für ein unbekanntes Set; **403 bare** für ein Set, dessen
     Besitzer weder der Akteur noch ein `editor_of`-Account ist; 503 bei 7TV-Fehler ohne Eintrag;
     204 sonst mit `ChannelName = null`.
-31. Ein Grant-Eintrag ohne `SevenTvUserId` (Legacy-Payload) wird live nachgelöst und zählt danach als
-    Editor; er wird nie als „kein Editor" gelesen.
+31. **Entfallen** (2026-09-21, Nachtrag 32). Das Kriterium verlangte, dass ein Grant-Eintrag ohne
+    `SevenTvUserId` (Legacy-Payload) live nachgelöst wird und danach als Editor zählt. Die
+    Besitzer-Prüfung liest keine 7TV-ID am Grant mehr, das Feld ist entfernt — es gibt nichts
+    nachzulösen. Die Nummer bleibt stehen, damit keine andere wandert.
 32. `ProjectDetail` liefert für einen Import-Eintrag mit `targetEmoteSetId` ein `TargetEmoteSet`;
     ohne bleibt es `null`; die 19 `AuditLogQueryServiceTests` bleiben grün.
 33. `set-warning?emoteSetId=X` für ein nicht-aktives X: Tier 1 fragt den Besitzer von X, Tier 2
@@ -2793,3 +2795,240 @@ Die Summen der fünf Tabellen aus Abschnitt 15, jede nachgezählt:
 
 „Bestand rot" bleibt bei **≥ 88** — keiner der entfallenen Fälle war ein Bestandstest.
 
+---
+
+## 32. Nachtrag: Codex-Review K2 (PR #215) vom 2026-09-21
+
+Zweitmeinung (`/codex:review --model gpt-5.6-sol`) über PR #215 (K2, Ziel-Set-Picker). Zwei Befunde,
+beide eingearbeitet; die Entscheidung zu P1 hat der Betreiber getroffen. Wie in den Nachträgen 24–31
+bleibt der Fließtext oben stehen — dieser Abschnitt hebt die genannten Stellen auf, und an 6.7
+Stufe 4 und E22 steht ein Verweis hierher.
+
+### P1 — Die Besitzer-Prüfung am set-zentrierten `sync-imported` lief am Budget vorbei
+
+**Befund.** Jeder gültige Aufruf von `POST /api/seventv/emote-sets/{id}/sync-imported` löste
+ungecachte 7TV-Requests aus (Set-Besitzer, Identität des Akteurs, dazu das Nachlösen von
+Legacy-Grants) — unter der Policy `Bookkeeping` (120/min je Nutzer, in `Program.cs` als reine
+Datenbankarbeit dokumentiert) und am Provider-Budget und am Breaker vorbei; ein Aufrufer konnte so
+Hunderte 7TV-Requests je Minute erzeugen und den geteilten Eimer leeren.
+
+**Was die Prüfung schützt.** Der Bericht läuft **nach** dem Import; die 7TV-Mutation ist mit dem
+eigenen Token des Nutzers schon passiert. Die Besitzer-Prüfung ist also **keine Zugriffskontrolle**,
+sondern schützt die **Integrität des Audit-Logs**: niemand soll Einträge über Sets schreiben, die er
+nicht bearbeitet. Dafür sind ungeschützte Upstream-Aufrufe unverhältnismäßig.
+
+**Entscheidung (Betreiber).**
+
+- **Stufe 4 prüft über die Set-Listen**, die `ISevenTvEmoteSetListService.ListByTwitchIdAsync`
+  liefert — derselbe Dienst, der den Picker füllt, hinter der vollen Wächterkette aus 6.1. Geprüft
+  werden der Akteur (`principal.TwitchUserId`, **kein** Identitäts-Request) und jedes Konto aus
+  `GetEditorGrantsAsync` (gecacht in `ModRoleCache`).
+- **Die Regel:** X ist zulässig, wenn X in einer dieser Listen steht **und** seine Besitzer-ID zur
+  Menge der 7TV-IDs der geprüften Konten gehört. Damit bleibt die Semantik von E22 („Besitzer ∈
+  {Akteur} ∪ {`editor_of`}") exakt erhalten, auch wenn 7TV unter `emoteSets` ein fremdes Set führt.
+  Verglichen wird nur über IDs.
+- **Kein zusätzlicher Request, keine neue Abfrage.** Die E7-Abfrage holt `userByConnection { id }`
+  und `owner { id }` je Set schon immer; beide werden jetzt additiv durchgereicht
+  (`EmoteSetList.SevenTvUserId`, `EmoteSetSummary.OwnerSevenTvUserId`). Der Abfragetext bleibt
+  zeichengleich — F17 ist nicht berührt.
+- **Fehlerfall — X steht in keiner Liste oder ohne Besitzer-ID:** **einmal** die Besitzerabfrage,
+  aber über das Provider-Budget (ein Permit), einen Nebenläufigkeits-Slot und den Breaker unter der
+  eigenen Operationskennung `emote-set-owner`. Kein Besitzer ⇒ 404 `emote_set_not_found`; Besitzer ∉
+  Kontenmenge ⇒ **403 bare**; Budget verweigert, Breaker offen oder 7TV nicht erreichbar ⇒ 503
+  `foreign_channel_seventv_unavailable`, **kein** Eintrag. Neu gegenüber 6.7: ein 7TV-Ausfall in
+  dieser Abfrage ist 503 — vorher wurde er als „unbekanntes Set" zu 404. Diesen Weg nimmt nur eine
+  Fehlbedienung oder ein manipulierter Request, nie der Normalfall; die einzige legitime Ausnahme ist
+  ein Set, das nach dem Laden der Listen angelegt wurde — sein Besitzer ist ein geprüftes Konto, und
+  die eine Abfrage sagt das.
+- **X steht in einer Liste, aber unter fremdem Besitzer** ⇒ 403 ohne Abfrage: die Liste hat den
+  Besitzer schon genannt.
+- **Teilausfall:** Ist eine Liste (oder die Grant-Abfrage) nicht lesbar, X aber anderswo zulässig
+  gefunden ⇒ 204. Wurde X nirgends zulässig gefunden und war mindestens eine Quelle nicht lesbar ⇒
+  **503, nicht 403** — die unlesbare Liste kann genau die des Besitzers sein.
+- **Akteur ohne 7TV-Konto** (eigene Liste `NoSevenTvAccount`) ⇒ die Grants werden gar nicht erst
+  gefragt: `editor_of` hängt am selben Konto. Das erspart auch den ungecachten Identitäts-Request,
+  den die Grant-Abfrage für einen solchen Akteur bei jedem Aufruf wiederholen würde.
+- **Cache-Kompatibilität:** Ein Listen-Eintrag von vor der Änderung (60 s TTL) hat die neuen Felder
+  nicht. Er wird als **Miss** gelesen, nie als „kein Besitzer".
+- **Die Policy bleibt `Bookkeeping`** (6.10: keine neue Policy). Sie ist damit wieder zutreffend: der
+  Normalfall kostet keinen ungeschützten Upstream-Request mehr.
+
+**Warum nicht die zwei naheliegenden Alternativen.**
+
+1. **Nur die Policy auf `ForeignEmoteLookup` stellen.** Begrenzt je Nutzer (10/min), umgeht aber
+   weiter das Provider-Budget — die Summe über viele Konten bleibt unbegrenzt, und der Eimer der
+   Vorschau bleibt ungeschützt. Dazu verlöre ein Nutzer, der sein Minutenkontingent mit Vorschauen
+   aufgebraucht hat, die Papierspur eines Imports, der längst gelaufen ist.
+2. **Die bestehenden Aufrufe hinter das Budget legen.** Tauscht Missbrauch gegen verlorene
+   Papierspur: ein 503 **nach** der Mutation schreibt keinen Eintrag, und das Frontend wiederholt
+   nicht. Und der Normalfall zöge weiterhin zwei bis drei Permits je Bericht aus dem Eimer, den der
+   Picker gerade gebraucht hat.
+
+**Was dadurch wegfällt.** Die Besitzer-Prüfung braucht keine 7TV-IDs der Grants und kein
+Live-Nachlösen (`ResolveSevenTvIdentityAsync` für Akteur und Legacy-Grants) mehr. `SevenTvUserId` an
+`SevenTvEditorGrant`/`SevenTvEditorGrantEntry` und das `user { id }` in `GqlEditorOfQuery` hatten
+keinen anderen Leser (per `grep` geprüft) und sind entfernt, samt der beiden Tests, die nur das
+Nachlösen prüften, und des Client-Tests für ein fehlendes `id`. `GqlEditorOfQuery` hat damit wieder
+den Text von vor T2.4.
+
+**Überholte Stellen.**
+
+| Stelle | Was jetzt gilt |
+|---|---|
+| **6.7, Stufe 4** | Die Prüfung oben in diesem Abschnitt; die Tabellenzeile bleibt als Stand von T2.4 stehen |
+| **E22** | Keine 7TV-ID am Grant, kein Nachlösen, keine direkte Besitzerabfrage im Normalfall |
+| **F10**, soweit sie das Nachlösen betrifft | Gegenstandslos — das Feld gibt es nicht mehr. Die Falle selbst (ein neues Feld fehlt in jedem vor dem Deploy geschriebenen Eintrag) gilt weiter und trifft jetzt die Listen-Payload: Miss statt „kein Besitzer" |
+| **AK 30** | Die Leiter bleibt als Vertrag geprüft; 503 zusätzlich bei Teilausfall ohne zulässigen Fund, und 404 nur noch, wenn 7TV antwortet und keinen Besitzer nennt |
+| **AK 31** | **Entfallen**, die Nummer bleibt stehen |
+
+**Tests.** `Unit/ImportTargetOwnershipServiceTests.cs` (neu, +14) — darunter der Beleg für den Kern
+des Befunds: mit gecachten Listen und Grants erzeugt der Normalfall **null** HTTP-Requests und
+**null** Permits, gezählt an einem echten `SevenTvApiClient` hinter den echten Listen- und
+Editor-Diensten; der Fehlerfall genau einen Request und ein Permit.
+`Unit/SevenTvApiClientEmoteSetOwnerLookupTests.cs` (neu, +6), `SevenTvApiClientEmoteSetListTests`
++2, `SevenTvEmoteSetListCacheTests` +1 (alte Payload ⇒ Miss). `SevenTvEmoteSetSyncImportedEndpointTests`
+läuft jetzt gegen die echte Prüfung (Zahl unverändert). Entfallen: die zwei AK-31-Fälle in
+`Integration/SevenTvEditorServiceTests.cs` und einer der zwei Fälle in `SevenTvApiClientEditorOfTests`.
+Die Summen aus Nachtrag 31 sind hier nicht neu gerechnet.
+
+### P2 — Legacy-Grant-Payloads wurden als „keine Grants" gelesen
+
+**Befund.** `ModRoleCache` gab einen `7tveditor:`-Eintrag von vor dem Feld `entries` absichtlich
+weiter — Grant-Mengen gefüllt, `Entries` leer. `MyChannelsService` erkannte diese Form
+(`isLegacyGrantPayload`), die beiden neuen Leser nicht: die Besitzer-Prüfung antwortete einem echten
+Editor mit 403 — **nach** der Mutation, der Eintrag war damit verloren —, und
+`/me/emote-set-targets` ließ die Konten still weg.
+
+**Eingearbeitet.** Erkannt wird die Form jetzt dort, wo sie entsteht: `ModRoleCache` liest einen
+Eintrag ohne `entries` als **Miss**. `GetEditorGrantsAsync` löst die Grants dann live auf und
+schreibt die aktuelle Form zurück — der Altbestand verschwindet beim ersten Lesen, nicht erst mit
+der TTL. Das wirkt für alle Leser zugleich; die eigene Erkennung in `MyChannelsService` war damit
+unerreichbar und ist entfernt (samt ihres Tests; zwei Übersichtstests, die Grants ohne `Entries`
+bauten, bauen sie jetzt mit). Preis: fällt 7TV genau in diesem Moment aus, ist die Antwort
+„unbekannt" statt der alten Login-Liste — für eine Form, die höchstens zehn Minuten nach einem
+Deploy existieren kann, und für die Besitzer-Prüfung ohnehin die richtige Antwort (503 statt 403).
+Tests: `ModRoleCacheTests` (Legacy ⇒ Miss, umgestellt), `Integration/SevenTvEditorServiceTests.cs`
++2 — je einer für die Angebotsliste und die Besitzer-Prüfung, gegen echtes Redis.
+
+### P2 — Eine operationslokale Transition verwarf das 429 des anderen Pfads
+
+**Befund.** T2.1 hatte die Generation des Breakers bewusst **providerweit** gelassen (DECISIONS,
+Eintrag vom 2026-09-20, Absatz zum Generationszähler): mit einer Generation je Operation hätte ein
+verspäteter Erfolg auf Pfad A die Rate-Limit-Sperre löschen können, die Pfad B gerade eingefangen
+hat. Die eine Generation machte dafür den umgekehrten Fehler. `OpenOperation` zählte denselben
+Zähler hoch wie das Öffnen der providerweiten Sperre. Öffnet die Liste ihren **eigenen** Breaker
+(fünf `Unavailable`), während eine vorher zugelassene Vorschau-Anfrage noch läuft, passt deren
+Generation danach nicht mehr — ihr bestätigtes 429 wird verworfen, die providerweite Sperre öffnet
+nicht, und 7TVs `Retry-After` geht verloren. Genau diese Aussperrung soll E4 respektieren.
+
+**Eingearbeitet: zwei Epochen.** Die **Provider-Epoche** bewegt sich nur, wenn die providerweite
+Rate-Limit-Sperre öffnet oder schließt. Die **Operations-Epoche** bewegt sich nur, wenn der Breaker
+dieser Operation öffnet oder schließt. Beide sind Stempel einer gemeinsamen, monoton steigenden
+Übergangsuhr. Die Entscheidung trägt deshalb weiter **einen** `long` (den Uhrstand bei der
+Zulassung), und die Frage „hat sich diese Epoche seit meiner Zulassung bewegt?" lautet: „ist ihr
+Stempel jünger als meine Zulassung?". Form der Entscheidung, die vier Methoden und alle Aufrufer
+bleiben unverändert. Eine Rückmeldung wird an der Epoche des Zustands geprüft, den sie ändern will:
+
+- **Rate-Limit-Sperre öffnen oder löschen:** nur die Provider-Epoche muss aktuell sein. Eine
+  operationslokale Transition, gleich auf welchem Pfad, entwertet kein 429 mehr.
+- **Streak, offener Zustand und Probe der Operation:** die eigene Operations-Epoche **und** die
+  Provider-Epoche müssen aktuell sein. Ob ein Aufruf eine Probe war und ob ein gewöhnlicher Fehler
+  zu einem schon behandelten Rate-Limit-Vorfall gehört, hängt am Provider-Zustand der Zulassung.
+  Sonst würde ein Nachzügler-`OtherFailure` aus einem 429-Schwall das Fenster wieder dehnen.
+- **Probe:** Sie bleibt je Operation und gilt als unterwegs, solange sich keine der beiden Epochen,
+  die ihre Operation sieht, seit der Beanspruchung bewegt hat. Jede Transition, die den eigenen
+  Bericht der Probe veraltet, gibt also auch ihren Platz frei — ein Deadlock ist ausgeschlossen. Eine
+  Transition der **anderen** Operation gibt ihn weder frei noch entwertet sie den Bericht.
+
+Der ursprüngliche Grund von T2.1 gilt weiter und wird jetzt von der Provider-Epoche gehalten: ein
+verspäteter Erfolg auf Pfad A löscht keine Sperre, die Pfad B eingefangen hat, weil deren Öffnen
+die Provider-Epoche über die Zulassung von A hinausgeschoben hat.
+
+**Verhältnis zu 6.1.** Die Reichweitentabelle in 6.1 ist damit in ihrer ursprünglichen Absicht
+erfüllt: Half-open-Probe und `OtherFailure`-Zähler je Operation, `RateLimited` samt `Retry-After`
+providerweit. Hinzu kommt die providerweite Epoche, die die Spec nicht vorsah; die Tabellenzeile
+„Half-open-Probe (`_probeInFlight`, `_generation`) je Operation" bleibt als Stand des Entwurfs
+stehen. Eine Operation allein verhält sich in allen Bestandsfällen wie vor K2. Einzige gewollte
+Abweichung: ein 429, das nach einer lokalen Transition **derselben** Operation zurückkommt, öffnet
+die Sperre jetzt ebenfalls, statt verworfen zu werden.
+
+**Tests.** `Unit/ForeignSevenTvBreakerPolicyTests.cs`, neue Klasse
+`ForeignSevenTvBreakerPolicyEpochTests` (+12). Die Fälle decken ab: den Befund in beiden Richtungen
+(lokales Öffnen und lokales Schließen der Liste, vor der Änderung rot), den T2.1-Fall, das
+Streak- und Probe-Übergreifen, vier Folgen, in denen eine Epoche die andere überholt, eine
+geseedete Zufallsfolge (2000 Folgen, nach Abschluss aller Berichte bekommt jede Operation eine
+Probe) und AK 94 mit mehr als `FailureThreshold` Listenfehlern. Die 12 Bestandsfälle und die
+Klasse `ForeignSevenTvBreakerPolicyOperationScopeTests` sind unverändert.
+
+### Zweite Codex-Runde auf K2 (2026-09-21)
+
+Zweite Zweitmeinung (`/codex:review --model gpt-5.6-sol`) über PR #215 nach Einarbeitung der ersten
+Runde. Zwei Befunde, beide eingearbeitet; die Entscheidung zu P1 hat der Betreiber getroffen. Die
+Unterabschnitte oben bleiben unverändert stehen, dieser hier ergänzt sie.
+
+#### P1 — Die Grant-Auffrischung der Besitzer-Prüfung lief weiter am Budget vorbei
+
+**Befund.** Die erste Runde hat die Besitzer-Prüfung auf die gecachten Set-Listen umgestellt, die
+Konten aus `editor_of` aber weiter über `SevenTvEditorService.GetEditorGrantsAsync` geholt. Ist der
+Grant-Cache leer, nicht erreichbar oder hält er eine Legacy-Payload, macht dieser Aufruf ein bis zwei
+rohe 7TV-Requests (Identität, dann `editor_of`) — ohne Provider-Budget, ohne Breaker, und ein Fehler
+wird nicht gehalten. Wiederholte gefälschte Berichte während eines Redis- oder 7TV-Ausfalls konnten
+so über die Policy `Bookkeeping` (120/min je Nutzer) den geteilten Eimer leeren. Gemessen vor der
+Änderung: 20 Berichte bei leerem Cache und ausgefallenem 7TV ⇒ 20 Requests, 0 Permits.
+
+**Entscheidung (Betreiber): geschützter Grant-Weg, nicht „nur Cache".**
+
+- **Cache-Treffer:** kein Upstream-Request, wie bisher. Das ist der Normalfall, weil der Picker
+  (`/me/emote-set-targets`) den Grant-Cache Minuten vor dem Bericht füllt.
+- **Cache-Miss:** Die Grant-Auflösung läuft auf dem Weg der Besitzer-Prüfung durch die
+  Provider-Wächter, in der Reihenfolge des Listen-Dienstes: Breaker unter der eigenen
+  Operationskennung `editor-grants`, Nebenläufigkeits-Slot, und **je Upstream-Request ein Permit**
+  — Identität und `editor_of` ziehen jeder ihr eigenes. Dafür gibt es im Client eine budgetierte
+  Zwillingsmethode (`LookUpEditorGrantsAsync`), die zusätzlich beide 429-Gestalten erkennt: ein
+  bestätigtes 429 auf diesem Weg sperrt wie überall den ganzen Provider, mit 7TVs `Retry-After`.
+- **Erfolg** wird in denselben Grant-Cache geschrieben (`7tveditor:`, dieselbe Form, dieselbe TTL
+  aus `Auth:ModCheckCacheTtlMinutes`); der nächste Leser jeden Wegs profitiert davon.
+- **Fehler werden gehalten**, in einem eigenen Schlüsselraum (`7tveditorhold:{twitchId}`), fail-open
+  bei Redis-Ausfall: Unavailable 60 s, RateLimited ≥ 60 s bzw. `Retry-After` (höchstens 1 h), Budget
+  oder Slot verweigert und Breaker offen 30 s. `NoSevenTvAccount` ist eine Antwort und wird 60 s
+  gehalten. Ein zweiter Bericht in dieser Frist erzeugt keinen Request. Nach dem Erwerb des Slots
+  werden beide Caches ein zweites Mal gefragt; damit ist auch ein gleichzeitiger Schwall von
+  Berichten auf die zwei Slots begrenzt, nicht nur eine Folge von Berichten auf den Halt.
+- **Wächter verweigert oder Fehler gehalten** ⇒ die Grants gelten als unlesbar. Ohne zulässigen Fund
+  anderswo antwortet die Besitzer-Prüfung mit **503 ohne Eintrag** — das ist die Teilausfall-Regel der
+  ersten Runde, keine neue.
+
+**Warum nicht „nur Cache".** Der Grant-Cache hält zehn Minuten. Nur aus dem Cache zu lesen hieße,
+einen Bericht nach einem langen Import oder bei einem Redis-Aussetzer mit 503 abzulehnen. Die
+7TV-Mutation ist dann aber schon passiert, und das Frontend wiederholt nicht: der Audit-Eintrag wäre
+für immer verloren. Der geschützte Weg kostet im Normalfall nichts und im Fehlerfall höchstens, was
+Budget, Breaker und Halt zulassen.
+
+**Warum der Autorisierungspfad bewusst ungeschützt bleibt.** Der geschützte Weg gilt nur für diesen
+einen Aufrufer (`IGuardedSevenTvEditorGrantsService`, nur von `ImportTargetOwnershipService`
+aufgelöst). `GetEditorGrantsAsync` bleibt für `ChannelAccessService` und die übrigen
+Autorisierungsleser, für `/me/emote-set-targets` (hinter `ForeignEmoteLookup`, 10/min) und für
+`MyChannelsService` unverändert. Hinge der Autorisierungspfad an einem geteilten Budget, wären bei
+erschöpftem Budget die Rollen unbekannt, und Kanalseiten antworteten mit 403 — eine weit größere
+Wirkung als der Befund, und keine, die hier zur Entscheidung stand. Den Halt liest ebenfalls nur der
+geschützte Weg: ein gehaltener Fehler erreicht nie einen Leser, der auf ihm geschlossen scheitert.
+
+**Tests.** `Unit/GuardedSevenTvEditorGrantsServiceTests.cs` (neu, 16 Fälle, echter
+`SevenTvApiClient` über zählenden Handler und zählendes Budget): Cache-Treffer ⇒ 0 Requests,
+0 Permits; Miss ⇒ 2 Requests, 2 Permits und Rückschreiben in den Grant-Cache; Permit verweigert
+(auch nur für den zweiten Request); Breaker offen; 429 sperrt den Provider; die Haltbarkeiten als
+Theorie über sieben Ausgänge, jeweils ohne Request beim zweiten Aufruf; Redis-Ausfall ⇒ fail-open, der
+Breaker begrenzt 20 Berichte auf `FailureThreshold` Requests; ein gleichzeitiger Schwall von zehn
+Berichten ⇒ zwei Requests; und der Beleg, dass `SevenTvEditorService` weder Permit noch Breaker kennt.
+`Unit/ImportTargetOwnershipServiceTests.cs` +3, darunter der Missbrauchsfall (20 Berichte ⇒ 1 Request,
+1 Permit; vor der Änderung 20 Requests, und mit Breaker, aber ohne Halt, 5).
+`Unit/SevenTvApiClientEditorGrantsLookupTests.cs` (neu, 8 Fälle). Umgestellt: die Besitzer-Prüfung
+in `Integration/SevenTvEditorServiceTests.cs` und `SevenTvEmoteSetSyncImportedEndpointTests` auf den
+geschützten Weg; letzterer prüft zusätzlich, dass der Bericht den ungeschützten Dienst nie fragt.
+
+#### P2 — Eine Besitzer-Antwort nur mit Fehlern wurde als „unbekanntes Set" gelesen
+
+Nur die lesbare Form `data.emote_set: null` bedeutet „Set unbekannt" (404); HTTP 200 mit
+`data: null` oder ohne `emote_set`-Feld ist bei `LookUpEmoteSetOwnerAsync` jetzt `Unavailable`
+(503, Breaker-Fehler statt Breaker-Erfolg). Der alte Weg `GetEmoteSetOwnerIdAsync` (E9,
+`set-warning`) hat dieselbe Verwechslung und bleibt bewusst unverändert.

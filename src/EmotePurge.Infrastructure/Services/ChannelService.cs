@@ -119,6 +119,14 @@ public class ChannelService(
         return await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
     }
 
+    public async Task<Channel?> GetActiveByTwitchChannelIdAsync(string twitchChannelId, CancellationToken cancellationToken = default)
+    {
+        return await db.Channels
+            .AsNoTracking()
+            .Where(c => c.TwitchChannelId == twitchChannelId && c.IsBotActive)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default)
     {
         // AsNoTracking because both callers only ever read the names: this runs once per minute

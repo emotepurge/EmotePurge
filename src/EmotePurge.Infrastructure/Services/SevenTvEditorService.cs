@@ -39,20 +39,29 @@ public class SevenTvEditorService(
             return SevenTvEditorGrantsLookupResult.Failed(editorOfResult.Status);
         }
 
-        // The one place where grant logins get normalized. Previously done twice with two different
-        // comparison strategies (OrdinalIgnoreCase in the access check, ToLowerInvariant dictionary
-        // keys in the overview), so a change to 7TV's grant semantics had to be followed correctly in
-        // both — and a test for one said nothing about the other. Entries is built first and the two
-        // sets are derived from it, so there is exactly one projection over editorOf, not three.
-        var entries = editorOfResult.Grants!
-            .Select(grant => new SevenTvEditorGrantEntry(ChannelName.Normalize(grant.TwitchChannelLogin), grant.TwitchChannelId))
-            .ToList();
-        var grants = new SevenTvEditorGrants(
-            new HashSet<string>(entries.Select(entry => entry.ChannelLogin), StringComparer.OrdinalIgnoreCase),
-            new HashSet<string>(entries.Select(entry => entry.TwitchChannelId), StringComparer.Ordinal),
-            entries);
+        var grants = BuildGrants(editorOfResult.Grants!);
 
         await modRoleCache.SetSevenTvEditorGrantsAsync(twitchUserId, grants, cancellationToken);
         return SevenTvEditorGrantsLookupResult.Ok(grants);
+    }
+
+    /// <summary>
+    /// The one place where grant logins get normalized — for this service and for
+    /// <see cref="GuardedSevenTvEditorGrantsService"/>, which writes the same cache entry. Previously
+    /// done twice with two different comparison strategies (OrdinalIgnoreCase in the access check,
+    /// ToLowerInvariant dictionary keys in the overview), so a change to 7TV's grant semantics had to
+    /// be followed correctly in both — and a test for one said nothing about the other. Entries is
+    /// built first and the two sets are derived from it, so there is exactly one projection over
+    /// editorOf, not three.
+    /// </summary>
+    internal static SevenTvEditorGrants BuildGrants(IEnumerable<SevenTvEditorGrant> editorOf)
+    {
+        var entries = editorOf
+            .Select(grant => new SevenTvEditorGrantEntry(ChannelName.Normalize(grant.TwitchChannelLogin), grant.TwitchChannelId))
+            .ToList();
+        return new SevenTvEditorGrants(
+            new HashSet<string>(entries.Select(entry => entry.ChannelLogin), StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(entries.Select(entry => entry.TwitchChannelId), StringComparer.Ordinal),
+            entries);
     }
 }

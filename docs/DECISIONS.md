@@ -10,6 +10,238 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-20 — An import may target any set of an account the user edits; the confirm dialog keeps collisions out of the run
+
+**Betrifft:** `web/src/app/core/emotes/import-target-loader.ts` ·
+`web/src/app/core/emotes/emote-admin.service.ts` ·
+`web/src/app/shared/seven-tv/import-preview.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` ·
+`web/src/app/shared/seven-tv/foreign-import-flow.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-target-choices.ts` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`src/EmotePurge.Infrastructure/SevenTv/ForeignSevenTvBreakerPolicy.cs` ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvEmoteSetListCache.cs` ·
+`src/EmotePurge.Core/Services/IGuardedSevenTvEditorGrantsService.cs` ·
+`src/EmotePurge.Infrastructure/Services/GuardedSevenTvEditorGrantsService.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvEditorGrantsHoldCache.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs`
+
+Revises the 2026-09-09 entry's "the target set stays a tracked channel out of `listMine()`" into the
+weakened form: tracked stays the default and needs no extra step; an untracked target (a 7TV account
+the actor edits via `editor_of`, but that is not itself an EmotePurge-tracked channel) is offered too,
+after a confirmation naming the set and its owner's display name. **R2 from the 2026-09-06 entry is
+unaffected** — the write token is still only asked for right before the run starts, never earlier
+just because the target class changed.
+
+**The picker chooses a set, not a channel.** `GET /api/seventv/me/emote-set-targets` replaces
+`listMine()` as the picker's data source: it groups every offered set under the account it belongs
+to (the caller's own 7TV account first, then every account reachable through an `editor_of` grant),
+tracked accounts before untracked ones, active set labelled and preselected per tracked account. Only
+`kind == NORMAL` sets are selectable; `PERSONAL`, `GLOBAL` and `SPECIAL` render visible but disabled
+and labelled, never silently hidden and never silently selectable — a positive rule so a fifth `kind`
+value 7TV adds later lands disabled by default rather than wrongly offered. `import-target-options.ts`
+is retired; `import-target-choices.ts` replaces it with a pure function over the new response.
+
+**The loader now has three cases, not one — and the active case is the same case as before, always
+(spec 8.6, fourth bullet; AK 36).** "Getracktes Ziel **und** `emoteSetId === activeEmoteSetId` ⇒
+**heutiger Weg**; **sonst** Live-Liste nach Set-ID" is two-sided in the spec, and stays two-sided
+here: a tracked choice whose picked `emoteSetId` equals the account's `activeEmoteSetId` (spec 6.2,
+carried on `ImportTargetChoice` for exactly this comparison) resolves via `getSetStatus` +
+`listEmotes` + `getSetWarning`, the unchanged pre-spec requests — whether it arrived as the picker's
+one-click "active set of channel X" shortcut or as one of the three channel-only import doors (file,
+foreign channel, leaderboard), which never ask *which* set at all and always mean the active one. Any
+other tracked choice — a non-active set — or an untracked account's set reads live via the set-ID mode
+of the existing foreign-emotes endpoint instead: occupancy from `totalCount`, capacity and the set's
+own name from the same response. This is a cost decision the spec already made, not a style
+preference: per E6's permit budget, the target-set preview itself already spends up to 2 permits per
+dialog open for a large set, and routing the *common* case (dialog open, active set, import) through
+the same live read as well would have turned "costs nothing extra" into "costs permits on every open,
+for every viewer" — exactly the assumption E6's "1 + *k* Permits je Dialog" accounting rests on. A
+`truncated` live answer counts as a failed load, not a smaller-but-usable one — a page cap that hid
+part of the set's real contents would otherwise undercount both its occupancy and its name collisions.
+The set-ownership warning is sourced by class: a tracked target (active or not) still gets a real check
+(`GET .../set-warning`, now with an optional `emoteSetId` query parameter for the non-active case); an
+untracked target has no channel to check ownership against at all, and gets the same "not verified"
+fallback the check's own failure path already used — that costs no request, and is not a weaker answer
+to the same question, it is the only honest answer to a different one.
+
+**Open question, flagged here rather than decided:** the picker loads its account list (and each
+account's `activeEmoteSetId`) once, when the dialog opens; a click on "active set of channel X" some
+time later trusts that snapshot rather than re-asking 7TV. If the channel's active set changes in that
+window (another editor, another tab, the periodic resync), the picker's one-click shortcut can commit
+to a comparison — "is the set I'm about to pick still the active one?" — that was true when the dialog
+opened and may no longer be by the time it closes. This does not change the contract above: the
+spec's two-sided rule is what this entry documents, and a stale snapshot argues for a narrower fix
+(re-verifying at load time, inside the existing "today" path) if it turns out to matter in practice,
+not for routing every choice through the live-list read to sidestep the question.
+
+**The chosen set is wired all the way to the run, not just as far as the loader.** A first pass of
+this change left `usage-stats-page.ts`'s `startImportFromChoice` still calling `startImportFlow` with
+only `choice.channelName`, discarding `choice.emoteSetId` — which meant `import-flow.ts` kept
+resolving every picker choice as the channel's *active* set regardless of what was actually picked
+(spec F5, in full: "der Ziel-Loader liest das aktive Set, und der Dialog schließt mit dessen ID"),
+silently copying into the wrong set the moment a user picked anything other than the active one. That
+is precisely the failure the plan named as the reason T2.5a (the picker) and T2.5b (the loader) had to
+land in one commit — a picker capable of choosing a set is not the fix by itself if nothing carries
+the choice to where the run actually starts. `startImportFlow` now takes an `ImportFlowTarget`
+(`import-flow.ts`) instead of a bare channel name: `'activeSet'` for the three channel-only doors
+(unchanged behaviour, always the channel's active set), `'chosen'` for a full picker `ImportTargetChoice`
+(minus its `scope`, which the caller has already applied to the rows by then).
+`startImportFromChoice` passes the whole choice through unconditionally for a tracked target — active
+or not — and the resulting `ImportTargetLoadState.setId` (the *loaded*, chosen set) is what flows into
+`ImportConfirmOutcome.targetSetId`, `SevenTvImportService.startImport`'s `setId`, and from there into
+`reportImported`'s `targetEmoteSetId` (AK 44) — never re-derived from the choice a second time at any
+of those points, so a stale re-comparison cannot creep back in there either. The untracked class's
+transitional guard (`choice.channelName === null` in `startImportFromChoice`) stays exactly what it
+was: it still refuses to start anything for an untracked choice (confirmation and the set-centric
+report are T2.6's job), but it no longer also swallows the tracked-non-active case along with it.
+`startImportFlow` itself carries the same refusal as a second, independent backstop for a `'chosen'`
+target with no channel name, so the invariant does not rest on the caller-side guard alone.
+
+The untracked class's own live-list read needed a route: `GET /api/seventv/channels/{channelName}/…`
+needs *some* Twitch-login-shaped path segment, and an untracked target has no `channelName` to supply
+it (spec E8 — the segment is never resolved server-side in this mode, only format-checked).
+`EmoteSetTargetAccount.twitchLogin` (spec 6.2) is exactly the field for this — carried machine-readable
+next to the display-only `ownerDisplayName` for precisely this kind of use — so `ImportTargetChoice`
+now also carries `twitchLogin`, and the untracked branch routes through it. `ownerDisplayName` stays
+barred from any routing or comparison role (E7): it is what the confirm dialog's header shows, nothing
+it, or any URL, is built from.
+
+**Revises the 2026-09-06 entry's informative-preview reading (#72).** Two of the three findings
+`buildImportPreview` produces changed from "reported, but the row still runs" to "reported, and the
+row is excluded": a name collision (a different `sevenTvEmoteId` in the target already owns the
+source's exact name) and an alias mismatch (the same `sevenTvEmoteId` already exists in the target,
+but under a different alias) both now leave `toAdd` entirely, each surfaced as its own named group
+instead. 7TV would reject every one of these rows outright; running them anyway only spent a rate-limit
+attempt on something known to fail before it was even sent. Neither becomes a silent rename: 7TV's
+existing alias for that id is left exactly as it is, the row is skipped and named, nothing more.
+`invalidNames` is unaffected and stays informational — unlike the other two, nothing about the
+*target's contents* dooms an invalid-alias row, so it still reaches `toAdd` and 7TV still decides. The
+already-present count only ever refers to a same-id-same-alias match and is never double-counted with
+an alias mismatch; the #74 duplicate-id grenzfall (the target itself carries the same `sevenTvEmoteId`
+twice under two different aliases, 7TV's own set-merge defect) counts as already-present the moment
+*either* alias agrees with the source, and only becomes a mismatch when *neither* does.
+`already-present-filter.ts`'s own, separate, fresh pre-send check stays an ID comparison, untouched —
+it answers a different question (did 7TV's *live* set change since the dialog opened), not this one.
+
+**Audit contract for both ways in.** `SyncImportedRequest.TargetEmoteSetId` stays optional forever on
+the wire (an older open tab is still a valid caller, and a missing field is an honest "no set known"
+rather than a rejected mutation after the 7TV writes already happened) — but this client now sends it
+on *every* `sync-imported` call it makes, active target or not, tracked or not, pinned by a Vitest
+spec. The audit entry carries `TargetType = "emoteSet"` / `TargetId = <the set>` and a three-valued
+`targetIsActiveSetOfChannel` (`true`/`false` when a set was reported, `null` when it was not) next to
+the existing per-channel entry shape. An untracked target's eventual write goes through a *different*,
+set-centric endpoint with its own ownership check (`editor_of`) rather than the per-channel one, since
+there is no channel to scope it to at all — wiring that report and its confirmation step is a
+follow-up task, not this one. `ownerDisplayName`, shown in the picker and the confirm dialog's header,
+is a 7TV display name (`owner.mainConnection.platformDisplayName`), never a login and never compared
+against anything; the audit trail's own record of *who* still runs on the Twitch login, the same
+identity every other audit row uses.
+
+**Breaker clause, added 2026-09-20 after the day's implementation (T2.1, commit `b3526a7`).** The
+shared 7TV breaker (`ForeignSevenTvBreakerPolicy`) counts an ordinary failure streak and holds its
+half-open probe **per operation** (a named constant like `emote-set-list` or `foreign-preview`), while
+a confirmed rate limit and the provider's upstream request budget stay **shared across every
+operation** — the list/preview read path introduced by this spec sits on the *same* rate-limit bucket
+and budget as the existing foreign-preview path (unlike the 7TV leaderboard read, which has its own
+budget, `ServiceCollectionExtensions.cs:128,135-136`). This matters because a malformed or
+schema-drifted query is, from the breaker's point of view, indistinguishable from a genuine outage
+(F17) — without the per-operation split, five bad requests on one read path would trip the shared
+breaker and answer a perfectly healthy second read path with 503 too, and would also burn the one
+half-open probe that healthy path needed to prove itself.
+
+**Not carried by the spec, found only while implementing it:** the breaker's generation counter
+(`_generation`) stays **provider-wide** even though the failure streak and the probe slot are now
+per-operation. `ForeignSevenTvBreakerPolicy.TryAcquire` stamps a claimed probe as
+`state.ProbeGeneration = _generation` (per operation) rather than a plain boolean, and
+`RecordSuccess`/`RecordFailure` only apply a report whose `generation` still equals the current
+`_generation`. A per-operation generation would have reopened a correctness hole this class exists to
+close: a success straggling in late on read path A, after read path B has just tripped the shared
+rate-limit lock, would unconditionally clear that lock if generations were scoped per operation — path
+A's own success proves nothing about the incident path B just reported. Keeping one generation for the
+whole provider, with only the probe *slot* itself tracked per operation, is what lets a stale report
+release its slot on any transition without ever being able to undo a lock a different operation is
+still holding. (Superseded 2026-09-21 — see the correction below.)
+
+**Correction 2026-09-21 (second opinion on K2, spec section 32).** The single provider-wide
+generation got the opposite case wrong. `OpenOperation` bumped the same counter a provider-wide
+lock did, so an *operation-local* transition invalidated every report in flight on every other
+operation: the list opens its own breaker after five bad queries while a preview request admitted
+before that is still running; the preview then comes back with a confirmed 429, its generation no
+longer matches, and the report is discarded — the provider-wide rate-limit lock is never opened and
+7TV's `Retry-After` is lost, which is exactly the lockout E4 exists to honour. What holds now is two
+epochs. The **provider epoch** moves only when the provider-wide rate-limit lock opens or closes;
+each **operation epoch** moves only when that operation's own breaker opens or closes. Both are
+stamps from one monotonic transition clock, so a decision still carries a single `long` (the clock
+at admission), and "has this epoch moved since I was admitted" is "is its stamp newer than my
+admission". A report is checked against the epoch of the state it wants to change: opening or
+clearing the rate-limit lock needs only a current provider epoch; the operation's own streak, open
+state and probe slot need its own epoch and the provider epoch, because whether a call was a probe,
+and whether an ordinary failure belonged to a rate-limit incident already acted on, depends on the
+provider state it was admitted under. The probe slot stays per operation and is held only while
+neither of the two epochs its operation sees has moved since the claim, so every transition that
+makes a probe's own report stale also hands its slot back — and a transition of *another*
+operation no longer frees or invalidates it. The original reason for keeping the counter
+provider-wide still holds and is now kept by the provider epoch: a success straggling in late on
+path A cannot clear a rate-limit lock path B has just caught, because that lock's opening moved the
+provider epoch past A's admission.
+
+**Owner-check clause, added 2026-09-21 after the second opinion on K2 (spec section 32).** The
+set-centric endpoint's owner check (`POST /api/seventv/emote-sets/{id}/sync-imported`, step 4 of the
+6.7 ladder) no longer asks 7TV directly. It answers from the cached set lists of
+`ISevenTvEmoteSetListService` — the actor's own and every `editor_of` account's, the same lists the
+picker was built from, behind the full guard chain of 6.1: a set is admissible when it appears in one
+of those lists *and* its `owner.id` is the `userByConnection.id` of one of the checked accounts, so
+E22's "owner ∈ {actor} ∪ {editor_of}" holds exactly, compared on ids only. Both ids were already part
+of the measured E7 query and are now passed through, at no extra request. Why: this check does not
+guard access — the report runs *after* the import, whose 7TV mutation already happened with the
+user's own token — it keeps the audit log honest. Its previous form made uncached set-owner and
+identity requests on every call under the `Bookkeeping` policy (120/min per user, documented as
+database-only work), outside the provider budget and breaker the list and preview paths share, so a
+single caller could drain the shared bucket. The one case that still asks 7TV — a set in none of the
+lists — is budgeted: one permit, a concurrency slot and its own breaker operation (`emote-set-owner`),
+with 503 and no audit entry when refused. A partial outage without an admissible find answers 503,
+not 403, because the unreadable list may be the owner's. Rejected: moving the route to
+`ForeignEmoteLookup` (bounds each user, but still bypasses the provider budget) and putting the
+existing direct calls behind the budget (trades abuse for a lost paper trail: a 503 *after* the
+mutation writes no entry, and the frontend does not retry). The 7TV account id on editor grants and
+the live re-resolution of legacy grants had no other reader and were removed with it.
+
+**Grant-refresh clause, added 2026-09-21 after the second review round (spec section 32).** The
+owner check still read its `editor_of` accounts through the unguarded
+`SevenTvEditorService.GetEditorGrantsAsync`: on an empty, unreachable or legacy grant cache that is
+one or two raw 7TV requests per report, outside the provider budget and breaker, with failures never
+held — so repeated forged reports during a Redis or 7TV outage could still drain the shared bucket
+through the `Bookkeeping` policy (measured before the change: 20 reports, 20 requests, 0 permits).
+The owner check now reads its grants through `IGuardedSevenTvEditorGrantsService`, a guarded refresh
+for this one caller. A cache hit costs nothing, as before; a miss runs behind the guards of spec 6.1
+in the list service's order — the shared breaker under its own operation `editor-grants`, a
+concurrency slot of the shared budget, and one permit per upstream request (identity and `editor_of`
+each charge their own, in a budgeted client twin, `LookUpEditorGrantsAsync`, that also tells both
+429 shapes apart so a rate limit here locks the provider like anywhere else). A success is written to
+the same `7tveditor:` entry, same shape and TTL, so every reader profits; a failure is held in a key
+space only this path reads (`7tveditorhold:`), fail-open on Redis: unavailable 60 s, rate-limited at
+least 60 s or 7TV's `Retry-After` (at most 1 h), refused permit or slot and open breaker 30 s,
+`NoSevenTvAccount` 60 s as an answer. A refused guard or a held failure makes the grants unreadable,
+which without an admissible find elsewhere is the first round's partial-outage rule: 503, no entry.
+Rejected: reading the cache only. It holds ten minutes, so a report after a long import or during a
+Redis blip would be refused with 503 after the 7TV mutation already happened, and the frontend does
+not retry — the audit entry would be lost for good, while the ordinary report is free anyway because
+the picker fills the cache minutes before. Deliberately not extended to the other readers of
+`GetEditorGrantsAsync` (authorization via `ChannelAccessService`, `/me/emote-set-targets`,
+`MyChannelsService`): behind a shared budget, an exhausted budget would make roles unknown and
+channel pages answer 403, an effect far larger than the finding and not decided here.
+
+---
+
 ### 2026-09-20 — Usage is counted per emote set; the observed set travels with the match cache (#200)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IEmoteMatchCache.cs` ·

@@ -176,4 +176,121 @@ describe('toAuditRows', () => {
       expect(row.detail).toBeNull();
     });
   });
+
+  // Spec 8.10: the import ladder's target-set addendum, a second line segment independent of
+  // `detail` — it is present or absent, and shaped, purely from `AuditLogDetail.targetEmoteSet`,
+  // never from the row's `kind`.
+  describe('targetSet (8.10)', () => {
+    it('is null when the entry names no target set at all', () => {
+      const [row] = toAuditRows(
+        [entry({ detail: { kind: 'importedFromFile', count: 7, text: null } })],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.targetSet).toBeNull();
+    });
+
+    it('shows the plain "in set" form with the id\'s first eight characters when the target is the active set', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            detail: {
+              kind: 'importedFromFile',
+              count: 7,
+              text: null,
+              targetEmoteSet: {
+                id: '01FY9A4ZG8000BH1HKPGP0R1S0',
+                isActiveSetOfChannel: true,
+                ownerLogin: null,
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.targetSet).toEqual({
+        key: 'audit.details.targetEmoteSet',
+        params: { setId: '01FY9A4Z' },
+      });
+    });
+
+    // The `false` vs `null` distinction is the whole point of this case (spec 8.10): `null` means
+    // "no channel to compare against" or "no set reported" and gets the plain form above, only a
+    // literal `false` earns the "not the active set" addition.
+    it('adds "not the active set" only for a literal isActiveSetOfChannel: false, not for null', () => {
+      const [notActiveRow] = toAuditRows(
+        [
+          entry({
+            detail: {
+              kind: 'importedFromFile',
+              count: 7,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-halloween',
+                isActiveSetOfChannel: false,
+                ownerLogin: null,
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+      expect(notActiveRow.targetSet).toEqual({
+        key: 'audit.details.targetEmoteSetNotActive',
+        params: { setId: 'set-hall' },
+      });
+
+      const [nullRow] = toAuditRows(
+        [
+          entry({
+            detail: {
+              kind: 'importedFromFile',
+              count: 7,
+              text: null,
+              targetEmoteSet: { id: 'set-halloween', isActiveSetOfChannel: null, ownerLogin: null },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+      expect(nullRow.targetSet).toEqual({
+        key: 'audit.details.targetEmoteSet',
+        params: { setId: 'set-hall' },
+      });
+    });
+
+    it('names the owner login for the set-centric endpoint, never isActiveSetOfChannel', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            channelName: null,
+            detail: {
+              kind: 'importedFromFile',
+              count: 3,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-untracked',
+                // The set-centric endpoint always sends null here (6.7) — the owner form must win
+                // regardless, never fall through to the plain form.
+                isActiveSetOfChannel: null,
+                ownerLogin: 'strangertv',
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.targetSet).toEqual({
+        key: 'audit.details.targetEmoteSetForOwner',
+        params: { setId: 'set-untr', ownerLogin: 'strangertv' },
+      });
+    });
+  });
 });

@@ -58,7 +58,8 @@ const DE_TRANSLATIONS = {
       originLeaderboard: 'Aus 7TVs Bestenliste: {{ sort }}',
       dateUnknown: 'Datum unbekannt',
       channelUnknown: 'Kanal unbekannt',
-      target: 'Ziel: {{ channel }} · Set {{ setId }}',
+      target: 'Ziel: {{ channel }} · Set {{ setName }}',
+      targetUntracked: 'Ziel: Set {{ setName }} von {{ owner }}',
       loadingHint: 'Zieldaten werden geladen…',
       noTargetSet: 'Der Zielkanal hat noch kein aktives 7TV-Set.',
       loadFailed: 'Die Daten des Zielkanals konnten nicht geladen werden.',
@@ -69,9 +70,14 @@ const DE_TRANSLATIONS = {
         other: '{{ count }} Emotes sind bereits im Zielset und werden übersprungen.',
       },
       nameCollisions: {
-        one: '{{ count }} Name ist im Zielset schon vergeben:',
-        other: '{{ count }} Namen sind im Zielset schon vergeben:',
+        one: '{{ count }} Name ist im Zielset schon vergeben, wird nicht übertragen:',
+        other: '{{ count }} Namen sind im Zielset schon vergeben, werden nicht übertragen:',
       },
+      aliasMismatches: {
+        one: '{{ count }} ist vorhanden, heißt dort aber anders:',
+        other: '{{ count }} sind vorhanden, heißen dort aber anders:',
+      },
+      aliasMismatchRow: '{{ source }} → {{ target }}',
       invalidNames: {
         one: '{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann:',
         other: '{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann:',
@@ -87,6 +93,11 @@ const DE_TRANSLATIONS = {
       nothingToAdd: {
         one: 'Das einzige Emote ist bereits im Zielset.',
         other: 'Alle {{ count }} Emotes sind bereits im Zielset.',
+      },
+      nothingToAddBlocked: {
+        one: 'Das einzige Emote kann nicht hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+        other:
+          'Keines der {{ count }} Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
       },
       sameChannelFile: 'Diese Liste stammt aus diesem Kanal.',
       runNotice: 'Das Hinzufügen läuft danach automatisch nacheinander.',
@@ -182,6 +193,9 @@ function readyTarget(overrides: Partial<ReadyTarget> = {}): ImportTargetLoadStat
   return {
     status: 'ready',
     setId: 'set-1',
+    // `null` by default, matching the "today" (active-set) path, which never has one — a test
+    // about the header's setName sets this explicitly (spec 8.6, AK 39).
+    setName: null,
     occupiedSlots: 10,
     capacity: 1000,
     syncFailureReason: null,
@@ -206,7 +220,8 @@ function inRenderedOrder(text: string, markers: readonly string[]): string[] {
 
 interface RenderOptions {
   source?: ImportSource;
-  targetChannelName?: string;
+  targetChannelName?: string | null;
+  targetOwnerDisplayName?: string | null;
   target?: ImportTargetLoadState;
   runBlocked?: boolean;
 }
@@ -268,7 +283,9 @@ describe('ImportConfirmDialog', () => {
 
     dialogData = {
       source: options.source ?? channelSource([row('new-1', 'Kappa')]),
-      targetChannelName: options.targetChannelName ?? 'targetchannel',
+      targetChannelName:
+        options.targetChannelName === undefined ? 'targetchannel' : options.targetChannelName,
+      targetOwnerDisplayName: options.targetOwnerDisplayName ?? null,
       target,
       retry: () => {
         retryCalls += 1;
@@ -368,6 +385,65 @@ describe('ImportConfirmDialog', () => {
       );
     });
 
+    it('says why nothing is left to add when name collisions took every row — not the "already present" wording', () => {
+      // Codex Sol P2: before the fix this banner always used the `nothingToAdd` key regardless of
+      // reason, so a run blocked entirely by collisions still claimed every emote was "already in
+      // the target set" — false, and contradicting the collision group shown just above it.
+      const dialog = render({
+        source: channelSource([row('new-1', 'Collides'), row('new-2', 'AlsoCollides')]),
+        target: readyTarget({
+          emotes: [
+            { sevenTvEmoteId: 'existing-1', name: 'Collides' },
+            { sevenTvEmoteId: 'existing-2', name: 'AlsoCollides' },
+          ],
+        }),
+      });
+
+      const execute = dialog.button(EXECUTE);
+      expect(execute.disabled).toBe(true);
+      expect(execute.getAttribute('aria-describedby')).toBe('import-confirm-nothing-to-add');
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain(
+        'Keines der 2 Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      );
+      expect(banner).not.toContain('Alle 2 Emotes sind bereits im Zielset.');
+
+      dialog.button(EXECUTE).click();
+      expect(closed).toEqual([]);
+    });
+
+    it('says why nothing is left to add on a mixed reason — some present, some collided', () => {
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU'), row('new-1', 'Collides')]),
+        target: readyTarget({
+          emotes: [
+            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
+            { sevenTvEmoteId: 'existing-2', name: 'Collides' },
+          ],
+        }),
+      });
+
+      const execute = dialog.button(EXECUTE);
+      expect(execute.disabled).toBe(true);
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain(
+        'Keines der 2 Emotes kann hinzugefügt werden — bereits vorhanden, Namenskollision oder anderer Alias.',
+      );
+      expect(banner).not.toContain('Alle 2 Emotes sind bereits im Zielset.');
+    });
+
+    it('keeps the plain "already present" wording when that is the only reason', () => {
+      // Regression: the mixed/collision wording above must not swallow the existing, more specific
+      // case — every row present under the same alias still gets the original sentence.
+      const dialog = render({
+        source: channelSource([row('existing-1', 'PogU')]),
+        target: readyTarget({ emotes: [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }] }),
+      });
+
+      const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
+      expect(banner).toContain('Das einzige Emote ist bereits im Zielset.');
+    });
+
     it('releases it once the target is ready and something is left to add', () => {
       const dialog = render({ target: { status: 'loading' } });
       expect(dialog.button(EXECUTE).disabled).toBe(true);
@@ -410,7 +486,9 @@ describe('ImportConfirmDialog', () => {
         source: channelSource([
           row('existing-1', 'PogU'),
           row('new-1', 'Kappa'),
-          // A name collision is informational — 7TV decides, so the row stays in the run.
+          // A name collision is excluded outright since spec 2026-09-20 — 7TV would reject it
+          // every time, so it never even reaches the run (AK 40: the run's own `failed` count for
+          // this row is 0, not "1 rejected").
           row('new-2', 'Collides'),
         ]),
         target: readyTarget({
@@ -427,7 +505,7 @@ describe('ImportConfirmDialog', () => {
       expect(closed).toEqual([
         {
           targetSetId: 'set-42',
-          rows: [row('new-1', 'Kappa'), row('new-2', 'Collides')],
+          rows: [row('new-1', 'Kappa')],
         },
       ]);
     });
@@ -688,11 +766,12 @@ describe('ImportConfirmDialog', () => {
   });
 
   describe('name collisions for the foreign source (spec E7/AK 17)', () => {
-    it('warns about a colliding alias and still keeps the row in the run', () => {
-      // Nothing new was built for this — `buildImportPreview` has produced `nameCollisions` since
-      // #72. What is pinned here is that it keeps working for the third source, whose rows carry the
-      // *alias* of the foreign set and therefore collide more readily than a base name would. Warn,
-      // never block: the row stays in `toAdd` and 7TV decides.
+    it('warns about a colliding alias and keeps it out of the run', () => {
+      // Nothing new was built for the detection itself — `buildImportPreview` has produced
+      // `nameCollisions` since #72. What is pinned here is that it keeps working for the third
+      // source, whose rows carry the *alias* of the foreign set and therefore collide more readily
+      // than a base name would — and that, since spec 2026-09-20, the row is excluded from the run
+      // rather than merely flagged (AK 37/40).
       const dialog = render({
         source: foreignChannelSource([row('new-1', 'Kappa'), row('new-2', 'Collides')]),
         target: readyTarget({
@@ -701,7 +780,9 @@ describe('ImportConfirmDialog', () => {
         }),
       });
 
-      expect(dialog.text()).toContain('1 Name ist im Zielset schon vergeben:');
+      expect(dialog.text()).toContain(
+        '1 Name ist im Zielset schon vergeben, wird nicht übertragen:',
+      );
       expect(dialog.text()).toContain('Collides');
       expect(dialog.button(EXECUTE).disabled).toBe(false);
 
@@ -710,7 +791,7 @@ describe('ImportConfirmDialog', () => {
       expect(closed).toEqual([
         {
           targetSetId: 'set-42',
-          rows: [row('new-1', 'Kappa'), row('new-2', 'Collides')],
+          rows: [row('new-1', 'Kappa')],
         },
       ]);
     });
@@ -750,17 +831,18 @@ describe('ImportConfirmDialog', () => {
       // The contract from docs/UI-Designsprache.md §7.2 — the sequence of statements, not the
       // markup carrying them. Note the two source findings: discarded rows (data actually lost)
       // stand before collapsed duplicates (merely folded), because the heavier finding reads first.
+      // The title counts only `new-2` now: `new-1`/'Collides' is a name collision and, since spec
+      // 2026-09-20, no longer part of `toAdd` at all (AK 37).
       const contract = [
-        '2 Emotes nach handofblood kopieren?',
+        '1 Emote nach handofblood kopieren?',
         'Aus Datei emotes.json',
         'Export aus HandOfBlood,',
         'Ziel: handofblood · Set set-7',
         'Achtung: Das aktive Emote-Set',
-        'Das Set hätte danach 1001 von 1000 Slots belegt.',
-        'Das überschreitet die Kapazität',
+        'Das Set hätte danach 1000 von 1000 Slots belegt.',
         'Der letzte Abgleich des Zielkanals ist fehlgeschlagen.',
         '1 Emote ist bereits im Zielset',
-        '1 Name ist im Zielset schon vergeben:',
+        '1 Name ist im Zielset schon vergeben, wird nicht übertragen:',
         '1 Name enthält Zeichen, die 7TV nicht anlegen kann:',
         '2 ungültige Zeilen in der Quelle verworfen.',
         '3 doppelte Zeilen in der Quelle zusammengefasst.',
@@ -798,6 +880,99 @@ describe('ImportConfirmDialog', () => {
       ];
 
       expect(inRenderedOrder(dialog.text(), contract)).toEqual(contract);
+    });
+  });
+
+  describe('target label and grouping (spec 8.6, AK 38/39/40)', () => {
+    it('names the channel and the set in the header when both are known', () => {
+      const dialog = render({
+        targetChannelName: 'handofblood',
+        target: readyTarget({ setName: 'Halloween' }),
+      });
+
+      expect(dialog.text()).toContain('Ziel: handofblood · Set Halloween');
+    });
+
+    it('falls back to the raw set id when the loader has no set name (the "today" path)', () => {
+      const dialog = render({
+        targetChannelName: 'handofblood',
+        target: readyTarget({ setId: 'set-9', setName: null }),
+      });
+
+      expect(dialog.text()).toContain('Ziel: handofblood · Set set-9');
+    });
+
+    it('names the owner and the set for an untracked target, not a channel', () => {
+      const dialog = render({
+        targetChannelName: null,
+        targetOwnerDisplayName: 'SomeEditor',
+        target: readyTarget({ setName: 'Wegwerf-Set' }),
+      });
+
+      expect(dialog.text()).toContain('Ziel: Set Wegwerf-Set von SomeEditor');
+      expect(dialog.text()).not.toContain('Ziel: handofblood');
+    });
+
+    it('reproduces the Halloween-set import proportions and the projection without an overflow banner (AK 38)', () => {
+      const ALREADY_PRESENT_COUNT = 328;
+      const ALIAS_MISMATCH_COUNT = 10;
+      const NAME_COLLISION_COUNT = 192;
+      const TO_ADD_COUNT = 232;
+
+      const targetEmotes: { sevenTvEmoteId: string; name: string }[] = [];
+      const sourceRows: ReturnType<typeof row>[] = [];
+
+      for (let index = 0; index < ALREADY_PRESENT_COUNT; index++) {
+        const id = `present-${index}`;
+        targetEmotes.push({ sevenTvEmoteId: id, name: `Present${index}` });
+        sourceRows.push(row(id, `Present${index}`));
+      }
+      for (let index = 0; index < ALIAS_MISMATCH_COUNT; index++) {
+        const id = `mismatch-${index}`;
+        targetEmotes.push({ sevenTvEmoteId: id, name: `TargetAlias${index}` });
+        sourceRows.push(row(id, `SourceAlias${index}`));
+      }
+      for (let index = 0; index < NAME_COLLISION_COUNT; index++) {
+        targetEmotes.push({ sevenTvEmoteId: `collision-target-${index}`, name: `Collide${index}` });
+        sourceRows.push(row(`collision-source-${index}`, `Collide${index}`));
+      }
+      for (let index = 0; index < TO_ADD_COUNT; index++) {
+        sourceRows.push(row(`new-${index}`, `New${index}`));
+      }
+
+      expect(sourceRows.length).toBe(762);
+
+      const dialog = render({
+        source: channelSource(sourceRows),
+        target: readyTarget({
+          setId: 'set-halloween',
+          setName: 'Halloween',
+          occupiedSlots: 687,
+          capacity: 1000,
+          emotes: targetEmotes,
+        }),
+      });
+
+      expect(dialog.title()).toBe(`${TO_ADD_COUNT} Emotes nach targetchannel kopieren?`);
+      expect(dialog.text()).toContain(
+        `${ALREADY_PRESENT_COUNT} Emotes sind bereits im Zielset und werden übersprungen.`,
+      );
+      expect(dialog.text()).toContain(
+        `${ALIAS_MISMATCH_COUNT} sind vorhanden, heißen dort aber anders:`,
+      );
+      expect(dialog.text()).toContain(
+        `${NAME_COLLISION_COUNT} Namen sind im Zielset schon vergeben, werden nicht übertragen:`,
+      );
+      // 687 occupied + 232 toAdd = 919, comfortably under the capacity of 1000 — no overflow line.
+      expect(dialog.text()).toContain('Das Set hätte danach 919 von 1000 Slots belegt.');
+      expect(dialog.text()).not.toContain('Das überschreitet die Kapazität');
+
+      // AK 40: none of the excluded rows (collisions or alias mismatches) reach the run at all —
+      // the eventual `failed` count downstream is 0 for them, because they were never attempted.
+      dialog.button(EXECUTE).click();
+      expect(closed[0]?.rows.length).toBe(TO_ADD_COUNT);
+      expect(closed[0]?.rows.some((r) => r.name.startsWith('Collide'))).toBe(false);
+      expect(closed[0]?.rows.some((r) => r.name.startsWith('SourceAlias'))).toBe(false);
     });
   });
 });

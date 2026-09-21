@@ -103,6 +103,13 @@ public interface IChannelService
 
     Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default);
 
+    // Spec 2026-09-20, 6.2: the target picker's "is this account one of our tracked channels?"
+    // question, asked by Twitch id rather than by name — a 7TV editor grant and the picker's own
+    // account both carry an id, never a channel name to look up by. IsBotActive = true only: a
+    // channel we once tracked and then left is, for this endpoint's purpose, exactly as untracked as
+    // one we never joined — its ActiveEmoteSetId is stale, not a live observed state (E21).
+    Task<Channel?> GetActiveByTwitchChannelIdAsync(string twitchChannelId, CancellationToken cancellationToken = default);
+
     // The normalized names of every channel the bot is currently meant to be in — the worker's
     // boot recovery and its periodic 7TV resync both start from this list. Exists as a service
     // method rather than as the identical inline query both hosted services used to carry, because

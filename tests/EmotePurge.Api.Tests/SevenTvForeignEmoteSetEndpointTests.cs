@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text.Json;
 using EmotePurge.Api.Validation;
+using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using NSubstitute;
 using Xunit;
 
@@ -33,6 +35,9 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
         _factory = factory;
         _factory.ChannelAccess.ClearReceivedCalls();
         _factory.ForeignEmoteSet.ClearReceivedCalls();
+        _factory.EditorService.ClearReceivedCalls();
+        _factory.EmoteSetList.ClearReceivedCalls();
+        _factory.Channels.ClearReceivedCalls();
     }
 
     [Fact]
@@ -167,6 +172,161 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
     }
 
+    // AK 26/27 (spec 2026-09-20, 6.4): the ?emoteSetId= query parameter on this same route —
+    // format-rejected before the handler, and switching the service call to the set-ID mode when
+    // it is present and valid.
+
+    [Fact]
+    public async Task EmoteSetIdQueryParam_Malformed_Gets400_WithoutCallingTheService()
+    {
+        var response = await SendAsync(Channel, NewUserId(), emoteSetId: "../x");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.ForeignEmoteSet.DidNotReceive().GetForeignEmoteSetAsync(
+            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        await _factory.ForeignEmoteSet.DidNotReceive().GetForeignEmoteSetBySetIdAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task EmoteSetIdQueryParam_Valid_CallsTheSetIdModeWithTheGivenIdAndRefresh_NotTheLoginMode()
+    {
+        const string setId = "01FRY81K4800085N93FNKSBYXS";
+        var emoteSet = new ForeignEmoteSet(Channel, null, setId, 0, false, []);
+        _factory.ForeignEmoteSet.GetForeignEmoteSetBySetIdAsync(Channel, setId, Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetLookupResult.Ok(emoteSet));
+
+        var response = await SendAsync(Channel, NewUserId(), emoteSetId: setId, refresh: true);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _factory.ForeignEmoteSet.Received(1).GetForeignEmoteSetBySetIdAsync(Channel, setId, true, Arg.Any<CancellationToken>());
+        await _factory.ForeignEmoteSet.DidNotReceive().GetForeignEmoteSetAsync(
+            Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task EmoteSetIdQueryParam_Valid_ReturnsTheSetModeBody_WithANullSevenTvUserId()
+    {
+        const string setId = "01FRY81K4800085N93FNKSBYXS";
+        var emoteSet = new ForeignEmoteSet(
+            Channel, null, setId, 1, false,
+            [new ForeignEmoteRow("e1", "Alias", "Default", "https://cdn.7tv.app/emote/e1/4x_static.webp", 500, 12)],
+            "Some set", 956);
+        _factory.ForeignEmoteSet.GetForeignEmoteSetBySetIdAsync(Channel, setId, Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetLookupResult.Ok(emoteSet));
+
+        var response = await SendAsync(Channel, NewUserId(), emoteSetId: setId);
+
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(setId, body.GetProperty("emoteSetId").GetString());
+        Assert.Equal("Some set", body.GetProperty("emoteSetName").GetString());
+        Assert.Equal(956, body.GetProperty("capacity").GetInt32());
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("sevenTvUserId").ValueKind);
+    }
+
+    // AK 25 (spec 2026-09-20, 6.2): GET /api/seventv/me/emote-set-targets.
+
+    [Fact]
+    public async Task EmoteSetTargets_ListsOwnAccountFirst_ThenEditorAccountsOrdinalByLogin_WithTrackedChannelNameWhenApplicable()
+    {
+        const string ownTwitchId = "1000";
+        const string ownLogin = "owner";
+
+        _factory.EditorService.GetEditorGrantsAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(
+                new HashSet<string> { "trackedmod", "untrackedmod" },
+                new HashSet<string> { "2000", "3000" },
+                [
+                    new SevenTvEditorGrantEntry("untrackedmod", "3000"),
+                    new SevenTvEditorGrantEntry("trackedmod", "2000"),
+                ])));
+
+        _factory.Channels.GetActiveByTwitchChannelIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+        _factory.Channels.GetActiveByTwitchChannelIdAsync("2000", Arg.Any<CancellationToken>())
+            .Returns(new Channel
+            {
+                ChannelName = "trackedmod",
+                TwitchChannelId = "2000",
+                ActiveEmoteSetId = "set-tracked",
+                IsBotActive = true,
+            });
+        _factory.Channels.GetActiveByTwitchChannelIdAsync("3000", Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+
+        _factory.EmoteSetList.ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(null, [])));
+
+        var response = await SendMeAsync(ownTwitchId, ownLogin);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var accounts = body.GetProperty("accounts").EnumerateArray().ToList();
+
+        Assert.Equal(3, accounts.Count);
+        Assert.True(accounts[0].GetProperty("isOwnAccount").GetBoolean());
+        Assert.Equal(ownLogin, accounts[0].GetProperty("twitchLogin").GetString());
+        Assert.Equal(JsonValueKind.Null, accounts[0].GetProperty("trackedChannelName").ValueKind);
+
+        // editor_of accounts ordinal by twitchLogin: "trackedmod" before "untrackedmod", even though
+        // the grants came back in the opposite order above.
+        Assert.Equal("trackedmod", accounts[1].GetProperty("twitchLogin").GetString());
+        Assert.False(accounts[1].GetProperty("isOwnAccount").GetBoolean());
+        Assert.Equal("trackedmod", accounts[1].GetProperty("trackedChannelName").GetString());
+
+        Assert.Equal("untrackedmod", accounts[2].GetProperty("twitchLogin").GetString());
+        Assert.Equal(JsonValueKind.Null, accounts[2].GetProperty("trackedChannelName").ValueKind);
+
+        Assert.False(body.GetProperty("sevenTvUnavailable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task EmoteSetTargets_Answers_OnlyTheOwnAccount_AndSevenTvUnavailableTrue_WhenTheGrantsLookupFails()
+    {
+        const string ownTwitchId = "5000";
+
+        _factory.EditorService.GetEditorGrantsAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Failed(SevenTvLookupStatus.Unavailable));
+        _factory.Channels.GetActiveByTwitchChannelIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+        _factory.EmoteSetList.ListByTwitchIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(null, [])));
+
+        var response = await SendMeAsync(ownTwitchId, "owner");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var accounts = body.GetProperty("accounts").EnumerateArray().ToList();
+
+        var account = Assert.Single(accounts);
+        Assert.True(account.GetProperty("isOwnAccount").GetBoolean());
+        Assert.True(body.GetProperty("sevenTvUnavailable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task EmoteSetTargets_MarksTheAccountSetsUnavailable_WhenItsOwnListLookupFails()
+    {
+        const string ownTwitchId = "6000";
+
+        _factory.EditorService.GetEditorGrantsAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(new HashSet<string>(), new HashSet<string>())));
+        _factory.Channels.GetActiveByTwitchChannelIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+        _factory.EmoteSetList.ListByTwitchIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Failed(EmoteSetListStatus.Unavailable));
+
+        var response = await SendMeAsync(ownTwitchId, "owner");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var account = Assert.Single(body.GetProperty("accounts").EnumerateArray());
+
+        Assert.True(account.GetProperty("setsUnavailable").GetBoolean());
+        Assert.Empty(account.GetProperty("sets").EnumerateArray());
+        Assert.True(body.GetProperty("sevenTvUnavailable").GetBoolean());
+    }
+
     private static string NewUserId() => Guid.NewGuid().ToString("N");
 
     private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage response)
@@ -175,19 +335,51 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
         return JsonDocument.Parse(body).RootElement.GetProperty("errorCode").GetString();
     }
 
-    private async Task<HttpResponseMessage> SendAsync(string channelName, string? userId, bool refresh = false)
+    private async Task<HttpResponseMessage> SendAsync(
+        string channelName, string? userId, bool refresh = false, string? emoteSetId = null)
     {
         var client = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
         });
 
-        var path = $"/api/seventv/channels/{channelName}/emotes" + (refresh ? "?refresh=true" : "");
+        var query = new List<string>();
+        if (refresh)
+        {
+            query.Add("refresh=true");
+        }
+
+        if (emoteSetId is not null)
+        {
+            query.Add($"emoteSetId={emoteSetId}");
+        }
+
+        var path = $"/api/seventv/channels/{channelName}/emotes" + (query.Count > 0 ? "?" + string.Join("&", query) : "");
         var request = new HttpRequestMessage(HttpMethod.Get, path);
         if (userId is not null)
         {
             request.Headers.Add(TestAuthHandler.UserIdHeader, userId);
             request.Headers.Add(TestAuthHandler.LoginHeader, "someuser");
+        }
+
+        return await client.SendAsync(request);
+    }
+
+    private async Task<HttpResponseMessage> SendMeAsync(string? userId, string? login = "someuser")
+    {
+        var client = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/seventv/me/emote-set-targets");
+        if (userId is not null)
+        {
+            request.Headers.Add(TestAuthHandler.UserIdHeader, userId);
+            if (login is not null)
+            {
+                request.Headers.Add(TestAuthHandler.LoginHeader, login);
+            }
         }
 
         return await client.SendAsync(request);

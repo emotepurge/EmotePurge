@@ -93,20 +93,96 @@ public sealed class HardenedForeignEmoteSetService(
         // the rest. This caller's own token is handed to the coalescer, which applies it to this
         // caller's wait alone. The abandoned work still completes and still fills the cache.
         return await coalescer.CoalesceAsync(
-            normalized, () => ExecuteGuardedAsync(normalized, CancellationToken.None), cancellationToken);
+            normalized,
+            () => ExecuteGuardedAsync(
+                normalized,
+                () => inner.GetForeignEmoteSetAsync(normalized, refresh: false, CancellationToken.None),
+                emoteSet => cache.SetAsync(normalized, emoteSet, CancellationToken.None)),
+            cancellationToken);
     }
 
-    private async Task<ForeignEmoteSetLookupResult> ExecuteGuardedAsync(string normalizedChannelName, CancellationToken cancellationToken)
+    public async Task<ForeignEmoteSetLookupResult> GetForeignEmoteSetBySetIdAsync(
+        string channelName, string emoteSetId, bool refresh = false, CancellationToken cancellationToken = default)
     {
-        var decision = breaker.TryAcquire();
+        var normalizedChannel = ChannelName.Normalize(channelName);
+
+        if (!refresh)
+        {
+            var cached = await cache.TryGetBySetIdAsync(emoteSetId, cancellationToken);
+            telemetry.RecordCacheLookup(RateLimitCacheNames.ForeignEmoteSetBySetId, hit: cached is not null);
+            if (cached is not null)
+            {
+                return EchoRouteChannel(ForeignEmoteSetLookupResult.Ok(cached), normalizedChannel);
+            }
+        }
+
+        // Coalescing key "set:{id}" (spec E12) — deliberately its own namespace within the shared
+        // coalescer, distinct from the bare normalized login GetForeignEmoteSetAsync above uses as
+        // its key. A Twitch login can never contain a colon, so the two key spaces are disjoint by
+        // construction: a set-ID lookup for X and a login lookup that happens to resolve to the same
+        // account's active set never share one in-flight entry, and neither ever coalesces onto the
+        // other's cache write (AK 26, spec 19's Prüfaufgabe).
+        var coalesceKey = $"set:{emoteSetId}";
+        var result = await coalescer.CoalesceAsync(
+            coalesceKey,
+            () => ExecuteGuardedAsync(
+                emoteSetId,
+                () => inner.GetForeignEmoteSetBySetIdAsync(normalizedChannel, emoteSetId, refresh: false, CancellationToken.None),
+                emoteSet => cache.SetBySetIdAsync(emoteSetId, emoteSet, CancellationToken.None)),
+            cancellationToken);
+
+        return EchoRouteChannel(result, normalizedChannel);
+    }
+
+    /// <summary>
+    /// Set-ID cache entries and coalesced executions are shared across every channel that happens to
+    /// ask about the same set (cache key <c>7tvforeign:set:{setId}</c>, coalescing key
+    /// <c>set:{setId}</c> — both deliberately channel-free, spec E12) — so a reused entry carries
+    /// whichever caller's <see cref="ForeignEmoteSet.ChannelName"/> happened to populate it, not this
+    /// caller's route channel. <see cref="IForeignEmoteSetService.GetForeignEmoteSetBySetIdAsync"/>'s
+    /// contract is that <c>ChannelName</c> always echoes the current route (spec 6.4), so every reuse
+    /// — a cache hit and a coalesced miss alike — corrects it here before the result leaves this
+    /// method. A first, uncoalesced miss for a set nobody else is asking about needs no correction
+    /// (the inner chain already echoed this same caller's channel), which is why this stays a no-op
+    /// rather than an unconditional allocation.
+    /// </summary>
+    private static ForeignEmoteSetLookupResult EchoRouteChannel(ForeignEmoteSetLookupResult result, string normalizedChannel)
+    {
+        if (result.Status != ForeignEmoteSetLookupStatus.Ok || result.EmoteSet!.ChannelName == normalizedChannel)
+        {
+            return result;
+        }
+
+        return ForeignEmoteSetLookupResult.Ok(result.EmoteSet with { ChannelName = normalizedChannel });
+    }
+
+    /// <summary>
+    /// The shared guarded execution behind both public methods: breaker, then the provider-wide
+    /// concurrency budget, then the caller-supplied <paramref name="resolve"/> chain, then (on
+    /// success) <paramref name="writeCache"/>. Both read modes share this — and, with it, the same
+    /// <see cref="ForeignSevenTvBreakerOperations.ForeignPreview"/> operation and the same budget —
+    /// because F6 (spec 2026-09-20) is explicit that hardening "wie heute" applies to the set-ID mode
+    /// too: it is the same 7TV bucket and the same preview query shape, just without the two
+    /// resolution calls in front of it.
+    /// </summary>
+    /// <param name="logIdentifier">
+    /// What log lines below name — the normalized channel for the login mode, the set id for the
+    /// set-ID mode (which has no identity to resolve and so nothing else to log).
+    /// </param>
+    private async Task<ForeignEmoteSetLookupResult> ExecuteGuardedAsync(
+        string logIdentifier,
+        Func<Task<ForeignEmoteSetLookupResult>> resolve,
+        Func<ForeignEmoteSet, Task> writeCache)
+    {
+        var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.ForeignPreview);
         if (!decision.Allowed)
         {
             // Deliberately not louder than Debug: this fires on every rejected request while the
             // breaker is open, and the one event worth a real log line — the breaker actually opening
             // — is logged exactly once, below, at the point the transition happens.
             logger.LogDebug(
-                "Fremdkanal-Vorschau für {ChannelName}: Circuit-Breaker offen, kein Upstream-Aufruf (verbleibende Offenzeit {RemainingSeconds}s).",
-                normalizedChannelName, Math.Ceiling(decision.RemainingOpenTime.TotalSeconds));
+                "Fremdkanal-Vorschau für {Identifier}: Circuit-Breaker offen, kein Upstream-Aufruf (verbleibende Offenzeit {RemainingSeconds}s).",
+                logIdentifier, Math.Ceiling(decision.RemainingOpenTime.TotalSeconds));
             return ForeignEmoteSetLookupResult.Failed(
                 decision.OpenedByRateLimit
                     ? ForeignEmoteSetLookupStatus.SevenTvRateLimited
@@ -117,26 +193,26 @@ public sealed class HardenedForeignEmoteSetService(
         IDisposable? permit = null;
         try
         {
-            permit = await budget.TryAcquireConcurrencySlotAsync(BudgetWaitTimeout, cancellationToken);
+            permit = await budget.TryAcquireConcurrencySlotAsync(BudgetWaitTimeout, CancellationToken.None);
             if (permit is null)
             {
                 logger.LogWarning(
-                    "Fremdkanal-Vorschau für {ChannelName}: providerweites 7TV-Budget nach {TimeoutSeconds}s Wartezeit nicht verfügbar.",
-                    normalizedChannelName, BudgetWaitTimeout.TotalSeconds);
+                    "Fremdkanal-Vorschau für {Identifier}: providerweites 7TV-Budget nach {TimeoutSeconds}s Wartezeit nicht verfügbar.",
+                    logIdentifier, BudgetWaitTimeout.TotalSeconds);
                 // Never reached the inner chain — nothing to tell the breaker about 7TV's health, but
                 // the probe slot (if this was one) still needs releasing.
-                breaker.ReleaseProbeWithoutOutcome(decision.Generation);
+                breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.ForeignPreview, decision.Generation);
                 breakerResolved = true;
                 return ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable);
             }
 
-            var result = await inner.GetForeignEmoteSetAsync(normalizedChannelName, refresh: false, cancellationToken);
-            LogBreakerTransition(normalizedChannelName, result.Status, ApplyBreakerFeedback(result, decision.Generation));
+            var result = await resolve();
+            LogBreakerTransition(logIdentifier, result.Status, ApplyBreakerFeedback(result, decision.Generation));
             breakerResolved = true;
 
             if (result.Status == ForeignEmoteSetLookupStatus.Ok)
             {
-                await cache.SetAsync(normalizedChannelName, result.EmoteSet!, cancellationToken);
+                await writeCache(result.EmoteSet!);
             }
 
             return result;
@@ -148,7 +224,7 @@ public sealed class HardenedForeignEmoteSetService(
                 // Backstop for a genuinely unexpected exception (including cancellation) that skipped
                 // every other resolution path above — treated as a plain failure, never a rate limit:
                 // whatever happened here is not something 7TV told us.
-                breaker.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
+                breaker.RecordFailure(ForeignSevenTvBreakerOperations.ForeignPreview, ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
             }
 
             permit?.Dispose();
@@ -170,11 +246,11 @@ public sealed class HardenedForeignEmoteSetService(
     {
         ForeignEmoteSetLookupStatus.Ok
             or ForeignEmoteSetLookupStatus.NoSevenTvAccount
-            or ForeignEmoteSetLookupStatus.NoActiveEmoteSet => breaker.RecordSuccess(generation),
+            or ForeignEmoteSetLookupStatus.NoActiveEmoteSet => breaker.RecordSuccess(ForeignSevenTvBreakerOperations.ForeignPreview, generation),
         ForeignEmoteSetLookupStatus.SevenTvRateLimited =>
-            breaker.RecordFailure(ForeignSevenTvBreakerOutcome.RateLimited, result.RetryAfter, generation),
+            breaker.RecordFailure(ForeignSevenTvBreakerOperations.ForeignPreview, ForeignSevenTvBreakerOutcome.RateLimited, result.RetryAfter, generation),
         ForeignEmoteSetLookupStatus.SevenTvUnavailable =>
-            breaker.RecordFailure(ForeignSevenTvBreakerOutcome.OtherFailure, null, generation),
+            breaker.RecordFailure(ForeignSevenTvBreakerOperations.ForeignPreview, ForeignSevenTvBreakerOutcome.OtherFailure, null, generation),
         ForeignEmoteSetLookupStatus.ChannelNotOnTwitch
             or ForeignEmoteSetLookupStatus.TwitchUnavailable
             or ForeignEmoteSetLookupStatus.ProviderBudgetExhausted =>
@@ -184,11 +260,11 @@ public sealed class HardenedForeignEmoteSetService(
 
     private ForeignSevenTvBreakerTransition ReleaseProbeAsNoEvidence(long generation)
     {
-        breaker.ReleaseProbeWithoutOutcome(generation);
+        breaker.ReleaseProbeWithoutOutcome(ForeignSevenTvBreakerOperations.ForeignPreview, generation);
         return ForeignSevenTvBreakerTransition.None;
     }
 
-    private void LogBreakerTransition(string normalizedChannelName, ForeignEmoteSetLookupStatus status, ForeignSevenTvBreakerTransition transition)
+    private void LogBreakerTransition(string logIdentifier, ForeignEmoteSetLookupStatus status, ForeignSevenTvBreakerTransition transition)
     {
         switch (transition)
         {
@@ -197,8 +273,8 @@ public sealed class HardenedForeignEmoteSetService(
                 // rejected request (spec section 6): a transition only ever happens on the call that
                 // causes it, never on the many rejections that follow while it stays open.
                 logger.LogWarning(
-                    "7TV-Circuit-Breaker für Fremdkanal-Vorschauen geöffnet (ausgelöst durch Kanal {ChannelName}, Status {Status}).",
-                    normalizedChannelName, status);
+                    "7TV-Circuit-Breaker für Fremdkanal-Vorschauen geöffnet (ausgelöst durch {Identifier}, Status {Status}).",
+                    logIdentifier, status);
                 break;
             case ForeignSevenTvBreakerTransition.Closed:
                 logger.LogInformation("7TV-Circuit-Breaker für Fremdkanal-Vorschauen wieder geschlossen.");

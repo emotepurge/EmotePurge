@@ -24,6 +24,13 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     private const string SourceChannelNameProperty = "sourceChannelName";
     private const string LeaderboardSortProperty = "leaderboardSort";
 
+    // The import ladder's target (spec 6.7): written by MarkImportedAsync when a set was reported
+    // (E5) and always by MarkImportedToSetAsync. Not part of AuditLogDetail.Kinds — they never pick
+    // a Kind, they annotate whichever import Kind was already chosen above with AuditLogTargetEmoteSet.
+    private const string TargetEmoteSetIdProperty = "targetEmoteSetId";
+    private const string TargetIsActiveSetOfChannelProperty = "targetIsActiveSetOfChannel";
+    private const string TargetOwnerTwitchLoginProperty = "targetOwnerTwitchLogin";
+
     // The closed vocabulary the endpoint accepts for that discriminator (EmoteEndpoints, F5.1/F1).
     // Both channel-shaped kinds render as ImportedFromChannel: what the row has to preserve is that
     // the emotes came from a channel and which one, not through which of the two read paths we saw
@@ -188,8 +195,57 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
         }
 
         var sourceKind = sourceKindElement.GetString();
-        return TryProjectLeaderboardDetail(root, sourceKind, out detail)
-            || TryProjectChannelOrFileDetail(root, sourceKind, out detail);
+        if (!(TryProjectLeaderboardDetail(root, sourceKind, out detail)
+            || TryProjectChannelOrFileDetail(root, sourceKind, out detail)))
+        {
+            return false;
+        }
+
+        // AK 32/spec 6.7: annotates whichever import Kind was just chosen with the target set, if the
+        // payload names one. A row written before targetEmoteSetId existed, or one from a client that
+        // omitted it (E5), simply has no property here — ReadTargetEmoteSet returns null and the
+        // detail stays exactly as the two methods above built it.
+        var targetEmoteSet = ReadTargetEmoteSet(root);
+        if (targetEmoteSet is not null)
+        {
+            detail = detail! with { TargetEmoteSet = targetEmoteSet };
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the import ladder's target (spec 6.7) off an already-parsed details payload. Returns
+    /// null — not a throw — whenever <c>targetEmoteSetId</c> is missing, not a non-empty string, or
+    /// simply absent (E5: a valid, complete row with no set reported at all).
+    /// </summary>
+    private static AuditLogTargetEmoteSet? ReadTargetEmoteSet(JsonElement root)
+    {
+        if (!root.TryGetProperty(TargetEmoteSetIdProperty, out var idElement)
+            || idElement.ValueKind != JsonValueKind.String
+            || idElement.GetString() is not { Length: > 0 } id)
+        {
+            return null;
+        }
+
+        // Three-valued (E5): missing or non-boolean reads as null ("not applicable"/"not reported"),
+        // never coerced to false — the set-centric endpoint never writes this property at all, since
+        // its target set has no channel of ours to compare against.
+        bool? isActiveSetOfChannel = root.TryGetProperty(TargetIsActiveSetOfChannelProperty, out var activeElement)
+            ? activeElement.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => null,
+            }
+            : null;
+
+        string? ownerLogin = root.TryGetProperty(TargetOwnerTwitchLoginProperty, out var ownerElement)
+            && ownerElement.ValueKind == JsonValueKind.String
+                ? ownerElement.GetString()
+                : null;
+
+        return new AuditLogTargetEmoteSet(id, isActiveSetOfChannel, ownerLogin);
     }
 
     /// <summary>

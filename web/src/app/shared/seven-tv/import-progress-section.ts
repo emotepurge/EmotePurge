@@ -55,7 +55,17 @@ import { RunProgressPanel } from './run-progress-panel';
       @if (importService.run(); as run) {
         <div class="flex flex-col gap-2">
           <p class="text-xs text-fg-muted">
-            {{ 'import.summary.target' | transloco: { channel: run.targetChannelName } }}
+            <!-- targetChannelName is null for an untracked run (T2.6, spec 8.6) — there is no
+                 channel of ours to name, so this reads off the set/owner the picker's own
+                 confirmation already named instead (import-target-dialog.ts). -->
+            @if (run.targetChannelName; as targetChannelName) {
+              {{ 'import.summary.target' | transloco: { channel: targetChannelName } }}
+            } @else {
+              {{
+                'import.summary.targetSet'
+                  | transloco: { setId: run.targetSetId, owner: run.targetOwnerDisplayName ?? '' }
+              }}
+            }
           </p>
           <app-run-progress-panel
             [items]="importService.queue()"
@@ -79,12 +89,16 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ noticeKey | transloco }}
                 </span>
               }
-              <a
-                appButton="outline"
-                [routerLink]="['/channels', run.targetChannelName, 'usage-stats']"
-              >
-                {{ 'import.summary.openTarget' | transloco }}
-              </a>
+              <!-- No channel of ours to open for an untracked run (T2.6) — the link simply does
+                   not render rather than pointing at '/channels/null/usage-stats'. -->
+              @if (run.targetChannelName; as targetChannelName) {
+                <a
+                  appButton="outline"
+                  [routerLink]="['/channels', targetChannelName, 'usage-stats']"
+                >
+                  {{ 'import.summary.openTarget' | transloco }}
+                </a>
+              }
             </ng-container>
           </app-run-progress-panel>
         </div>

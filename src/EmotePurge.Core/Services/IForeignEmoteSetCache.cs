@@ -15,4 +15,16 @@ public interface IForeignEmoteSetCache
 
     /// <summary>Fail-open: a lost write only costs the next request a live lookup.</summary>
     Task SetAsync(string normalizedChannelName, ForeignEmoteSet emoteSet, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The set-ID read mode's own key space (spec 2026-09-20, E12): a second namespace in the same
+    /// cache, never the same key as <see cref="TryGetAsync"/>/<see cref="SetAsync"/> for the same
+    /// channel — an entry read by set id must never be overwritten by, or overwrite, the entry for
+    /// that channel's currently active set, and vice versa. Fail-open, same as
+    /// <see cref="TryGetAsync"/>.
+    /// </summary>
+    Task<ForeignEmoteSet?> TryGetBySetIdAsync(string emoteSetId, CancellationToken cancellationToken = default);
+
+    /// <summary>The set-ID key space's write side. Fail-open, same as <see cref="SetAsync"/>.</summary>
+    Task SetBySetIdAsync(string emoteSetId, ForeignEmoteSet emoteSet, CancellationToken cancellationToken = default);
 }

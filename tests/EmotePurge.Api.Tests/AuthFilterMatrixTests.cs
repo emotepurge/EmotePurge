@@ -41,6 +41,8 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.Channels.ClearReceivedCalls();
         factory.ResyncCooldown.ClearReceivedCalls();
         factory.Emotes.ClearReceivedCalls();
+        factory.EmoteSetList.ClearReceivedCalls();
+        factory.EmoteSetOwnership.ClearReceivedCalls();
 
         // Default to "the slot was free", so the cooldown never masks the status code a test is
         // actually asserting. The one case that cares sets it explicitly.
@@ -59,9 +61,12 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/mine")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
     [InlineData("GET", "/api/channels/testchannel/emotes")]
+    [InlineData("GET", "/api/channels/testchannel/emote-sets")]
     [InlineData("GET", "/api/channels/testchannel/emotes/set-warning")]
+    [InlineData("GET", "/api/seventv/me/emote-set-targets")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-restored")]
     [InlineData("POST", "/api/channels/testchannel/emotes/sync-imported")]
+    [InlineData("POST", "/api/seventv/emote-sets/01GV88A38G0006FW5TVZVMG507/sync-imported")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
     [InlineData("POST", "/api/channels/testchannel/vote-sessions/1/votes")]
@@ -327,6 +332,102 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
     }
 
+    // AK 22 (spec 2026-09-20, 6.1): the set-listing route's five documented states — the anonymous
+    // 401 case lives in the matrix Theory above, these are the four that need per-case setup.
+
+    [Fact]
+    public async Task EmoteSets_Answers403_ForACallerWithoutUsageStatsAccess()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task EmoteSets_Answers404_ForAnUnknownChannel()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>()).Returns((Channel?)null);
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task EmoteSets_Answers200WithAnEmptyList_WhenTheChannelHasNoTwitchChannelId()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel, TwitchChannelId = null, ActiveEmoteSetId = "" });
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Empty(body.GetProperty("sets").EnumerateArray());
+        await _factory.EmoteSetList.DidNotReceive().ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task EmoteSets_Answers503_OnA7TvFailure()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.GetByNameAsync(Channel, Arg.Any<CancellationToken>())
+            .Returns(new Channel { ChannelName = Channel, TwitchChannelId = "1234", ActiveEmoteSetId = "set-a" });
+        _factory.EmoteSetList.ListByTwitchIdAsync("1234", Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Failed(EmoteSetListStatus.Unavailable));
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/emote-sets", NewUserId());
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ForeignChannelSevenTvUnavailable, await ReadErrorCodeAsync(response));
+    }
+
+    // AK 27 (spec 2026-09-20, E14): a malformed emoteSetId on any of the three /usage-stats/* routes
+    // is a 400 the EmoteSetIdValidationFilter answers before the handler — and therefore before
+    // IUsageStatQueryService is ever asked anything.
+
+    [Theory]
+    [InlineData("/totals")]
+    [InlineData("/daily")]
+    [InlineData("/series")]
+    public async Task UsageStats_Answers400_ForAMalformedEmoteSetId(string subRoute)
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var query = subRoute == "/daily"
+            ? "emoteId=e1&from=2026-01-01&to=2026-01-02&emoteSetId=../x"
+            : "from=2026-01-01&to=2026-01-02&emoteSetId=../x";
+
+        var response = await SendAsync("GET", $"/api/channels/{Channel}/usage-stats{subRoute}?{query}", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task SetWarning_Answers400_ForAMalformedEmoteSetId()
+    {
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync(
+            "GET", $"/api/channels/{Channel}/emotes/set-warning?emoteSetId={new string('a', 33)}", NewUserId());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.EmoteSetOwnership.DidNotReceive().CheckAsync(
+            Arg.Any<string>(), Arg.Any<TwitchPrincipalInfo?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task SyncRestored_Answers403_ForACallerWithoutUsageStatsAccess()
     {
@@ -380,6 +481,24 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.EmoteIdsEmpty, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task SyncImported_Answers400_ForAMalformedTargetEmoteSetId()
+    {
+        // AK 29 (spec 6.7, E5/E14): TargetEmoteSetId is a body field, not a query/route parameter, so
+        // EmoteSetIdValidationFilter never sees it — the check runs inline in the handler instead.
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "file", "targetEmoteSetId": "../x"}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-imported", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        await _factory.Emotes.DidNotReceive().MarkImportedAsync(
+            Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -439,7 +558,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": "handofblood", "sourceKind": "seventv-channel"}""";
@@ -453,6 +572,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             "seventv-channel",
             null,
             Arg.Any<AuditActor>(),
+            null,
             Arg.Any<CancellationToken>());
     }
 
@@ -472,7 +592,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -522,7 +642,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TRENDING_DAILY"}""";
@@ -536,6 +656,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             "seventv-leaderboard",
             "TRENDING_DAILY",
             Arg.Any<AuditActor>(),
+            null,
             Arg.Any<CancellationToken>());
     }
 
@@ -548,7 +669,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(true);
         _factory.Emotes.MarkImportedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
         var body = """{"sevenTvEmoteIds": ["7tv-x1"], "sourceChannelName": null, "sourceKind": "seventv-leaderboard", "leaderboardSort": "TOP_ALL_TIME"}""";
@@ -573,7 +694,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -628,7 +749,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidSourceKind, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkImportedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<string?>(), Arg.Any<string>(),
-            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

@@ -38,6 +38,25 @@ export type AuditDetailKind =
   | 'importedFromLeaderboard';
 
 /**
+ * The import ladder's target (spec 2026-09-20, 6.7), present on an import `AuditLogDetail`
+ * whenever the row's `DetailsJson` named a target set: optionally on the channel-scoped
+ * `sync-imported` (E5) or always on the set-centric endpoint. `id`/`ownerLogin` are never a display
+ * name — identification is by id, and the paper trail records a Twitch login rather than 7TV's own
+ * (changeable) display name.
+ */
+export interface AuditLogTargetEmoteSet {
+  id: string;
+  /**
+   * Three-valued (E5): `true`/`false` when the channel-scoped endpoint compared the reported set
+   * against the channel's active set at write time, `null` when no set was reported, or — for the
+   * set-centric endpoint — because there is no channel of ours to compare against at all.
+   */
+  isActiveSetOfChannel: boolean | null;
+  /** The set's owner, as a Twitch login — `null` for the channel-scoped endpoint. */
+  ownerLogin: string | null;
+}
+
+/**
  * The renderable part of an entry's details, already reduced to a closed set of shapes by the
  * server. `count` is set for the counting kinds, `text` for the naming ones.
  *
@@ -49,11 +68,17 @@ export type AuditDetailKind =
  * `kind` is typed `AuditDetailKind | (string & {})` rather than plain `AuditDetailKind | string`:
  * the intersection keeps editor autocomplete offering the known literals while still widening to
  * any string, which a bare union with `string` would swallow.
+ *
+ * `targetEmoteSet` is optional, not just nullable: this field lands here in T2.4 purely additively,
+ * ahead of the view that renders it (T2.6) — every existing literal that builds an `AuditLogDetail`
+ * without it (tests, e2e mocks) stays valid rather than needing a mechanical `targetEmoteSet: null`
+ * added everywhere. A server response always sends the key (`null` when the row has no target set).
  */
 export interface AuditLogDetail {
   kind: AuditDetailKind | (string & {});
   count: number | null;
   text: string | null;
+  targetEmoteSet?: AuditLogTargetEmoteSet | null;
 }
 
 /**

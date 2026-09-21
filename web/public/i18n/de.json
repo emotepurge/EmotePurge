@@ -541,7 +541,10 @@
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
         "TOP_ALL_TIME": "7TV Top insgesamt"
-      }
+      },
+      "targetEmoteSet": "in Set {{setId}}",
+      "targetEmoteSetNotActive": "in Set {{setId}} (nicht das aktive Set)",
+      "targetEmoteSetForOwner": "in Set {{setId}} für {{ownerLogin}}"
     }
   },
   "emoteCount": {
@@ -967,14 +970,21 @@
     "dockCopyButton": "Übertragen ({{ count }})",
     "target": {
       "title": "Emotes übertragen",
-      "label": "Zielkanal",
-      "notTracked": "Kanal muss erst beitreten",
-      "none": "Kein weiterer Kanal, in dem du Broadcaster oder 7TV-Editor bist.",
-      "listIncomplete": "Die Kanalliste ist gerade unvollständig — fehlende Kanäle erscheinen nach einem erneuten Laden.",
-      "reauthRequired": "Deine Twitch-Anmeldung ist abgelaufen oder wurde widerrufen — Zielkanäle gibt es erst nach einem neuen Login.",
-      "loadFailed": "Die Kanalliste konnte nicht geladen werden.",
+      "label": "Ziel",
+      "active": "aktiv",
+      "untracked": "nicht getrackt",
+      "kindPersonal": "persönliches Set",
+      "kindUnavailable": "kein Zielset",
+      "isSource": "das ist die Quelle",
+      "setsUnavailable": "Sets nicht lesbar",
+      "none": "Kein Set gefunden, in das kopiert werden kann.",
+      "listIncomplete": "Die Angebotsliste ist gerade unvollständig — fehlende Ziele erscheinen nach einem erneuten Laden.",
+      "loadFailed": "Die Angebotsliste konnte nicht geladen werden.",
       "retry": "Erneut laden",
-      "submit": "Weiter"
+      "submit": "Weiter",
+      "confirmUntracked": "In das Set ‚{{setName}}' von ‚{{ownerDisplayName}}' kopieren?",
+      "unknownOwner": "Besitzer unbekannt",
+      "confirmUntrackedSubmit": "Kopieren"
     },
     "foreignChannel": {
       "title": "Aus einem Kanal importieren",
@@ -1025,7 +1035,8 @@
       "originLeaderboard": "Aus 7TVs Bestenliste: {{ sort }}",
       "dateUnknown": "Datum unbekannt",
       "channelUnknown": "Kanal unbekannt",
-      "target": "Ziel: {{ channel }} · Set {{ setId }}",
+      "target": "Ziel: {{ channel }} · Set {{ setName }}",
+      "targetUntracked": "Ziel: Set {{ setName }} von {{ owner }}",
       "loadingHint": "Zieldaten werden geladen…",
       "noTargetSet": "Der Zielkanal hat noch kein aktives 7TV-Set — der erste Abgleich läuft noch oder ist fehlgeschlagen.",
       "loadFailed": "Die Daten des Zielkanals konnten nicht geladen werden.",
@@ -1036,9 +1047,14 @@
         "other": "{{ count }} Emotes sind bereits im Zielset und werden übersprungen."
       },
       "nameCollisions": {
-        "one": "{{ count }} Name ist im Zielset schon vergeben — 7TV wird dieses Emote ablehnen:",
-        "other": "{{ count }} Namen sind im Zielset schon vergeben — 7TV wird diese Emotes ablehnen:"
+        "one": "{{ count }} Emote trägt einen Namen, der im Zielset schon vergeben ist — wird nicht übertragen:",
+        "other": "{{ count }} Emotes tragen einen Namen, der im Zielset schon vergeben ist — werden nicht übertragen:"
       },
+      "aliasMismatches": {
+        "one": "{{ count }} ist im Zielset bereits vorhanden, heißt dort aber anders:",
+        "other": "{{ count }} sind im Zielset bereits vorhanden, heißen dort aber anders:"
+      },
+      "aliasMismatchRow": "{{ source }} → {{ target }}",
       "invalidNames": {
         "one": "{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann — 7TV wird dieses Emote ablehnen:",
         "other": "{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann — 7TV wird diese Emotes ablehnen:"
@@ -1055,6 +1071,10 @@
         "one": "Das einzige Emote ist bereits im Zielset.",
         "other": "Alle {{ count }} Emotes sind bereits im Zielset."
       },
+      "nothingToAddBlocked": {
+        "one": "Das einzige Emote kann nicht hinzugefügt werden — es ist bereits im Zielset, durch eine Namenskollision blockiert oder dort unter einem anderen Alias vorhanden.",
+        "other": "Keines der {{ count }} Emotes kann hinzugefügt werden — jedes ist bereits im Zielset, durch eine Namenskollision blockiert oder dort unter einem anderen Alias vorhanden."
+      },
       "sameChannelFile": "Diese Liste stammt aus diesem Kanal.",
       "runNotice": "Das Hinzufügen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
       "execute": "Kopieren"
@@ -1066,6 +1086,7 @@
     "summary": {
       "counts": "{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
       "target": "Ziel: {{ channel }}",
+      "targetSet": "Ziel: Set {{ setId }} von {{ owner }}",
       "openTarget": "Zielkanal öffnen",
       "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde nach der ersten Zeile abgebrochen."
     },
@@ -1150,7 +1171,11 @@
       "live_stream_quota_exhausted": "Zu viele offene Live-Verbindungen. Schließe ein paar Tabs und versuch es erneut.",
       "unexpected_error": "Auf dem Server ist ein unerwarteter Fehler aufgetreten. Bitte versuch es erneut.",
       "no_health_data": "Es liegen aktuell keine Worker-Daten vor.",
-      "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden."
+      "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden.",
+      "invalid_emote_set_id": "Ungültige Emote-Set-ID.",
+      "emote_set_id_empty": "Kein Ziel-Set angegeben.",
+      "emote_set_not_found": "Dieses 7TV-Emote-Set ist unbekannt.",
+      "vote_session_set_ballot_invalid": "Ungültige Stimmzettel-Angabe für diese Abstimmung."
     }
   }
 }

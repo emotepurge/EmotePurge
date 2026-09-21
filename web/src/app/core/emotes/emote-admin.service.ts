@@ -1,4 +1,4 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { map, Observable } from 'rxjs';
 
@@ -38,6 +38,11 @@ export interface SyncImportedBody {
   sourceChannelName: string | null;
   sourceKind: 'channel' | 'file' | 'seventv-channel' | 'seventv-leaderboard';
   leaderboardSort: LeaderboardSort | null;
+  /** The 7TV set the run actually wrote into (spec 6.7, E5, AK 44) — the loaded target's `setId`,
+   *  sent on *every* call this client makes, active or not. The server keeps the field optional
+   *  forever (an old open tab is still a valid caller), but this client always knows the answer by
+   *  the time it reports, so it always sends it. */
+  targetEmoteSetId: string;
 }
 
 /** Wire shape of GET .../emotes — wrapped in an object like the admin channel list, not a bare
@@ -67,11 +72,21 @@ export class EmoteAdminService {
     });
   }
 
-  /** Best-effort check whether this channel's active 7TV set is shared with/owned by someone else —
-   *  see EmoteSetOwnershipService, can never be fully complete (7TV has no reverse "who else has this
-   *  set active" lookup). */
-  getSetWarning(channelName: string): Observable<EmoteSetWarning> {
-    return this.http.get<EmoteSetWarning>(`/api/channels/${channelName}/emotes/set-warning`);
+  /** Best-effort check whether a 7TV set is shared with/owned by someone else — see
+   *  EmoteSetOwnershipService, can never be fully complete (7TV has no reverse "who else has this
+   *  set active" lookup). Without `emoteSetId` this checks the channel's *active* set (unchanged
+   *  request, same URL as before spec 2026-09-20 — the import target loader's old path depends on
+   *  that for its "no other request" guarantee, AK 36). With it, checks that specific (possibly
+   *  non-active) set instead (spec 6.8, E9) — only ever passed for a *tracked* target; an untracked
+   *  one has no channel to check ownership against at all and never calls this. */
+  getSetWarning(channelName: string, emoteSetId?: string): Observable<EmoteSetWarning> {
+    let params = new HttpParams();
+    if (emoteSetId !== undefined) {
+      params = params.set('emoteSetId', emoteSetId);
+    }
+    return this.http.get<EmoteSetWarning>(`/api/channels/${channelName}/emotes/set-warning`, {
+      params,
+    });
   }
 
   /** Deliberately separate from ChannelService.getStatus (management-only): a 7TV editor without

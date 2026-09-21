@@ -5,6 +5,7 @@ import {
   CHANNEL_SCOPED_ACTIONS,
   CHANNELLESS_ACTIONS,
   DETAIL_KEYS,
+  TARGET_EMOTE_SET_KEYS,
 } from './audit-actions';
 import de from '../../../../public/i18n/de.json';
 import en from '../../../../public/i18n/en.json';
@@ -58,6 +59,14 @@ describe('audit action tables', () => {
       'title',
     ]);
   });
+
+  it.each(Object.values(TARGET_EMOTE_SET_KEYS))(
+    'translates the target-set addendum key %s in both locales (spec 8.10)',
+    (key) => {
+      expect(lookup(de, key)).toBeTypeOf('string');
+      expect(lookup(en, key)).toBeTypeOf('string');
+    },
+  );
 
   it('translates both leaderboard sort codes in both locales (#148, E9)', () => {
     // Not covered by DETAIL_KEYS itself — `leaderboardSort` is a separate lookup table

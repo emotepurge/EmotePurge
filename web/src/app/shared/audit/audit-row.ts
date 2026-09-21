@@ -1,9 +1,15 @@
-import { ACTION_KEYS, DETAIL_KEYS } from './audit-actions';
+import { ACTION_KEYS, DETAIL_KEYS, TARGET_EMOTE_SET_KEYS } from './audit-actions';
 import { AuditLogDetail, AuditLogEntry } from '../../core/audit/audit.model';
 import {
   LEADERBOARD_SORT_LABEL_KEYS,
   isLeaderboardSort,
 } from '../../core/seven-tv/leaderboard.model';
+
+/** How many characters of a 7TV set id the audit row shows (spec 8.10's "id-Kurzform") — the same
+ *  short-hash convention as a Git commit, long enough to disambiguate by eye, short enough not to
+ *  dominate the line. The full id is never shown anywhere in this view; it identifies nothing a
+ *  reader compares by hand. */
+const TARGET_SET_ID_SHORT_LENGTH = 8;
 
 /** A detail reduced to what the template hands to Transloco. */
 export interface RenderedDetail {
@@ -23,6 +29,12 @@ export interface AuditRow {
   action: string;
   channelName: string | null;
   detail: RenderedDetail | null;
+  /** The import ladder's target-set addendum (spec 8.10) — a second, independent line segment
+   *  appended after `detail`, never folded into it: `detail` already has its own kind-specific key
+   *  (`emoteCount`, `importedFromFile`, …), and multiplying that by the three target-set cases would
+   *  turn one small table into a combinatorial one for no reason a reader would notice. `null`
+   *  whenever the entry names no target set at all. */
+  targetSet: RenderedDetail | null;
 }
 
 /**
@@ -55,6 +67,7 @@ export function toAuditRows(
     action: entry.action,
     channelName: entry.channelName,
     detail: renderDetail(entry.detail, translate),
+    targetSet: renderTargetSet(entry.detail),
   }));
 }
 
@@ -95,4 +108,35 @@ function renderDetail(
   }
 
   return { key, params };
+}
+
+/**
+ * The import ladder's target-set addendum (spec 8.10). Independent of `renderDetail` above — it
+ * reads the same `AuditLogDetail`, but the two functions never influence each other's outcome: a
+ * row with an unrecognized `kind` (renderDetail returning `null`) can still name its target set,
+ * and a row naming no target set at all renders exactly as it always did.
+ *
+ * `ownerLogin` is checked before `isActiveSetOfChannel`, not the other way round, but the order is
+ * moot in practice: the two are mutually exclusive by construction (`AuditLogTargetEmoteSet`'s own
+ * doc) — the channel-scoped endpoint sets `isActiveSetOfChannel` and leaves `ownerLogin` `null`, the
+ * set-centric one does the reverse. A row can therefore never need the not-active *and* the owner
+ * phrasing at once.
+ */
+function renderTargetSet(detail: AuditLogDetail | null): RenderedDetail | null {
+  const targetSet = detail?.targetEmoteSet;
+  if (targetSet == null) {
+    return null;
+  }
+
+  const setId = targetSet.id.slice(0, TARGET_SET_ID_SHORT_LENGTH);
+  if (targetSet.ownerLogin !== null) {
+    return {
+      key: TARGET_EMOTE_SET_KEYS.forOwner,
+      params: { setId, ownerLogin: targetSet.ownerLogin },
+    };
+  }
+  if (targetSet.isActiveSetOfChannel === false) {
+    return { key: TARGET_EMOTE_SET_KEYS.notActive, params: { setId } };
+  }
+  return { key: TARGET_EMOTE_SET_KEYS.plain, params: { setId } };
 }

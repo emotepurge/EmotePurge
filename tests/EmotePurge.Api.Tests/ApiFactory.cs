@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using EmotePurge.Api.Auth;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -90,6 +91,44 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IEmoteService Emotes { get; } = Substitute.For<IEmoteService>();
 
     /// <summary>
+    /// Substituted so the new set-listing routes (<c>GET /emote-sets</c>, <c>GET
+    /// /me/emote-set-targets</c>, the <c>?emoteSetId=</c> mode of the foreign-channel preview) never
+    /// reach real 7TV — the real implementation sits behind the guard chain (cache, coalescer,
+    /// breaker, budget) this factory otherwise leaves real, none of which resolves without Redis.
+    /// </summary>
+    public ISevenTvEmoteSetListService EmoteSetList { get; } = Substitute.For<ISevenTvEmoteSetListService>();
+
+    /// <summary>
+    /// Substituted for <c>GET /emotes/set-warning</c>'s allow-path tests: the real implementation
+    /// takes <c>AppDbContext</c>, <c>ISevenTvApiClient</c> and <c>IModeratedChannelsProvider</c>, and
+    /// this factory has no real database behind the placeholder connection string below.
+    /// </summary>
+    public IEmoteSetOwnershipService EmoteSetOwnership { get; } = Substitute.For<IEmoteSetOwnershipService>();
+
+    /// <summary>
+    /// Substituted for <c>GET /me/emote-set-targets</c>'s AK 25 cases (the "Grants Failed" case in
+    /// particular): the real implementation goes through <c>IModRoleCache</c>'s Redis-backed
+    /// <see cref="IConnectionMultiplexer"/>, which this factory substitutes but never answers a real
+    /// grants lookup from.
+    /// </summary>
+    public ISevenTvEditorService EditorService { get; } = Substitute.For<ISevenTvEditorService>();
+
+    /// <summary>
+    /// Substituted for the set-centric <c>sync-imported</c>'s owner check, which reads its grants
+    /// through the guarded refresh (spec 2026-09-20, section 32, second review round) rather than
+    /// through <see cref="EditorService"/>. Its real implementation is pinned in the Infrastructure
+    /// tests; here it would only meet the substituted multiplexer.
+    /// </summary>
+    public IGuardedSevenTvEditorGrantsService GuardedEditorGrants { get; } = Substitute.For<IGuardedSevenTvEditorGrantsService>();
+
+    /// <summary>
+    /// Substituted for the set-centric <c>sync-imported</c>'s owner check (spec 2026-09-20, section
+    /// 32), which runs for real here: its one direct owner lookup is the only thing in this factory
+    /// that would otherwise reach 7TV. The check's breaker and budget stay the real singletons.
+    /// </summary>
+    public ISevenTvApiClient SevenTvApi { get; } = Substitute.For<ISevenTvApiClient>();
+
+    /// <summary>
     /// Substituted because Program.cs now runs the S3-34 migration guard at startup — the real
     /// implementation would open a connection to the placeholder database configured below.
     /// The substitute simply completes, which is the "fully migrated" answer.
@@ -128,6 +167,11 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => ForeignEmoteSet);
             services.AddScoped(_ => Leaderboard);
             services.AddScoped(_ => Emotes);
+            services.AddScoped(_ => EmoteSetList);
+            services.AddScoped(_ => EmoteSetOwnership);
+            services.AddScoped(_ => EditorService);
+            services.AddScoped(_ => GuardedEditorGrants);
+            services.AddScoped(_ => SevenTvApi);
             services.AddScoped(_ => _migrationGuard);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected

@@ -117,6 +117,17 @@ public static class RateLimitCallSources
     /// <c>Ratelimit-*</c> ones the preview path (still) never reads.
     /// </summary>
     public const string SevenTvLeaderboard = "seventv-leaderboard";
+
+    /// <summary>
+    /// The emote-set list of a 7TV account (spec 2026-09-20, 6.1/E7) — one v4 <c>userByConnection</c>
+    /// request per account, reported by <c>SevenTvApiClient.GetEmoteSetListForTwitchUserAsync</c>
+    /// itself for the same reason as the two above: only the client sees the parsed GraphQL body,
+    /// and 7TV disguises an overload as HTTP 200 here too. Named apart from
+    /// <see cref="SevenTvForeignPreview"/> even though both sit on the same upstream budget,
+    /// because reading which of the two is failing is the whole point of separating their circuit
+    /// breaker counters.
+    /// </summary>
+    public const string SevenTvEmoteSetList = "seventv-emote-set-list";
 }
 
 /// <summary>
@@ -139,4 +150,11 @@ public static class RateLimitCacheNames
     /// 2026-09-09, E3).
     /// </summary>
     public const string ForeignEmoteSet = "foreign-emote-set";
+
+    /// <summary>
+    /// The same 60 s cache's second key space (spec 2026-09-20, E12): the set-ID read mode, keyed on
+    /// the 7TV set id instead of a channel login. Named apart from <see cref="ForeignEmoteSet"/> so a
+    /// hit-rate dashboard can tell the two read paths apart, even though both live in the one cache.
+    /// </summary>
+    public const string ForeignEmoteSetBySetId = "foreign-emote-set-by-set-id";
 }

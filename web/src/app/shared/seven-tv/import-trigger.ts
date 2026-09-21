@@ -4,6 +4,7 @@ import { Component, computed, inject, input } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -68,6 +69,10 @@ export class ImportTrigger {
   private readonly arbiter = inject(SevenTvRunArbiter);
   private readonly dialog = inject(Dialog);
   private readonly emoteAdminService = inject(EmoteAdminService);
+  /** Only threaded through to `ImportFlowDeps` — `loadImportTarget`'s live-list collaborator for a
+   *  non-active/untracked target, not exercised from any of this component's three chains, which
+   *  all target the current channel's active set (spec F5). */
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read
    *  reached from here goes through `emoteAdminService`. */
   private readonly httpClient = inject(HttpClient);
@@ -112,6 +117,7 @@ export class ImportTrigger {
       const importDeps = {
         dialog: this.dialog,
         emoteAdminService: this.emoteAdminService,
+        emoteSetService: this.emoteSetService,
         httpClient: this.httpClient,
         tokenService: this.tokenService,
         importService: this.importService,
@@ -129,7 +135,7 @@ export class ImportTrigger {
         startLeaderboardImportFlow(importDeps, result.picked, channelName);
         return;
       }
-      startImportFlow(importDeps, result.source, channelName);
+      startImportFlow(importDeps, result.source, { kind: 'activeSet', channelName });
     });
   }
 }

@@ -31,8 +31,21 @@ export interface ForeignEmoteRow {
 export interface ForeignEmoteSetResponse {
   /** Normalized (Regel 9). */
   channelName: string;
-  sevenTvUserId: string;
+  /**
+   * `null` in the set-ID read mode (spec 2026-09-20, E8) — that path never resolves an identity at
+   * all, so there is nothing to report here. Never `null` for a response this login-based load
+   * produced.
+   */
+  sevenTvUserId: string | null;
   emoteSetId: string;
+  /**
+   * `null` when 7TV reports no name for the set (spec 6.4). Added 2026-09-20 alongside `capacity` —
+   * T2.2 shipped both fields on the wire without a frontend reader yet; T2.5b's loader is the first
+   * consumer (target-set capacity/name in the picker's confirm dialog).
+   */
+  emoteSetName: string | null;
+  /** 7TV's own figure, `0` normalised to `null` (spec 6.4, F6). */
+  capacity: number | null;
   /** What 7TV reports as the set's total entry count. */
   totalCount: number;
   /**

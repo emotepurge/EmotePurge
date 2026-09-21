@@ -291,6 +291,75 @@ public class ForeignEmoteSetServiceTests
         Assert.Equal(ForeignEmoteSetLookupStatus.ProviderBudgetExhausted, statuses[5]);
     }
 
+    /// <summary>
+    /// E8/6.4: the set-ID mode never resolves an identity at all — neither Helix nor the 7TV
+    /// <c>userByConnection</c> lookup runs, only the paginated preview read for the given set id
+    /// directly. The route's channel name is echoed onto the result, never looked up.
+    /// </summary>
+    [Fact]
+    public async Task BySetId_NeverCallsHelixOrResolvesA7TvIdentity()
+    {
+        var identityService = Substitute.For<IChannelIdentityService>();
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.GetEmoteSetPreviewAsync(EmoteSetId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(0, false, [])));
+        var service = CreateService(identityService, sevenTv);
+
+        var result = await service.GetForeignEmoteSetBySetIdAsync(Channel, EmoteSetId);
+
+        Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
+        Assert.Equal(NormalizedChannel, result.EmoteSet!.ChannelName);
+        await identityService.DidNotReceive().LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await sevenTv.DidNotReceive().ResolveSevenTvIdentityAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await sevenTv.DidNotReceive().ResolveTwitchUserIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// E8: the channel row holds no 7TV user id to report, so the set-ID mode's result always carries
+    /// <c>SevenTvUserId: null</c> — never a value invented from the route's channel name.
+    /// </summary>
+    [Fact]
+    public async Task BySetId_AlwaysReturnsANullSevenTvUserId()
+    {
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        var previewItem = new SevenTvEmoteSetPreviewItem("emote-1", "PogU", "PogChamp", "https://cdn.example/1.webp", 500, 12);
+        sevenTv.GetEmoteSetPreviewAsync(EmoteSetId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(1, false, [previewItem], "Some set", 956)));
+        var service = CreateService(Substitute.For<IChannelIdentityService>(), sevenTv);
+
+        var result = await service.GetForeignEmoteSetBySetIdAsync(Channel, EmoteSetId);
+
+        Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
+        var emoteSet = result.EmoteSet!;
+        Assert.Null(emoteSet.SevenTvUserId);
+        Assert.Equal(EmoteSetId, emoteSet.EmoteSetId);
+        Assert.Equal("Some set", emoteSet.EmoteSetName);
+        Assert.Equal(956, emoteSet.Capacity);
+        var row = Assert.Single(emoteSet.Emotes);
+        Assert.Equal("emote-1", row.SevenTvEmoteId);
+    }
+
+    /// <summary>
+    /// Vorentscheidung 4 (K2 task brief)/spec 6.4: an unknown set id must reach the caller as the
+    /// existing <see cref="ForeignEmoteSetLookupStatus.NoActiveEmoteSet"/>/404
+    /// <c>foreign_channel_no_active_emote_set</c>, not the 503
+    /// <see cref="ForeignEmoteSetLookupStatus.SevenTvUnavailable"/> a genuine outage produces — the
+    /// two used to be indistinguishable one layer down (<see cref="SevenTvPreviewLookupStatus.Unavailable"/>
+    /// covered both before this task).
+    /// </summary>
+    [Fact]
+    public async Task BySetId_MapsAnUnknownSetToNoActiveEmoteSet_NotSevenTvUnavailable()
+    {
+        var sevenTv = Substitute.For<ISevenTvApiClient>();
+        sevenTv.GetEmoteSetPreviewAsync(EmoteSetId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.NotFound));
+        var service = CreateService(Substitute.For<IChannelIdentityService>(), sevenTv);
+
+        var result = await service.GetForeignEmoteSetBySetIdAsync(Channel, EmoteSetId);
+
+        Assert.Equal(ForeignEmoteSetLookupStatus.NoActiveEmoteSet, result.Status);
+    }
+
     private static IChannelIdentityService FoundIdentityService()
     {
         var identityService = Substitute.For<IChannelIdentityService>();

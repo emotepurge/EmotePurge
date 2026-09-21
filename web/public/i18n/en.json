@@ -541,7 +541,10 @@
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",
         "TOP_ALL_TIME": "7TV top overall"
-      }
+      },
+      "targetEmoteSet": "in set {{setId}}",
+      "targetEmoteSetNotActive": "in set {{setId}} (not the active set)",
+      "targetEmoteSetForOwner": "in set {{setId}} for {{ownerLogin}}"
     }
   },
   "emoteCount": {
@@ -967,14 +970,21 @@
     "dockCopyButton": "Transfer ({{ count }})",
     "target": {
       "title": "Transfer emotes",
-      "label": "Target channel",
-      "notTracked": "Channel has to join first",
-      "none": "No other channel where you are broadcaster or 7TV editor.",
-      "listIncomplete": "The channel list is incomplete right now — missing channels appear after a reload.",
-      "reauthRequired": "Your Twitch login has expired or was revoked — target channels appear after a fresh login.",
-      "loadFailed": "The channel list could not be loaded.",
+      "label": "Target",
+      "active": "active",
+      "untracked": "not tracked",
+      "kindPersonal": "personal set",
+      "kindUnavailable": "not a target set",
+      "isSource": "this is the source",
+      "setsUnavailable": "sets could not be read",
+      "none": "No set found to copy into.",
+      "listIncomplete": "The offer list is incomplete right now — missing targets appear after a reload.",
+      "loadFailed": "The offer list could not be loaded.",
       "retry": "Reload",
-      "submit": "Continue"
+      "submit": "Continue",
+      "confirmUntracked": "Copy into the set ‚{{setName}}' from ‚{{ownerDisplayName}}'?",
+      "unknownOwner": "owner unknown",
+      "confirmUntrackedSubmit": "Copy"
     },
     "foreignChannel": {
       "title": "Import from a channel",
@@ -1025,7 +1035,8 @@
       "originLeaderboard": "From 7TV's leaderboard: {{ sort }}",
       "dateUnknown": "date unknown",
       "channelUnknown": "channel unknown",
-      "target": "Target: {{ channel }} · set {{ setId }}",
+      "target": "Target: {{ channel }} · set {{ setName }}",
+      "targetUntracked": "Target: set {{ setName }} of {{ owner }}",
       "loadingHint": "Loading target data…",
       "noTargetSet": "The target channel has no active 7TV set yet — its first sync is still running or has failed.",
       "loadFailed": "The target channel's data could not be loaded.",
@@ -1036,9 +1047,14 @@
         "other": "{{ count }} emotes are already in the target set and will be skipped."
       },
       "nameCollisions": {
-        "one": "{{ count }} name is already taken in the target set — 7TV will reject this emote:",
-        "other": "{{ count }} names are already taken in the target set — 7TV will reject these emotes:"
+        "one": "{{ count }} emote's name is already taken in the target set — it will not be copied:",
+        "other": "{{ count }} emotes' names are already taken in the target set — they will not be copied:"
       },
+      "aliasMismatches": {
+        "one": "{{ count }} is already in the target set, but under a different name:",
+        "other": "{{ count }} are already in the target set, but under a different name:"
+      },
+      "aliasMismatchRow": "{{ source }} → {{ target }}",
       "invalidNames": {
         "one": "{{ count }} name contains characters 7TV cannot create — 7TV will reject this emote:",
         "other": "{{ count }} names contain characters 7TV cannot create — 7TV will reject these emotes:"
@@ -1055,6 +1071,10 @@
         "one": "The only emote is already in the target set.",
         "other": "All {{ count }} emotes are already in the target set."
       },
+      "nothingToAddBlocked": {
+        "one": "The only emote cannot be added — it is already in the target set, blocked by a name collision there, or listed under a different alias.",
+        "other": "None of the {{ count }} emotes can be added — each is already in the target set, blocked by a name collision there, or listed under a different alias."
+      },
       "sameChannelFile": "This list comes from this channel.",
       "runNotice": "Adding then runs automatically, one emote at a time, with a short delay between each.",
       "execute": "Copy"
@@ -1066,6 +1086,7 @@
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",
       "target": "Target: {{ channel }}",
+      "targetSet": "Target: set {{ setId }} of {{ owner }}",
       "openTarget": "Open target channel",
       "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row."
     },
@@ -1150,7 +1171,11 @@
       "live_stream_quota_exhausted": "Too many open live connections. Close a few tabs and try again.",
       "unexpected_error": "An unexpected error occurred on the server. Please try again.",
       "no_health_data": "No worker data is available right now.",
-      "health_data_unreadable": "The worker data could not be read."
+      "health_data_unreadable": "The worker data could not be read.",
+      "invalid_emote_set_id": "Invalid emote set id.",
+      "emote_set_id_empty": "No target set given.",
+      "emote_set_not_found": "This 7TV emote set is unknown.",
+      "vote_session_set_ballot_invalid": "Invalid ballot for this voting session."
     }
   }
 }

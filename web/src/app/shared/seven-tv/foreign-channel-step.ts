@@ -25,7 +25,8 @@ import { ForeignEmoteGrid } from './foreign-emote-grid';
 export interface ForeignChannelImportResult {
   /** Normalized (Regel 9) — what the resolved channel is actually called. */
   channelName: string;
-  sevenTvUserId: string;
+  /** `null` in the set-ID read mode (spec 2026-09-20, E8) — see `ForeignEmoteSetResponse`. */
+  sevenTvUserId: string | null;
   emoteSetId: string;
   /** Only the rows the user marked, in the grid's selection order. Never the full set — the whole
    *  point of this step (spec Falle F4, the user's "NICHT alle direkt übernehmen"). */

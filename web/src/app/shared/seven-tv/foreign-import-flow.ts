@@ -22,7 +22,10 @@ export function startForeignChannelImportFlow(
   picked: ForeignChannelImportResult,
   targetChannelName: string,
 ): void {
-  startImportFlow(deps, buildForeignImportSource(picked), targetChannelName);
+  startImportFlow(deps, buildForeignImportSource(picked), {
+    kind: 'activeSet',
+    channelName: targetChannelName,
+  });
 }
 
 /**
@@ -66,7 +69,10 @@ export function startLeaderboardImportFlow(
   picked: LeaderboardImportResult,
   targetChannelName: string,
 ): void {
-  startImportFlow(deps, buildLeaderboardImportSource(picked), targetChannelName);
+  startImportFlow(deps, buildLeaderboardImportSource(picked), {
+    kind: 'activeSet',
+    channelName: targetChannelName,
+  });
 }
 
 /**

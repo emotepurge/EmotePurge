@@ -343,7 +343,7 @@ describe('ImportTrigger', () => {
 
       // The target is always the frozen (current) channel, never the file's own origin.
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL },
+        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL, ownerDisplayName: null },
         expect.objectContaining({ kind: 'file' }),
         [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
         0,
@@ -423,7 +423,7 @@ describe('ImportTrigger', () => {
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL },
+        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL, ownerDisplayName: null },
         { kind: 'seventv-channel', channelName: 'handofblood' },
         [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
         0,
@@ -466,7 +466,7 @@ describe('ImportTrigger', () => {
       });
 
       expect(startImport).toHaveBeenCalledWith(
-        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL },
+        { setId: CURRENT_SET, channelName: CURRENT_CHANNEL, ownerDisplayName: null },
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
         [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
         0,
