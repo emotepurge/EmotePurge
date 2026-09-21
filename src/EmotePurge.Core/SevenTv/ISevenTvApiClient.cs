@@ -35,6 +35,13 @@ public interface ISevenTvApiClient
     // answers Ok with an empty list, since only a genuinely unusable response reaches Unavailable.
     Task<SevenTvEditorGrantsResult> GetEditorOfChannelsAsync(string sevenTvUserId, CancellationToken cancellationToken = default);
 
+    // The same two questions as ResolveSevenTvIdentityAsync followed by GetEditorOfChannelsAsync —
+    // the account behind a Twitch id, then the channels it edits — behind the provider-wide request
+    // budget: one permit before each of the (at most two) requests, and a refusal sends nothing
+    // further. For the set-centric import's owner check only (spec 2026-09-20, section 32, second
+    // review round); the authorization path keeps the unbudgeted pair on purpose. Never null.
+    Task<SevenTvEditorGrantsLookup> LookUpEditorGrantsAsync(string twitchUserId, CancellationToken cancellationToken = default);
+
     // A read-only, paginated preview of an arbitrary 7TV emote set — the foreign-channel-import
     // source (spec 2026-09-09), distinct from every method above in that the caller need not own,
     // moderate, or even track the channel the set belongs to. Uses the v4 GQL emoteSet(id) query, not

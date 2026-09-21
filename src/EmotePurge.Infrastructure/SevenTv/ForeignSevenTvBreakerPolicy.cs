@@ -64,6 +64,14 @@ public static class ForeignSevenTvBreakerOperations
     public const string EmoteSetOwner = "emote-set-owner";
 
     /// <summary>
+    /// The guarded editor-grant refresh behind the same owner check (spec 2026-09-20, section 32,
+    /// second review round) — the identity and <c>editor_of</c> requests a report makes when the
+    /// grant cache has nothing. Its own streak and probe, for the same reason as the owner lookup;
+    /// the authorization path's unguarded grant lookup never reports here.
+    /// </summary>
+    public const string EditorGrants = "editor-grants";
+
+    /// <summary>
     /// The leaderboard import source (spec 2026-09-13). It runs on its own policy instance because
     /// its upstream bucket is a different one, so this name only ever shares a dictionary with
     /// itself — it exists because the operation parameter is mandatory, not because the leaderboard
@@ -169,7 +177,7 @@ public sealed class ForeignSevenTvBreakerPolicy(TimeProvider? timeProvider = nul
     private readonly Lock _gate = new();
 
     // One entry per operation identifier, created on first use. Bounded by the number of named
-    // operations sharing this instance (three today), never by anything a request carries.
+    // operations sharing this instance (four today), never by anything a request carries.
     private readonly Dictionary<string, OperationState> _operations = new(StringComparer.Ordinal);
 
     // Provider-wide, deliberately: 7TV limits the bucket, not the query. A confirmed 429 on one

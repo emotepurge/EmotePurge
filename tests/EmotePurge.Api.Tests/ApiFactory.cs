@@ -114,6 +114,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public ISevenTvEditorService EditorService { get; } = Substitute.For<ISevenTvEditorService>();
 
     /// <summary>
+    /// Substituted for the set-centric <c>sync-imported</c>'s owner check, which reads its grants
+    /// through the guarded refresh (spec 2026-09-20, section 32, second review round) rather than
+    /// through <see cref="EditorService"/>. Its real implementation is pinned in the Infrastructure
+    /// tests; here it would only meet the substituted multiplexer.
+    /// </summary>
+    public IGuardedSevenTvEditorGrantsService GuardedEditorGrants { get; } = Substitute.For<IGuardedSevenTvEditorGrantsService>();
+
+    /// <summary>
     /// Substituted for the set-centric <c>sync-imported</c>'s owner check (spec 2026-09-20, section
     /// 32), which runs for real here: its one direct owner lookup is the only thing in this factory
     /// that would otherwise reach 7TV. The check's breaker and budget stay the real singletons.
@@ -162,6 +170,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => EmoteSetList);
             services.AddScoped(_ => EmoteSetOwnership);
             services.AddScoped(_ => EditorService);
+            services.AddScoped(_ => GuardedEditorGrants);
             services.AddScoped(_ => SevenTvApi);
             services.AddScoped(_ => _migrationGuard);
 

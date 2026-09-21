@@ -206,7 +206,7 @@ public class ImportTargetOwnershipServiceTests
     public async Task AnUnreadableGrantsLookup_WithoutAnAdmissibleFind_IsUnavailable()
     {
         var client = ClientAnsweringOwner(SevenTvEmoteSetOwnerLookupResult.Ok(StrangerSevenTvId));
-        var editors = Substitute.For<ISevenTvEditorService>();
+        var editors = Substitute.For<IGuardedSevenTvEditorGrantsService>();
         editors.GetEditorGrantsAsync(ActorTwitchId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEditorGrantsLookupResult.Failed(SevenTvLookupStatus.Unavailable));
 
@@ -255,6 +255,81 @@ public class ImportTargetOwnershipServiceTests
         Assert.Equal(1, requestBudget.Charges);
     }
 
+    /// <summary>
+    /// The second-round finding (P1): repeated reports against an empty grant cache during a 7TV
+    /// outage. Before the guard, each one cost an unbudgeted identity request (20 reports, 20
+    /// requests, 0 permits). Now the first failure is held, and the rest send nothing — every report
+    /// still answers 503, and none writes an entry.
+    /// </summary>
+    [Fact]
+    public async Task RepeatedReports_DuringAnOutage_CostNoMoreThanTheHoldAllows()
+    {
+        var (service, handler, requestBudget, _) = CreateOutageChain();
+
+        for (var report = 0; report < 20; report++)
+        {
+            Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, (await service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId)).Status);
+        }
+
+        Assert.Equal(1, handler.Requests);
+        Assert.Equal(1, requestBudget.Charges);
+    }
+
+    [Fact]
+    public async Task ARefusedPermitForTheGrants_IsUnavailable_WithoutAnUpstreamRequest()
+    {
+        var (service, handler, _, _) = CreateOutageChain(grantCount: 0);
+
+        var result = await service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, result.Status);
+        Assert.Equal(0, handler.Requests);
+    }
+
+    [Fact]
+    public async Task AnOpenBreakerForTheGrants_IsUnavailable_WithoutAnUpstreamRequest()
+    {
+        var (service, handler, requestBudget, breaker) = CreateOutageChain();
+        var decision = breaker.TryAcquire(ForeignSevenTvBreakerOperations.EditorGrants);
+        breaker.RecordFailure(
+            ForeignSevenTvBreakerOperations.EditorGrants, ForeignSevenTvBreakerOutcome.OtherFailure, null, decision.Generation);
+        for (var failure = 1; failure < ForeignSevenTvBreakerPolicy.FailureThreshold; failure++)
+        {
+            var next = breaker.TryAcquire(ForeignSevenTvBreakerOperations.EditorGrants);
+            breaker.RecordFailure(
+                ForeignSevenTvBreakerOperations.EditorGrants, ForeignSevenTvBreakerOutcome.OtherFailure, null, next.Generation);
+        }
+
+        var result = await service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, result.Status);
+        Assert.Equal(0, handler.Requests);
+        Assert.Equal(0, requestBudget.Charges);
+    }
+
+    // The actor's list is readable and names the set under a stranger, so the owner check needs the
+    // grants to say no — and needs no owner lookup either way. Grant cache empty; 7TV answers every
+    // request with 503 (nothing is configured on the handler).
+    private static (ImportTargetOwnershipService Service, SevenTvGqlRouteHandler Handler, RecordingForeignUpstreamRequestBudget RequestBudget, ForeignSevenTvBreakerPolicy Breaker)
+        CreateOutageChain(int grantCount = int.MaxValue)
+    {
+        var handler = new SevenTvGqlRouteHandler();
+        var requestBudget = new RecordingForeignUpstreamRequestBudget(grantCount);
+        var client = new SevenTvApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
+            new RecordingRateLimitTelemetry(),
+            requestBudget,
+            new RecordingLogger<SevenTvApiClient>());
+        var breaker = new ForeignSevenTvBreakerPolicy();
+        var budget = new ForeignEmoteSetProviderBudget();
+        var grants = new GuardedSevenTvEditorGrantsService(
+            client, Substitute.For<IModRoleCache>(), new InMemoryEditorGrantsHoldCache(), breaker, budget,
+            new RecordingRateLimitTelemetry(), NullLogger<GuardedSevenTvEditorGrantsService>.Instance);
+        var lists = ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId, Set(EmoteSetId, StrangerSevenTvId))));
+
+        return (CreateService(lists, grants, client, breaker, budget), handler, requestBudget, breaker);
+    }
+
     private static async Task<(ImportTargetOwnershipService Service, CountingOwnerHandler Handler, RecordingForeignUpstreamRequestBudget RequestBudget)>
         CreateRealChainAsync(EmoteSetListResult actorList, EmoteSetListResult editedList)
     {
@@ -279,15 +354,16 @@ public class ImportTargetOwnershipServiceTests
         var lists = new SevenTvEmoteSetListService(
             client, listCache, new ForeignEmoteSetRequestCoalescer<EmoteSetListResult>(), breaker, budget,
             NullLogger<SevenTvEmoteSetListService>.Instance);
-        var editors = new SevenTvEditorService(
-            client, grantsCache, new RecordingRateLimitTelemetry(), NullLogger<SevenTvEditorService>.Instance);
+        var editors = new GuardedSevenTvEditorGrantsService(
+            client, grantsCache, new InMemoryEditorGrantsHoldCache(), breaker, budget, new RecordingRateLimitTelemetry(),
+            NullLogger<GuardedSevenTvEditorGrantsService>.Instance);
 
         return (CreateService(lists, editors, client, breaker, budget), handler, requestBudget);
     }
 
     private static ImportTargetOwnershipService CreateService(
         ISevenTvEmoteSetListService lists,
-        ISevenTvEditorService editors,
+        IGuardedSevenTvEditorGrantsService editors,
         ISevenTvApiClient client,
         ForeignSevenTvBreakerPolicy? breaker = null,
         ForeignEmoteSetProviderBudget? budget = null) => new(
@@ -311,9 +387,9 @@ public class ImportTargetOwnershipServiceTests
         return lists;
     }
 
-    private static ISevenTvEditorService EditorsReturning(SevenTvEditorGrants grants)
+    private static IGuardedSevenTvEditorGrantsService EditorsReturning(SevenTvEditorGrants grants)
     {
-        var editors = Substitute.For<ISevenTvEditorService>();
+        var editors = Substitute.For<IGuardedSevenTvEditorGrantsService>();
         editors.GetEditorGrantsAsync(ActorTwitchId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEditorGrantsLookupResult.Ok(grants));
         return editors;

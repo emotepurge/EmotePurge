@@ -2959,3 +2959,76 @@ Streak- und Probe-Übergreifen, vier Folgen, in denen eine Epoche die andere üb
 geseedete Zufallsfolge (2000 Folgen, nach Abschluss aller Berichte bekommt jede Operation eine
 Probe) und AK 94 mit mehr als `FailureThreshold` Listenfehlern. Die 12 Bestandsfälle und die
 Klasse `ForeignSevenTvBreakerPolicyOperationScopeTests` sind unverändert.
+
+### Zweite Codex-Runde auf K2 (2026-09-21)
+
+Zweite Zweitmeinung (`/codex:review --model gpt-5.6-sol`) über PR #215 nach Einarbeitung der ersten
+Runde. Zwei Befunde, beide eingearbeitet; die Entscheidung zu P1 hat der Betreiber getroffen. Die
+Unterabschnitte oben bleiben unverändert stehen, dieser hier ergänzt sie.
+
+#### P1 — Die Grant-Auffrischung der Besitzer-Prüfung lief weiter am Budget vorbei
+
+**Befund.** Die erste Runde hat die Besitzer-Prüfung auf die gecachten Set-Listen umgestellt, die
+Konten aus `editor_of` aber weiter über `SevenTvEditorService.GetEditorGrantsAsync` geholt. Ist der
+Grant-Cache leer, nicht erreichbar oder hält er eine Legacy-Payload, macht dieser Aufruf ein bis zwei
+rohe 7TV-Requests (Identität, dann `editor_of`) — ohne Provider-Budget, ohne Breaker, und ein Fehler
+wird nicht gehalten. Wiederholte gefälschte Berichte während eines Redis- oder 7TV-Ausfalls konnten
+so über die Policy `Bookkeeping` (120/min je Nutzer) den geteilten Eimer leeren. Gemessen vor der
+Änderung: 20 Berichte bei leerem Cache und ausgefallenem 7TV ⇒ 20 Requests, 0 Permits.
+
+**Entscheidung (Betreiber): geschützter Grant-Weg, nicht „nur Cache".**
+
+- **Cache-Treffer:** kein Upstream-Request, wie bisher. Das ist der Normalfall, weil der Picker
+  (`/me/emote-set-targets`) den Grant-Cache Minuten vor dem Bericht füllt.
+- **Cache-Miss:** Die Grant-Auflösung läuft auf dem Weg der Besitzer-Prüfung durch die
+  Provider-Wächter, in der Reihenfolge des Listen-Dienstes: Breaker unter der eigenen
+  Operationskennung `editor-grants`, Nebenläufigkeits-Slot, und **je Upstream-Request ein Permit**
+  — Identität und `editor_of` ziehen jeder ihr eigenes. Dafür gibt es im Client eine budgetierte
+  Zwillingsmethode (`LookUpEditorGrantsAsync`), die zusätzlich beide 429-Gestalten erkennt: ein
+  bestätigtes 429 auf diesem Weg sperrt wie überall den ganzen Provider, mit 7TVs `Retry-After`.
+- **Erfolg** wird in denselben Grant-Cache geschrieben (`7tveditor:`, dieselbe Form, dieselbe TTL
+  aus `Auth:ModCheckCacheTtlMinutes`); der nächste Leser jeden Wegs profitiert davon.
+- **Fehler werden gehalten**, in einem eigenen Schlüsselraum (`7tveditorhold:{twitchId}`), fail-open
+  bei Redis-Ausfall: Unavailable 60 s, RateLimited ≥ 60 s bzw. `Retry-After` (höchstens 1 h), Budget
+  oder Slot verweigert und Breaker offen 30 s. `NoSevenTvAccount` ist eine Antwort und wird 60 s
+  gehalten. Ein zweiter Bericht in dieser Frist erzeugt keinen Request. Nach dem Erwerb des Slots
+  werden beide Caches ein zweites Mal gefragt; damit ist auch ein gleichzeitiger Schwall von
+  Berichten auf die zwei Slots begrenzt, nicht nur eine Folge von Berichten auf den Halt.
+- **Wächter verweigert oder Fehler gehalten** ⇒ die Grants gelten als unlesbar. Ohne zulässigen Fund
+  anderswo antwortet die Besitzer-Prüfung mit **503 ohne Eintrag** — das ist die Teilausfall-Regel der
+  ersten Runde, keine neue.
+
+**Warum nicht „nur Cache".** Der Grant-Cache hält zehn Minuten. Nur aus dem Cache zu lesen hieße,
+einen Bericht nach einem langen Import oder bei einem Redis-Aussetzer mit 503 abzulehnen. Die
+7TV-Mutation ist dann aber schon passiert, und das Frontend wiederholt nicht: der Audit-Eintrag wäre
+für immer verloren. Der geschützte Weg kostet im Normalfall nichts und im Fehlerfall höchstens, was
+Budget, Breaker und Halt zulassen.
+
+**Warum der Autorisierungspfad bewusst ungeschützt bleibt.** Der geschützte Weg gilt nur für diesen
+einen Aufrufer (`IGuardedSevenTvEditorGrantsService`, nur von `ImportTargetOwnershipService`
+aufgelöst). `GetEditorGrantsAsync` bleibt für `ChannelAccessService` und die übrigen
+Autorisierungsleser, für `/me/emote-set-targets` (hinter `ForeignEmoteLookup`, 10/min) und für
+`MyChannelsService` unverändert. Hinge der Autorisierungspfad an einem geteilten Budget, wären bei
+erschöpftem Budget die Rollen unbekannt, und Kanalseiten antworteten mit 403 — eine weit größere
+Wirkung als der Befund, und keine, die hier zur Entscheidung stand. Den Halt liest ebenfalls nur der
+geschützte Weg: ein gehaltener Fehler erreicht nie einen Leser, der auf ihm geschlossen scheitert.
+
+**Tests.** `Unit/GuardedSevenTvEditorGrantsServiceTests.cs` (neu, 16 Fälle, echter
+`SevenTvApiClient` über zählenden Handler und zählendes Budget): Cache-Treffer ⇒ 0 Requests,
+0 Permits; Miss ⇒ 2 Requests, 2 Permits und Rückschreiben in den Grant-Cache; Permit verweigert
+(auch nur für den zweiten Request); Breaker offen; 429 sperrt den Provider; die Haltbarkeiten als
+Theorie über sieben Ausgänge, jeweils ohne Request beim zweiten Aufruf; Redis-Ausfall ⇒ fail-open, der
+Breaker begrenzt 20 Berichte auf `FailureThreshold` Requests; ein gleichzeitiger Schwall von zehn
+Berichten ⇒ zwei Requests; und der Beleg, dass `SevenTvEditorService` weder Permit noch Breaker kennt.
+`Unit/ImportTargetOwnershipServiceTests.cs` +3, darunter der Missbrauchsfall (20 Berichte ⇒ 1 Request,
+1 Permit; vor der Änderung 20 Requests, und mit Breaker, aber ohne Halt, 5).
+`Unit/SevenTvApiClientEditorGrantsLookupTests.cs` (neu, 8 Fälle). Umgestellt: die Besitzer-Prüfung
+in `Integration/SevenTvEditorServiceTests.cs` und `SevenTvEmoteSetSyncImportedEndpointTests` auf den
+geschützten Weg; letzterer prüft zusätzlich, dass der Bericht den ungeschützten Dienst nie fragt.
+
+#### P2 — Eine Besitzer-Antwort nur mit Fehlern wurde als „unbekanntes Set" gelesen
+
+Nur die lesbare Form `data.emote_set: null` bedeutet „Set unbekannt" (404); HTTP 200 mit
+`data: null` oder ohne `emote_set`-Feld ist bei `LookUpEmoteSetOwnerAsync` jetzt `Unavailable`
+(503, Breaker-Fehler statt Breaker-Erfolg). Der alte Weg `GetEmoteSetOwnerIdAsync` (E9,
+`set-warning`) hat dieselbe Verwechslung und bleibt bewusst unverändert.

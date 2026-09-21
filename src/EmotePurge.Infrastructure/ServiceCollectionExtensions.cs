@@ -141,6 +141,13 @@ public static class ServiceCollectionExtensions
         // instance, with an operation name of its own.
         services.AddScoped<IImportTargetOwnershipService, ImportTargetOwnershipService>();
 
+        // Its grants, when the grant cache has none, come through a guarded refresh of their own
+        // (section 32, second review round): same budget and breaker instance, operation name
+        // editor-grants, failures held in a key space only it reads. Nothing else resolves this
+        // interface — authorization, the picker and the overview keep ISevenTvEditorService.
+        services.AddSingleton<ISevenTvEditorGrantsHoldCache, SevenTvEditorGrantsHoldCache>();
+        services.AddScoped<IGuardedSevenTvEditorGrantsService, GuardedSevenTvEditorGrantsService>();
+
         // Leaderboard import source (spec 2026-09-13, section 6, T3). Purely additive: the typed
         // ForeignSevenTvBreakerPolicy registration above is untouched, and the HardenedForeignEmoteSetService
         // factory above still takes that same typed instance through GetRequiredService, not a keyed

@@ -28,7 +28,11 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/SevenTv/ForeignSevenTvBreakerPolicy.cs` ·
 `src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` ·
 `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
-`src/EmotePurge.Infrastructure/SevenTv/SevenTvEmoteSetListCache.cs`
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvEmoteSetListCache.cs` ·
+`src/EmotePurge.Core/Services/IGuardedSevenTvEditorGrantsService.cs` ·
+`src/EmotePurge.Infrastructure/Services/GuardedSevenTvEditorGrantsService.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvEditorGrantsHoldCache.cs` ·
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs`
 
 Revises the 2026-09-09 entry's "the target set stays a tracked channel out of `listMine()`" into the
 weakened form: tracked stays the default and needs no extra step; an untracked target (a 7TV account
@@ -210,6 +214,31 @@ not 403, because the unreadable list may be the owner's. Rejected: moving the ro
 existing direct calls behind the budget (trades abuse for a lost paper trail: a 503 *after* the
 mutation writes no entry, and the frontend does not retry). The 7TV account id on editor grants and
 the live re-resolution of legacy grants had no other reader and were removed with it.
+
+**Grant-refresh clause, added 2026-09-21 after the second review round (spec section 32).** The
+owner check still read its `editor_of` accounts through the unguarded
+`SevenTvEditorService.GetEditorGrantsAsync`: on an empty, unreachable or legacy grant cache that is
+one or two raw 7TV requests per report, outside the provider budget and breaker, with failures never
+held — so repeated forged reports during a Redis or 7TV outage could still drain the shared bucket
+through the `Bookkeeping` policy (measured before the change: 20 reports, 20 requests, 0 permits).
+The owner check now reads its grants through `IGuardedSevenTvEditorGrantsService`, a guarded refresh
+for this one caller. A cache hit costs nothing, as before; a miss runs behind the guards of spec 6.1
+in the list service's order — the shared breaker under its own operation `editor-grants`, a
+concurrency slot of the shared budget, and one permit per upstream request (identity and `editor_of`
+each charge their own, in a budgeted client twin, `LookUpEditorGrantsAsync`, that also tells both
+429 shapes apart so a rate limit here locks the provider like anywhere else). A success is written to
+the same `7tveditor:` entry, same shape and TTL, so every reader profits; a failure is held in a key
+space only this path reads (`7tveditorhold:`), fail-open on Redis: unavailable 60 s, rate-limited at
+least 60 s or 7TV's `Retry-After` (at most 1 h), refused permit or slot and open breaker 30 s,
+`NoSevenTvAccount` 60 s as an answer. A refused guard or a held failure makes the grants unreadable,
+which without an admissible find elsewhere is the first round's partial-outage rule: 503, no entry.
+Rejected: reading the cache only. It holds ten minutes, so a report after a long import or during a
+Redis blip would be refused with 503 after the 7TV mutation already happened, and the frontend does
+not retry — the audit entry would be lost for good, while the ordinary report is free anyway because
+the picker fills the cache minutes before. Deliberately not extended to the other readers of
+`GetEditorGrantsAsync` (authorization via `ChannelAccessService`, `/me/emote-set-targets`,
+`MyChannelsService`): behind a shared budget, an exhausted budget would make roles unknown and
+channel pages answer 403, an effect far larger than the finding and not decided here.
 
 ---
 

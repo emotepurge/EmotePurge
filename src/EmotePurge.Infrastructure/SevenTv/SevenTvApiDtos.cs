@@ -31,9 +31,12 @@ internal sealed class SevenTvGqlConnectionDto
 }
 
 // GQL: userByConnection(platform, id) { id connections { platform id emote_set_id } }
-internal sealed class SevenTvGqlUserByConnectionResponseDto
+internal sealed class SevenTvGqlUserByConnectionResponseDto : ISevenTvGqlErrorEnvelope
 {
     public SevenTvGqlUserByConnectionDataDto? Data { get; set; }
+
+    // Read only by the budgeted grants lookup, to tell a disguised 429 apart from any other failure.
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
 }
 
 internal sealed class SevenTvGqlUserByConnectionDataDto
@@ -74,9 +77,12 @@ internal sealed class SevenTvGqlEmoteSetOwnerDto
 }
 
 // GQL: user(id) { editor_of { user { connections { platform id username } } } }
-internal sealed class SevenTvGqlEditorOfResponseDto
+internal sealed class SevenTvGqlEditorOfResponseDto : ISevenTvGqlErrorEnvelope
 {
     public SevenTvGqlEditorOfDataDto? Data { get; set; }
+
+    // Read only by the budgeted grants lookup, to tell a disguised 429 apart from any other failure.
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
 }
 
 internal sealed class SevenTvGqlEditorOfDataDto

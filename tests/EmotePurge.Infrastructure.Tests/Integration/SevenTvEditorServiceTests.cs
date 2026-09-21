@@ -75,12 +75,24 @@ public class SevenTvEditorServiceTests(RedisFixture fixture)
             .Returns(EmoteSetListResult.Ok(new EmoteSetList(
                 null, [new EmoteSetSummary(EmoteSetId, "Emotes", 1000, "NORMAL", false, "HandOfBlood", EditedSevenTvId)], EditedSevenTvId)));
 
+        // The owner check reads its grants through the guarded refresh (spec section 32, second
+        // round) — the same ModRoleCache entry, so the legacy payload reaches it the same way.
+        var breaker = new ForeignSevenTvBreakerPolicy();
+        var budget = new ForeignEmoteSetProviderBudget();
+        var guardedGrants = new GuardedSevenTvEditorGrantsService(
+            client,
+            new ModRoleCache(fixture.Connection, BuildConfiguration(), NullLogger<ModRoleCache>.Instance),
+            new SevenTvEditorGrantsHoldCache(fixture.Connection, NullLogger<SevenTvEditorGrantsHoldCache>.Instance),
+            breaker,
+            budget,
+            new RecordingRateLimitTelemetry(),
+            NullLogger<GuardedSevenTvEditorGrantsService>.Instance);
         var ownership = new ImportTargetOwnershipService(
             lists,
-            CreateEditorService(client),
+            guardedGrants,
             client,
-            new ForeignSevenTvBreakerPolicy(),
-            new ForeignEmoteSetProviderBudget(),
+            breaker,
+            budget,
             NullLogger<ImportTargetOwnershipService>.Instance);
 
         var result = await ownership.CheckAsync(actorTwitchId, "actor", EmoteSetId);
@@ -89,6 +101,11 @@ public class SevenTvEditorServiceTests(RedisFixture fixture)
         Assert.Equal(EditedSevenTvId, result.OwnerSevenTvUserId);
         Assert.Equal(EditedLogin, result.OwnerTwitchLogin);
         await client.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await client.Received(1).LookUpEditorGrantsAsync(actorTwitchId, Arg.Any<CancellationToken>());
+
+        // Written back in the current shape, for every reader: the unguarded service now hits too.
+        Assert.Single((await CreateEditorService(client).GetEditorGrantsAsync(actorTwitchId)).Grants!.Entries);
+        await client.DidNotReceive().GetEditorOfChannelsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     private static string NewActorTwitchId() => $"editor-service-{Guid.NewGuid():N}";
@@ -105,6 +122,8 @@ public class SevenTvEditorServiceTests(RedisFixture fixture)
             .Returns(SevenTvIdentityResult.Ok(new SevenTvIdentity(ActorSevenTvId, null)));
         client.GetEditorOfChannelsAsync(ActorSevenTvId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEditorGrantsResult.Ok([new SevenTvEditorGrant(EditedLogin, EditedTwitchId)]));
+        client.LookUpEditorGrantsAsync(actorTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookup.Ok([new SevenTvEditorGrant(EditedLogin, EditedTwitchId)]));
         return client;
     }
 

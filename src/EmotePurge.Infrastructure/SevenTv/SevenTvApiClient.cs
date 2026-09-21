@@ -292,8 +292,7 @@ public class SevenTvApiClient(
             // survives 7TV changing the sentinel value itself. `EmoteSetId` on that connection may
             // still be null (account exists, no active set), which is a legitimate Ok — only the
             // connection itself being absent means NoSevenTvAccount.
-            var twitchConnection = user.Connections
-                .FirstOrDefault(c => c.Platform == TwitchPlatform && c.Id == twitchUserId);
+            var twitchConnection = FindOwnTwitchConnection(user, twitchUserId);
             if (twitchConnection is null)
             {
                 logger.LogInformation("Kein 7TV-Account für Twitch-ID {Id}.", twitchUserId);
@@ -426,17 +425,68 @@ public class SevenTvApiClient(
                 return SevenTvEditorGrantsResult.Failed(SevenTvLookupStatus.Unavailable);
             }
 
-            var result = grants
-                .SelectMany(g => g.User?.Connections ?? [])
-                .Where(c => c.Platform == TwitchPlatform)
-                .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
-                .ToList();
-            return SevenTvEditorGrantsResult.Ok(result);
+            return SevenTvEditorGrantsResult.Ok(ToEditorGrants(grants));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             logger.LogWarning(ex, "7TV-Editor-Abfrage für 7TV-User {Id} fehlgeschlagen, wird übersprungen.", sevenTvUserId);
             return SevenTvEditorGrantsResult.Failed(SevenTvLookupStatus.Unavailable);
+        }
+    }
+
+    public async Task<SevenTvEditorGrantsLookup> LookUpEditorGrantsAsync(
+        string twitchUserId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Request 1 of 2: the 7TV account behind the Twitch id. Same query and the same
+            // placeholder reading as ResolveSevenTvIdentityAsync; only the failures are told apart.
+            var identity = await PostBudgetedGqlAsync<SevenTvGqlUserByConnectionResponseDto>(
+                new { query = GqlUserByConnectionQuery, variables = new { p = TwitchPlatform, id = twitchUserId } },
+                "7TV identity",
+                twitchUserId,
+                cancellationToken);
+            if (identity.Failure is { } identityFailure)
+            {
+                return identityFailure;
+            }
+
+            var user = identity.Dto?.Data?.UserByConnection;
+            if (user is null)
+            {
+                logger.LogWarning("The 7TV identity of Twitch id {Id} came back without usable data.", twitchUserId);
+                return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable);
+            }
+
+            if (FindOwnTwitchConnection(user, twitchUserId) is null)
+            {
+                return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.NoSevenTvAccount);
+            }
+
+            // Request 2 of 2, with a permit of its own: editor_of of that account.
+            var editorOf = await PostBudgetedGqlAsync<SevenTvGqlEditorOfResponseDto>(
+                new { query = GqlEditorOfQuery, variables = new { id = user.Id } },
+                "7TV editor grants",
+                twitchUserId,
+                cancellationToken);
+            if (editorOf.Failure is { } editorOfFailure)
+            {
+                return editorOfFailure;
+            }
+
+            var grants = editorOf.Dto?.Data?.User?.EditorOf;
+            if (grants is null)
+            {
+                logger.LogWarning("The 7TV editor grants of Twitch id {Id} came back without usable data.", twitchUserId);
+                return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable);
+            }
+
+            return SevenTvEditorGrantsLookup.Ok(ToEditorGrants(grants));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            logger.LogWarning(ex, "Reading the 7TV editor grants of Twitch id {Id} failed.", twitchUserId);
+            return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable);
         }
     }
 
@@ -885,6 +935,46 @@ public class SevenTvApiClient(
             ProviderRequestTelemetryHandler.ReadHeader(response, usesSearchHeaders ? SearchRateLimitResetHeader : "Ratelimit-Reset")));
     }
 
+    // One budgeted GraphQL request of LookUpEditorGrantsAsync: a permit first (refused ⇒ nothing is
+    // sent), then both 429 disguises before the body is read for anything else. Failure is null
+    // exactly when the caller may read Dto.
+    private async Task<BudgetedGqlAnswer<TDto>> PostBudgetedGqlAsync<TDto>(
+        object payload, string what, string twitchUserId, CancellationToken cancellationToken)
+        where TDto : class, ISevenTvGqlErrorEnvelope
+    {
+        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        {
+            logger.LogWarning("Provider-wide 7TV budget exhausted — {What} of Twitch id {Id} not requested.", what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.BudgetExhausted));
+        }
+
+        var response = await httpClient.PostAsJsonAsync("gql", payload, cancellationToken);
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            logger.LogWarning("7TV reports overload (429) while reading the {What} of Twitch id {Id}.", what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(
+                SevenTvEditorGrantsLookupStatus.RateLimited,
+                ToRetryAfter(ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response))));
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            logger.LogWarning(
+                "7TV answered HTTP {StatusCode} while reading the {What} of Twitch id {Id}.",
+                (int)response.StatusCode, what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable));
+        }
+
+        var dto = await response.Content.ReadFromJsonAsync<TDto>(SevenTvEmoteJsonMapper.JsonOptions, cancellationToken);
+        if (IsRateLimited(dto?.Errors))
+        {
+            logger.LogWarning("7TV reports overload (429 in the body) while reading the {What} of Twitch id {Id}.", what, twitchUserId);
+            return BudgetedGqlAnswer<TDto>.Failed(SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.RateLimited));
+        }
+
+        return new BudgetedGqlAnswer<TDto>(dto, null);
+    }
+
     private static TimeSpan? ToRetryAfter(int? retryAfterSeconds) =>
         retryAfterSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null;
 
@@ -1181,6 +1271,21 @@ public class SevenTvApiClient(
     private static object BuildSortVariable(SevenTvLeaderboardSort sortBy) =>
         new { sortBy = sortBy.ToWireCode(), order = SearchSortOrderDescending };
 
+    // The connection that proves a real 7TV account behind a Twitch id — absent on 7TV's placeholder
+    // user (see ResolveSevenTvIdentityAsync). Shared by the unbudgeted and the budgeted identity read,
+    // so the two can never disagree about what "no 7TV account" means.
+    private static SevenTvGqlIdentityConnectionDto? FindOwnTwitchConnection(SevenTvGqlIdentityUserDto user, string twitchUserId) =>
+        user.Connections.FirstOrDefault(c => c.Platform == TwitchPlatform && c.Id == twitchUserId);
+
+    // editor_of reduced to the Twitch identity of each granting channel. Shared by
+    // GetEditorOfChannelsAsync and LookUpEditorGrantsAsync for the same reason as above.
+    private static List<SevenTvEditorGrant> ToEditorGrants(IEnumerable<SevenTvGqlEditorOfGrantDto> grants) =>
+        grants
+            .SelectMany(g => g.User?.Connections ?? [])
+            .Where(c => c.Platform == TwitchPlatform)
+            .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
+            .ToList();
+
     private enum V4PageStatus
     {
         Ok,
@@ -1212,5 +1317,12 @@ public class SevenTvApiClient(
         public static PreviewPageFetch Success(SevenTvGqlEmoteSetPreviewSetDto setDto) => new(setDto.Emotes, setDto, null);
 
         public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, null, failure);
+    }
+
+    // Outcome of PostBudgetedGqlAsync: Failure is null exactly when Dto may be read — the failure is
+    // already the finished LookUpEditorGrantsAsync answer, so its caller returns it as-is.
+    private readonly record struct BudgetedGqlAnswer<TDto>(TDto? Dto, SevenTvEditorGrantsLookup? Failure)
+    {
+        public static BudgetedGqlAnswer<TDto> Failed(SevenTvEditorGrantsLookup failure) => new(default, failure);
     }
 }

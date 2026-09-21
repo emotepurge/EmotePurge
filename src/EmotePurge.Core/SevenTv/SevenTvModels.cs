@@ -846,3 +846,78 @@ public sealed class SevenTvEmoteSetOwnerLookupResult
         return new SevenTvEmoteSetOwnerLookupResult(status, null, retryAfter);
     }
 }
+
+/// <summary>
+/// Why <see cref="ISevenTvApiClient.LookUpEditorGrantsAsync"/> produced what it produced — the
+/// budgeted twin of the identity-then-<c>editor_of</c> chain the authorization path runs unbudgeted
+/// (<see cref="ISevenTvApiClient.ResolveSevenTvIdentityAsync"/> followed by
+/// <see cref="ISevenTvApiClient.GetEditorOfChannelsAsync"/>). The set-centric import's owner check
+/// needs what that chain folds away: a confirmed overload apart from any other failure, and a
+/// refused permit apart from both (spec 2026-09-20, section 32, second review round).
+/// </summary>
+public enum SevenTvEditorGrantsLookupStatus
+{
+    Ok,
+
+    /// <summary>No 7TV account carries the Twitch connection — an answer, not a failure.</summary>
+    NoSevenTvAccount,
+
+    /// <summary>A confirmed 7TV overload — HTTP 429, or HTTP 200 with <c>extensions.status: 429</c>.</summary>
+    RateLimited,
+
+    /// <summary>Transport failure, a non-success status other than 429, or an unusable body.</summary>
+    Unavailable,
+
+    /// <summary>
+    /// The provider-wide request budget refused a permit before one of the two requests, so that
+    /// request was never sent. Kept apart from <see cref="Unavailable"/> for the breaker's sake (F14).
+    /// </summary>
+    BudgetExhausted
+}
+
+/// <summary>
+/// <see cref="Grants"/> is non-null if and only if <see cref="Status"/> is
+/// <see cref="SevenTvEditorGrantsLookupStatus.Ok"/> — an account that edits nothing answers Ok with
+/// an empty list. Same invariant-by-construction shape as the other result types in this file.
+/// </summary>
+public sealed class SevenTvEditorGrantsLookup
+{
+    private SevenTvEditorGrantsLookup(
+        SevenTvEditorGrantsLookupStatus status, IReadOnlyList<SevenTvEditorGrant>? grants, TimeSpan? retryAfter)
+    {
+        Status = status;
+        Grants = grants;
+        RetryAfter = retryAfter;
+    }
+
+    public SevenTvEditorGrantsLookupStatus Status { get; }
+
+    /// <summary>Non-null if and only if <see cref="Status"/> is <see cref="SevenTvEditorGrantsLookupStatus.Ok"/>.</summary>
+    public IReadOnlyList<SevenTvEditorGrant>? Grants { get; }
+
+    /// <summary>What 7TV asked us to wait, on a <see cref="SevenTvEditorGrantsLookupStatus.RateLimited"/> answer that said so.</summary>
+    public TimeSpan? RetryAfter { get; }
+
+    public static SevenTvEditorGrantsLookup Ok(IReadOnlyList<SevenTvEditorGrant> grants)
+    {
+        ArgumentNullException.ThrowIfNull(grants);
+        return new SevenTvEditorGrantsLookup(SevenTvEditorGrantsLookupStatus.Ok, grants, null);
+    }
+
+    public static SevenTvEditorGrantsLookup Failed(SevenTvEditorGrantsLookupStatus status, TimeSpan? retryAfter = null)
+    {
+        if (status == SevenTvEditorGrantsLookupStatus.Ok)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Failed() cannot carry a success status — Ok(grants) is for that.");
+        }
+
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status), status, "Unknown SevenTvEditorGrantsLookupStatus.");
+        }
+
+        return new SevenTvEditorGrantsLookup(status, null, retryAfter);
+    }
+}

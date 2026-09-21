@@ -27,6 +27,14 @@ namespace EmotePurge.Infrastructure.Services;
 /// operation.
 /// </para>
 /// <para>
+/// <b>The grants take the guarded way (second review round).</b> Which accounts to check comes from
+/// <see cref="IGuardedSevenTvEditorGrantsService"/>, not from the unguarded
+/// <see cref="ISevenTvEditorService"/> the authorization path uses: a hit costs nothing either way,
+/// but a miss is resolved behind the provider guards and a failure is held — without that, repeated
+/// forged reports during a Redis or 7TV outage cost two unbudgeted requests each. A refused guard or
+/// a held failure makes the grants unreadable, which is the partial outage below.
+/// </para>
+/// <para>
 /// <b>Unknown is not forbidden.</b> When a list could not be read and the set was not found
 /// admissible anywhere else, the answer is <see cref="SevenTvEmoteSetOwnershipStatus.Unavailable"/>:
 /// the unreadable account may be the very one that owns the set.
@@ -34,7 +42,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// </remarks>
 public sealed class ImportTargetOwnershipService(
     ISevenTvEmoteSetListService emoteSetListService,
-    ISevenTvEditorService editorService,
+    IGuardedSevenTvEditorGrantsService grantsService,
     ISevenTvApiClient client,
     ForeignSevenTvBreakerPolicy breaker,
     ForeignEmoteSetProviderBudget budget,
@@ -98,7 +106,7 @@ public sealed class ImportTargetOwnershipService(
     private async Task<SevenTvEmoteSetOwnershipCheckResult?> InspectEditorAccountsAsync(
         OwnershipEvidence evidence, string actorTwitchUserId, CancellationToken cancellationToken)
     {
-        var grants = await editorService.GetEditorGrantsAsync(actorTwitchUserId, cancellationToken);
+        var grants = await grantsService.GetEditorGrantsAsync(actorTwitchUserId, cancellationToken);
         if (grants.Status == SevenTvLookupStatus.Unavailable)
         {
             evidence.MarkUnreadable();

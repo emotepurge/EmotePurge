@@ -35,6 +35,7 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
     {
         _factory = factory;
         _factory.EditorService.ClearReceivedCalls();
+        _factory.GuardedEditorGrants.ClearReceivedCalls();
         _factory.EmoteSetList.ClearReceivedCalls();
         _factory.SevenTvApi.ClearReceivedCalls();
         _factory.Emotes.ClearReceivedCalls();
@@ -141,7 +142,7 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
             .Returns(SetList(ActorSevenTvUserId));
         _factory.EmoteSetList.ListByTwitchIdAsync(OwnerTwitchId, Arg.Any<CancellationToken>())
             .Returns(SetList(OwnerSevenTvUserId, (EmoteSetId, OwnerSevenTvUserId)));
-        _factory.EditorService.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
+        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(
                 new HashSet<string> { OwnerTwitchLogin },
                 new HashSet<string> { OwnerTwitchId },
@@ -162,6 +163,10 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
             Arg.Any<AuditActor>(),
             Arg.Any<CancellationToken>());
         await _factory.SevenTvApi.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+
+        // The report reads its grants the guarded way only; the unguarded lookup the authorization
+        // path uses is never asked from here (spec section 32, second review round).
+        await _factory.EditorService.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     private static EmoteSetListResult SetList(string accountSevenTvUserId, params (string Id, string OwnerSevenTvUserId)[] sets) =>
@@ -173,14 +178,14 @@ public class SevenTvEmoteSetSyncImportedEndpointTests : IClassFixture<ApiFactory
     private void ArrangeActorWithoutGrants(string userId, EmoteSetListResult actorList)
     {
         _factory.EmoteSetList.ListByTwitchIdAsync(userId, Arg.Any<CancellationToken>()).Returns(actorList);
-        _factory.EditorService.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
+        _factory.GuardedEditorGrants.GetEditorGrantsAsync(userId, Arg.Any<CancellationToken>())
             .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(new HashSet<string>(), new HashSet<string>())));
     }
 
     private async Task AssertOwnerCheckDidNotRunAsync()
     {
         await _factory.EmoteSetList.DidNotReceive().ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
-        await _factory.EditorService.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.GuardedEditorGrants.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _factory.SevenTvApi.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
