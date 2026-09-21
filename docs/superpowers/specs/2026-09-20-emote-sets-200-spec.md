@@ -3032,3 +3032,63 @@ Nur die lesbare Form `data.emote_set: null` bedeutet „Set unbekannt" (404); HT
 `data: null` oder ohne `emote_set`-Feld ist bei `LookUpEmoteSetOwnerAsync` jetzt `Unavailable`
 (503, Breaker-Fehler statt Breaker-Erfolg). Der alte Weg `GetEmoteSetOwnerIdAsync` (E9,
 `set-warning`) hat dieselbe Verwechslung und bleibt bewusst unverändert.
+
+## 33. Nachtrag: Live-Verifikation K2 vom 2026-09-21
+
+K2 (der Ziel-Set-Picker aus Abschnitt 32) live gegen einen laufenden Dev-Stack geprüft, nicht nur
+gegen die eigene Testsuite — Ziel: Kanal `sensitron`, Set `wegwerf` (nicht das aktive Set, das ist
+`test2`); Ziel: Konto `olaf_olaf_son`, Set `test` (untracked). Sechs Befunde, alle behoben; der
+Fließtext oben bleibt unverändert stehen, dieser Abschnitt hebt die betroffenen Stellen auf.
+
+**1. Vorschau-Titel nannte das Set nicht, auch wenn er nicht das aktive Set traf (8.6).** Der Titel
+las sich für *jedes* getrackte Ziel als „N Emotes nach {Kanal} kopieren?" — für ein nicht-aktives Set
+irreführend, weil genau das der Grund für Befund 3 unten ist: die Kanalseite zeigt dieses Set nicht.
+Jetzt nennt der Titel das Set ausdrücklich („N Emotes in Set ‚{Set}' kopieren?"), sobald das Ziel
+*nicht* das aktive Set des getrackten Kanals ist — nicht-aktiv getrackt und jedes untrackte Ziel
+gleichermaßen. Der Ein-Klick-Weg auf das aktive Set (die 6.2-Vorauswahl) bleibt bei der alten
+Formulierung, unverändert.
+
+**2. Die Dock-Zielzeile nannte das Set gar nicht oder nur über seine rohe ID (8.10).** Für ein
+nicht-aktives getracktes Ziel fehlte das Set in der Zeile ganz; für ein untracktes Ziel stand dort
+die rohe 7TV-Set-ID statt eines Namens. Beide Fälle lesen das Set jetzt über seinen aufgelösten Namen
+(Id-Fallback nur, wenn wirklich kein Name bekannt ist) — die nicht-aktive Zeile spiegelt jetzt exakt
+die Formulierung der Vorschau („Ziel: {Kanal} · Set {Set}"). Das aktive Ziel bleibt bei der schlichten
+„Ziel: {Kanal}"-Zeile.
+
+**3. Ein Lauf in ein nicht-aktives, getracktes Set löste trotzdem den kanalweiten Abgleich aus (8.6).**
+Der Abgleich synchronisiert das *aktive* Set des Kanals — bei einem nicht-aktiven Ziel las er also das
+falsche Set, meldete trotzdem Erfolg, und das Dock behauptete „der Zielkanal zeigt die Emotes gleich"
+samt „Zielkanal öffnen"-Link, obwohl die Kanalseite die kopierten Emotes nie zeigt. Der Abgleich läuft
+jetzt nur noch, wenn das Ziel tatsächlich das aktive Set des getrackten Kanals ist; für ein
+nicht-aktives Ziel bleibt er aus, ebenso der „Zielkanal öffnen"-Link, und das Dock zeigt stattdessen
+eine eigene, zutreffende Meldung. Der `sync-imported`-Bericht selbst — das Audit-Log für den Kopiervorgang
+— läuft in beiden Fällen unverändert. Die Verhaltensänderung steht zusätzlich in `docs/DECISIONS.md`
+(Eintrag 2026-09-21).
+
+**4. Die Vorauswahl beim Öffnen des Pickers fiel auf einen fremden Kanal durch (8.6, Konzept 7.5
+Baustein 2).** War das eigene aktive Set des Nutzers gesperrt, weil es die Quelle des Laufs selbst
+ist, fiel die Vorauswahl auf den *nächsten* getrackten Account in der Antwortliste durch — beobachtet
+live als Vorauswahl eines fremden, nur moderierten Kanals. Die Vorauswahl sucht jetzt gezielt nach dem
+eigenen Account (`isOwnAccount`, aus 6.2 schon vorhanden, aber im Picker bislang verworfen) und wählt
+dessen aktives Set nur, wenn es selbst auswählbar ist; sonst bleibt nichts vorausgewählt und „Weiter"
+gesperrt, bis der Nutzer selbst wählt. Das gilt unabhängig davon, von welcher Kanalseite aus der
+Picker geöffnet wurde — die Vorauswahl fragt nie nach `data.currentChannelName`.
+
+**5. Die Vorschau zeigte für ein untracktes Ziel die Lösch-Warnung des Mass-Delete-Flows (8.6).**
+`ownershipCheckUnavailable` ist für ein untracktes Ziel laut Vertrag *immer* wahr (es gibt keinen
+Kanal, gegen den `EmoteSetOwnershipService` prüfen könnte) — die Vorschau zeigte dafür bislang
+unverändert `massDelete.ownershipCheckUnavailable`, Lösch-Wortlaut und Alarm-Optik inklusive. Ein
+untracktes Ziel bekommt jetzt einen kurzen, neutralen Hinweis in eigenem Wortlaut (der Besitzer wurde
+im Picker bereits bestätigt); ein getracktes Ziel, dessen Prüfung tatsächlich fehlschlug, bekommt
+ebenfalls eigenen, kopier- statt löschbezogenen Wortlaut (`import.confirm.*`, nie mehr
+`massDelete.*`).
+
+**6. Die Picker-eigene Bestätigung für ein untracktes Set las sich als Kopier-Aktion, obwohl sie
+nichts kopiert (8.6, AK 35).** Frage „In das Set ‚…' von ‚…' kopieren?" mit Knopf „Kopieren" neben dem
+gesperrten „Weiter" der Picker-Hülle — zwei verschieden benannte Kopier-Knöpfe nebeneinander, obwohl
+der Klick nur das Ziel bestätigt und den Picker schließt, ohne dass die eigentliche Kopie schon läuft.
+Umformuliert als Zielbestätigung („Ziel ist das Set ‚…' von ‚…' — dieses Konto trackt EmotePurge
+nicht.") mit den Knöpfen „Ja, dieses Set" (bestätigt, schließt den Picker — exakt das bisherige
+Verhalten von „Kopieren") und „Anderes Set wählen" (verwirft die Auswahl, stellt den vorherigen Stand
+wieder her — exakt das bisherige Verhalten des inneren „Abbrechen", AK 35 bleibt unverändert
+verpflichtend).
