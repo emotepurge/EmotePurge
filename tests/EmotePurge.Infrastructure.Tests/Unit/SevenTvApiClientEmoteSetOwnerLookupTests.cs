@@ -58,6 +58,23 @@ public class SevenTvApiClientEmoteSetOwnerLookupTests
     }
 
     /// <summary>
+    /// Only the readable <c>data.emote_set: null</c> above means "unknown set". An answer that
+    /// carries a non-429 GraphQL error and no <c>emote_set</c> at all — <c>data: null</c>, or a
+    /// <c>data</c> object without the field — is 7TV failing, not 7TV saying no (second review round
+    /// on K2, P2): read as <c>NotFound</c>, it answered a legitimate report with 404.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"data":null,"errors":[{"message":"internal server error"}]}""")]
+    [InlineData("""{"data":{},"errors":[{"message":"internal server error"}]}""")]
+    [InlineData("""{"errors":[{"message":"internal server error"}]}""")]
+    public async Task AnErrorsOnlyAnswer_IsUnavailable_NotNotFound(string body)
+    {
+        var result = await CreateClient(new StubHandler(HttpStatusCode.OK, body)).LookUpEmoteSetOwnerAsync(EmoteSetId);
+
+        Assert.Equal(SevenTvEmoteSetOwnerLookupStatus.Unavailable, result.Status);
+    }
+
+    /// <summary>
     /// Both disguises of an overload are <c>RateLimited</c>, never <c>NotFound</c>: an overload read
     /// as "no such set" would answer a legitimate report with 404.
     /// </summary>

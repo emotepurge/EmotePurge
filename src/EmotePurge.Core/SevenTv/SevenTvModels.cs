@@ -789,7 +789,11 @@ public enum SevenTvEmoteSetOwnerLookupStatus
     /// <summary>A confirmed 7TV overload — HTTP 429, or HTTP 200 with <c>extensions.status: 429</c>.</summary>
     RateLimited,
 
-    /// <summary>Transport failure, a non-success status other than 429, or an unreadable body.</summary>
+    /// <summary>
+    /// Transport failure, a non-success status other than 429, an unreadable body — or an answer
+    /// without an <c>emote_set</c> field at all (<c>data: null</c> next to a GraphQL error), which is
+    /// 7TV failing, not 7TV saying "no such set".
+    /// </summary>
     Unavailable,
 
     /// <summary>

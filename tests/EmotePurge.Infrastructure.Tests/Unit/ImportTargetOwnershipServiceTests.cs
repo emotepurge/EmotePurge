@@ -330,6 +330,33 @@ public class ImportTargetOwnershipServiceTests
         return (CreateService(lists, grants, client, breaker, budget), handler, requestBudget, breaker);
     }
 
+    /// <summary>
+    /// The second-round P2 at the level it was reported: an owner answer that carries only a GraphQL
+    /// error is 503, not 404 — and it counts against the owner lookup's breaker as a failure, so a
+    /// run of them opens it instead of each one "proving" 7TV healthy.
+    /// </summary>
+    [Fact]
+    public async Task AnErrorsOnlyOwnerAnswer_IsUnavailable_AndCountsAsABreakerFailure()
+    {
+        var handler = new SevenTvGqlRouteHandler().Answer(
+            SevenTvGqlRouteHandler.Owner, HttpStatusCode.OK, """{"data":null,"errors":[{"message":"internal server error"}]}""");
+        var client = new SevenTvApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
+            new RecordingRateLimitTelemetry(),
+            new RecordingForeignUpstreamRequestBudget(),
+            new RecordingLogger<SevenTvApiClient>());
+        var breaker = new ForeignSevenTvBreakerPolicy();
+        var service = CreateService(
+            ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId))), EditorsReturning(Grants()), client, breaker);
+
+        for (var report = 0; report < ForeignSevenTvBreakerPolicy.FailureThreshold; report++)
+        {
+            Assert.Equal(SevenTvEmoteSetOwnershipStatus.Unavailable, (await service.CheckAsync(ActorTwitchId, ActorLogin, EmoteSetId)).Status);
+        }
+
+        Assert.False(breaker.TryAcquire(ForeignSevenTvBreakerOperations.EmoteSetOwner).Allowed);
+    }
+
     private static async Task<(ImportTargetOwnershipService Service, CountingOwnerHandler Handler, RecordingForeignUpstreamRequestBudget RequestBudget)>
         CreateRealChainAsync(EmoteSetListResult actorList, EmoteSetListResult editedList)
     {

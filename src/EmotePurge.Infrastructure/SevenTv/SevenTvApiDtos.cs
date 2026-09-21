@@ -68,7 +68,24 @@ internal sealed class SevenTvGqlEmoteSetOwnerResponseDto : ISevenTvGqlErrorEnvel
 
 internal sealed class SevenTvGqlEmoteSetOwnerDataDto
 {
-    public SevenTvGqlEmoteSetOwnerDto? EmoteSet { get; set; }
+    private SevenTvGqlEmoteSetOwnerDto? _emoteSet;
+
+    public SevenTvGqlEmoteSetOwnerDto? EmoteSet
+    {
+        get => _emoteSet;
+        set
+        {
+            _emoteSet = value;
+            HasEmoteSet = true;
+        }
+    }
+
+    // Set once the answer carried an emote_set field at all, JSON null included — the serializer
+    // calls the setter for an explicit null, never for a missing field. Read only by the budgeted
+    // owner lookup: "emote_set: null" is 7TV saying it knows no such set, an absent field is 7TV
+    // not answering the question.
+    [JsonIgnore]
+    public bool HasEmoteSet { get; private set; }
 }
 
 internal sealed class SevenTvGqlEmoteSetOwnerDto

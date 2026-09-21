@@ -377,7 +377,18 @@ public class SevenTvApiClient(
                 return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.RateLimited);
             }
 
-            var ownerId = dto?.Data?.EmoteSet?.OwnerId;
+            // Only a readable answer to the question can say "no such set": data.emote_set present,
+            // null included. data: null, or data without emote_set, next to a non-429 error is 7TV
+            // failing — Unavailable, so the owner check answers 503 and the breaker counts a
+            // failure instead of a success.
+            if (dto?.Data is not { HasEmoteSet: true } data)
+            {
+                logger.LogWarning(
+                    "7TV answered the owner query for emote set {SetId} without an emote_set (GraphQL error answer?).", emoteSetId);
+                return SevenTvEmoteSetOwnerLookupResult.Failed(SevenTvEmoteSetOwnerLookupStatus.Unavailable);
+            }
+
+            var ownerId = data.EmoteSet?.OwnerId;
             if (string.IsNullOrEmpty(ownerId))
             {
                 logger.LogInformation("7TV names no owner for emote set {SetId}.", emoteSetId);
