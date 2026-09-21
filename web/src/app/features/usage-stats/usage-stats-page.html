@@ -424,6 +424,15 @@
         {{ 'usageStats.rangeBeforeTracking' | transloco: { date: formatDate(since) } }}
       </app-notice-banner>
     }
+  } @else if (setViewCaptions().length > 0) {
+    <!-- The same set-view statements when the set status (and with it the tracking start) could not
+         be read: they do not depend on it (spec 8.3/8.4), and the member-list warnings above all
+         must not disappear just because the paragraph they normally close has nothing to open with. -->
+    <p class="text-xs text-fg-muted">
+      @for (sentence of setViewCaptions(); track sentence.key) {
+        {{ sentence.key | transloco: sentence.params }}
+      }
+    </p>
   }
 
   @if (slotBudget(); as budget) {

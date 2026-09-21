@@ -384,8 +384,10 @@ export class UsageStatsPage {
 
   /**
    * The `/totals` rows exactly as the last successful request returned them, and the set they were
-   * requested for (`null` = no explicit set, the endpoint's active-set fallback). Written together,
-   * in `loadTotals`' success branch only, so the pair always describes one answer — the same
+   * answered for — fixed when the request went out and never re-derived afterwards: the explicit
+   * set, or for a request without one (the endpoint's active-set fallback, spec 6.5) the active id
+   * known at that moment, or `null` = unknown when none was known. Written together, in
+   * `loadTotals`' success branch only, so the pair always describes one answer — the same
    * discipline as `totalsChannel`/`totalsRange` below.
    */
   private readonly totalsRows = signal<EmoteUsageTotalDto[]>([]);
@@ -574,10 +576,16 @@ export class UsageStatsPage {
 
   // --- Set view (spec #200, 8.2-8.5) -----------------------------------------------------------
 
-  /** The set the rows on screen belong to. Rows requested without an explicit set (`null` — no
-   *  active set was known yet) were answered for the channel's active set by the endpoint itself
-   *  (spec 6.5), so they count as the active set's. */
-  private readonly shownSetId = computed(() => this.totalsSetId() ?? this.activeEmoteSetId());
+  /**
+   * The set the rows on screen belong to — their fixed identity (`totalsSetId`), `null` when they
+   * were answered while no active set was known. Deliberately **not** `totalsSetId ?? today's active
+   * id`: rows fetched through the endpoint's fallback while the status request had failed would
+   * otherwise be relabelled retroactively as whatever set the status names once it recovers — after
+   * a 7TV set switch in between, one set's rows under another set's name, with every write path
+   * open. An unknown identity never equals a known selected set, so `viewSwitching` keeps writes
+   * locked until rows answered for an explicit, known set land (spec §36, unknown active set).
+   */
+  private readonly shownSetId = computed(() => this.totalsSetId());
 
   /**
    * Whether the rows on screen were loaded as a view of a set other than the channel's active one —
@@ -673,6 +681,17 @@ export class UsageStatsPage {
     }
     return resource.isLoading() ? 'loading' : 'unavailable';
   });
+
+  /**
+   * Whether the non-active view's member list is still about to change — any request in flight,
+   * including a loud reload. Wider than `liveMembersState() === 'loading'` on purpose: a reload
+   * keeps the previous list renderable (`'ready'`, no skeleton), but reconciling the selection
+   * against it would miss a live member the new list drops — and nothing would reconcile again
+   * afterwards. `reconcileSelection` therefore waits for this, not for the render state.
+   */
+  private readonly liveMembersSettling = computed(
+    () => this.isNonActiveView() && this.liveMembersResource.isLoading(),
+  );
 
   private readonly liveMembers = computed(() =>
     this.liveMembersState() === 'ready' ? this.liveMembersResource.value() : null,
@@ -1678,7 +1697,7 @@ export class UsageStatsPage {
     // #94's reconciliation, deferred: a same-channel reload's rows landed while a non-active view's
     // member list was still loading (see selectionReconcilePending). Runs once the list settles.
     effect(() => {
-      if (this.selectionReconcilePending() && this.liveMembersState() !== 'loading') {
+      if (this.selectionReconcilePending() && !this.liveMembersSettling()) {
         untracked(() => this.reconcileSelection());
       }
     });
@@ -2640,7 +2659,7 @@ export class UsageStatsPage {
    * whichever way. A failed list reconciles against the DB rows alone: that is the view on screen.
    */
   private reconcileSelection(): void {
-    if (this.liveMembersState() === 'loading') {
+    if (this.liveMembersSettling()) {
       this.selectionReconcilePending.set(true);
       return;
     }
@@ -2749,7 +2768,7 @@ export class UsageStatsPage {
           // always takes the channel-switch branch, which is correct: there is nothing to retain yet.
           const previousTotalsChannel = this.totalsChannel();
           this.totalsRows.set(emotes);
-          this.totalsSetId.set(emoteSetId);
+          this.totalsSetId.set(emoteSetId ?? activeAtRequest);
           this.totalsNonActive.set(nonActive);
           // Written next to the rows themselves, never before: until this line runs, the grid still
           // shows the previous channel's emotes (see totalsChannel's declaration).

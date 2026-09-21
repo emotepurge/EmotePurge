@@ -484,8 +484,18 @@ describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', (
     // own, writing setStatusChannel alongside setStatus rather than leaving it stale.
     expect(component['setStatus']()?.activeEmoteSetId).toBe('set-a');
     expect(component['setStatusChannel']()).toBe('a');
-    // totalsChannel was already 'a' — set alongside the totals fired earlier once the failure
-    // resolved rangeResolved — so this is also where importScopeCurrent() turns true.
+    // The rows on screen were answered through the endpoint's fallback while no active set was
+    // known — their identity stays unknown and is never relabelled as 'set-a' after the fact
+    // (#200 K4, second review round): the scope only turns current once rows answered for the now
+    // known set have landed.
+    expect(component['importScopeCurrent']()).toBe(false);
+    fixture.detectChanges();
+    const explicit = httpMock.match(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-a',
+    );
+    expect(explicit.length).toBeGreaterThan(0);
+    explicit.forEach((request) => request.flush([]));
     expect(component['importScopeCurrent']()).toBe(true);
   });
 });
@@ -3630,6 +3640,89 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['selectionPrunedFeedback']()?.count).toBe(1);
   });
 
+  it('rows answered through the fallback while no active set was known keep that unknown identity: writes stay locked until rows for the recovered set land (second review, P1)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush({}, { status: 503, statusText: 'Service Unavailable' });
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+    // No set known: /totals goes out without one and the endpoint answers for whatever is active.
+    const fallback = httpMock.match((r) => r.url === TOTALS_URL);
+    expect(fallback.map((r) => r.request.params.get('emoteSetId'))).toEqual([null]);
+    fallback[0].flush([emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    await settle();
+
+    // The status recovers — and names set-b: 7TV switched sets in between.
+    component['refreshSetStatus']();
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-b', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+
+    // The fallback rows are not relabelled as set-b's: every write path stays locked.
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    expect(component['viewSwitching']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+    expect(component['importScopeCurrent']()).toBe(false);
+
+    // …and stay locked when the explicit request for set-b fails.
+    failTotals();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    await settle();
+    expect(component['setSwitchFailed']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+  });
+
+  it('a loud reload defers the reconciliation until the refreshed member list is in, even while the old one stays on screen (second review, P2)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA'), member('7tv-x', 'PumpkinX')]),
+    });
+    const pumpkin = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-x')!;
+    component['selection'].onRowClick(pumpkin, { shiftKey: false } as MouseEvent);
+
+    component['refresh']();
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    // The refreshed numbers land first; the refreshed member list is still out, the old one still
+    // renders (no skeleton) — but it must not be what the selection is reconciled against.
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    fixture.detectChanges();
+    expect(component['liveMembersState']()).toBe('ready');
+    expect(component['selectionReconcilePending']()).toBe(true);
+
+    // PumpkinX left the set on 7TV.
+    liveListRequests().forEach((request) => request.flush(memberList([member('7tv-a', 'PeepoA')])));
+    await settle();
+
+    expect(component['selectionReconcilePending']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual([]);
+    expect(component['selectionPrunedFeedback']()?.count).toBe(1);
+  });
+
   it('a failed member list pays the deferred reconciliation against the counted rows alone (#94 deferred)', async () => {
     await openView({ totals: [emote('a', 'PeepoA'), emote('b', 'PeepoB')] });
     for (const row of component['emotes']()) {
@@ -3792,6 +3885,57 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
     // "Löschen" — untranslated here (empty `de` dict), so this is the raw key, but the key itself
     // is the "membersUnavailable" one whose copy this fix corrected in public/i18n/{de,en}.json.
     expect(reasonParagraph!.textContent?.trim()).toBe('usageStats.setView.lock.membersUnavailable');
+  });
+
+  it('states the set-view facts and member-list warnings even when the set status (and its tracking start) could not be read (second review, P2)', async () => {
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush({}, { status: 503, statusText: 'Service Unavailable' });
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+        ]),
+      );
+    await settle();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    await settle();
+
+    expect(component['trackedSince']()).toBeNull();
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('usageStats.setView.membersUnavailable');
+    expect(text).toContain('usageStats.setView.facts.notObserved');
   });
 
   it('leaves the vote button without an aria-describedby in the active view, where nothing is locked', async () => {

@@ -198,6 +198,21 @@ is not settled.** Five rules, each closing a path to a wrong write or a view tha
   === setId`. Silent reloads (`usage.flushed`, the recheck poll, the sync wait) request no rows while
   a URL-carried set is still unconfirmed.
 
+**Second review round (same day), three more rules.** Rows carry the set they were **answered
+for**, fixed at request time and never re-derived: the explicit set, or for a request without one
+(the endpoint's active-set fallback) the active id known at that moment, or *unknown* (`null`) when
+none was known. `shownSetId` used to fill a `null` with today's active id, which relabelled fallback
+rows fetched during a failed status request as whatever set the recovered status named — after a
+7TV set switch in between, one set's rows under another's name with every write path open. An
+unknown identity never equals a known selected set, so `viewSwitching` keeps writes locked until
+rows for an explicit, known set land (and stays locked if that request fails). The selection's
+deferred reconciliation now waits for *any* member-list request in flight, a loud reload included
+(`liveMembersSettling`): a reload keeps the old list renderable (`'ready'`), but reconciling against
+it would miss a member the new list drops, with nothing reconciling afterwards. And the set-view
+statements (observed/counted facts, member list unavailable or truncated) render in a paragraph of
+their own when the set status — and with it the tracking-start paragraph they normally close —
+could not be read.
+
 Two smaller rules of the same round: **the set dropdown is locked, with its reason shown next to the
 trigger, while a delete run is still writing or its `sync-deleted` report is still out**
 (`emoteSetMenu.lockedDuringDelete`) — `onDeleted` edits the rows on screen when that report
