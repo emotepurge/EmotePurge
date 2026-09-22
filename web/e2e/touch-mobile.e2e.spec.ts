@@ -128,6 +128,34 @@ test.describe('touch: reading and voting only', () => {
     expect(paneBox.width).toBe(viewport.width);
   });
 
+  // #226: the sheet's action row used to scroll away with the body, same as the desktop dialog did
+  // — the fix sits once in `DialogShell` for both, but `pointer: coarse` only follows from THIS
+  // file's Playwright project (`mobile-chrome`, `playwright.config.ts`'s `testMatch`), so the sheet
+  // half of the contract has to live here rather than next to the desktop case
+  // (`dialog-action-row.e2e.spec.ts`). The viewport is shrunk to force overflow deterministically —
+  // the drilldown's own content is not reliably taller than a real device at this project's default
+  // size, and a flaky overflow premise would make the assertions below pass for the wrong reason.
+  test('the sheet keeps its close button in view once the body has been scrolled past it', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 393, height: 400 });
+    await mockUsageTotals(page, 'sensitron', [TOUCH_EMOTE]);
+    await page.goto('/channels/sensitron/usage-stats');
+    await page.locator('[data-atlas-index="0"]').tap();
+    await expect(page.locator('#app-dialog-title')).toBeVisible();
+
+    const pane = page.locator('.cdk-overlay-pane.app-dialog-panel');
+    const overflow = await pane.evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(overflow).toBeGreaterThan(20);
+
+    const closeButton = page.getByRole('button', { name: 'Schließen' });
+    await pane.evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+
+    await expect(closeButton).toBeInViewport();
+  });
+
   test('the sheet closes when the backdrop is tapped', async ({ page }) => {
     await mockUsageTotals(page, 'sensitron', [TOUCH_EMOTE]);
     await page.goto('/channels/sensitron/usage-stats');

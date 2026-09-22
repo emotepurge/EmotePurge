@@ -42,6 +42,26 @@ import { SheetDrag } from './sheet-drag';
  * check, deliberately: a drag started on the heading means the sheet, never the content. `contents`
  * on a fine pointer keeps the wrapper out of the layout entirely, so the desktop dialog is boxed
  * exactly as before and a dialog that renders neither heading form cannot collect a stray gap.
+ *
+ * The action row is sticky to the pane's bottom edge (#226), the same bleed-and-pin technique as
+ * the handle above, mirrored: `-mx-6 -mb-6` cancels the hull's own padding on those three sides so
+ * the row's margin box reaches the pane's edges, and `-bottom-6` cancels that same negative margin
+ * back out of the sticky offset so the pinned position lands flush rather than 24 px short (or
+ * long) of it — exactly the relationship `-top-6`/`-mt-6` already has on the handle, just facing the
+ * other edge. The row then re-declares its own padding (`px-6 pt-4 pb-6`) so its content sits where
+ * the hull's `p-6` used to put it. This has to be `position: sticky`, not a flex-column height chain
+ * (`h-full` on the hull, `overflow-y-auto` on the body) that would pin the footer structurally: two
+ * component hosts sit between the pane and the hull (both `display: inline` by default) and a
+ * percentage/`h-full` chain does not survive them — the same reason `.app-dialog-panel` itself is
+ * the scroll container instead of the hull (see `styles.css`). Sticky needs no height chain, only a
+ * scrolling ancestor, which the pane already is.
+ *
+ * `bg-surface` and `border-t border-border` are load-bearing, not decoration: without its own opaque
+ * surface the sticky row would let scrolled-under content show through, and without the rule the
+ * boundary between "still scrolling" and "always visible" would be invisible. `rounded-b-lg` only
+ * applies on a fine pointer — the sheet's hull is square at the bottom (it is flush with the screen
+ * edge, `hullClasses` never rounds that corner there), so rounding the footer to match would round a
+ * corner the hull itself does not have.
  */
 @Component({
   selector: 'app-dialog-shell',
@@ -70,8 +90,10 @@ import { SheetDrag } from './sheet-drag';
       <div class="flex flex-col gap-3"><ng-content /></div>
 
       <!-- Cancel goes first, always: the CDK's first-tabbable autoFocus default then lands on the
-           harmless control, which is what makes an explicit cdkFocusInitial unnecessary. -->
-      <div class="flex flex-wrap items-center justify-end gap-2">
+           harmless control, which is what makes an explicit cdkFocusInitial unnecessary. Sticky to
+           the pane's bottom edge (#226) so the row stays reachable while the body scrolls — see the
+           class doc comment above for why this is a sticky offset and not a height chain. -->
+      <div [class]="actionsClasses()">
         <ng-content select="[dialog-actions]" />
       </div>
     </div>
@@ -105,4 +127,14 @@ export class DialogShell {
   );
 
   protected readonly titleId = DIALOG_TITLE_ID;
+
+  // `-bottom-6`/`-mb-6`/`-mx-6` mirror the handle's `-top-6`/`-mt-6`/`-mx-6` (see the class doc
+  // comment); `rounded-b-lg` only on a fine pointer, because the sheet's hull has no bottom radius
+  // to match (flush with the screen edge instead).
+  protected readonly actionsClasses = computed(
+    () =>
+      'sticky -bottom-6 -mx-6 -mb-6 flex flex-wrap items-center justify-end gap-2 border-t ' +
+      'border-border bg-surface px-6 pt-4 pb-6 ' +
+      (this.isSheet() ? '' : 'rounded-b-lg'),
+  );
 }
