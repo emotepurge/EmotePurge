@@ -611,4 +611,23 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
     expect(data.emoteSetId).toBeNull();
   });
+
+  it("locks the mass-delete panel over a set-session on a NON-active set (Ruling D, temporary until K5's set-scoped sync-deleted)", async () => {
+    await mount(results([resultEmote('a')], { emoteSetId: 'halloween-1' }), true);
+
+    // activeEmoteSetId() is 'set-1' per this describe block's own mount() — 'halloween-1' differs.
+    expect(component['massDeleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+  });
+
+  it('leaves the mass-delete panel unlocked for a null-session (no set of its own to disagree with the active one)', async () => {
+    await mount(results([resultEmote('a')]), true);
+
+    expect(component['massDeleteLockReasonKey']()).toBeNull();
+  });
+
+  it("leaves the mass-delete panel unlocked for a set-session over the channel's own ACTIVE set", async () => {
+    await mount(results([resultEmote('a')], { emoteSetId: 'set-1' }), true);
+
+    expect(component['massDeleteLockReasonKey']()).toBeNull();
+  });
 });

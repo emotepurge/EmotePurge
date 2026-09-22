@@ -94,22 +94,34 @@ describe('votingCsv', () => {
     const csv = votingCsv(input([resultRow()]));
     const [header, row] = csv.replace(/^﻿/, '').trimEnd().split('\r\n');
     expect(header).toBe(
-      'emote_name,seven_tv_emote_id,keep_votes,delete_votes,score,total_use_count,my_vote,is_archived',
+      'emote_name,seven_tv_emote_id,keep_votes,delete_votes,score,total_use_count,my_vote,is_archived,eligible',
     );
-    expect(row).toBe('PogU,01ABC,5,2,3,42,keep,false');
+    expect(row).toBe('PogU,01ABC,5,2,3,42,keep,false,true');
   });
 
   it('drops the tally columns entirely on a running secret ballot', () => {
     const rows = [resultRow({ keepVotes: null, deleteVotes: null, score: null })];
     const [header, row] = votingCsv(input(rows)).replace(/^﻿/, '').trimEnd().split('\r\n');
-    expect(header).toBe('emote_name,seven_tv_emote_id,total_use_count,my_vote,is_archived');
-    expect(row).toBe('PogU,01ABC,42,keep,false');
+    expect(header).toBe(
+      'emote_name,seven_tv_emote_id,total_use_count,my_vote,is_archived,eligible',
+    );
+    expect(row).toBe('PogU,01ABC,42,keep,false,true');
   });
 
   it('keeps a single null as an empty cell instead of dropping the column', () => {
     const rows = [resultRow(), resultRow({ emoteId: 'guid-2', totalUseCount: null, myVote: null })];
     const lines = votingCsv(input(rows)).replace(/^﻿/, '').trimEnd().split('\r\n');
-    expect(lines[2]).toBe('PogU,01ABC,5,2,3,,,false');
+    expect(lines[2]).toBe('PogU,01ABC,5,2,3,,,false,true');
+  });
+
+  it('is_archived and eligible can disagree — a set-session member upserted "never active" (K6 whole-branch review)', () => {
+    const row = resultRow({ isArchived: true, eligible: true });
+    const [, csvRow] = votingCsv(input([row]))
+      .replace(/^﻿/, '')
+      .trimEnd()
+      .split('\r\n');
+    // ...,is_archived,eligible — true then true, not the same column read twice by coincidence.
+    expect(csvRow.split(',').slice(-2)).toEqual(['true', 'true']);
   });
 });
 
@@ -133,5 +145,10 @@ describe('votingJson', () => {
       hideResultsUntilEnd: true,
     });
     expect(parsed.rows[0]).toMatchObject({ keepVotes: 5, deleteVotes: 2, score: 3 });
+  });
+
+  it('carries eligible alongside is_archived, independently (K6 whole-branch review)', () => {
+    const parsed = JSON.parse(votingJson(input([resultRow({ isArchived: true, eligible: true })])));
+    expect(parsed.rows[0]).toMatchObject({ isArchived: true, eligible: true });
   });
 });
