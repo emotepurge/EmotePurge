@@ -121,7 +121,12 @@ layout uniformity identically.
 `web/src/app/features/voting/vote-session-detail-page.ts` ·
 `web/src/app/shared/seven-tv/delete-confirm-dialog.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
 `web/e2e/emote-import.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
-`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, §35, §36) ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` ·
+`src/EmotePurge.Core/Services/IAuditLogQueryService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` ·
+`web/src/app/shared/audit/audit-row.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
+`web/src/app/core/audit/audit.model.ts` · `web/src/app/shared/audit/audit-row.spec.ts` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, 8.10, §35, §36) ·
 `docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.3, T5.2, T5.1)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
@@ -381,6 +386,11 @@ false`. `channel.synced` keeps its existing gate (`NewlyArchivedCount > 0`) unch
 fires for a non-active-set report. `notFoundIds` carries 7TV ids for the new form, Guids for the
 legacy one, per the response shape (spec 6.6). Threading the set id into the delete/restore run
 record and the frontend's own body construction is T5.1, not this commit.
+
+The admin audit view (spec 8.10) reads this same `emoteSetId` back off the two actions' details —
+`AuditLogQueryService.ReadTargetEmoteSet` took the property name as a parameter instead of a second
+copy, because the import ladder's own equivalent field is spelled `targetEmoteSetId` (K5/T5.2 gap
+close, closed alongside #209).
 
 **K5 addendum (T5.1) — delete and restore runs speak 7TV ids end to end.** `RunResult.doneIds` is
 gone (E2); `doneKeys` is the one identity a finished run reports, so a row without a local

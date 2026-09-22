@@ -31,6 +31,13 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     private const string TargetIsActiveSetOfChannelProperty = "targetIsActiveSetOfChannel";
     private const string TargetOwnerTwitchLoginProperty = "targetOwnerTwitchLogin";
 
+    // The set-scoped sync-deleted/sync-restored target (spec 6.6, K5/T5.2): EmoteService's
+    // set-scoped MarkDeletedAsync/MarkRestoredAsync overloads write "emoteSetId", not
+    // "targetEmoteSetId" — a different property name than the import ladder above, because the two
+    // write paths shipped independently and each already had its own name before this projection
+    // read both. TargetIsActiveSetOfChannelProperty is shared as-is: both paths spell it the same.
+    private const string EmoteSetIdProperty = "emoteSetId";
+
     // The closed vocabulary the endpoint accepts for that discriminator (EmoteEndpoints, F5.1/F1).
     // Both channel-shaped kinds render as ImportedFromChannel: what the row has to preserve is that
     // the emotes came from a channel and which one, not through which of the two read paths we saw
@@ -147,7 +154,12 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
 
         if (TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var emoteCount))
         {
-            return new AuditLogDetail(AuditLogDetail.Kinds.EmoteCount, emoteCount, null);
+            // Spec 6.6 (K5/T5.2): a set-scoped sync-deleted/sync-restored call annotates this same
+            // bare-count shape with its target set under "emoteSetId" — read generically here, same
+            // as the import ladder above, so a legacy-body row (no such property) or an unrelated
+            // action that also happens to carry a bare emoteCount projects with TargetEmoteSet null,
+            // exactly as before.
+            return new AuditLogDetail(AuditLogDetail.Kinds.EmoteCount, emoteCount, null, ReadTargetEmoteSet(root, EmoteSetIdProperty));
         }
 
         if (TryReadCount(root, AuditLogDetail.Kinds.RemovedEntries, out var removedEntries))
@@ -205,7 +217,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
         // payload names one. A row written before targetEmoteSetId existed, or one from a client that
         // omitted it (E5), simply has no property here — ReadTargetEmoteSet returns null and the
         // detail stays exactly as the two methods above built it.
-        var targetEmoteSet = ReadTargetEmoteSet(root);
+        var targetEmoteSet = ReadTargetEmoteSet(root, TargetEmoteSetIdProperty);
         if (targetEmoteSet is not null)
         {
             detail = detail! with { TargetEmoteSet = targetEmoteSet };
@@ -215,13 +227,16 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     }
 
     /// <summary>
-    /// Reads the import ladder's target (spec 6.7) off an already-parsed details payload. Returns
-    /// null — not a throw — whenever <c>targetEmoteSetId</c> is missing, not a non-empty string, or
-    /// simply absent (E5: a valid, complete row with no set reported at all).
+    /// Reads a target set off an already-parsed details payload, under <paramref name="idPropertyName"/>
+    /// — the import ladder's <c>targetEmoteSetId</c> (spec 6.7) or the set-scoped
+    /// sync-deleted/sync-restored's <c>emoteSetId</c> (spec 6.6, K5/T5.2); the two write paths
+    /// shipped independently and never agreed on a name. Returns null — not a throw — whenever that
+    /// property is missing, not a non-empty string, or simply absent (a legacy row, or a valid,
+    /// complete import row with no set reported at all, E5).
     /// </summary>
-    private static AuditLogTargetEmoteSet? ReadTargetEmoteSet(JsonElement root)
+    private static AuditLogTargetEmoteSet? ReadTargetEmoteSet(JsonElement root, string idPropertyName)
     {
-        if (!root.TryGetProperty(TargetEmoteSetIdProperty, out var idElement)
+        if (!root.TryGetProperty(idPropertyName, out var idElement)
             || idElement.ValueKind != JsonValueKind.String
             || idElement.GetString() is not { Length: > 0 } id)
         {

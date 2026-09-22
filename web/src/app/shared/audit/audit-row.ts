@@ -29,11 +29,13 @@ export interface AuditRow {
   action: string;
   channelName: string | null;
   detail: RenderedDetail | null;
-  /** The import ladder's target-set addendum (spec 8.10) — a second, independent line segment
-   *  appended after `detail`, never folded into it: `detail` already has its own kind-specific key
-   *  (`emoteCount`, `importedFromFile`, …), and multiplying that by the three target-set cases would
-   *  turn one small table into a combinatorial one for no reason a reader would notice. `null`
-   *  whenever the entry names no target set at all. */
+  /** The target-set addendum (spec 8.10) — a second, independent line segment appended after
+   *  `detail`, never folded into it: `detail` already has its own kind-specific key (`emoteCount`,
+   *  `importedFromFile`, …), and multiplying that by the three target-set cases would turn one small
+   *  table into a combinatorial one for no reason a reader would notice. Present on both the import
+   *  ladder's rows and the set-scoped `sync-deleted`/`sync-restored` rows (spec 6.6, K5) — purely
+   *  from `AuditLogDetail.targetEmoteSet`, never from the row's action or kind. `null` whenever the
+   *  entry names no target set at all. */
   targetSet: RenderedDetail | null;
 }
 
@@ -111,7 +113,8 @@ function renderDetail(
 }
 
 /**
- * The import ladder's target-set addendum (spec 8.10). Independent of `renderDetail` above — it
+ * The target-set addendum (spec 8.10) — the import ladder's rows and the set-scoped
+ * `sync-deleted`/`sync-restored` rows alike (spec 6.6, K5). Independent of `renderDetail` above — it
  * reads the same `AuditLogDetail`, but the two functions never influence each other's outcome: a
  * row with an unrecognized `kind` (renderDetail returning `null`) can still name its target set,
  * and a row naming no target set at all renders exactly as it always did.

@@ -292,5 +292,80 @@ describe('toAuditRows', () => {
         params: { setId: 'set-untr', ownerLogin: 'strangertv' },
       });
     });
+
+    // Spec 6.6 (K5): the set-scoped sync-deleted/sync-restored rows feed the same
+    // `targetEmoteSet` shape as an import row, but on the bare `emoteCount` kind rather than one of
+    // the import kinds — this is the actual combination those two actions write, not a stand-in.
+    it('shows both the count and the "in set" addition for a set-scoped delete on the active set', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            action: 'emotes.syncDeleted',
+            detail: {
+              kind: 'emoteCount',
+              count: 4,
+              text: null,
+              targetEmoteSet: {
+                id: '01J94NYQR0000D15QN0BDGN85E',
+                isActiveSetOfChannel: true,
+                ownerLogin: null,
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 4 } });
+      expect(row.targetSet).toEqual({
+        key: 'audit.details.targetEmoteSet',
+        params: { setId: '01J94NYQ' },
+      });
+    });
+
+    it('adds "not the active set" for a set-scoped restore reported against a non-active set', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            action: 'emotes.syncRestored',
+            detail: {
+              kind: 'emoteCount',
+              count: 2,
+              text: null,
+              targetEmoteSet: {
+                id: 'set-halloween',
+                isActiveSetOfChannel: false,
+                ownerLogin: null,
+              },
+            },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 2 } });
+      expect(row.targetSet).toEqual({
+        key: 'audit.details.targetEmoteSetNotActive',
+        params: { setId: 'set-hall' },
+      });
+    });
+
+    it('names no target set for a legacy-body sync-deleted row', () => {
+      const [row] = toAuditRows(
+        [
+          entry({
+            action: 'emotes.syncDeleted',
+            detail: { kind: 'emoteCount', count: 6, text: null },
+          }),
+        ],
+        'de-DE',
+        IDENTITY_TRANSLATE,
+      );
+
+      expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 6 } });
+      expect(row.targetSet).toBeNull();
+    });
   });
 });

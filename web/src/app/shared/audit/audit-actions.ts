@@ -58,16 +58,19 @@ export const DETAIL_KEYS: Record<string, string> = {
 };
 
 /**
- * Translation keys for the import ladder's target-set addenda (spec 8.10) — appended *after* a
- * row's own detail line, never in place of it. Deliberately not part of `DETAIL_KEYS`:
- * `targetEmoteSet` never selects a `kind` on its own, it only annotates whichever kind the row
- * already has (mirroring the server, `AuditLogQueryService.TryProjectImportDetail`), so it needs
- * its own small table rather than a seventh entry there.
+ * Translation keys for the target-set addenda (spec 8.10) — appended *after* a row's own detail
+ * line, never in place of it. Deliberately not part of `DETAIL_KEYS`: `targetEmoteSet` never selects
+ * a `kind` on its own, it only annotates whichever kind the row already has (mirroring the server,
+ * `AuditLogQueryService.ProjectDetail`/`TryProjectImportDetail`), so it needs its own small table
+ * rather than a seventh entry there. Covers the import ladder's rows and the set-scoped
+ * `sync-deleted`/`sync-restored` rows alike (spec 6.6, K5) — both feed the same
+ * `AuditLogDetail.targetEmoteSet` shape.
  *
  * Three keys, one per case the row can show: the plain form (a set was reported, nothing further to
- * say); the not-the-active-set form (channel-scoped endpoint, `isActiveSetOfChannel === false`);
- * and the owner form (set-centric endpoint, which has no channel of ours to compare against at all
- * and names its owner's Twitch login instead, spec 6.7). The latter two never co-occur — a row's
+ * say); the not-the-active-set form (channel-scoped endpoints — `sync-imported` or the set-scoped
+ * `sync-deleted`/`sync-restored` — `isActiveSetOfChannel === false`); and the owner form (set-centric
+ * `sync-imported` endpoint, which has no channel of ours to compare against at all and names its
+ * owner's Twitch login instead, spec 6.7). The latter two never co-occur — a row's
  * `AuditLogTargetEmoteSet` is either channel-scoped (`isActiveSetOfChannel` three-valued,
  * `ownerLogin` always `null`) or set-centric (`isActiveSetOfChannel` always `null`, `ownerLogin`
  * set) — so a row needs at most one of the three keys, never two.

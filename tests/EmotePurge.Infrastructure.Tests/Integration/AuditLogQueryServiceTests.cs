@@ -586,6 +586,90 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
         Assert.Null(dto.Detail.TargetEmoteSet);
     }
 
+    [Fact]
+    public async Task ListAsync_ProjectsTheSyncDeletedTargetEmoteSet_WhenTheSetIsTheActiveSet()
+    {
+        // Spec 6.6 (K5/T5.2): EmoteService.MarkDeletedAsync's set-scoped overload writes
+        // "emoteSetId", a different property name than the import ladder's own "targetEmoteSetId"
+        // (6.7) — this pins that ProjectDetail reads it too, on the bare EmoteCount kind.
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-del-active";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 20, 0, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncDeleted,
+            ChannelName = channel,
+            TargetType = "emoteSet",
+            TargetId = "set-del-active",
+            DetailsJson = """{"emoteCount": 4, "emoteSetId": "set-del-active", "targetIsActiveSetOfChannel": true}"""
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(AuditLogDetail.Kinds.EmoteCount, dto.Detail!.Kind);
+        Assert.Equal(4, dto.Detail.Count);
+        Assert.Equal(new AuditLogTargetEmoteSet("set-del-active", true, null), dto.Detail.TargetEmoteSet);
+    }
+
+    [Fact]
+    public async Task ListAsync_ProjectsTheSyncRestoredTargetEmoteSet_WhenTheSetIsNotTheActiveSet()
+    {
+        // The paper-only branch (6.6): a report against a set that is not the channel's active one
+        // still names its target, with a literal false rather than null.
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-res-inactive";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 20, 15, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncRestored,
+            ChannelName = channel,
+            TargetType = "emoteSet",
+            TargetId = "set-res-halloween",
+            DetailsJson = """{"emoteCount": 2, "emoteSetId": "set-res-halloween", "targetIsActiveSetOfChannel": false}"""
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(new AuditLogTargetEmoteSet("set-res-halloween", false, null), dto.Detail!.TargetEmoteSet);
+    }
+
+    [Fact]
+    public async Task ListAsync_LeavesTheSyncDeletedTargetEmoteSetNull_ForALegacyBodyRow()
+    {
+        // The legacy `{ emoteIds }` body (spec 6.6, E3) never writes emoteSetId at all — this pins
+        // that the set-scoped projection degrades the same way the import ladder's E5 case does,
+        // rather than only being exercised incidentally by an unrelated theory case.
+        await using var db = fixture.CreateDbContext();
+        var channel = $"{ChannelPrefix}-del-legacy";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 7, 31, 20, 30, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.EmotesSyncDeleted,
+            ChannelName = channel,
+            DetailsJson = """{"emoteCount": 6}"""
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, channel, null));
+
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(AuditLogDetail.Kinds.EmoteCount, dto.Detail!.Kind);
+        Assert.Null(dto.Detail.TargetEmoteSet);
+    }
+
     private static AuditLogEntry NewEntry(string channelName, string action, DateTime occurredAtUtc, string actorLogin)
         => new()
         {
