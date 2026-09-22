@@ -556,8 +556,10 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     page,
   }) => {
     const entriesReadSetIds: string[] = [];
+    let removeVariables: { setId?: string; emoteId?: string } | null = null;
     await mockSevenTvGql(page, (request) => {
       if (request.query.includes('mutation RemoveEmote')) {
+        removeVariables = request.variables as { setId?: string; emoteId?: string };
         return { data: {} };
       }
       entriesReadSetIds.push(request.variables['id'] as string);
@@ -586,6 +588,17 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
         }),
       }),
     );
+    // The page-level session-set membership check (#227 P2) — without this, the delete button
+    // would stay locked forever (nothing here answers that request otherwise) rather than reach
+    // the confirm dialog at all. Registered before the navigation, same reasoning as
+    // mockSevenTvGql above.
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
+    });
 
     await openHalloweenBallot(page, [
       {
@@ -602,6 +615,10 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
 
     // The live read named the Halloween set — the session's own — never the channel's active one.
     await expect.poll(() => entriesReadSetIds).toEqual([HALLOWEEN_SET_ID]);
+    // And the RemoveEmote mutation itself: the set and the member it actually removed (Opus review
+    // P3-g) — not just which set the earlier entries read happened to name.
+    await expect.poll(() => removeVariables?.setId).toBe(HALLOWEEN_SET_ID);
+    await expect.poll(() => removeVariables?.emoteId).toBe('7tv-pump');
   });
 
   // Point 2 of #227: a set-session member no longer in the session's own live set used to stay
@@ -611,7 +628,9 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     const removedIds: string[] = [];
     await mockSevenTvGql(page, (request) => {
       if (request.query.includes('mutation RemoveEmote')) {
-        removedIds.push(request.variables['id'] as string);
+        // RemoveEmote's own id variable is `emoteId`, not `id` (seven-tv-delete.service.ts's
+        // REMOVE_EMOTE_MUTATION) — the entries-read query above is the one that uses `id`.
+        removedIds.push(request.variables['emoteId'] as string);
         return { data: {} };
       }
       return {
@@ -679,5 +698,55 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
 
     await expect.poll(() => removedIds).toEqual(['7tv-pump']);
+  });
+
+  // Opus review P1: the page-level pre-filter (previous test) and the panel's own confirm-time live
+  // read are two independent checks, not one — this covers the panel's backstop on its own, for the
+  // race it exists for: 7TV's live truth diverges from the cached preview between page load and the
+  // confirm click. The cached preview below still lists Pumpkin, so it stays selectable and the
+  // delete button unlocks; the confirm-time read (via mockSevenTvGql, reading 7TV directly) says
+  // otherwise. Nothing must be removed, and the reason must be visible.
+  test('the confirm-time live read still blocks a member the page-level check let through', async ({
+    page,
+  }) => {
+    let removeCalled = false;
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('mutation RemoveEmote')) {
+        removeCalled = true;
+        return { data: {} };
+      }
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } },
+          },
+        },
+      };
+    });
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
+    });
+
+    await openHalloweenBallot(page, [
+      {
+        emoteId: 'guid-pump',
+        emoteName: 'Pumpkin',
+        sevenTvEmoteId: '7tv-pump',
+        totalUseCount: null,
+      },
+    ]);
+
+    await page.getByRole('button', { name: 'Pumpkin', exact: true }).click();
+    const massDeleteButton = page.getByRole('button', { name: 'Löschen (1)' });
+    await expect(massDeleteButton).toBeEnabled();
+    await massDeleteButton.click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+
+    await expect(page.getByText('markiertes Emote ist nicht mehr im Set')).toBeVisible();
+    expect(removeCalled).toBe(false);
   });
 });
