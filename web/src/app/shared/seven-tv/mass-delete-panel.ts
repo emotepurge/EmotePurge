@@ -47,11 +47,15 @@ import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
  *  `aria-describedby` target has to be unique in the document. */
 let nextDeleteLockReasonId = 0;
 
-/** The usage page's own set-view lock texts (spec #200, 8.3), reused verbatim for the one case this
- *  panel blocks by itself: the active set's live entries, read right before a delete, could not be
- *  read or came back incomplete — a list that only knows half must not delete. */
-const MEMBERS_UNAVAILABLE_REASON_KEY = 'usageStats.setView.lock.membersUnavailable';
-const MEMBERS_TRUNCATED_REASON_KEY = 'usageStats.setView.lock.truncated';
+/** Dedicated reason keys for the one case this panel blocks by itself: the active set's live
+ *  entries, read right before a delete, could not be read or came back incomplete — a list that
+ *  only knows half must not delete (spec #200, 8.3's rule, applied here). K5 fix round: these used
+ *  to reuse the usage page's own `usageStats.setView.lock.*` texts verbatim, but those say "Deleting
+ *  and voting are locked: …" — correct for the sticky lock paragraph they were written for, wrong
+ *  here, where this is a one-off, transient abort notice ("Nothing was deleted." + reason), not a
+ *  standing lock description. */
+const MEMBER_READ_UNAVAILABLE_REASON_KEY = 'massDelete.memberRead.unavailable';
+const MEMBER_READ_TRUNCATED_REASON_KEY = 'massDelete.memberRead.truncated';
 
 /** Total time budget for the active-set delete's live alias read (K5 fix round) — a hung request
  *  (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true`
@@ -734,9 +738,11 @@ export class MassDeletePanel {
         // disabled forever — treated exactly like any other failed read (K5 fix round item 5).
         timeout(LIVE_ALIAS_READ_TIMEOUT_MS),
         map((entries): LiveAliasRead =>
-          entries.complete ? { entries } : { blockedReasonKey: MEMBERS_TRUNCATED_REASON_KEY },
+          entries.complete ? { entries } : { blockedReasonKey: MEMBER_READ_TRUNCATED_REASON_KEY },
         ),
-        catchError(() => of<LiveAliasRead>({ blockedReasonKey: MEMBERS_UNAVAILABLE_REASON_KEY })),
+        catchError(() =>
+          of<LiveAliasRead>({ blockedReasonKey: MEMBER_READ_UNAVAILABLE_REASON_KEY }),
+        ),
       )
       .subscribe((read) => {
         this.liveAliasReadPending.set(false);

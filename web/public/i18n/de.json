@@ -910,8 +910,8 @@
       }
     },
     "skippedDuplicates": {
-      "one": "{{ count }} Emote ist bereits im Zielset und wurde übersprungen.",
-      "other": "{{ count }} Emotes sind bereits im Zielset und wurden übersprungen."
+      "one": "{{ count }} Eintrag war bereits im Zielset und wurde übersprungen.",
+      "other": "{{ count }} Einträge waren bereits im Zielset und wurden übersprungen."
     },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
   },
@@ -986,7 +986,12 @@
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
     "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
-    "abortedByMemberRead": "Nichts gelöscht."
+    "abortedByMemberRead": "Nichts gelöscht.",
+    "memberRead": {
+      "unavailable": "Die aktuellen Einträge dieses Sets konnten nicht von 7TV gelesen werden.",
+      "truncated": "Die Einträge dieses Sets konnten nur teilweise gelesen werden."
+    },
+    "anotherRunStarted": "Inzwischen hat ein anderer 7TV-Lauf begonnen."
   },
   "import": {
     "copyButton": "Übertragen",

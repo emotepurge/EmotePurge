@@ -1680,7 +1680,9 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
     expect(startDelete).not.toHaveBeenCalled();
     expect(statusText()).toContain('massDelete.abortedByMemberRead');
-    expect(statusText()).toContain('usageStats.setView.lock.membersUnavailable');
+    // K5 fix round: dedicated massDelete.memberRead.* keys, not the reused usageStats.setView.lock.*
+    // texts ("Deleting and voting are locked: …"), which are wrong for this one-off abort notice.
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
   });
 
   it('deletes nothing when 7TV answers the read with a GraphQL error disguised as HTTP 200', () => {
@@ -1689,7 +1691,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
-    expect(statusText()).toContain('usageStats.setView.lock.membersUnavailable');
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
   });
 
   it('deletes nothing when the live read only knows part of the set', () => {
@@ -1700,7 +1702,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
-    expect(statusText()).toContain('usageStats.setView.lock.truncated');
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
   });
 
   // K5 fix round: `complete` now also compares the collected item count against the query's own
@@ -1724,7 +1726,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
-    expect(statusText()).toContain('usageStats.setView.lock.truncated');
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
   });
 
   it('keeps the delete button disabled while the read is out', () => {
@@ -1752,7 +1754,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
       expect(startDelete).not.toHaveBeenCalled();
       expect(statusText()).toContain('massDelete.abortedByMemberRead');
-      expect(statusText()).toContain('usageStats.setView.lock.membersUnavailable');
+      expect(statusText()).toContain('massDelete.memberRead.unavailable');
       expect(deleteButton().disabled).toBe(false);
       expect(req.cancelled).toBe(true);
     } finally {

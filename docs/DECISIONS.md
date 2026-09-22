@@ -534,11 +534,16 @@ alias.
   again after it, followed by a silent arbiter re-check like the restore paths'. The delete button
   stays disabled while the read is out.
 - **Failure blocks.** A failed read (network, HTTP, a GraphQL error inside HTTP 200 — 7TV's disguised
-  429) blocks the run with `usageStats.setView.lock.membersUnavailable`; an incomplete one (the
-  10-page runaway guard hit while 7TV promises more) with `…lock.truncated` — spec 8.3's "a list that
-  only knows half must not delete". Nothing is deleted; the panel shows and announces "Nichts
-  gelöscht." plus that reason (`massDelete.abortedByMemberRead`) in the status region the lock aborts
-  already use. A selected id the read does not know keeps the host's aliases.
+  429) blocks the run with `massDelete.memberRead.unavailable`; an incomplete one (the 10-page
+  runaway guard hit while 7TV promises more — or, since the K5 fix round below, a `totalCount`
+  mismatch on an otherwise normally-ending read) with `massDelete.memberRead.truncated` — spec 8.3's
+  "a list that only knows half must not delete". *Corrected 2026-09-22 (K5 fix round below): the
+  first version of this sentence named the reused `usageStats.setView.lock.*` keys — correct wording
+  for the sticky lock paragraph they were written for ("Deleting and voting are locked: …"), wrong
+  for this one-off abort notice; dedicated `massDelete.memberRead.*` keys replace them.* Nothing is
+  deleted; the panel shows and announces "Nichts gelöscht." plus that reason
+  (`massDelete.abortedByMemberRead`) in the status region the lock aborts already use. A selected id
+  the read does not know keeps the host's aliases.
 - **No double fetch.** A non-active view makes no second read: its rows already carry every alias
   from the member list the view is built from (`mergeSetView`'s non-active branch).
 - **Slots.** `onDeleted` frees per cell the larger of its `slotCount` and the alias count the run
@@ -643,6 +648,13 @@ alias from the member list loaded *with that view* (`mergeSetView`'s non-active 
 An entry added to the set on 7TV after that list loaded is therefore not reflected in the run's
 protocol even if it duplicates a selected id; this is accepted by spec §37 itself ("die
 nicht-aktive Ansicht liest nicht ein zweites Mal") and unchanged by this round.
+
+**New/renamed i18n keys, closing the K5 fix round.** `massDelete.memberRead.unavailable`/`.truncated`
+replace the reused `usageStats.setView.lock.*` texts (corrected above); `massDelete.anotherRunStarted`
+is new. `restore.skippedDuplicates` is reworded from "{{count}} emotes …" to "{{count}} entries …" —
+the string counts `ADD`s (aliases) since the "middle rule" addendum, and a #74 duplicate cell is one
+emote but can contribute more than one skipped alias, so "emote" both undercounted the entity being
+reported and invited a reader to expect one skipped notice per emote rather than per alias.
 
 ---
 
