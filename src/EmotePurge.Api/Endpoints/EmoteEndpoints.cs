@@ -109,9 +109,11 @@ public static class EmoteEndpoints
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            if (request.EmoteIds is null || request.EmoteIds.Count == 0)
+            // Spec 6.6's four-step validation ladder, shared with sync-restored below.
+            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds, request.EmoteSetId, request.SevenTvEmoteIds);
+            if (vocabularyError is not null)
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty });
+                return Results.BadRequest(new { errorCode = vocabularyError });
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
@@ -120,13 +122,21 @@ public static class EmoteEndpoints
                 return Results.Unauthorized();
             }
 
-            var result = await emoteService.MarkDeletedAsync(channelName, request.EmoteIds, actor, ct);
+            // The ladder above guarantees exactly one of the two forms is populated by this point.
+            var result = request.SevenTvEmoteIds is { Count: > 0 }
+                ? await emoteService.MarkDeletedAsync(channelName, request.EmoteSetId!, request.SevenTvEmoteIds, actor, ct)
+                : await emoteService.MarkDeletedAsync(channelName, request.EmoteIds!, actor, ct);
             if (result.NewlyArchivedCount > 0)
             {
                 await PublishChannelSyncedAsync(redisPublisher, logger, channelName);
             }
 
-            return Results.Ok(new { archivedCount = result.ArchivedCount, notFoundIds = result.NotFoundIds });
+            return Results.Ok(new
+            {
+                archivedCount = result.ArchivedCount,
+                notFoundIds = result.NotFoundIds,
+                targetIsActiveSetOfChannel = result.TargetIsActiveSetOfChannel
+            });
         })
         // Overrides the group's policy: this is the one call that must never be dropped. The emotes
         // are already gone from 7TV by the time it runs, so a 429 here leaves the database diverging
@@ -147,9 +157,11 @@ public static class EmoteEndpoints
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            if (request.EmoteIds is null || request.EmoteIds.Count == 0)
+            // Spec 6.6's four-step validation ladder, shared with sync-deleted above.
+            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds, request.EmoteSetId, request.SevenTvEmoteIds);
+            if (vocabularyError is not null)
             {
-                return Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty });
+                return Results.BadRequest(new { errorCode = vocabularyError });
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
@@ -158,13 +170,21 @@ public static class EmoteEndpoints
                 return Results.Unauthorized();
             }
 
-            var result = await emoteService.MarkRestoredAsync(channelName, request.EmoteIds, actor, ct);
+            // The ladder above guarantees exactly one of the two forms is populated by this point.
+            var result = request.SevenTvEmoteIds is { Count: > 0 }
+                ? await emoteService.MarkRestoredAsync(channelName, request.EmoteSetId!, request.SevenTvEmoteIds, actor, ct)
+                : await emoteService.MarkRestoredAsync(channelName, request.EmoteIds!, actor, ct);
             if (result.NewlyRestoredCount > 0)
             {
                 await PublishChannelSyncedAsync(redisPublisher, logger, channelName);
             }
 
-            return Results.Ok(new { restoredCount = result.RestoredCount, notFoundIds = result.NotFoundIds });
+            return Results.Ok(new
+            {
+                restoredCount = result.RestoredCount,
+                notFoundIds = result.NotFoundIds,
+                targetIsActiveSetOfChannel = result.TargetIsActiveSetOfChannel
+            });
         })
         // Same reasoning as sync-deleted: the emotes are already back on 7TV, a dropped call here
         // costs the paper trail and leaves the database stale until the next sync.
@@ -244,20 +264,56 @@ public static class EmoteEndpoints
             return status is null ? Results.NotFound() : Results.Ok(status);
         });
     }
-
     /// <summary>
-    /// Announces "this channel's emote inventory changed" — the same event the worker's sync paths
-    /// publish, because the effect on every open page is identical: the database now reflects what
-    /// happened on 7TV (archived after a delete, active again after a restore). Published only when
-    /// the call actually changed rows (the live sync often got there first, and a no-op must not
-    /// make everyone refetch).
-    /// <para>
-    /// In the endpoint rather than in EmoteService, exactly like the vote event: the notification
-    /// belongs to the request that caused it, and IRedisPublisher in a handler is explicitly
-    /// allowed by rule 4. Failure is logged and swallowed — the archiving is committed and the
-    /// response must not change because Redis hiccuped.
-    /// </para>
+    /// The <c>sync-deleted</c>/<c>sync-restored</c> validation ladder (spec 6.6), shared verbatim by
+    /// both handlers above so the two bodies cannot drift apart. Checked in order — each step only
+    /// runs once the one before it passed:
+    /// <list type="number">
+    /// <item>both lists empty or missing → <see cref="ApiErrorCodes.EmoteIdsEmpty"/> (today's check)</item>
+    /// <item><paramref name="emoteIds"/> (legacy) and <paramref name="sevenTvEmoteIds"/> (new form)
+    /// both non-empty → <see cref="ApiErrorCodes.EmoteIdsInvalid"/> — a body cannot name both shapes</item>
+    /// <item><paramref name="sevenTvEmoteIds"/> non-empty but <paramref name="emoteSetId"/> missing or
+    /// empty → <see cref="ApiErrorCodes.EmoteSetIdEmpty"/></item>
+    /// <item><paramref name="emoteSetId"/> present but malformed →
+    /// <see cref="ApiErrorCodes.InvalidEmoteSetId"/> — checked inline rather than by
+    /// <see cref="EmoteSetIdValidationFilter"/>, which reads only the query string and route values,
+    /// not a body field (the same reason <c>sync-imported</c>'s own <c>TargetEmoteSetId</c> check is
+    /// inline above)</item>
+    /// </list>
+    /// Returns <c>null</c> when the body is internally consistent.
     /// </summary>
+    internal static string? ValidateSyncBookkeepingBody(
+        IReadOnlyList<string>? emoteIds, string? emoteSetId, IReadOnlyList<string>? sevenTvEmoteIds)
+    {
+        var hasEmoteIds = emoteIds is { Count: > 0 };
+        var hasSevenTvEmoteIds = sevenTvEmoteIds is { Count: > 0 };
+
+        if (!hasEmoteIds && !hasSevenTvEmoteIds)
+        {
+            return ApiErrorCodes.EmoteIdsEmpty;
+        }
+
+        if (hasEmoteIds && hasSevenTvEmoteIds)
+        {
+            return ApiErrorCodes.EmoteIdsInvalid;
+        }
+
+        if (hasSevenTvEmoteIds)
+        {
+            if (string.IsNullOrEmpty(emoteSetId))
+            {
+                return ApiErrorCodes.EmoteSetIdEmpty;
+            }
+
+            if (!EmoteSetIdValidation.IsValid(emoteSetId))
+            {
+                return ApiErrorCodes.InvalidEmoteSetId;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// The <c>sync-imported</c> body vocabulary table (spec 6.7), shared verbatim by this group's own
     /// <c>/sync-imported</c> handler above and by the set-centric
@@ -418,9 +474,14 @@ internal sealed record EmoteSetSummaryDto(
 
 internal sealed record EmoteSetObservationDto(DateTime FromUtc, DateTime? ToUtc);
 
-internal sealed record SyncDeletedRequest(IReadOnlyList<string> EmoteIds);
+// A record, two shapes (spec 6.6): EmoteIds is the legacy form (active set, Guid match, E3);
+// EmoteSetId/SevenTvEmoteIds is the new, set-scoped form. All three stay optional — the validation
+// ladder (ValidateSyncBookkeepingBody) is what enforces "exactly one shape", not the model binder.
+internal sealed record SyncDeletedRequest(
+    IReadOnlyList<string>? EmoteIds = null, string? EmoteSetId = null, IReadOnlyList<string>? SevenTvEmoteIds = null);
 
-internal sealed record SyncRestoredRequest(IReadOnlyList<string> EmoteIds);
+internal sealed record SyncRestoredRequest(
+    IReadOnlyList<string>? EmoteIds = null, string? EmoteSetId = null, IReadOnlyList<string>? SevenTvEmoteIds = null);
 
 // LeaderboardSort is the wire code (SevenTvLeaderboardSortWireCode.TrendingDailyWireCode /
 // TopAllTimeWireCode) carried separately from SourceChannelName (leaderboard-import spec E8): a

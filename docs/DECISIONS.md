@@ -113,8 +113,10 @@ layout uniformity identically.
 `web/src/app/shared/seven-tv/file-import-step.ts` · `web/src/app/shared/seven-tv/import-source-dialog.ts` ·
 `web/src/app/shared/export/usage-export.ts` · `web/src/app/shared/export/usage-export-purposes.ts` ·
 `web/e2e/support/mocks.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (7, 8.1–8.6, §35, §36) ·
-`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5)
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` · `src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, §35, §36) ·
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.2)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
 part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
@@ -339,6 +341,40 @@ mutation need nothing new" was only true of the 7TV mutation itself — everythi
 (selection key, queue key, report, optimistic update, protocol, voting wire) hung on the Guid; 6.2
 "live members without a row are still usable for deleting" holds only once that identity contract is
 in place, i.e. from K5 on.
+
+**K5 addendum (T5.2) — sync-deleted/sync-restored speak set-scoped bookkeeping too.**
+`SyncDeletedRequest`/`SyncRestoredRequest` become one record with two shapes (spec 6.6): the legacy
+`{ emoteIds }` (Guid, active set only) stays valid, transitionally, behind the same gate as `/series`'s
+dual fields above (E3, follow-up issue 1) — `EmoteService` now logs one Information line per legacy
+call ("sync-deleted: legacy body form {EmoteIds} used", and the restore mirror), so retiring it is a
+measured decision, not a guess. The new shape is `{ emoteSetId, sevenTvEmoteIds }`. A shared
+`ValidateSyncBookkeepingBody` (`EmoteEndpoints.cs`) enforces spec 6.6's four-step ladder ahead of both
+handlers: both lists empty → `emote_ids_empty` (unchanged); both non-empty → `emote_ids_invalid`
+(reused from the vote-session ballot); `sevenTvEmoteIds` set without `emoteSetId` →
+`emote_set_id_empty` (already defined for T2.3, reused rather than duplicated); a malformed
+`emoteSetId` → `invalid_emote_set_id`, checked inline — a body field, not a query/route value, so
+`EmoteSetIdValidationFilter` never sees it, the same reason `sync-imported`'s own `TargetEmoteSetId`
+check is inline.
+
+`IEmoteService` gains a set-scoped overload of `MarkDeletedAsync`/`MarkRestoredAsync` rather than
+replacing the Guid-keyed one, taking the plan's own recommendation as-is: the legacy form still needs
+the old path until follow-up issue 1 retires it, and every one of the twelve pre-existing
+`EmoteServiceTests` keeps passing unchanged. When `emoteSetId == channel.ActiveEmoteSetId`, the
+overload matches by `(ChannelId, SevenTvEmoteId)` instead of `Emote.Id` — the unique index on that
+pair (`AppDbContext.cs:31`) gives the same precision the Guid match had, and is the only identity a
+live-only member (a set-view row the grid never saw a `UsageStat` for, K4) has at all — archives/
+un-archives and audits exactly like today, with `emoteSetId` and `targetIsActiveSetOfChannel: true`
+added to the audit details and `TargetType = "emoteSet"`/`TargetId = emoteSetId` on the entry itself.
+
+A **different** `emoteSetId` is paper-only, a nachtrag to the soft-archive entry of 2026-07-26: this
+database never archived a row under any set but the active one, so there is nothing to match outside
+it — no `Emote` row changes, and the audit entry (`emoteCount` = the deduplicated 7TV id count,
+`targetIsActiveSetOfChannel: false`) is written unconditionally, since there is no per-id match left
+to gate it on. The reported response is `archivedCount: 0, notFoundIds: [], targetIsActiveSetOfChannel:
+false`. `channel.synced` keeps its existing gate (`NewlyArchivedCount > 0`) unchanged, so it never
+fires for a non-active-set report. `notFoundIds` carries 7TV ids for the new form, Guids for the
+legacy one, per the response shape (spec 6.6). Threading the set id into the delete/restore run
+record and the frontend's own body construction is T5.1, not this commit.
 
 ---
 
