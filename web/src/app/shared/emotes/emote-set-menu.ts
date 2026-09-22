@@ -51,38 +51,48 @@ let nextLockReasonId = 0;
   selector: 'app-emote-set-menu',
   imports: [Button, Popover, TranslocoPipe],
   template: `
-    <div class="relative flex flex-wrap items-center gap-x-2" data-popover-anchor>
-      <button
-        #trigger
-        type="button"
-        appButton="neutral"
-        class="max-w-48 truncate whitespace-nowrap disabled:cursor-not-allowed"
-        aria-haspopup="dialog"
-        [attr.aria-expanded]="isOpen()"
-        [disabled]="triggerDisabled()"
-        [attr.aria-describedby]="lockedReasonKey() !== null ? lockReasonId : null"
-        [title]="unavailable() ? ('emoteSetMenu.unavailable' | transloco) : null"
-        (click)="toggle()"
-      >
-        {{ 'emoteSetMenu.label' | transloco }}:
-        @if (loading()) {
-          {{ 'emoteSetMenu.loading' | transloco }}
-        } @else if (unavailable()) {
-          {{ 'emoteSetMenu.unavailable' | transloco }}
-        } @else if (selectedSet(); as set) {
-          {{ set.name }}
-          @if (set.isActive) {
-            <span class="text-fg-muted">({{ 'emoteSetMenu.active' | transloco }})</span>
+    <!-- This div only anchors the popover (position: relative, same as DateRangeMenu's own
+         wrapper) — it must not also lay it out. A flex/gap-x-2 row treats every child as a gapped
+         flex item even when that child paints nothing itself (the popover panel is position:
+         absolute): the popover's host element still claims a flex slot and the gap next to it,
+         widening this component by one gap-x-2 every time it opens and shoving every sibling after
+         it in the page header — the sort segmented controls — sideways. The trigger and the
+         lock-reason text are the only things that actually need the flex row, so they get their own
+         nested one that the popover sits outside of. -->
+    <div class="relative" data-popover-anchor>
+      <div class="flex flex-wrap items-center gap-x-2">
+        <button
+          #trigger
+          type="button"
+          appButton="neutral"
+          class="max-w-48 truncate whitespace-nowrap disabled:cursor-not-allowed"
+          aria-haspopup="dialog"
+          [attr.aria-expanded]="isOpen()"
+          [disabled]="triggerDisabled()"
+          [attr.aria-describedby]="lockedReasonKey() !== null ? lockReasonId : null"
+          [title]="unavailable() ? ('emoteSetMenu.unavailable' | transloco) : null"
+          (click)="toggle()"
+        >
+          {{ 'emoteSetMenu.label' | transloco }}:
+          @if (loading()) {
+            {{ 'emoteSetMenu.loading' | transloco }}
+          } @else if (unavailable()) {
+            {{ 'emoteSetMenu.unavailable' | transloco }}
+          } @else if (selectedSet(); as set) {
+            {{ set.name }}
+            @if (set.isActive) {
+              <span class="text-fg-muted">({{ 'emoteSetMenu.active' | transloco }})</span>
+            }
           }
+          <span aria-hidden="true" class="ml-1 text-fg-muted">▾</span>
+        </button>
+        <!-- A lock the host imposes for a reason of its own (a delete run still writing) explains
+             itself as text next to the trigger (docs/UI-Designsprache.md §10, "Disabled explains
+             itself"). The list's own states need none: the trigger's label already says them. -->
+        @if (lockedReasonKey(); as reasonKey) {
+          <span [id]="lockReasonId" class="text-xs text-fg-muted">{{ reasonKey | transloco }}</span>
         }
-        <span aria-hidden="true" class="ml-1 text-fg-muted">▾</span>
-      </button>
-      <!-- A lock the host imposes for a reason of its own (a delete run still writing) explains
-           itself as text next to the trigger (docs/UI-Designsprache.md §10, "Disabled explains
-           itself"). The list's own states need none: the trigger's label already says them. -->
-      @if (lockedReasonKey(); as reasonKey) {
-        <span [id]="lockReasonId" class="text-xs text-fg-muted">{{ reasonKey | transloco }}</span>
-      }
+      </div>
 
       @if (isOpen()) {
         <app-popover [ariaLabel]="'emoteSetMenu.menuLabel' | transloco" (closed)="close()">

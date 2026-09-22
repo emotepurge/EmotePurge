@@ -972,6 +972,48 @@ test.describe('set view (#200, K4)', () => {
     await expect(menu.getByRole('radio', { name: /Mein Set/ })).toHaveCount(0);
   });
 
+  test('opening the set menu does not shift the sort controls next to it in the header (no-layout-jump contract, docs/UI-Designsprache.md)', async ({
+    page,
+  }) => {
+    // Regression for a real bug: the anchor `div` around the trigger and the popover used to be a
+    // `flex ... gap-x-2` row that had the popover itself as a flex child. The popover's panel is
+    // `position: absolute` and paints nothing there, but its host element still claimed a flex slot
+    // and the gap next to it — widening EmoteSetMenu by one `gap-x-2` every time it opened and
+    // shoving every header control after it sideways. A geometry assertion is the only thing that
+    // actually pins this down; anything checking markup or classes would miss a regression that
+    // reintroduces the same box model by a different route.
+    await mockSetViewChannel(page);
+    await mockUsageTotals(page, CHANNEL, []);
+
+    await gotoSetView(page);
+
+    const sortKeyGroup = page.getByRole('radiogroup', { name: 'Sortieren nach' });
+    const sortDirGroup = page.getByRole('radiogroup', { name: 'Reihenfolge' });
+    const before = {
+      sortKey: await sortKeyGroup.boundingBox(),
+      sortDir: await sortDirGroup.boundingBox(),
+    };
+    expect(before.sortKey).not.toBeNull();
+    expect(before.sortDir).not.toBeNull();
+
+    await setMenuTrigger(page).click();
+    await expect(page.getByRole('radiogroup', { name: 'Set wählen' })).toBeVisible();
+
+    const after = {
+      sortKey: await sortKeyGroup.boundingBox(),
+      sortDir: await sortDirGroup.boundingBox(),
+    };
+    expect(after.sortKey).not.toBeNull();
+    expect(after.sortDir).not.toBeNull();
+
+    // toBeCloseTo(value, 0) accepts a difference below 0.5 — exactly the ±0.5px tolerance the
+    // no-layout-jump contract asks for, without being so tight that sub-pixel rounding flakes it.
+    for (const key of ['x', 'y', 'width', 'height'] as const) {
+      expect(after.sortKey![key]).toBeCloseTo(before.sortKey![key], 0);
+      expect(after.sortDir![key]).toBeCloseTo(before.sortDir![key], 0);
+    }
+  });
+
   test('choosing a non-active set writes it into the URL and swaps the grid; a reload restores it; choosing the active set removes the param again (AK 50-52, spec 8.1)', async ({
     page,
   }) => {
