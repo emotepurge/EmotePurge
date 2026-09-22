@@ -235,7 +235,17 @@ public interface IUsageStatQueryService
         string channelName, DateOnly from, DateOnly to, string? emoteSetId = null, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Range totals for a known set of emote ids, keyed by id and omitting the ones without usage.
+    /// Range totals for a known set of emote ids, keyed by id. An id is present with its
+    /// range-summed <c>UseCount</c> whenever it has at least one <c>UsageStat</c> row under
+    /// <paramref name="emoteSetId"/> at all, in any date — the sum itself can legitimately be
+    /// <c>0</c> two different ways: every such row falls outside <paramref name="from"/>–
+    /// <paramref name="to"/>, or a row does fall inside the range but carries
+    /// <c>UseCount = 0</c> (a bot-only or shared-chat-only day). A <c>WHERE</c>-level date filter
+    /// would have made the first of those cases indistinguishable from "never observed under this
+    /// set", which is exactly the distinction
+    /// <see cref="EmotePurge.Core.Services.IVoteSessionQueryService.GetResultsAsync"/> needs for a
+    /// set-session's <c>eligible</c> ballot (spec section 9, AK 80): an id missing here means the
+    /// caller may report <c>null</c> ("never counted under this set"), never a fabricated <c>0</c>.
     /// Scoped to the caller's ids rather than to a whole channel, because the one caller (a vote
     /// session's ballot) may hold twenty emotes out of a thousand. Each total is <c>UseCount</c>
     /// alone — see <see cref="EmoteUsageContextDto.TotalUseCount"/>.

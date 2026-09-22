@@ -303,10 +303,16 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         // (docs/DECISIONS.md 2026-09-08).
         var ids = emoteIds.ToList();
 
+        // The date range is deliberately NOT a WHERE-level filter (unlike this method's own shape
+        // before spec section 9's set-session eligible/useCount split, T6.3 fix round 1) — a row
+        // that exists under this set but falls outside [from, to] must still make its id present
+        // here, with a possibly-zero sum, so the interface doc's "missing = never observed under
+        // this set at all" distinction actually holds. Same conditional-sum shape
+        // GetUsageContextAsync's own aggregates query already uses for the identical reason.
         return await db.UsageStats
-            .Where(u => ids.Contains(u.EmoteId) && u.EmoteSetId == emoteSetId && u.Date >= from && u.Date <= to)
+            .Where(u => ids.Contains(u.EmoteId) && u.EmoteSetId == emoteSetId)
             .GroupBy(u => u.EmoteId)
-            .Select(g => new { EmoteId = g.Key, TotalUseCount = g.Sum(u => u.UseCount) })
+            .Select(g => new { EmoteId = g.Key, TotalUseCount = g.Sum(u => u.Date >= from && u.Date <= to ? u.UseCount : 0) })
             .ToDictionaryAsync(g => g.EmoteId, g => g.TotalUseCount, cancellationToken);
     }
 

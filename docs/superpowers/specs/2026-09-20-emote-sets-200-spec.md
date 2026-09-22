@@ -949,6 +949,7 @@ Name kommt aus der Set-Liste der Seite, wie beim Dropdown).
 |---|---|---|
 | `/api/channels/{c}/emote-sets`, `/usage-stats/*`, `/emotes/set-warning` | `InteractiveRead` (Gruppe) | `EmoteEndpoints.cs:29`, `UsageStatsEndpoints.cs:24` |
 | `/api/seventv/me/emote-set-targets`, `/api/seventv/channels/{c}/emote-sets`, `…/emotes?emoteSetId=` | `ForeignEmoteLookup` (10/min) | `RateLimitingOptions.cs:56`, `Program.cs:188` |
+| `POST /api/channels/{c}/vote-sessions` (K6 whole-branch review, Fable A) | `ForeignEmoteLookup` (10/min), nicht mehr `Bookkeeping` | `VoteSessionEndpoints.cs:~72-79`; ein Set-Session-Zweig liest die Live-Mitgliedschaft des Sets von 7TV (paginiert), also derselbe Budget-Anteil wie die anderen `ForeignEmoteLookup`-Routen — ein Null-Session-Anlegen fasst 7TV gar nicht an und läuft unter derselben Police einfach mit; `end`/`delete` bleiben bei `Bookkeeping` |
 | `…/sync-deleted`, `…/sync-restored`, `…/sync-imported`, `/api/seventv/emote-sets/{id}/sync-imported` | `Bookkeeping` (120/min) | `RateLimitingOptions.cs:41`, `Program.cs:167` |
 
 `RateLimitPolicyNames`, `RateLimitingOptions.Validate()` (`:72-80`) bleiben unverändert;
@@ -1233,6 +1234,13 @@ eine dynamische „alle Emotes"-Set-Session gibt es nicht (400 `vote_session_set
 
 **Anlegen (`VoteSessionService.CreateAsync`, `:14 ff.`), Set-Session:**
 
+0. Kanalzugehörigkeit der Set-ID (Präzedenz 6.8, „ActiveEmoteSetId oder in der Set-Liste des
+   Kanals"): `channel.TwitchChannelId` fehlt ⇒ `EmoteIdsInvalid` (400 `emote_ids_invalid`), noch
+   ohne 7TV-Anfrage; sonst `ISevenTvEmoteSetListService.ListByTwitchIdAsync` nach der Twitch-ID des
+   Kanals — `Ok` und die Set-ID steht darin mit `Kind == "NORMAL"` oder ist
+   `channel.ActiveEmoteSetId` ⇒ weiter zu Schritt 1; `Ok` ohne das, oder `NoSevenTvAccount`, ⇒
+   `EmoteIdsInvalid`; `RateLimited`/`Unavailable`/`BudgetExhausted` ⇒ Ergebnis `SevenTvUnavailable`
+   → 503 `foreign_channel_seventv_unavailable`, keine Session.
 1. Live-Mitgliederliste des Sets über `IForeignEmoteSetService` nach Set-ID (6.4); nicht lesbar ⇒
    Ergebnis `SevenTvUnavailable` → 503 `foreign_channel_seventv_unavailable`, keine Session.
 2. All-or-nothing auf der **7TV-Identität**: jede `sevenTvEmoteIds`-Id muss Live-Mitglied sein,

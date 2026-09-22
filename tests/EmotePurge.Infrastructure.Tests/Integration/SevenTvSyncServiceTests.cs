@@ -6,8 +6,10 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using NSubstitute;
 using Xunit;
 
@@ -361,6 +363,87 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.NotNull(result);
         Assert.True(result.HasChanges);
         Assert.True(await db.Emotes.AnyAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e2"));
+    }
+
+    // AK 78, first case. The worker has read the channel's rows and staged an insert for a new set
+    // member; before its SaveChangesAsync runs, the Api (a vote session over this set) inserts the
+    // very same (ChannelId, SevenTvEmoteId) as an archived row. The interleaving is forced by an
+    // interceptor on the worker's own context, never hoped for by timing: the "Api" insert commits
+    // on a second AppDbContext inside SavingChangesAsync, i.e. strictly after the read and strictly
+    // before the worker's INSERT reaches Postgres.
+    [Fact]
+    public async Task SyncChannel_VoteSessionInsertsTheSameEmoteMidSync_RetriesOnceAndTheRowCarriesTheSyncState()
+    {
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            await SeedChannelAsync(seedDb, "wstest_ak78_retry", ("e1", "stable", false));
+        }
+
+        var addedAt = new DateTime(2026, 9, 20, 18, 0, 0, DateTimeKind.Utc);
+        var interceptor = new ConcurrentEmoteInsertInterceptor(fixture, maxInsertions: 1);
+        await using var db = fixture.CreateDbContext([interceptor]);
+        var channel = await db.Channels.SingleAsync(c => c.ChannelName == "wstest_ak78_retry");
+        var cache = new EmoteMatchCache();
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        var service = CreateRestServiceWithLogger(
+            db, cache, channel, SetId, logger,
+            LiveEmote("e1", "stable"),
+            new SevenTvEmote("race-x", "RaceX", SeededImageUrl("race-x"), addedAt));
+
+        var result = await service.SyncChannelAsync(channel.ChannelName);
+
+        Assert.NotNull(result);
+        Assert.True(result.HasChanges);
+        var inserted = Assert.Single(interceptor.InsertedRows);
+        Assert.Equal("race-x", inserted.SevenTvEmoteId);
+
+        await using var verifyDb = fixture.CreateDbContext();
+        var row = await verifyDb.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "race-x");
+        // Both sides came through: the Api's row survived (its id is what a ballot references), and
+        // it now carries what the sync decided — a live member of the active set is active.
+        Assert.Equal(inserted.Id, row.Id);
+        Assert.False(row.IsArchived);
+        Assert.Null(row.ArchivedAt);
+        Assert.Equal("RaceX", row.Name);
+        Assert.Equal(addedAt, row.FirstSeenAt);
+
+        // The rest of the sync's state landed with the retried save, including the observation
+        // interval a first sync opens — a tracked-only row that the cleared change tracker would
+        // have dropped had the retry not recorded it again.
+        var reloadedChannel = await verifyDb.Channels.SingleAsync(c => c.Id == channel.Id);
+        Assert.NotNull(reloadedChannel.LastSyncedAtUtc);
+        Assert.Null(reloadedChannel.LastSyncFailureReason);
+        Assert.True(await verifyDb.ChannelEmoteSetObservations.AnyAsync(
+            o => o.ChannelId == channel.Id && o.SevenTvEmoteSetId == SetId && o.ObservedToUtc == null));
+        Assert.Equal(row.Id, cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId["RaceX"]);
+        Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
+    }
+
+    // AK 78, second case: the retry is exactly one. A second conflict inside the retry run — the Api
+    // inserting another new member between the retry's read and its save — propagates as before.
+    [Fact]
+    public async Task SyncChannel_SecondConflictInTheRetryRun_Propagates()
+    {
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            await SeedChannelAsync(seedDb, "wstest_ak78_second", ("e1", "stable", false));
+        }
+
+        var interceptor = new ConcurrentEmoteInsertInterceptor(fixture, maxInsertions: 2);
+        await using var db = fixture.CreateDbContext([interceptor]);
+        var channel = await db.Channels.SingleAsync(c => c.ChannelName == "wstest_ak78_second");
+        var service = CreateRestService(
+            db, new EmoteMatchCache(), channel, SetId,
+            LiveEmote("e1", "stable"), LiveEmote("race-a", "RaceA"), LiveEmote("race-b", "RaceB"));
+
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => service.SyncChannelAsync(channel.ChannelName));
+
+        var postgres = Assert.IsType<PostgresException>(exception.InnerException);
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, postgres.SqlState);
+        // One insert per attempt, and no third attempt: the first save lost race-a, the retry lost
+        // race-b, and the exception left SyncChannelAsync from there.
+        Assert.Equal(["race-a", "race-b"], interceptor.InsertedRows.Select(r => r.SevenTvEmoteId));
+        Assert.Equal(2, interceptor.CallsWithStagedEmoteInserts);
     }
 
     [Fact]
@@ -1245,4 +1328,48 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         [.. logger.Entries.Where(e =>
             e.Message.Contains(SetId, StringComparison.Ordinal)
             && e.Message.Contains(SwitchedSetId, StringComparison.Ordinal))];
+
+    // The forced interleaving for AK 78. Fires inside the worker context's SavingChangesAsync — after
+    // ReconcileAsync has read the rows and staged its inserts, before any INSERT is sent — and, for
+    // the first maxInsertions saves that stage an Emote insert, commits one of those same keys from
+    // a second AppDbContext first. The SQL mirrors VoteSessionService.UpsertSetSessionEmotesAsync:
+    // an archived row with no archive date, inserted ON CONFLICT DO NOTHING.
+    private sealed class ConcurrentEmoteInsertInterceptor(PostgresFixture fixture, int maxInsertions) : SaveChangesInterceptor
+    {
+        private readonly List<(string Id, string SevenTvEmoteId)> _insertedRows = [];
+
+        public IReadOnlyList<(string Id, string SevenTvEmoteId)> InsertedRows => _insertedRows;
+
+        public int CallsWithStagedEmoteInserts { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            var staged = eventData.Context!.ChangeTracker.Entries<Emote>()
+                .Where(e => e.State == EntityState.Added)
+                .Select(e => e.Entity)
+                .OrderBy(e => e.SevenTvEmoteId, StringComparer.Ordinal)
+                .ToList();
+            if (staged.Count == 0)
+            {
+                return result;
+            }
+
+            CallsWithStagedEmoteInserts++;
+            if (_insertedRows.Count < maxInsertions)
+            {
+                var target = staged[0];
+                var id = Guid.NewGuid().ToString();
+                await using var apiDb = fixture.CreateDbContext();
+                await apiDb.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt")
+                    VALUES ({id}, {target.SevenTvEmoteId}, {target.ChannelId}, {target.Name}, {target.ImageUrl}, true, NULL, NULL, {DateTime.UtcNow})
+                    ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING
+                    """, cancellationToken);
+                _insertedRows.Add((id, target.SevenTvEmoteId));
+            }
+
+            return result;
+        }
+    }
 }

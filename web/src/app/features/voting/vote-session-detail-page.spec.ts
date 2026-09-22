@@ -13,16 +13,19 @@
  * `results.emotes` and must be pruned; a fixed-ballot session keeps an archived member listed
  * throughout, so nothing should be pruned for it.
  */
+import { Dialog } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
+import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { VoteSessionResult, VoteSessionResults } from '../../core/voting/vote-session.model';
+import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { VoteSessionDetailPage } from './vote-session-detail-page';
 
 /** Same stand-in as usage-stats-page.spec.ts / core/live/live-reload.spec.ts — jsdom ships no
@@ -78,6 +81,10 @@ function resultEmote(id: string, overrides: Partial<VoteSessionResult> = {}): Vo
     deleteVotes: 0,
     score: 0,
     isArchived: false,
+    // Matches isArchived's default here (spec section 9: eligible = !isArchived for a null-session
+    // row) — a test that only cares about isArchived, like the archived-ballot-member cases below,
+    // leaves this alone and gets the same result it always did.
+    eligible: true,
     myVote: null,
     ...overrides,
   };
@@ -97,6 +104,8 @@ function results(
     voterCount: 3,
     hideResultsUntilEnd: false,
     emotes,
+    // null-session default; set-session tests pass their own emoteSetId.
+    emoteSetId: null,
     ...overrides,
   };
 }
@@ -229,7 +238,7 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
     component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
     expect(component['selection'].selectedKeys()).toEqual(['a']);
 
-    silentReload(results([resultEmote('a', { isArchived: true }), b]));
+    silentReload(results([resultEmote('a', { isArchived: true, eligible: false }), b]));
 
     expect(component['selection'].selectedKeys()).toEqual(['a']);
   });
@@ -441,5 +450,338 @@ describe('VoteSessionDetailPage — the selection is scoped to channel:session (
     );
 
     expect(component['selection'].selectedKeys()).toEqual(['a']);
+  });
+});
+
+/**
+ * Spec section 9 (T6.3, AK 81/82): `canSelectForDelete` follows `canManage` rather than
+ * `hasUsageData` — a manager must see the mass-delete panel even over a set-session ballot whose
+ * every row is `totalUseCount: null` (never used under that set, GetTotalsByEmoteIdsAsync's honest
+ * answer, not a permission gap) — and the vote lock/badge follow `eligible` rather than
+ * `isArchived`, so a set-session's archived member stays votable while a null-session's ineligible
+ * member does not.
+ *
+ * Real timers throughout (no `vi.useFakeTimers()`, unlike the two describe blocks above): every
+ * test here awaits `settle()` for `permissionsResource` (an `rxResource`, unlike `results`/
+ * `activeEmoteSetId`, which loadResults()/loadActiveEmoteSetId() write to directly from a plain
+ * HttpClient `.subscribe()` and so update synchronously on `flush()`) — a bare
+ * `fixture.detectChanges()` right after `flush()` still observably reports `canManage() === false`
+ * (checked directly while writing this suite; same idiom as usage-stats-page.spec.ts's own
+ * `settle()` for its `rxResource`-backed `emoteSetListResource`).
+ */
+describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow their own gates (spec section 9, AK 81/82)', () => {
+  let fixture: ComponentFixture<VoteSessionDetailPage>;
+  let component: VoteSessionDetailPage;
+  let httpMock: HttpTestingController;
+
+  const CHANNEL = 'sensitron';
+  const SESSION_ID = '7';
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(VoteSessionDetailPage, {
+      set: { template: '<div #sheet></div>' },
+    });
+
+    fixture = TestBed.createComponent(VoteSessionDetailPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', CHANNEL);
+    fixture.componentRef.setInput('sessionId', SESSION_ID);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  async function mount(initial: VoteSessionResults, canManage: boolean): Promise<void> {
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`, initial);
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/permissions`, {
+      canManage,
+      canViewUsageStats: canManage,
+      isGlobalAdmin: false,
+      isTracked: true,
+      isBotActive: true,
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/emote-sets`, {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Main set', isActive: true, kind: 'NORMAL' },
+        { id: 'halloween-1', name: 'Halloween 2026', isActive: false, kind: 'NORMAL' },
+      ],
+    });
+    await settle();
+  }
+
+  it("a manager sees the panel over an all-null-usage set-session ballot, targeting the session's own set", async () => {
+    await mount(
+      results([resultEmote('a', { totalUseCount: null })], { emoteSetId: 'halloween-1' }),
+      true,
+    );
+
+    // hasUsageData reads this exact shape as "not a manager" (its own doc comment) — the point of
+    // AK 81 is that canSelectForDelete no longer inherits that misreading.
+    expect(component['hasUsageData']()).toBe(false);
+    expect(component['canSelectForDelete']()).toBe(true);
+    expect(component['massDeletePanelSetId']()).toBe('halloween-1');
+  });
+
+  it("resolves the panel's set name for a set session over a non-active set (spec 8.8's delete confirmation)", async () => {
+    await mount(
+      results([resultEmote('a', { totalUseCount: null })], { emoteSetId: 'halloween-1' }),
+      true,
+    );
+
+    expect(component['massDeletePanelSetName']()).toBe('Halloween 2026');
+  });
+
+  it('a non-manager gets no panel even with usage data present', async () => {
+    await mount(results([resultEmote('a', { totalUseCount: 5 })]), false);
+
+    expect(component['hasUsageData']()).toBe(true);
+    expect(component['canSelectForDelete']()).toBe(false);
+  });
+
+  it('a null-session falls back to the active set for the panel when the session carries no set of its own', async () => {
+    await mount(results([resultEmote('a')]), true);
+
+    expect(component['massDeletePanelSetId']()).toBe('set-1'); // channel status' activeEmoteSetId
+  });
+
+  it('the vote lock and its title follow eligible, not isArchived', async () => {
+    await mount(
+      results([
+        // A set-session member that has left 7TV since the ballot was frozen: still votable.
+        resultEmote('archived-but-eligible', { isArchived: true, eligible: true, keepVotes: 0 }),
+        // A null-session member the vote lock still has to close: not eligible.
+        resultEmote('not-eligible', { isArchived: false, eligible: false, keepVotes: 0 }),
+      ]),
+      true,
+    );
+    const [eligible, ineligible] = component['results']()!.emotes;
+
+    // The normal label carries the tally in parentheses; the disabled message does not.
+    expect(component['keepButtonTitle'](eligible)).toContain('(0)');
+    expect(component['keepButtonTitle'](ineligible)).not.toContain('(0)');
+  });
+
+  it("openDrilldown charts the SESSION's own set, not whatever the channel is showing as active (T6.3 fix round 1)", async () => {
+    await mount(
+      results([resultEmote('a', { totalUseCount: 5 })], { emoteSetId: 'halloween-1' }),
+      true,
+    );
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+
+    component['openDrilldown'](component['results']()!.emotes[0]);
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
+    // NOT the channel's active set (activeEmoteSetId() would be 'set-1' per this describe block's
+    // mount()) — a set-session's numbers must chart under its own, frozen set.
+    expect(data.emoteSetId).toBe('halloween-1');
+  });
+
+  it('openDrilldown omits emoteSetId for a null-session (falls back to the active set inside the dialog)', async () => {
+    await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+
+    component['openDrilldown'](component['results']()!.emotes[0]);
+
+    const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
+    expect(data.emoteSetId).toBeNull();
+  });
+
+  it("targets a set-session's own NON-active set with the real active set beside it, unlocked (K5's set-scoped sync-deleted lifted Ruling D)", async () => {
+    await mount(results([resultEmote('a')], { emoteSetId: 'halloween-1' }), true);
+
+    // The panel's [setId] and [activeSetId] bindings: the session's own set to delete from, the
+    // channel's real active set ('set-1' per this describe block's mount()) so the run's
+    // bookkeeping knows the two differ. No lock input any more — the temporary Ruling D lock
+    // existed only until sync-deleted carried { emoteSetId, sevenTvEmoteIds } (K5).
+    expect(component['canSelectForDelete']()).toBe(true);
+    expect(component['massDeletePanelSetId']()).toBe('halloween-1');
+    expect(component['activeEmoteSetId']()).toBe('set-1');
+    expect('massDeleteLockReasonKey' in component).toBe(false);
+  });
+});
+
+/**
+ * `canDrilldown(emote)`/`rowAction(emote)` (arbitrated review round 2): a per-row narrowing of
+ * `cellAction()` so a set-session row with no chartable usage number never claims the drilldown —
+ * `emote.totalUseCount === null` alone is not the test (a null-session's archived row can carry
+ * that for an unrelated reason and must keep its drilldown), only `results().emoteSetId != null`
+ * together with it is. Mounted on a COARSE pointer, where `cellAction()` is `'drilldown'` for the
+ * whole page whenever `hasUsageData()` holds (same stub as usage-stats-page.spec.ts's own
+ * "mark-all does not exist on a coarse pointer" block) — on a fine pointer `cellAction()` is
+ * `'select'` instead, which would never exercise the downgrade this checks.
+ */
+describe('VoteSessionDetailPage — canDrilldown/rowAction withhold the drilldown from a rowless usage number (arbitrated review round 2)', () => {
+  let fixture: ComponentFixture<VoteSessionDetailPage>;
+  let component: VoteSessionDetailPage;
+  let httpMock: HttpTestingController;
+
+  const CHANNEL = 'sensitron';
+  const SESSION_ID = '7';
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.stubGlobal('matchMedia', () => ({
+      matches: true,
+      media: '',
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(VoteSessionDetailPage, {
+      set: { template: '<div #sheet></div>' },
+    });
+
+    fixture = TestBed.createComponent(VoteSessionDetailPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', CHANNEL);
+    fixture.componentRef.setInput('sessionId', SESSION_ID);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  async function mount(initial: VoteSessionResults): Promise<void> {
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`, initial);
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/permissions`, {
+      canManage: true,
+      canViewUsageStats: true,
+      isGlobalAdmin: false,
+      isTracked: true,
+      isBotActive: true,
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/emote-sets`, {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Main set', isActive: true, kind: 'NORMAL' },
+        { id: 'halloween-1', name: 'Halloween 2026', isActive: false, kind: 'NORMAL' },
+      ],
+    });
+    await settle();
+  }
+
+  it('withholds the drilldown from a set-session row with no chartable usage number, keeps it for the counted row', async () => {
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+    await mount(
+      results(
+        [
+          resultEmote('counted', { totalUseCount: 5 }),
+          resultEmote('uncounted', { totalUseCount: null }),
+        ],
+        { emoteSetId: 'halloween-1' },
+      ),
+    );
+    const [counted, uncounted] = component['results']()!.emotes;
+
+    expect(component['canDrilldown'](counted)).toBe(true);
+    expect(component['rowAction'](counted)).toBe('drilldown');
+    expect(component['canDrilldown'](uncounted)).toBe(false);
+    expect(component['rowAction'](uncounted)).toBe('none');
+
+    component['openDrilldown'](uncounted);
+    expect(openSpy).not.toHaveBeenCalled();
+
+    component['openDrilldown'](counted);
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the drilldown for a null-session's archived row with null usage — a withheld tally, not a set-session gap", async () => {
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+    await mount(
+      results([
+        resultEmote('a', { totalUseCount: 5 }),
+        resultEmote('archived', { totalUseCount: null, isArchived: true, eligible: false }),
+      ]),
+    );
+    const archived = component['results']()!.emotes.find((emote) => emote.emoteId === 'archived')!;
+
+    expect(component['canDrilldown'](archived)).toBe(true);
+    expect(component['rowAction'](archived)).toBe('drilldown');
+
+    component['openDrilldown'](archived);
+    expect(openSpy).toHaveBeenCalledTimes(1);
   });
 });

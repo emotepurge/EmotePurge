@@ -3070,23 +3070,83 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(data.emoteSetId).toBe('set-b');
   });
 
-  it('resolves a null-session ballot to Guids from the 7TV-keyed selection, and offers none in a non-active view (E4, K6 interim)', async () => {
+  it('resolves a null-session ballot to Guids in the active view, and a set-session ballot to 7TV ids in a settled non-active view (E4, spec 6.9, K6)', async () => {
     await openView({ totals: [emote('a', 'PeepoA'), emote('b', 'PeepoB')] });
     const [a, b] = component['emotes']();
     component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
     component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
 
-    // Keys are 7TV ids, the ballot the dialog would submit is Guids.
+    // Keys are 7TV ids, the null-session ballot the dialog would submit is Guids.
     expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
     expect([...component['voteBallotEmoteIds']()].sort()).toEqual(['a', 'b']);
     expect(component['voteLocked']()).toBe(false);
 
+    // A fresh, direct mount on a non-active set — settled, not mid-switch (spec §36) — no longer
+    // locks voting at all (T6.3 lifts the "set sessions are K6" interim lock): only a view that is
+    // switching, still loading, or whose member list came back unavailable/truncated still does,
+    // see the "K4 fix round" describe block above. Its ballot speaks 7TV ids.
     await openView({
       emoteSetId: 'set-b',
       totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA'), member('7tv-c', 'PeepoC')]),
+    });
+    const nonActiveRows = component['emotes']();
+    component['selection'].onRowClick(nonActiveRows[0], { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(nonActiveRows[1], { shiftKey: false } as MouseEvent);
+
+    expect(component['voteLocked']()).toBe(false);
+    // Both rows contribute their 7TV id, including 'c' — a class-2b, Guid-less live member (spec
+    // 7.2) that a null-session ballot would have silently dropped (voteBallotEmoteIds.flatMap).
+    expect([...component['voteBallotSevenTvEmoteIds']()].sort()).toEqual(['7tv-a', '7tv-c']);
+  });
+
+  it("excludes a 'left' row from the set-session ballot — CreateAsync validates all-or-nothing against the LIVE 7TV set (K6 whole-branch review, Fable B)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      // 'gone' is counted here but absent from the live list below ⇒ 'left' (E23). 'a' and
+      // 'live2' are both live — 'live2' has no totals row of its own (class-2b), same as the
+      // sibling test above.
+      totals: [emote('a', 'PeepoA'), emote('gone', 'GoneEmote')],
+      members: memberList([member('7tv-a', 'PeepoA'), member('7tv-live2', 'Live2')]),
+    });
+    const rows = component['emotes']();
+    expect(rows.map((row) => row.membership).sort()).toEqual(['left', 'live', 'live']);
+    for (const row of rows) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+    expect(component['selection'].selectedKeys()).toHaveLength(3);
+
+    // Sending 'gone' alongside the two live ids would fail VoteSessionService.CreateAsync's
+    // all-or-nothing live-membership check (spec section 9 step 2, 400 emote_ids_invalid) and
+    // silently drop the two rows that WERE still valid along with it.
+    expect([...component['voteBallotSevenTvEmoteIds']()].sort()).toEqual(['7tv-a', '7tv-live2']);
+    // voteBallotSize() is what the vote button's label and [disabled] actually read (arbitrated
+    // review round 2) — it must count the ballot CreateAsync would receive (the two live rows),
+    // not the raw selection (all three rows, including the excluded 'left' one).
+    expect(component['voteBallotSize']()).toBe(2);
+  });
+
+  it("counts the ballot at zero and opens no dialog when only a 'left' row is selected (arbitrated review round 2)", async () => {
+    // Same shape as the sibling test above, but this time only the 'left' row is picked — the
+    // ballot openCreateVoteSession would actually send is then empty even though the selection
+    // itself is not, which is exactly the gap voteBallotSize() (rather than the raw selection
+    // count) closes for both the button's [disabled] and this early return.
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('gone', 'GoneEmote')],
       members: memberList([member('7tv-a', 'PeepoA')]),
     });
-    expect(component['voteLocked']()).toBe(true);
+    const left = component['emotes']().find((row) => row.membership === 'left')!;
+    component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-gone']);
+
+    expect(component['voteBallotSize']()).toBe(0);
+    expect(component['voteLocked']()).toBe(false);
+
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open');
+    component['openCreateVoteSession']();
+
+    expect(openSpy).not.toHaveBeenCalled();
   });
 
   // --- T4.4: loading and reloads ---------------------------------------------------------------
@@ -3399,13 +3459,15 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['slotBudget']()).toBeNull();
   });
 
-  it('a truncated member list locks deleting with its own reason; a whole one no longer locks it (K5/T5.3), but voting still does (K6)', async () => {
+  it('a truncated member list locks deleting and voting with its own reason; a whole one locks neither (K5/T5.3, K6)', async () => {
     await openView({
       emoteSetId: 'set-b',
       totals: [],
       members: memberList([member('7tv-a', 'Alpha')], { truncated: true, totalCount: 1200 }),
     });
     expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+    // A ballot the page cannot read in full is not one the server's live-membership check backs.
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
     expect(captionKeys()).toContain('usageStats.setView.truncated');
 
     await openView({
@@ -3414,10 +3476,10 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       members: memberList([member('7tv-a', 'Alpha')]),
     });
     // K5/T5.3 (spec 8.8): the run is set-aware and both confirmations name the set, so a plain
-    // non-active view with a good member list no longer locks deleting. Voting still does (K6,
-    // spec 9 — set sessions do not exist yet) with the reason deleting used to carry.
+    // non-active view with a good member list no longer locks deleting; K6 (spec 9): voting there
+    // creates a set-session over the shown set, so it is not locked either.
     expect(component['deleteLockReasonKey']()).toBeNull();
-    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+    expect(component['voteLockReasonKey']()).toBeNull();
 
     await openView({ totals: [emote('a', 'Alpha')] });
     expect(component['deleteLockReasonKey']()).toBeNull();
@@ -3476,11 +3538,11 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     liveListRequests().forEach((request) => request.flush(memberList([member('7tv-a', 'PeepoA')])));
     await settle();
 
-    // Landed: the member list loaded clean, so deleting is unlocked (K5/T5.3, spec 8.8) — voting
-    // still shows the non-active view's own reason (K6, spec 9).
+    // Landed: the member list loaded clean, so deleting (K5/T5.3, spec 8.8) and voting (K6, spec 9)
+    // are both unlocked.
     expect(component['viewSwitching']()).toBe(false);
     expect(component['deleteLockReasonKey']()).toBeNull();
-    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+    expect(component['voteLockReasonKey']()).toBeNull();
   });
 
   it('hands the vote dialog a live lock, so a switch started behind the open dialog blocks its submit (finding A)', async () => {
@@ -3970,7 +4032,7 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
     ).find((button) => button.textContent?.trim().startsWith('usageStats.createVoteSession'));
   }
 
-  it('points the disabled vote button at the exact same reason paragraph the delete button uses, in a non-active view whose member list is unreadable (AK 62 shape)', async () => {
+  it('locks the vote button in a non-active view whose member list is unreadable, pointing at the same reason paragraph as delete (spec §36, K6)', async () => {
     router = TestBed.inject(Router);
     await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
 
@@ -4022,10 +4084,11 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
       );
     await settle();
 
-    // Same lock, same condition — see mass-delete-panel.ts's deleteLockReasonId comment: this is
-    // exactly why the vote button can reuse the delete button's paragraph instead of needing one of
-    // its own.
+    // Deleting and voting share one lock since K6 (`sharedSetViewLockReasonKey`): the set-session
+    // create validates its ballot against the live 7TV membership server-side, and a member list
+    // this page cannot read cannot back a ballot that check would accept (no row is 'live' here).
     expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.membersUnavailable');
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.membersUnavailable');
     expect(component['voteLocked']()).toBe(true);
 
     // Nothing marked yet — the dock (panel and both buttons) does not exist until something is.
@@ -4043,13 +4106,9 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
       'p[id^="mass-delete-lock-reason-"]',
     ) as HTMLParagraphElement | null;
     expect(reasonParagraph).not.toBeNull();
-    // The identical element the delete button already points at (mass-delete-panel.ts) — not a
-    // second, duplicated paragraph, and not some other panel instance's id.
-    expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
-    // The text itself now names both locked actions (this fix's locale change) rather than only
-    // "Löschen" — untranslated here (empty `de` dict), so this is the raw key, but the key itself
-    // is the "membersUnavailable" one whose copy this fix corrected in public/i18n/{de,en}.json.
     expect(reasonParagraph!.textContent?.trim()).toBe('usageStats.setView.lock.membersUnavailable');
+    // The locked vote button explains itself through the delete button's own paragraph.
+    expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
   });
 
   it('states the set-view facts and member-list warnings even when the set status (and its tracking start) could not be read (second review, P2)', async () => {
@@ -4144,6 +4203,76 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
     expect(button).toBeDefined();
     expect(button!.disabled).toBe(false);
     expect(button!.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('locks the vote button with the switch reason during a mid-switch, pointing at the same paragraph as delete (a11y, T6.3 fix round 1)', async () => {
+    // The positive case this describe block's own title promises (since K6 the vote lock IS
+    // `sharedSetViewLockReasonKey`, so every vote lock shares the delete button's paragraph):
+    // this asserts the DOM wiring actually holds for it, not just the underlying signals (the
+    // "K4 fix round" describe block checks those, never the rendered button/paragraph pair).
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    // onEmoteSetSelected resolves its id against this list (usage-stats-page.ts's own
+    // `selectedEmoteSetId` comment) — without it flushed, the switch below never registers and
+    // viewSwitching() stays false, which is what silently broke this exact assertion.
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+      ]),
+    );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    await settle();
+
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    // A dropdown choice lands behind the marked selection — the view has not caught up yet.
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    expect(component['viewSwitching']()).toBe(true);
+    expect(component['voteLocked']()).toBe(true);
+
+    const button = findVoteButton();
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(true);
+
+    const reasonParagraph = fixture.nativeElement.querySelector(
+      'p[id^="mass-delete-lock-reason-"]',
+    ) as HTMLParagraphElement | null;
+    expect(reasonParagraph).not.toBeNull();
+    expect(reasonParagraph!.textContent?.trim()).toBe('usageStats.setView.lock.switching');
+    // The positive a11y assertion: the locked button still points at the SAME paragraph the
+    // delete button uses, in the one case that still locks both together.
+    expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
   });
 });
 

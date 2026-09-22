@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { Page, expect, test } from '@playwright/test';
 
+import { VoteSessionResult } from '../../src/app/core/voting/vote-session.model';
 import {
   AUTH_USER,
   MockChannel,
@@ -210,13 +211,17 @@ function voteResults(sessionId: number, isActive: boolean, options: VoteResultsO
     voterCount,
     hideResultsUntilEnd: hidden !== undefined,
     // Backend order: ascending net score, delete candidates first (name order when withheld).
-    emotes: usageEmotes(count).map((e, i) => ({
+    emotes: usageEmotes(count).map((e, i): VoteSessionResult => ({
       ...e,
       totalUseCount: withUsage ? e.totalUseCount : null,
       keepVotes: talliesWithheld ? null : 2 + i * 4,
       deleteVotes: talliesWithheld ? null : 40 - i * 3,
       score: talliesWithheld ? null : -38 + i * 7,
       isArchived: withArchived && i < 2,
+      // Same rule as e2e/support/mocks.ts's mockVoteSessionResults (~:1171): eligible defaults
+      // to !isArchived. Left inline here rather than defaulted through `?? !isArchived` because
+      // this fixture builds isArchived itself a line below rather than reading it off an input.
+      eligible: !(withArchived && i < 2),
       myVote: i % 3 === 0 ? 1 : i % 3 === 1 ? 2 : null,
     })),
   };

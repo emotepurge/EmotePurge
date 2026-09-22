@@ -46,6 +46,10 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     // call runs, same reasoning as its channel-scoped sibling two lines up — Bookkeeping, not
     // ForeignEmoteLookup, so a spent read budget cannot drop the paper trail.
     [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-imported", RateLimitPolicyNames.Bookkeeping)]
+    // K6 whole-branch review, Fable A (spec 6.10): a set-session's branch of this route reads the
+    // set's live 7TV membership (paginated), same provider-budget shape as the ForeignEmoteLookup
+    // routes above — its own group otherwise defaults to Bookkeeping (end/delete keep it, unaffected).
+    [InlineData("POST", "/api/channels/{channelName}/vote-sessions", RateLimitPolicyNames.ForeignEmoteLookup)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

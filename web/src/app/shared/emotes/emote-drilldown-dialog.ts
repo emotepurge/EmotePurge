@@ -41,7 +41,9 @@ export interface EmoteDrilldownData {
   /**
    * The set the host page's numbers are counted under, frozen when the dialog opens (spec #200,
    * 7.2/F4, AK 64): a dropdown switch behind an open dialog must not re-point its request. `null` or
-   * absent means "the channel's active set" — the vote page's case, whose sessions predate sets.
+   * absent means "the channel's active set" — a null-session's case on the vote page (T6.3): a
+   * set-session passes its own `emoteSetId` instead, so its drilldown charts the ballot's set, not
+   * whatever the channel happens to be showing as active right now.
    */
   emoteSetId?: string | null;
   /** Usage page only — trend and time-in-set need these. */

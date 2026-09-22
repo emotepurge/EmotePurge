@@ -26,6 +26,15 @@ public static class VoteSessionEndpoints
             IVoteSessionService voteSessionService,
             CancellationToken ct) =>
         {
+            // Format check ahead of everything else (spec 6.9, E14): emoteSetId is a body field, not a
+            // query/route parameter, so EmoteSetIdValidationFilter never sees it — same idiom as
+            // SyncImportedRequest.TargetEmoteSetId (EmoteEndpoints.cs, AK 29), inline instead of a
+            // shared filter.
+            if (request.EmoteSetId is not null && !EmoteSetIdValidation.IsValid(request.EmoteSetId))
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidEmoteSetId });
+            }
+
             var actor = httpContext.User.TryBuildAuditActor();
             if (actor is null)
             {
@@ -37,7 +46,7 @@ public static class VoteSessionEndpoints
             var (result, session) = await voteSessionService.CreateAsync(
                 new VoteSessionCreateRequest(
                     channelName, request.Title, request.AllowedVoterRoles, request.StartedAt, request.EmoteIds,
-                    request.HideResultsUntilEnd),
+                    request.HideResultsUntilEnd, request.EmoteSetId, request.SevenTvEmoteIds),
                 actor, ct);
 
             return result switch
@@ -52,14 +61,23 @@ public static class VoteSessionEndpoints
                     new { errorCode = ApiErrorCodes.RangeTooLarge, maxRangeDays = VoteSessionLimits.MaxBackdateDays }),
                 CreateVoteSessionResult.EmoteIdsEmpty => Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty }),
                 CreateVoteSessionResult.EmoteIdsInvalid => Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsInvalid }),
+                CreateVoteSessionResult.SetBallotInvalid => Results.BadRequest(new { errorCode = ApiErrorCodes.VoteSessionSetBallotInvalid }),
+                CreateVoteSessionResult.SevenTvUnavailable => Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable),
                 _ => Results.Problem()
             };
         })
         .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
-        // The three management mutations here (create, end, delete) had no policy at all until now.
-        // Bookkeeping: writes against our own database with no provider cost, and 120 a minute is far
-        // past anything a mod team does by hand.
-        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+        // ForeignEmoteLookup, not Bookkeeping (K6 whole-branch review, Fable A): a set-session's
+        // branch of VoteSessionService.CreateAsync reads the set's live membership from 7TV
+        // (IForeignEmoteSetService), one or more paginated pages, so this route can cost the shared
+        // provider budget exactly like the other endpoints under that policy — Bookkeeping's 120/min
+        // would let a caller burn through it 12x faster than the routes it's actually shared with. A
+        // null-session create touches no 7TV endpoint at all and simply rides along under the same
+        // policy, the same way an unauthenticated 401 or a validation 400 does on every other route
+        // here — the budget is spent on the request making it this far, not on which branch runs.
+        .RequireRateLimiting(RateLimitPolicyNames.ForeignEmoteLookup);
 
         group.MapPost("/{sessionId:long}/end", async (
             string channelName,
@@ -304,7 +322,7 @@ public static class VoteSessionEndpoints
     // dynamic "all emotes" session, reported as null.
     private static VoteSessionSummaryDto ToSummaryDto(VoteSession session) => new(
         session.Id, session.Title, session.AllowedVoterRoles, session.IsActive, session.StartedAt, session.EndedAt,
-        session.SessionEmotes.Count == 0 ? null : session.SessionEmotes.Count, session.HideResultsUntilEnd);
+        session.SessionEmotes.Count == 0 ? null : session.SessionEmotes.Count, session.HideResultsUntilEnd, session.EmoteSetId);
 
     /// <summary>
     /// Announces "the tally of this session changed" to everyone watching it. Deliberately without
@@ -339,10 +357,14 @@ public static class VoteSessionEndpoints
 }
 
 // EmoteIds null = the session covers all non-archived channel emotes dynamically; a non-null list
-// becomes the session's fixed ballot (local emote guids, validated in VoteSessionService).
+// becomes the session's fixed ballot (local emote guids, validated in VoteSessionService). Always
+// null for a set-session (E4).
 // HideResultsUntilEnd defaults to false, so an existing client that never sends it keeps creating
 // open sessions.
+// EmoteSetId/SevenTvEmoteIds (spec 6.9, additive): a set-session ballot by 7TV identity instead of
+// local Emote guid. The exclusion rule between this pair and EmoteIds is VoteSessionService's, not
+// this record's — see VoteSessionCreateRequest.
 internal sealed record CreateVoteSessionRequest(
     string Title, AllowedRoles AllowedVoterRoles, DateTime? StartedAt = null, IReadOnlyList<string>? EmoteIds = null,
-    bool HideResultsUntilEnd = false);
+    bool HideResultsUntilEnd = false, string? EmoteSetId = null, IReadOnlyList<string>? SevenTvEmoteIds = null);
 internal sealed record CastVoteRequest(string EmoteId, VoteType Type);

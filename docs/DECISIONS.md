@@ -10,6 +10,177 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-22 — Voting: "member of the session's set" replaces "not archived"; permission comes from permission (#200, K6)
+
+**Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, 6.10, F8, F12, E4, E10) ·
+`src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs` ·
+`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` ·
+`src/EmotePurge.Core/Services/IVoteSessionQueryService.cs` ·
+`src/EmotePurge.Core/Services/IVoteSessionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionQueryServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`web/e2e/audit/ui-audit.audit.ts` ·
+`web/e2e/support/mocks.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`web/e2e/vote-ballot.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/voting/vote-session.model.ts` ·
+`web/src/app/core/voting/vote-session.service.spec.ts` ·
+`web/src/app/core/voting/vote-session.service.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.spec.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.html` ·
+`web/src/app/features/voting/vote-session-detail-page.spec.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/features/voting/vote-session-list-page.spec.ts` ·
+`web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/shared/export/voting-export.spec.ts` · `web/src/app/shared/export/voting-export.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts`
+
+A vote session can now be scoped to any 7TV emote set of the channel, not only the active one — a
+**set-session**, created from a non-active set's view in the usage-stats grid (K6, spec section 9),
+alongside the existing **null-session** every session was before this (dynamic "all active emotes" or
+a fixed ballot of local `Emote` Guids, spec E4 unchanged). Both live on `CreateVoteSessionRequest`
+(`emoteIds` for a null-session; `emoteSetId` + `sevenTvEmoteIds` for a set-session) with an exclusion
+rule between them (400 `vote_session_set_ballot_invalid`), and both go through `VoteSessionService.
+CreateAsync`. `VoteSession.EmoteSetId` (nullable) records which kind a session is; a set-session's
+invariant is that `EmoteSetId != null` implies its `SessionEmotes` are never empty — there is no
+dynamic "all emotes of a set" mode, because a foreign or non-active set has no local inventory to be
+dynamic over.
+
+**The trap this revises, in both directions.** The 2026-08-01 archived-badge entry read a subset
+ballot member's `Emote.IsArchived` as "left the 7TV set, voting closed" — correct for a null-session,
+where the flag means exactly that. It is the wrong test for a set-session: `CreateAsync` upserts a
+set-session's members via `INSERT … ON CONFLICT ("ChannelId", "SevenTvEmoteId") DO NOTHING`, and a
+member with no prior local row gets one created `IsArchived = true`, `ArchivedAt = null` ("never
+active") — not because it left anything, but because it was never the *active* set's member to begin
+with. Reading that flag as "closed to voting" would have frozen a fresh set-session's ballot shut on
+arrival. The fix touches **both** ends the trap has: creation no longer validates a set-session's
+members against `!IsArchived` (it validates against the live 7TV membership instead, all-or-nothing on
+the 7TV identity, 400 `emote_ids_invalid` on a miss) and voting no longer gates on it either —
+`IsEmoteVotableAsync` accepts any ballot member of a set-session, `IsArchived` or not.
+
+**`GetResultsAsync` gains `eligible: bool`**, which is what actually gates the vote buttons and the
+"left the set" badge now: `!IsArchived` for a null-session row (unchanged behaviour), always `true` for
+a set-session row (its fixed ballot never closes, precisely because it was frozen as a ballot, not as
+a live view) — so a set-session shows **no** mid-session badge at all. `useCount` follows a matching
+split: a null-session row still nulls it for an archived member and otherwise defaults a missing
+`UsageStat` entry to `0` (no row in range genuinely means no use); a set-session row instead reports
+`null` only when the set's own `UsageStats` never carry that emote at all — **date-independently**, not
+just "no row inside the session's own window" (fix round 1: `GetTotalsByEmoteIdsAsync`'s `WHERE` clause
+used to filter the date range itself, which made a row that exists but falls outside the window
+indistinguishable from no row at all; the date range moved into the `Sum`'s own conditional instead, the
+same shape `GetUsageContextAsync`'s aggregates query already used for the identical reason) — a
+fabricated `0` for "we never even watched this member under this set" would have been a claim the data
+does not support, and a fabricated `null` for "counted, just not in this window" would have hidden a
+real, reportable zero. Name/image come from `VoteSessionEmote.NameAtCreation`/`ImageUrlAtCreation` when
+set (a set-session's freeze, `null` for a null-session's row, where the live `Emote` is always the
+answer) — so a later sync that renames the live `Emote.Name` cannot retroactively rewrite what a voter
+was shown.
+
+**`canSelectForDelete` no longer follows `hasUsageData`.** The two used to be the same flag
+(`hasUsageData` reading a null-only-`TotalUseCount` shape as "not a manager"), which is also exactly
+the shape a manager sees on an all-null-usage set-session ballot (every member genuinely never used
+under that set) — the old coupling would have hidden the mass-delete panel from the one viewer who is
+allowed to use it. `canSelectForDelete` now follows `canManage` directly; `hasUsageData` keeps gating
+only the usage column and the coarse-pointer drilldown, which still are permission-shaped. The panel's
+target set (`massDeletePanelSetId`) is `session.EmoteSetId ?? activeEmoteSetId()` — a set-session's
+own set, never the channel's active one under its name. On the usage-stats page, `voteLockReasonKey`
+is now exactly the lock deleting uses (`sharedSetViewLockReasonKey`: mid-switch per spec §36, or the
+shown set's member list loading, unreadable or truncated) — a settled non-active view with a good
+member list no longer blocks creating a vote session at all (the "set sessions are K6" interim
+`nonActiveSet` lock this revises; its copy key is removed). An unreadable or truncated list still
+locks voting as it locks deleting: creating a set-session validates the ballot against the live 7TV
+membership server-side, and a member list the page cannot read in full cannot back a ballot that
+check would accept either. Since both locks are one, the vote button's `aria-describedby` always
+points at the delete button's reason paragraph; K5's interim vote-only paragraph
+(`voteOnlyLockReasonId`) is gone again. `openCreateVoteSession` picks the ballot's id
+space by view: `voteBallotEmoteIds` (Guids) in the active view, `voteBallotSevenTvEmoteIds` (7TV ids,
+including class-2b rows a Guid ballot would silently drop) in a non-active one, paired with
+`setSession: { emoteSetId }` on the dialog data only in the latter case — the request body this
+produces is exactly `CreateVoteSessionRequest`'s pair, and the null-session body is byte-for-byte
+unchanged from before this feature.
+
+**Why a per-channel advisory lock could not close the create/sync race instead.** A set-session's
+creation upserts emote rows from the **Api** process; `ChannelSyncGate` (`ChannelSyncGate.cs`) is a
+process-wide semaphore that only serializes the **Worker's** own sync attempts against each other —
+it has no reach into the Api process at all, so it cannot be what keeps the two from racing. The
+chosen fix is a **retry, not a lock** (spec E10): `SevenTvSyncService.SyncChannelAsync` catches
+exactly the `23505` unique-key violation on `IX_Emotes_ChannelId_SevenTvEmoteId` once, clears the
+change tracker, re-reads the channel row and re-runs the write sequence — a second conflict propagates
+as before. **Widened beyond E10's own wording** (T6.2, decided during implementation, not a separate
+spec revision): the retried sequence re-runs `RecordObservedSetAsync` as well as the emote reconcile,
+because `ChangeTracker.Clear()` discards whatever that call had staged on the first attempt — the
+observation row is tracked-only until `SaveChangesAsync`, so a retry that skipped it would silently
+lose the open interval a plain, un-conflicted sync would have recorded. An advisory lock spanning the
+Worker's read-to-save window plus the Api's upsert would have cost every 60-second sync tick of every
+channel a lock acquisition, for a race whose only cost when it does happen is one lost sync round —
+disproportionate for what the retry already closes for free, and testable by forcing the interleaving
+with two `AppDbContext` instances (AK 78) in a way a lock's absence of contention could not be.
+
+**Fix round 1 (review + the controller's E2E run), same entry, same day.** Three more corrections
+belong to this same contract change, not a separate one: `openDrilldown` on the vote detail page now
+passes the session's own `emoteSetId` to `EmoteDrilldownData` (it used to omit it entirely, which
+made a set-session's drilldown chart the channel's *active* set — silently wrong whenever the two
+differ); and the vote-session detail page's mass-delete panel now also gates on
+`results()` (not just `canSelectForDelete()`/`massDeletePanelSetId()`), so it cannot briefly mount
+bound to the channel's active set while the session's own results — and with them, its actual
+`emoteSetId` — are still in flight.
+
+**Final fix wave (whole-branch review: Opus, Codex Sol, a Fable arbitration), same entry, same
+day.** **Ruling D (P1, both reviews):** a temporary lock on the vote detail page's mass-delete
+panel for a set-session over a non-active set existed only until K5's set-scoped `sync-deleted
+{ emoteSetId, sevenTvEmoteIds }` bookkeeping landed, and is lifted: the panel now deletes from the
+session's own set (`[setId]`) with the channel's real active set beside it (`[activeSetId]`). **Fable A (P2, rate
+limit):** `POST /api/channels/{c}/vote-sessions` (create) moved from `Bookkeeping` (120/min) to
+`ForeignEmoteLookup` (10/min, spec 6.10) — a set-session's branch of `CreateAsync` reads the set's
+live 7TV membership, one or more paginated pages, the same provider-budget shape as the other
+`ForeignEmoteLookup` routes; a null-session create touches no 7TV endpoint and simply rides along
+under the same policy. `end`/`delete` keep `Bookkeeping` — they write only against Postgres.
+
+Two deliberate non-changes, recorded so a future reader does not mistake either for an oversight:
+the delta path (`SevenTvSyncService.ApplyEmoteSetUpdateAsync`, the EventAPI dispatch route) carries
+no `23505` retry of its own — E10 scopes the retry to `SyncChannelAsync` alone (the full
+reconcile), and a conflict reaching the delta path instead is left to the periodic resync (default
+60 s) to repair on its own next tick, the same staleness tolerance the delta path already has
+elsewhere. And a set-session's never-active row keeps `FirstSeenAt = null` at creation — a recorded
+deviation from spec section 9 step 3's "`FirstSeenAt` aus dem Set-Eintrag, wenn 7TV es liefert":
+the set-ID read path (`IForeignEmoteSetService`) does not thread 7TV's `AddedToSetAt` through (only
+the full sync's REST/dispatch path does, `SevenTvSyncService.UpsertEmote`), so the column is
+corrected retroactively if and when the set becomes active, not filled at ballot-creation time.
+
+**Known limitations, both on the vote-session detail page's mass-delete panel, recorded rather than
+fixed here (rebase-delta review, same day).** (a) A delete started from the vote page records
+`[NameAtCreation]` as the emote's only alias — `MassDeletePanel.readLiveAliasesFromActiveSet` stays
+unset there on purpose (see that input's own doc). The recorded alias goes stale after a later 7TV
+rename, and a #74 duplicate cell still records only one of its aliases, same as before this entry;
+the fix needs a live read of the panel's own (possibly non-active) set's membership, not the active
+set's, which is a design step of its own rather than a one-line follow-up. (b) A set-session member
+that has since left the live set stays selectable for delete on the vote page — `eligible` is always
+`true` there by design (this entry, above), it does not track live membership — so confirming a
+delete on such a member issues a `RemoveEmote` for something no longer a member of the target set.
+Both are tracked as a follow-up in epic #200, not fixed in K6.
+
+**Arbitrated review fixes (round 2, Opus/Codex Sol with a Fable arbitration), same entry, same
+day.** `CreateAsync` now rejects a set-session whose `emoteSetId` is not one of the channel's own
+sets before it ever reads that set's live membership (spec section 9's new step 0, via
+`ISevenTvEmoteSetListService`, precedent 6.8), the usage-stats page's vote button now counts and
+gates on the exact ballot `openCreateVoteSession` sends instead of a stale sibling count, and the
+vote detail page withholds the drilldown trigger from a set-session row that carries no usage
+number while leaving a null-session's archived-with-null-usage rows untouched.
+
+---
+
 ### 2026-09-22 — Target-set picker: one heading per account, one radio per set, PERSONAL sets hidden (#217)
 
 **Betrifft:** `web/src/app/shared/seven-tv/import-target-choices.ts` ·

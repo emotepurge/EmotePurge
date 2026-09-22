@@ -63,7 +63,13 @@ export function votingCsv(input: VotingExportInput): string {
       present: () => !withheld.includes('totalUseCount'),
     },
     { header: 'my_vote', value: (row) => formatVote(row.myVote) },
+    // is_archived kept for compatibility (an existing consumer's column, spec section 9's own
+    // history) even though it no longer gates anything in the app — eligible is what actually
+    // decides the vote lock/badge now, and the two can disagree: a set-session's member reads
+    // is_archived true the moment it was upserted "never active" (T6.1, ArchivedAt = null) while
+    // staying eligible true throughout, since a set-session's fixed ballot never closes.
     { header: 'is_archived', value: (row) => String(row.isArchived) },
+    { header: 'eligible', value: (row) => String(row.eligible) },
   ];
   return toCsv(input.rows, columns);
 }
@@ -96,6 +102,7 @@ export function votingJson(input: VotingExportInput): string {
       ...(includeUsage ? { totalUseCount: row.totalUseCount } : {}),
       myVote: formatVote(row.myVote),
       isArchived: row.isArchived,
+      eligible: row.eligible,
     })),
   });
   return JSON.stringify(envelope, null, 2);

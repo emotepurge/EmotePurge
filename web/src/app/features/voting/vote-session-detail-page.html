@@ -105,7 +105,7 @@
         class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-2 text-xs text-fg-muted lg:hidden pointer-coarse:hidden"
       >
         <span class="font-medium text-fg">{{ emote.emoteName }}</span>
-        @if (emote.isArchived) {
+        @if (!emote.eligible) {
           <span class="text-warning-fg">{{ 'voting.detail.archivedBadge' | transloco }}</span>
         }
         @if (emote.totalUseCount !== null) {
@@ -151,11 +151,16 @@
   <app-dock-outcome-announcer />
 
   <!-- Gated like the cell selection that feeds it — without delete power the panel could only
-       ever show an empty selection. -->
-  @if (canSelectForDelete() && !isCoarse() && activeEmoteSetId(); as setId) {
+       ever show an empty selection. results() gates it too (T6.3 fix round 1): before the
+       session's own results land, massDeletePanelSetId() falls back to activeEmoteSetId(), which
+       can resolve first (a separate, parallel request) — mounting the panel bound to the active
+       set for a set-session would be briefly, silently wrong. -->
+  @if (results() && canSelectForDelete() && !isCoarse() && massDeletePanelSetId(); as setId) {
     <app-mass-delete-panel
       [setId]="setId"
       [activeSetId]="activeEmoteSetId()"
+      [setName]="massDeletePanelSetName()"
+      [setNames]="emoteSetNames()"
       [channelName]="channelName()"
       [selectedEmotes]="selectedForDelete()"
       (deleted)="onDeleted($event)"
@@ -218,34 +223,35 @@
                    same way it went on the usage atlas, but the vote buttons are NOT — they are the
                    task here, so they keep a real size and only the chrome around them left. -->
               <div class="group relative flex flex-col" [style.width.px]="cellPx()">
-                <!-- What the sprite face does is cellAction(): selects on a fine pointer for those
-                     who can run the mass delete, opens the drilldown on a coarse one (the delete
-                     engine is gone there — see isCoarse()), or is a plain sprite with no button
-                     semantics when neither applies. Voting does not go through here — that is the
-                     strip. -->
+                <!-- What the sprite face does is rowAction(emote) — cellAction() narrowed to this
+                     one row (see its own doc comment: a set-session row with no chartable usage
+                     number never claims the drilldown): selects on a fine pointer for those who can
+                     run the mass delete, opens the drilldown on a coarse one (the delete engine is
+                     gone there — see isCoarse()), or is a plain sprite with no button semantics
+                     when neither applies. Voting does not go through here — that is the strip. -->
                 <div
-                  [attr.role]="cellAction() === 'none' ? null : 'button'"
-                  [attr.tabindex]="cellAction() === 'none' ? null : 0"
+                  [attr.role]="rowAction(emote) === 'none' ? null : 'button'"
+                  [attr.tabindex]="rowAction(emote) === 'none' ? null : 0"
                   [attr.aria-pressed]="
-                    cellAction() === 'select' ? selection.isSelected(emote) : null
+                    rowAction(emote) === 'select' ? selection.isSelected(emote) : null
                   "
-                  [attr.aria-haspopup]="cellAction() === 'drilldown' ? 'dialog' : null"
+                  [attr.aria-haspopup]="rowAction(emote) === 'drilldown' ? 'dialog' : null"
                   [attr.aria-label]="
-                    cellAction() === 'drilldown'
+                    rowAction(emote) === 'drilldown'
                       ? (drilldownLabelKey(emote)
                         | transloco
                           : {
                               name: emote.emoteName,
                               count: formatUseCount(emote.totalUseCount),
                             })
-                      : cellAction() === 'select'
+                      : rowAction(emote) === 'select'
                         ? emote.emoteName
                         : null
                   "
                   [class]="
                     'app-sprite-cell relative block ' +
-                    (emote.isArchived ? 'app-sprite-cell-void ' : '') +
-                    (cellAction() === 'none' ? '' : 'cursor-pointer ')
+                    (!emote.eligible ? 'app-sprite-cell-void ' : '') +
+                    (rowAction(emote) === 'none' ? '' : 'cursor-pointer ')
                   "
                   [style.height.px]="cellPx()"
                   (click)="onCardActivate(emote, $event)"
@@ -269,7 +275,7 @@
                     [url]="emote.imageUrl"
                     [size]="96"
                     sizes="(min-width: 640px) 64px, 96px"
-                    [dimmed]="emote.isArchived"
+                    [dimmed]="!emote.eligible"
                   />
                   <!-- The usage figure printed onto the sprite, as on the usage atlas. `null` is
                        the server's withholding verdict, not a zero, so it prints nothing. -->
@@ -307,7 +313,7 @@
                         ? 'bg-success-solid text-on-accent hover:bg-success-solid-hover'
                         : 'bg-surface-inset text-fg-secondary hover:bg-surface-inset-hover')
                     "
-                    [disabled]="emote.isArchived"
+                    [disabled]="!emote.eligible"
                     [attr.aria-pressed]="emote.myVote === voteType.Keep"
                     [attr.aria-label]="'voting.detail.keepAriaLabel' | transloco"
                     [attr.title]="keepButtonTitle(emote)"
@@ -340,7 +346,7 @@
                         ? 'bg-danger-solid text-on-accent hover:bg-danger-solid-hover'
                         : 'bg-surface-inset text-fg-secondary hover:bg-surface-inset-hover')
                     "
-                    [disabled]="emote.isArchived"
+                    [disabled]="!emote.eligible"
                     [attr.aria-pressed]="emote.myVote === voteType.Delete"
                     [attr.aria-label]="'voting.detail.deleteAriaLabel' | transloco"
                     [attr.title]="deleteButtonTitle(emote)"
@@ -376,13 +382,15 @@
                   }
                 </div>
 
-                <!-- Drilldown (A5), gated on hasUsageData(): the /daily endpoint sits behind the
-                     usage-stats access filter, so a plain voter's click could only earn a 403.
-                     On the cell rather than in the readout, for the reason the usage atlas learned
-                     the hard way — a panel that follows the pointer cannot hold a click target.
-                     Not rendered on coarse: the sprite face itself is the drilldown trigger there
-                     (cellAction()), and this 20 px overlay would be a redundant second target. -->
-                @if (hasUsageData() && !isCoarse()) {
+                <!-- Drilldown (A5), gated on canDrilldown(emote): hasUsageData() alone sits behind
+                     the usage-stats access filter (a plain voter's click could only earn a 403),
+                     and canDrilldown additionally withholds it from a set-session row with no
+                     chartable usage number (see its own doc comment). On the cell rather than in
+                     the readout, for the reason the usage atlas learned the hard way — a panel that
+                     follows the pointer cannot hold a click target. Not rendered on coarse: the
+                     sprite face itself is the drilldown trigger there (rowAction(emote)), and this
+                     20 px overlay would be a redundant second target. -->
+                @if (canDrilldown(emote) && !isCoarse()) {
                   <button
                     type="button"
                     class="absolute top-0 left-0 flex h-5 w-5 items-center justify-center opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
@@ -421,12 +429,12 @@
               <app-emote-sprite-animated
                 [url]="emote.imageUrl"
                 [size]="56"
-                [dimmed]="emote.isArchived"
+                [dimmed]="!emote.eligible"
               />
             </span>
             <div class="min-w-0">
               <p class="text-sm font-semibold break-all text-fg">{{ emote.emoteName }}</p>
-              @if (emote.isArchived) {
+              @if (!emote.eligible) {
                 <p class="mt-0.5 text-[11px] text-warning-fg">
                   {{ 'voting.detail.archivedBadge' | transloco }}
                 </p>

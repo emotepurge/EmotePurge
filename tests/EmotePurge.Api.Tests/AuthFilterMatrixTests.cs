@@ -668,6 +668,44 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
+    // AK 75 (spec 6.9/9, K6): CreateVoteSessionRequest's set-ballot exclusion rule and its emoteSetId
+    // format check. Both run inside VoteSessionEndpoints/VoteSessionService ahead of any channel or
+    // Postgres access, so — like SyncImported's TargetEmoteSetId case above — these are runnable
+    // without a database behind the test factory.
+
+    [Theory]
+    // emoteSetId set, sevenTvEmoteIds empty.
+    [InlineData("""{"title":"t","allowedVoterRoles":1,"emoteSetId":"set1","sevenTvEmoteIds":[]}""")]
+    // emoteSetId set, and emoteIds set too — the two ballot shapes must never both be present.
+    [InlineData("""{"title":"t","allowedVoterRoles":1,"emoteSetId":"set1","sevenTvEmoteIds":["7tv-a"],"emoteIds":["e1"]}""")]
+    // sevenTvEmoteIds set without emoteSetId.
+    [InlineData("""{"title":"t","allowedVoterRoles":1,"sevenTvEmoteIds":["7tv-a"]}""")]
+    public async Task CreateVoteSession_Answers400_ForTheSetBallotExclusionRule(string body)
+    {
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/vote-sessions", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.VoteSessionSetBallotInvalid, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task CreateVoteSession_Answers400_ForAMalformedEmoteSetId()
+    {
+        // emoteSetId is a body field, not a query/route parameter — same idiom as SyncImported's
+        // TargetEmoteSetId (AK 29) above, checked inline ahead of the service.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var body = """{"title":"t","allowedVoterRoles":1,"emoteSetId":"../x","sevenTvEmoteIds":["7tv-a"]}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/vote-sessions", NewUserId(), body: body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+    }
+
     [Fact]
     public async Task SyncImported_Answers400_ForAnUnrecognizedSourceKind()
     {

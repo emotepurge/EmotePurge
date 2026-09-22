@@ -86,8 +86,8 @@ export interface DeletableEmote {
    *  `REMOVE` takes whole. Recorded in the protocol so a restore can re-add each. Omitted means
    *  `[name]`. A host that cannot know every alias (the active set's view keeps one name per id)
    *  sets `readLiveAliasesFromActiveSet` instead, and the panel reads them from 7TV itself before
-   *  the run starts. The vote-session page does neither until K6: its rows stay on `[name]`, so a
-   *  duplicate deleted there still records one alias (DECISIONS, #200 K5 addendum). */
+   *  the run starts. The vote-session page deliberately does neither: its rows stay on `[name]`, so
+   *  a duplicate deleted there still records one alias (DECISIONS, #200 K6 known limitation). */
   aliases?: readonly string[];
   /** Whether the host page's current filter hides this emote right now (`!selection.isVisible`).
    *  Required, not optional (Konzept "Auswahl überlebt Suche und Filter" 2.1, Codex befund 3b):
@@ -279,12 +279,14 @@ export class MassDeletePanel {
    *  non-7TV-rate-limited `EmoteAdminService.getSetStatus`, or the live per-set preview otherwise.
    *  `undefined` folds onto `setId()` (`effectiveActiveSetId` below) — same convention as
    *  `ImportTrigger`'s identically-named input (DECISIONS K4) — rather than defaulting to `null`
-   *  and thereby reading as "known not active": the vote-session-detail page's own run has always
-   *  been against the active set (it only ever offers this panel for `activeEmoteSetId()` itself,
-   *  see the page's template), and that page went unbound for a full spec round (#200 K5 finding
-   *  B) before it started passing this explicitly — silently showing a false "this set is not
-   *  currently active" note the whole time, worse than the reverse: an *unconfirmed* explicit
-   *  `null` still means "we checked and don't know", so it correctly stays `false` below. */
+   *  and thereby reading as "known not active": the vote-session-detail page went unbound for a
+   *  full spec round (#200 K5 finding B) before it started passing this explicitly — silently
+   *  showing a false "this set is not currently active" note the whole time, worse than the
+   *  reverse: an *unconfirmed* explicit `null` still means "we checked and don't know", so it
+   *  correctly stays `false` below. Since K6 the vote page's `setId` is the vote session's own
+   *  set — a set-session's ballot can be frozen against a set that is no longer active — while
+   *  `activeSetId` stays the channel's real active set, so the two can legitimately differ there
+   *  (spec §9, `massDeletePanelSetId`/`activeEmoteSetId` on that page). */
   readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the delete confirmation (spec #200, 8.8) — falls back to
    *  the set id itself, same convention as every other unnamed-set reader in this app. */
@@ -317,7 +319,7 @@ export class MassDeletePanel {
    *
    * Opt-in, `false` by default: a non-active set's rows already carry every alias from the live
    * member list the view is built from, so no second read happens there; and the vote-session page
-   * stays on `[name]` until K6 on purpose.
+   * deliberately stays on `[name]` (DECISIONS, #200 K6 known limitation).
    */
   readonly readLiveAliasesFromActiveSet = input<boolean>(false);
 

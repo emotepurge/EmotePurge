@@ -31,8 +31,21 @@ public enum CreateVoteSessionResult
     // emoteIds was provided but is empty after trimming/deduplication. null means "all emotes" and
     // is valid; an explicit empty list is rejected instead of being silently reinterpreted as "all".
     EmoteIdsEmpty,
-    // At least one provided id is unknown, belongs to another channel, or is already archived.
-    EmoteIdsInvalid
+    // At least one provided id is unknown, belongs to another channel, or (null-session only) already
+    // archived. For a set-session this instead means at least one sevenTvEmoteIds entry is not a live
+    // member of the set (spec section 9, step 2 — all-or-nothing on the 7TV identity), or — checked
+    // first, spec section 9 step 0 — the emoteSetId itself is not one of the channel's own sets
+    // (channel.TwitchChannelId unresolved, ISevenTvEmoteSetListService answers NoSevenTvAccount, or
+    // Ok without the set among the channel's NORMAL-kind sets or its ActiveEmoteSetId).
+    EmoteIdsInvalid,
+    // Set-session exclusion rule (spec 6.9/9): emoteSetId set requires a non-empty sevenTvEmoteIds and
+    // no emoteIds; emoteSetId absent forbids sevenTvEmoteIds. The two fields disagree about which of
+    // the two session shapes this request is.
+    SetBallotInvalid,
+    // Set-session step 1: the set's live membership list could not be read from 7TV (unreachable,
+    // rate-limited, budget exhausted, or the set itself is unknown to 7TV — spec section 9 collapses
+    // all of these to the same outcome: no session is created).
+    SevenTvUnavailable
 }
 
 public static class VoteSessionLimits
@@ -49,13 +62,19 @@ public static class VoteSessionLimits
 // ChannelName/Title/AllowedVoterRoles describe the session, same as VoteSessionSummaryDto's fields.
 // StartedAt null = now.
 // EmoteIds null = the session covers all non-archived channel emotes dynamically; a non-null list
-// becomes the session's fixed ballot (VoteSessionEmote rows, validated against the channel).
+// becomes the session's fixed ballot (VoteSessionEmote rows, validated against the channel). Always
+// null for a set-session (E4) — a set-session never goes through the local-guid ballot path.
 // HideResultsUntilEnd true = secret ballot: no tallies for non-managers until the session ends.
 // Fixed at creation like the ballot — a flag a manager could flip mid-session would let them hide a
 // result they dislike, or reveal one at the moment it suits them.
+// EmoteSetId/SevenTvEmoteIds together describe a set-session (spec 6.9/9): EmoteSetId non-null marks
+// it, SevenTvEmoteIds is its fixed ballot by 7TV identity rather than by local Emote guid. The
+// exclusion rule between the two shapes is enforced in CreateAsync, not by the type system — a single
+// record keeps VoteSessionEndpoints a pure translator (see CreateVoteSessionResult's doc comment).
 public sealed record VoteSessionCreateRequest(
     string ChannelName, string Title, AllowedRoles AllowedVoterRoles, DateTime? StartedAt = null,
-    IReadOnlyList<string>? EmoteIds = null, bool HideResultsUntilEnd = false);
+    IReadOnlyList<string>? EmoteIds = null, bool HideResultsUntilEnd = false,
+    string? EmoteSetId = null, IReadOnlyList<string>? SevenTvEmoteIds = null);
 
 public interface IVoteSessionService
 {

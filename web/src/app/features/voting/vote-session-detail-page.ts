@@ -25,6 +25,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { LIVE_EVENT_TYPES, LiveEvent, channelLiveUrl } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import {
   VoteSessionResult,
   VoteSessionResults,
@@ -137,6 +138,7 @@ export class VoteSessionDetailPage {
   private readonly translocoService = inject(TranslocoService);
   private readonly languageService = inject(LanguageService);
   private readonly dialog = inject(Dialog);
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
 
   /** See UsageStatsPage: no 7TV write access without a mouse. */
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
@@ -191,6 +193,43 @@ export class VoteSessionDetailPage {
   protected readonly activeEmoteSetId = signal<string | null>(null);
   protected readonly errorMessage = signal<string | null>(null);
 
+  /** The set the mass-delete panel targets (spec section 9): a set-session's own set, so a delete
+   *  run from a Halloween-set ballot never writes against the active set by accident; a
+   *  null-session still falls back to the channel's active set, exactly as before set-sessions
+   *  existed. `null` while neither is known yet — the panel stays unmounted (see the template). */
+  protected readonly massDeletePanelSetId = computed(
+    () => this.results()?.emoteSetId ?? this.activeEmoteSetId(),
+  );
+
+  /** The channel's set list, so the mass-delete panel's confirmations can name a set instead of
+   *  showing its raw 7TV id (spec 8.8) — the same request usage-stats-page's dropdown makes
+   *  (`SevenTvEmoteSetService.listChannelEmoteSets`), loaded once per channel here since this page
+   *  has no set-switching UI of its own to reuse a resource from. `hasValue()` guards `.value()`
+   *  deliberately, same reasoning as usage-stats-page's identical guard: a `resource()`'s `.value()`
+   *  re-throws the load error once `status()` is `'error'`. A failed load simply leaves the map
+   *  empty — the panel's own `setName`/`setNames` inputs already fall back to the raw id. */
+  private readonly emoteSetListResource = rxResource({
+    params: () => this.channelName(),
+    stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),
+  });
+
+  protected readonly emoteSetNames = computed(
+    () =>
+      new Map(
+        (this.emoteSetListResource.hasValue() ? this.emoteSetListResource.value().sets : []).map(
+          (set) => [set.id, set.name],
+        ),
+      ),
+  );
+
+  /** The mass-delete panel's target set, by name (spec 8.8) — `null` while the set list has not
+   *  named it (not loaded yet, failed, or the id is one the list does not carry), which the panel
+   *  folds onto the raw id itself, same convention as every other unnamed-set reader. */
+  protected readonly massDeletePanelSetName = computed(() => {
+    const setId = this.massDeletePanelSetId();
+    return setId === null ? null : (this.emoteSetNames().get(setId) ?? null);
+  });
+
   // The one place on this page that asks for the permission instead of inferring it from the data,
   // and it has to: hasUsageData() below reads null-only rows as "not a manager", which is also what
   // a fully archived subset ballot looks like — a manager would then lose the end button on exactly
@@ -204,20 +243,23 @@ export class VoteSessionDetailPage {
     () => this.permissionsResource.value()?.canManage ?? false,
   );
 
-  // The server reports TotalUseCount as null to everyone CanManageChannelAsync rejects, so data
-  // presence *is* the permission verdict — no separate GET /permissions round-trip needed. (An
-  // all-archived subset ballot also yields null-only rows; hiding the usage UI is right there too,
-  // since no usage is being computed for it.)
+  // Gates the usage column and the coarse-pointer drilldown only now (spec section 9, AK 81) — no
+  // longer the delete selection, which a manager needs even on a set-session ballot of nothing but
+  // null rows (every member never used under that set — GetTotalsByEmoteIdsAsync's honest answer,
+  // not a permission gap). The server still reports TotalUseCount as null to everyone
+  // CanManageChannelAsync rejects, so data presence remains the right verdict for these two.
   protected readonly hasUsageData = computed(() =>
     (this.results()?.emotes ?? []).some((emote) => emote.totalUseCount !== null),
   );
 
   // Card selection exists solely to feed the mass-delete panel, so voters without delete power get
-  // plain, non-interactive cards — a selection they can build but never act on is dead UI. The
-  // usage verdict doubles as the gate (same CanManageChannelAsync behind both). Known trade-off: a
-  // 7TV editor who is not also a channel manager gets no usage data either and loses the delete
-  // entry point on this page — the usage-stats grid keeps it for them.
-  protected readonly canSelectForDelete = this.hasUsageData;
+  // plain, non-interactive cards — a selection they can build but never act on is dead UI. Follows
+  // canManage directly (spec section 9, AK 81) rather than hasUsageData: a manager of an all-null
+  // set-session ballot must still see the panel, and hasUsageData reads that exact shape as "not a
+  // manager" (see its own comment). Known trade-off, unchanged: a 7TV editor who is not also a
+  // channel manager gets no usage data either and loses the delete entry point on this page — the
+  // usage-stats grid keeps it for them.
+  protected readonly canSelectForDelete = this.canManage;
 
   /**
    * What the sprite face does when it is touched or clicked. Two jobs on one surface was fine while
@@ -437,17 +479,48 @@ export class VoteSessionDetailPage {
     return index;
   }
 
-  // One guarded entry point for click/Enter/Space on the sprite, branched on cellAction. Both acting
-  // branches swallow the keyboard default: the element carries role="button", and the ARIA button
-  // pattern requires Space not to scroll the page as well as activate. On the drilldown branch that
-  // is currently invisible — the CDK freezes background scrolling the moment the dialog opens — but
-  // an element does not get to rely on what the thing it opens happens to do. The 'none' branch is
-  // neither focusable nor a button and keeps every default.
+  /**
+   * Whether ONE row's drilldown may open (arbitrated review round 2) — `cellAction()`/`hasUsageData()`
+   * gate the trigger's existence on the page as a whole, this additionally gates a single row on
+   * whether IT has a number to chart. Deliberately NOT `emote.totalUseCount !== null` on its own:
+   * for a null-session, an archived ballot member can carry `totalUseCount === null` for reasons
+   * that have nothing to do with this check (see `drilldownLabelKey`'s own doc comment on the
+   * several things null means there), and its drilldown must keep working — the /daily endpoint
+   * answers by emote id, not by this session's ballot. What actually rules a row out is a
+   * SET-session row whose member was never observed under the session's own set at all
+   * (`results()!.emoteSetId != null` together with a null count) — `results().emoteSetId`, not
+   * anything on `emote` itself, because only the session's own kind (set vs. null) decides which
+   * reading of `totalUseCount === null` applies.
+   */
+  protected canDrilldown(emote: VoteSessionResult): boolean {
+    return (
+      this.hasUsageData() && !(this.results()?.emoteSetId != null && emote.totalUseCount === null)
+    );
+  }
+
+  /**
+   * `cellAction()` downgraded to `'none'` for a row whose own drilldown `canDrilldown` rejects —
+   * the page-wide action still applies to every other row. Drives the cell's role/tabindex/
+   * aria-haspopup/aria-label bindings and `onCardActivate` below, so a row without a chartable
+   * number never claims the dialog button semantics it cannot deliver on.
+   */
+  protected rowAction(emote: VoteSessionResult): 'drilldown' | 'select' | 'none' {
+    const action = this.cellAction();
+    return action === 'drilldown' && !this.canDrilldown(emote) ? 'none' : action;
+  }
+
+  // One guarded entry point for click/Enter/Space on the sprite, branched on rowAction (cellAction
+  // narrowed to this one row, see rowAction's own doc comment). Both acting branches swallow the
+  // keyboard default: the element carries role="button", and the ARIA button pattern requires Space
+  // not to scroll the page as well as activate. On the drilldown branch that is currently invisible
+  // — the CDK freezes background scrolling the moment the dialog opens — but an element does not
+  // get to rely on what the thing it opens happens to do. The 'none' branch is neither focusable nor
+  // a button and keeps every default.
   // Also pins the readout, so a tap on a touch screen (where nothing hovers) still tells the voter
   // which emote they are looking at.
   protected onCardActivate(emote: VoteSessionResult, event: MouseEvent | KeyboardEvent): void {
     this.inspectedId.set(emote.emoteId);
-    const action = this.cellAction();
+    const action = this.rowAction(emote);
     if (action === 'none') {
       return;
     }
@@ -551,10 +624,13 @@ export class VoteSessionDetailPage {
   // Opened from the card's info icon; only rendered for viewers with usage access (hasUsageData),
   // since /usage-stats/daily sits behind the usage-stats authorization filter. The range is the
   // session's own usage window; the vote block carries the card's tallies — null inside stays
-  // "withheld" and the dialog renders nothing for it.
+  // "withheld" and the dialog renders nothing for it. emoteSetId is the session's own set
+  // (T6.3 fix round 1): omitted/null falls back to the channel's active set inside the dialog
+  // (EmoteDrilldownData's own doc comment), which is exactly right for a null-session — a
+  // set-session's numbers must chart under ITS set, not whatever happens to be active right now.
   protected openDrilldown(emote: VoteSessionResult): void {
     const results = this.results();
-    if (!results) {
+    if (!results || !this.canDrilldown(emote)) {
       return;
     }
     const data: EmoteDrilldownData = {
@@ -564,6 +640,7 @@ export class VoteSessionDetailPage {
       emoteId: emote.emoteId,
       emoteName: emote.emoteName,
       imageUrl: emote.imageUrl,
+      emoteSetId: results.emoteSetId,
       vote: {
         keepVotes: emote.keepVotes,
         deleteVotes: emote.deleteVotes,
@@ -741,7 +818,7 @@ export class VoteSessionDetailPage {
     labelKey: string,
     tally: number | null,
   ): string {
-    if (emote.isArchived) {
+    if (!emote.eligible) {
       return this.translocoService.translate('voting.detail.archivedVoteDisabled');
     }
     const label = this.translocoService.translate(labelKey);
