@@ -279,6 +279,14 @@ describe('CreateVoteSessionDialog', () => {
       httpMock.expectNone('/api/channels/sensitron/vote-sessions');
     });
 
+    it('reports the empty-ballot reason itself, not just the disabled effect, once the live list is empty and no host lock applies (K6 whole-branch review)', () => {
+      const dialog = render([]);
+
+      expect(dialog.fixture.componentInstance['blockedReasonKey']()).toBe(
+        'voting.create.selectionEmpty',
+      );
+    });
+
     it('connects the submit button to a text explanation once blocked, and drops it again once re-enabled (docs/UI-Designsprache.md §7)', () => {
       const dialog = render(['a']);
 

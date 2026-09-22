@@ -1399,9 +1399,18 @@ export class UsageStatsPage {
    * resolution as `voteBallotEmoteIds` above, just against the id every row of *any* view — active
    * or not, Guid or class-2b — always has (spec 6.9, 7.2). Read only for a non-active view
    * (`openCreateVoteSession`); the active view's button still speaks Guids.
+   *
+   * `membership === 'live'` only (K6 whole-branch review, Fable B — mirrors `selectedForDelete`'s
+   * own filter above): a `'left'` row is no longer a member of the set on 7TV at all, and
+   * `VoteSessionService.CreateAsync`'s set-session branch validates the whole ballot all-or-nothing
+   * against the *live* membership (spec section 9 step 2) — one stale id in the request would fail
+   * the entire create with 400 `emote_ids_invalid`, silently dropping every other selected emote
+   * along with it.
    */
   private readonly voteBallotSevenTvEmoteIds = computed(() =>
-    this.selection.selectedItems().map((emote) => emote.sevenTvEmoteId),
+    this.selection
+      .selectedItems()
+      .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
   );
 
   /** Voting is locked exactly when deleting is (`sharedSetViewLockReasonKey`): mid-switch (spec

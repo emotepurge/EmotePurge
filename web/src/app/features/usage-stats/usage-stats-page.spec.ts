@@ -3099,6 +3099,28 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect([...component['voteBallotSevenTvEmoteIds']()].sort()).toEqual(['7tv-a', '7tv-c']);
   });
 
+  it("excludes a 'left' row from the set-session ballot — CreateAsync validates all-or-nothing against the LIVE 7TV set (K6 whole-branch review, Fable B)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      // 'gone' is counted here but absent from the live list below ⇒ 'left' (E23). 'a' and
+      // 'live2' are both live — 'live2' has no totals row of its own (class-2b), same as the
+      // sibling test above.
+      totals: [emote('a', 'PeepoA'), emote('gone', 'GoneEmote')],
+      members: memberList([member('7tv-a', 'PeepoA'), member('7tv-live2', 'Live2')]),
+    });
+    const rows = component['emotes']();
+    expect(rows.map((row) => row.membership).sort()).toEqual(['left', 'live', 'live']);
+    for (const row of rows) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+    expect(component['selection'].selectedKeys()).toHaveLength(3);
+
+    // Sending 'gone' alongside the two live ids would fail VoteSessionService.CreateAsync's
+    // all-or-nothing live-membership check (spec section 9 step 2, 400 emote_ids_invalid) and
+    // silently drop the two rows that WERE still valid along with it.
+    expect([...component['voteBallotSevenTvEmoteIds']()].sort()).toEqual(['7tv-a', '7tv-live2']);
+  });
+
   // --- T4.4: loading and reloads ---------------------------------------------------------------
 
   it('loads the member list beside /totals and /series for a non-active set, and holds the union until it is there (8.3, AK 51)', async () => {
