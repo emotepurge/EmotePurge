@@ -993,12 +993,12 @@
       "unavailable": "Die aktuellen Einträge dieses Sets konnten nicht von 7TV gelesen werden.",
       "truncated": "Die Einträge dieses Sets konnten nur teilweise gelesen werden.",
       "missingFromSet": {
-        "one": "1 markiertes Emote ist nicht mehr im Set, nichts gelöscht — bitte neu laden.",
-        "other": "{{count}} markierte Emotes sind nicht mehr im Set, nichts gelöscht — bitte neu laden."
+        "one": "{{names}} ist nicht mehr im Set — abwählen und den Lauf erneut starten.",
+        "other": "{{names}} sind nicht mehr im Set — abwählen und den Lauf erneut starten."
       },
       "lock": {
-        "unavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
-        "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
+        "unavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar. Seite neu laden, um es erneut zu versuchen.",
+        "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig. Seite neu laden, um es erneut zu versuchen.",
         "loading": "Löschen gesperrt, bis die Mitgliederliste dieses Sets geladen ist."
       }
     },

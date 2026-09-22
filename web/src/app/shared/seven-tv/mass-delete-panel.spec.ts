@@ -74,6 +74,16 @@ const DE_TRANSLATIONS = {
     deleteButton: 'Löschen ({{ count }})',
     clearSelection: 'Auswahl aufheben',
   },
+  // Real text (matches public/i18n/de.json) — needed for the "and N more" tail
+  // `missingRowsReasonParams` builds via `TranslocoService.translate` directly, not the template
+  // pipe, so a missing key here would not fall back to a key string the way the pipe's own missing
+  // translations do elsewhere in this spec file.
+  common: {
+    andMore: {
+      one: '… und 1 weiteres',
+      other: '… und {{count}} weitere',
+    },
+  },
 };
 
 const DELETE_LABEL = 'Löschen (2)';
@@ -1761,6 +1771,9 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(startDelete).not.toHaveBeenCalled();
     expect(statusText()).toContain('massDelete.nothingDeleted');
     expect(statusText()).toContain('massDelete.memberRead.missingFromSet.one');
+    // Opus review P2-c: the reason names the missing row, not only a count — the user has to know
+    // which one to deselect before trying again.
+    expect(fixture.componentInstance['abortNotice']()?.reasonParams).toEqual({ names: 'KEKW' });
   });
 
   it('picks the plural reason key when more than one confirmed id is missing from a complete read', () => {
@@ -1771,6 +1784,31 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
     expect(startDelete).not.toHaveBeenCalled();
     expect(statusText()).toContain('massDelete.memberRead.missingFromSet.other');
+    expect(fixture.componentInstance['abortNotice']()?.reasonParams).toEqual({
+      names: 'PogU, KEKW',
+    });
+  });
+
+  // Opus review P2-c: many missing rows still read as one line, not a wall of names — same cap and
+  // "and N more" tail NamePreviewList uses for the identical problem in a dialog.
+  it('caps the missing-row names and counts the rest, mirroring NamePreviewList', () => {
+    const manyEmotes: DeletableEmote[] = Array.from({ length: 52 }, (_, i) => ({
+      emoteId: `e${i}`,
+      sevenTvEmoteId: `7tv-${i}`,
+      name: `Emote${i}`,
+      hidden: false,
+    }));
+    fixture.componentRef.setInput('selectedEmotes', manyEmotes);
+    fixture.detectChanges();
+
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([])); // none of the 52 are known to the set
+
+    expect(startDelete).not.toHaveBeenCalled();
+    const params = fixture.componentInstance['abortNotice']()?.reasonParams as { names: string };
+    expect(params.names.startsWith('Emote0, Emote1, ')).toBe(true);
+    expect(params.names.endsWith('… und 2 weitere')).toBe(true);
+    expect(params.names.split(', ')).toHaveLength(50); // 50 previewed names + the tail sentence
   });
 
   // An aliasless entry still counts as "known" (the id is a real member, just with no name to

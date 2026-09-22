@@ -10,7 +10,7 @@ import {
   output,
   signal,
 } from '@angular/core';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { catchError, finalize, map, of, timeout } from 'rxjs';
 
 import { EmoteAdminService, EmoteSetWarning } from '../../core/emotes/emote-admin.service';
@@ -35,6 +35,7 @@ import {
   purgeRunJson,
 } from '../export/purge-run-export';
 import { Button } from '../ui/button';
+import { PREVIEW_CAP } from '../ui/name-preview-list';
 import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
 import { resyncNoticeKey } from './dock-outcome-announcer';
@@ -392,6 +393,9 @@ export class MassDeletePanel {
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
   private readonly destroyRef = inject(DestroyRef);
+  /** Only for the missing-row abort reason's "and N more" tail (#227 P2-c) — every other string in
+   *  this component goes through the template's own `TranslocoPipe`. */
+  private readonly translocoService = inject(TranslocoService);
 
   /** `activeSetId()` with the omitted (`undefined`) case folded onto `setId()` — see that input's
    *  own doc for why. An explicit `null` ("known unknown") is left alone. */
@@ -944,18 +948,23 @@ export class MassDeletePanel {
       // defect #227 point 2 forbids (a departed set-session member reaching the run), and equally a
       // bug for the active-set path this same read also serves. Fails the WHOLE batch, not just the
       // missing rows: a partial run would record a protocol that no longer matches what the
-      // confirmation showed as a whole ("gezeigt = gelöscht", spec §8.3, K5 follow-up #229) — the
-      // user re-selects instead, after a reload shows the set as it actually stands.
-      const missingCount = confirmedSelection.filter(
+      // confirmation showed as a whole ("gezeigt = gelöscht", spec §8.3, K5 follow-up #229). The
+      // reason names the missing rows (P2-c, Opus review) rather than only a count, and tells the
+      // user to deselect exactly those and start again — not "reload", which on the usage page's own
+      // legitimate normal case (an emote removed on 7TV directly, ahead of our periodic resync
+      // noticing) would not help at all: our own database still shows the row as present until that
+      // resync runs, so every confirmed selection containing it would keep failing the same way
+      // regardless of how many times the page is reloaded.
+      const missingRows = confirmedSelection.filter(
         (emote) =>
           !liveEntries.aliasesById.has(emote.sevenTvEmoteId) &&
           !liveEntries.aliaslessIds.has(emote.sevenTvEmoteId),
-      ).length;
-      if (missingCount > 0) {
+      );
+      if (missingRows.length > 0) {
         this.abortNotice.set({
           leadKey: 'massDelete.nothingDeleted',
-          reasonKey: pluralKey(missingCount, 'massDelete.memberRead.missingFromSet'),
-          reasonParams: { count: missingCount },
+          reasonKey: pluralKey(missingRows.length, 'massDelete.memberRead.missingFromSet'),
+          reasonParams: this.missingRowsReasonParams(missingRows.map((emote) => emote.name)),
         });
         return;
       }
@@ -1023,5 +1032,25 @@ export class MassDeletePanel {
     return (
       (frozenIsActiveSet && this.readLiveAliasesFromActiveSet()) || this.readLiveAliasesFromSet()
     );
+  }
+
+  /** Comma-joined, capped names for the missing-row abort reason (#227 P2-c, Opus review). A bare
+   *  count told the user nothing they could act on — this run is blocked outright ("gezeigt =
+   *  gelöscht" stays the rule, spec §8.3), so the way forward is deselecting exactly these rows and
+   *  starting again, which needs their names, not just how many. `PREVIEW_CAP`/the "and N more" tail
+   *  are the identical ones `NamePreviewList` uses for the same "many names" problem in a dialog —
+   *  reused here rather than a second threshold, just rendered as one line of status text instead of
+   *  a scrollable list, since the abort notice has no dialog to put a list into. */
+  private missingRowsReasonParams(missingNames: readonly string[]): Record<string, unknown> {
+    const preview = missingNames.slice(0, PREVIEW_CAP);
+    const remaining = missingNames.length - preview.length;
+    const joined = preview.join(', ');
+    if (remaining <= 0) {
+      return { names: joined };
+    }
+    const tail = this.translocoService.translate(pluralKey(remaining, 'common.andMore'), {
+      count: remaining,
+    });
+    return { names: `${joined} ${tail}` };
   }
 }
