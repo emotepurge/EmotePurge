@@ -22,8 +22,13 @@ import { SheetDrag } from './sheet-drag';
  * On a coarse pointer the same dialog is a bottom sheet: the pane's geometry comes from a media
  * query in styles.css, and what is added here is the chrome that only a sheet has — a grab handle
  * and the drag that dismisses it. Sticky, because the pane is the scroll container, and a handle
- * that scrolls out of reach is not a handle. (`-top-6` is what makes that pin land flush: it
- * cancels the `-mt-6` that bleeds the handle over the hull's own top padding.)
+ * that scrolls out of reach is not a handle. `top-0` is what makes that pin land flush — see the
+ * offset note further down (#226 fix round) for why `-mt-6`'s bleed and the sticky offset are two
+ * separate jobs, not one cancelling the other: an earlier version of this comment claimed `-top-6`
+ * was needed to "cancel" the margin, which produced a handle that lost its own grab bar entirely
+ * for the whole time it was actually stuck (only the moment right after opening, before any scroll,
+ * ever looked right). `-mt-6` alone already does the full bleed; the sticky offset only has to say
+ * where the *already-bled* box should pin, which is flush — `0`, not a second `-6`.
  *
  * The handle carries the hull's own `rounded-t-2xl`, because its negative margins bleed it into the
  * corner areas the hull's radius leaves unpainted — without it the sheet reads square-topped and the
@@ -42,6 +47,37 @@ import { SheetDrag } from './sheet-drag';
  * check, deliberately: a drag started on the heading means the sheet, never the content. `contents`
  * on a fine pointer keeps the wrapper out of the layout entirely, so the desktop dialog is boxed
  * exactly as before and a dialog that renders neither heading form cannot collect a stray gap.
+ *
+ * The action row is sticky to the pane's bottom edge (#226), the same bleed-and-pin technique as
+ * the handle above, mirrored: `-mx-6 -mb-6` cancels the hull's own padding on those three sides so
+ * the row's margin box reaches the pane's edges, and the sticky offset is `bottom-0` — plain `0`,
+ * **not** a second negative value — so the pinned position lands flush with that already-bled edge.
+ * `sticky`'s offset and an element's own negative margin do two different jobs and must not be
+ * read as cancelling one another: the margin decides where the box sits in normal flow (here:
+ * bled out past the hull's padding), and the offset decides where the *stuck* box's edge is
+ * clamped to, relative to the scrollport's own edge — `0` means flush with it, not "flush after
+ * subtracting the margin a second time". A `-6` offset here (mirrored from what the handle used to
+ * carry above) pins the row 24 px past the pane's true edge instead: harmless-looking at rest
+ * (`scrollTop === 0`) and at the very end of the scroll range (both are *unstuck*, natural-flow
+ * positions), but for every scroll position in between — the entire time the row is actually
+ * stuck — it sits 24 px too low, clipping its own `pb-6` cushion under the pane's edge and leaving
+ * the button flush against the raw bottom with no visible padding at all. Measured
+ * (`getBoundingClientRect()` on the pane vs. the last `[dialog-actions]` button, mid-scroll): 0 px
+ * gap with the wrong `-bottom-6` offset, a steady 24 px with `bottom-0`, in both the desktop and the
+ * sheet case. The row then re-declares its own padding (`px-6 pt-4 pb-6`) so its content sits where
+ * the hull's `p-6` used to put it. This has to be `position: sticky`, not a flex-column height chain
+ * (`h-full` on the hull, `overflow-y-auto` on the body) that would pin the footer structurally: two
+ * component hosts sit between the pane and the hull (both `display: inline` by default) and a
+ * percentage/`h-full` chain does not survive them — the same reason `.app-dialog-panel` itself is
+ * the scroll container instead of the hull (see `styles.css`). Sticky needs no height chain, only a
+ * scrolling ancestor, which the pane already is.
+ *
+ * `bg-surface` and `border-t border-border` are load-bearing, not decoration: without its own opaque
+ * surface the sticky row would let scrolled-under content show through, and without the rule the
+ * boundary between "still scrolling" and "always visible" would be invisible. `rounded-b-lg` only
+ * applies on a fine pointer — the sheet's hull is square at the bottom (it is flush with the screen
+ * edge, `hullClasses` never rounds that corner there), so rounding the footer to match would round a
+ * corner the hull itself does not have.
  */
 @Component({
   selector: 'app-dialog-shell',
@@ -51,7 +87,7 @@ import { SheetDrag } from './sheet-drag';
       @if (isSheet()) {
         <div
           data-sheet-handle
-          class="sticky -top-6 -mx-6 -mt-6 flex min-h-11 touch-none items-start justify-center rounded-t-2xl bg-surface py-3"
+          class="sticky top-0 -mx-6 -mt-6 flex min-h-11 touch-none items-start justify-center rounded-t-2xl bg-surface py-3"
           aria-hidden="true"
         >
           <span class="h-1 w-9 rounded-full bg-border-strong"></span>
@@ -70,8 +106,10 @@ import { SheetDrag } from './sheet-drag';
       <div class="flex flex-col gap-3"><ng-content /></div>
 
       <!-- Cancel goes first, always: the CDK's first-tabbable autoFocus default then lands on the
-           harmless control, which is what makes an explicit cdkFocusInitial unnecessary. -->
-      <div class="flex flex-wrap items-center justify-end gap-2">
+           harmless control, which is what makes an explicit cdkFocusInitial unnecessary. Sticky to
+           the pane's bottom edge (#226) so the row stays reachable while the body scrolls — see the
+           class doc comment above for why this is a sticky offset and not a height chain. -->
+      <div [class]="actionsClasses()">
         <ng-content select="[dialog-actions]" />
       </div>
     </div>
@@ -105,4 +143,15 @@ export class DialogShell {
   );
 
   protected readonly titleId = DIALOG_TITLE_ID;
+
+  // `bottom-0`/`-mb-6`/`-mx-6` mirror the handle's `top-0`/`-mt-6`/`-mx-6` (see the class doc
+  // comment — the offset is plain `0`, not a second negative value); `rounded-b-lg` only on a fine
+  // pointer, because the sheet's hull has no bottom radius to match (flush with the screen edge
+  // instead).
+  protected readonly actionsClasses = computed(
+    () =>
+      'sticky bottom-0 -mx-6 -mb-6 flex flex-wrap items-center justify-end gap-2 border-t ' +
+      'border-border bg-surface px-6 pt-4 pb-6 ' +
+      (this.isSheet() ? '' : 'rounded-b-lg'),
+  );
 }

@@ -909,6 +909,19 @@ const SCENARIOS: Scenario[] = [
         ...TYPICAL_CHANNELS,
         { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
       ]);
+      // The picker's own data source since K2 (spec 6.2, same mock the confirm-dialog scenario
+      // below uses) — stale since then, because this scenario predates K2 and was never updated:
+      // without it the picker's target-loading request 404s against the route mock and the dialog
+      // renders its load-failed banner instead of the radio group the screenshot is meant to show.
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
     },
     afterLoad: async (page) => {
       // Locale-independent handle: the visible label is translated ("Übertragen" / "Transfer")
@@ -920,6 +933,9 @@ const SCENARIOS: Scenario[] = [
       // first and silently opens the export dialog instead.
       await page.locator('main header button').nth(1).click();
       await page.locator('#app-dialog-title').waitFor();
+      // The target radio group loads async off the mock above; without waiting for it the
+      // screenshot can still land on the loading skeleton depending on timing.
+      await page.getByRole('radio', { name: /^Main/ }).waitFor();
     },
   },
   {
