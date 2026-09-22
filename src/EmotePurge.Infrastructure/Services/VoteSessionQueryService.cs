@@ -214,7 +214,9 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
         // else defaults a missing dictionary entry to a genuine 0 (no UsageStat row in range means
         // no use happened, not that the answer is unknown). Set-session: eligible is always true, so
         // that gate no longer applies — instead a missing dictionary entry means "no UsageStat row
-        // under this set at all" and reports null rather than a fabricated 0 (spec section 9, AK 80).
+        // under this set at all, in any date" (GetTotalsByEmoteIdsAsync's own doc comment) and
+        // reports null rather than a fabricated 0; a row that exists but falls outside the session's
+        // own window is present with its in-range sum, which is legitimately 0 (spec section 9, AK 80).
         int? useCount = !includeRawUsage
             ? null
             : isSetSession

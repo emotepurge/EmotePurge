@@ -329,6 +329,36 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetResultsAsync_SetSession_ReportsZeroUsage_ForAMemberCountedUnderThatSetOnlyOutsideTheWindow()
+    {
+        // AK 80 fix round 1: a UsageStat row DOES exist under the session's own set — it just falls
+        // outside the session's usage window (StartedAt..EndedAt/now). That must read as 0 ("no use
+        // in this window"), not as null ("never observed under this set at all") — the distinction
+        // GetTotalsByEmoteIdsAsync's own doc comment draws, and the one this fix closed: the method
+        // used to filter the date range in its WHERE clause, which made an out-of-window-only row
+        // indistinguishable from no row at all.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteset5");
+        var member = await SeedEmoteAsync(db, channel.Id, "CountedBeforeTheSession");
+        var session = await SeedActiveSetSessionAsync(db, channel.Id, "halloween-5");
+        await SeedSetBallotAsync(db, session.Id, member.Id, "CountedBeforeTheSession", member.ImageUrl);
+        // Well before session.StartedAt (SeedActiveSetSessionAsync defaults it to DateTime.UtcNow).
+        db.UsageStats.Add(new UsageStat
+        {
+            EmoteId = member.Id,
+            EmoteSetId = "halloween-5",
+            Date = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-30)),
+            UseCount = 12,
+        });
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        Assert.Equal(0, Assert.Single(results!.Emotes).TotalUseCount);
+    }
+
+    [Fact]
     public async Task GetResultsAsync_SetSession_ReportsNameAtCreation_EvenAfterASyncOverwritesTheLiveEmoteName()
     {
         // AK 80: the ballot's frozen name survives a later sync that renames the live Emote row —

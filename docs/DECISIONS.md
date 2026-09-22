@@ -14,6 +14,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `src/EmotePurge.Core/Services/IVoteSessionQueryService.cs` ·
 `src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
+`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` ·
 `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs` ·
 `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
 `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
@@ -25,10 +27,12 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/core/voting/vote-session.model.ts` · `web/src/app/core/voting/vote-session.service.ts` ·
 `web/src/app/features/voting/vote-session-detail-page.ts` ·
 `web/src/app/features/voting/vote-session-detail-page.html` ·
+`web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
 `web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.html` ·
-`web/e2e/vote-ballot.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/e2e/vote-ballot.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
 `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, F8, F12, E4, E10) ·
 `docs/plans/Plan-200-Emote-Sets.md` (K6: T6.1–T6.3)
 
@@ -61,12 +65,17 @@ a set-session row (its fixed ballot never closes, precisely because it was froze
 a live view) — so a set-session shows **no** mid-session badge at all. `useCount` follows a matching
 split: a null-session row still nulls it for an archived member and otherwise defaults a missing
 `UsageStat` entry to `0` (no row in range genuinely means no use); a set-session row instead reports
-`null` only when the set's own `UsageStats` never carry that emote at all (`GetTotalsByEmoteIdsAsync`
-scoped to `session.EmoteSetId` rather than the channel's active set) — a fabricated `0` for "we never
-even watched this member under this set" would have been a claim the data does not support. Name/image
-come from `VoteSessionEmote.NameAtCreation`/`ImageUrlAtCreation` when set (a set-session's freeze,
-`null` for a null-session's row, where the live `Emote` is always the answer) — so a later sync that
-renames the live `Emote.Name` cannot retroactively rewrite what a voter was shown.
+`null` only when the set's own `UsageStats` never carry that emote at all — **date-independently**, not
+just "no row inside the session's own window" (fix round 1: `GetTotalsByEmoteIdsAsync`'s `WHERE` clause
+used to filter the date range itself, which made a row that exists but falls outside the window
+indistinguishable from no row at all; the date range moved into the `Sum`'s own conditional instead, the
+same shape `GetUsageContextAsync`'s aggregates query already used for the identical reason) — a
+fabricated `0` for "we never even watched this member under this set" would have been a claim the data
+does not support, and a fabricated `null` for "counted, just not in this window" would have hidden a
+real, reportable zero. Name/image come from `VoteSessionEmote.NameAtCreation`/`ImageUrlAtCreation` when
+set (a set-session's freeze, `null` for a null-session's row, where the live `Emote` is always the
+answer) — so a later sync that renames the live `Emote.Name` cannot retroactively rewrite what a voter
+was shown.
 
 **`canSelectForDelete` no longer follows `hasUsageData`.** The two used to be the same flag
 (`hasUsageData` reading a null-only-`TotalUseCount` shape as "not a manager"), which is also exactly
@@ -102,6 +111,18 @@ Worker's read-to-save window plus the Api's upsert would have cost every 60-seco
 channel a lock acquisition, for a race whose only cost when it does happen is one lost sync round —
 disproportionate for what the retry already closes for free, and testable by forcing the interleaving
 with two `AppDbContext` instances (AK 78) in a way a lock's absence of contention could not be.
+
+**Fix round 1 (review + the controller's E2E run), same entry, same day.** Three more corrections
+belong to this same contract change, not a separate one: `openDrilldown` on the vote detail page now
+passes the session's own `emoteSetId` to `EmoteDrilldownData` (it used to omit it entirely, which
+made a set-session's drilldown chart the channel's *active* set — silently wrong whenever the two
+differ); the non-active-view lock copy (`usageStats.setView.lock.membersUnavailable`/`truncated`/
+`nonActiveSet`) dropped "und Abstimmen"/"and voting" — those three reasons never lock voting any
+more, only `switching` still does, and the old copy was actively misleading once voting worked
+again in that view; and the vote-session detail page's mass-delete panel now also gates on
+`results()` (not just `canSelectForDelete()`/`massDeletePanelSetId()`), so it cannot briefly mount
+bound to the channel's active set while the session's own results — and with them, its actual
+`emoteSetId` — are still in flight.
 
 ---
 
