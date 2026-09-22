@@ -54,12 +54,18 @@ export interface ImportTargetDialogData {
  *  have to change again the day a tracked choice needs it too.
  *
  *  `activeEmoteSetId` (spec 6.2, `EmoteSetTargetAccount.activeEmoteSetId`) is the account's current
- *  active set — `null` for an untracked account. This is what lets `import-flow.ts`'s
- *  `toTargetSelection` tell "the chosen set happens to be the account's active one" apart from any
- *  other choice *before* firing a request (spec 8.6, fourth bullet; AK 36: the active case must not
- *  change which requests fire at all) — comparing `emoteSetId === activeEmoteSetId` here, rather
- *  than reusing `ImportTargetSetChoice.isActive` a second time, keeps that one decision explicit at
- *  the exact point it is made instead of trusting an already-baked-in boolean from an earlier step. */
+ *  active set — `null` for an untracked account, and also `null` whenever the account's reported
+ *  active set is itself `PERSONAL` (spec addendum 39, `import-target-choices.ts`'s `toAccountGroup`):
+ *  a `PERSONAL` set never becomes a row in this picker at all, so this field should never describe
+ *  one as "the active one" either, even defensively — nothing downstream actually depends on the
+ *  null to work correctly (`emoteSetId` below only ever comes from a rendered, selectable set, so a
+ *  comparison against a `PERSONAL` id could never match by accident anyway). This is what lets
+ *  `import-flow.ts`'s `toTargetSelection` tell "the chosen set happens to be the account's active
+ *  one" apart from any other choice *before* firing a request (spec 8.6, fourth bullet; AK 36: the
+ *  active case must not change which requests fire at all) — comparing `emoteSetId ===
+ *  activeEmoteSetId` here, rather than reusing `ImportTargetSetChoice.isActive` a second time,
+ *  keeps that one decision explicit at the exact point it is made instead of trusting an
+ *  already-baked-in boolean from an earlier step. */
 export interface ImportTargetChoice {
   scope: ExportScope;
   emoteSetId: string;
@@ -147,29 +153,40 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
           </app-notice-banner>
         }
 
-        <!-- role="radiogroup" only wraps the two @for blocks below, and only when there is at
-             least one set to own: ARIA requires a radiogroup to contain at least one radio, and a
-             account with zero sets (setsUnavailable, or genuinely none) can legitimately bring the
-             total to zero. The "no set" message therefore renders as a sibling, never inside an
-             otherwise-empty group — same idiom as the former channel-only picker. -->
-        @if (hasAnySet()) {
-          <div
-            class="flex flex-col gap-3"
-            role="radiogroup"
-            [attr.aria-label]="'import.target.label' | transloco"
-          >
-            @for (group of choices().tracked; track group.twitchChannelId) {
-              <ng-container *ngTemplateOutlet="accountGroup; context: { group }" />
-            }
-            @for (group of choices().untracked; track group.twitchChannelId) {
-              <ng-container *ngTemplateOutlet="accountGroup; context: { group, untracked: true }" />
-            }
-          </div>
-        } @else if (!loadFailed()) {
-          <!-- Only when there genuinely is no set anywhere — after a reauth-less failure or a
-               partial load the empty list says nothing about the account, and claiming otherwise
-               invites ignoring the notice above. -->
-          <p class="text-sm text-fg-muted">{{ 'import.target.none' | transloco }}</p>
+        <!-- Once the load has not failed outright, the account loop always renders — every tracked
+             and untracked account gets its own heading, and, below it, either its set radios or its
+             own notice (setsUnavailable/noUsableSets) — even when not a single account anywhere has
+             an offerable set (P2 fix, #217 review round: this used to sit entirely inside the
+             hasAnySet() branch below, so an account list of just one PERSONAL-only account never
+             rendered its heading or its "Kein nutzbares Set" notice at all — only the unrelated,
+             list-wide import.target.none placeholder, which says nothing about that specific
+             account). The wrapper only becomes a radiogroup, with the "Ziel" aria-label, once at
+             least one radio actually exists inside it — ARIA requires a radiogroup to contain at
+             least one radio, and every account having zero sets can legitimately bring the total to
+             zero; the wrapper is then a plain, unlabelled container around the accounts' own
+             headings/notices instead. import.target.none is reserved for the one case nothing here
+             can render at all: the accounts list itself is empty (a reauth-less failure or a partial
+             load also leaves the list looking empty, but loadFailed() already took over the message
+             for that above). -->
+        @if (!loadFailed()) {
+          @if (hasAnyAccount()) {
+            <div
+              class="flex flex-col gap-3"
+              [attr.role]="hasAnySet() ? 'radiogroup' : null"
+              [attr.aria-label]="hasAnySet() ? ('import.target.label' | transloco) : null"
+            >
+              @for (group of choices().tracked; track group.twitchChannelId) {
+                <ng-container *ngTemplateOutlet="accountGroup; context: { group }" />
+              }
+              @for (group of choices().untracked; track group.twitchChannelId) {
+                <ng-container
+                  *ngTemplateOutlet="accountGroup; context: { group, untracked: true }"
+                />
+              }
+            </div>
+          } @else {
+            <p class="text-sm text-fg-muted">{{ 'import.target.none' | transloco }}</p>
+          }
         }
       }
 
@@ -186,30 +203,39 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
            target and closes the picker (confirmUntrackedTarget() does exactly what the old
            "Kopieren" button did). "Ja, dieses Set" / "Anderes Set wählen" name what each button
            actually does — confirm this target, or go back to choosing — without echoing "kopieren"
-           a second time before the confirm dialog (the actual copy step) has even opened. -->
+           a second time before the confirm dialog (the actual copy step) has even opened.
+
+           The text and its two buttons are stacked (buttons in their own row *below* the text),
+           not laid out side by side (#217, T2 fix): NoticeBanner's own [notice-action] slot is
+           right-aligned next to the content and, with two buttons in it, wrapped into a narrow
+           column that squeezed each button's label to one or two words per line. Neither button
+           uses notice-action here — both live inside the default content slot instead, in their
+           own flex row underneath the paragraph, so the banner's single content item gets the
+           whole width to stack in rather than sharing a row with a right-aligned action area. -->
       @if (pendingUntrackedTarget(); as pending) {
         <app-notice-banner variant="info">
-          {{
-            'import.target.confirmUntracked'
-              | transloco: { setName: pending.setName, ownerDisplayName: pending.ownerDisplayName }
-          }}
-          <button
-            notice-action
-            type="button"
-            appButton="outline"
-            (click)="cancelUntrackedConfirmation()"
-          >
-            {{ 'import.target.confirmUntrackedReject' | transloco }}
-          </button>
-          <button
-            notice-action
-            type="button"
-            appButton="primary"
-            [disabled]="emptyScopeChosen()"
-            (click)="confirmUntrackedTarget()"
-          >
-            {{ 'import.target.confirmUntrackedAccept' | transloco }}
-          </button>
+          <div class="flex flex-col gap-3">
+            <p>
+              {{
+                'import.target.confirmUntracked'
+                  | transloco
+                    : { setName: pending.setName, ownerDisplayName: pending.ownerDisplayName }
+              }}
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" appButton="outline" (click)="cancelUntrackedConfirmation()">
+                {{ 'import.target.confirmUntrackedReject' | transloco }}
+              </button>
+              <button
+                type="button"
+                appButton="primary"
+                [disabled]="emptyScopeChosen()"
+                (click)="confirmUntrackedTarget()"
+              >
+                {{ 'import.target.confirmUntrackedAccept' | transloco }}
+              </button>
+            </div>
+          </div>
         </app-notice-banner>
       }
 
@@ -236,42 +262,47 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
 
     <ng-template #accountGroup let-group="group" let-untracked="untracked">
       <div class="flex flex-col gap-1">
-        <!-- A tracked account whose active set is itself selectable gets its header *merged* into
-             that set's own radio (headerSet()): clicking the account name is then the one click
-             that lands on its active set (spec 8.6 — "die Wahl eines getrackten Accounts X in
-             einem Schritt auf dessen aktivem Set landet"). An untracked account, or a tracked one
-             without an eligible active set, keeps a plain, non-interactive header instead — see
-             headerSet()'s own doc for why. -->
-        @if (headerSet(group); as header) {
-          <label class="flex items-center gap-2 py-1">
-            <input
-              type="radio"
-              class="h-4 w-4 accent-accent-solid"
-              name="import-target"
-              [checked]="isSetChecked(header.emoteSetId)"
-              (change)="selectSet(group, header)"
-            />
+        <!-- One plain heading for every account, tracked or untracked, regardless of how many sets
+             it has (spec addendum 39, #217) — the old "channel itself is the radio" shortcut for a
+             tracked account's selectable active set is gone: a <p>, never an <input>, so it is
+             never a radio and never a stop in the radiogroup's native roving tab order. Every set
+             below it, including a single one, gets its own radio row instead — the same shape every
+             account gets, one click on that radio being the whole cost either way.
+
+             The heading's own [id] (accountHeadingId(group), twitchChannelId-based and therefore
+             unique per account) is what every set radio below points back to via
+             aria-describedby (#217 review round, P2): with the account-header radio gone since
+             addendum 39, two accounts that each have an active set of the same name (e.g. two
+             "Main"s) render two radios with the exact same accessible name ("Main (aktiv)") and
+             nothing else to tell them apart for a screen reader. aria-describedby rather than
+             aria-labelledby deliberately leaves the accessible *name* alone — it still starts with
+             the set's own visible label, so it keeps matching existing name-based lookups
+             (getByRole('radio', { name: 'Main (aktiv)' }) in the e2e suite) — and instead adds the
+             account as an accessible *description*, read after the name. -->
+        <p [id]="accountHeadingId(group)" class="text-xs font-medium text-fg-secondary">
+          @if (group.channelName !== null) {
             #{{ group.channelName }}
-            <span class="text-xs text-fg-muted">
-              ({{ 'import.target.active' | transloco }}: {{ header.setName }})
-            </span>
-          </label>
-        } @else {
-          <p class="text-xs font-medium text-fg-secondary">
-            @if (group.channelName !== null) {
-              #{{ group.channelName }}
-            } @else {
-              {{ group.twitchLogin }}
-            }
-            @if (untracked) {
-              <span class="text-fg-muted">({{ 'import.target.untracked' | transloco }})</span>
-            }
-          </p>
-        }
+          } @else {
+            {{ group.twitchLogin }}
+          }
+          @if (untracked) {
+            <span class="text-fg-muted">({{ 'import.target.untracked' | transloco }})</span>
+          }
+        </p>
         @if (group.setsUnavailable) {
           <p class="text-xs text-fg-muted">{{ 'import.target.setsUnavailable' | transloco }}</p>
+        } @else if (group.noUsableSets) {
+          <!-- The account's set list was read fine but left nothing offerable — genuinely empty, or
+               every set on it was PERSONAL and importTargetChoices already filtered it out (spec
+               addendum 39, operator decision 2026-09-22). Distinct from setsUnavailable above: this
+               is not a read failure, so it gets its own, less alarming wording. -->
+          <p class="text-xs text-fg-muted">{{ 'import.target.noUsableSets' | transloco }}</p>
         }
-        @for (set of remainingSets(group); track set.emoteSetId) {
+        <!-- group.sets never contains a PERSONAL set (importTargetChoices filters it out before
+             this template ever sees it, spec addendum 39) — the only disabled, non-source kind left
+             here is notNormalKind, which can now only mean GLOBAL/SPECIAL and always gets the same
+             label. -->
+        @for (set of group.sets; track set.emoteSetId) {
           <label class="flex items-center gap-2 py-1" [class.opacity-60]="set.disabled">
             <input
               type="radio"
@@ -279,6 +310,7 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
               name="import-target"
               [disabled]="set.disabled"
               [checked]="isSetChecked(set.emoteSetId)"
+              [attr.aria-describedby]="accountHeadingId(group)"
               (change)="selectSet(group, set)"
             />
             {{ set.setName }}
@@ -291,10 +323,7 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
               >
             } @else if (set.disabledReason === 'notNormalKind') {
               <span class="text-xs text-fg-muted">
-                ({{
-                  (set.isPersonal ? 'import.target.kindPersonal' : 'import.target.kindUnavailable')
-                    | transloco
-                }})
+                ({{ 'import.target.kindUnavailable' | transloco }})
               </span>
             }
           </label>
@@ -396,21 +425,32 @@ export class ImportTargetDialog {
     );
   });
 
+  /** Whether `choices()` holds any account at all, tracked or untracked (P2 fix, #217 review round)
+   *  — deliberately weaker than {@link hasAnySet}, which additionally requires at least one *set*.
+   *  Gates whether the account loop renders at all: `import.target.none` is now reserved for the
+   *  case this is `false` (nothing loaded, or a genuinely empty accounts array), while an account
+   *  list that is non-empty but offers no set anywhere still renders every account's own heading and
+   *  its own `setsUnavailable`/`noUsableSets` notice — the bug this fixes was exactly that a
+   *  single such account (e.g. one with only a PERSONAL set) used to render neither, because the
+   *  whole loop sat inside `@if (hasAnySet())` instead of this weaker condition. */
+  protected readonly hasAnyAccount = computed(() => {
+    const choices = this.choices();
+    return choices.tracked.length > 0 || choices.untracked.length > 0;
+  });
+
   constructor() {
-    // Initial load-time default only — the *other* half of preselection (spec 8.6 / Konzept 7.5
-    // Baustein 2, "das aktive Set beschriftet und vorausgewählt, damit der heutige Ein-Klick-Weg
-    // 'in Kanal X' unverändert bleibt") is per-account and lives in headerSet(): every tracked
-    // account's own header is already a one-click shortcut to its active set, on its own, without
-    // this effect. This effect only supplies the "nothing chosen yet" starting point — the caller's
-    // own account's active set, never any other tracked account's (finding 4, Live-Verifikation K2
-    // 2026-09-21 — see firstPreselectableTarget's own doc for the bug this replaced) — so the common
-    // case still needs zero clicks, not just one. Scoped to *tracked* accounts (via
-    // firstPreselectableTarget → headerSet) — an untracked target always needs the confirmation step
-    // T2.6 adds, so auto-selecting one here would let a submit skip it. Runs once data arrives and
-    // only while nothing has been chosen yet; a user's own click always wins and is never
-    // overwritten, including across a later `targetsResource.reload()` — the `target() !== null`
-    // guard is exactly what keeps this from re-firing once a choice, theirs or this effect's own,
-    // already exists.
+    // Initial load-time default only — the caller's own account's active set, and nothing else
+    // (spec 8.6 / Konzept 7.5 Baustein 2: "ein Anfangszustand beim Laden: der eigene Account mit
+    // seinem aktiven Set"). Since addendum 39 removed the account-header shortcut, this effect is
+    // now the *only* place that preselection happens — there is no longer a second, per-account
+    // "click the header" path that agrees with it by construction; firstPreselectableTarget derives
+    // its answer straight from the own account's own set list instead (see that method's doc for
+    // the finding-4 bug this still guards against). Scoped to *tracked* accounts — an untracked
+    // target always needs the confirmation step AK 35 adds, so auto-selecting one here would let a
+    // submit skip it. Runs once data arrives and only while nothing has been chosen yet; a user's
+    // own click always wins and is never overwritten, including across a later
+    // `targetsResource.reload()` — the `target() !== null` guard is exactly what keeps this from
+    // re-firing once a choice, theirs or this effect's own, already exists.
     effect(() => {
       if (this.target() !== null || !this.targetsResource.hasValue()) {
         return;
@@ -445,26 +485,12 @@ export class ImportTargetDialog {
     return current !== null && current.emoteSetId === emoteSetId;
   }
 
-  /**
-   * The set a tracked account's own header row stands in for — its active set, but only when that
-   * set is itself selectable (spec 8.6: a disabled set, source or non-NORMAL, "kommen als
-   * Vorauswahl nicht in Frage" — the header then falls back to plain text and that set stays a
-   * normal row via {@link remainingSets}). `null` for every untracked account, unconditionally: an
-   * untracked target always needs T2.6's confirmation step, so the account header must never become
-   * a one-click shortcut past it.
-   */
-  protected headerSet(group: ImportTargetAccountGroup): ImportTargetSetChoice | null {
-    if (!group.isTracked) {
-      return null;
-    }
-    return group.sets.find((set) => set.isActive && !set.disabled) ?? null;
-  }
-
-  /** `group.sets` minus whichever one {@link headerSet} already rendered as the account's own
-   *  header radio, so the same set never appears twice. */
-  protected remainingSets(group: ImportTargetAccountGroup): ImportTargetSetChoice[] {
-    const header = this.headerSet(group);
-    return header === null ? group.sets : group.sets.filter((set) => set !== header);
+  /** The id an account's own heading renders under, and what every one of its set radios points
+   *  back to via `aria-describedby` (P2 fix, #217 review round) — see the template's own comment on
+   *  the heading for why. `twitchChannelId`-based, so it stays unique across every account the
+   *  picker ever renders, tracked or untracked, without needing a second counter of its own. */
+  protected accountHeadingId(group: ImportTargetAccountGroup): string {
+    return `import-target-account-${group.twitchChannelId}`;
   }
 
   /**
@@ -525,14 +551,15 @@ export class ImportTargetDialog {
 
   /**
    * The dialog's initial `target` (spec 8.6 / Konzept 7.5 Baustein 2: "ein Anfangszustand beim
-   * Laden: der eigene Account mit seinem aktiven Set"). Reuses {@link headerSet} deliberately — the
-   * account this picks is exactly the one whose header is already a live one-click shortcut to the
-   * same set, so the initial state and the "choose account X" shortcut always agree on what "X's
-   * active set" means, by construction rather than by keeping two rules in sync by hand.
+   * Laden: der eigene Account mit seinem aktiven Set"). Since addendum 39 (#217) removed the
+   * account-header shortcut, there is no longer a second place that already computes "this
+   * account's active, selectable set" for this method to reuse — it looks the set up directly in
+   * `own.sets`, the same field the template now renders every row from, so this and the rendered
+   * rows can never disagree on which one is "the active one".
    *
    * Looks up the account by `isOwnAccount`, never by list position (finding 4, Live-Verifikation K2
    * 2026-09-21): a first draft walked `choices().tracked` in order and returned the first group
-   * whose header was selectable, which reads as "the caller's own account" only as long as that
+   * with a selectable active set, which reads as "the caller's own account" only as long as that
    * account's own active set happens to be selectable. The moment it is not — because it is the
    * copy's own source set, disabled by {@link ImportTargetSetChoice.disabled} — the loop fell
    * through to the *next* tracked account instead, silently landing the preselection on a different
@@ -542,7 +569,9 @@ export class ImportTargetDialog {
    * regardless of which channel page the picker was opened from (its own `data.currentChannelName`
    * plays no role here at all) — so a disabled own active set now falls through to "nothing
    * preselected", never to someone else's channel. No own account in the tracked list (it is
-   * untracked, or absent — a moderator's own channel need not be tracked) is the same "nothing
+   * untracked, or absent — a moderator's own channel need not be tracked), or an own account whose
+   * reported active set is itself `PERSONAL` and therefore filtered out of `sets` entirely (spec
+   * addendum 39) and never carries `isActive: true` on any rendered row, are the same "nothing
    * preselected" outcome, unchanged from before.
    */
   private firstPreselectableTarget(): TargetSelection {
@@ -550,15 +579,15 @@ export class ImportTargetDialog {
     if (own === undefined) {
       return null;
     }
-    const header = this.headerSet(own);
-    if (header === null) {
+    const activeSet = own.sets.find((set) => set.isActive && !set.disabled);
+    if (activeSet === undefined) {
       return null;
     }
     return {
-      emoteSetId: header.emoteSetId,
+      emoteSetId: activeSet.emoteSetId,
       channelName: own.channelName,
-      ownerDisplayName: header.ownerDisplayName,
-      setName: header.setName,
+      ownerDisplayName: activeSet.ownerDisplayName,
+      setName: activeSet.setName,
       isTracked: own.isTracked,
       twitchLogin: own.twitchLogin,
       activeEmoteSetId: own.activeEmoteSetId,

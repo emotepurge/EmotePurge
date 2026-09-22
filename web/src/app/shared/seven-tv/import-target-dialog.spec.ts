@@ -32,10 +32,10 @@ const DE_TRANSLATIONS = {
       label: 'Ziel',
       active: 'aktiv',
       untracked: 'nicht getrackt',
-      kindPersonal: 'persönliches Set',
       kindUnavailable: 'kein Zielset',
       isSource: 'das ist die Quelle',
       setsUnavailable: 'Sets nicht lesbar',
+      noUsableSets: 'Kein nutzbares Set',
       none: 'Kein Set gefunden, in das kopiert werden kann.',
       listIncomplete:
         'Die Angebotsliste ist gerade unvollständig — fehlende Ziele erscheinen nach einem erneuten Laden.',
@@ -112,15 +112,10 @@ interface Harness {
   hasButton(label: string): boolean;
   scopeInputs(): HTMLInputElement[];
   scopeInput(value: 'visible' | 'selection'): HTMLInputElement;
-  /** Finds the radio whose label starts with the given set name (labels read "<name> (aktiv)" etc,
-   *  mirroring the old channelInput's prefix match). Never matches a tracked account's *merged*
-   *  header radio (see {@link accountInput}) — that label starts with "#<channel>", not the set's
-   *  own name. */
+  /** Finds the radio whose label starts with the given set name (labels read "<name> (aktiv)" etc).
+   *  Every account's heading is a plain, non-radio `<p>` since addendum 39 (#217) — this is the only
+   *  way to reach a set's own radio, there is no separate "account header" radio anymore. */
   setInput(setName: string): HTMLInputElement | undefined;
-  /** Finds a tracked account's header radio — present only when {@link headerSet} on the component
-   *  has a set to merge into it (its own active, selectable set). `undefined` for an untracked
-   *  account, or a tracked one with no eligible active set: both keep a plain, non-radio header. */
-  accountInput(channelName: string): HTMLInputElement | undefined;
   targetInputCount(): number;
   /** The target radiogroup itself, keyed on its `aria-label` (`import.target.label`) rather than
    *  just "any `[role=radiogroup]`" — the scope radiogroup above it (`export.scopeLabel`) is a
@@ -230,8 +225,6 @@ describe('ImportTargetDialog', () => {
         return input;
       },
       setInput: (setName) => labelStartingWith(setName)?.querySelector('input') ?? undefined,
-      accountInput: (channelName) =>
-        labelStartingWith(`#${channelName}`)?.querySelector('input') ?? undefined,
       targetInputCount: () => host.querySelectorAll('input[name="import-target"]').length,
       targetRadiogroup: () =>
         Array.from(host.querySelectorAll('[role="radiogroup"]')).find(
@@ -419,15 +412,54 @@ describe('ImportTargetDialog', () => {
       expect(dialog.text()).not.toContain('Die Angebotsliste ist gerade unvollständig');
     });
 
-    it('shows the "no set" placeholder only when nothing has any set at all', async () => {
+    // P2 fix, #217 review round: the account loop used to sit entirely inside `@if (hasAnySet())`,
+    // so a single account with an empty (or PERSONAL-only) set list fell all the way through to the
+    // list-wide "no set" placeholder instead of rendering its own heading and notice — the two are
+    // now told apart by whether the accounts list itself is empty (see the two tests below), not by
+    // whether any of it has a set.
+    it('shows the account\'s own heading and "no usable set" notice, not the list-wide placeholder, for a single account with an empty set list', async () => {
       const dialog = render();
       await resolve(
         dialog,
         0,
-        targetsResult({ accounts: [account({ twitchChannelId: '1', sets: [] })] }),
+        targetsResult({
+          accounts: [account({ twitchChannelId: '1', trackedChannelName: 'chan' })],
+        }),
       );
 
+      expect(dialog.text()).toContain('#chan');
+      expect(dialog.text()).toContain('Kein nutzbares Set');
+      expect(dialog.text()).not.toContain('Kein Set gefunden, in das kopiert werden kann.');
+      expect(dialog.targetRadiogroup()).toBeUndefined();
+    });
+
+    it('shows the list-wide "no set" placeholder only when the accounts list itself is empty', async () => {
+      const dialog = render();
+      await resolve(dialog, 0, targetsResult({ accounts: [] }));
+
       expect(dialog.text()).toContain('Kein Set gefunden, in das kopiert werden kann.');
+      expect(dialog.targetRadiogroup()).toBeUndefined();
+    });
+
+    it("shows a setsUnavailable-only account's heading and its own notice without a radiogroup role", async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'chan',
+              setsUnavailable: true,
+              sets: [],
+            }),
+          ],
+        }),
+      );
+
+      expect(dialog.text()).toContain('#chan');
+      expect(dialog.text()).toContain('Sets nicht lesbar');
       expect(dialog.targetRadiogroup()).toBeUndefined();
     });
   });
@@ -510,7 +542,30 @@ describe('ImportTargetDialog', () => {
       expect(dialog.text()).toContain('das ist die Quelle');
     });
 
-    it('disables a non-NORMAL set with its kind label — PERSONAL', async () => {
+    it('hides a PERSONAL set entirely — no radio at all, not even disabled (addendum 39, #217)', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'chan',
+              sets: [
+                set({ id: 'set-p', name: 'Personal Emotes', kind: 'PERSONAL', isPersonal: true }),
+                set({ id: 'set-n', name: 'Main', kind: 'NORMAL' }),
+              ],
+            }),
+          ],
+        }),
+      );
+
+      expect(dialog.setInput('Personal Emotes')).toBeUndefined();
+      expect(dialog.setInput('Main')).toBeDefined();
+    });
+
+    it('shows a distinct "no usable set" notice for an account left with only a PERSONAL set — not the setsUnavailable wording', async () => {
       const dialog = render();
       await resolve(
         dialog,
@@ -528,9 +583,10 @@ describe('ImportTargetDialog', () => {
         }),
       );
 
-      const input = dialog.setInput('Personal Emotes');
-      expect(input?.disabled).toBe(true);
-      expect(dialog.text()).toContain('persönliches Set');
+      expect(dialog.text()).toContain('Kein nutzbares Set');
+      expect(dialog.text()).not.toContain('Sets nicht lesbar');
+      expect(dialog.setInput('Personal Emotes')).toBeUndefined();
+      expect(dialog.targetRadiogroup()).toBeUndefined();
     });
 
     it('disables a non-NORMAL set with the shared "kein Zielset" label — GLOBAL/SPECIAL', async () => {
@@ -599,7 +655,63 @@ describe('ImportTargetDialog', () => {
     });
   });
 
-  describe('preselection — the caller\'s own account\'s active set (Ein-Klick-Weg "in Kanal X", finding 4)', () => {
+  // P2 fix, #217 review round (Opus + Codex): since addendum 39 removed the merged account-header
+  // radio, a set's own radio is the *only* thing naming an account any more — two accounts that
+  // each happen to have an active set of the same name render two radios with the exact same
+  // accessible name ("Main (aktiv)"), indistinguishable to a screen reader without this fix.
+  describe("accessibility — a set radio's account is programmatically discoverable (P2 fix, #217 review round)", () => {
+    it('associates each radio with its own account heading via aria-describedby, keeping two same-named active sets on different accounts distinguishable', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'chan1',
+              sets: [set({ id: 'set-1', name: 'Main', isActive: true })],
+            }),
+            account({
+              twitchChannelId: '2',
+              trackedChannelName: 'chan2',
+              sets: [set({ id: 'set-2', name: 'Main', isActive: true })],
+            }),
+          ],
+        }),
+      );
+
+      const host: HTMLElement = dialog.fixture.nativeElement;
+      const radios = Array.from(
+        host.querySelectorAll<HTMLInputElement>('input[name="import-target"]'),
+      );
+      expect(radios).toHaveLength(2);
+
+      function describedText(radio: HTMLInputElement): string {
+        const id = radio.getAttribute('aria-describedby');
+        expect(id).toBeTruthy();
+        const heading = host.querySelector(`#${id}`);
+        expect(heading).not.toBeNull();
+        return heading?.textContent ?? '';
+      }
+
+      // Both radios share the exact same accessible name — the label text starts with it
+      // unchanged, so a name-based lookup (getByRole('radio', { name: 'Main (aktiv)' }), same as
+      // the e2e suite uses) still finds either one; only the description tells them apart.
+      for (const radio of radios) {
+        expect(radio.closest('label')?.textContent?.trim().startsWith('Main (aktiv)')).toBe(true);
+      }
+      expect(describedText(radios[0])).toContain('chan1');
+      expect(describedText(radios[0])).not.toContain('chan2');
+      expect(describedText(radios[1])).toContain('chan2');
+      expect(describedText(radios[1])).not.toContain('chan1');
+      // Each account's id is unique — the two radios are never accidentally wired to the same
+      // description.
+      expect(new Set(radios.map((radio) => radio.getAttribute('aria-describedby'))).size).toBe(2);
+    });
+  });
+
+  describe("preselection — the caller's own account's active set (finding 4)", () => {
     it("preselects the active, selectable set of the caller's own account once the data loads", async () => {
       const dialog = render();
       await resolve(
@@ -617,14 +729,14 @@ describe('ImportTargetDialog', () => {
         }),
       );
 
-      // 'Main' is the account's active, selectable set — its header row is the merged radio
-      // (headerSet()), so the checked state shows on the header, not on a nested 'Main' row.
-      expect(dialog.accountInput('chan')?.checked).toBe(true);
+      // 'Main' is the account's active, selectable set — its own radio row (there is no separate
+      // account-header radio since addendum 39, #217).
+      expect(dialog.setInput('Main')?.checked).toBe(true);
       expect(dialog.button(SUBMIT).disabled).toBe(false);
     });
 
     // Finding 4 (Live-Verifikation K2 2026-09-21): a first draft walked the tracked list in order
-    // and preselected the first account whose header was selectable — which fell straight through
+    // and preselected the first account with a selectable active set — which fell straight through
     // to a *different* tracked account's active set the moment the caller's own one was disabled
     // (observed live as an unrelated, merely moderated channel getting preselected). The fix looks
     // up the account by isOwnAccount specifically, never by list position, so a disabled own set now
@@ -654,7 +766,7 @@ describe('ImportTargetDialog', () => {
         }),
       );
 
-      expect(dialog.accountInput('moderated-channel')?.checked).toBe(false);
+      expect(dialog.setInput('ModMain')?.checked).toBe(false);
       expect(dialog.setInput('Main')?.checked).toBe(false);
       expect(dialog.button(SUBMIT).disabled).toBe(true);
     });
@@ -718,7 +830,7 @@ describe('ImportTargetDialog', () => {
         }),
       );
 
-      expect(dialog.accountInput('moderated-channel')?.checked).toBe(false);
+      expect(dialog.setInput('Main')?.checked).toBe(false);
       expect(dialog.button(SUBMIT).disabled).toBe(true);
     });
 
@@ -741,7 +853,7 @@ describe('ImportTargetDialog', () => {
         }),
       );
 
-      expect(dialog.accountInput('sensitron')?.checked).toBe(true);
+      expect(dialog.setInput('Main')?.checked).toBe(true);
     });
 
     it('never overrides a manual pick the user already made', async () => {
@@ -768,12 +880,12 @@ describe('ImportTargetDialog', () => {
       dialog.detect();
 
       expect(dialog.setInput('Halloween')?.checked).toBe(true);
-      // 'Main' (the account's active set) is rendered as the account's header radio here — the
-      // manual pick above must not leave it checked either.
-      expect(dialog.accountInput('chan')?.checked).toBe(false);
+      // 'Main' is the account's active set, preselected by the load-time effect — the manual pick
+      // above must not leave it checked either.
+      expect(dialog.setInput('Main')?.checked).toBe(false);
     });
 
-    it("a manual click still lands on a second (non-own) tracked account's active set in one click", async () => {
+    it("a manual click on a second (non-own) tracked account's own active-set radio replaces the preselection", async () => {
       const dialog = render();
       await resolve(
         dialog,
@@ -805,16 +917,17 @@ describe('ImportTargetDialog', () => {
 
       // The load-time default already landed on the own account (chan1) — that half is covered by
       // the earlier tests in this describe block.
-      expect(dialog.accountInput('chan1')?.checked).toBe(true);
+      expect(dialog.setInput('Main1')?.checked).toBe(true);
 
-      // One click on chan2's header is enough to land on *its* active set too — not "expand, then
-      // click a nested set radio". Each tracked account's header is its own one-click shortcut,
-      // regardless of isOwnAccount — that field only gates the automatic load-time default.
-      dialog.accountInput('chan2')?.click();
+      // One click on chan2's own active-set radio is enough to land on it — every set, including a
+      // second (non-own) account's active one, is just an ordinary radio in the group since
+      // addendum 39 removed the account-header shortcut; isOwnAccount only gates the automatic
+      // load-time default, never what a manual click can reach.
+      dialog.setInput('Main2')?.click();
       dialog.detect();
 
-      expect(dialog.accountInput('chan2')?.checked).toBe(true);
-      expect(dialog.accountInput('chan1')?.checked).toBe(false);
+      expect(dialog.setInput('Main2')?.checked).toBe(true);
+      expect(dialog.setInput('Main1')?.checked).toBe(false);
       dialog.button(SUBMIT).click();
       expect(closed).toEqual([
         {
@@ -857,7 +970,7 @@ describe('ImportTargetDialog', () => {
       await resolve(dialog, 1, targetsResult({ accounts }));
 
       expect(dialog.setInput('Halloween')?.checked).toBe(true);
-      expect(dialog.accountInput('chan')?.checked).toBe(false);
+      expect(dialog.setInput('Main')?.checked).toBe(false);
     });
   });
 
@@ -1115,14 +1228,14 @@ describe('ImportTargetDialog', () => {
       // A tracked choice already stands (the load-time preselection of the caller's own account,
       // finding 4) — cancelling an
       // untracked confirmation attempt must leave it exactly as it is.
-      expect(dialog.accountInput('chan')?.checked).toBe(true);
+      expect(dialog.setInput('Main')?.checked).toBe(true);
 
       dialog.setInput('Halloween')?.click();
       dialog.detect();
       expect(dialog.confirmationBanner()).not.toBeUndefined();
       // The pending candidate takes over the radio group's visual state while its confirmation is
       // up — a native radio group can only ever show one checked item at a time regardless.
-      expect(dialog.accountInput('chan')?.checked).toBe(false);
+      expect(dialog.setInput('Main')?.checked).toBe(false);
       expect(dialog.setInput('Halloween')?.checked).toBe(true);
 
       dialog.confirmationCancelButton()?.click();
@@ -1130,7 +1243,7 @@ describe('ImportTargetDialog', () => {
 
       expect(dialog.confirmationBanner()).toBeUndefined();
       // Not "leert sie" — the previously standing tracked choice is still there, unmodified.
-      expect(dialog.accountInput('chan')?.checked).toBe(true);
+      expect(dialog.setInput('Main')?.checked).toBe(true);
       expect(dialog.setInput('Halloween')?.checked).toBe(false);
       expect(dialog.button(SUBMIT).disabled).toBe(false);
 

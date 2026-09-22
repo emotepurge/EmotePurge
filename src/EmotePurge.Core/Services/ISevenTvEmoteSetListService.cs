@@ -17,8 +17,15 @@ namespace EmotePurge.Core.Services;
 /// <c>NORMAL</c>. Selectable is <c>NORMAL</c> alone (8.6).
 /// </param>
 /// <param name="IsPersonal">
-/// <c>Kind == PERSONAL</c>. Only the label depends on it — every non-<c>NORMAL</c> kind is equally
-/// unselectable, and this one merely gets its own wording.
+/// <c>Kind == PERSONAL</c>. Every non-<c>NORMAL</c> kind is equally unselectable, but this flag is no
+/// longer purely a label decision everywhere: since frontend spec addenda 34/39 (#217), both import
+/// pickers — the copy flow's source-set picker (spec 6.3,
+/// <c>GET /seventv/channels/{channelName}/emote-sets</c>) and its target picker (spec 6.2,
+/// <c>GET /seventv/me/emote-set-targets</c>) — hide a <c>PERSONAL</c> set out of their offer
+/// entirely rather than merely rendering it disabled with its own wording. The channel-scoped set
+/// dropdown (spec 6.1, <c>GET /channels/{channelName}/emote-sets</c>) is unaffected by that change —
+/// it already excludes every non-<c>NORMAL</c> kind by <c>Kind</c> alone, so this flag plays no role
+/// in what it offers either.
 /// </param>
 /// <param name="OwnerDisplayName">
 /// <c>owner.mainConnection.platformDisplayName</c> (E7) — a display name, never a login, and never

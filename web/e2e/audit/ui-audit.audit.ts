@@ -20,6 +20,7 @@ import {
   mockChannelPermissions,
   mockChannelStatus,
   mockEmoteList,
+  mockEmoteSetTargets,
   mockSetWarning,
   failLive,
   mockLiveQuota,
@@ -931,6 +932,20 @@ const SCENARIOS: Scenario[] = [
         ...TYPICAL_CHANNELS,
         { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
       ]);
+      // The picker's own data source since K2 (spec 6.2) — replaces the pre-K2 assumption that
+      // `/api/channels/mine` above was enough to open it on. `target-set` is both this account's
+      // active set and the one `mockActiveEmoteSet`/`mockSetWarning`/`mockEmoteList` below already
+      // answer for, so picking it below stays on the "chosen set is the account's active one" fast
+      // path (spec 8.6 fourth bullet, AK 36) the same way this scenario always has.
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
       await mockActiveEmoteSet(page, 'aatrociity', 'target-set', {
         capacity: 1000,
         occupiedSlots: 3,
@@ -946,11 +961,12 @@ const SCENARIOS: Scenario[] = [
       // why it is scoped to `main`.
       await page.locator('main header button').nth(1).click();
       const picker = page.getByRole('dialog');
-      // Channel logins are not translated, so the radio's own name is locale-independent — unlike
-      // the "Weiter"/"Continue" submit button next to it, matched here by position instead
-      // ([dialog-actions] is the attribute DialogShell's <ng-content select> projects on, so it is
-      // never removed from the DOM; Cancel is always first — dialog-shell.ts's own comment).
-      await picker.getByRole('radio', { name: '#aatrociity' }).check();
+      // Every set is its own radio since addendum 39 (#217) — there is no more merged
+      // "#aatrociity" account-header radio to check. The set's own name ("Main", from the mock
+      // above) is not translated, so a prefix match on it stays locale-independent the same way the
+      // old channel-login match was — unlike its "(aktiv)"/"(active)" suffix, which this regex
+      // deliberately does not pin down.
+      await picker.getByRole('radio', { name: /^Main/ }).check();
       await picker.locator('[dialog-actions]').last().click();
       // The target load starts async and the dialog opens on its loading skeleton (R8). The dialog
       // title itself already carries the channel name the moment the dialog opens — before the

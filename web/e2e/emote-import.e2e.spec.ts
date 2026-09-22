@@ -261,8 +261,10 @@ test.describe('push flow: picker to confirmation dialog', () => {
     // Scope defaults to the selection (R12), not to the visible list.
     await expect(picker.getByRole('radio', { name: 'Auswahl (3)' })).toBeChecked();
 
-    // The target account's header radio is enabled (its active set is a normal, non-source set).
-    await expect(picker.getByRole('radio', { name: '#aatrociity' })).toBeEnabled();
+    // The target account's active set gets its own radio, same as every other set (addendum
+    // 39, #217 — there is no separate account-header radio anymore): enabled, since it is a
+    // normal, non-source set.
+    await expect(picker.getByRole('radio', { name: 'Main (aktiv)' })).toBeEnabled();
     // The own channel stays in the list since K2 (spec 8.6, a deliberate change from the old
     // picker) — only its own set is disabled, labelled as the run's source, never the account.
     await expect(
@@ -273,7 +275,7 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await expect(picker.getByText('nicht getrackt')).toBeVisible();
     await expect(picker.getByRole('radio', { name: 'Wegwerf-Set' })).toBeEnabled();
 
-    await picker.getByRole('radio', { name: '#aatrociity' }).check();
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await picker.getByRole('button', { name: 'Weiter' }).click();
 
     const confirm = page.getByRole('dialog');
@@ -357,7 +359,7 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await expect(picker.getByRole('radio', { name: /^Auswahl/ })).toHaveCount(0);
     await expect(picker.getByRole('radio', { name: /^Gefilterte Liste/ })).toHaveCount(0);
 
-    await picker.getByRole('radio', { name: '#aatrociity' }).check();
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await picker.getByRole('button', { name: 'Weiter' }).click();
 
     const confirm = page.getByRole('dialog');
@@ -504,8 +506,8 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
 
     const picker = page.getByRole('dialog');
     await expect(picker.locator('#app-dialog-title')).toHaveText('Emotes übertragen');
-    // Halloween is not the account's active set, so it renders as its own nested radio rather
-    // than being merged into the account's header shortcut (spec 8.6) — no confirmation banner
+    // Halloween is not the account's active set — its radio just is not labelled "(aktiv)"
+    // (addendum 39, #217: every set is its own radio regardless) — no confirmation banner
     // either, that class is untracked-only (T2.6, see the test below).
     await picker.getByRole('radio', { name: 'Halloween' }).check();
     await picker.getByRole('button', { name: 'Weiter' }).click();
@@ -653,6 +655,85 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
       sourceKind: 'channel',
       leaderboardSort: null,
     });
+  });
+
+  /**
+   * The target picker's own layout follow-up (addendum 39, #217): every account renders as a plain
+   * heading with its sets as ordinary radios below it — no merged "channel is the radio" shortcut
+   * for a single-set or an active-set account, and PERSONAL sets are hidden outright rather than
+   * shown disabled. Mirrors the source-picker's own shape test above (K3, spec addendum
+   * 2026-09-21) for the target side.
+   */
+  test('the target picker gives every account the same heading-plus-radios layout and hides PERSONAL entirely (addendum 39, #217)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+      {
+        // A single-set tracked account — the old picker rendered this account's name itself as the
+        // radio ("#brudivoeller_tv (aktiv: …)"); addendum 39 gives it the same heading-plus-radio
+        // shape as every other account instead.
+        twitchChannelId: 'target-1',
+        twitchLogin: TARGET_CHANNEL,
+        trackedChannelName: TARGET_CHANNEL,
+        activeEmoteSetId: 'target-set',
+        sets: [
+          { id: 'target-set', name: 'Main', isActive: true },
+          // PERSONAL alongside a real set on the same account — hidden entirely, the NORMAL
+          // sibling stays.
+          { id: 'target-personal', name: 'Persönlich', kind: 'PERSONAL', isPersonal: true },
+        ],
+      },
+      {
+        // Every set on this account is PERSONAL — filtered down to zero, distinct from a read
+        // failure (setsUnavailable), so it gets the "no usable set" notice, not "Sets nicht
+        // lesbar".
+        twitchChannelId: 'personal-only-1',
+        twitchLogin: 'personalonly',
+        trackedChannelName: 'personalonly',
+        activeEmoteSetId: 'personal-set',
+        sets: [{ id: 'personal-set', name: 'Nur ich', kind: 'PERSONAL', isPersonal: true }],
+      },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    const radiogroup = picker.getByRole('radiogroup', { name: 'Ziel' });
+
+    // Every account is a plain heading (never itself a radio) plus its sets below it, source and
+    // target account alike.
+    await expect(picker.getByText('#sensitron', { exact: false })).toBeVisible();
+    await expect(picker.getByText(`#${TARGET_CHANNEL}`, { exact: false })).toBeVisible();
+    await expect(picker.getByRole('radio', { name: `#${TARGET_CHANNEL}` })).toHaveCount(0);
+    await expect(picker.getByRole('radio', { name: /^#sensitron/ })).toHaveCount(0);
+
+    // The target account's active set is its own radio, checked state aside — same shape a
+    // single-set account gets as a multi-set one.
+    await expect(radiogroup.getByRole('radio', { name: 'Main (aktiv)' })).toBeEnabled();
+
+    // PERSONAL is absent everywhere, never merely disabled or labelled.
+    await expect(radiogroup.getByText('Persönlich')).toHaveCount(0);
+    await expect(radiogroup.getByText('Nur ich')).toHaveCount(0);
+
+    // The account left with nothing but a PERSONAL set still renders (its heading stays) with a
+    // distinct notice — not the "Sets nicht lesbar" wording a read failure gets.
+    await expect(picker.getByText('personalonly', { exact: false })).toBeVisible();
+    await expect(picker.getByText('Kein nutzbares Set')).toBeVisible();
+    await expect(picker.getByText('Sets nicht lesbar')).toHaveCount(0);
   });
 });
 
@@ -1879,7 +1960,7 @@ test.describe('running import: channel switch', () => {
     await copyButton(page).click();
 
     let dialog = page.getByRole('dialog');
-    await dialog.getByRole('radio', { name: '#aatrociity' }).check();
+    await dialog.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await dialog.getByRole('button', { name: 'Weiter' }).click();
 
     dialog = page.getByRole('dialog');
@@ -1963,7 +2044,7 @@ test.describe('running import: channel switch', () => {
     await cell(page, 'CatJAM').click();
     await copyButton(page).click();
     let dialog = page.getByRole('dialog');
-    await dialog.getByRole('radio', { name: '#aatrociity' }).check();
+    await dialog.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await dialog.getByRole('button', { name: 'Weiter' }).click();
     dialog = page.getByRole('dialog');
     await dialog.getByRole('button', { name: 'Kopieren' }).click();
@@ -2096,7 +2177,7 @@ test.describe('running import: a token without write rights', () => {
     await copyButton(page).click();
 
     let dialog = page.getByRole('dialog');
-    await dialog.getByRole('radio', { name: '#aatrociity' }).check();
+    await dialog.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await dialog.getByRole('button', { name: 'Weiter' }).click();
 
     dialog = page.getByRole('dialog');
@@ -2159,7 +2240,7 @@ test.describe('running import: progress wording matches the outcome (#158)', () 
     await copyButton(page).click();
 
     let dialog = page.getByRole('dialog');
-    await dialog.getByRole('radio', { name: '#aatrociity' }).check();
+    await dialog.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await dialog.getByRole('button', { name: 'Weiter' }).click();
 
     dialog = page.getByRole('dialog');
@@ -2223,7 +2304,7 @@ test.describe('running import: leaving the page', () => {
     await copyButton(page).click();
 
     let dialog = page.getByRole('dialog');
-    await dialog.getByRole('radio', { name: '#aatrociity' }).check();
+    await dialog.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await dialog.getByRole('button', { name: 'Weiter' }).click();
 
     dialog = page.getByRole('dialog');
@@ -2470,7 +2551,7 @@ test.describe('dock outcomes: announced from a region that outlives the dock (#1
     await dockCopyButton(page, 2).click();
 
     const picker = page.getByRole('dialog');
-    await picker.getByRole('radio', { name: '#aatrociity' }).check();
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
     await picker.getByRole('button', { name: 'Weiter' }).click();
     const confirm = page.getByRole('dialog');
     await expect(confirm.locator('#app-dialog-title')).toHaveText(
