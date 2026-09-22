@@ -25,6 +25,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { LIVE_EVENT_TYPES, LiveEvent, channelLiveUrl } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import {
   VoteSessionResult,
   VoteSessionResults,
@@ -137,6 +138,7 @@ export class VoteSessionDetailPage {
   private readonly translocoService = inject(TranslocoService);
   private readonly languageService = inject(LanguageService);
   private readonly dialog = inject(Dialog);
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
 
   /** See UsageStatsPage: no 7TV write access without a mouse. */
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
@@ -198,6 +200,35 @@ export class VoteSessionDetailPage {
   protected readonly massDeletePanelSetId = computed(
     () => this.results()?.emoteSetId ?? this.activeEmoteSetId(),
   );
+
+  /** The channel's set list, so the mass-delete panel's confirmations can name a set instead of
+   *  showing its raw 7TV id (spec 8.8) — the same request usage-stats-page's dropdown makes
+   *  (`SevenTvEmoteSetService.listChannelEmoteSets`), loaded once per channel here since this page
+   *  has no set-switching UI of its own to reuse a resource from. `hasValue()` guards `.value()`
+   *  deliberately, same reasoning as usage-stats-page's identical guard: a `resource()`'s `.value()`
+   *  re-throws the load error once `status()` is `'error'`. A failed load simply leaves the map
+   *  empty — the panel's own `setName`/`setNames` inputs already fall back to the raw id. */
+  private readonly emoteSetListResource = rxResource({
+    params: () => this.channelName(),
+    stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),
+  });
+
+  protected readonly emoteSetNames = computed(
+    () =>
+      new Map(
+        (this.emoteSetListResource.hasValue() ? this.emoteSetListResource.value().sets : []).map(
+          (set) => [set.id, set.name],
+        ),
+      ),
+  );
+
+  /** The mass-delete panel's target set, by name (spec 8.8) — `null` while the set list has not
+   *  named it (not loaded yet, failed, or the id is one the list does not carry), which the panel
+   *  folds onto the raw id itself, same convention as every other unnamed-set reader. */
+  protected readonly massDeletePanelSetName = computed(() => {
+    const setId = this.massDeletePanelSetId();
+    return setId === null ? null : (this.emoteSetNames().get(setId) ?? null);
+  });
 
   // The one place on this page that asks for the permission instead of inferring it from the data,
   // and it has to: hasUsageData() below reads null-only rows as "not a manager", which is also what

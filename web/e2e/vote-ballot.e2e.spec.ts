@@ -483,6 +483,9 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
     await massDeleteButton.click();
 
     const deleteConfirmDialog = page.getByRole('dialog');
+    // Rebase-delta review, Ruling G: names the session's own non-active set (spec 8.8), not its
+    // raw 7TV id — resolved from the same channel set list the usage page's dropdown reads.
+    await expect(deleteConfirmDialog.getByText('Aus dem Set „Halloween“.')).toBeVisible();
     const startDeleteButton = deleteConfirmDialog.getByRole('button', { name: 'Löschen starten' });
     await expect(startDeleteButton).toBeEnabled();
     await startDeleteButton.click();

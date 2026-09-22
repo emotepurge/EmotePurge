@@ -159,6 +159,8 @@
     <app-mass-delete-panel
       [setId]="setId"
       [activeSetId]="activeEmoteSetId()"
+      [setName]="massDeletePanelSetName()"
+      [setNames]="emoteSetNames()"
       [channelName]="channelName()"
       [selectedEmotes]="selectedForDelete()"
       (deleted)="onDeleted($event)"

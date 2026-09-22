@@ -536,6 +536,13 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
       isTracked: true,
       isBotActive: true,
     });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/emote-sets`, {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Main set', isActive: true, kind: 'NORMAL' },
+        { id: 'halloween-1', name: 'Halloween 2026', isActive: false, kind: 'NORMAL' },
+      ],
+    });
     await settle();
   }
 
@@ -550,6 +557,15 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     expect(component['hasUsageData']()).toBe(false);
     expect(component['canSelectForDelete']()).toBe(true);
     expect(component['massDeletePanelSetId']()).toBe('halloween-1');
+  });
+
+  it("resolves the panel's set name for a set session over a non-active set (spec 8.8's delete confirmation)", async () => {
+    await mount(
+      results([resultEmote('a', { totalUseCount: null })], { emoteSetId: 'halloween-1' }),
+      true,
+    );
+
+    expect(component['massDeletePanelSetName']()).toBe('Halloween 2026');
   });
 
   it('a non-manager gets no panel even with usage data present', async () => {
