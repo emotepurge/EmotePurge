@@ -264,6 +264,7 @@ public static class EmoteEndpoints
             return status is null ? Results.NotFound() : Results.Ok(status);
         });
     }
+
     /// <summary>
     /// The <c>sync-deleted</c>/<c>sync-restored</c> validation ladder (spec 6.6), shared verbatim by
     /// both handlers above so the two bodies cannot drift apart. Checked in order — each step only
@@ -298,17 +299,18 @@ public static class EmoteEndpoints
             return ApiErrorCodes.EmoteIdsInvalid;
         }
 
-        if (hasSevenTvEmoteIds)
+        if (hasSevenTvEmoteIds && string.IsNullOrEmpty(emoteSetId))
         {
-            if (string.IsNullOrEmpty(emoteSetId))
-            {
-                return ApiErrorCodes.EmoteSetIdEmpty;
-            }
+            return ApiErrorCodes.EmoteSetIdEmpty;
+        }
 
-            if (!EmoteSetIdValidation.IsValid(emoteSetId))
-            {
-                return ApiErrorCodes.InvalidEmoteSetId;
-            }
+        // Checked whenever an emoteSetId was sent at all, not only alongside sevenTvEmoteIds
+        // (#200 K5 finding E): a legacy body form carries no set of its own, but nothing stops a
+        // caller from sending a malformed emoteSetId next to it anyway, and letting that through
+        // unchecked would leave a bad value silently unvalidated rather than refused.
+        if (!string.IsNullOrEmpty(emoteSetId) && !EmoteSetIdValidation.IsValid(emoteSetId))
+        {
+            return ApiErrorCodes.InvalidEmoteSetId;
         }
 
         return null;
@@ -391,6 +393,19 @@ public static class EmoteEndpoints
         return null;
     }
 
+    /// <summary>
+    /// Announces "this channel's emote inventory changed" — the same event the worker's sync paths
+    /// publish, because the effect on every open page is identical: the database now reflects what
+    /// happened on 7TV (archived after a delete, active again after a restore). Published only when
+    /// the call actually changed rows (the live sync often got there first, and a no-op must not
+    /// make everyone refetch).
+    /// <para>
+    /// In the endpoint rather than in EmoteService, exactly like the vote event: the notification
+    /// belongs to the request that caused it, and IRedisPublisher in a handler is explicitly
+    /// allowed by rule 4. Failure is logged and swallowed — the archiving is committed and the
+    /// response must not change because Redis hiccuped.
+    /// </para>
+    /// </summary>
     private static async Task PublishChannelSyncedAsync(
         IRedisPublisher redisPublisher,
         ILogger logger,
