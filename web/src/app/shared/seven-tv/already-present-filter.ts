@@ -26,10 +26,12 @@ export interface AlreadyPresentFilterResult<T> {
  * the duplicate. This became reachable once #149 moved the write surface to `v4`, whose alias
  * validator lets umlaut aliases through where `v3` used to reject them before the push ever ran.
  *
- * Used at the last moment before a run actually starts — both restore's two entry points
- * (`restore-flow.ts`, `mass-delete-panel.ts`) and import's (`import-flow.ts`) call this right in the
- * confirm-dialog-closed handler, immediately before handing rows to `startRestore`/`startImport` —
- * so the fetch it does is always fresh, never a dialog-open-time snapshot reused later. For import
+ * Used at the last moment before a run actually starts — import (`import-flow.ts`) calls this, and
+ * both restore entry points (`restore-flow.ts`, `mass-delete-panel.ts`) call its restore variant
+ * `filterAlreadyPresentForRestore` below, right in the confirm-dialog-closed handler, immediately
+ * before handing rows to `startRestore`/`startImport` — so the fetch it does is always fresh, never
+ * a dialog-open-time snapshot reused later. This one compares the 7TV id alone (spec #200, 7.2: the
+ * import and the delete path stay on the id axis). For import
  * this sits *on top of* `buildImportPreview`'s own dialog-time filter (`import-preview.ts`), not
  * instead of it: that filter can already be stale by the time the user actually confirms (another
  * editor, another tab, a long-open dialog), so this re-checks right before anything is sent.
@@ -73,6 +75,74 @@ export function filterAlreadyPresent<T extends { sevenTvEmoteId: string }>(
     map(({ aliasesById }) => {
       const filtered = rows.filter((row) => !aliasesById.has(row.sevenTvEmoteId));
       return { rows: filtered, skipped: rows.length - filtered.length, available: true };
+    }),
+    catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
+  );
+}
+
+/** A restore row: one purge-protocol row, re-added once per alias (spec #200, 7.2). `aliases`
+ *  missing or empty means `[name]`, the same fallback the restore queue applies. */
+export interface RestoreFilterRow {
+  sevenTvEmoteId: string;
+  name: string;
+  aliases?: readonly string[];
+}
+
+/**
+ * The restore run's pre-run check — `filterAlreadyPresent`'s id comparison, refined per alias
+ * ("middle rule", operator decision 2026-09-22, refining spec #200 7.2's literal
+ * `(sevenTvEmoteId, alias)` comparison). Per row, against the target set's live entries:
+ *
+ * 1. **The id is not in the set** — the row goes through unchanged.
+ * 2. **The id sits in the set under an alias the row does not name** — the whole row is dropped,
+ *    exactly as the id-only check always did. Re-adding any of its aliases would put the same emote
+ *    into the set a second time under another name: the #149 hole this filter exists for (7TV's
+ *    `addEmote` only rejects a colliding alias string, never a second entry of the same id).
+ * 3. **The id sits in the set only under aliases the row names** — those aliases are dropped from
+ *    the row, the rest are re-added. This is the partial retry of a #74 duplicate cell: a restore
+ *    in which `A` came back and `B` failed is re-run from the same protocol, and `B` is the only
+ *    thing still missing. The id-only check dropped the whole row there, and `B` was then
+ *    unrecoverable from the protocol (spec 7.2, "Vorprüfung des Restore"). A row all of whose
+ *    aliases are already present drops out entirely.
+ *
+ * `skipped` counts **aliases**, i.e. `ADD`s not sent, not rows: the restore confirmation already
+ * speaks in `ADD`s (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per
+ * `ADD` (`${sevenTvEmoteId}#${alias}`), so what the run shows plus what this skipped adds up to the
+ * number the dialog named. For every single-alias row — nearly all of them — the two counts are the
+ * same thing. Fails open exactly like `filterAlreadyPresent` (see there).
+ */
+export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
+  httpClient: HttpClient,
+  targetSetId: string,
+  rows: readonly T[],
+): Observable<AlreadyPresentFilterResult<T>> {
+  return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
+    map(({ aliasesById }) => {
+      const kept: T[] = [];
+      let skipped = 0;
+      for (const row of rows) {
+        const rowAliases = row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
+        const present = aliasesById.get(row.sevenTvEmoteId);
+        if (present === undefined) {
+          kept.push(row);
+          continue;
+        }
+        // An entry 7TV lists without an alias yields an id with an empty alias list — it still
+        // occupies the set under a name the row cannot vouch for, so it takes rule 2 like any
+        // foreign alias would.
+        const foreignEntry =
+          present.length === 0 || present.some((alias) => !rowAliases.includes(alias));
+        if (foreignEntry) {
+          skipped += rowAliases.length;
+          continue;
+        }
+        const missing = rowAliases.filter((alias) => !present.includes(alias));
+        skipped += rowAliases.length - missing.length;
+        if (missing.length > 0) {
+          kept.push({ ...row, aliases: missing });
+        }
+      }
+      return { rows: kept, skipped, available: true };
     }),
     catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
   );

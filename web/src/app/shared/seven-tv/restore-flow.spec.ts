@@ -59,6 +59,35 @@ function emoteSetPage(ids: string[] = []) {
   };
 }
 
+/** Same page shape as `emoteSetPage`, but with each entry's alias — what the per-alias restore
+ *  check (`filterAlreadyPresentForRestore`) reads. */
+function emoteSetEntriesPage(entries: { id: string; alias: string }[]) {
+  return {
+    data: {
+      emoteSets: {
+        emoteSet: {
+          emotes: {
+            totalCount: entries.length,
+            pageCount: 1,
+            items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+          },
+        },
+      },
+    },
+  };
+}
+
+function duplicateCellRow(): PurgeRunRow {
+  return {
+    emoteId: 'e1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    aliases: ['PogU', 'PogU2'],
+    status: 'done',
+    errorMessage: null,
+  };
+}
+
 function readyStatus(overrides: Partial<EmoteSetStatus> = {}): EmoteSetStatus {
   return {
     activeEmoteSetId: SET_ID,
@@ -277,6 +306,37 @@ describe('startRestoreFlow', () => {
         0,
         true,
       );
+    });
+
+    // Operator decision 2026-09-22 ("middle rule", spec 7.2): a restore of a #74 duplicate cell in
+    // which one alias came back and the other failed is re-run from the same protocol — only the
+    // missing alias may be queued, the present one is skipped (counted per ADD).
+    it('re-adds only the missing alias of a duplicate cell whose other alias is already back', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-1', alias: 'PogU' }])));
+
+      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        SET_ID,
+        CHANNEL,
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
+        1,
+        true,
+      );
+    });
+
+    // The #149 hole stays shut: the emote sits in the set under a name the row does not know, so
+    // re-adding either alias would enter it a second time.
+    it('drops the whole row when the emote is already in the set under an alias the row does not name', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-1', alias: 'Renamed' }])));
+
+      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 2, true);
     });
 
     // #149: a failed check must fail open (every row still goes through, the run still starts) but

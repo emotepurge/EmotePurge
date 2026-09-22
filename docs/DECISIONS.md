@@ -129,7 +129,7 @@ layout uniformity identically.
 `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, 8.10, §35, §36) ·
 `docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.3, T5.2, T5.1) ·
 `web/src/app/shared/seven-tv/seven-tv-set-entries.ts` ·
-`web/src/app/shared/seven-tv/already-present-filter.ts` (spec §37)
+`web/src/app/shared/seven-tv/already-present-filter.ts` (spec §37, §38)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
 part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
@@ -435,7 +435,8 @@ the set name in both confirmations (spec 8.8) — lifting the delete lock before
 set would let a delete reach a non-active set behind a confirmation that does not say which. Not
 done anywhere yet: spec 7.2's `(sevenTvEmoteId, alias)` comparison in the restore's pre-run
 duplicate check; `filterAlreadyPresent` still compares the id alone, so re-running a restore in
-which only one alias of a duplicate came back skips the whole row.
+which only one alias of a duplicate came back skips the whole row. *(Closed on 2026-09-22 by the
+"middle rule" addendum below.)*
 
 **K5 addendum (T5.3) — both confirmations name the set; the delete and restore locks that stood
 only for a non-active view lift.** `DeleteConfirmDialogData`/`RestoreConfirmDialogData` gain
@@ -545,6 +546,26 @@ alias.
   for the `channel.synced` refetch.
 - **Still open, on purpose:** the vote-session detail page does not opt in. Its rows stay on
   `[name]` until K6, so a duplicate deleted there still records one alias.
+
+**K5 addendum, operator decision 2026-09-22 — the restore's pre-run check compares per alias, the
+"middle rule" (spec §38).** `filterAlreadyPresentForRestore` (`already-present-filter.ts`), used by
+both restore entry points (`restore-flow.ts` and the panel's restore-from-run), decides per protocol
+row against the target set's live entries: (1) the id is not in the set → the row goes through
+unchanged; (2) the id is in the set under an alias the row does not name → the whole row is dropped,
+as the id-only check always did; (3) the id is in the set only under aliases the row names → those
+are dropped from the row and the rest re-added (none left → the row drops out). This refines spec
+7.2's literal `(sevenTvEmoteId, alias)` comparison, which would re-add `A` next to an existing `C` of
+the same id — the #149 hole (7TV's `addEmote` rejects only a colliding alias string, never a second
+entry of the same id) this check exists to keep shut. Rule 3 is what the literal comparison was
+meant for: a partly failed restore of a duplicate cell can be re-run from the same protocol and adds
+just the missing alias. Import (`filterAlreadyPresent`) and the delete path stay on the id axis.
+Aliases compare exactly, case included. A 7TV entry without an alias counts as a foreign alias.
+
+The "already present" notice (`restore.skippedDuplicates`) counts **skipped aliases** — `ADD`s not
+sent — not rows: the restore confirmation already speaks in `ADD`s (`addCount`), and the run queue
+is one row per `ADD`, so the run's rows plus the skipped count equal the number the user confirmed.
+For single-alias rows, nearly all of them, both counts are the same; a row dropped under rule 2
+counts all of its aliases.
 
 ---
 

@@ -9,7 +9,7 @@ import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.serv
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { PurgeRunRow } from '../export/purge-run-export';
-import { filterAlreadyPresent } from './already-present-filter';
+import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
@@ -123,8 +123,10 @@ export function startRestoreFlow(
       // (see `filterAlreadyPresent`'s doc — asking our own mirror is exactly wrong for restore,
       // which runs *because* something already went wrong and our mirror may still be stale) for
       // why this sits at confirm-time rather than dialog-open-time and for the residual race it
-      // does not close.
-      filterAlreadyPresent(deps.httpClient, setId, emotes).subscribe(
+      // does not close. Per alias, not per id (operator decision 2026-09-22): a row whose id is
+      // present only under some of its own aliases re-adds just the missing ones — see
+      // `filterAlreadyPresentForRestore`.
+      filterAlreadyPresentForRestore(deps.httpClient, setId, emotes).subscribe(
         ({ rows: toRestore, skipped, available }) => {
           // #149 P2 review fix: the arbiter check above ran *before* this fetch, outside the
           // mutual-exclusion contract (design doc §4.3) it is meant to enforce — another run can

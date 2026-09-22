@@ -1821,4 +1821,26 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
     expect(startRestore).toHaveBeenCalledTimes(1);
     expect(startRestore.mock.calls[0][1]).toBe(RUN_CHANNEL);
   });
+  // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
+  // same per-alias check as the file restore — here, the run's one alias is already back.
+  it('skips an alias of the run that is already back in the set, counted per alias', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    closed.next(true);
+
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(startRestore).toHaveBeenCalledWith('set-1', RUN_CHANNEL, [], 1, true);
+  });
 });

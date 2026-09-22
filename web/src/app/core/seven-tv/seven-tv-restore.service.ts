@@ -106,8 +106,9 @@ export class SevenTvRestoreService {
 
   readonly resyncTrigger = signal<ResyncTriggerState>('idle');
 
-  /** How many rows the caller's pre-run duplicate check (#149/T5, `already-present-filter.ts`)
-   *  dropped before ever calling `startRestore` — surfaced so a run where every row was already
+  /** How many `ADD`s — one per alias of a protocol row, counted per alias since the 2026-09-22
+   *  "middle rule" (`filterAlreadyPresentForRestore`) — the caller's pre-run duplicate check
+   *  (#149/T5, `already-present-filter.ts`) dropped before ever calling `startRestore` — surfaced so a run where every row was already
    *  present is not a silent no-op. Set unconditionally, even when the engine then refuses to start
    *  (an empty `emotes` list, e.g. because everything was a duplicate) — that case is exactly the
    *  one this exists to make visible. */

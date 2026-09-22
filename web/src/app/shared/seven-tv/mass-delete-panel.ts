@@ -35,7 +35,7 @@ import {
   purgeRunJson,
 } from '../export/purge-run-export';
 import { Button } from '../ui/button';
-import { filterAlreadyPresent } from './already-present-filter';
+import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
 import { resyncNoticeKey } from './dock-outcome-announcer';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
@@ -413,8 +413,8 @@ export class MassDeletePanel {
     resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),
   );
 
-  /** #149/T5: wording for how many rows the pre-run duplicate check (`already-present-filter.ts`)
-   *  dropped — shown independently of the run-progress panel below, because a run where *every*
+  /** #149/T5: wording for how many `ADD`s (aliases, since the 2026-09-22 per-alias rule) the
+   *  pre-run duplicate check (`already-present-filter.ts`) dropped — shown independently of the run-progress panel below, because a run where *every*
    *  row was already present queues nothing and would otherwise leave that panel hidden (its own
    *  gate is `isRunning() || queue().length > 0`), silently swallowing the one thing the user needs
    *  to see in that case. */
@@ -627,8 +627,10 @@ export class MassDeletePanel {
       // (see `filterAlreadyPresent`'s doc — asking our own mirror is exactly wrong for restore,
       // which runs *because* something already went wrong and our mirror may still be stale) for
       // why this sits at confirm-time rather than dialog-open-time and for the residual race it
-      // does not close.
-      filterAlreadyPresent(this.httpClient, runSetId, emotes).subscribe(
+      // does not close. Per alias, not per id (operator decision 2026-09-22): a row whose id is
+      // present only under some of its own aliases re-adds just the missing ones — see
+      // `filterAlreadyPresentForRestore`.
+      filterAlreadyPresentForRestore(this.httpClient, runSetId, emotes).subscribe(
         ({ rows: toRestore, skipped, available }) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists

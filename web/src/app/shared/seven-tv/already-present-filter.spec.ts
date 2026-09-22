@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { filterAlreadyPresent } from './already-present-filter';
+import { filterAlreadyPresent, filterAlreadyPresentForRestore } from './already-present-filter';
 
 interface Row {
   sevenTvEmoteId: string;
@@ -202,5 +202,157 @@ describe('filterAlreadyPresent', () => {
     expect(checked).toEqual({ rows, skipped: 0, available: true });
     expect(unverified).toEqual({ rows, skipped: 0, available: false });
     expect(checked.available).not.toBe(unverified.available);
+  });
+});
+
+/** A page of set entries with their aliases — what the restore variant reads. */
+function entriesPage(entries: { id: string; alias: string }[]) {
+  return {
+    data: {
+      emoteSets: {
+        emoteSet: {
+          emotes: {
+            totalCount: entries.length,
+            pageCount: 1,
+            items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+          },
+        },
+      },
+    },
+  };
+}
+
+interface RestoreRow {
+  sevenTvEmoteId: string;
+  name: string;
+  aliases?: string[];
+}
+
+// Operator decision 2026-09-22 ("middle rule"), refining spec #200 7.2's (sevenTvEmoteId, alias)
+// comparison for the restore run only.
+describe('filterAlreadyPresentForRestore', () => {
+  let httpClient: HttpClient;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    httpClient = TestBed.inject(HttpClient);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  async function run(rows: RestoreRow[], entries: { id: string; alias: string }[]) {
+    const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).flush(entriesPage(entries));
+    return result$;
+  }
+
+  it("asks 7TV for each entry's alias, not only its id", async () => {
+    const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', []));
+    const req = httpMock.expectOne(GQL_ENDPOINT);
+    expect(req.request.body.query).toContain('alias');
+    req.flush(entriesPage([]));
+    await result$;
+  });
+
+  it('keeps a row whose emote is not in the set at all, unchanged', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(await run([row], [{ id: '7tv-other', alias: 'A' }])).toEqual({
+      rows: [row],
+      skipped: 0,
+      available: true,
+    });
+  });
+
+  it('drops a row whose every alias is already present under the same id', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(
+      await run(
+        [row],
+        [
+          { id: '7tv-1', alias: 'A' },
+          { id: '7tv-1', alias: 'B' },
+        ],
+      ),
+    ).toEqual({ rows: [], skipped: 2, available: true });
+  });
+
+  // The partial retry the id-only check made impossible: A came back, B failed — re-running the
+  // protocol must add B, and only B.
+  it('keeps only the missing aliases of a row whose id is present under some of its own aliases', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(await run([row], [{ id: '7tv-1', alias: 'A' }])).toEqual({
+      rows: [{ sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['B'] }],
+      skipped: 1,
+      available: true,
+    });
+  });
+
+  // #149: 7TV's addEmote only rejects a colliding alias string — re-adding A or B next to C would
+  // enter the same emote a second time.
+  it('drops the whole row when its id is present under an alias the row does not name', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(await run([row], [{ id: '7tv-1', alias: 'C' }])).toEqual({
+      rows: [],
+      skipped: 2,
+      available: true,
+    });
+  });
+
+  it('drops the whole row when a foreign alias sits next to one of its own', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(
+      await run(
+        [row],
+        [
+          { id: '7tv-1', alias: 'A' },
+          { id: '7tv-1', alias: 'C' },
+        ],
+      ),
+    ).toEqual({ rows: [], skipped: 2, available: true });
+  });
+
+  it('reads a row without aliases as [name], like the restore queue does', async () => {
+    const present: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A' };
+    const renamed: RestoreRow = { sevenTvEmoteId: '7tv-2', name: 'B' };
+
+    expect(
+      await run(
+        [present, renamed],
+        [
+          { id: '7tv-1', alias: 'A' },
+          { id: '7tv-2', alias: 'NotB' },
+        ],
+      ),
+    ).toEqual({ rows: [], skipped: 2, available: true });
+  });
+
+  it('compares aliases exactly, so a case-only difference counts as a foreign alias', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'pogu', aliases: ['pogu'] };
+
+    expect(await run([row], [{ id: '7tv-1', alias: 'PogU' }])).toEqual({
+      rows: [],
+      skipped: 1,
+      available: true,
+    });
+  });
+
+  it('fails open on a failed fetch, like the id-only check', async () => {
+    const rows: RestoreRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] }];
+
+    const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('network error'));
+
+    expect(await result$).toEqual({ rows, skipped: 0, available: false });
   });
 });

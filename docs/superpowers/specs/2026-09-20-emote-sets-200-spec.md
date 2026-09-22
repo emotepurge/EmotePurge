@@ -3204,6 +3204,24 @@ K6 bei `[name]`. Quelle (7TV direkt statt Vorschau-Route), Zeitpunkt (beim Best�
 Öffnen) und Begründung im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is identified
 by its 7TV id …", K5-Nachtrag vom 2026-09-22.
 
+## 38. Nachtrag: Die Vorprüfung des Restore vergleicht je Alias — die „mittlere Regel" (K5, Betreiber-Entscheidung 2026-09-22)
+
+7.2 verlangte für die Vorprüfung des Restore den Vergleich über `(sevenTvEmoteId, alias)`. Wörtlich
+genommen ließe das ein Emote, das im Ziel-Set unter einem **anderen** Alias liegt, ein zweites Mal
+anlegen — genau das #149-Loch, gegen das die Prüfung da ist. Der Betreiber hat am 2026-09-22 je
+Protokollzeile entschieden:
+
+1. Liegt die 7TV-ID nicht im Ziel-Set, wird die Zeile unverändert wiederhergestellt.
+2. Liegt die ID dort unter einem Alias, den die Zeile **nicht** nennt, fällt die ganze Zeile weg (wie
+   bisher).
+3. Sonst fallen die Aliase der Zeile weg, die unter dieser ID schon im Set liegen; die übrigen werden
+   angelegt. Eine Zeile `[A, B]`, deren `A` schon zurück ist, legt also nur `B` an.
+
+Nur der Restore-Lauf ändert sich; Import und Löschen bleiben bei der ID-Achse. Der Hinweis „schon im
+Ziel-Set" zählt übersprungene Aliase (`ADD`s), nicht Zeilen — wie die Bestätigung, die `ADD`s nennt.
+Begründung im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is identified by its 7TV
+id …", K5-Nachtrag „middle rule".
+
 ## 39. Nachtrag: Ziel-Picker — ein Layout je Konto, PERSONAL ausgeblendet (#217, 2026-09-22)
 
 §34 hat die beiden Entscheidungen aus Issue #217 nur für den *Quell*-Picker umgesetzt und den
