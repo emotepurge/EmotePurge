@@ -19,21 +19,22 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs` ·
 `src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
 `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
-`src/EmotePurge.Core/Entities/VoteSession.cs` · `src/EmotePurge.Core/Entities/VoteSessionEmote.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionQueryServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
 `web/src/app/core/voting/vote-session.model.ts` · `web/src/app/core/voting/vote-session.service.ts` ·
 `web/src/app/features/voting/vote-session-detail-page.ts` ·
 `web/src/app/features/voting/vote-session-detail-page.html` ·
 `web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/shared/export/voting-export.ts` ·
 `web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.html` ·
 `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
 `web/e2e/vote-ballot.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
-`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, F8, F12, E4, E10) ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, 6.10, F8, F12, E4, E10) ·
 `docs/plans/Plan-200-Emote-Sets.md` (K6: T6.1–T6.3)
 
 A vote session can now be scoped to any 7TV emote set of the channel, not only the active one — a
@@ -123,6 +124,32 @@ again in that view; and the vote-session detail page's mass-delete panel now als
 `results()` (not just `canSelectForDelete()`/`massDeletePanelSetId()`), so it cannot briefly mount
 bound to the channel's active set while the session's own results — and with them, its actual
 `emoteSetId` — are still in flight.
+
+**Final fix wave (whole-branch review: Opus, Codex Sol, a Fable arbitration), same entry, same
+day.** **Ruling D (P1, both reviews):** the vote detail page's mass-delete panel now locks —
+delete only, reusing the `nonActiveSet` copy from the usage page's own lock — whenever the
+session's own `EmoteSetId` names a set that is not the channel's currently active one. This is
+temporary, not the final shape: today's `sync-deleted { emoteIds }` still archives by `Emote.Id`
+alone and assumes the *active* set, so deleting a member shared between a set-session's own
+(non-active) set and the active set would remove it correctly on 7TV but archive the wrong row in
+Postgres. A null-session (no set of its own) and a set-session over the active set both stay
+unlocked. The lock lifts once K5's set-scoped `sync-deleted` body lands. **Fable A (P2, rate
+limit):** `POST /api/channels/{c}/vote-sessions` (create) moved from `Bookkeeping` (120/min) to
+`ForeignEmoteLookup` (10/min, spec 6.10) — a set-session's branch of `CreateAsync` reads the set's
+live 7TV membership, one or more paginated pages, the same provider-budget shape as the other
+`ForeignEmoteLookup` routes; a null-session create touches no 7TV endpoint and simply rides along
+under the same policy. `end`/`delete` keep `Bookkeeping` — they write only against Postgres.
+
+Two deliberate non-changes, recorded so a future reader does not mistake either for an oversight:
+the delta path (`SevenTvSyncService.ApplyEmoteSetUpdateAsync`, the EventAPI dispatch route) carries
+no `23505` retry of its own — E10 scopes the retry to `SyncChannelAsync` alone (the full
+reconcile), and a conflict reaching the delta path instead is left to the periodic resync (default
+60 s) to repair on its own next tick, the same staleness tolerance the delta path already has
+elsewhere. And a set-session's never-active row keeps `FirstSeenAt = null` at creation — a recorded
+deviation from spec section 9 step 3's "`FirstSeenAt` aus dem Set-Eintrag, wenn 7TV es liefert":
+the set-ID read path (`IForeignEmoteSetService`) does not thread 7TV's `AddedToSetAt` through (only
+the full sync's REST/dispatch path does, `SevenTvSyncService.UpsertEmote`), so the column is
+corrected retroactively if and when the set becomes active, not filled at ballot-creation time.
 
 ---
 

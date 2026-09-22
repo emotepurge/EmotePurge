@@ -365,8 +365,12 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task GetTotalsByEmoteIdsAsync_OmitsEmotesWithoutUsage()
     {
-        // No zero-fill here, unlike the context query: the caller already holds the emote rows and
-        // reads a missing key as zero, so filling them in would only make the payload bigger.
+        // No zero-fill here, unlike the context query: the caller already holds the emote rows, so
+        // filling in every id would only make the payload bigger. What a missing key means depends
+        // on the caller now (T6.3, AK 80): a null-session reads it as zero
+        // (VoteSessionQueryService.BuildResultRow's GetValueOrDefault(id, 0)); a set-session reads
+        // it as null — "never counted under this set at all" (TryGetValue, no default). This id has
+        // no UsageStat row under the set at all, so it stays absent from the dictionary either way.
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "ballottest2");
         var unused = await SeedEmoteAsync(db, channel.Id, "Unused");

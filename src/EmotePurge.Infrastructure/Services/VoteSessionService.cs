@@ -424,8 +424,9 @@ public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreign
     /// <see cref="IForeignEmoteSetService"/>'s set-ID read (<see cref="ForeignEmoteRow"/>) does not
     /// thread it through — this preview path was built for reading, not for backfilling that column.
     /// If this set later becomes the channel's active one, the worker's regular resync corrects
-    /// <c>FirstSeenAt</c> from the live <c>AddedToSetAt</c> it does carry (<c>SevenTvSyncService</c>,
-    /// the dispatch/REST fill-in around line 538). Runs inside the caller's transaction, so this
+    /// <c>FirstSeenAt</c> from the live <c>AddedToSetAt</c> it does carry
+    /// (<c>SevenTvSyncService.UpsertEmote</c>'s own correction, not a write-once backfill). Runs
+    /// inside the caller's transaction, so this
     /// insert never lands without the session it belongs to, or the reverse. A concurrent worker sync
     /// racing the same insert either lands first (this one then no-ops and reads the synced row back)
     /// or after (rare; left to the worker's own retry, spec E10 — out of scope here, see AK 78).
