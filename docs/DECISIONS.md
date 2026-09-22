@@ -42,7 +42,9 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/features/voting/vote-session-detail-page.ts` ·
 `web/src/app/features/voting/vote-session-list-page.spec.ts` ·
 `web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
-`web/src/app/shared/export/voting-export.spec.ts` · `web/src/app/shared/export/voting-export.ts`
+`web/src/app/shared/export/voting-export.spec.ts` · `web/src/app/shared/export/voting-export.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts`
 
 A vote session can now be scoped to any 7TV emote set of the channel, not only the active one — a
 **set-session**, created from a non-active set's view in the usage-stats grid (K6, spec section 9),
@@ -155,6 +157,18 @@ deviation from spec section 9 step 3's "`FirstSeenAt` aus dem Set-Eintrag, wenn 
 the set-ID read path (`IForeignEmoteSetService`) does not thread 7TV's `AddedToSetAt` through (only
 the full sync's REST/dispatch path does, `SevenTvSyncService.UpsertEmote`), so the column is
 corrected retroactively if and when the set becomes active, not filled at ballot-creation time.
+
+**Known limitations, both on the vote-session detail page's mass-delete panel, recorded rather than
+fixed here (rebase-delta review, same day).** (a) A delete started from the vote page records
+`[NameAtCreation]` as the emote's only alias — `MassDeletePanel.readLiveAliasesFromActiveSet` stays
+unset there on purpose (see that input's own doc). The recorded alias goes stale after a later 7TV
+rename, and a #74 duplicate cell still records only one of its aliases, same as before this entry;
+the fix needs a live read of the panel's own (possibly non-active) set's membership, not the active
+set's, which is a design step of its own rather than a one-line follow-up. (b) A set-session member
+that has since left the live set stays selectable for delete on the vote page — `eligible` is always
+`true` there by design (this entry, above), it does not track live membership — so confirming a
+delete on such a member issues a `RemoveEmote` for something no longer a member of the target set.
+Both are tracked as a follow-up in epic #200, not fixed in K6.
 
 ---
 
