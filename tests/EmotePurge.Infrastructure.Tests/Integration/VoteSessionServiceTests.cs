@@ -26,7 +26,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = emote.Id, UserId = voter.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var deleted = await service.DeleteAsync(channel.ChannelName, session.Id, Actor);
 
         Assert.True(deleted);
@@ -40,7 +40,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "deletetest2");
 
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var deleted = await service.DeleteAsync(channel.ChannelName, sessionId: 999_999, Actor);
 
         Assert.False(deleted);
@@ -51,7 +51,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var deleted = await service.DeleteAsync("does-not-exist", sessionId: 1, Actor);
 
         Assert.False(deleted);
@@ -65,7 +65,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var toDelete = await SeedActiveSessionAsync(db, channel.Id);
         var toKeep = await SeedActiveSessionAsync(db, channel.Id);
 
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var deleted = await service.DeleteAsync(channel.ChannelName, toDelete.Id, Actor);
 
         Assert.True(deleted);
@@ -77,7 +77,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "votesessionaudit1");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Sommer-Purge", AllowedRoles.Everyone), Actor);
@@ -98,7 +98,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "votesessionaudit2");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, _) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "   ", AllowedRoles.Everyone), Actor);
@@ -112,7 +112,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "rolesempty1");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Ohne Rollen", (AllowedRoles)0), Actor);
@@ -129,7 +129,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // the decision log. VIPs combined with another role must still be rejected.
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "vipsnotsupported1");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Mit VIPs", AllowedRoles.Everyone | AllowedRoles.VIPs), Actor);
@@ -144,7 +144,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "startedatfuture1");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Zukunft", AllowedRoles.Everyone, StartedAt: DateTime.UtcNow.AddDays(1)),
@@ -162,7 +162,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // depend on the exact millisecond the test happens to run at.
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "startedattoofarback1");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var wayTooFarBack = DateTime.UtcNow.AddDays(-(VoteSessionLimits.MaxBackdateDays + 30));
 
         var (result, session) = await service.CreateAsync(
@@ -180,7 +180,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "ballotcreate1");
         var emoteA = await SeedEmoteAsync(db, channel.Id, "EmoteA");
         var emoteB = await SeedEmoteAsync(db, channel.Id, "EmoteB");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         // Duplicate and whitespace-padded ids collapse to one clean row each.
         var (result, session) = await service.CreateAsync(
@@ -201,7 +201,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "hidecreate1");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (_, hidden) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Geheim", AllowedRoles.Everyone, HideResultsUntilEnd: true), Actor);
@@ -223,7 +223,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "ballotcreate2");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         // An explicit empty ballot (here: whitespace-only ids) is an error, not "all emotes".
         var (result, session) = await service.CreateAsync(
@@ -245,7 +245,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var archived = await SeedEmoteAsync(db, channel.Id, "Archived");
         archived.IsArchived = true;
         await db.SaveChangesAsync();
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (foreignResult, _) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Fremd", AllowedRoles.Everyone, EmoteIds: [own.Id, foreign.Id]), Actor);
@@ -270,10 +270,11 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // AK 76: all-or-nothing on the 7TV identity — one id outside the live set rejects the whole
         // create, same "all or nothing" shape as the local-guid ballot's own EmoteIdsInvalid above.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "setballot1");
+        var channel = await SeedChannelAsync(db, "setballot1", twitchChannelId: "setballot1-twitch");
         var foreignEmoteSetService = SubstituteForeignEmoteSetService(
             channel.ChannelName, "set-1", ("7tv-live", "LiveOnly", "https://cdn.7tv.app/emote/live/2x.webp"));
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var emoteSetListService = SubstituteEmoteSetListService("set-1");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -294,10 +295,11 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // AK 77 (new-row half): a live member with no local row yet gets one, created archived
         // ("never active") — never granted the appearance of being live in our own database.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "setballot2");
+        var channel = await SeedChannelAsync(db, "setballot2", twitchChannelId: "setballot2-twitch");
         var foreignEmoteSetService = SubstituteForeignEmoteSetService(
             channel.ChannelName, "set-2", ("7tv-new", "NewMember", "https://cdn.7tv.app/emote/new/2x.webp"));
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var emoteSetListService = SubstituteEmoteSetListService("set-2");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -325,14 +327,15 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // ordinary sync — is taken over unmodified (ON CONFLICT DO NOTHING). NameAtCreation still
         // freezes the *live* 7TV value even though the stored row itself was left untouched.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "setballot3");
+        var channel = await SeedChannelAsync(db, "setballot3", twitchChannelId: "setballot3-twitch");
         var existing = await SeedEmoteAsync(db, channel.Id, "StaleName");
         existing.SevenTvEmoteId = "7tv-existing";
         existing.ImageUrl = "https://cdn.7tv.app/emote/stale/2x.webp";
         await db.SaveChangesAsync();
         var foreignEmoteSetService = SubstituteForeignEmoteSetService(
             channel.ChannelName, "set-3", ("7tv-existing", "LiveName", "https://cdn.7tv.app/emote/live/2x.webp"));
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var emoteSetListService = SubstituteEmoteSetListService("set-3");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -357,12 +360,13 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         // Spec section 9, step 1: an unreadable live membership list creates no session at all.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "setballot4");
+        var channel = await SeedChannelAsync(db, "setballot4", twitchChannelId: "setballot4-twitch");
         var foreignEmoteSetService = Substitute.For<IForeignEmoteSetService>();
         foreignEmoteSetService
             .GetForeignEmoteSetBySetIdAsync(channel.ChannelName, "set-4", Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(ForeignEmoteSetLookupResult.Failed(ForeignEmoteSetLookupStatus.SevenTvUnavailable));
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var emoteSetListService = SubstituteEmoteSetListService("set-4");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -383,12 +387,13 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // ToDictionary over the live members would throw ArgumentException on the second occurrence.
         // First-wins keeps this deterministic without needing to pick a "correct" alias.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "setballot5");
+        var channel = await SeedChannelAsync(db, "setballot5", twitchChannelId: "setballot5-twitch");
         var foreignEmoteSetService = SubstituteForeignEmoteSetService(
             channel.ChannelName, "set5",
             ("7tv-dup", "FirstAlias", "https://cdn.7tv.app/emote/dup/2x.webp"),
             ("7tv-dup", "SecondAlias", "https://cdn.7tv.app/emote/dup-second/2x.webp"));
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var emoteSetListService = SubstituteEmoteSetListService("set5");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -416,7 +421,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "setballot6");
         var foreignEmoteSetService = Substitute.For<IForeignEmoteSetService>();
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var service = new VoteSessionService(db, foreignEmoteSetService, Substitute.For<ISevenTvEmoteSetListService>());
 
         var (emptyListResult, _) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -443,10 +448,11 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // Mirrors CreateAsync_WithEmoteIds_PersistsDedupedBallotRows above, for the 7TV-id ballot:
         // VoteSessionEmote's (VoteSessionId, EmoteId) primary key would otherwise reject a repeated id.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "setballot7");
+        var channel = await SeedChannelAsync(db, "setballot7", twitchChannelId: "setballot7-twitch");
         var foreignEmoteSetService = SubstituteForeignEmoteSetService(
             channel.ChannelName, "set7", ("7tv-repeat", "Repeat", "https://cdn.7tv.app/emote/repeat/2x.webp"));
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var emoteSetListService = SubstituteEmoteSetListService("set7");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
 
         var (result, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
@@ -462,6 +468,87 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task CreateAsync_SetSession_WithSetIdNotOnTheChannelsList_ReturnsEmoteIdsInvalid_AndWritesNothing()
+    {
+        // Spec section 9, new step 0 (arbitrated review round 2, precedent 6.8): a set id the
+        // channel's own 7TV list does not even mention is rejected before the live-membership read —
+        // GetForeignEmoteSetBySetIdAsync must never be called for a set that fails this gate.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setballot8", twitchChannelId: "setballot8-twitch");
+        var foreignEmoteSetService = Substitute.For<IForeignEmoteSetService>();
+        var emoteSetListService = SubstituteEmoteSetListService("some-other-set");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Fremdes Set", AllowedRoles.Everyone,
+                EmoteSetId: "set8", SevenTvEmoteIds: ["7tv-x"]),
+            Actor);
+
+        Assert.Equal(CreateVoteSessionResult.EmoteIdsInvalid, result);
+        Assert.Null(session);
+        await foreignEmoteSetService.DidNotReceive().GetForeignEmoteSetBySetIdAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        Assert.Empty(await db.VoteSessions.Where(s => s.ChannelId == channel.Id).ToListAsync());
+        Assert.Empty(await db.Emotes.Where(e => e.ChannelId == channel.Id).ToListAsync());
+        Assert.Empty(await LoadAuditEntriesAsync(db, "setballot8"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_SetSession_WithPersonalSet_ReturnsEmoteIdsInvalid_AndWritesNothing()
+    {
+        // A PERSONAL set is listed, but it is never one of "the channel's own" sets (spec section 9
+        // step 0) — Kind must be NORMAL, or the id must be the channel's own ActiveEmoteSetId, and
+        // neither holds here.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setballot9", twitchChannelId: "setballot9-twitch");
+        var foreignEmoteSetService = Substitute.For<IForeignEmoteSetService>();
+        var emoteSetListService = SubstituteEmoteSetListService("set9", kind: "PERSONAL");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Persönliches Set", AllowedRoles.Everyone,
+                EmoteSetId: "set9", SevenTvEmoteIds: ["7tv-x"]),
+            Actor);
+
+        Assert.Equal(CreateVoteSessionResult.EmoteIdsInvalid, result);
+        Assert.Null(session);
+        await foreignEmoteSetService.DidNotReceive().GetForeignEmoteSetBySetIdAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        Assert.Empty(await db.VoteSessions.Where(s => s.ChannelId == channel.Id).ToListAsync());
+        Assert.Empty(await LoadAuditEntriesAsync(db, "setballot9"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_SetSession_WhenTheSetListIsUnavailable_ReturnsSevenTvUnavailable_AndWritesNothing()
+    {
+        // The set-list read (step 0) fails closed exactly like the live-membership read (step 1)
+        // already does — an unreadable answer never falls through to "not the channel's set".
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setballot10", twitchChannelId: "setballot10-twitch");
+        var foreignEmoteSetService = Substitute.For<IForeignEmoteSetService>();
+        var emoteSetListService = Substitute.For<ISevenTvEmoteSetListService>();
+        emoteSetListService
+            .ListByTwitchIdAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Failed(EmoteSetListStatus.Unavailable));
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Set", AllowedRoles.Everyone,
+                EmoteSetId: "set10", SevenTvEmoteIds: ["7tv-x"]),
+            Actor);
+
+        Assert.Equal(CreateVoteSessionResult.SevenTvUnavailable, result);
+        Assert.Null(session);
+        await foreignEmoteSetService.DidNotReceive().GetForeignEmoteSetBySetIdAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        Assert.Empty(await db.VoteSessions.Where(s => s.ChannelId == channel.Id).ToListAsync());
+        Assert.Empty(await LoadAuditEntriesAsync(db, "setballot10"));
+    }
+
+    [Fact]
     public async Task CastVoteAsync_SubsetSession_AllowsBallotMembers_RejectsOutsiders()
     {
         await using var db = fixture.CreateDbContext();
@@ -469,7 +556,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var onBallot = await SeedEmoteAsync(db, channel.Id, "OnBallot");
         var offBallot = await SeedEmoteAsync(db, channel.Id, "OffBallot");
         var voter = await SeedUserAsync(db, "ballotcast1-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var (_, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Kuratiert", AllowedRoles.Everyone, EmoteIds: [onBallot.Id]), Actor);
 
@@ -489,7 +576,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "ballotcast2");
         var emote = await SeedEmoteAsync(db, channel.Id, "SoonGone");
         var voter = await SeedUserAsync(db, "ballotcast2-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var (_, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Kuratiert", AllowedRoles.Everyone, EmoteIds: [emote.Id]), Actor);
 
@@ -508,11 +595,12 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // section 9) — "steht auf dem Wahlzettel" is the only criterion here, unlike the null-session
         // case above where IsArchived still gates the vote.
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "setballotcast1");
+        var channel = await SeedChannelAsync(db, "setballotcast1", twitchChannelId: "setballotcast1-twitch");
         var voter = await SeedUserAsync(db, "setballotcast1-voter");
         var foreignEmoteSetService = SubstituteForeignEmoteSetService(
             channel.ChannelName, "set-5", ("7tv-halloween", "PumpkinFace", "https://cdn.7tv.app/emote/pumpkin/2x.webp"));
-        var service = new VoteSessionService(db, foreignEmoteSetService);
+        var emoteSetListService = SubstituteEmoteSetListService("set-5");
+        var service = new VoteSessionService(db, foreignEmoteSetService, emoteSetListService);
         var (_, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(
                 channel.ChannelName, "Halloween-Set", AllowedRoles.Everyone,
@@ -534,7 +622,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "ballotcast3");
         var emote = await SeedEmoteAsync(db, channel.Id, "AnyEmote");
         var voter = await SeedUserAsync(db, "ballotcast3-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         var (_, session) = await service.CreateAsync(
             new VoteSessionCreateRequest(channel.ChannelName, "Alle", AllowedRoles.Everyone), Actor);
 
@@ -556,7 +644,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(db, channel.Id, "Emote");
         var session = await SeedActiveSessionAsync(db, channel.Id);
         var voter = await SeedUserAsync(db, "castupsert1-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (firstResult, firstVote) = await service.CastVoteAsync(channel.ChannelName, session.Id, emote.Id, voter.Id, VoteType.Keep);
         var (secondResult, secondVote) = await service.CastVoteAsync(channel.ChannelName, session.Id, emote.Id, voter.Id, VoteType.Delete);
@@ -579,7 +667,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(db, channel.Id, "Emote");
         var session = await SeedActiveSessionAsync(db, channel.Id);
         var voter = await SeedUserAsync(db, "castended1-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
         await service.EndAsync(channel.ChannelName, session.Id, Actor);
 
         var (result, vote) = await service.CastVoteAsync(channel.ChannelName, session.Id, emote.Id, voter.Id, VoteType.Keep);
@@ -597,7 +685,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(db, channel.Id, "Emote");
         var session = await SeedActiveSessionAsync(db, channel.Id);
         var voter = await SeedUserAsync(db, "castunknown1-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, vote) = await service.CastVoteAsync("doesnotexist", session.Id, emote.Id, voter.Id, VoteType.Keep);
 
@@ -617,7 +705,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var emoteA = await SeedEmoteAsync(db, channelA.Id, "Emote");
         var sessionB = await SeedActiveSessionAsync(db, channelB.Id);
         var voter = await SeedUserAsync(db, "castforeign1-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, vote) = await service.CastVoteAsync(channelA.ChannelName, sessionB.Id, emoteA.Id, voter.Id, VoteType.Keep);
 
@@ -637,7 +725,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         var sessionA = await SeedActiveSessionAsync(db, channelA.Id);
         var emoteB = await SeedEmoteAsync(db, channelB.Id, "ForeignEmote");
         var voter = await SeedUserAsync(db, "castforeign2-voter");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         var (result, vote) = await service.CastVoteAsync(channelA.ChannelName, sessionA.Id, emoteB.Id, voter.Id, VoteType.Keep);
 
@@ -654,7 +742,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "votesessionaudit3");
         var session = await SeedActiveSessionAsync(db, channel.Id);
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         await service.EndAsync(channel.ChannelName, session.Id, Actor);
         await service.EndAsync(channel.ChannelName, session.Id, Actor);
@@ -670,7 +758,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "votesessionaudit4");
         var session = await SeedActiveSessionAsync(db, channel.Id);
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         await service.DeleteAsync(channel.ChannelName, session.Id, Actor);
 
@@ -687,7 +775,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "votesessionaudit5");
-        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>());
+        var service = new VoteSessionService(db, Substitute.For<IForeignEmoteSetService>(), Substitute.For<ISevenTvEmoteSetListService>());
 
         await service.DeleteAsync(channel.ChannelName, sessionId: 999_999, Actor);
 
@@ -719,9 +807,9 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
             .ToListAsync();
     }
 
-    private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName)
+    private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName, string? twitchChannelId = null)
     {
-        var channel = new Channel { ChannelName = channelName, IsBotActive = true };
+        var channel = new Channel { ChannelName = channelName, IsBotActive = true, TwitchChannelId = twitchChannelId };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;
@@ -780,5 +868,23 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
             .Returns(ForeignEmoteSetLookupResult.Ok(
                 new ForeignEmoteSet(channelName, SevenTvUserId: null, emoteSetId, emotes.Count, Truncated: false, emotes)));
         return foreignEmoteSetService;
+    }
+
+    /// <summary>
+    /// A substituted <see cref="ISevenTvEmoteSetListService"/> answering <c>Ok</c> with exactly one
+    /// set — the shape every set-session test needs to clear the "this set is the channel's own"
+    /// check (spec section 9, step 0) before the live-membership read is ever reached. Defaults to
+    /// <c>NORMAL</c>, the one selectable kind (8.6); tests that need to fail the check pass a
+    /// different kind or a different set id outright.
+    /// </summary>
+    private static ISevenTvEmoteSetListService SubstituteEmoteSetListService(string emoteSetId, string kind = "NORMAL")
+    {
+        var emoteSetListService = Substitute.For<ISevenTvEmoteSetListService>();
+        emoteSetListService
+            .ListByTwitchIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(
+                SevenTvActiveEmoteSetId: emoteSetId,
+                Sets: [new EmoteSetSummary(emoteSetId, "Halloween-Set", Capacity: null, kind, IsPersonal: kind == "PERSONAL", OwnerDisplayName: null)])));
+        return emoteSetListService;
     }
 }

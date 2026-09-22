@@ -27,6 +27,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionQueryServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`web/e2e/audit/ui-audit.audit.ts` ·
 `web/e2e/support/mocks.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
 `web/e2e/vote-ballot.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
 `web/src/app/core/voting/vote-session.model.ts` ·
@@ -169,6 +170,14 @@ that has since left the live set stays selectable for delete on the vote page �
 `true` there by design (this entry, above), it does not track live membership — so confirming a
 delete on such a member issues a `RemoveEmote` for something no longer a member of the target set.
 Both are tracked as a follow-up in epic #200, not fixed in K6.
+
+**Arbitrated review fixes (round 2, Opus/Codex Sol with a Fable arbitration), same entry, same
+day.** `CreateAsync` now rejects a set-session whose `emoteSetId` is not one of the channel's own
+sets before it ever reads that set's live membership (spec section 9's new step 0, via
+`ISevenTvEmoteSetListService`, precedent 6.8), the usage-stats page's vote button now counts and
+gates on the exact ballot `openCreateVoteSession` sends instead of a stale sibling count, and the
+vote detail page withholds the drilldown trigger from a set-session row that carries no usage
+number while leaving a null-session's archived-with-null-usage rows untouched.
 
 ---
 

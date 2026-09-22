@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
@@ -8,7 +9,9 @@ using NpgsqlTypes;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreignEmoteSetService) : IVoteSessionService
+public class VoteSessionService(
+    AppDbContext db, IForeignEmoteSetService foreignEmoteSetService, ISevenTvEmoteSetListService emoteSetListService)
+    : IVoteSessionService
 {
     // AuditLogEntry.TargetType for every entry this service writes.
     private const string VoteSessionTargetType = "voteSession";
@@ -72,12 +75,48 @@ public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreign
             return (CreateVoteSessionResult.ChannelNotFound, null);
         }
 
-        // Set-session steps 1–2 (spec section 9): read the set's live membership from 7TV, then check
-        // all-or-nothing on the 7TV identity. Done ahead of the transaction below — an HTTP round trip
-        // has no business holding a database transaction open.
+        // Set-session steps 0–2 (spec section 9): step 0 first, so a set that is not even the
+        // channel's own never reaches the live-membership read below (precedent 6.8, which gates the
+        // same way on "ActiveEmoteSetId or in the channel's set list"). Steps 1–2 read the set's live
+        // membership from 7TV, then check all-or-nothing on the 7TV identity. Done ahead of the
+        // transaction below — an HTTP round trip has no business holding a database transaction open.
         IReadOnlyDictionary<string, ForeignEmoteRow>? liveMembers = null;
         if (isSetSession)
         {
+            if (channel.TwitchChannelId is null)
+            {
+                // No sync has ever resolved a Twitch identity for this channel, so there is nothing to
+                // ask 7TV about — and therefore no way this set could be one of the channel's own.
+                return (CreateVoteSessionResult.EmoteIdsInvalid, null);
+            }
+
+            var setListResult = await emoteSetListService.ListByTwitchIdAsync(channel.TwitchChannelId, cancellationToken);
+            switch (setListResult.Status)
+            {
+                case EmoteSetListStatus.Ok:
+                    var belongsToChannel = setListResult.List!.Sets.Any(set =>
+                        string.Equals(set.Id, request.EmoteSetId, StringComparison.Ordinal)
+                        && string.Equals(set.Kind, "NORMAL", StringComparison.Ordinal))
+                        || string.Equals(request.EmoteSetId, channel.ActiveEmoteSetId, StringComparison.Ordinal);
+                    if (!belongsToChannel)
+                    {
+                        return (CreateVoteSessionResult.EmoteIdsInvalid, null);
+                    }
+
+                    break;
+                case EmoteSetListStatus.NoSevenTvAccount:
+                    // An answer, not a failure (spec 6.1) — but one that leaves no set of this
+                    // channel's own for the requested id to be.
+                    return (CreateVoteSessionResult.EmoteIdsInvalid, null);
+                case EmoteSetListStatus.RateLimited:
+                case EmoteSetListStatus.Unavailable:
+                case EmoteSetListStatus.BudgetExhausted:
+                    return (CreateVoteSessionResult.SevenTvUnavailable, null);
+                default:
+                    throw new UnreachableException(
+                        $"Unexpected {nameof(EmoteSetListStatus)} value: {setListResult.Status}.");
+            }
+
             var lookup = await foreignEmoteSetService.GetForeignEmoteSetBySetIdAsync(
                 channel.ChannelName, request.EmoteSetId!, cancellationToken: cancellationToken);
             if (lookup.Status != ForeignEmoteSetLookupStatus.Ok)

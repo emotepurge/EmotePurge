@@ -33,7 +33,10 @@ public enum CreateVoteSessionResult
     EmoteIdsEmpty,
     // At least one provided id is unknown, belongs to another channel, or (null-session only) already
     // archived. For a set-session this instead means at least one sevenTvEmoteIds entry is not a live
-    // member of the set (spec section 9, step 2 — all-or-nothing on the 7TV identity).
+    // member of the set (spec section 9, step 2 — all-or-nothing on the 7TV identity), or — checked
+    // first, spec section 9 step 0 — the emoteSetId itself is not one of the channel's own sets
+    // (channel.TwitchChannelId unresolved, ISevenTvEmoteSetListService answers NoSevenTvAccount, or
+    // Ok without the set among the channel's NORMAL-kind sets or its ActiveEmoteSetId).
     EmoteIdsInvalid,
     // Set-session exclusion rule (spec 6.9/9): emoteSetId set requires a non-empty sevenTvEmoteIds and
     // no emoteIds; emoteSetId absent forbids sevenTvEmoteIds. The two fields disagree about which of

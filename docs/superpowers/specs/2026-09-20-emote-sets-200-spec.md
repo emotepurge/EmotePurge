@@ -1234,6 +1234,13 @@ eine dynamische „alle Emotes"-Set-Session gibt es nicht (400 `vote_session_set
 
 **Anlegen (`VoteSessionService.CreateAsync`, `:14 ff.`), Set-Session:**
 
+0. Kanalzugehörigkeit der Set-ID (Präzedenz 6.8, „ActiveEmoteSetId oder in der Set-Liste des
+   Kanals"): `channel.TwitchChannelId` fehlt ⇒ `EmoteIdsInvalid` (400 `emote_ids_invalid`), noch
+   ohne 7TV-Anfrage; sonst `ISevenTvEmoteSetListService.ListByTwitchIdAsync` nach der Twitch-ID des
+   Kanals — `Ok` und die Set-ID steht darin mit `Kind == "NORMAL"` oder ist
+   `channel.ActiveEmoteSetId` ⇒ weiter zu Schritt 1; `Ok` ohne das, oder `NoSevenTvAccount`, ⇒
+   `EmoteIdsInvalid`; `RateLimited`/`Unavailable`/`BudgetExhausted` ⇒ Ergebnis `SevenTvUnavailable`
+   → 503 `foreign_channel_seventv_unavailable`, keine Session.
 1. Live-Mitgliederliste des Sets über `IForeignEmoteSetService` nach Set-ID (6.4); nicht lesbar ⇒
    Ergebnis `SevenTvUnavailable` → 503 `foreign_channel_seventv_unavailable`, keine Session.
 2. All-or-nothing auf der **7TV-Identität**: jede `sevenTvEmoteIds`-Id muss Live-Mitglied sein,
