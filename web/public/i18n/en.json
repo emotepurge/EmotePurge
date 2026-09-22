@@ -906,7 +906,6 @@
         "noRows": "The file contains no importable emotes.",
         "wrongChannel": "The protocol belongs to a different channel.",
         "wrongSet": "The protocol belongs to a different emote set — the channel switched its active set.",
-        "restoreNonActiveSet": "For now, restoring only works in the active set — this set is not the active one right now.",
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore."
       }
     },

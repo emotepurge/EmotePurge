@@ -727,10 +727,13 @@ export class UsageStatsPage {
    * The "objective" reasons a non-active set view blocks a writer, independent of *which* writer:
    * the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
    * request failed), the member list could not be read (503/429), the member list came back
-   * `truncated`, or the member list is still (re)loading for a settled, non-switching view (same
-   * "not loaded yet" reason as switching — a list not yet confirmed readable must not be trusted
-   * either way). `null` for the active view and for a non-active view whose member list loaded
-   * clean.
+   * `truncated`, or the member list is still loading for the first time in a settled,
+   * non-switching view (same "not loaded yet" reason as switching — a list not yet confirmed
+   * readable must not be trusted either way). A *loud* reload (`channel.synced`, the refresh
+   * button) does not hit that last case: it keeps serving the previous list as `'ready'` while it
+   * refetches (spec's own "second review round" addendum in DECISIONS), so it locks only if that
+   * previous list was itself `truncated` — never merely for being mid-reload. `null` for the
+   * active view and for a non-active view whose member list loaded clean.
    *
    * Shared by `deleteLockReasonKey` (spec #200, 8.3/8.8) and `voteLockReasonKey` (spec 9, K6): a
    * vote session is still locked for *every* non-active view regardless of this shared reason —

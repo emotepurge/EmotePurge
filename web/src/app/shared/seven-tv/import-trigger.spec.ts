@@ -234,7 +234,6 @@ describe('ImportTrigger', () => {
       expect(dataAt(0)).toEqual({
         channelName: 'achannel',
         setId: 'aset',
-        restoreEnabled: true,
       });
     });
 
@@ -529,17 +528,6 @@ describe('ImportTrigger', () => {
   });
 
   describe('a non-active set on screen (#200, T4.5): all four doors follow it, restore included since K5', () => {
-    it('leaves the source-dialog data restore-enabled when setId differs from activeSetId', () => {
-      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: CURRENT_SET });
-      dialog.click();
-
-      expect(dataAt(0)).toEqual({
-        channelName: CURRENT_CHANNEL,
-        setId: 'set-halloween',
-        restoreEnabled: true,
-      });
-    });
-
     // K5/T5.3: restore's own slot preview follows the same active/non-active fork the other three
     // doors already had (spec 8.3) — the run itself was already set-aware since T5.1/T5.2.
     it('restores into the non-active set, reading its slot preview live instead of EmoteSetStatus', () => {
@@ -741,17 +729,6 @@ describe('ImportTrigger', () => {
         emotes: [],
       });
     }
-
-    it('still leaves restore enabled when the host passes activeSetId null (status unknown), unlike an omitted input', () => {
-      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: null });
-      dialog.click();
-
-      expect(dataAt(0)).toEqual({
-        channelName: CURRENT_CHANNEL,
-        setId: 'set-halloween',
-        restoreEnabled: true,
-      });
-    });
 
     it("takes the explicit 'trackedSet' path for the selected set instead of the active-set fast path", () => {
       loadEmoteSetPreview.mockReturnValue(preview());

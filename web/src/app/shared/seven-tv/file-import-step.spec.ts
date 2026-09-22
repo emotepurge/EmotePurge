@@ -35,8 +35,6 @@ const DE_TRANSLATIONS = {
         wrongChannel: 'Das Protokoll gehört zu einem anderen Channel.',
         wrongSet:
           'Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.',
-        restoreNonActiveSet:
-          'Wiederherstellen geht vorerst nur im aktiven Set — dieses Set ist gerade nicht aktiv.',
         noRestorableRows:
           'Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.',
       },
@@ -154,12 +152,11 @@ describe('FileImportStep', () => {
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
   });
 
-  function render(restoreEnabled = true): Harness {
+  function render(): Harness {
     const fixture = TestBed.createComponent(FileImportStep);
     // Frozen values handed in by the trigger, never read in a constructor (Regel 13).
     fixture.componentRef.setInput('channelName', channelName);
     fixture.componentRef.setInput('setId', setId);
-    fixture.componentRef.setInput('restoreEnabled', restoreEnabled);
     fixture.componentInstance.picked.subscribe((result) => closed.push(result));
     fixture.detectChanges();
     const host: HTMLElement = fixture.nativeElement;
@@ -301,42 +298,6 @@ describe('FileImportStep', () => {
 
       expect(closed).toEqual([]);
       expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.wrongSet);
-    });
-  });
-
-  describe('restoreEnabled locks the restore branch without touching the import one (spec #200, T4.5)', () => {
-    it('shows a locked-reason banner instead of a restore result when disabled, even for a matching protocol', async () => {
-      const dialog = render(false);
-
-      await dialog.selectFile(file(purgeRunText()));
-
-      expect(closed).toEqual([]);
-      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.restoreNonActiveSet);
-    });
-
-    it('never reaches the set-match check while locked — a WRONG-set protocol reports the same lock reason, not wrongSet', async () => {
-      const dialog = render(false);
-
-      await dialog.selectFile(file(purgeRunText({ emoteSetId: 'set-old' })));
-
-      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.restoreNonActiveSet);
-    });
-
-    it('leaves the import path untouched while restore is locked', async () => {
-      const dialog = render(false);
-
-      await dialog.selectFile(file(emoteListText()));
-
-      expect(closed).toHaveLength(1);
-      expect(closed[0]?.kind).toBe('import');
-    });
-
-    it('defaults to enabled when the caller does not pass it', async () => {
-      const fixture = TestBed.createComponent(FileImportStep);
-      fixture.componentRef.setInput('channelName', channelName);
-      fixture.componentRef.setInput('setId', setId);
-      fixture.detectChanges();
-      expect(fixture.componentInstance.restoreEnabled()).toBe(true);
     });
   });
 

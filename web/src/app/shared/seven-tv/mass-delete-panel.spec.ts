@@ -1,5 +1,6 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
@@ -1495,5 +1496,102 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
     closed.next(true);
 
     expect(startDelete).not.toHaveBeenCalled();
+  });
+});
+
+// #200 K5 finding F: the restore-confirm path used to read `this.channelName()` — the panel's
+// live input — at three call sites, instead of the finished run's own frozen `channelName`
+// (`DeleteRunInfo.channelName`). Harmless while a panel only ever sees one channel across a run's
+// lifetime, which is true today, but the wrong source of truth all the same — the same class of
+// bug finding A fixed for `setId`. Pinned here against a panel whose live `channelName` input
+// disagrees with the run's own, which cannot happen in production today but must not silently
+// resolve to the live value if it ever does.
+describe("MassDeletePanel — the restore-confirm path reads the run's own channelName, not the live input (#200 K5 finding F)", () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let getSetStatus: ReturnType<typeof vi.fn>;
+  let startRestore: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+
+  const RUN_CHANNEL = 'runchannel';
+  const LIVE_CHANNEL = 'livechannel';
+
+  beforeEach(async () => {
+    closed = new Subject<boolean | undefined>();
+    getSetStatus = vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 }));
+    startRestore = vi.fn();
+    const lastRun: WritableSignal<{
+      setId: string;
+      channelName: string;
+      result: RunResult;
+    } | null> = signal({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      result: {
+        doneKeys: ['7tv-1'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    const restoreService = { ...fakeRestoreService(), startRestore };
+    const emoteAdminService = { getSetStatus } as unknown as Partial<EmoteAdminService>;
+    const providers = panelProviders({
+      deleteService: fakeDeleteService({ lastRun }),
+      restoreService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService,
+    });
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', LIVE_CHANNEL);
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it("reads the slot-status check from the run's channelName, not the panel's live one", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+
+    expect(getSetStatus).toHaveBeenCalledWith(RUN_CHANNEL);
+    expect(getSetStatus).not.toHaveBeenCalledWith(LIVE_CHANNEL);
+  });
+
+  it("starts the restore against the run's channelName, not the panel's live one", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    closed.next(true);
+
+    // filterAlreadyPresent's own 7TV read — fails open, same as a network hiccup would.
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(startRestore).toHaveBeenCalledTimes(1);
+    expect(startRestore.mock.calls[0][1]).toBe(RUN_CHANNEL);
   });
 });

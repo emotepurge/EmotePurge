@@ -515,27 +515,31 @@ export class MassDeletePanel {
     if (!this.tokenService.hasToken()) {
       openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
         if (saved) {
-          this.openRestoreConfirmDialog(run.setId, doneItems);
+          this.openRestoreConfirmDialog(run.setId, run.channelName, doneItems);
         }
       });
       return;
     }
-    this.openRestoreConfirmDialog(run.setId, doneItems);
+    this.openRestoreConfirmDialog(run.setId, run.channelName, doneItems);
   }
 
-  /** `runSetId` is the set the delete run removed from (its frozen record, spec #200 7.2) — the
-   *  restore puts the emotes back there, never into whatever `setId()` says by now. Named and
-   *  slot-previewed against *that* set (spec 8.8), which the dropdown may since have moved past
-   *  (it only locks while the run is still writing). */
-  private openRestoreConfirmDialog(runSetId: string, doneItems: readonly RunQueueItem[]): void {
-    const runIsActiveSet = runSetId === this.activeSetId();
+  /** `runSetId`/`runChannelName` are the set and channel the delete run removed from (its frozen
+   *  record, spec #200 7.2/AK 71) — the restore puts the emotes back there, never into whatever
+   *  `setId()`/`channelName()` say by now. Named and slot-previewed against *that* set (spec 8.8),
+   *  which the dropdown may since have moved past (it only locks while the run is still writing). */
+  private openRestoreConfirmDialog(
+    runSetId: string,
+    runChannelName: string,
+    doneItems: readonly RunQueueItem[],
+  ): void {
+    const runIsActiveSet = runSetId === this.effectiveActiveSetId();
     // Live slot view, so the projection line pops in once the check answers (the dialog is
     // already open by then) — same pattern as the delete confirm's shared-set warning. The active
     // run's set keeps the cheap, non-7TV-rate-limited status read; any other set reads the live
     // per-set preview instead (spec 8.3) — `getSetStatus` has no set-scoped form at all.
     this.restoreSlots.set(null);
     if (runIsActiveSet) {
-      this.emoteAdminService.getSetStatus(this.channelName()).subscribe({
+      this.emoteAdminService.getSetStatus(runChannelName).subscribe({
         next: (status) =>
           this.restoreSlots.set(
             status.capacity === null
@@ -545,7 +549,7 @@ export class MassDeletePanel {
         error: () => this.restoreSlots.set(null),
       });
     } else {
-      this.emoteSetService.loadEmoteSetPreview(this.channelName(), runSetId).subscribe({
+      this.emoteSetService.loadEmoteSetPreview(runChannelName, runSetId).subscribe({
         next: (preview) =>
           this.restoreSlots.set(
             preview.capacity === null
@@ -592,13 +596,7 @@ export class MassDeletePanel {
           if (this.arbiter.activeRun() !== null) {
             return;
           }
-          this.restoreService.startRestore(
-            runSetId,
-            this.channelName(),
-            toRestore,
-            skipped,
-            available,
-          );
+          this.restoreService.startRestore(runSetId, runChannelName, toRestore, skipped, available);
         },
       );
     });

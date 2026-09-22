@@ -97,11 +97,11 @@ function toImportTarget(
  * `startRestoreFlow`'s own `setId`/`setName` parameters for restore). Restore books its un-archive
  * through the set-aware `EmoteAdminService.syncRestored(channelName, { emoteSetId, … })` call
  * (`restore-flow.ts`, T5.2), and its confirmation names the set it re-adds into (T5.3, spec 8.8) —
- * `FileImportStep`'s `restoreEnabled` input therefore stays `true` unconditionally now
- * (`restoreEnabled: true` below); the input itself is untouched so a future caller can still gate
- * it. The protocol *match* check itself (`setId` vs. the file's own `meta.emoteSetId`) was already
- * generic over whichever set it is given — it needed no change to accept a non-active set's own
- * protocol while that set is shown (AK 66).
+ * restoring from a file is therefore never locked to the active set here either; the interim
+ * `FileImportStep.restoreEnabled` gate that used to enforce that (T4.5) was removed once T5.3
+ * lifted it for good (K5 fix round, #200 finding F). The protocol *match* check itself (`setId` vs.
+ * the file's own `meta.emoteSetId`) was already generic over whichever set it is given — it needed
+ * no change to accept a non-active set's own protocol while that set is shown (AK 66).
  */
 @Component({
   selector: 'app-import-trigger',
@@ -129,9 +129,9 @@ export class ImportTrigger {
   /** The channel's actual active set; `null` when the host knows it has none to offer (unknown —
    *  status failed — or no active set at all); omitted (`undefined`) by a caller with no such
    *  distinction (every caller that predates T4.5, and any test that never sets it), which folds
-   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Also
-   *  what gates `FileImportStep.restoreEnabled` (see the class doc) — restore needs a *known* active
-   *  set equal to `setId`. */
+   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Feeds
+   *  `restoreIsActiveSet` in `openDialog` below, which only decides which slot-preview source the
+   *  restore confirmation reads — restoring itself is never gated on it (see the class doc). */
   readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the import confirm dialog's title when it is not the
    *  active one (spec 8.6) — `null` falls back to the id, same as every other unnamed set there. */
@@ -180,7 +180,6 @@ export class ImportTrigger {
     openImportSourceDialog(this.dialog, {
       channelName,
       setId,
-      restoreEnabled: true,
     }).closed.subscribe((result) => {
       if (!result) {
         return;

@@ -906,7 +906,6 @@
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "wrongChannel": "Das Protokoll gehört zu einem anderen Channel.",
         "wrongSet": "Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.",
-        "restoreNonActiveSet": "Wiederherstellen geht vorerst nur im aktiven Set — dieses Set ist gerade nicht aktiv.",
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen."
       }
     },
