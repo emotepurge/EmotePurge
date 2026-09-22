@@ -55,10 +55,14 @@ export interface ImportTargetAccountGroup {
    *  matters (`import-flow.ts`'s `toTargetSelection`, spec 8.6/F5/AK 36). `null` for an untracked
    *  account, which has no channel-scoped "our" notion of active at all — **and** whenever the
    *  account's reported active set turns out to be `PERSONAL` (spec addendum 39, mirroring the
-   *  source picker's P2-2 fix): a `PERSONAL` active set is filtered out of {@link sets} entirely, so
-   *  nothing may point either the preselection ({@link ImportTargetDialog}'s
-   *  `firstPreselectableTarget`) or the "is this pick the account's active set" comparison in
-   *  `import-flow.ts`'s `toTargetSelection` at an id this picker no longer offers a row for. */
+   *  source picker's P2-2 fix), even though nothing downstream actually needs that: preselection
+   *  ({@link ImportTargetDialog}'s `firstPreselectableTarget`) already keys on
+   *  `ImportTargetSetChoice.isActive` over the (already PERSONAL-filtered) {@link sets}, never on
+   *  this raw id, and `import-flow.ts`'s `toTargetSelection` only ever compares this field against
+   *  an `emoteSetId` that came from a rendered, selectable set to begin with — never a `PERSONAL`
+   *  one. Nulling it here is a defensive consistency measure, not a fix for a reachable bug: the
+   *  invariant is simply that this field never names a set the picker does not also offer a row
+   *  for. */
   activeEmoteSetId: string | null;
   /** This account's own set list could not be read — render the account with a visible reason
    *  instead of a silently empty flyout (spec Falle, 8.6). */

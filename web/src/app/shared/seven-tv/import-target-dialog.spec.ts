@@ -412,15 +412,54 @@ describe('ImportTargetDialog', () => {
       expect(dialog.text()).not.toContain('Die Angebotsliste ist gerade unvollständig');
     });
 
-    it('shows the "no set" placeholder only when nothing has any set at all', async () => {
+    // P2 fix, #217 review round: the account loop used to sit entirely inside `@if (hasAnySet())`,
+    // so a single account with an empty (or PERSONAL-only) set list fell all the way through to the
+    // list-wide "no set" placeholder instead of rendering its own heading and notice — the two are
+    // now told apart by whether the accounts list itself is empty (see the two tests below), not by
+    // whether any of it has a set.
+    it('shows the account\'s own heading and "no usable set" notice, not the list-wide placeholder, for a single account with an empty set list', async () => {
       const dialog = render();
       await resolve(
         dialog,
         0,
-        targetsResult({ accounts: [account({ twitchChannelId: '1', sets: [] })] }),
+        targetsResult({
+          accounts: [account({ twitchChannelId: '1', trackedChannelName: 'chan' })],
+        }),
       );
 
+      expect(dialog.text()).toContain('#chan');
+      expect(dialog.text()).toContain('Kein nutzbares Set');
+      expect(dialog.text()).not.toContain('Kein Set gefunden, in das kopiert werden kann.');
+      expect(dialog.targetRadiogroup()).toBeUndefined();
+    });
+
+    it('shows the list-wide "no set" placeholder only when the accounts list itself is empty', async () => {
+      const dialog = render();
+      await resolve(dialog, 0, targetsResult({ accounts: [] }));
+
       expect(dialog.text()).toContain('Kein Set gefunden, in das kopiert werden kann.');
+      expect(dialog.targetRadiogroup()).toBeUndefined();
+    });
+
+    it("shows a setsUnavailable-only account's heading and its own notice without a radiogroup role", async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'chan',
+              setsUnavailable: true,
+              sets: [],
+            }),
+          ],
+        }),
+      );
+
+      expect(dialog.text()).toContain('#chan');
+      expect(dialog.text()).toContain('Sets nicht lesbar');
       expect(dialog.targetRadiogroup()).toBeUndefined();
     });
   });
@@ -527,10 +566,6 @@ describe('ImportTargetDialog', () => {
     });
 
     it('shows a distinct "no usable set" notice for an account left with only a PERSONAL set — not the setsUnavailable wording', async () => {
-      // A second account with a real set keeps hasAnySet() true, so the radiogroup (and therefore
-      // the first account's own heading + notice) actually renders — an account list with *nothing*
-      // offerable anywhere takes the "no set at all" placeholder branch instead (see the
-      // "post-load notice" describe block), which this test is not about.
       const dialog = render();
       await resolve(
         dialog,
@@ -544,11 +579,6 @@ describe('ImportTargetDialog', () => {
                 set({ id: 'set-p', name: 'Personal Emotes', kind: 'PERSONAL', isPersonal: true }),
               ],
             }),
-            account({
-              twitchChannelId: '2',
-              trackedChannelName: 'other',
-              sets: [set({ id: 'set-n', name: 'Main' })],
-            }),
           ],
         }),
       );
@@ -556,6 +586,7 @@ describe('ImportTargetDialog', () => {
       expect(dialog.text()).toContain('Kein nutzbares Set');
       expect(dialog.text()).not.toContain('Sets nicht lesbar');
       expect(dialog.setInput('Personal Emotes')).toBeUndefined();
+      expect(dialog.targetRadiogroup()).toBeUndefined();
     });
 
     it('disables a non-NORMAL set with the shared "kein Zielset" label — GLOBAL/SPECIAL', async () => {

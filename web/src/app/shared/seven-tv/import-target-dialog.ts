@@ -56,13 +56,16 @@ export interface ImportTargetDialogData {
  *  `activeEmoteSetId` (spec 6.2, `EmoteSetTargetAccount.activeEmoteSetId`) is the account's current
  *  active set — `null` for an untracked account, and also `null` whenever the account's reported
  *  active set is itself `PERSONAL` (spec addendum 39, `import-target-choices.ts`'s `toAccountGroup`):
- *  a `PERSONAL` set never becomes a row in this picker at all, so nothing may still describe it as
- *  "the active one" once it is filtered out. This is what lets `import-flow.ts`'s
- *  `toTargetSelection` tell "the chosen set happens to be the account's active one" apart from any
- *  other choice *before* firing a request (spec 8.6, fourth bullet; AK 36: the active case must not
- *  change which requests fire at all) — comparing `emoteSetId === activeEmoteSetId` here, rather
- *  than reusing `ImportTargetSetChoice.isActive` a second time, keeps that one decision explicit at
- *  the exact point it is made instead of trusting an already-baked-in boolean from an earlier step. */
+ *  a `PERSONAL` set never becomes a row in this picker at all, so this field should never describe
+ *  one as "the active one" either, even defensively — nothing downstream actually depends on the
+ *  null to work correctly (`emoteSetId` below only ever comes from a rendered, selectable set, so a
+ *  comparison against a `PERSONAL` id could never match by accident anyway). This is what lets
+ *  `import-flow.ts`'s `toTargetSelection` tell "the chosen set happens to be the account's active
+ *  one" apart from any other choice *before* firing a request (spec 8.6, fourth bullet; AK 36: the
+ *  active case must not change which requests fire at all) — comparing `emoteSetId ===
+ *  activeEmoteSetId` here, rather than reusing `ImportTargetSetChoice.isActive` a second time,
+ *  keeps that one decision explicit at the exact point it is made instead of trusting an
+ *  already-baked-in boolean from an earlier step. */
 export interface ImportTargetChoice {
   scope: ExportScope;
   emoteSetId: string;
@@ -150,29 +153,40 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
           </app-notice-banner>
         }
 
-        <!-- role="radiogroup" only wraps the two @for blocks below, and only when there is at
-             least one set to own: ARIA requires a radiogroup to contain at least one radio, and a
-             account with zero sets (setsUnavailable, or genuinely none) can legitimately bring the
-             total to zero. The "no set" message therefore renders as a sibling, never inside an
-             otherwise-empty group — same idiom as the former channel-only picker. -->
-        @if (hasAnySet()) {
-          <div
-            class="flex flex-col gap-3"
-            role="radiogroup"
-            [attr.aria-label]="'import.target.label' | transloco"
-          >
-            @for (group of choices().tracked; track group.twitchChannelId) {
-              <ng-container *ngTemplateOutlet="accountGroup; context: { group }" />
-            }
-            @for (group of choices().untracked; track group.twitchChannelId) {
-              <ng-container *ngTemplateOutlet="accountGroup; context: { group, untracked: true }" />
-            }
-          </div>
-        } @else if (!loadFailed()) {
-          <!-- Only when there genuinely is no set anywhere — after a reauth-less failure or a
-               partial load the empty list says nothing about the account, and claiming otherwise
-               invites ignoring the notice above. -->
-          <p class="text-sm text-fg-muted">{{ 'import.target.none' | transloco }}</p>
+        <!-- Once the load has not failed outright, the account loop always renders — every tracked
+             and untracked account gets its own heading, and, below it, either its set radios or its
+             own notice (setsUnavailable/noUsableSets) — even when not a single account anywhere has
+             an offerable set (P2 fix, #217 review round: this used to sit entirely inside the
+             hasAnySet() branch below, so an account list of just one PERSONAL-only account never
+             rendered its heading or its "Kein nutzbares Set" notice at all — only the unrelated,
+             list-wide import.target.none placeholder, which says nothing about that specific
+             account). The wrapper only becomes a radiogroup, with the "Ziel" aria-label, once at
+             least one radio actually exists inside it — ARIA requires a radiogroup to contain at
+             least one radio, and every account having zero sets can legitimately bring the total to
+             zero; the wrapper is then a plain, unlabelled container around the accounts' own
+             headings/notices instead. import.target.none is reserved for the one case nothing here
+             can render at all: the accounts list itself is empty (a reauth-less failure or a partial
+             load also leaves the list looking empty, but loadFailed() already took over the message
+             for that above). -->
+        @if (!loadFailed()) {
+          @if (hasAnyAccount()) {
+            <div
+              class="flex flex-col gap-3"
+              [attr.role]="hasAnySet() ? 'radiogroup' : null"
+              [attr.aria-label]="hasAnySet() ? ('import.target.label' | transloco) : null"
+            >
+              @for (group of choices().tracked; track group.twitchChannelId) {
+                <ng-container *ngTemplateOutlet="accountGroup; context: { group }" />
+              }
+              @for (group of choices().untracked; track group.twitchChannelId) {
+                <ng-container
+                  *ngTemplateOutlet="accountGroup; context: { group, untracked: true }"
+                />
+              }
+            </div>
+          } @else {
+            <p class="text-sm text-fg-muted">{{ 'import.target.none' | transloco }}</p>
+          }
         }
       }
 
@@ -409,6 +423,19 @@ export class ImportTargetDialog {
       choices.tracked.some((group) => group.sets.length > 0) ||
       choices.untracked.some((group) => group.sets.length > 0)
     );
+  });
+
+  /** Whether `choices()` holds any account at all, tracked or untracked (P2 fix, #217 review round)
+   *  — deliberately weaker than {@link hasAnySet}, which additionally requires at least one *set*.
+   *  Gates whether the account loop renders at all: `import.target.none` is now reserved for the
+   *  case this is `false` (nothing loaded, or a genuinely empty accounts array), while an account
+   *  list that is non-empty but offers no set anywhere still renders every account's own heading and
+   *  its own `setsUnavailable`/`noUsableSets` notice — the bug this fixes was exactly that a
+   *  single such account (e.g. one with only a PERSONAL set) used to render neither, because the
+   *  whole loop sat inside `@if (hasAnySet())` instead of this weaker condition. */
+  protected readonly hasAnyAccount = computed(() => {
+    const choices = this.choices();
+    return choices.tracked.length > 0 || choices.untracked.length > 0;
   });
 
   constructor() {

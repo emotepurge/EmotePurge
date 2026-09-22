@@ -3222,10 +3222,14 @@ und die gemeinsame Beschriftung `import.target.kindUnavailable` reicht dafür al
 Ein gemeldetes aktives Set, das selbst `PERSONAL` ist, zählt seitdem wie „kein aktives Set“ (P2-2s
 Muster aus dem Quell-Picker, hier auf `ImportTargetAccountGroup.activeEmoteSetId` übertragen):
 `toAccountGroup` nullt dieses Feld, sobald das gemeldete `account.activeEmoteSetId` auf ein
-PERSONAL-Set zeigt, statt die rohe ID unverändert durchzureichen — sonst hätte weder die Vorauswahl
-noch `import-flow.ts`s `toTargetSelection` (die den „getracktes Ziel und `emoteSetId ===
-activeEmoteSetId`“-Kurzweg genau über dieses Feld entscheidet) einen Weg gehabt zu erkennen, dass die
-ID auf keine gerenderte Zeile mehr zeigt.
+PERSONAL-Set zeigt, statt die rohe ID unverändert durchzureichen. Das ist eine defensive
+Konsistenzmaßnahme, kein Fix für einen erreichbaren Fehler: Die Vorauswahl liest ohnehin das
+`isActive`-Flag jedes Sets über der bereits gefilterten `sets`-Liste, nie diese rohe ID, und
+`import-flow.ts`s `toTargetSelection` (die den „getracktes Ziel und `emoteSetId ===
+activeEmoteSetId`“-Kurzweg genau über dieses Feld entscheidet) vergleicht es nur gegen eine
+`emoteSetId`, die ohnehin aus einer gerenderten, wählbaren Zeile stammt — eine rohe PERSONAL-ID hätte
+hier also nie zufällig getroffen. Die Invariante, die das Nullen sicherstellt, ist schlicht: Dieses
+Feld zeigt nie auf ein Set, für das die Gruppe keine Zeile anbietet.
 
 **3. Ein Konto ohne nutzbares Set nach dem Filtern bekommt eine eigene, ruhige Notiz.**
 **Betreiber-Entscheidung 2026-09-22:** Bleibt einem Konto nach dem PERSONAL-Filter kein Set mehr
@@ -3237,9 +3241,22 @@ nicht gelesen werden, Ersteres, sie wurde gelesen und war (nach dem Filtern) lee
 unterschiedliche Tatsachen, zwei unterschiedliche Texte. Das Transformmodell macht den Unterschied
 explizit über ein neues `ImportTargetAccountGroup.noUsableSets: boolean`
 (`sets.length === 0 && !setsUnavailable`), statt ihn nur in der Vorlage abzuleiten.
-`ImportTargetDialog.hasAnySet()` bleibt unverändert korrekt: sie fragt weiterhin, ob irgendein Konto
-irgendwo mindestens ein Set hat, unabhängig davon, ob ein einzelnes Konto seine eigene
-„kein nutzbares Set“-Notiz zeigt.
+**Nachtrag zur selben Review-Runde (2026-09-22): diese Notiz war zunächst unerreichbar.** Die
+gesamte Kontoschleife — Überschriften, `setsUnavailable`/`noUsableSets`-Notizen, Set-Radios,
+getrackt wie ungetrackt — steckte vollständig in `@if (hasAnySet())`. Eine Kontenliste aus genau
+einem Konto ohne anbietbares Set (ein reines PERSONAL-Konto, oder eines mit `setsUnavailable` —
+derselbe Fehler traf beide) renderte dadurch weder seine Überschrift noch seine Notiz: `hasAnySet()`
+war `false`, also fiel die Vorlage direkt auf den unabhängigen, listenweiten Platzhalter
+`import.target.none` durch — genau der Fall, für den die Notiz oben gedacht ist. Die Kontoschleife
+rendert jetzt, sobald die Kontenliste selbst nicht leer ist (`ImportTargetDialog.hasAnyAccount()`,
+ein neues, bewusst schwächeres Computed als `hasAnySet()`); die Hülle wird nur dann zu einem
+`role="radiogroup"` mit dem „Ziel“-`aria-label`, wenn `hasAnySet()` tatsächlich `true` ist (ARIA
+verlangt weiterhin mindestens ein Radio in einer Radiogruppe) — sonst bleibt sie ein schlichter,
+unbeschrifteter Container. `import.target.none` ist jetzt für den einen Fall reserviert, in dem hier
+wirklich nichts rendert: die Kontenliste selbst ist leer. `ImportTargetDialog.hasAnySet()` selbst ist
+unverändert in seiner Bedeutung — sie fragt weiterhin, ob irgendein Konto irgendwo mindestens ein Set
+hat —, nur wofür sie gilt, hat sich verschoben: Ob die Schleife überhaupt rendert, entscheidet jetzt
+`hasAnyAccount()`; `hasAnySet()` entscheidet nur noch über Radiogroup-Rolle und -Label.
 
 **Layout-Korrektur an der ungetrackten Bestätigung (kein Vertragswechsel, aber derselbe Anlass):**
 Die Bestätigungsbox für ein ungetracktes Ziel (8.6, AK 35) legte ihren Text und ihre zwei Buttons

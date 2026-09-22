@@ -52,9 +52,13 @@ labelled — only `PERSONAL` is affected.
 An account's reported active set that is itself `PERSONAL` now counts as no active set at all
 (mirrors the source picker's P2-2 fix): `toAccountGroup` nulls `ImportTargetAccountGroup.
 activeEmoteSetId` whenever the raw `account.activeEmoteSetId` names a `PERSONAL` set, rather than
-passing that id through unchanged — otherwise neither the preselection effect nor `import-flow.ts`'s
-`toTargetSelection` (which decides its "tracked target and `emoteSetId === activeEmoteSetId`" fast
-path from exactly this field) could tell that the id no longer names a rendered row.
+passing that id through unchanged. This is a defensive consistency measure, not a fix for a reachable
+bug — preselection already keys on each set's own `isActive` flag over the already-filtered `sets`,
+and `import-flow.ts`'s `toTargetSelection` (which decides its "tracked target and `emoteSetId ===
+activeEmoteSetId`" fast path from exactly this field) only ever compares it against an `emoteSetId`
+that came from a rendered, selectable set to begin with, so a raw `PERSONAL` id here could never have
+matched by accident either way. The invariant this keeps is simply that `activeEmoteSetId` never
+names a set the group does not also offer a row for.
 
 **Operator decision 2026-09-22: an account left with zero sets after filtering gets its own, quiet
 notice.** Whether an account had only `PERSONAL` sets or genuinely none, its heading still renders
@@ -63,8 +67,23 @@ locale files) appears below it — never silence. Deliberately distinct from `se
 nicht lesbar": one means the list could not be read at all, the other means it was read and, after
 filtering, held nothing. Made explicit in the transform model via a new
 `ImportTargetAccountGroup.noUsableSets: boolean` (`sets.length === 0 && !setsUnavailable`) rather
-than left implicit in the template. `ImportTargetDialog.hasAnySet()` is unaffected — it still asks
-whether *any* account anywhere has at least one set, independent of a single account's own notice.
+than left implicit in the template.
+
+**P2 fix, same review round (#217): that notice was unreachable on first landing.** The whole account
+loop — headings, `setsUnavailable`/`noUsableSets` notices, set radios, tracked and untracked alike —
+sat entirely inside `@if (hasAnySet())`. An accounts list consisting of exactly one account with
+nothing offerable (a PERSONAL-only account, or a `setsUnavailable` one — the same gap existed for
+both) never rendered its own heading or notice at all: `hasAnySet()` was `false`, so the template
+fell straight through to the unrelated, list-wide `import.target.none` placeholder instead, the very
+case the notice above exists to avoid. The account loop now renders whenever the accounts list itself
+is non-empty (`ImportTargetDialog.hasAnyAccount()`, a new computed, deliberately weaker than
+`hasAnySet()`); the wrapper only becomes a `role="radiogroup"` with the "Ziel" `aria-label` once
+`hasAnySet()` is actually `true` (ARIA still requires a radiogroup to contain a radio) and is a
+plain, unlabelled container otherwise. `import.target.none` is now reserved for the one case nothing
+here can render at all — the accounts list itself is empty. `ImportTargetDialog.hasAnySet()` itself
+is unchanged in meaning — still "does any account anywhere have at least one set" — only what it
+gates changed: rendering the loop at all is now `hasAnyAccount()`'s job, `hasAnySet()` only decides
+the radiogroup role/label.
 
 **Unrelated layout fix, same commit window.** The untracked-target confirmation banner (8.6, AK 35)
 used to lay its text and two buttons side by side in `NoticeBanner`'s `[notice-action]` slot, which
