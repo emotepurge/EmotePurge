@@ -74,6 +74,9 @@ type LiveAliasRead = { entries: SevenTvSetEntries } | { blockedReasonKey: string
 interface DeleteAbortNotice {
   leadKey: string;
   reasonKey: string;
+  /** Extra transloco interpolation params for `reasonKey` (e.g. a count for a plural reason) —
+   *  omitted for every reason that needs none, which the template folds onto `{}`. */
+  reasonParams?: Record<string, unknown>;
 }
 
 export interface DeletableEmote {
@@ -178,12 +181,14 @@ export interface DeletableEmote {
            attempt. -->
       <span role="status" class="sr-only">
         @if (abortNotice(); as notice) {
-          {{ notice.leadKey | transloco }} {{ notice.reasonKey | transloco }}
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
         }
       </span>
       @if (abortNotice(); as notice) {
         <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{ notice.leadKey | transloco }} {{ notice.reasonKey | transloco }}
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
         </p>
       }
 
@@ -931,6 +936,30 @@ export class MassDeletePanel {
       return;
     }
     const liveEntries = liveAliases?.entries;
+    if (liveEntries !== undefined) {
+      // A live read only ever reaches here complete (an incomplete one was already blocked above,
+      // via `blockedReasonKey`) — so an id it does not know at all under either map means 7TV no
+      // longer has it, not merely that it has no alias. Deleting such a row anyway would issue a
+      // `RemoveEmote` for something that is not there: on the vote page specifically the exact
+      // defect #227 point 2 forbids (a departed set-session member reaching the run), and equally a
+      // bug for the active-set path this same read also serves. Fails the WHOLE batch, not just the
+      // missing rows: a partial run would record a protocol that no longer matches what the
+      // confirmation showed as a whole ("gezeigt = gelöscht", spec §8.3, K5 follow-up #229) — the
+      // user re-selects instead, after a reload shows the set as it actually stands.
+      const missingCount = confirmedSelection.filter(
+        (emote) =>
+          !liveEntries.aliasesById.has(emote.sevenTvEmoteId) &&
+          !liveEntries.aliaslessIds.has(emote.sevenTvEmoteId),
+      ).length;
+      if (missingCount > 0) {
+        this.abortNotice.set({
+          leadKey: 'massDelete.nothingDeleted',
+          reasonKey: pluralKey(missingCount, 'massDelete.memberRead.missingFromSet'),
+          reasonParams: { count: missingCount },
+        });
+        return;
+      }
+    }
     const emotes: DeleteQueueEmote[] = confirmedSelection.map((emote) => {
       // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
       // what the host said.

@@ -991,7 +991,16 @@
     "nothingDeleted": "Nothing was deleted.",
     "memberRead": {
       "unavailable": "The set’s current entries could not be read from 7TV.",
-      "truncated": "The set’s entries could only be read partly."
+      "truncated": "The set’s entries could only be read partly.",
+      "missingFromSet": {
+        "one": "1 marked emote is no longer in the set, nothing deleted — please reload.",
+        "other": "{{count}} marked emotes are no longer in the set, nothing deleted — please reload."
+      },
+      "lock": {
+        "unavailable": "Deleting is locked: this set’s member list is not available.",
+        "truncated": "Deleting is locked: this set’s member list is incomplete.",
+        "loading": "Deleting is locked until this set’s member list has loaded."
+      }
     },
     "anotherRunStarted": "Another 7TV run started in the meantime."
   },

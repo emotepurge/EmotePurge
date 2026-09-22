@@ -1634,12 +1634,11 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     ]);
   });
 
-  it('keeps the host aliases of a cell the live read does not know', () => {
-    confirm();
-    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
-
-    expect(startDelete.mock.calls[0][2][1].aliases).toEqual(['KEKW']);
-  });
+  // Superseded by #227 P1 (below, "blocks the whole run…"): a cell the live read does not know at
+  // all used to keep its host aliases and still get deleted — exactly the defect #227 point 2
+  // closes. What a *known* cell without any alias entry falls back to is still covered by "falls
+  // back to the name for a cell that is entirely aliasless" above (that id IS in the read, via
+  // `aliaslessIds`, so it is not "missing").
 
   // K5 fix round, spec §37/§38: an aliasless 7TV entry is a slot the one REMOVE also takes, but it
   // has no alias to restore under — the enrichment falls back to the emote's own display name for
@@ -1748,6 +1747,44 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(statusText()).toContain('massDelete.memberRead.truncated');
   });
 
+  // Opus review P1 (#227): a complete read that simply does not carry a confirmed row's id at all
+  // (neither aliased nor aliasless) used to fall back to the host's own aliases and delete it
+  // anyway — the vote page's frozen `[name]` fallback, still sent to 7TV for a member that had
+  // already left. Fails closed: the WHOLE batch is blocked, not just the missing row, so a partial
+  // run never records a protocol that disagrees with what the confirmation showed as a whole.
+  it('blocks the whole run, with no read result used, when the complete read is missing one confirmed id', () => {
+    confirm();
+    // Knows 7tv-1 only — 7tv-2 (KEKW) is not there at all, aliased or not.
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.memberRead.missingFromSet.one');
+  });
+
+  it('picks the plural reason key when more than one confirmed id is missing from a complete read', () => {
+    confirm();
+    // Empty but complete (pageCount 1, totalCount 0) — neither 7tv-1 nor 7tv-2 is in the set.
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.missingFromSet.other');
+  });
+
+  // An aliasless entry still counts as "known" (the id is a real member, just with no name to
+  // record) — only a row absent from BOTH maps is missing, so this must not falsely block.
+  it('does not block on an id that is only aliasless — that id is still known to the set', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }, { id: '7tv-2' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
   /** The three dock-claim calls of the fake service, typed for the block below. */
   function claimCalls(): {
     beginConfirmedRun: ReturnType<typeof vi.fn>;
@@ -1787,7 +1824,14 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     closed.next(true);
     expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
 
-    httpMock.expectOne(GQL).flush(entriesPage([]));
+    // Both confirmed ids known to the read (#227 P1: an id missing from a complete read now blocks
+    // the whole run instead of falling back — not what this test is about).
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
     expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
     // Released only once the run was attempted, so the service can tell a started run (which keeps
     // the dock by itself) from an abort (which has nothing but its notice).
@@ -2020,7 +2064,14 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     ]);
     fixture.detectChanges();
 
-    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+    // Both confirmed ids known to the read (#227 P1) — including 7tv-2, which the shrunk live
+    // selection above no longer carries but the confirmed snapshot still does.
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
 
     expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
       { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
@@ -2036,7 +2087,14 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     ]);
     fixture.detectChanges();
 
-    httpMock.expectOne(GQL).flush(entriesPage([]));
+    // Both confirmed ids known to the read (#227 P1) — 7tv-3 was never confirmed, so it must not
+    // matter either way whether the read knows it; it isn't in this response at all.
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
 
     const deletedIds = startDelete.mock.calls[0][2].map(
       (emote: { sevenTvEmoteId: string }) => emote.sevenTvEmoteId,
@@ -2115,7 +2173,14 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.componentRef.setInput('channelName', 'otherchannel');
     fixture.detectChanges();
 
-    httpMock.expectOne(GQL).flush(entriesPage([]));
+    // Both confirmed ids known to the read (#227 P1) — this test is about the channel name, not
+    // about the missing-id block.
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+      ]),
+    );
 
     expect(startDelete.mock.calls[0][1]).toBe('somechannel');
   });
@@ -2320,6 +2385,26 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
         aliases: ['Pumpkin'],
       },
     ]);
+  });
+
+  // Opus review P1 (#227): the exact case the issue describes — Ghost was on the frozen ballot,
+  // left the Halloween set, and the live read now confirms it is simply not there. Blocked, not
+  // silently deleted under its frozen name.
+  it("blocks the run instead of falling back to the frozen name when the vote page's own read is missing a confirmed id", async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-ghost', name: 'GhostAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([])); // complete, empty: Ghost is gone
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.missingFromSet.one');
   });
 
   it('makes no read at all when the host did not opt in', async () => {
