@@ -1942,6 +1942,25 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(startDelete).not.toHaveBeenCalled();
   });
 
+  // Opus review P3-2: the third way deleteService.startDelete refuses in silence. A 401 from any
+  // 7TV call behind the open confirmation clears the stored token, and the engine then declines
+  // without a word — with the dock claim of this round holding an empty dock over it.
+  it('says so instead of vanishing when the 7TV token was cleared behind the confirmation', () => {
+    const tokenService = TestBed.inject(SevenTvTokenService) as unknown as {
+      hasToken: WritableSignal<boolean>;
+    };
+    fixture.componentInstance['openConfirm']();
+    tokenService.hasToken.set(false);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.tokenGoneDuringConfirm');
+  });
+
   it('makes no read at all when the host lock already stops the delete', () => {
     fixture.componentInstance['openConfirm']();
     fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');

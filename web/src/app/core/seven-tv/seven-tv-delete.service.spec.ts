@@ -727,6 +727,31 @@ describe('SevenTvDeleteService', () => {
       expect(service.confirmedRunPending()).toBe(false);
     });
 
+    it('is dropped by reset(), window and all — the user dismissed the dock it belonged to', () => {
+      service.beginConfirmedRun();
+      service.endConfirmedRun();
+
+      service.reset();
+
+      expect(service.confirmedRunPending()).toBe(false);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS);
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
+    it('cannot be re-armed by a release that arrives after the claim was dropped elsewhere', () => {
+      // The read of a confirmed delete is still out when reset() or a channel change drops the
+      // claim; its eventual endConfirmedRun must not open a notice window on a dock that now
+      // belongs to something else.
+      service.beginConfirmedRun();
+      service.clearConfirmedRun();
+
+      service.endConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(false);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS);
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
     it('does not let a first notice window expire onto a second confirmed delete', () => {
       service.beginConfirmedRun();
       service.endConfirmedRun();

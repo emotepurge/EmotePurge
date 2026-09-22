@@ -11,7 +11,7 @@ import {
   signal,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { catchError, map, of, timeout } from 'rxjs';
+import { catchError, finalize, map, of, timeout } from 'rxjs';
 
 import { EmoteAdminService, EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import { pluralKey } from '../../core/i18n/plural';
@@ -759,8 +759,13 @@ export class MassDeletePanel {
         return;
       }
       if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
-        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
-        this.deleteService.endConfirmedRun();
+        // `finally`, because a leaked claim pins an empty dock until the page is reloaded — a worse
+        // outcome than whatever threw, and one nothing on screen could explain.
+        try {
+          this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+        } finally {
+          this.deleteService.endConfirmedRun();
+        }
         return;
       }
       // Owns the claim from here to the end of the read — see `readLiveAliasesThenDelete`.
@@ -785,8 +790,11 @@ export class MassDeletePanel {
     // The same checks `startDelete` makes, made once before the read as well: a delete that is
     // already doomed must not wait for (or spend) a 7TV read first.
     if (this.abortReasonBeforeStart(frozenSetId) !== undefined) {
-      this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
-      this.deleteService.endConfirmedRun();
+      try {
+        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+      } finally {
+        this.deleteService.endConfirmedRun();
+      }
       return;
     }
     this.liveAliasReadPending.set(true);
@@ -804,13 +812,17 @@ export class MassDeletePanel {
         catchError(() =>
           of<LiveAliasRead>({ blockedReasonKey: MEMBER_READ_UNAVAILABLE_REASON_KEY }),
         ),
+        // Released here rather than at the end of the `next` handler: `finalize` runs after that
+        // handler on the completing path *and* on every other way out, so a throw inside
+        // `startDelete` cannot leak the claim and pin an empty dock until the page is reloaded.
+        // The service decides from its own `isRunning()` whether the dock still needs holding for
+        // the abort notice or the run now carries it, so the ordering (after `startDelete`) is what
+        // matters, not the call site.
+        finalize(() => this.deleteService.endConfirmedRun()),
       )
       .subscribe((read) => {
         this.liveAliasReadPending.set(false);
         this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, read);
-        // After `startDelete`, not before: the service decides from its own `isRunning()` whether
-        // the dock still needs holding open for the abort notice or the run now carries it.
-        this.deleteService.endConfirmedRun();
       });
   }
 
@@ -879,6 +891,18 @@ export class MassDeletePanel {
       this.abortNotice.set({
         leadKey: 'massDelete.nothingDeleted',
         reasonKey: 'massDelete.anotherRunStarted',
+      });
+      return;
+    }
+    // The third way `deleteService.startDelete` can refuse without a word — the other two, a run
+    // already going and an empty list, are caught above. The engine needs the stored 7TV token, and
+    // any 401 from 7TV behind the open confirmation clears it (`SevenTvTokenService.clearToken`);
+    // the dock claim of the commits above would then hold an empty dock over a delete that simply
+    // never happened.
+    if (!this.tokenService.hasToken()) {
+      this.abortNotice.set({
+        leadKey: 'massDelete.nothingDeleted',
+        reasonKey: 'massDelete.tokenGoneDuringConfirm',
       });
       return;
     }

@@ -931,6 +931,27 @@ the string counts `ADD`s (aliases) since the "middle rule" addendum, and a #74 d
 emote but can contribute more than one skipped alias, so "emote" both undercounted the entity being
 reported and invited a reader to expect one skipped notice per emote rather than per alias.
 
+**The second fix round's i18n keys, completing that list.** Renamed:
+`massDelete.abortedByMemberRead` → **`massDelete.nothingDeleted`** (same text, both locales — the
+lead is no longer the member read's alone). New, all in both locales:
+**`massDelete.selectionGoneDuringConfirm`** (a reload emptied the confirmed selection; worded
+membership-neutral — "gehören nicht mehr zu diesem Set" / "are no longer part of this set" — rather
+than "no longer marked", because its most reachable path is a non-active view where the rows flip to
+`membership: 'left'` and stay marked), **`massDelete.tokenGoneDuringConfirm`** (the stored 7TV token
+was cleared by a 401 behind the open confirmation — the third and last of
+`deleteService.startDelete`'s silent refusals, now all three spoken: a run already going, an empty
+list, no token) and **`massDelete.confirmSelectionEmpty`** (the confirmation's own lock reason, see
+the snapshot bullet above).
+
+**Two lifetime rules for the dock claim, from the same round.** `SevenTvDeleteService.reset()` drops
+it — whatever the dock was still holding open, the user has dismissed it, exactly as the restore
+service clears its own transient notice flag there — and `channel-workspace-layout.ts` drops it on a
+channel change through a call of its own, since `resetIfChannelChanged` returns early when there is
+no run record and a confirmed-but-unstarted delete is precisely that state. Correspondingly,
+`endConfirmedRun()` refuses to re-arm a claim that is no longer held: a read that answers after
+either of those two would otherwise open a notice window on a dock the aborted delete no longer
+belongs to.
+
 ---
 
 ### 2026-09-21 — An import into a tracked channel's non-active set no longer resyncs the channel, and the dock stops claiming it does

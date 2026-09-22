@@ -167,6 +167,13 @@ export class SevenTvDeleteService {
    */
   endConfirmedRun(): void {
     clearTimeout(this.confirmedRunTimeout);
+    // Only a claim that is still held may be extended into a notice window. Something else can have
+    // dropped it from under this delete while its read was out — `reset()`, or the workspace
+    // switching channel — and in both cases the dock it belonged to is gone; re-arming a timer here
+    // would pin an empty one somewhere the aborted delete never belonged.
+    if (!this.confirmedRunPending()) {
+      return;
+    }
     if (this.isRunning()) {
       this.confirmedRunPending.set(false);
       return;
@@ -179,8 +186,9 @@ export class SevenTvDeleteService {
 
   /** Drops the claim at once, without the notice window `endConfirmedRun` grants: nothing was
    *  confirmed and nothing has to be read, so keeping an otherwise empty dock up for 8 s would be
-   *  exactly the empty bar `actionDockHasContent` exists to prevent. The dismissed confirmation is
-   *  this case. */
+   *  exactly the empty bar `actionDockHasContent` exists to prevent. Three cases: the dismissed
+   *  confirmation, `reset()`, and the channel workspace moving to another channel — the last two
+   *  because an abort notice belongs to the dock it was raised in and to no other. */
   clearConfirmedRun(): void {
     clearTimeout(this.confirmedRunTimeout);
     this.confirmedRunPending.set(false);
@@ -215,6 +223,9 @@ export class SevenTvDeleteService {
     this.syncReport.set('idle');
     this.run = null;
     this.lastRun.set(null);
+    // The restore service clears its own transient notice flag here for the same reason: whatever
+    // this dock was still holding open, the user has dismissed it.
+    this.clearConfirmedRun();
   }
 
   /** The panel is a root-service singleton, so a finished run used to follow the user into the
