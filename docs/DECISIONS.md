@@ -10,6 +10,41 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-22 — Dialog action row stays visible while the body scrolls (#226)
+
+**Betrifft:** `docs/UI-Designsprache.md` · `web/e2e/audit/ui-audit.audit.ts` ·
+`web/e2e/dialog-action-row.e2e.spec.ts` · `web/e2e/touch-mobile.e2e.spec.ts` ·
+`web/src/app/shared/ui/dialog-shell.ts`
+
+Every `DialogShell` dialog used to scroll its action row away with the body — on a dialog whose
+content outgrows the pane (the import target picker with every set of every account the user edits
+is the reported case, #217's follow-up), "Cancel"/"Continue" ended up below the fold with nothing
+telling the reader a next step existed at all. A nested scroll area inside the picker's own content
+was considered and rejected: it scrolls inside an already-scrolling pane, which behaves badly on
+touch, and it would make that one dialog behave differently from the other eleven `DialogShell`
+callers.
+
+The fix sits once in `DialogShell`, not in any one dialog: the action row is `position: sticky` to
+`.cdk-overlay-pane.app-dialog-panel`'s bottom edge, the same bleed-and-pin technique the sheet's own
+drag handle already used at the top (`-mx-6 -mb-6` cancels the shell's `p-6` on three sides so the
+row's margin box reaches the pane's edges, `-bottom-6` cancels that negative margin back out of the
+sticky offset so the pinned position lands flush). Sticky rather than a flex-column height chain
+(`h-full` on the shell, `overflow-y-auto` on the body) deliberately: two component hosts with a
+`display: inline` default sit between the pane and the shell, and a height chain does not survive
+them — the exact reason the pane, not the shell, has been the scroll container all along. The row
+carries its own `bg-surface` and a `border-t border-border` so scrolled content cannot show through
+underneath it and the boundary between "still scrolling" and "always visible" stays legible; it
+rounds its bottom corners to match the shell's own only on a fine pointer, since the sheet's shell
+has no bottom radius to match (flush with the screen edge). `overflow-hidden` on the shell stays
+forbidden, unchanged from the existing sheet-handle rule — it would break both sticky pins the same
+way.
+
+Also fixed in the same change: the audit harness's `usage-stats-import-target-dialog` scenario had
+gone stale since K2 (#206) — it never mocked `GET /api/seventv/me/emote-set-targets`, so its
+screenshot showed the picker's load-failed banner instead of the picker the scenario is named for.
+
+---
+
 ### 2026-09-22 — Voting: "member of the session's set" replaces "not archived"; permission comes from permission (#200, K6)
 
 **Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, 6.10, F8, F12, E4, E10) ·
