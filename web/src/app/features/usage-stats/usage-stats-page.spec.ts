@@ -34,18 +34,33 @@
  */
 import { Dialog } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  TestRequest,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
-import { EmoteUsageTotal } from '../../core/usage-stats/usage-stat.model';
+import {
+  ForeignEmoteRow,
+  ForeignEmoteSetResponse,
+} from '../../core/seven-tv/foreign-emote-set.model';
+import {
+  EmoteSetListResponse,
+  EmoteSetSummary,
+} from '../../core/seven-tv/seven-tv-emote-set.model';
+import { mergeSetView } from '../../core/usage-stats/merge-set-view';
+import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
+import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
+import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { CSV_MIME } from '../../shared/export/csv';
 import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
@@ -152,7 +167,7 @@ function setStatus(overrides: Partial<EmoteSetStatus>): EmoteSetStatus {
   };
 }
 
-function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotal {
+function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotalDto {
   return {
     emoteId: id,
     emoteName: name,
@@ -162,6 +177,40 @@ function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotal {
     lastUsedDate: null,
     previousWindowUseCount: 0,
     firstSeenAt: null,
+    isArchived: false,
+    nameTwinEmoteSetIds: [],
+  };
+}
+
+/**
+ * The page's grid row for a `/totals` fixture in the ACTIVE set's view — the lossless 1:1 mapping
+ * `mergeSetView` does there (spec #200, 7.1). The selection and every grid-facing method take the
+ * merged row type; the rows the page builds from a flushed payload are exactly this shape.
+ */
+function asRow(dto: EmoteUsageTotalDto): EmoteUsageTotal {
+  return mergeSetView([dto], null, true)[0];
+}
+
+/** Fixture for the set-dropdown's own list (spec #200, 6.1) — one entry, override for anything else
+ *  (a second set, a `kind` other than `NORMAL`, an inactive one). */
+function emoteSet(overrides: Partial<EmoteSetSummary> = {}): EmoteSetSummary {
+  return {
+    id: 'set-a',
+    name: 'Hauptset',
+    capacity: 250,
+    kind: 'NORMAL',
+    isActive: true,
+    isPersonal: false,
+    ownerDisplayName: null,
+    observations: [],
+    ...overrides,
+  };
+}
+
+function emoteSetList(sets: EmoteSetSummary[]): EmoteSetListResponse {
+  return {
+    activeEmoteSetId: sets.find((set) => set.isActive)?.id ?? '',
+    sets,
   };
 }
 
@@ -435,8 +484,18 @@ describe('UsageStatsPage — refreshSetStatus channel race (#112 regression)', (
     // own, writing setStatusChannel alongside setStatus rather than leaving it stale.
     expect(component['setStatus']()?.activeEmoteSetId).toBe('set-a');
     expect(component['setStatusChannel']()).toBe('a');
-    // totalsChannel was already 'a' — set alongside the totals fired earlier once the failure
-    // resolved rangeResolved — so this is also where importScopeCurrent() turns true.
+    // The rows on screen were answered through the endpoint's fallback while no active set was
+    // known — their identity stays unknown and is never relabelled as 'set-a' after the fact
+    // (#200 K4, second review round): the scope only turns current once rows answered for the now
+    // known set have landed.
+    expect(component['importScopeCurrent']()).toBe(false);
+    fixture.detectChanges();
+    const explicit = httpMock.match(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-a',
+    );
+    expect(explicit.length).toBeGreaterThan(0);
+    explicit.forEach((request) => request.flush([]));
     expect(component['importScopeCurrent']()).toBe(true);
   });
 });
@@ -648,7 +707,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
    * short-circuits to `false` and the reload each test fires afterwards produces no extra
    * `/emotes/active-set` request — the scenario under test is the totals reconciliation alone.
    */
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -675,7 +734,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
   /** Fires one `usageFlushed` burst (the silent, `preserveSelection`d reload path) and flushes its
    *  totals response — the same round trip `loadTotals(..., {preserveSelection: true, silent:
    *  true})` produces from the live subscription in the constructor. */
-  function silentReload(totals: EmoteUsageTotal[]): void {
+  function silentReload(totals: EmoteUsageTotalDto[]): void {
     FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
     vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
     fixture.detectChanges();
@@ -688,9 +747,9 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     const c = emote('c', 'PeepoC');
 
     mount([a, b, c]);
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(c), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
 
     // The silent reload comes back without 'c' — deleted externally on 7TV between loads.
@@ -698,7 +757,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
 
     // 'a' survives, 'c' is gone from the authoritative key set, and the transient feedback names
     // exactly one dropped emote.
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toEqual({
       key: 'usageStats.selectionPruned.one',
       count: 1,
@@ -714,11 +773,11 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     const b = emote('b', 'PeepoB');
 
     mount([a, b]);
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
 
     silentReload([a, b]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 
@@ -737,8 +796,8 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     // (Konzept "Auswahl überlebt Suche und Filter"), so this is only here to narrow atlasOrder()
     // for the reload assertion below, not to exercise any pruning of its own.
     component['usageFilter'].setRange(5, null);
-    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['c']);
+    component['selection'].onRowClick(asRow(c), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-c']);
     expect(component['atlasOrder']().map((e: EmoteUsageTotal) => e.emoteId)).toContain('c');
 
     // The reload drops 'c's count under the filter's floor — atlasOrder() will no longer include
@@ -750,7 +809,7 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     expect(component['atlasOrder']().map((e: EmoteUsageTotal) => e.emoteId)).not.toContain('c');
     // ...yet the selection and the feedback are both untouched: 'c' was never actually removed
     // from the set, only filtered out of the current view.
-    expect(component['selection'].selectedKeys()).toEqual(['c']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-c']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 });
@@ -816,7 +875,7 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
   /** Mounts channel 'a' with the given totals under the fixed 2026-01-01..2026-01-31 range set in
    *  beforeEach — all four requests `load()` fires are already pending after the constructor's
    *  first tick, since a `'custom'` preset never waits on trackedSince to resolve the range. */
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -837,8 +896,8 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
 
     component['from'].set('2026-02-01');
     component['to'].set('2026-02-28');
@@ -847,7 +906,7 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     // requestedSetStatusFor's channel-keyed guard), only a fresh totals/series round trip.
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 
@@ -856,9 +915,9 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
 
     component['from'].set('2026-02-01');
     component['to'].set('2026-02-28');
@@ -868,7 +927,7 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     // surfaced through the same #94 notice a silent reload would show.
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()).toEqual({
       key: 'usageStats.selectionPruned.one',
       count: 1,
@@ -879,22 +938,22 @@ describe('UsageStatsPage — a date-range change or refresh retains the selectio
     const a = emote('a', 'PeepoA');
     mount([a]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
 
     component['refresh']();
     fixture.detectChanges();
     flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a]);
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
   });
 
   it('clears the selection outright on a channel switch, even when the new channel reuses the same emote id', () => {
     const a = emote('a', 'PeepoA');
     mount([a]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
 
     fixture.componentRef.setInput('channelName', 'b');
     fixture.detectChanges();
@@ -967,7 +1026,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -991,14 +1050,14 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const c = emote('c', 'PeepoC');
     mount([a, b, c]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(c, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(c), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
 
     // Narrows atlasOrder() to just 'b' — both marked rows drop out of view.
     component['usageFilter'].setNameFilter('PeepoB');
 
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
     expect(component['selection'].hiddenSelectedCount()).toBe(2);
     expect(
       component['selectedForDelete']()
@@ -1017,7 +1076,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     // Nothing hidden yet — the template gates the whole row on this, no permanent control
     // (Frontend-Zurückhaltung).
     expect(component['selection'].hiddenSelectedCount()).toBe(0);
@@ -1043,7 +1102,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     expect(component['dockHiddenSelectedCount']()).toBe(0);
 
     component['usageFilter'].setNameFilter('PeepoB');
@@ -1076,8 +1135,8 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
 
     component['markAll']();
 
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
-    expect(component['selection'].isSelected(c)).toBe(false);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+    expect(component['selection'].isSelected(asRow(c))).toBe(false);
   });
 
   it('is disabled once the current view is fully marked, and re-enables the moment a row is unmarked', () => {
@@ -1090,7 +1149,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     component['markAll']();
     expect(component['markAllDisabled']()).toBe(true);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     expect(component['markAllDisabled']()).toBe(false);
   });
 
@@ -1099,7 +1158,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     expect(component['markAllDisabled']()).toBe(false);
 
     // Narrows atlasOrder() to just the already-marked 'a' — mark-all over that view could add
@@ -1188,13 +1247,13 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
       const b = emote('b', 'PeepoB');
       mount([a, b]);
 
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(1);
       // An individual mark already announces itself via its own cell — this region must stay
       // silent for it, unlike the pre-review behaviour that mirrored the live count here too.
       expect(component['dockMarkedCount']()).toBe(0);
 
-      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(2);
       expect(component['dockMarkedCount']()).toBe(0);
     });
@@ -1208,8 +1267,8 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
       expect(component['dockMarkedCount']()).toBe(2);
 
       // Unmarked by hand, down to nothing — no further bulk gesture in between.
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-      component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(0);
       expect(component['dockMarkedCount']()).toBe(0);
 
@@ -1223,7 +1282,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
       // bulk count back to 0 while the selection was empty, this would read 2 again — the stale
       // "mark all" outcome — instead of staying silent for what is, on its own, just another
       // individual mark.
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(1);
       expect(component['dockMarkedCount']()).toBe(0);
     });
@@ -1238,7 +1297,7 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
 
       // A single deselect is not a bulk gesture — it must retire the announcement even though the
       // selection stays non-empty, unlike the fully-emptied case above.
-      component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+      component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
       expect(component['selection'].selectedKeys()).toHaveLength(1);
       expect(component['dockMarkedCount']()).toBe(0);
 
@@ -1260,17 +1319,17 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
 
     // "select all" on the dead band while nothing is filtered.
     component['selectBand']('dead');
-    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2']);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-d1', '7tv-d2']);
 
     // Narrows to the heavy emote (an unrelated band) and marks it too — the filter change above
     // must not have dropped 'd1'/'d2' for this to still be additive.
     component['usageFilter'].setNameFilter('Heavy1');
-    component['selection'].onRowClick(heavy, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2', 'h1']);
+    component['selection'].onRowClick(asRow(heavy), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-d1', '7tv-d2', '7tv-h1']);
 
     component['usageFilter'].reset();
 
-    expect(component['selection'].selectedKeys().sort()).toEqual(['d1', 'd2', 'h1']);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-d1', '7tv-d2', '7tv-h1']);
   });
 
   it('a sort-key change keeps the selection and only resets the shift anchor', () => {
@@ -1279,15 +1338,15 @@ describe('UsageStatsPage — the selection survives filter and sort-key changes 
     const c = emote('c', 'PeepoC', 15);
     mount([a, b, c]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent); // anchor 'a'
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent); // anchor 'a'
 
     component['setSortKey']('lastUsed');
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     // The anchor is gone — a further shift-click degrades to a plain toggle instead of ranging
     // from 'a' in the (now differently ordered) list.
-    component['selection'].onRowClick(c, { shiftKey: true } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'c']);
+    component['selection'].onRowClick(asRow(c), { shiftKey: true } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-c']);
   });
 });
 
@@ -1343,7 +1402,7 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1366,7 +1425,7 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
     const b = emote('b', 'PeepoB');
     mount([a, b]);
 
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
     component['usageFilter'].setNameFilter('does-not-match-anything');
 
     expect(component['atlasOrder']()).toHaveLength(0);
@@ -1602,7 +1661,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
 
   /** Mounts channel 'a' with an active 7TV set (E3 offers the emote-list purpose) and given
    *  totals — otherwise identical to the "silent reload" describe block's own `mount()`. */
-  function mountWithActiveSet(totals: EmoteUsageTotal[]): void {
+  function mountWithActiveSet(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1622,7 +1681,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
 
   /** Same mount, but the channel has no active 7TV set — E3 must not offer the emote-list
    *  purpose, and `openExport()` must not fail trying to build it. */
-  function mountWithoutActiveSet(totals: EmoteUsageTotal[]): void {
+  function mountWithoutActiveSet(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1662,7 +1721,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
     ]);
     expect(downloads).toHaveLength(1);
     expect(downloads[0].filename).toMatch(
-      /^emotepurge_a_usage_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.csv$/,
+      /^emotepurge_a_usage_set-a_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.csv$/,
     );
     expect(downloads[0].mimeType).toBe(CSV_MIME);
   });
@@ -1675,7 +1734,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
 
     expect(downloads).toHaveLength(1);
     expect(downloads[0].filename).toMatch(
-      /^emotepurge_a_usage_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$/,
+      /^emotepurge_a_usage_set-a_\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$/,
     );
     expect(downloads[0].mimeType).toBe(JSON_MIME);
   });
@@ -1734,7 +1793,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
     expect(downloads).toHaveLength(1);
     // The filename embeds from/to verbatim (usageExportFilename) — proves the download describes
     // the range the rows actually came from, not '2026-03-01'/'2026-03-31' set above.
-    expect(downloads[0].filename).toBe(`emotepurge_a_usage_${loadedFrom}_${loadedTo}.csv`);
+    expect(downloads[0].filename).toBe(`emotepurge_a_usage_set-a_${loadedFrom}_${loadedTo}.csv`);
   });
 
   it('the "selection" export scope ignores an active filter and reports filtered = false, unlike "visible" (Konzept 2.6)', async () => {
@@ -1746,7 +1805,7 @@ describe('UsageStatsPage — openExport() (#141)', () => {
     // Suche und Filter"), which is exactly what this exercises for the export path: the selection
     // scope must carry 'b' through even though the filter is currently hiding it.
     component['usageFilter'].setMinCount('10');
-    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
 
     openSpy.mockReturnValue({ closed: of({ optionId: 'usage-json', scope: 'selection' }) });
     component['openExport']();
@@ -1824,7 +1883,7 @@ describe('UsageStatsPage — openCreateVoteSession() (#132)', () => {
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -1853,24 +1912,25 @@ describe('UsageStatsPage — openCreateVoteSession() (#132)', () => {
     const a = emote('a', 'PeepoA');
     const b = emote('b', 'PeepoB');
     mount([a, b]);
-    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
-    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
 
     openSpy.mockReturnValue({ closed: of(undefined) });
     component['openCreateVoteSession']();
 
     expect(openSpy).toHaveBeenCalledTimes(1);
     const data = openSpy.mock.calls[0][1].data as CreateVoteSessionDialogData;
-    // The exact same signal reference the page's own selection exposes — not a copy taken at call
-    // time — is what makes a later prune of the selection visible to an already-open dialog.
-    expect(data.emoteIds).toBe(component['selection'].selectedKeys);
+    // A live signal derived from the page's selection — not a copy taken at call time — is what
+    // makes a later prune of the selection visible to an already-open dialog. Its values are the
+    // rows' Emote.Id Guids, resolved from the 7TV-keyed selection when read (spec #200, E4, 7.2).
+    expect(data.emoteIds).toBe(component['voteBallotEmoteIds']);
     expect(data.emoteIds()).toEqual(['a', 'b']);
 
     // A silent reload that prunes 'b' (e.g. archived on 7TV) after the dialog has already opened —
     // ListSelection.retainAmong() directly, the same call loadTotals()'s preserveSelection branch
     // makes; the full live-event pipeline that reaches it is #94's own describe block's job.
-    component['selection'].retainAmong([a]);
+    component['selection'].retainAmong([asRow(a)]);
 
     expect(data.emoteIds()).toEqual(['a']);
   });
@@ -1938,7 +1998,7 @@ describe('UsageStatsPage — mark-all does not exist on a coarse pointer (2026-0
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -2020,7 +2080,7 @@ describe("UsageStatsPage — the toolbar mark-all button's template binding (Opu
     vi.unstubAllGlobals();
   });
 
-  function mount(totals: EmoteUsageTotal[]): void {
+  function mount(totals: EmoteUsageTotalDto[]): void {
     httpMock
       .expectOne('/api/channels/a/permissions')
       .flush({ canManage: true, canViewUsageStats: true });
@@ -2086,5 +2146,2084 @@ describe("UsageStatsPage — the toolbar mark-all button's template binding (Opu
 
     expect(component['isLoading']()).toBe(false);
     expect(markAllButton()).not.toBeUndefined();
+  });
+});
+
+/**
+ * T4.2 (spec #200, 8.1; operator decisions 2026-09-21): the set dropdown's URL state, its fallback
+ * rules and everything a set switch triggers. Stub template like most of this file — none of these
+ * assertions read the DOM, they read the state the dropdown is built on top of (Regel 12).
+ *
+ * `router.navigate([], { queryParams })` reaches `ActivatedRoute.queryParamMap` even for a component
+ * created directly via `TestBed.createComponent` rather than through a routed outlet — query params
+ * live on the router's root state, which every injected `ActivatedRoute` in the same injector shares.
+ * Seeding them *before* `TestBed.createComponent` is what lets a test simulate a deep link (the URL
+ * already carries `?emoteSetId=…` the moment `listQueryState`'s field initializer first reads it).
+ *
+ * `settle()` does double duty: it lets a fire-and-forget `router.navigate` (setParams,
+ * onEmoteSetSelected) finish, the same as core/routing/list-query-state.spec.ts's own helper, AND it
+ * gives `emoteSetListResource` (an `rxResource`, unlike the plain `HttpClient` calls the rest of this
+ * file flushes) the extra microtask its status/value need after a synchronous `.flush()` — a bare
+ * `fixture.detectChanges()` right after `flush()` observably still reports `status() === 'loading'`
+ * (checked directly against a minimal `rxResource` in isolation while writing this suite).
+ */
+describe('UsageStatsPage — set dropdown, URL fallback rules and retainAmong (T4.2)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  function configure(): void {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  /** Flushes permissions + active-set + the set list, then settles — the same choreography every
+   *  other describe block in this file drives by hand, plus the new set-list request T4.2 adds.
+   *  Totals/series are NOT flushed here: whether/when they even fire is what half of this block's
+   *  tests are about. */
+  async function mountUpTo(
+    channelName: string,
+    sets: EmoteSetSummary[],
+    options: { setsUnavailable?: boolean } = {},
+  ): Promise<void> {
+    httpMock
+      .expectOne(`/api/channels/${channelName}/permissions`)
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne(`/api/channels/${channelName}/emotes/active-set`).flush(
+      setStatus({
+        activeEmoteSetId: sets.find((set) => set.isActive)?.id ?? '',
+        trackedSince: '2026-01-01T00:00:00Z',
+      }),
+    );
+    // The "all time" correction against trackedSince reruns the load effect a second time (see that
+    // effect's own comment in usage-stats-page.ts).
+    fixture.detectChanges();
+
+    const setsReq = httpMock.expectOne(`/api/channels/${channelName}/emote-sets`);
+    if (options.setsUnavailable) {
+      setsReq.flush(
+        { errorCode: 'foreign_channel_seventv_unavailable' },
+        { status: 503, statusText: 'Service Unavailable' },
+      );
+    } else {
+      setsReq.flush(emoteSetList(sets));
+    }
+    await settle();
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('an unknown emoteSetId in the URL silently falls back to the active set and cleans the URL (T4.0 decision 3)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'does-not-exist' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [emoteSet({ id: 'set-a', isActive: true })]);
+    // The list is readable and rejects the id — /totals fires for the active set right away, the
+    // same tick, not held back (only a still-pending list holds it, see the waiting-phase test).
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+
+    await settle();
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBeNull();
+  });
+
+  it('a PERSONAL set id in the URL is treated exactly like an unknown id (decision 4)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-personal' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-personal', name: 'Personal Emotes', kind: 'PERSONAL', isPersonal: true }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+
+    await settle();
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBeNull();
+  });
+
+  it('holds the totals/series request while the set list for a URL-carried emoteSetId is still pending (decision 2)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    void router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    // The query-param navigation above is fire-and-forget too — let it land before relying on it.
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+
+    // Range is resolved and the channel is known, but the set list itself has not answered yet —
+    // no premature request for the active set, no #94 notice for an answer nobody asked for.
+    expect(component['awaitingEmoteSetId']()).toBe(true);
+    httpMock.expectNone('/api/channels/a/usage-stats/totals');
+    httpMock.expectNone('/api/channels/a/usage-stats/series');
+
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    expect(component['awaitingEmoteSetId']()).toBe(false);
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    const totalsReq = httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-b',
+    );
+    totalsReq.flush([]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  });
+
+  it('pins the display to the active set for the rest of the channel session once the set list fails to load (decision 3)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [emoteSet({ id: 'set-a', isActive: true })], { setsUnavailable: true });
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+    expect(component['emoteSetListUnavailable']()).toBe(true);
+    expect(component['isPinnedToActiveSet']()).toBe(true);
+  });
+
+  /**
+   * Regression (found live via a coordinator-driven e2e run, 2026-09-21, matching MEMORY.md's own
+   * "unmocked route falls through the dev proxy" trap for `/api/**`): `resource()`'s `.value()`
+   * *re-throws* the load error once `status()` is `'error'` — a plain `emoteSetListResource.value()
+   * ?? null` still crashes on read, because the throw happens before `??` ever sees anything to fall
+   * back on. The real template reads `emoteSetList()` UNCONDITIONALLY (`[sets]="emoteSetList()?.sets
+   * ?? []"` on `<app-emote-set-menu>`), regardless of whether the URL carries an `emoteSetId` at all
+   * — every stub-template test in this block, and the "pins the display" test right above, happens
+   * to dodge the crash because `selectedEmoteSetId()`'s `param === ''` guard short-circuits before it
+   * ever reads `emoteSetList()`. This test calls it directly, the way the template does, and is what
+   * would have caught the regression before it reached e2e — a live channel with no `?emoteSetId=` in
+   * its URL at all (the ordinary case) still rendered nothing at all once `/emote-sets` answered
+   * 503, because reading the signal to feed the dropdown took the whole page's change detection down
+   * with it.
+   */
+  it('reading emoteSetList() does not throw once the set list has failed to load, and /totals still loads without any id in the URL (decision 2)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [emoteSet({ id: 'set-a', isActive: true })], { setsUnavailable: true });
+
+    // The exact read the real template performs unconditionally, regardless of the URL — must not
+    // throw, and must degrade to null rather than surface the resource's error.
+    expect(() => component['emoteSetList']()).not.toThrow();
+    expect(component['emoteSetList']()).toBeNull();
+
+    // No id in the URL at all (decision 2's own wording: "ohne id in der URL, don't wait") — /totals
+    // and /series fire despite the set list never having answered successfully.
+    expect(component['awaitingEmoteSetId']()).toBe(false);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(component['emotes']()).toHaveLength(1);
+  });
+
+  it('retainAmong (not clear) survives a dropdown set switch, like a date-range change on the same channel (AK 51)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    const a = emote('a', 'PeepoA');
+    const b = emote('b', 'PeepoB');
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [a, b]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    component['selection'].onRowClick(asRow(a), { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(asRow(b), { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    // Only 'a' has a row under set-b and is a member of it — a genuine channel switch would have
+    // cleared the whole selection outright instead of reconciling it.
+    const totalsReq = httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-b',
+    );
+    totalsReq.flush([a]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    // The non-active view is only complete with its member list — the reconciliation waits for it
+    // (see the deferred-reconciliation cases in the set-view block), so it has to be flushed here
+    // for the pruning to be real rather than merely postponed.
+    httpMock
+      .expectOne(
+        (r) => r.url === '/api/seventv/channels/a/emotes' && r.params.get('emoteSetId') === 'set-b',
+      )
+      .flush({
+        channelName: 'a',
+        sevenTvUserId: null,
+        emoteSetId: 'set-b',
+        emoteSetName: 'Halloween',
+        capacity: 1000,
+        totalCount: 1,
+        truncated: false,
+        emotes: [
+          {
+            sevenTvEmoteId: '7tv-a',
+            name: 'PeepoA',
+            defaultName: 'PeepoA',
+            imageUrl: '',
+            topAllTime: null,
+            trending: null,
+          },
+        ],
+      });
+    await settle();
+
+    // Retained, not cleared: 'a' stays, 'b' — gone from set-b entirely — is pruned with the #94
+    // notice.
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
+    expect(component['selectionPrunedFeedback']()?.count).toBe(1);
+  });
+
+  it('an explicit dropdown choice lifts the pin once the list is readable again — even for the id the URL already carried (decision 2026-09-22)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    const sets = [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ];
+    await mountUpTo('a', sets, { setsUnavailable: true });
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    expect(component['isPinnedToActiveSet']()).toBe(true);
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+
+    // A later read succeeds (the loud channel.synced reload) — the pin still holds the view.
+    component['emoteSetListResource'].reload();
+    await settle();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(emoteSetList(sets));
+    await settle();
+    expect(component['isPinnedToActiveSet']()).toBe(true);
+    expect(component['selectedEmoteSetId']()).toBe('set-a');
+    httpMock.expectNone((r) => r.url === '/api/channels/a/usage-stats/totals');
+
+    // A deliberate choice is never ignored — not even when it names the id the URL still holds.
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    expect(component['isPinnedToActiveSet']()).toBe(false);
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-b',
+    );
+  });
+
+  it('clears the series cache and does not re-fetch the set list on a dropdown set switch (AK 51, E19)', async () => {
+    configure();
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    const clearSeriesCache = vi.spyOn(TestBed.inject(UsageStatService), 'clearSeriesCache');
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    clearSeriesCache.mockClear();
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    expect(clearSeriesCache).toHaveBeenCalledTimes(1);
+    // No second /emote-sets request pending — the list is bound to the channel (E19), not to the
+    // chosen set.
+    httpMock.expectNone('/api/channels/a/emote-sets');
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  });
+
+  it('choosing the active set writes no emoteSetId back into the URL', async () => {
+    configure();
+    router = TestBed.inject(Router);
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    await mountUpTo('a', [
+      emoteSet({ id: 'set-a', isActive: true }),
+      emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    // Switch away, then explicitly back to the active set — not a no-op click, the URL genuinely
+    // carries an id at this point that the second choice must remove again.
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBe('set-b');
+
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBeNull();
+  });
+});
+
+/**
+ * E19 / AK 52 (partial): the set list is bound to the channel, never to a reload cadence. Its own
+ * describe block because it needs the FakeEventSource + fake-timer choreography every live-reload
+ * test in this file uses, which the block above deliberately avoids (real timers, for the
+ * `setTimeout(0)` `settle()` helper).
+ */
+describe('UsageStatsPage — usage.flushed never reloads the set list, channel.synced does (T4.2, E19)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Fake-timer counterpart of the other block's `settle()` — an `rxResource`'s status/value need a
+   *  microtask after a synchronous `.flush()`, and under `vi.useFakeTimers()` a bare `setTimeout(0)`
+   *  never fires on its own. */
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+  }
+
+  it('counts /emote-sets requests across a usage.flushed burst (none) and a channel.synced burst (one)', async () => {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        trackedSince: '2026-01-01T00:00:00Z',
+        // Both dates set so SetStatusFlushProbeGate.shouldRefreshOn short-circuits to false — this
+        // test is about the SET LIST's own request count, not about the status probe's, which the
+        // usageFlushed branch would otherwise also fire (see the #94 mount() helper's own comment
+        // further up in this file for the same fix).
+        botsExcludedSince: '2026-01-01T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-01T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+
+    const source = FakeEventSource.instances[0];
+
+    source.emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+
+    // The silent reload's own totals refetch — draining it is not what this test is about.
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    httpMock.expectNone('/api/channels/a/emote-sets');
+
+    source.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-01T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-01T00:00:00Z',
+      }),
+    );
+    // The loud reload's own re-fetch — E19: channel.synced DOES reload the set list, unlike
+    // usage.flushed above.
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(emoteSetList([emoteSet({ id: 'set-a', isActive: true })]));
+    await settle();
+  });
+});
+
+/**
+ * AK 50: the one DOM-level assertion in this file's T4.2 coverage — everything else reads state, not
+ * markup (Regel 12), but "the dropdown offers these sets, this one preselected, that one hidden" is
+ * genuinely about what renders. Real template, like the mark-all block above, for the same reason:
+ * the dropdown is a real descendant of it, not something a stub template could stand in for.
+ */
+describe('UsageStatsPage — set dropdown renders the radiogroup with the active set preselected and PERSONAL hidden (AK 50)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+  }
+
+  it('offers only the NORMAL sets, active one checked and named', async () => {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({ id: 'set-a', name: 'Hauptset', isActive: true }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        emoteSet({
+          id: 'set-personal',
+          name: 'Personal Emotes',
+          kind: 'PERSONAL',
+          isPersonal: true,
+          isActive: false,
+        }),
+      ]),
+    );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    fixture.detectChanges();
+
+    // Scoped by its own trigger label — `aria-haspopup="dialog"` alone would also match
+    // DateRangeMenu's trigger sitting right next to it in the same toolbar row.
+    const trigger = Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.includes('emoteSetMenu.label'));
+    expect(trigger).not.toBeUndefined();
+    trigger!.click();
+    fixture.detectChanges();
+
+    const radios = Array.from(
+      fixture.nativeElement.querySelectorAll(
+        '[role="radiogroup"][aria-label="emoteSetMenu.menuLabel"] [role="radio"]',
+      ) as NodeListOf<HTMLElement>,
+    );
+    // Two, not three — the PERSONAL set is hidden entirely, not shown disabled (decision 4).
+    expect(radios).toHaveLength(2);
+    expect(radios.map((radio) => radio.textContent?.trim())).toEqual([
+      expect.stringContaining('Hauptset'),
+      expect.stringContaining('Halloween'),
+    ]);
+
+    const checked = radios.find((radio) => radio.getAttribute('aria-checked') === 'true');
+    expect(checked?.textContent).toContain('Hauptset');
+  });
+});
+
+/**
+ * Spec #200, T4.3 + T4.4: the grid keyed by 7TV id, and a non-active set's view — the member list
+ * loaded beside `/totals`/`/series`, the row classes it produces (8.2), the caption's two
+ * independent statements (8.4, AK 60 as a matrix), the delete locks with their reasons (8.3, AK 62)
+ * and the preset (8.5). Real timers like the T4.2 block above (the query-param navigation and the
+ * resources settle on microtasks), fake ones only where a live event has to fire.
+ */
+describe('UsageStatsPage — set view: row identity, non-active loading, classes, captions, locks (T4.3/T4.4)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+
+  function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
+    return {
+      sevenTvEmoteId,
+      name,
+      defaultName: name,
+      imageUrl: '',
+      topAllTime: null,
+      trending: null,
+    };
+  }
+
+  function memberList(
+    emotes: ForeignEmoteRow[],
+    overrides: Partial<ForeignEmoteSetResponse> = {},
+  ): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: emotes.length,
+      truncated: false,
+      emotes,
+      ...overrides,
+    };
+  }
+
+  function configure(): void {
+    // Several tests open more than one view; each gets a fresh module, not a reconfigured one.
+    TestBed.resetTestingModule();
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function liveListRequests(): TestRequest[] {
+    return httpMock.match((r) => r.url === '/api/seventv/channels/a/emotes');
+  }
+
+  /**
+   * Mounts channel 'a' (active set `set-a`, tracked since 2026-01-01) with the given set in the URL
+   * and drives it up to the point where the rows are on screen: permissions, status, set list,
+   * `/totals`, `/series` and — for a non-active set — its member list. `members: 'unavailable'`
+   * answers the member list with a 503. Returns nothing; the tests read the page's state.
+   */
+  async function openView(options: {
+    emoteSetId?: string;
+    totals: EmoteUsageTotalDto[];
+    members?: ForeignEmoteSetResponse | 'unavailable';
+    observations?: EmoteSetSummary['observations'];
+  }): Promise<void> {
+    configure();
+    router = TestBed.inject(Router);
+    if (options.emoteSetId) {
+      await router.navigate([], { queryParams: { emoteSetId: options.emoteSetId } });
+    }
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        capacity: 600,
+        occupiedSlots: 10,
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-02T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-02T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({
+          id: 'set-b',
+          name: 'Halloween',
+          isActive: false,
+          observations: options.observations ?? [],
+        }),
+      ]),
+    );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', options.totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    if (options.members === 'unavailable') {
+      liveListRequests().forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    } else if (options.members) {
+      const members = options.members;
+      liveListRequests().forEach((request) => request.flush(members));
+    }
+    await settle();
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // --- T4.3: the key switch ------------------------------------------------------------------
+
+  it('keeps two Guid-less live members as two separate, individually selectable rows, and retainAmong keeps the right one (AK 54)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX'), member('7tv-y', 'PumpkinY')]),
+    });
+    const [x, y] = component['emotes']();
+    expect(x.emoteId).toBeNull();
+    expect(y.emoteId).toBeNull();
+
+    component['selection'].onRowClick(x, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-x']);
+    expect(component['selection'].isSelected(y)).toBe(false);
+    component['selection'].onRowClick(y, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-x', '7tv-y']);
+
+    // A reconciliation against a view where only 'y' survived drops exactly 'x'.
+    component['selection'].retainAmong(component['emotes']().filter((row) => row === y));
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-y']);
+    // AK 55 at the model level: the inner @for tracks sevenTvEmoteId, unique per row.
+    const keys = component['atlasOrder']().map((row) => row.sevenTvEmoteId);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('opens the drilldown only for a row with a Guid and counts, freezing the shown set into its data (7.2 drilldown gate)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('gone', 'OldPumpkin', 30)],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+    });
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: of(undefined),
+    } as ReturnType<Dialog['open']>);
+
+    const uncounted = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-x')!;
+    const left = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-gone')!;
+
+    expect(component['canDrilldown'](uncounted)).toBe(false);
+    component['openDrilldown'](uncounted);
+    expect(openSpy).not.toHaveBeenCalled();
+
+    expect(component['canDrilldown'](left)).toBe(true);
+    component['openDrilldown'](left);
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
+    expect(data.emoteId).toBe('gone');
+    expect(data.emoteSetId).toBe('set-b');
+  });
+
+  it('resolves a null-session ballot to Guids from the 7TV-keyed selection, and offers none in a non-active view (E4, K6 interim)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA'), emote('b', 'PeepoB')] });
+    const [a, b] = component['emotes']();
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+
+    // Keys are 7TV ids, the ballot the dialog would submit is Guids.
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+    expect([...component['voteBallotEmoteIds']()].sort()).toEqual(['a', 'b']);
+    expect(component['voteLocked']()).toBe(false);
+
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    expect(component['voteLocked']()).toBe(true);
+  });
+
+  // --- T4.4: loading and reloads ---------------------------------------------------------------
+
+  it('loads the member list beside /totals and /series for a non-active set, and holds the union until it is there (8.3, AK 51)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    const liveRequest = httpMock.expectOne(
+      (r) => r.url === '/api/seventv/channels/a/emotes' && r.params.get('emoteSetId') === 'set-b',
+    );
+    // A params-driven load after choosing the set may use the Api's cache; only a loud reload
+    // bypasses it (see the refresh-button case below).
+    expect(liveRequest.request.params.get('refresh')).toBeNull();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    fixture.detectChanges();
+
+    // The counted rows are in, the member list is not — skeleton, not a half-built union.
+    expect(component['liveMembersState']()).toBe('loading');
+    expect(component['viewLoading']()).toBe(true);
+
+    liveRequest.flush(memberList([member('7tv-a', 'PeepoA'), member('7tv-x', 'PumpkinX')]));
+    await settle();
+
+    expect(component['viewLoading']()).toBe(false);
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a', '7tv-x']);
+  });
+
+  it('usage.flushed reloads only the numbers, channel.synced the member list too (AK 52)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    vi.useFakeTimers();
+    const source = FakeEventSource.instances[0];
+
+    source.emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+    httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/a/usage-stats/totals' && r.params.get('emoteSetId') === 'set-b',
+    );
+    expect(liveListRequests()).toHaveLength(0);
+
+    source.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    const reloaded = liveListRequests();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    // A loud reload asks the Api to bypass its cache (spec 8.3) — only this one request.
+    expect(reloaded[0].request.params.get('refresh')).toBe('true');
+  });
+
+  // --- T4.4: row classes (8.2) ----------------------------------------------------------------
+
+  it('keeps rows without counts out of sums, bands and the strip, as a trailing group in name order (AK 56)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 40), emote('z', 'Zulu', 60)],
+      members: memberList([
+        member('7tv-a', 'Alpha'),
+        member('7tv-z', 'Zulu'),
+        member('7tv-q', 'Quebec'),
+        member('7tv-c', 'Charlie'),
+      ]),
+    });
+
+    expect(component['totalUsage']()).toBe(100);
+    expect(component['bands']().flatMap((band) => band.items.map((row) => row.emoteName))).toEqual([
+      'Zulu',
+      'Alpha',
+    ]);
+    expect(component['distribution']()).toHaveLength(2);
+    // The null group comes last, alphabetical, whatever the toolbar's sort says.
+    expect(component['atlasOrder']().map((row) => row.emoteName)).toEqual([
+      'Zulu',
+      'Alpha',
+      'Charlie',
+      'Quebec',
+    ]);
+    const groups = component['rows']().filter((row) => row.kind === 'band');
+    expect(groups.at(-1)).toMatchObject({ kind: 'band', band: 'uncounted', count: 2 });
+    // The label hangs on the missing count (E17), not on the missing Guid.
+    component['inspect'](component['atlasOrder']()[2]);
+    expect(component['inspectedBand']()).toBe('uncounted');
+    expect(component['inspectedShare']()).toBeNull();
+    // …and no curve: a zero-filled baseline would claim "counted, never used".
+    expect(component['inspectedPoints']()).toEqual([]);
+    component['inspect'](component['atlasOrder']()[0]);
+    expect(component['inspectedPoints']().length).toBeGreaterThan(0);
+  });
+
+  it("marks a counted row that left the set as 'left', keeps it in the sums, and never hands it to the delete run (AK 57)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('gone', 'OldPumpkin', 30), emote('a', 'Alpha', 70)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+    });
+    const left = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-gone')!;
+    expect(left.membership).toBe('left');
+    expect(component['totalUsage']()).toBe(100);
+
+    const alpha = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-a')!;
+    component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(alpha, { shiftKey: false } as MouseEvent);
+    expect(component['selectedForDelete']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+  });
+
+  it("counts a #74 duplicate cell as two slots of the shown set's own budget (AK 58)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('d', 'Dupe', 5)],
+      members: memberList(
+        [member('7tv-d', 'Dupe'), member('7tv-d', 'DupeAlias'), member('7tv-e', 'Echo')],
+        { capacity: 1000, totalCount: 3 },
+      ),
+    });
+    const dupe = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-d')!;
+    expect(dupe.slotCount).toBe(2);
+    expect(dupe.aliases).toEqual(['Dupe', 'DupeAlias']);
+
+    component['selection'].onRowClick(dupe, { shiftKey: false } as MouseEvent);
+    expect(component['pendingRemovalSlots']()).toBe(2);
+    // The budget is the member list's, not the active set's status (600 / 10).
+    expect(component['slotBudget']()).toEqual({ capacity: 1000, occupied: 3 });
+    expect(component['projectedSlots']()).toEqual({ projected: 1, capacity: 1000 });
+  });
+
+  it('names a name twin by the set the dropdown list calls it, and never adds its numbers (AK 59)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [{ ...emote('a', 'Alpha', 12), nameTwinEmoteSetIds: ['set-a', 'zzzzzz-unknown'] }],
+      members: memberList([member('7tv-a', 'Alpha')]),
+    });
+    const twin = component['emotes']()[0];
+
+    expect(component['nameTwinSetNames'](twin)).toBe('Hauptset, nknown');
+    expect(component['totalUsage']()).toBe(12);
+  });
+
+  // --- T4.4: the caption matrix (8.4, AK 60) ----------------------------------------------------
+
+  function captionKeys(): string[] {
+    return component['setViewCaptions']().map((sentence) => sentence.key);
+  }
+
+  it('not observed and no counts: B− then Z− (AK 60, case 1)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+      observations: [],
+    });
+
+    expect(captionKeys()).toEqual([
+      'usageStats.setView.facts.notObserved',
+      'usageStats.setView.facts.noCounts',
+    ]);
+  });
+
+  it('not observed but with counts: B− alone, nothing said about the numbers (AK 60, case 2 — the migration/rejoin case)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 12)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+      observations: [],
+    });
+
+    expect(captionKeys()).toEqual(['usageStats.setView.facts.notObserved']);
+  });
+
+  it('observed from inside the range: B~ with the interval start; plus Z− when there are no counts (AK 60, case 3)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 0)],
+      members: memberList([member('7tv-a', 'Alpha')]),
+      observations: [{ fromUtc: '2026-03-01T12:00:00Z', toUtc: null }],
+    });
+
+    expect(captionKeys()).toEqual([
+      'usageStats.setView.facts.countedSince',
+      'usageStats.setView.facts.noCounts',
+    ]);
+    expect(component['setViewCaptions']()[0].params).toEqual({
+      date: component['formatDate']('2026-03-01T12:00:00Z'),
+    });
+  });
+
+  it('the active set with an open interval since tracking start: no set sentence at all, as today (AK 60, case 4)', async () => {
+    await openView({ totals: [emote('a', 'Alpha', 0)] });
+
+    expect(component['isNonActiveView']()).toBe(false);
+    expect(captionKeys()).toEqual([]);
+  });
+
+  // --- T4.4: locks (8.3, AK 62) and the preset (8.5) -------------------------------------------
+
+  it('shows the counted rows without a readable member list, says so, and locks deleting with that reason (AK 62)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'Alpha', 12)],
+      members: 'unavailable',
+      observations: [{ fromUtc: '2025-12-01T00:00:00Z', toUtc: null }],
+    });
+
+    expect(component['liveMembersState']()).toBe('unavailable');
+    expect(component['viewLoading']()).toBe(false);
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.membersUnavailable');
+    expect(captionKeys()).toEqual(['usageStats.setView.membersUnavailable']);
+    // No budget to project against — never the active set's numbers under this set's name.
+    expect(component['slotBudget']()).toBeNull();
+  });
+
+  it('a truncated member list locks deleting with its own reason; a whole one still carries the K5 interim lock; the active view carries none', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-a', 'Alpha')], { truncated: true, totalCount: 1200 }),
+    });
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+    expect(captionKeys()).toContain('usageStats.setView.truncated');
+
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-a', 'Alpha')]),
+    });
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+
+    await openView({ totals: [emote('a', 'Alpha')] });
+    expect(component['deleteLockReasonKey']()).toBeNull();
+  });
+
+  it("offers the 'set-observed' range of the chosen set only, and follows a set switch while that preset is on (8.5)", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([]),
+      observations: [],
+    });
+    expect(component['setObservedPresetRange']()).toBeNull();
+
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+    expect(component['setObservedPresetRange']()).toMatchObject({ from: '2026-01-01' });
+
+    component['rangePreset'].set('set-observed');
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    // Halloween was never observed: the dates stay, the preset turns into what they now are.
+    expect(component['rangePreset']()).toBe('custom');
+  });
+
+  // --- K4 fix round (2026-09-22) ---------------------------------------------------------------
+
+  const TOTALS_URL = '/api/channels/a/usage-stats/totals';
+
+  function failTotals(status = 500): void {
+    httpMock
+      .match((r) => r.url === TOTALS_URL)
+      .forEach((request) => request.flush({}, { status, statusText: 'Error' }));
+  }
+
+  it('locks delete and vote with the switch reason while the chosen set is not on screen yet, with the dock still up (finding A)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA')] });
+    component['selection'].onRowClick(component['emotes']()[0], {
+      shiftKey: false,
+    } as MouseEvent);
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['voteLocked']()).toBe(false);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    // The dock stays mounted across the switch — which is exactly why it has to be locked.
+    expect(component['dockVisible']()).toBe(true);
+    expect(component['viewSwitching']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+    expect(component['voteLocked']()).toBe(true);
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    liveListRequests().forEach((request) => request.flush(memberList([member('7tv-a', 'PeepoA')])));
+    await settle();
+
+    // Landed: the non-active view's own (K5 interim) reason takes over.
+    expect(component['viewSwitching']()).toBe(false);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+  });
+
+  it('hands the vote dialog a live lock, so a switch started behind the open dialog blocks its submit (finding A)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA')] });
+    component['selection'].onRowClick(component['emotes']()[0], {
+      shiftKey: false,
+    } as MouseEvent);
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: new Subject(),
+    } as unknown as ReturnType<Dialog['open']>);
+
+    component['openCreateVoteSession']();
+    const data = openSpy.mock.calls[0][1]?.data as CreateVoteSessionDialogData;
+    expect(data.lockReasonKey?.()).toBeNull();
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    expect(data.lockReasonKey?.()).toBe('usageStats.setView.lock.switching');
+  });
+
+  it('a failed /totals after a switch shows the error state — no endless skeleton, refresh free — and a retry recovers (finding B)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA')] });
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    failTotals();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    liveListRequests().forEach((request) =>
+      request.flush(memberList([member('7tv-x', 'PumpkinX')])),
+    );
+    await settle();
+
+    // The refresh button is disabled by viewLoading() — it must be free again.
+    expect(component['viewLoading']()).toBe(false);
+    expect(component['setSwitchFailed']()).toBe(true);
+    expect(component['errorMessage']()).not.toBeNull();
+    // The previous set's rows are still loaded, but nothing may present them as the chosen set's.
+    expect(component['inspected']()).toBeNull();
+    expect(component['slotBudget']()).toBeNull();
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+
+    component['refresh']();
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    httpMock
+      .expectOne((r) => r.url === TOTALS_URL && r.params.get('emoteSetId') === 'set-b')
+      .flush([]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    liveListRequests().forEach((request) =>
+      request.flush(memberList([member('7tv-x', 'PumpkinX')])),
+    );
+    await settle();
+
+    expect(component['setSwitchFailed']()).toBe(false);
+    expect(component['errorMessage']()).toBeNull();
+    expect(component['isNonActiveView']()).toBe(true);
+  });
+
+  it('a failed /totals on the way back to the active set settles into the error state too (finding B, idle member list)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+    failTotals();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    await settle();
+
+    expect(component['viewLoading']()).toBe(false);
+    expect(component['setSwitchFailed']()).toBe(true);
+  });
+
+  it('a failed background reload of an already read set list keeps the view — no pin, no fallback, no reload, no prune (finding C)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA'), member('7tv-x', 'PumpkinX')]),
+    });
+    const pumpkin = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-x')!;
+    component['selection'].onRowClick(pumpkin, { shiftKey: false } as MouseEvent);
+
+    // The loud channel.synced reload of the list, failing this time.
+    component['emoteSetListResource'].reload();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        { errorCode: 'foreign_channel_seventv_unavailable' },
+        { status: 503, statusText: 'Service Unavailable' },
+      );
+    await settle();
+
+    expect(component['isPinnedToActiveSet']()).toBe(false);
+    expect(component['emoteSetListUnavailable']()).toBe(false);
+    expect(component['emoteSetList']()?.sets.map((set) => set.id)).toEqual(['set-a', 'set-b']);
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    expect(router.routerState.snapshot.root.queryParamMap.get('emoteSetId')).toBe('set-b');
+    httpMock.expectNone((r) => r.url === TOTALS_URL);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-x']);
+    expect(component['selectionPrunedFeedback']()).toBeNull();
+  });
+
+  it('a failed status request un-claims the channel: the push/import scope locks and no active set is assumed (finding E)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA')] });
+    expect(component['importScopeCurrent']()).toBe(true);
+
+    component['refresh']();
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush({}, { status: 429, statusText: 'Too Many Requests' });
+    await settle();
+
+    expect(component['activeEmoteSetId']()).toBeNull();
+    expect(component['importScopeCurrent']()).toBe(false);
+  });
+
+  it("a channel switch never asks the new channel for the previous channel's set (finding F)", async () => {
+    await openView({ totals: [emote('a', 'PeepoA')] });
+    // A chosen range needs no tracking start, so the new channel's rows are requested at once —
+    // the window in which the previous channel's active id used to leak into the request.
+    component['rangePreset'].set('custom');
+
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+
+    const totalsForB = httpMock.match((r) => r.url === '/api/channels/b/usage-stats/totals');
+    expect(totalsForB.length).toBeGreaterThan(0);
+    for (const request of totalsForB) {
+      expect(request.request.params.get('emoteSetId')).toBeNull();
+    }
+  });
+
+  it('a live reload requests no rows while a URL-carried set is still unconfirmed (finding F)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    expect(component['awaitingEmoteSetId']()).toBe(true);
+
+    vi.useFakeTimers();
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+
+    httpMock.expectNone((r) => r.url === TOTALS_URL);
+  });
+
+  it('when the viewed set becomes the active one, delete stays locked until its rows are reloaded as the active view (finding H)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+
+    // A sync made Halloween the channel's active set.
+    component['setStatus'].set(
+      setStatus({ activeEmoteSetId: 'set-b', trackedSince: '2026-01-01T00:00:00Z' }),
+    );
+    fixture.detectChanges();
+
+    // Still the rows merged as a non-active view — no flash of an unlocked delete over them.
+    expect(component['isNonActiveView']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+
+    httpMock
+      .expectOne((r) => r.url === TOTALS_URL && r.params.get('emoteSetId') === 'set-b')
+      .flush([emote('a', 'PeepoA')]);
+    await settle();
+
+    expect(component['isNonActiveView']()).toBe(false);
+    expect(component['deleteLockReasonKey']()).toBeNull();
+  });
+
+  it('the refresh button reloads the member list bypassing the Api cache (finding I)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+
+    component['refresh']();
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    await settle();
+
+    const reloaded = liveListRequests();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].request.params.get('refresh')).toBe('true');
+  });
+
+  it('a set switch reconciles the selection only once the member list is in: a marked live member survives, a vanished one is pruned (#94 deferred)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA'), emote('b', 'PeepoB')] });
+    for (const row of component['emotes']()) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    // Neither emote has counts under Halloween — against the /totals rows alone both would go.
+    flushByPath(httpMock, TOTALS_URL, []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    fixture.detectChanges();
+
+    expect(component['selectionReconcilePending']()).toBe(true);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+    expect(component['selectionPrunedFeedback']()).toBeNull();
+
+    liveListRequests().forEach((request) => request.flush(memberList([member('7tv-a', 'PeepoA')])));
+    await settle();
+
+    expect(component['selectionReconcilePending']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
+    expect(component['selectionPrunedFeedback']()?.count).toBe(1);
+  });
+
+  it('rows answered through the fallback while no active set was known keep that unknown identity: writes stay locked until rows for the recovered set land (second review, P1)', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush({}, { status: 503, statusText: 'Service Unavailable' });
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+    // No set known: /totals goes out without one and the endpoint answers for whatever is active.
+    const fallback = httpMock.match((r) => r.url === TOTALS_URL);
+    expect(fallback.map((r) => r.request.params.get('emoteSetId'))).toEqual([null]);
+    fallback[0].flush([emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    await settle();
+
+    // The status recovers — and names set-b: 7TV switched sets in between.
+    component['refreshSetStatus']();
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-b', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+
+    // The fallback rows are not relabelled as set-b's: every write path stays locked.
+    expect(component['selectedEmoteSetId']()).toBe('set-b');
+    expect(component['viewSwitching']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+    expect(component['importScopeCurrent']()).toBe(false);
+
+    // …and stay locked when the explicit request for set-b fails.
+    failTotals();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    await settle();
+    expect(component['setSwitchFailed']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.switching');
+  });
+
+  it('a loud reload defers the reconciliation until the refreshed member list is in, even while the old one stays on screen (second review, P2)', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA'), member('7tv-x', 'PumpkinX')]),
+    });
+    const pumpkin = component['emotes']().find((row) => row.sevenTvEmoteId === '7tv-x')!;
+    component['selection'].onRowClick(pumpkin, { shiftKey: false } as MouseEvent);
+
+    component['refresh']();
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    // The refreshed numbers land first; the refreshed member list is still out, the old one still
+    // renders (no skeleton) — but it must not be what the selection is reconciled against.
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    fixture.detectChanges();
+    expect(component['liveMembersState']()).toBe('ready');
+    expect(component['selectionReconcilePending']()).toBe(true);
+
+    // PumpkinX left the set on 7TV.
+    liveListRequests().forEach((request) => request.flush(memberList([member('7tv-a', 'PeepoA')])));
+    await settle();
+
+    expect(component['selectionReconcilePending']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual([]);
+    expect(component['selectionPrunedFeedback']()?.count).toBe(1);
+  });
+
+  it('a failed member list pays the deferred reconciliation against the counted rows alone (#94 deferred)', async () => {
+    await openView({ totals: [emote('a', 'PeepoA'), emote('b', 'PeepoB')] });
+    for (const row of component['emotes']()) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    fixture.detectChanges();
+    expect(component['selectionReconcilePending']()).toBe(true);
+
+    liveListRequests().forEach((request) =>
+      request.flush(
+        { errorCode: 'foreign_channel_seventv_unavailable' },
+        { status: 503, statusText: 'Service Unavailable' },
+      ),
+    );
+    await settle();
+
+    expect(component['selectionReconcilePending']()).toBe(false);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
+    expect(component['selectionPrunedFeedback']()?.count).toBe(1);
+  });
+
+  // --- Client-side member-list cache (operator decision 2026-09-22) -----------------------------
+  // A fast A→B→A switch hit 429 on the shared ForeignEmoteLookup limiter even though the backend's
+  // own 60 s cache sat behind it — a cache hit there still spends a permit. liveMembersResource now
+  // reads through SevenTvEmoteSetService.loadCachedEmoteSetPreview, which mirrors that TTL
+  // client-side for a params-driven load only; see that method's own spec for the cache's rules in
+  // isolation (fresh hit, expiry, refresh bypass, no caching of an error, separate keys).
+
+  it('serves a set switch back to a recently-shown set from the client cache — A, B, A issues exactly two live-list requests', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          emoteSet({ id: 'set-c', name: 'Winter', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    // Initial load of B (set-b) — a real request.
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    let requests = liveListRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].request.params.get('emoteSetId')).toBe('set-b');
+    requests[0].flush(memberList([member('7tv-a', 'PeepoA')], { emoteSetId: 'set-b' }));
+    await settle();
+
+    // Switch to a different, never-loaded non-active set (set-c) — also a real request.
+    component['onEmoteSetSelected']('set-c');
+    await settle();
+    flushByPath(httpMock, TOTALS_URL, []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    requests = liveListRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].request.params.get('emoteSetId')).toBe('set-c');
+    requests[0].flush(memberList([member('7tv-z', 'Zulu')], { emoteSetId: 'set-c' }));
+    await settle();
+
+    // Back to set-b, within the 60 s TTL: no live-list request at all — served from the cache.
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    await settle();
+
+    expect(liveListRequests()).toHaveLength(0);
+    expect(component['liveMembersState']()).toBe('ready');
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+  });
+
+  it('a loud channel.synced reload still bypasses a warm client cache and fetches fresh', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    // The cache is now warm for (a, set-b) from openView's own initial load.
+    vi.useFakeTimers();
+    const source = FakeEventSource.instances[0];
+
+    source.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const reloaded = liveListRequests();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.params.get('refresh')).toBe('true');
+  });
+});
+
+/**
+ * The vote button's own `aria-describedby` (a11y fix, docs/UI-Designsprache.md §10 "Disabled
+ * explains itself"): before this fix only the delete button pointed at the mass-delete panel's
+ * visible reason paragraph, leaving the vote button's disabled state unexplained to a screen
+ * reader. Unlike every block above, this one keeps the real template rather than overriding it to
+ * two bare `<div>`s — the vote button and the paragraph it must reference (`MassDeletePanel`'s
+ * `deleteLockReasonId`, made public for exactly this) only exist there. The selection is still
+ * driven through `ListSelection` directly rather than a DOM click on a grid cell, same as the
+ * `openCreateVoteSession()` block above — `cdk-virtual-scroll-viewport` renders nothing meaningful
+ * in jsdom's zero-size layout, but the dock and its buttons sit outside the viewport and only need
+ * the selection *signal* to be non-empty, not a rendered cell to click.
+ */
+describe('UsageStatsPage — the locked vote button shares the delete lock reason paragraph (a11y fix)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function findVoteButton(): HTMLButtonElement | undefined {
+    return Array.from(
+      fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>,
+    ).find((button) => button.textContent?.trim().startsWith('usageStats.createVoteSession'));
+  }
+
+  it('points the disabled vote button at the exact same reason paragraph the delete button uses, in a non-active view whose member list is unreadable (AK 62 shape)', async () => {
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+      ]),
+    );
+    await settle();
+
+    // A real-looking imageUrl: this describe block renders the actual template, so
+    // NgOptimizedImage runs for real and rejects the shared emote() helper's default '' (NG02952,
+    // see the "toolbar mark-all" block's own comment on the same trap).
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    await settle();
+
+    // Same lock, same condition — see mass-delete-panel.ts's deleteLockReasonId comment: this is
+    // exactly why the vote button can reuse the delete button's paragraph instead of needing one of
+    // its own.
+    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.membersUnavailable');
+    expect(component['voteLocked']()).toBe(true);
+
+    // Nothing marked yet — the dock (panel and both buttons) does not exist until something is.
+    expect(findVoteButton()).toBeUndefined();
+
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    const button = findVoteButton();
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(true);
+
+    const reasonParagraph = fixture.nativeElement.querySelector(
+      'p[id^="mass-delete-lock-reason-"]',
+    ) as HTMLParagraphElement | null;
+    expect(reasonParagraph).not.toBeNull();
+    // The identical element the delete button already points at (mass-delete-panel.ts) — not a
+    // second, duplicated paragraph, and not some other panel instance's id.
+    expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
+    // The text itself now names both locked actions (this fix's locale change) rather than only
+    // "Löschen" — untranslated here (empty `de` dict), so this is the raw key, but the key itself
+    // is the "membersUnavailable" one whose copy this fix corrected in public/i18n/{de,en}.json.
+    expect(reasonParagraph!.textContent?.trim()).toBe('usageStats.setView.lock.membersUnavailable');
+  });
+
+  it('states the set-view facts and member-list warnings even when the set status (and its tracking start) could not be read (second review, P2)', async () => {
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush({}, { status: 503, statusText: 'Service Unavailable' });
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+        ]),
+      );
+    await settle();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => request.url === '/api/seventv/channels/a/emotes')
+      .forEach((request) =>
+        request.flush(
+          { errorCode: 'foreign_channel_seventv_unavailable' },
+          { status: 503, statusText: 'Service Unavailable' },
+        ),
+      );
+    await settle();
+
+    expect(component['trackedSince']()).toBeNull();
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('usageStats.setView.membersUnavailable');
+    expect(text).toContain('usageStats.setView.facts.notObserved');
+  });
+
+  it('leaves the vote button without an aria-describedby in the active view, where nothing is locked', async () => {
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    // Genuine microtask tick, not just detectChanges(): canManage() reads permissionsResource, an
+    // rxResource whose value a bare synchronous detectChanges() right after flush() does not yet
+    // reflect (see this file's own header comment on rxResource vs. plain HttpClient flushes) — the
+    // vote button is entirely gated on it (`@if (canManage())`), unlike the mark-all button the
+    // "toolbar mark-all" block above checks, which does not depend on it.
+    await settle();
+
+    expect(component['voteLocked']()).toBe(false);
+    expect(component['canManage']()).toBe(true);
+
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    const button = findVoteButton();
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(false);
+    expect(button!.getAttribute('aria-describedby')).toBeNull();
+  });
+});
+
+/**
+ * T4.5, AK 64 (second part): the export dialog and the push/import-target dialog each read the
+ * *shown* set once, at the moment they open — the same capture discipline `CapturedExportScope`/
+ * `CapturedImportScope`'s own docs describe, already exercised for a range change by the openExport()
+ * block above (#143 P2) but not yet for a *set* switch, which is what T4.5 adds. A set switch while
+ * either dialog is still on screen must not retarget what it already captured — the header's own
+ * dropdown keeps working underneath it, and only the *next* open sees the new set.
+ */
+describe('UsageStatsPage — export/import scope capture reads the shown set once, at open (#200, T4.5, AK 64)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let router: Router;
+
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+
+  function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
+    return {
+      sevenTvEmoteId,
+      name,
+      defaultName: name,
+      imageUrl: '',
+      topAllTime: null,
+      trending: null,
+    };
+  }
+
+  function memberList(emotes: ForeignEmoteRow[]): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: emotes.length,
+      truncated: false,
+      emotes,
+    };
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  /** Same shape as the T4.3/T4.4 block's own `openView` — mounts channel 'a' (active set `set-a`)
+   *  on the Halloween set `set-b`, with a matching live member list, and settles every request the
+   *  set-b view needs before the test drives a dialog open. */
+  async function openHalloweenView(): Promise<void> {
+    TestBed.resetTestingModule();
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [emote('a', 'PumpkinA', 5)]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    httpMock
+      .match((r) => r.url === '/api/seventv/channels/a/emotes')
+      .forEach((request) => request.flush(memberList([member('7tv-a', 'PumpkinA')])));
+    await settle();
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('captures the export scope once, at open — a set switch while the dialog is still open does not retarget the download (AK 64)', async () => {
+    await openHalloweenView();
+    const closedSubject = new Subject<
+      { optionId: ExportPurposeId; scope: 'visible' } | undefined
+    >();
+    vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: closedSubject,
+    } as unknown as ReturnType<Dialog['open']>);
+    const downloads = captureDownloads();
+
+    component['openExport']();
+
+    // The header dropdown keeps working underneath the still-open dialog (#94's own reasoning).
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+
+    closedSubject.next({ optionId: 'usage-csv', scope: 'visible' });
+
+    expect(downloads).toHaveLength(1);
+    // Names Halloween's set — the one the dialog was opened for — not the one the header now shows.
+    expect(downloads[0].filename).toContain('set-b');
+  });
+
+  it('captures the push/import-target scope once, at open — a set switch while it is still open does not retarget the source (AK 64)', async () => {
+    await openHalloweenView();
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+      closed: new Subject<unknown>(),
+    } as unknown as ReturnType<Dialog['open']>);
+
+    component['openImportTarget']();
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const data = openSpy.mock.calls[0][1]?.data as { sourceEmoteSetId: string };
+    expect(data.sourceEmoteSetId).toBe('set-b');
+
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+
+    // Still the set the dialog was opened for — the capture never re-reads a live signal.
+    expect(data.sourceEmoteSetId).toBe('set-b');
   });
 });

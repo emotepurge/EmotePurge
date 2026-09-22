@@ -148,7 +148,10 @@ describe('startForeignChannelImportFlow', () => {
   it('opens the import confirmation directly — no target picker in between (#147)', () => {
     const { deps, dialogOpen } = setup();
 
-    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), 'my_channel');
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
 
     // Exactly one dialog, and it is the confirmation: where the emotes go was decided by the page
     // the flow was started from, exactly as it is for the file path.
@@ -158,7 +161,10 @@ describe('startForeignChannelImportFlow', () => {
   it('hands the picked rows and the foreign origin to the ordinary import run', () => {
     const { deps, dialogOpen, startImport } = setup();
 
-    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), 'my_channel');
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',
       targetSetName: 'set-target',
@@ -186,10 +192,48 @@ describe('startForeignChannelImportFlow', () => {
   it('starts no run when the confirmation is dismissed', () => {
     const { deps, dialogOpen, startImport } = setup();
 
-    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), 'my_channel');
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
     closedSubject<unknown>(dialogOpen, 0).next(undefined);
 
     expect(startImport).not.toHaveBeenCalled();
+  });
+
+  it('targets a specific, non-active set when the caller names one (T4.5) — the live preview path, not the "today" one', () => {
+    const { deps, dialogOpen } = setup();
+    const loadEmoteSetPreview = vi.fn(() =>
+      of({
+        channelName: 'my_channel',
+        sevenTvUserId: null,
+        emoteSetId: 'set-halloween',
+        emoteSetName: 'Halloween',
+        capacity: 1000,
+        totalCount: 0,
+        truncated: false,
+        emotes: [],
+      }),
+    );
+    deps.emoteSetService = { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService;
+
+    startForeignChannelImportFlow(deps, picked([foreignRow('e1', 'Kappa')]), {
+      kind: 'chosen',
+      choice: {
+        emoteSetId: 'set-halloween',
+        channelName: 'my_channel',
+        ownerDisplayName: 'my_channel',
+        setName: 'Halloween',
+        isTracked: true,
+        twitchLogin: 'my_channel',
+        activeEmoteSetId: 'set-active',
+      },
+    });
+
+    // Not the "today" path — the target is a specific, non-active set, so the loader reads it live
+    // instead of assuming the channel's active one (spec F5).
+    expect(loadEmoteSetPreview).toHaveBeenCalledWith('my_channel', 'set-halloween');
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -252,11 +296,10 @@ describe('startLeaderboardImportFlow', () => {
   it('opens the import confirmation directly \u2014 there is even less to ask than for a channel', () => {
     const { deps, dialogOpen } = setup();
 
-    startLeaderboardImportFlow(
-      deps,
-      pickedFromLeaderboard([foreignRow('e1', 'Kappa')]),
-      'my_channel',
-    );
+    startLeaderboardImportFlow(deps, pickedFromLeaderboard([foreignRow('e1', 'Kappa')]), {
+      kind: 'activeSet',
+      channelName: 'my_channel',
+    });
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
@@ -267,7 +310,7 @@ describe('startLeaderboardImportFlow', () => {
     startLeaderboardImportFlow(
       deps,
       pickedFromLeaderboard([foreignRow('e1', 'Kappa', 'Kappa')], 'TOP_ALL_TIME'),
-      'my_channel',
+      { kind: 'activeSet', channelName: 'my_channel' },
     );
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',

@@ -2,7 +2,7 @@ import { ImportRow, ImportSource, dedupeImportRows } from '../../core/seven-tv/i
 import { ForeignEmoteRow } from '../../core/seven-tv/foreign-emote-set.model';
 import { LeaderboardImportResult } from '../../core/seven-tv/leaderboard.model';
 import { ForeignChannelImportResult } from './foreign-channel-step';
-import { ImportFlowDeps, startImportFlow } from './import-flow';
+import { ImportFlowDeps, ImportFlowTarget, startImportFlow } from './import-flow';
 
 /**
  * The third import source, wired to the chain the other two already use: pick a foreign channel and
@@ -14,18 +14,18 @@ import { ImportFlowDeps, startImportFlow } from './import-flow';
  * channel's usage-stats page, and the file path has always taken its target from that same page
  * context without asking. Both paths now behave the same way.
  *
- * Fremd ist die Quelle, nie das Ziel: the target is the page's own channel, so an untracked channel
- * can be read here but never written into.
+ * Fremd ist die Quelle, nie das Ziel: the target is the page's own channel, never a channel this
+ * flow reads emotes out of — but *which set* of that channel is the caller's decision (T4.5,
+ * `import-trigger.ts`'s `toImportTarget`), not this function's: it used to hardcode
+ * `{ kind: 'activeSet' }` here, which pinned every foreign-channel copy to the channel's active set
+ * regardless of which set the usage page was actually showing.
  */
 export function startForeignChannelImportFlow(
   deps: ImportFlowDeps,
   picked: ForeignChannelImportResult,
-  targetChannelName: string,
+  target: ImportFlowTarget,
 ): void {
-  startImportFlow(deps, buildForeignImportSource(picked), {
-    kind: 'activeSet',
-    channelName: targetChannelName,
-  });
+  startImportFlow(deps, buildForeignImportSource(picked), target);
 }
 
 /**
@@ -62,17 +62,15 @@ function toImportRow(row: ForeignEmoteRow): ImportRow {
  * optional fields whose absence nothing checks (spec F4).
  *
  * The target is this page's own channel, exactly as it is for the file and foreign-channel paths;
- * there is no target picker in between (#147).
+ * there is no target picker in between (#147). Which *set* of that channel is, again, the caller's
+ * decision (T4.5) — see the identical note on {@link startForeignChannelImportFlow}.
  */
 export function startLeaderboardImportFlow(
   deps: ImportFlowDeps,
   picked: LeaderboardImportResult,
-  targetChannelName: string,
+  target: ImportFlowTarget,
 ): void {
-  startImportFlow(deps, buildLeaderboardImportSource(picked), {
-    kind: 'activeSet',
-    channelName: targetChannelName,
-  });
+  startImportFlow(deps, buildLeaderboardImportSource(picked), target);
 }
 
 /**

@@ -10,6 +10,249 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-21 — A row of the set view is identified by its 7TV id; bookkeeping speaks 7TV ids (#200, K4 — first part)
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.html` ·
+`web/src/app/core/usage-stats/usage-stat.model.ts` · `web/src/app/core/usage-stats/merge-set-view.ts` ·
+`web/src/app/core/usage-stats/usage-stat.service.ts` · `web/src/app/core/routing/list-query-state.ts` ·
+`web/src/app/shared/emotes/emote-set-menu.ts` · `web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
+`web/src/app/shared/datetime/date-range-menu.ts` · `web/src/app/shared/grid/atlas-grid.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` · `web/src/app/shared/seven-tv/import-trigger.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/foreign-import-flow.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` · `web/src/app/shared/seven-tv/import-source-dialog.ts` ·
+`web/src/app/shared/export/usage-export.ts` · `web/src/app/shared/export/usage-export-purposes.ts` ·
+`web/e2e/support/mocks.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (7, 8.1–8.6, §35, §36) ·
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5)
+
+Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
+part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
+(T5.2: `sync-deleted`/`sync-restored` body `{ emoteSetId, sevenTvEmoteIds }`, match over
+`(ChannelId, SevenTvEmoteId)`, the paper-only variant for a non-active set, the set id frozen into the
+run record) to this same entry.
+
+**The key.** The usage page can now show *any* NORMAL set of the channel, not only the active one, and
+a non-active set's view unions the counted `/totals` rows with the set's live 7TV member list. A live
+member that never earned a `UsageStat` under that set has no `Emote.Id` at all. Every identity the grid
+uses therefore moves from `Emote.Id` to `SevenTvEmoteId`: the `ListSelection` key, the inner
+`@for … track` (the outer `trackBy: trackRow` stays on the index — 2026-08-30), `inspectedId`,
+`usageRank`, `fillPercents` and the `/series` lookup. `Emote.Id` stays on the row as **nullable
+payload without meaning of its own**; the only readers left are the ones that talk to the server in
+Guids (drilldown `/daily`, the null-session ballot, the legacy delete report). Two Guid-less rows are
+two cells and two selection keys (AK 54); keyed on the Guid they would collapse into one and trip
+NG0955 (AK 55). This is why the key switch and the first Guid-less row land in one commit.
+
+**`/series` names its entries by `SevenTvEmoteId`** — revising the wire-format sentence of the
+2026-08-06 `/usage-stats/series` entry — **additively**: `emoteId` stays beside it until follow-up
+issue 5, the same pattern and the **same gate** as the legacy `sync-deleted` body form (E3): both
+transitional fields fall only behind K7 plus 14 days plus evidence from operation, never behind the
+merge of K4, so the integration branch between K1 and K4 stays usable and no tab opened before the
+deploy loses the field. The E2E mock sends both fields (it mirrors the contract, not the reader). Both
+series caches (`/daily`, `/series`) carry the set in their key (T4.2, AK 64); the drilldown reads the
+set frozen into its dialog data, never the dropdown.
+
+**Two models, not one (T4.1).** `EmoteUsageTotalDto` is the `/totals` wire shape (always a DB row,
+`emoteId`/counts never null); `EmoteUsageTotal` is the page's merged row (`emoteId` and counts
+nullable, `membership: 'live' | 'left'`, `slotCount`, `aliases`, `nameTwinEmoteSetIds`), built only by
+the pure `mergeSetView`. Kept apart because the union happens in the **frontend** (E16: a silent
+`usage.flushed` reload every 30 s must never cause a 7TV request, which a server-side union would tie
+to every `/totals` call), and because one type for both would have made every wire consumer handle a
+`null` the wire never sends. In the active set's view `mergeSetView` is a lossless 1:1 mapping, so
+nothing that predates set views sees a different row.
+
+**`null` is not 0.** A row without counts under the shown set is split off *before* bands, sort,
+Pareto denominator, distribution strip, fill bars and sums — each of them would otherwise turn it into
+a silent `NaN` (F16) — and forms its own trailing group in name order, headed "keine Zählungen unter
+diesem Set" (E17, AK 56). It is not a fifth band: `packAtlasRows` got a widened group key instead of
+`usageBandOf` learning a value it must never return. A counted row that is no longer in the set is
+`'left'` (E23): the ballot's archived treatment (void plate, dimmed sprite, badge text), counted in
+sums and denominator, never handed to the delete run (AK 57). A #74 duplicate is one cell with
+`slotCount 2` and both aliases, and frees two slots in the dock's projection (AK 58). A name twin in
+another set gets a marker naming that set, never a merged number (E24, AK 59). The set view creates
+no `Emote` rows; only a set-scoped vote session will (K6, foreign key).
+
+**The caption states two independent facts** (spec 8.4, AK 60): *observed* comes only from the shown
+set's observation intervals against the loaded range, *counted* only from the loaded totals — never one
+from the other. A range with counts but without an interval (an inactive channel's rows backfilled onto
+a set id by the migration, later rejoined) says "not observed" and nothing about the numbers. The
+active set's view is unchanged. The date menu gains a `'set-observed'` preset (youngest interval,
+offered only when there is one; wording "beobachtet", not "aktiv").
+
+**Set state in the URL — T4.0 chose route (a).** The page reuses `listQueryState({ emoteSetId: '' })`
+instead of a hand-rolled `queryParamMap` reader: `''` means *follow the active set* and the active id
+is never written out — choosing the active set removes the parameter; every write is `replaceUrl`, so
+a set switch is never a history step. This **corrects a premise of spec 8.1**, which asked for the
+set in the URL "like the date range": the range was never in the URL (`rangePreset` is a local
+signal, the page had no `ActivatedRoute` at all — plan 0.2). The set is the page's first URL-borne
+state, and the asymmetry is deliberate for this plan: Back/reload restores the set but not the range.
+An id the set list does not confirm falls back to the active set **silently**; with a **readable**
+list the parameter is also removed from the URL, with an **unreadable** list (6.1 answered 503) it is
+kept, and the display is pinned to the active set (a later successful read must not jump the view)
+— refined on 2026-09-22, see "Fix round" below: the pin applies only while the list has *never*
+been read for the channel, and an explicit choice in the dropdown lifts it. Following the operator decision of 2026-09-21 (spec §35) the
+dropdown hides every `kind != NORMAL` set entirely instead of showing it disabled (reversing 8.1/AK 50
+for this one dropdown), and a URL id naming such a set counts exactly like an unknown one.
+
+**A set switch is a sight, not a context** — like a date-range change: `selection.retainAmong` with the
+#94 notice, never `clear()` (AK 51); against the *merged* view, and when the member list is still
+loading the reconciliation waits for it instead of pruning a marked live member that merely has no
+counted row yet. The set list loads once per channel and on a loud reload only (E19); the member list
+of a non-active set loads beside `/totals`/`/series` and again on `channel.synced` or the refresh
+button, never on `usage.flushed` (8.3, AK 52). Slot bar and projection of a non-active view come from
+that list's `capacity`/`totalCount`, never from the active set's status.
+
+**Gates on the selected set, locks with reasons (spec 8.1, 8.3), and what stays interim.** Header
+write paths and the dock's marking half are gated on `selectedEmoteSetId()`. Deleting in a non-active
+view is locked with a visible reason: member list unreadable, member list truncated (AK 62), and — as
+an **interim lock until K5** — in every non-active view, because the delete run still reports in the
+legacy `{ emoteIds }` form, which archives `Emote` rows as if they had left the *active* set, and still
+keys queue and protocol by `Emote.Id` (the Guid-less-row lock of plan T4.3 is contained in it). For the
+same reason `DeletableEmote`/`DeleteQueueEmote.emoteId` stay required here and the page filters
+Guid-less and `'left'` rows out itself; the panel stays bound to the active set, since every run it can
+show started there. Creating a vote session is locked in a non-active view until set sessions exist
+(K6). The push ("Übertragen") and the export already capture the shown set (T4.4). The usage export
+serializes a `null` count as an empty CSV cell / JSON `null` with trend `unknown`, never 0. The
+null-session ballot is resolved from the 7TV-keyed selection into Guids when the dialog reads it,
+i.e. at submit (E4).
+
+**T4.5 — the import trigger's three channel-only doors now follow the selected set; restore is the
+one door that still does not (K5 closes it).** `import-trigger.ts`'s `setId` input was always bound
+to `selectedEmoteSetId()` (T4.4), but the file/foreign-channel/leaderboard doors ignored it and
+hardcoded `{ kind: 'activeSet' }` — the header comment said so outright ("its file, foreign-channel
+and leaderboard doors still write into the channel's ACTIVE set"). They now build a `'chosen'`
+`ImportFlowTarget` (`toImportTarget`) from `setId` plus a new `activeSetId` input: when the two
+agree, `toTargetSelection` (`import-flow.ts`, unchanged) still takes the identical `'trackedActive'`
+fast path a plain `'activeSet'` target always did (AK 36 — same request contract, not a new one);
+when they differ, it reads the target live via `SevenTvEmoteSetService.loadEmoteSetPreview` instead
+of assuming the channel's active set, the same `'trackedSet'` path the K2 target picker's own
+non-active choice already used. `startForeignChannelImportFlow`/`startLeaderboardImportFlow`
+(`foreign-import-flow.ts`) take that target as a parameter now instead of building `{ kind:
+'activeSet' }` themselves. `activeSetId` defaults to `null`, which folds back onto `setId` and
+keeps every caller that predates this task (including tests that never pass it) byte-identical.
+
+**Restore stays locked while a non-active set is on screen, with a visible reason shown at the
+exact moment a file is picked.** A finished restore still books its un-archive through the legacy,
+set-agnostic `EmoteAdminService.syncRestored(channelName, emoteIds)` call (`restore-flow.ts`) — K5
+(T5.2) is what makes it set-aware. `FileImportStep` gained a `restoreEnabled` input (`true` unless
+the caller says otherwise) that `import-trigger.ts` sets to `setId === activeSetId`; when `false`, a
+purge-run protocol never reaches `parsePurgeRunProtocol` at all — `handlePurgeRunProtocol` reports
+`restore.import.errors.restoreNonActiveSet` immediately instead. The protocol's own *match* check
+(`setId` against the file's `meta.emoteSetId`) needed no change to support this: it was already
+generic over whichever set it is handed, so a protocol naming a non-active set is accepted while
+that set is shown and rejected while another is (AK 66) — independent of whether restoring is
+currently locked at all.
+
+**The usage export now names its set.** `UsageExportInput`/`UsageExportMeta` gained
+`emoteSetId`/`emoteSetName`; the filename gets the set id's last six characters as a segment (the
+same "Kurzform" idiom the audit view and the name-twin tooltip already use), so two set exports of
+the same channel no longer share a filename. One deliberate deviation from the spec's own `string`
+annotation for `emoteSetId`: it stays `string | null`, because a channel with no active/selected
+7TV set can still export its usage numbers — a pre-K4 allowance `usage-stats-page.spec.ts`'s
+"mountWithoutActiveSet" case already exercised and that this task did not remove. `null` omits the
+filename segment entirely and nulls both meta fields, rather than inventing a placeholder set.
+
+**Fix round 2026-09-22 (independent reviews of the K4 branch) — what the page does while the view
+is not settled.** Five rules, each closing a path to a wrong write or a view that never settles:
+
+- **"Selected ≠ shown" locks delete and vote, visibly.** The dock stays mounted across a set switch
+  (it hangs on the selection), and before this round its delete and vote buttons stayed live because
+  every lock read the set the rows on screen belong to — still the old one — while the delete panel
+  targets the *active* set with the *live* selection. `viewSwitching` (the chosen set's rows are not
+  on screen yet, or their request failed, or the rows were merged for the other kind of view — see
+  the next-but-one bullet) is now the first reason `deleteLockReasonKey` names
+  (`usageStats.setView.lock.switching`), and `voteLocked` follows it; it is the same predicate the
+  push already used (`importScopeCurrent`). Because a confirm dialog outlives the view it was opened
+  on, both dialogs re-evaluate the lock when they are confirmed: `MassDeletePanel.startDelete`
+  aborts with a visible and announced notice (`massDelete.abortedByLock`), and
+  `CreateVoteSessionDialogData` gained an optional **live** `lockReasonKey` signal that blocks the
+  submit with the reason next to it — the same live-signal contract its ballot already had (#132).
+- **"Loading" means a request in flight, never "the member list does not match".** The old
+  derivation stayed `'loading'` forever once the rows' own request failed after a switch (the member
+  list then belonged to the new set, or was idle), so the skeleton never came down and the refresh
+  button — disabled while loading — offered no retry. A settled switch without the chosen set's rows
+  (`setSwitchFailed`) now shows an error state in the sheet with a retry, keeps the error banner, and
+  hides the previous set's rows, strip, sidecar and slot bar instead of presenting them as the chosen
+  set's. A successful `/totals` answer clears a standing error.
+- **Rows carry the kind of view they were requested for.** `totalsNonActive` is frozen at request
+  time next to `totalsSetId`; `isNonActiveView` reads it. When a sync makes the viewed set the active
+  one (or the reverse), `viewKindStale` locks through `viewSwitching` and triggers one silent reload,
+  so a delete is never offered over rows merged as a non-active view — no flash of an unlocked button.
+- **The pin, refined (operator decisions 2026-09-22).** The pin to the active set applies only if the
+  set list has *never* been read for the channel (a mount-time failure). Every successful read is
+  latched per channel (`lastReadSetList`); a later failed reload keeps serving it — no pin, no
+  silent fallback to the active set, no #94 prune, no totals reload caused by a background request.
+  An explicit choice in the dropdown lifts the pin for that channel and loads the chosen set: the pin
+  never moves the view unrequested, but a deliberate choice is never ignored. The latch resets with
+  the channel.
+- **An unknown active set is not the selected set.** `activeEmoteSetId()` is derived only once the
+  status on hand belongs to the channel in the URL (`setStatusChannel === channelName`), so a channel
+  switch can no longer request the new channel's rows for the old channel's set; a failed status
+  request un-claims the channel, which locks the push and the import doors (`importScopeCurrent`).
+  `ImportTrigger.activeSetId` now tells *omitted* (`undefined`: a legacy caller, folded onto `setId`
+  as before) from *known unknown* (`null`): unknown takes the explicit `'trackedSet'` path, which reads
+  the selected set live by its id and assumes nothing about the active set (no active-set request, no
+  post-run resync) — chosen over disabling the doors because it is just as safe and keeps the import
+  usable while a status request keeps failing; restore requires `activeSetId !== null && activeSetId
+  === setId`. Silent reloads (`usage.flushed`, the recheck poll, the sync wait) request no rows while
+  a URL-carried set is still unconfirmed.
+
+**Second review round (same day), three more rules.** Rows carry the set they were **answered
+for**, fixed at request time and never re-derived: the explicit set, or for a request without one
+(the endpoint's active-set fallback) the active id known at that moment, or *unknown* (`null`) when
+none was known. `shownSetId` used to fill a `null` with today's active id, which relabelled fallback
+rows fetched during a failed status request as whatever set the recovered status named — after a
+7TV set switch in between, one set's rows under another's name with every write path open. An
+unknown identity never equals a known selected set, so `viewSwitching` keeps writes locked until
+rows for an explicit, known set land (and stays locked if that request fails). The selection's
+deferred reconciliation now waits for *any* member-list request in flight, a loud reload included
+(`liveMembersSettling`): a reload keeps the old list renderable (`'ready'`), but reconciling against
+it would miss a member the new list drops, with nothing reconciling afterwards. And the set-view
+statements (observed/counted facts, member list unavailable or truncated) render in a paragraph of
+their own when the set status — and with it the tracking-start paragraph they normally close —
+could not be read.
+
+Two smaller rules of the same round: **the set dropdown is locked, with its reason shown next to the
+trigger, while a delete run is still writing or its `sync-deleted` report is still out**
+(`emoteSetMenu.lockedDuringDelete`) — `onDeleted` edits the rows on screen when that report
+answers, and additionally only when the run's set and channel are still the ones on screen (another
+channel's run is ignored, another set reloads); and **a loud reload of the member list** (refresh
+button, `channel.synced`) passes `refresh: true` to the preview route for exactly that request,
+while a params-driven load after a switch may use the Api's cache (spec 8.3). The E2E mock of 6.1
+now answers what the real route answers for a tracked channel (spec 4.3): the active set carries an
+open observation interval unless a test says otherwise. One visible side effect of the guarded
+active id: during a channel switch inside the route, the header's set-gated write paths and the
+dock's marking half are unmounted until the new channel's status lands, instead of staying mounted
+(disabled) over the previous channel's set id.
+
+**A client-side cache for the non-active member list (operator decision 2026-09-22).** Switching
+back and forth between sets quickly still hit 429 on the shared `ForeignEmoteLookup` limiter (10
+permits/60 s) even with the Api-side cache above, because that cache sits *behind* the limiter — a
+hit there still spends a permit. `SevenTvEmoteSetService` gained `loadCachedEmoteSetPreview`, used
+only by `liveMembersResource`'s params-driven load: a client-side `Map` keyed `(channelName,
+emoteSetId)`, TTL 60 s (the same figure as the Api-side cache, named `EMOTE_SET_PREVIEW_CACHE_TTL_MS`
+so a future change to one is a prompt to check the other), so a switch back to a recently-shown set
+within that window costs no request at all — A, B, A now costs two, not three. A loud reload
+(`channel.synced`, the refresh button) still passes `refresh: true` straight through, bypassing the
+client cache exactly as it already bypassed the Api's, and replaces the cached entry; an error
+response is never cached. `loadEmoteSetPreview` itself is unchanged and is what K3's
+`ForeignChannelStep` and the K2/T4.5 import-target loader keep calling — deliberately not folded in:
+K3 already carries its own component-scoped, indefinitely-lived preview cache with its own
+same-set-id race guard (P3-5, an older answer must never overwrite a newer one), a guarantee this
+TTL cache does not make on its own, and layering it underneath K3's would risk resurrecting exactly
+that race one layer down for no gain K3 does not already have. Giving the tracked-channel preview
+(K4) its own rate-limit bucket instead of continuing to share `ForeignEmoteLookup` with K2/K3 is a
+follow-up issue.
+
+**Two corrected sentences of the concept** (`docs/Konzept-Emote-Sets-2026-09-19.md`): 7.1 "engine and
+mutation need nothing new" was only true of the 7TV mutation itself — everything around the run
+(selection key, queue key, report, optimistic update, protocol, voting wire) hung on the Guid; 6.2
+"live members without a row are still usable for deleting" holds only once that identity contract is
+in place, i.e. from K5 on.
+
+---
+
 ### 2026-09-21 — An import into a tracked channel's non-active set no longer resyncs the channel, and the dock stops claiming it does
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·

@@ -143,9 +143,19 @@
     "preset7Days": "7 Tage",
     "preset30Days": "30 Tage",
     "presetAll": "Seit Beginn",
+    "presetSetObserved": "Während dieses Set beobachtet wurde",
+    "presetSetObservedShort": "beobachtet",
     "presetCustom": "Eigener Zeitraum",
     "from": "Von",
     "to": "Bis"
+  },
+  "emoteSetMenu": {
+    "label": "Set",
+    "menuLabel": "Set wählen",
+    "loading": "Lädt …",
+    "unavailable": "Set-Liste nicht verfügbar",
+    "active": "aktiv",
+    "lockedDuringDelete": "Set-Wechsel gesperrt, bis der Löschlauf abgeschlossen ist."
   },
   "datetimePicker": {
     "placeholder": "Jetzt (Standard)",
@@ -629,7 +639,11 @@
       "share": "{{share}} der Nutzung",
       "count": "{{count}} Emotes",
       "countOne": "1 Emote",
-      "selectAll": "alle markieren"
+      "selectAll": "alle markieren",
+      "uncounted": {
+        "title": "Keine Zählungen",
+        "hint": "unter diesem Set"
+      }
     },
     "sidecar": {
       "share": "Anteil",
@@ -700,6 +714,27 @@
     },
     "errors": {
       "loadFailed": "Nutzungsdaten konnten nicht geladen werden."
+    },
+    "setView": {
+      "noCounts": "keine Zählungen unter diesem Set",
+      "leftBadge": "Nicht mehr im Set",
+      "slots": "{{count}} Plätze im Set: {{aliases}}",
+      "nameTwin": "Unter diesem Namen liegt in „{{sets}}“ ein anderes Emote.",
+      "facts": {
+        "notObserved": "Dieses Set war im gewählten Zeitraum nicht als aktiv beobachtet.",
+        "countedSince": "Für dieses Set gezählt seit dem {{date}}.",
+        "noCounts": "Für dieses Set liegen im gewählten Zeitraum keine Zählungen vor."
+      },
+      "membersUnavailable": "Die Mitgliederliste dieses Sets ist gerade nicht verfügbar – gezeigt werden nur Emotes mit Zählungen.",
+      "truncated": "Die Mitgliederliste dieses Sets ist unvollständig (laut 7TV {{total}} Einträge).",
+      "lock": {
+        "membersUnavailable": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
+        "truncated": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
+        "nonActiveSet": "Löschen und Abstimmen gehen vorerst nur im aktiven Set.",
+        "switching": "Löschen und Abstimmen gesperrt, bis das gewählte Set geladen ist."
+      },
+      "loadFailedTitle": "Das gewählte Set konnte nicht geladen werden",
+      "retry": "Erneut versuchen"
     }
   },
   "sevenTvSync": {
@@ -869,6 +904,7 @@
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "wrongChannel": "Das Protokoll gehört zu einem anderen Channel.",
         "wrongSet": "Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.",
+        "restoreNonActiveSet": "Wiederherstellen geht vorerst nur im aktiven Set — dieses Set ist gerade nicht aktiv.",
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen."
       }
     },
@@ -944,7 +980,8 @@
       "rateLimitedGaveUp": "7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }})."
-    }
+    },
+    "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war."
   },
   "import": {
     "copyButton": "Übertragen",

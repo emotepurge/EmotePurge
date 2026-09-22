@@ -143,9 +143,19 @@
     "preset7Days": "7 days",
     "preset30Days": "30 days",
     "presetAll": "All time",
+    "presetSetObserved": "While this set was observed",
+    "presetSetObservedShort": "observed",
     "presetCustom": "Custom range",
     "from": "From",
     "to": "To"
+  },
+  "emoteSetMenu": {
+    "label": "Set",
+    "menuLabel": "Choose a set",
+    "loading": "Loading…",
+    "unavailable": "Set list unavailable",
+    "active": "active",
+    "lockedDuringDelete": "Switching sets is locked until the delete run has finished."
   },
   "datetimePicker": {
     "placeholder": "Now (default)",
@@ -629,7 +639,11 @@
       "share": "{{share}} of usage",
       "count": "{{count}} emotes",
       "countOne": "1 emote",
-      "selectAll": "mark all"
+      "selectAll": "mark all",
+      "uncounted": {
+        "title": "No counts",
+        "hint": "under this set"
+      }
     },
     "sidecar": {
       "share": "Share",
@@ -700,6 +714,27 @@
     },
     "errors": {
       "loadFailed": "Couldn't load usage data."
+    },
+    "setView": {
+      "noCounts": "no counts under this set",
+      "leftBadge": "No longer in the set",
+      "slots": "{{count}} slots in the set: {{aliases}}",
+      "nameTwin": "Under this name, “{{sets}}” holds a different emote.",
+      "facts": {
+        "notObserved": "This set was not observed as active in the selected range.",
+        "countedSince": "Counted for this set since {{date}}.",
+        "noCounts": "There are no counts for this set in the selected range."
+      },
+      "membersUnavailable": "This set’s member list is unavailable right now – only emotes with counts are shown.",
+      "truncated": "This set’s member list is incomplete ({{total}} entries according to 7TV).",
+      "lock": {
+        "membersUnavailable": "Deleting and voting are locked: this set’s member list is unavailable.",
+        "truncated": "Deleting and voting are locked: this set’s member list is incomplete.",
+        "nonActiveSet": "For now, deleting and voting only work in the active set.",
+        "switching": "Deleting and voting are locked until the chosen set has loaded."
+      },
+      "loadFailedTitle": "The chosen set could not be loaded",
+      "retry": "Try again"
     }
   },
   "sevenTvSync": {
@@ -869,6 +904,7 @@
         "noRows": "The file contains no importable emotes.",
         "wrongChannel": "The protocol belongs to a different channel.",
         "wrongSet": "The protocol belongs to a different emote set — the channel switched its active set.",
+        "restoreNonActiveSet": "For now, restoring only works in the active set — this set is not the active one right now.",
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore."
       }
     },
@@ -944,7 +980,8 @@
       "rateLimitedGaveUp": "7TV rate limit still active after several waits — emote skipped.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }})."
-    }
+    },
+    "abortedByLock": "Nothing was deleted – the view changed while the dialog was open."
   },
   "import": {
     "copyButton": "Transfer",

@@ -16,11 +16,19 @@ import { toLocale } from '../../core/i18n/locale';
 import { Button } from '../ui/button';
 import { Popover } from '../ui/popover';
 
-export type DateRangePreset = '0' | '7' | '30' | 'all' | 'custom';
+export type DateRangePreset = '0' | '7' | '30' | 'all' | 'set-observed' | 'custom';
 
-interface PresetOption {
+export interface PresetOption {
   value: DateRangePreset;
   labelKey: string;
+  /**
+   * What the trigger names this preset, if different from `labelKey`. Every other preset's option
+   * text already reads as a trigger label ("7 Tage", "Seit Beginn") — only `'set-observed'` writes
+   * out a full sentence for the option ("Während dieses Set beobachtet wurde"), which as a trigger
+   * label pushes the neighbouring "Set: …" control out of the toolbar (operator decision
+   * 2026-09-22). The option keeps the sentence; the trigger falls back to this shorter key.
+   */
+  triggerLabelKey?: string;
 }
 
 const PRESET_OPTIONS: PresetOption[] = [
@@ -28,8 +36,62 @@ const PRESET_OPTIONS: PresetOption[] = [
   { value: '7', labelKey: 'dateRange.preset7Days' },
   { value: '30', labelKey: 'dateRange.preset30Days' },
   { value: 'all', labelKey: 'dateRange.presetAll' },
+  {
+    value: 'set-observed',
+    labelKey: 'dateRange.presetSetObserved',
+    triggerLabelKey: 'dateRange.presetSetObservedShort',
+  },
   { value: 'custom', labelKey: 'dateRange.presetCustom' },
 ];
+
+/** A closed `[from, to]` range of ISO dates (`yyyy-MM-dd`), both inclusive. */
+export interface IsoDateRange {
+  from: string;
+  to: string;
+}
+
+/**
+ * The presets the menu offers (spec #200, 8.5, AK 61): `'set-observed'` only when the host has a
+ * range for it — i.e. the chosen emote set was observed as active at least once. An option that
+ * could only ever pick "nothing" is not an option; it is absent, not disabled, because there is no
+ * reason to give that would not just restate the set's own history.
+ */
+export function dateRangePresetOptions(hasSetObservedRange: boolean): PresetOption[] {
+  return hasSetObservedRange
+    ? PRESET_OPTIONS
+    : PRESET_OPTIONS.filter((option) => option.value !== 'set-observed');
+}
+
+/**
+ * The range the `'set-observed'` preset selects (spec #200, 8.5, AK 61): the set's **youngest**
+ * observation interval — `fromUtc` … `toUtc ?? today`, as dates. Deliberately "observed", not
+ * "active": the log only knows when *this* app saw the set as the channel's active one (spec 4.3).
+ *
+ * `null` when the set has no interval at all. The start is clamped to the widest span the usage
+ * endpoints accept ({@link MAX_RANGE_DAYS} before the end) — an interval longer than a year would
+ * otherwise turn the preset into a `range_too_large` error — and the end never reaches past today.
+ */
+export function setObservedRange(
+  intervals: readonly { fromUtc: string; toUtc: string | null }[],
+  today: string = toIsoDate(new Date()),
+): IsoDateRange | null {
+  let youngest: { fromUtc: string; toUtc: string | null } | null = null;
+  for (const interval of intervals) {
+    if (youngest === null || interval.fromUtc > youngest.fromUtc) {
+      youngest = interval;
+    }
+  }
+  if (youngest === null) {
+    return null;
+  }
+
+  const rawTo = youngest.toUtc?.slice(0, 10) ?? today;
+  const to = rawTo < today ? rawTo : today;
+  const rawFrom = youngest.fromUtc.slice(0, 10);
+  const earliestAllowed = shiftIsoDate(to, -MAX_RANGE_DAYS);
+  const from = earliestAllowed && rawFrom < earliestAllowed ? earliestAllowed : rawFrom;
+  return { from: from > to ? to : from, to };
+}
 
 /**
  * How far back "all time" may actually reach. The usage-totals endpoint rejects a wider span with
@@ -133,7 +195,7 @@ function shiftIsoDate(iso: string, days: number): string {
           >
             <!-- min-h-11 on touch, tighter from sm up (§10: 44 px comfort target for pointer-coarse
                  rows, 24 px is only the floor). -->
-            @for (option of presetOptions; track option.value; let index = $index) {
+            @for (option of presetOptions(); track option.value; let index = $index) {
               <button
                 type="button"
                 role="radio"
@@ -211,13 +273,20 @@ export class DateRangeMenu {
    * began). Bounds the "all time" preset — see {@link allTimeStart} for what null falls back to.
    */
   readonly earliest = input<string | null>(null);
+  /**
+   * What the `'set-observed'` preset selects — see {@link setObservedRange}. `null` (the default,
+   * and every host that has no emote set to speak of) leaves the preset out of the list entirely.
+   */
+  readonly setObservedRange = input<IsoDateRange | null>(null);
 
   private readonly languageService = inject(LanguageService);
   private readonly document = inject(DOCUMENT);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly trigger = viewChild<ElementRef<HTMLButtonElement>>('trigger');
 
-  protected readonly presetOptions = PRESET_OPTIONS;
+  protected readonly presetOptions = computed(() =>
+    dateRangePresetOptions(this.setObservedRange() !== null),
+  );
   protected readonly isOpen = signal(false);
   // Roving tabindex: null means "follow the selection", which is where focus should land the first
   // time the group is tabbed into.
@@ -233,9 +302,11 @@ export class DateRangeMenu {
     return widest && widest < today ? widest : today;
   });
 
-  protected readonly selectedLabelKey = computed(
-    () => PRESET_OPTIONS.find((option) => option.value === this.preset())?.labelKey ?? '',
-  );
+  /** Trigger text for the current preset — its `triggerLabelKey` if it has one, else `labelKey`. */
+  protected readonly selectedLabelKey = computed(() => {
+    const option = PRESET_OPTIONS.find((candidate) => candidate.value === this.preset());
+    return option?.triggerLabelKey ?? option?.labelKey ?? '';
+  });
 
   // LOCALE_ID is bootstrap-time static and cannot follow a runtime language switch, so dates go
   // through toLocale() — same as the pages that host this.
@@ -275,7 +346,19 @@ export class DateRangeMenu {
     this.preset.set(value);
     if (value === 'custom') {
       // Stays open: the fields the user just asked for are inside this panel.
-      this.focusedIndex.set(PRESET_OPTIONS.length - 1);
+      this.focusedIndex.set(this.presetOptions().length - 1);
+      return;
+    }
+
+    if (value === 'set-observed') {
+      const range = this.setObservedRange();
+      // Only offered while there is a range (dateRangePresetOptions), so this is a narrowing, not a
+      // path anyone can reach with `null`.
+      if (range) {
+        this.from.set(range.from);
+        this.to.set(range.to);
+      }
+      this.close();
       return;
     }
 
@@ -309,14 +392,15 @@ export class DateRangeMenu {
     event.preventDefault();
     // Focus only — committing here would refetch the page's data on every keypress, which is the
     // wart this control was built to remove. Enter/Space fire click and go through select().
-    const next = (index + delta + PRESET_OPTIONS.length) % PRESET_OPTIONS.length;
+    const count = this.presetOptions().length;
+    const next = (index + delta + count) % count;
     this.focusedIndex.set(next);
     const group = (event.currentTarget as HTMLElement).closest('[role="radiogroup"]');
     group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
   }
 
   private selectedIndex(): number {
-    const index = PRESET_OPTIONS.findIndex((option) => option.value === this.preset());
+    const index = this.presetOptions().findIndex((option) => option.value === this.preset());
     return index === -1 ? 0 : index;
   }
 }

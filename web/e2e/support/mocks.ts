@@ -648,6 +648,11 @@ export async function mockUsageTotals(
         lastUsedDate: emote.lastUsedDate ?? null,
         previousWindowUseCount: emote.previousWindowUseCount ?? 0,
         firstSeenAt: emote.firstSeenAt ?? null,
+        // The two fields `/totals` gained with spec #200 (6.5, K1) — part of the contract the page
+        // reads, so the mock sends them like the endpoint does: the active set never returns an
+        // archived row, and a name twin is the exception.
+        isArchived: false,
+        nameTwinEmoteSetIds: [],
       })),
     ),
   );
@@ -680,7 +685,8 @@ export async function mockUsageDaily(
  * GET /api/channels/{channelName}/usage-stats/series — the whole set's daily curves in one
  * response, which is what feeds the atlas sidecar's sparkline.
  *
- * `days` is keyed by emote id and holds `[dayOffset, useCount]` pairs counted from the range's
+ * `days` is keyed by the emote's **7TV id** — the key the page matches a curve to its cell by since
+ * spec #200 (7.2) — and holds `[dayOffset, useCount]` pairs counted from the range's
  * `from` — the encoding the real endpoint uses, deliberately not prettied up here, because a mock
  * that speaks a friendlier dialect than the server is a mock that cannot catch a decoding bug.
  * Emotes absent from the map get no entry at all, which is how the server says "no usage".
@@ -697,7 +703,14 @@ export async function mockUsageChannelSeries(
       from: url.searchParams.get('from') ?? '2026-07-01',
       to: url.searchParams.get('to') ?? '2026-07-28',
       liveDays,
-      emotes: Object.entries(days).map(([emoteId, entries]) => ({ emoteId, days: entries })),
+      // Both fields, because the endpoint sends both (spec 6.5 step 1: `sevenTvEmoteId` added,
+      // `emoteId` kept until follow-up issue 5). The mock mirrors the contract, not the reader: the
+      // page no longer reads `emoteId`, so its value here only has to be a string.
+      emotes: Object.entries(days).map(([sevenTvEmoteId, entries]) => ({
+        sevenTvEmoteId,
+        emoteId: `emote-of-${sevenTvEmoteId}`,
+        days: entries,
+      })),
     });
   });
 }
@@ -904,6 +917,60 @@ export async function mockForeignChannelEmoteSets(
   );
 }
 
+export interface MockChannelEmoteSet extends MockEmoteSetTargetSet {
+  /** Observed-active intervals (spec 6.1, from `ChannelEmoteSetObservations`, ascending). Omitted,
+   *  the mock answers what the real route answers for a tracked channel (spec 4.3): the **active**
+   *  set carries one open interval — opened by the first successful sync or seeded by the
+   *  migration, here from {@link DEFAULT_TRACKED_SINCE} like `mockActiveEmoteSet`'s own default —
+   *  and every other set `[]` ("never observed"). Pass it to exercise the caption matrix (spec 8.4)
+   *  or the `'set-observed'` preset (8.5). */
+  observations?: { fromUtc: string; toUtc: string | null }[];
+}
+
+/** `mockActiveEmoteSet`'s default `trackedSince` — the active set's default open observation
+ *  interval starts at the same moment, as it does for a channel tracked since then. */
+const DEFAULT_TRACKED_SINCE = '2026-06-12T09:14:00Z';
+
+/**
+ * GET /api/channels/{channelName}/emote-sets (spec 6.1, K4) — the usage page's own set-dropdown
+ * list (`emote-set-menu.ts`, `usage-stats-page.ts`'s `emoteSetListResource`). Distinct from
+ * {@link mockForeignChannelEmoteSets}'s `/api/seventv/channels/{c}/emote-sets` sibling above (K3's
+ * source-set picker): same wire shape, but `isActive` here is `Channel.ActiveEmoteSetId` — our own
+ * observed state (E21) — never 7TV's `style.activeEmoteSetId`.
+ *
+ * A numeric `response` answers with that HTTP status and the usual `foreign_channel_seventv_
+ * unavailable` body instead of a set list — the 6.1-unreadable case the dropdown locks itself for
+ * (spec 8.1, AK 62 second half).
+ */
+export async function mockChannelEmoteSetList(
+  page: Page,
+  channelName: string,
+  response: { activeEmoteSetId: string; sets: MockChannelEmoteSet[] } | number,
+): Promise<void> {
+  await page.route(`**/api/channels/${channelName}/emote-sets`, (route) => {
+    if (typeof response === 'number') {
+      return fulfillJson(route, response, { errorCode: 'foreign_channel_seventv_unavailable' });
+    }
+    return fulfillJson(route, 200, {
+      activeEmoteSetId: response.activeEmoteSetId,
+      sets: response.sets.map((set) => ({
+        id: set.id,
+        name: set.name,
+        capacity: set.capacity ?? 1000,
+        kind: set.kind ?? 'NORMAL',
+        isActive: set.id === response.activeEmoteSetId,
+        isPersonal: set.isPersonal ?? false,
+        ownerDisplayName: set.ownerDisplayName ?? null,
+        observations:
+          set.observations ??
+          (set.id === response.activeEmoteSetId
+            ? [{ fromUtc: DEFAULT_TRACKED_SINCE, toUtc: null }]
+            : []),
+      })),
+    });
+  });
+}
+
 export interface MockLeaderboardEmote {
   sevenTvEmoteId: string;
   /** Sent as both `name` and `defaultName`: a leaderboard row is an `Emote`, not a set's aliased
@@ -990,7 +1057,7 @@ export async function mockActiveEmoteSet(
       activeEmoteSetId,
       capacity: status.capacity ?? 1000,
       occupiedSlots: status.occupiedSlots ?? 3,
-      trackedSince: status.trackedSince ?? '2026-06-12T09:14:00Z',
+      trackedSince: status.trackedSince ?? DEFAULT_TRACKED_SINCE,
       syncFailureReason: status.syncFailureReason ?? null,
       lastSyncAttemptAtUtc: status.lastSyncAttemptAtUtc ?? null,
       botsExcludedSince: status.botsExcludedSince ?? null,

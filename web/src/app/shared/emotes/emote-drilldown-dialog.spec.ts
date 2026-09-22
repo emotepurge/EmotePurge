@@ -210,4 +210,29 @@ describe('EmoteDrilldownDialog', () => {
       expect(component['series']()).toBeNull();
     });
   });
+  describe('set scope (spec #200, 7.2, AK 64)', () => {
+    it('asks for the series of the set frozen into its data', () => {
+      render(data({ emoteSetId: 'set-halloween' }), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        'emote-1',
+        '2026-01-15',
+        '2026-01-21',
+        'set-halloween',
+      );
+    });
+
+    it("asks for the channel's active set when its data carries no set (the vote page)", () => {
+      render(data(), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        'emote-1',
+        '2026-01-15',
+        '2026-01-21',
+        null,
+      );
+    });
+  });
 });

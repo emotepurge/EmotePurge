@@ -7,8 +7,10 @@ import {
   installLiveStub,
   mockActiveEmoteSet,
   mockAuthMe,
+  mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
+  mockForeignEmoteSetPreview,
   mockMyChannels,
   mockUsageChannelSeries,
   mockUsageDaily,
@@ -23,6 +25,12 @@ import {
  * that is visible to a unit test — the pure parts are covered in atlas-grid.spec.ts, but whether
  * the focus actually lands on the cell the arrow key aimed at only shows in a browser.
  */
+
+/** A transparent 1x1 PNG — what a stubbed CDN answers so no test depends on cdn.7tv.app. */
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64',
+);
 
 /** A set with a clear head, a middle, a tail and a block of never-used emotes. */
 const EMOTES = [
@@ -342,7 +350,7 @@ test.describe('emote atlas', () => {
       page,
       'sensitron',
       {
-        e1: [
+        '7tv-1': [
           [1, 200],
           [3, 700],
         ],
@@ -365,7 +373,7 @@ test.describe('emote atlas', () => {
 
   test('the channel-wide live count is stated once, above the sheet', async ({ page }) => {
     // It answers a question about the stream, not about any one emote, so it belongs to the page.
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[3, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[3, 700]] }, [3, 4, 5, 9]);
     await openAtlas(page);
 
     await expect(
@@ -376,7 +384,7 @@ test.describe('emote atlas', () => {
   test('names the bot-exclusion date when the Api reports one, alongside the other honesty statements', async ({
     page,
   }) => {
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[3, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[3, 700]] }, [3, 4, 5, 9]);
     await openAtlas(page, EMOTES, '2026-08-15');
 
     await expect(
@@ -400,7 +408,7 @@ test.describe('emote atlas', () => {
   test('names the shared-chat separation date when the Api reports one, alongside the other honesty statements', async ({
     page,
   }) => {
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[3, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[3, 700]] }, [3, 4, 5, 9]);
     await openAtlas(page, EMOTES, '2026-08-15', '2026-09-07');
 
     await expect(
@@ -429,7 +437,7 @@ test.describe('emote atlas', () => {
     // "0 of 57 days" would report an absence we never measured: a range older than the live poll has
     // no coverage data at all, which is not the same as a channel that never went live.
     await mockUsageChannelSeries(page, 'sensitron', {
-      e1: [
+      '7tv-1': [
         [1, 200],
         [3, 700],
       ],
@@ -448,7 +456,7 @@ test.describe('emote atlas', () => {
     // The usage sits on day 10, inside that lifetime: a count *before* the 20. would be drawn on
     // purpose (a re-added emote keeps its history, see firstDrawableIndex) and would say nothing
     // about the leading silence this test is here for.
-    await mockUsageChannelSeries(page, 'sensitron', { e1: [[10, 700]] }, [3, 4, 5, 9]);
+    await mockUsageChannelSeries(page, 'sensitron', { '7tv-1': [[10, 700]] }, [3, 4, 5, 9]);
     await openAtlas(
       page,
       EMOTES.map((emote) =>
@@ -868,5 +876,409 @@ test.describe('waiting for the first 7TV sync', () => {
     await page.clock.runFor(60_000);
     await page.waitForTimeout(500);
     expect(requests.activeSet).toBe(afterEvent);
+  });
+});
+
+/**
+ * The set view (#200, K4, T4.6): the header dropdown that switches which of the channel's sets the
+ * page shows, the URL round trip spec 8.1 asks for, and the non-active view's row classes (8.2) —
+ * a class-3 "no counts under this set" group, a `'left'` row and a #74 duplicate cell, all unionned
+ * from `/totals` and the set's live 7TV membership (`mergeSetView`, mocked here via
+ * {@link mockForeignEmoteSetPreview}, the same route the K3/K2 picker tests already mock).
+ *
+ * `mockUsageTotals` answers every request for a channel identically regardless of `emoteSetId`
+ * (existing contract, unchanged) — the switch/URL tests below need two DIFFERENT answers for the
+ * same channel, so they register their own `/totals` route keyed on the query parameter instead of
+ * extending that shared helper's default behaviour.
+ */
+test.describe('set view (#200, K4)', () => {
+  const CHANNEL = 'sensitron';
+  const ACTIVE_SET_ID = 'set-1';
+  const HALLOWEEN_SET_ID = 'set-2';
+  const PERSONAL_SET_ID = 'set-personal';
+
+  /** Answers `/usage-stats/totals` with a different fixture per `emoteSetId` — needed only by the
+   *  switch/URL tests, which is why this stays local rather than joining `support/mocks.ts`: every
+   *  other caller of `mockUsageTotals` is fine with one fixture for the whole channel. */
+  async function mockUsageTotalsBySet(
+    page: Page,
+    channelName: string,
+    totalsBySet: Record<string, MockEmoteUsage[]>,
+  ): Promise<void> {
+    await page.route(`**/api/channels/${channelName}/usage-stats/totals**`, (route) => {
+      const emoteSetId = new URL(route.request().url()).searchParams.get('emoteSetId') ?? '';
+      const emotes = totalsBySet[emoteSetId] ?? [];
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          emotes.map((emote) => ({
+            ...emote,
+            lastUsedDate: emote.lastUsedDate ?? null,
+            previousWindowUseCount: emote.previousWindowUseCount ?? 0,
+            firstSeenAt: emote.firstSeenAt ?? null,
+            isArchived: false,
+            nameTwinEmoteSetIds: [],
+          })),
+        ),
+      });
+    });
+  }
+
+  async function mockSetViewChannel(
+    page: Page,
+    sets: { id: string; name: string; kind?: string }[] = [
+      { id: ACTIVE_SET_ID, name: 'Hauptset' },
+      { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+    ],
+  ): Promise<void> {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: CHANNEL, isBroadcaster: true, isTracked: true, isBotActive: true },
+    ]);
+    await mockChannelPermissions(page, CHANNEL);
+    await mockChannelStatus(page, CHANNEL);
+    await mockActiveEmoteSet(page, CHANNEL, ACTIVE_SET_ID, { capacity: 1000, occupiedSlots: 10 });
+    await mockChannelEmoteSetList(page, CHANNEL, { activeEmoteSetId: ACTIVE_SET_ID, sets });
+  }
+
+  async function gotoSetView(page: Page, query = ''): Promise<void> {
+    await page.goto(`/channels/${CHANNEL}/usage-stats${query}`);
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+  }
+
+  const setMenuTrigger = (page: Page) => page.getByRole('button', { name: /^Set:/ });
+
+  test('the dropdown offers the channel’s NORMAL sets with the active one preselected, and hides every other kind (AK 50, spec §35)', async ({
+    page,
+  }) => {
+    await mockSetViewChannel(page, [
+      { id: ACTIVE_SET_ID, name: 'Hauptset' },
+      { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+      { id: PERSONAL_SET_ID, name: 'Mein Set', kind: 'PERSONAL' },
+    ]);
+    await mockUsageTotals(page, CHANNEL, []);
+
+    await gotoSetView(page);
+
+    await expect(setMenuTrigger(page)).toHaveAccessibleName(/^Set: Hauptset \(aktiv\)/);
+    await setMenuTrigger(page).click();
+
+    const menu = page.getByRole('radiogroup', { name: 'Set wählen' });
+    await expect(menu.getByRole('radio')).toHaveCount(2);
+    await expect(menu.getByRole('radio', { name: 'Hauptset (aktiv)' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    await expect(menu.getByRole('radio', { name: 'Halloween' })).toBeVisible();
+    // §35: not "disabled with a label", gone entirely.
+    await expect(menu.getByRole('radio', { name: /Mein Set/ })).toHaveCount(0);
+  });
+
+  test('opening the set menu does not shift the sort controls next to it in the header (no-layout-jump contract, docs/UI-Designsprache.md)', async ({
+    page,
+  }) => {
+    // Regression for a real bug: the anchor `div` around the trigger and the popover used to be a
+    // `flex ... gap-x-2` row that had the popover itself as a flex child. The popover's panel is
+    // `position: absolute` and paints nothing there, but its host element still claimed a flex slot
+    // and the gap next to it — widening EmoteSetMenu by one `gap-x-2` every time it opened and
+    // shoving every header control after it sideways. A geometry assertion is the only thing that
+    // actually pins this down; anything checking markup or classes would miss a regression that
+    // reintroduces the same box model by a different route.
+    await mockSetViewChannel(page);
+    await mockUsageTotals(page, CHANNEL, []);
+
+    await gotoSetView(page);
+
+    const sortKeyGroup = page.getByRole('radiogroup', { name: 'Sortieren nach' });
+    const sortDirGroup = page.getByRole('radiogroup', { name: 'Reihenfolge' });
+    const before = {
+      sortKey: await sortKeyGroup.boundingBox(),
+      sortDir: await sortDirGroup.boundingBox(),
+    };
+    expect(before.sortKey).not.toBeNull();
+    expect(before.sortDir).not.toBeNull();
+
+    await setMenuTrigger(page).click();
+    await expect(page.getByRole('radiogroup', { name: 'Set wählen' })).toBeVisible();
+
+    const after = {
+      sortKey: await sortKeyGroup.boundingBox(),
+      sortDir: await sortDirGroup.boundingBox(),
+    };
+    expect(after.sortKey).not.toBeNull();
+    expect(after.sortDir).not.toBeNull();
+
+    // toBeCloseTo(value, 0) accepts a difference below 0.5 — exactly the ±0.5px tolerance the
+    // no-layout-jump contract asks for, without being so tight that sub-pixel rounding flakes it.
+    for (const key of ['x', 'y', 'width', 'height'] as const) {
+      expect(after.sortKey![key]).toBeCloseTo(before.sortKey![key], 0);
+      expect(after.sortDir![key]).toBeCloseTo(before.sortDir![key], 0);
+    }
+  });
+
+  test('choosing a non-active set writes it into the URL and swaps the grid; a reload restores it; choosing the active set removes the param again (AK 50-52, spec 8.1)', async ({
+    page,
+  }) => {
+    await mockSetViewChannel(page);
+    await mockUsageTotalsBySet(page, CHANNEL, {
+      [ACTIVE_SET_ID]: [
+        {
+          emoteId: 'e-cat',
+          emoteName: 'CatJAM',
+          sevenTvEmoteId: '7tv-cat',
+          imageUrl: 'https://cdn.7tv.app/emote/1/2x.webp',
+          totalUseCount: 500,
+        },
+      ],
+      [HALLOWEEN_SET_ID]: [
+        {
+          emoteId: 'e-spooky',
+          emoteName: 'Spooky',
+          sevenTvEmoteId: '7tv-spooky',
+          imageUrl: 'https://cdn.7tv.app/emote/2/2x.webp',
+          totalUseCount: 12,
+        },
+      ],
+    });
+    // The Halloween set's own live membership matches the totals row above 1:1, so it renders as a
+    // plain 'live' row (spec 7.1) rather than 'left' — the switch itself is what this test is about.
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-spooky', name: 'Spooky' }],
+    });
+
+    await gotoSetView(page);
+    await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toBeVisible();
+
+    await setMenuTrigger(page).click();
+    await page.getByRole('radio', { name: 'Halloween' }).click();
+
+    await expect(page).toHaveURL(new RegExp(`[?&]emoteSetId=${HALLOWEEN_SET_ID}\\b`));
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Spooky ·/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toHaveCount(0);
+
+    // Reload: the URL, not local state, is what carries the choice, so a full reload must restore
+    // it rather than snap back to the active set.
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+    await expect(setMenuTrigger(page)).toHaveAccessibleName('Set: Halloween');
+    await expect(page.getByRole('button', { name: /^Spooky ·/ })).toBeVisible();
+
+    // Choosing the active set again removes the parameter instead of spelling out its id (comment
+    // on `onEmoteSetSelected`).
+    await setMenuTrigger(page).click();
+    await page.getByRole('radio', { name: 'Hauptset (aktiv)' }).click();
+    await expect(page).not.toHaveURL(/emoteSetId=/);
+    await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toBeVisible();
+  });
+
+  test('an emoteSetId in the URL that the set list does not confirm — unknown, or a hidden kind — falls back to the active set and is removed from the URL (spec 8.1, §35)', async ({
+    page,
+  }) => {
+    await mockSetViewChannel(page, [
+      { id: ACTIVE_SET_ID, name: 'Hauptset' },
+      { id: PERSONAL_SET_ID, name: 'Mein Set', kind: 'PERSONAL' },
+    ]);
+    await mockUsageTotals(page, CHANNEL, []);
+
+    await gotoSetView(page, '?emoteSetId=does-not-exist');
+    await expect(setMenuTrigger(page)).toHaveAccessibleName(/^Set: Hauptset \(aktiv\)/);
+    await expect(page).not.toHaveURL(/emoteSetId=/);
+
+    // A hidden (non-NORMAL) set's id is deliberately treated identically to an unknown one (§35).
+    await gotoSetView(page, `?emoteSetId=${PERSONAL_SET_ID}`);
+    await expect(setMenuTrigger(page)).toHaveAccessibleName(/^Set: Hauptset \(aktiv\)/);
+    await expect(page).not.toHaveURL(/emoteSetId=/);
+  });
+
+  test('the non-active view groups a countless live member on its own, badges a left-behind row, folds a #74 duplicate into one cell, and locks deleting/voting with a visible reason (spec 8.2, AK 54-58, 62; no NG0955)', async ({
+    page,
+  }) => {
+    const consoleProblems: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error' || message.type() === 'warning') {
+        consoleProblems.push(`${message.type()}: ${message.text()}`);
+      }
+    });
+    page.on('pageerror', (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+    await mockSetViewChannel(page);
+    await mockUsageTotalsBySet(page, CHANNEL, {
+      [ACTIVE_SET_ID]: [],
+      [HALLOWEEN_SET_ID]: [
+        {
+          emoteId: 'e-ghost',
+          emoteName: 'GhostA',
+          sevenTvEmoteId: '7tv-ghost',
+          imageUrl: 'https://cdn.7tv.app/emote/3/2x.webp',
+          totalUseCount: 50,
+        },
+        {
+          // Counted here, but absent from the live list below — 'left' (E23).
+          emoteId: 'e-gone',
+          emoteName: 'GoneEmote',
+          sevenTvEmoteId: '7tv-gone',
+          imageUrl: 'https://cdn.7tv.app/emote/4/2x.webp',
+          totalUseCount: 20,
+        },
+        {
+          // A #74 duplicate: one totals row, two live entries under the same 7TV id below.
+          emoteId: 'e-dup',
+          emoteName: 'AliasOne',
+          sevenTvEmoteId: '7tv-dup',
+          imageUrl: 'https://cdn.7tv.app/emote/5/2x.webp',
+          totalUseCount: 15,
+        },
+      ],
+    });
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 5,
+      emotes: [
+        { sevenTvEmoteId: '7tv-ghost', name: 'GhostA' },
+        { sevenTvEmoteId: '7tv-dup', name: 'AliasOne' },
+        { sevenTvEmoteId: '7tv-dup', name: 'AliasTwo' },
+        // Two DISTINCT class-3 rows (live, no counted row at all) — the exact shape AK 55 guards:
+        // keyed by Emote.Id (always null here) the two would collide (NG0955); keyed by
+        // sevenTvEmoteId (spec 7.2) they are two cells.
+        { sevenTvEmoteId: '7tv-noc-1', name: 'NoCountsOne' },
+        { sevenTvEmoteId: '7tv-noc-2', name: 'NoCountsTwo' },
+      ],
+    });
+    // Unmocked, /series would 502 through the dev proxy (no Api on :5151 in this suite) and log a
+    // browser console error unrelated to the thing this test actually checks — mocked purely to
+    // keep the console clean for the NG0955 assertion below.
+    await mockUsageChannelSeries(page, CHANNEL, {});
+    // The live members above carry made-up 7TV ids, and the atlas builds their sprite URLs from
+    // those ids — unstubbed, the browser really fetches https://cdn.7tv.app/emote/7tv-ghost/2x.webp,
+    // 7TV answers 400 for an id that is not an ObjectID, and Chromium logs "Failed to load
+    // resource: … 400". Whether that line lands before or after the assertion below depended on
+    // the CDN's round trip, which made this test flaky. Stubbing the CDN keeps it hermetic.
+    await page.route('https://cdn.7tv.app/**', (route) =>
+      route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1X1 }),
+    );
+
+    // Deep link straight into the non-active view — the switch itself is the previous test's job.
+    await gotoSetView(page, `?emoteSetId=${HALLOWEEN_SET_ID}`);
+
+    // Klasse 3, own trailing group (AK 56).
+    await expect(page.getByRole('heading', { name: 'Keine Zählungen', exact: true })).toBeVisible();
+    await expect(page.getByText('unter diesem Set')).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: /^NoCountsOne · keine Zählungen unter diesem Set/ }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: /^NoCountsTwo · keine Zählungen unter diesem Set/ }),
+    ).toBeVisible();
+
+    // 'left' row: badge, still counted (AK 57) — no NG0955 assertion needed here, that is the
+    // console check at the end of this test.
+    await expect(
+      page.getByRole('button', { name: /^GoneEmote ·.*Nicht mehr im Set/ }),
+    ).toBeVisible();
+
+    // #74 duplicate: one cell, slot count 2, both aliases (AK 58).
+    await expect(
+      page.getByRole('button', {
+        name: /^AliasOne ·.*2 Plätze im Set: AliasOne, AliasTwo/,
+      }),
+    ).toBeVisible();
+
+    // Mark a plain live row and check both interim locks (8.3's "for now, every non-active view").
+    await page.getByRole('button', { name: /^GhostA ·/ }).click();
+    const deleteButton = page.getByRole('button', { name: 'Löschen (1)' });
+    await expect(deleteButton).toBeVisible();
+    await expect(deleteButton).toBeDisabled();
+    await expect(
+      page.getByText('Löschen und Abstimmen gehen vorerst nur im aktiven Set.'),
+    ).toBeVisible();
+
+    const voteButton = page.getByRole('button', { name: 'Zur Abstimmung stellen (1)' });
+    await expect(voteButton).toBeVisible();
+    await expect(voteButton).toBeDisabled();
+    // The a11y fix this test now also covers: the vote button used to have no aria-describedby at
+    // all, so a screen-reader user only ever heard "disabled" with no reason — only the delete
+    // button pointed at the paragraph above. Both buttons now share that one reason via
+    // aria-describedby rather than each carrying (or worse, duplicating) their own.
+    await expect(voteButton).toHaveAccessibleDescription(
+      'Löschen und Abstimmen gehen vorerst nur im aktiven Set.',
+    );
+    await expect(deleteButton).toHaveAccessibleDescription(
+      'Löschen und Abstimmen gehen vorerst nur im aktiven Set.',
+    );
+
+    expect(consoleProblems, consoleProblems.join('\n')).toEqual([]);
+  });
+
+  test('a set switch whose rows fail to load shows the error in place of the sheet — no endless skeleton — and retrying recovers (K4 fix round)', async ({
+    page,
+  }) => {
+    await mockSetViewChannel(page);
+    await mockUsageChannelSeries(page, CHANNEL, {});
+    let halloweenAttempts = 0;
+    await page.route(`**/api/channels/${CHANNEL}/usage-stats/totals**`, (route) => {
+      const emoteSetId = new URL(route.request().url()).searchParams.get('emoteSetId');
+      if (emoteSetId === HALLOWEEN_SET_ID && ++halloweenAttempts === 1) {
+        return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+      }
+      const row =
+        emoteSetId === HALLOWEEN_SET_ID
+          ? { emoteId: 'e-spooky', emoteName: 'Spooky', sevenTvEmoteId: '7tv-spooky' }
+          : { emoteId: 'e-cat', emoteName: 'CatJAM', sevenTvEmoteId: '7tv-cat' };
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            ...row,
+            imageUrl: 'https://cdn.7tv.app/emote/1/2x.webp',
+            totalUseCount: 40,
+            lastUsedDate: null,
+            previousWindowUseCount: 0,
+            firstSeenAt: null,
+            isArchived: false,
+            nameTwinEmoteSetIds: [],
+          },
+        ]),
+      });
+    });
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-spooky', name: 'Spooky' }],
+    });
+
+    await gotoSetView(page);
+    await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toBeVisible();
+
+    await setMenuTrigger(page).click();
+    await page.getByRole('radio', { name: 'Halloween' }).click();
+
+    // Settled into the error state: no skeleton left, the previous set's rows gone from the sheet,
+    // and both ways forward usable.
+    await expect(page.getByText('Das gewählte Set konnte nicht geladen werden')).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^CatJAM ·/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Aktualisieren' })).toBeEnabled();
+
+    await page.getByRole('button', { name: 'Erneut versuchen' }).click();
+    await expect(page.getByRole('button', { name: /^Spooky ·/ })).toBeVisible();
+    await expect(page.getByText('Das gewählte Set konnte nicht geladen werden')).toHaveCount(0);
   });
 });

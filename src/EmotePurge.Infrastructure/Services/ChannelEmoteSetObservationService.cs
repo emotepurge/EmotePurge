@@ -116,6 +116,29 @@ public class ChannelEmoteSetObservationService(AppDbContext db) : IChannelEmoteS
         // rename/merge and the interval it closes are one fact, not two.
     }
 
+    public async Task<IReadOnlyDictionary<string, IReadOnlyList<ChannelEmoteSetObservationInterval>>> ListIntervalsByChannelAsync(
+        string channelId, CancellationToken cancellationToken = default)
+    {
+        // AsNoTracking + a scalar projection: this is a pure read for a response payload, never a
+        // write path, and ordering by ObservedFromUtc before grouping is what makes each set's list
+        // "ascending" (spec 6.1) without a second sort once grouped — LINQ-to-Objects preserves a
+        // source's order within each group.
+        var rows = await db.ChannelEmoteSetObservations
+            .AsNoTracking()
+            .Where(o => o.ChannelId == channelId)
+            .OrderBy(o => o.ObservedFromUtc)
+            .Select(o => new { o.SevenTvEmoteSetId, o.ObservedFromUtc, o.ObservedToUtc })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .GroupBy(row => row.SevenTvEmoteSetId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<ChannelEmoteSetObservationInterval>)group
+                    .Select(row => new ChannelEmoteSetObservationInterval(row.ObservedFromUtc, row.ObservedToUtc))
+                    .ToList());
+    }
+
     private async Task<ChannelEmoteSetObservation?> FindOpenIntervalAsync(string channelId, CancellationToken cancellationToken)
     {
         return await db.ChannelEmoteSetObservations

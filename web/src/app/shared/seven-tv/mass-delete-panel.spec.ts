@@ -3,7 +3,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -660,11 +660,15 @@ function panelProviders(
     restoreService?: RestoreServiceFake;
     arbiter?: RunArbiterFake;
     dialogOpen?: ReturnType<typeof vi.fn>;
+    emoteAdminService?: Partial<EmoteAdminService>;
   } = {},
 ) {
   return [
     provideHttpClient(),
-    { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
+    {
+      provide: EmoteAdminService,
+      useValue: (options.emoteAdminService ?? {}) as unknown as EmoteAdminService,
+    },
     {
       provide: SevenTvDeleteService,
       useValue: (options.deleteService ?? fakeDeleteService()) as unknown as SevenTvDeleteService,
@@ -1034,7 +1038,10 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
   let isRunning: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
 
-  async function render(selectedEmotes: DeletableEmote[]): Promise<HTMLButtonElement> {
+  async function render(
+    selectedEmotes: DeletableEmote[],
+    deleteLockReasonKey: string | null = null,
+  ): Promise<HTMLButtonElement> {
     await TestBed.configureTestingModule({
       imports: [
         MassDeletePanel,
@@ -1055,6 +1062,7 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     fixture.componentRef.setInput('setId', 'set-1');
     fixture.componentRef.setInput('channelName', 'somechannel');
     fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    fixture.componentRef.setInput('deleteLockReasonKey', deleteLockReasonKey);
     fixture.detectChanges();
 
     return findButtonByLabel(fixture.nativeElement, deleteButtonLabel(selectedEmotes.length));
@@ -1089,6 +1097,16 @@ describe('MassDeletePanel — delete button lock, three independent sources (#89
     const button = await render(EMOTES);
 
     expect(button.disabled).toBe(false);
+  });
+
+  it('a host lock disables the button and names its reason as text the button is described by (spec #200, 8.3)', async () => {
+    const button = await render(EMOTES, 'usageStats.setView.lock.membersUnavailable');
+
+    expect(button.disabled).toBe(true);
+    const reasonId = button.getAttribute('aria-describedby');
+    expect(reasonId).not.toBeNull();
+    const reason = button.ownerDocument.getElementById(reasonId!);
+    expect(reason?.textContent).toContain('usageStats.setView.lock.membersUnavailable');
   });
 });
 
@@ -1251,5 +1269,105 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
 
     expect(host.querySelectorAll('ul')).toHaveLength(1);
     expect(host.textContent).not.toContain('durch den aktuellen Filter ausgeblendet');
+  });
+});
+
+/**
+ * #200 K4 fix round (finding A): the confirm dialog outlives the view it was opened on. A host lock
+ * that lands while it is open — the usage page's set switch — must stop the delete at the moment
+ * of confirming, not only at the moment of opening, and say so instead of doing nothing silently.
+ */
+describe('MassDeletePanel — the host lock is re-checked at confirm time (#200, K4)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let startDelete: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+
+  beforeEach(async () => {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers,
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', EMOTES);
+    fixture.componentRef.setInput('deleteLockReasonKey', null);
+    fixture.detectChanges();
+  });
+
+  function statusRegion(): HTMLElement {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    expect(region).not.toBeNull();
+    return region as HTMLElement;
+  }
+
+  it('starts the run when nothing locked it while the dialog was open', () => {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(startDelete.mock.calls[0][0]).toBe('set-1');
+  });
+
+  it('aborts a confirmed delete when the host locked it behind the open dialog, and says why in a status region', () => {
+    fixture.componentInstance['openConfirm']();
+    // The set switch lands while the confirm dialog is still open.
+    fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');
+    fixture.detectChanges();
+    closed.next(true);
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    // Mounted before the abort (so a screen reader hears the mutation), filled by it.
+    expect(statusRegion().textContent).toContain('massDelete.abortedByLock');
+    expect(statusRegion().textContent).toContain('usageStats.setView.lock.switching');
+  });
+
+  it('keeps the status region mounted but empty until an abort, and clears it on the next attempt', () => {
+    expect(statusRegion().textContent?.trim()).toBe('');
+
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');
+    fixture.detectChanges();
+    closed.next(true);
+    fixture.detectChanges();
+    expect(statusRegion().textContent).toContain('massDelete.abortedByLock');
+
+    fixture.componentRef.setInput('deleteLockReasonKey', null);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    fixture.detectChanges();
+    expect(statusRegion().textContent?.trim()).toBe('');
+  });
+
+  it('starts nothing once the panel itself is gone when the dialog confirms', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.destroy();
+    closed.next(true);
+
+    expect(startDelete).not.toHaveBeenCalled();
   });
 });

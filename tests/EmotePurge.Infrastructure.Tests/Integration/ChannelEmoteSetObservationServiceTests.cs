@@ -283,6 +283,64 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
         Assert.Equal("23505", ((PostgresException)exception.InnerException!).SqlState);
     }
 
+    [Fact]
+    public async Task ListIntervalsByChannelAsync_WithNoObservations_ReturnsAnEmptyDictionary()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "obslistempty1");
+        var service = new ChannelEmoteSetObservationService(db);
+
+        var result = await service.ListIntervalsByChannelAsync(channel.Id, CancellationToken.None);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task ListIntervalsByChannelAsync_GroupsByEmoteSetId_AscendingWithinEachSet_AndOmitsOtherChannels()
+    {
+        // Spec 6.1: "aus ChannelEmoteSetObservations, aufsteigend" — one closed and one open
+        // interval for SetA (in that chronological order), a single interval for SetB, and an
+        // interval on a second, unrelated channel that must not leak into the first channel's result.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "obslistgroup1");
+        var otherChannel = await SeedChannelAsync(db, "obslistgroup-other");
+
+        var closedSetA = await SeedClosedIntervalAsync(db, channel.Id, SetA, ChannelEmoteSetObservationClosedBy.SetSwitch);
+        var openSetA = await SeedOpenIntervalAsync(db, channel.Id, SetA);
+        var closedSetB = await SeedClosedIntervalAsync(db, channel.Id, SetB, ChannelEmoteSetObservationClosedBy.Leave);
+        await SeedOpenIntervalAsync(db, otherChannel.Id, SetA);
+
+        // Postgres' timestamptz has microsecond precision, DateTime a finer tick (same caveat as
+        // RecordObservedSetAsync_WithOpenIntervalForTheSameSet_DoesNothing above) — read the seeded
+        // rows back as persisted rather than comparing against the in-memory values used to build
+        // them.
+        await using var expectedDb = fixture.CreateDbContext();
+        var expectedClosedSetA = await expectedDb.ChannelEmoteSetObservations.AsNoTracking()
+            .Where(o => o.Id == closedSetA.Id).SingleAsync();
+        var expectedOpenSetA = await expectedDb.ChannelEmoteSetObservations.AsNoTracking()
+            .Where(o => o.Id == openSetA.Id).SingleAsync();
+        var expectedClosedSetB = await expectedDb.ChannelEmoteSetObservations.AsNoTracking()
+            .Where(o => o.Id == closedSetB.Id).SingleAsync();
+
+        var service = new ChannelEmoteSetObservationService(db);
+
+        var result = await service.ListIntervalsByChannelAsync(channel.Id, CancellationToken.None);
+
+        Assert.Equal(2, result.Count);
+
+        var setAIntervals = Assert.Single(result, entry => entry.Key == SetA).Value;
+        Assert.Equal(2, setAIntervals.Count);
+        Assert.Equal(expectedClosedSetA.ObservedFromUtc, setAIntervals[0].FromUtc);
+        Assert.Equal(expectedClosedSetA.ObservedToUtc, setAIntervals[0].ToUtc);
+        Assert.Equal(expectedOpenSetA.ObservedFromUtc, setAIntervals[1].FromUtc);
+        Assert.Null(setAIntervals[1].ToUtc);
+
+        var setBIntervals = Assert.Single(result, entry => entry.Key == SetB).Value;
+        var onlySetBInterval = Assert.Single(setBIntervals);
+        Assert.Equal(expectedClosedSetB.ObservedFromUtc, onlySetBInterval.FromUtc);
+        Assert.Equal(expectedClosedSetB.ObservedToUtc, onlySetBInterval.ToUtc);
+    }
+
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string name)
     {
         var channel = new Channel { ChannelName = ChannelName.Normalize(name), IsBotActive = true };

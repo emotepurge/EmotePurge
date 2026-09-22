@@ -85,13 +85,17 @@ describe('CreateVoteSessionDialog', () => {
    * page's `ListSelection.selectedKeys` — so a test can shrink it exactly the way a live reload would
    * while the dialog is open, without needing the whole `UsageStatsPage` mounted.
    */
-  function render(initialIds: readonly string[]): Harness {
+  function render(
+    initialIds: readonly string[],
+    lockReasonKey?: WritableSignal<string | null>,
+  ): Harness {
     const emoteIds = signal<readonly string[]>(initialIds);
 
     dialogData = {
       channelName: 'sensitron',
       emoteIds,
       usageFromDate: '2026-08-01',
+      lockReasonKey,
     };
 
     const fixture = TestBed.createComponent(CreateVoteSessionDialog);
@@ -302,6 +306,43 @@ describe('CreateVoteSessionDialog', () => {
       dialog.detect();
 
       expect(dialog.submitButton().disabled).toBe(false);
+    });
+  });
+
+  describe("the host's live lock (#200, K4)", () => {
+    it('blocks the submit with the host reason once the host locks behind the open dialog, and does not submit if clicked anyway', () => {
+      const lock = signal<string | null>(null);
+      const dialog = render(['a'], lock);
+      dialog.fillTitle('Test session');
+      expect(dialog.submitButton().disabled).toBe(false);
+
+      // A set switch lands behind the open dialog.
+      lock.set('usageStats.setView.lock.switching');
+      dialog.detect();
+
+      const button = dialog.submitButton();
+      expect(button.disabled).toBe(true);
+      const hint = dialog.fixture.nativeElement.querySelector(
+        `#${button.getAttribute('aria-describedby')}`,
+      );
+      expect(hint?.textContent).toContain('usageStats.setView.lock.switching');
+
+      button.click();
+      dialog.fixture.componentInstance['create']();
+      httpMock.expectNone('/api/channels/sensitron/vote-sessions');
+    });
+
+    it('submits again once the host lock lifts', () => {
+      const lock = signal<string | null>('usageStats.setView.lock.switching');
+      const dialog = render(['a'], lock);
+      dialog.fillTitle('Test session');
+      expect(dialog.submitButton().disabled).toBe(true);
+
+      lock.set(null);
+      dialog.detect();
+      dialog.submitButton().click();
+
+      httpMock.expectOne('/api/channels/sensitron/vote-sessions');
     });
   });
 

@@ -1,6 +1,13 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
+/// One observed interval of <see cref="Entities.ChannelEmoteSetObservation"/>, without the row's
+/// channel/set identity — <see cref="IChannelEmoteSetObservationService.ListIntervalsByChannelAsync"/>
+/// already keys its result by set id, so nothing here needs to repeat it.
+/// </summary>
+public readonly record struct ChannelEmoteSetObservationInterval(DateTime FromUtc, DateTime? ToUtc);
+
+/// <summary>
 /// Owns every write to <see cref="Entities.ChannelEmoteSetObservation"/> (spec section 4.3): no
 /// caller touches the table directly, so the "at most one open interval per channel" invariant has
 /// exactly one place that can break it, and the partial unique index is there only as the backstop
@@ -35,4 +42,14 @@ public interface IChannelEmoteSetObservationService
     /// this method's job.
     /// </summary>
     Task CloseOpenIntervalAsync(string channelId, string closedBy, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every interval ever recorded for <paramref name="channelId"/> — open and closed alike, across
+    /// every set the channel has ever had active — grouped by <c>SevenTvEmoteSetId</c> and ordered
+    /// ascending by <c>ObservedFromUtc</c> within each set. One query for the whole channel, not one
+    /// per set: <c>GET /emote-sets</c> (spec 6.1) needs this shape for every set in the same
+    /// response, and a per-set query there would turn one request into N.
+    /// </summary>
+    Task<IReadOnlyDictionary<string, IReadOnlyList<ChannelEmoteSetObservationInterval>>> ListIntervalsByChannelAsync(
+        string channelId, CancellationToken cancellationToken = default);
 }

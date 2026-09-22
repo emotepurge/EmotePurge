@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { EmoteUsageTotal } from '../../core/usage-stats/usage-stat.model';
+import { EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { CSV_MIME } from './csv';
 import { JSON_MIME } from './export-envelope';
 import {
@@ -10,7 +10,7 @@ import {
   usageExportPurposeOptions,
 } from './usage-export-purposes';
 
-function usageRow(overrides: Partial<EmoteUsageTotal> = {}): EmoteUsageTotal {
+function usageRow(overrides: Partial<EmoteUsageTotalDto> = {}): EmoteUsageTotalDto {
   return {
     emoteId: 'guid-1',
     emoteName: 'PogU',
@@ -20,6 +20,8 @@ function usageRow(overrides: Partial<EmoteUsageTotal> = {}): EmoteUsageTotal {
     lastUsedDate: '2026-08-01',
     previousWindowUseCount: 12,
     firstSeenAt: '2026-06-01T00:00:00Z',
+    isArchived: false,
+    nameTwinEmoteSetIds: [],
     ...overrides,
   };
 }
@@ -28,6 +30,7 @@ function scope(overrides: Partial<UsageExportPurposeScope> = {}): UsageExportPur
   return {
     channelName: 'sensitron',
     emoteSetId: 'set-1',
+    emoteSetName: 'Main',
     from: '2026-07-01',
     to: '2026-08-01',
     filtered: false,
@@ -72,13 +75,18 @@ describe('buildUsageExportPurposeDownload — usage-csv', () => {
     const download = buildUsageExportPurposeDownload('usage-csv', scope());
 
     expect(download).not.toBeNull();
-    expect(download?.filename).toBe('emotepurge_sensitron_usage_2026-07-01_2026-08-01.csv');
+    expect(download?.filename).toBe('emotepurge_sensitron_usage_set-1_2026-07-01_2026-08-01.csv');
     expect(download?.mimeType).toBe(CSV_MIME);
     const [header, row] = (download?.content ?? '').replace(/^﻿/, '').trimEnd().split('\r\n');
     expect(header).toBe(
       'emote_name,seven_tv_emote_id,total_use_count,previous_window_use_count,last_used_date,first_seen_at,trend',
     );
     expect(row).toBe('PogU,01ABC,42,12,2026-08-01,2026-06-01T00:00:00Z,rising');
+  });
+
+  it('omits the set segment when the capture carried no set (AK 65)', () => {
+    const download = buildUsageExportPurposeDownload('usage-csv', scope({ emoteSetId: null }));
+    expect(download?.filename).toBe('emotepurge_sensitron_usage_2026-07-01_2026-08-01.csv');
   });
 });
 
@@ -87,12 +95,14 @@ describe('buildUsageExportPurposeDownload — usage-json', () => {
     const download = buildUsageExportPurposeDownload('usage-json', scope({ filtered: true }));
 
     expect(download).not.toBeNull();
-    expect(download?.filename).toBe('emotepurge_sensitron_usage_2026-07-01_2026-08-01.json');
+    expect(download?.filename).toBe('emotepurge_sensitron_usage_set-1_2026-07-01_2026-08-01.json');
     expect(download?.mimeType).toBe(JSON_MIME);
     const parsed = JSON.parse(download?.content ?? '{}');
     expect(parsed.kind).toBe('usage');
     expect(parsed.withheld).toEqual([]);
     expect(parsed.meta).toMatchObject({
+      emoteSetId: 'set-1',
+      emoteSetName: 'Main',
       from: '2026-07-01',
       to: '2026-08-01',
       rowCount: 1,
