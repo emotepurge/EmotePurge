@@ -808,6 +808,16 @@ findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
   (`massDelete.selectionGoneDuringConfirm`, under the existing `abortedByLock` lead): the run would
   otherwise be `startDelete`'s silent "refused, empty list", where the open-time snapshot at least
   started a doomed run whose failed rows were visible. A confirmed delete never ends in silence.
+
+  **The confirmation itself locks on the same condition** (`DeleteConfirmDialog`,
+  `confirmLockReasonKey`, i18n `massDelete.confirmSelectionEmpty`): because the lists are live, that
+  same reload leaves the dialog showing "0 Emotes von 7TV löschen?", two empty lists — and, before
+  this, an enabled red button. The panel-side abort stays as the backstop (the dialog can be
+  confirmed in the same frame the reload lands), but the last screen before an irreversible write
+  must not invite a click it is going to refuse, and a disabled control states its reason
+  (docs/UI-Designsprache.md §10) in the hint slot the shared-set check already uses. Emptiness
+  counts over *both* lists, hidden names included — a filtered-out target is still a target — and it
+  outranks the "still checking shared sets" reason when both hold, being the final one of the two.
 - **The run's channel name is frozen at dialog open too** (`frozenChannelName`, alongside
   `frozenSetId`) — `deleteService.startDelete` used to read the live `channelName()` input at the
   point it was actually called, the same class of gap finding A closed for `setId`: harmless today

@@ -954,6 +954,7 @@
     "confirmSetLine": "Aus dem Set „{{ setName }}“.",
     "confirmSetNotActive": "Dieses Set ist gerade nicht aktiv.",
     "checkingSharedSets": "Prüfe geteilte Sets…",
+    "confirmSelectionEmpty": "Es ist nichts mehr zum Löschen übrig — die Auswahl wurde inzwischen geleert.",
     "sharedSetWarningTitle": "Achtung: Dieses Emote-Set gehört möglicherweise nicht (nur) diesem Channel.",
     "notOwnSet": "Dieses Set gehört nicht dem eigenen 7TV-Account dieses Channels.",
     "knownAffected": "Bei uns bekannt betroffen: {{ list }}",

@@ -954,6 +954,7 @@
     "confirmSetLine": "From the set “{{ setName }}”.",
     "confirmSetNotActive": "This set is not the active one right now.",
     "checkingSharedSets": "Checking shared sets…",
+    "confirmSelectionEmpty": "Nothing is left to delete — the selection has been emptied in the meantime.",
     "sharedSetWarningTitle": "Warning: this emote set may not (only) belong to this channel.",
     "notOwnSet": "This set doesn't belong to this channel's own 7TV account.",
     "knownAffected": "Known to us as also affected: {{ list }}",
