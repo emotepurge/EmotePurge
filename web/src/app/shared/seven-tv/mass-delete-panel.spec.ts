@@ -1340,6 +1340,21 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
     dialogData = captureDialogData(EMOTES, { setName: 'Halloween', activeSetId: 'set-other' });
     expect(dialogData.isActiveSet).toBe(false);
   });
+
+  // #200 K5 finding B: the vote-session-detail page mounted this panel without ever binding
+  // `[activeSetId]` at all — an omitted input defaulted to `null`, read as a *known* "not active",
+  // so its delete confirmation wrongly said "this set is not currently active" even though that
+  // page's run is always against the active set. An omission must not read the same as an explicit
+  // `null` ("we checked and don't know"); it folds onto `setId()` instead.
+  it('marks the delete-confirm dialog set active when the host never bound activeSetId at all', () => {
+    dialogData = captureDialogData(EMOTES);
+    expect(dialogData.isActiveSet).toBe(true);
+  });
+
+  it('still marks the delete-confirm dialog set not active for an explicit null activeSetId (a known unknown, not an omission)', () => {
+    dialogData = captureDialogData(EMOTES, { activeSetId: null });
+    expect(dialogData.isActiveSet).toBe(false);
+  });
 });
 
 /**

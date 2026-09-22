@@ -237,17 +237,20 @@ export interface DeletableEmote {
 export class MassDeletePanel {
   readonly setId = input.required<string>();
   readonly channelName = input.required<string>();
-  /** The channel's active 7TV set — `null` when the host does not know it (status unknown/failed).
+  /** The channel's active 7TV set — `null` when the host knows it does not exist or could not be
+   *  read (a *known* unknown), `undefined` when the host simply never bound this input at all.
    *  Gates `isActiveSet` below for both confirmations (spec #200, 8.8) and which slot-preview
    *  source the restore confirmation reads (`openRestoreConfirmDialog`): the active set's cheap,
    *  non-7TV-rate-limited `EmoteAdminService.getSetStatus`, or the live per-set preview otherwise.
-   *  Defaults to `null` rather than folding onto `setId` — unlike `ImportTrigger`'s identically-
-   *  named input, every existing caller of this component predates the distinction and is written
-   *  against the active set already, so a caller that omits it simply never active-matches, which
-   *  only widens `deleteLockReasonKey`'s callers get on their own (this panel does not compute that
-   *  lock) and otherwise just shows the "not active" note it did not show before — never a false
-   *  "active" claim. */
-  readonly activeSetId = input<string | null>(null);
+   *  `undefined` folds onto `setId()` (`effectiveActiveSetId` below) — same convention as
+   *  `ImportTrigger`'s identically-named input (DECISIONS K4) — rather than defaulting to `null`
+   *  and thereby reading as "known not active": the vote-session-detail page's own run has always
+   *  been against the active set (it only ever offers this panel for `activeEmoteSetId()` itself,
+   *  see the page's template), and that page went unbound for a full spec round (#200 K5 finding
+   *  B) before it started passing this explicitly — silently showing a false "this set is not
+   *  currently active" note the whole time, worse than the reverse: an *unconfirmed* explicit
+   *  `null` still means "we checked and don't know", so it correctly stays `false` below. */
+  readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the delete confirmation (spec #200, 8.8) — falls back to
    *  the set id itself, same convention as every other unnamed-set reader in this app. */
   readonly setName = input<string | null>(null);
@@ -310,11 +313,20 @@ export class MassDeletePanel {
   private readonly dialog = inject(Dialog);
   private readonly destroyRef = inject(DestroyRef);
 
-  /** Whether `setId()` — the set the delete button targets — is the channel's active 7TV set
-   *  (spec #200, 8.8). `false` whenever `activeSetId()` is unknown (`null`), the conservative
-   *  direction: an unconfirmed "active" claim is worse than a needless "not active" note. */
-  protected readonly isActiveSet = computed(() => {
+  /** `activeSetId()` with the omitted (`undefined`) case folded onto `setId()` — see that input's
+   *  own doc for why. An explicit `null` ("known unknown") is left alone. */
+  private readonly effectiveActiveSetId = computed(() => {
     const active = this.activeSetId();
+    return active === undefined ? this.setId() : active;
+  });
+
+  /** Whether `setId()` — the set the delete button targets — is the channel's active 7TV set
+   *  (spec #200, 8.8). `false` whenever `activeSetId()` is a *known* unknown (`null`), the
+   *  conservative direction: an unconfirmed "active" claim is worse than a needless "not active"
+   *  note. An *omitted* `activeSetId()` folds onto `setId()` first (`effectiveActiveSetId`), so it
+   *  reads as active rather than as the same "known unknown". */
+  protected readonly isActiveSet = computed(() => {
+    const active = this.effectiveActiveSetId();
     return active !== null && active === this.setId();
   });
 
