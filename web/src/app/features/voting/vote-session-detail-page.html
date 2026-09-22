@@ -108,6 +108,11 @@
         @if (!emote.eligible) {
           <span class="text-warning-fg">{{ 'voting.detail.archivedBadge' | transloco }}</span>
         }
+        <!-- A set-session member `eligible` never flags (K6) but the live membership check does
+             (#227) — the usage page's own "left" badge, reused rather than inventing a second one. -->
+        @if (isDeparted(emote)) {
+          <span class="text-warning-fg">{{ 'usageStats.setView.leftBadge' | transloco }}</span>
+        }
         @if (emote.totalUseCount !== null) {
           <span class="font-mono text-fg-body"
             >{{ emote.totalUseCount }}× {{ 'usageStats.usageLabel' | transloco }}</span
@@ -164,6 +169,7 @@
       [channelName]="channelName()"
       [selectedEmotes]="selectedForDelete()"
       [readLiveAliasesFromSet]="true"
+      [deleteLockReasonKey]="massDeleteLockReasonKey()"
       (deleted)="onDeleted($event)"
       (reloadRequested)="onReloadRequested()"
       (selectionCleared)="selection.clear()"
@@ -246,12 +252,15 @@
                               count: formatUseCount(emote.totalUseCount),
                             })
                       : rowAction(emote) === 'select'
-                        ? emote.emoteName
+                        ? emote.emoteName +
+                          (isDeparted(emote)
+                            ? ' · ' + ('usageStats.setView.leftBadge' | transloco)
+                            : '')
                         : null
                   "
                   [class]="
                     'app-sprite-cell relative block ' +
-                    (!emote.eligible ? 'app-sprite-cell-void ' : '') +
+                    (!emote.eligible || isDeparted(emote) ? 'app-sprite-cell-void ' : '') +
                     (rowAction(emote) === 'none' ? '' : 'cursor-pointer ')
                   "
                   [style.height.px]="cellPx()"
@@ -276,7 +285,7 @@
                     [url]="emote.imageUrl"
                     [size]="96"
                     sizes="(min-width: 640px) 64px, 96px"
-                    [dimmed]="!emote.eligible"
+                    [dimmed]="!emote.eligible || isDeparted(emote)"
                   />
                   <!-- The usage figure printed onto the sprite, as on the usage atlas. `null` is
                        the server's withholding verdict, not a zero, so it prints nothing. -->
@@ -430,7 +439,7 @@
               <app-emote-sprite-animated
                 [url]="emote.imageUrl"
                 [size]="56"
-                [dimmed]="!emote.eligible"
+                [dimmed]="!emote.eligible || isDeparted(emote)"
               />
             </span>
             <div class="min-w-0">
@@ -438,6 +447,11 @@
               @if (!emote.eligible) {
                 <p class="mt-0.5 text-[11px] text-warning-fg">
                   {{ 'voting.detail.archivedBadge' | transloco }}
+                </p>
+              }
+              @if (isDeparted(emote)) {
+                <p class="mt-0.5 text-[11px] text-warning-fg">
+                  {{ 'usageStats.setView.leftBadge' | transloco }}
                 </p>
               }
             </div>

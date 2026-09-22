@@ -25,6 +25,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { LIVE_EVENT_TYPES, LiveEvent, channelLiveUrl } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import {
   VoteSessionResult,
@@ -262,30 +263,60 @@ export class VoteSessionDetailPage {
   protected readonly canSelectForDelete = this.canManage;
 
   /**
-   * Live 7TV membership of a SET-session's own set (#227, K6 follow-up) — fetched only once both
-   * are true: the session is a set-session (`results()?.emoteSetId != null`) and this viewer can
-   * actually select for delete (`canSelectForDelete()`, the same gate the mass-delete panel's own
-   * `@if` uses in the template). A plain voter never sees the panel, so their page view must never
-   * spend a permit off the shared `ForeignEmoteLookup` bucket (10/min, #220) for a check whose only
-   * consumer they cannot reach. `loadCachedEmoteSetPreview` is the same K4 reader the usage page's
-   * non-active view already uses for the identical "which of my rows are still live" question —
-   * same 60 s TTL, same backend cache, so several managers loading this page within that window
-   * cost no more than one of them would alone.
+   * Primitive projection of `results()?.emoteSetId`, read by `sessionSetMembersResource`'s `params`
+   * below instead of `results()` itself (Opus review P2-a, #227): `results` is replaced wholesale on
+   * every reload (`usage.flushed` roughly every 30 s, every vote, every `onDeleted`), a new object
+   * reference each time, and a `params` callback that reads it directly was retriggering the
+   * resource — and, past its 60 s cache, spending a fresh permit off the shared `ForeignEmoteLookup`
+   * bucket — on every one of those, not only when the session's set actually changed (it never does,
+   * mid-session). A plain `computed()` memoizes correctly here because its returned *value* is a
+   * primitive (`string | null`), so `params` (and `shouldTrackSessionSetMembers` below) only see a
+   * change when this string genuinely differs, never merely because `results()` was replaced.
+   */
+  private readonly sessionSetEmoteSetId = computed(() => this.results()?.emoteSetId ?? null);
+
+  /**
+   * Whether `sessionSetMembersResource` below should be tracking anything at all — mirrors the
+   * mass-delete panel's own template `@if` exactly (Opus review P3-b, #227): the session must be a
+   * SET-session (`sessionSetEmoteSetId() !== null`), this viewer must be able to select for delete
+   * (`canSelectForDelete()`), and the pointer must be fine (`!isCoarse()`) — the panel itself is
+   * `@if (results() && canSelectForDelete() && !isCoarse() && massDeletePanelSetId(); as setId)`,
+   * and `massDeletePanelSetId()` resolves to exactly `sessionSetEmoteSetId()` whenever that is
+   * non-null (its own `?? activeEmoteSetId()` fallback only ever matters for a null-session, which
+   * this never fetches for anyway). A manager on a phone must not spend a permit for a panel
+   * `isCoarse()` already hides from them.
+   */
+  private readonly shouldTrackSessionSetMembers = computed(
+    () => this.sessionSetEmoteSetId() !== null && this.canSelectForDelete() && !this.isCoarse(),
+  );
+
+  /**
+   * Live 7TV membership of a SET-session's own set (#227, K6 follow-up). `loadCachedEmoteSetPreview`
+   * is the same K4 reader the usage page's non-active view already uses for the identical "which of
+   * my rows are still live" question — same 60 s TTL, same backend cache, so several managers
+   * loading this page within that window cost no more than one of them would alone.
    *
    * `eligible` never reflects live departure for a set-session row (K6: the ballot is frozen and
    * voting on it never closes) — a member 7TV no longer carries under the session's set stayed
    * "eligible" and selectable for delete forever before this existed, and confirming issued a
-   * `RemoveEmote` for an id no longer in the target set. This is the read that closes that gap
-   * (`departedSevenTvEmoteIds` below); a null-session has no live-membership concept of its own
-   * (`isArchived`/`eligible` already cover it), so this never fetches for one.
+   * `RemoveEmote` for an id no longer in the target set. This read, and `departedSevenTvEmoteIds`
+   * below, close that gap by *pre-filtering* the selection for a set-session; a null-session has no
+   * such pre-filter of its own (`isArchived`/`eligible` already gate its ballot's voting and its
+   * selectability the same way they always have), which is why this never fetches for one. That
+   * does **not** mean a null-session's delete goes unchecked, though: the mass-delete panel's own
+   * `readLiveAliasesFromSet` (bound unconditionally below, K6-K7 fix round #227) still reads the
+   * panel's target set live at confirm time for every session kind and fails the whole run closed if
+   * a confirmed row turns out missing there (`MassDeletePanel.startDelete`) — this resource is the
+   * earlier, page-level half of the fix, not the only one.
    */
   private sessionSetMembersRefreshRequested = false;
   private readonly sessionSetMembersResource = rxResource({
     params: () => {
-      const emoteSetId = this.results()?.emoteSetId;
-      return emoteSetId != null && this.canSelectForDelete()
-        ? { channelName: this.channelName(), emoteSetId }
-        : undefined;
+      if (!this.shouldTrackSessionSetMembers()) {
+        return undefined;
+      }
+      const emoteSetId = this.sessionSetEmoteSetId();
+      return emoteSetId === null ? undefined : { channelName: this.channelName(), emoteSetId };
     },
     stream: ({ params }) => {
       const refresh = this.sessionSetMembersRefreshRequested;
@@ -297,23 +328,75 @@ export class VoteSessionDetailPage {
   });
 
   /**
+   * Where the session-set membership read stands — mirrors the usage page's own `liveMembersState`
+   * (`usage-stats-page.ts`), minus the "switching" case this page has no dropdown to produce.
+   * `'ready'` only once the landed value actually answers for the *current* `sessionSetEmoteSetId()`
+   * (a session's own set never changes mid-session in practice, but a stale answer from before a
+   * direct session-to-session navigation must not be read as current).
+   */
+  private readonly sessionSetMembersState = computed<'none' | 'loading' | 'ready' | 'unavailable'>(
+    () => {
+      if (!this.shouldTrackSessionSetMembers()) {
+        return 'none';
+      }
+      if (this.sessionSetMembersReady() !== null) {
+        return 'ready';
+      }
+      return this.sessionSetMembersResource.isLoading() ? 'loading' : 'unavailable';
+    },
+  );
+
+  /**
+   * The landed value of `sessionSetMembersResource`, guarded both against Angular's own contract
+   * (`resource().value()` re-throws once `status()` is `'error'` — `hasValue()` is what tells the
+   * two states apart, same idiom `usage-stats-page.ts`'s `emoteSetList` uses) and against answering
+   * for a set the resource no longer matches (a stale value from before a direct
+   * session-to-session navigation, same reasoning `sessionSetMembersState`'s `'ready'` case already
+   * had). `null` in every other case — the single source both `sessionSetMembersState` and the two
+   * computeds below read, so `.value()` is called from exactly one place.
+   */
+  private readonly sessionSetMembersReady = computed<ForeignEmoteSetResponse | null>(() => {
+    if (!this.sessionSetMembersResource.hasValue()) {
+      return null;
+    }
+    const value = this.sessionSetMembersResource.value();
+    return value.emoteSetId === this.sessionSetEmoteSetId() ? value : null;
+  });
+
+  /**
+   * The reason deleting is locked while the session-set membership read is loading, failed (429,
+   * 503, …) or `truncated` (Opus review P2, page-level fail-closed — mirrors
+   * `usage-stats-page.ts`'s `sharedSetViewLockReasonKey`) — bound to the mass-delete panel's
+   * `deleteLockReasonKey` input below. `null` for a null-session (`'none'`) and for a clean, complete
+   * read (`'ready'` and not `truncated`).
+   */
+  protected readonly massDeleteLockReasonKey = computed<string | null>(() => {
+    switch (this.sessionSetMembersState()) {
+      case 'none':
+        return null;
+      case 'loading':
+        return 'massDelete.memberRead.lock.loading';
+      case 'unavailable':
+        return 'massDelete.memberRead.lock.unavailable';
+      case 'ready':
+        return this.sessionSetMembersReady()?.truncated
+          ? 'massDelete.memberRead.lock.truncated'
+          : null;
+    }
+  });
+
+  /**
    * 7TV ids on this session's ballot that the read above confirms are no longer members of the
-   * session's own set. Empty for a null-session, and empty while the read has not landed (yet, or
-   * at all) — the conservative direction: a row this check cannot yet confirm departed simply stays
-   * selectable here, same as it always was before #227, and the confirm-time live alias read in
-   * `MassDeletePanel` (`readLiveAliasesFromSet`) is the actual gate a delete cannot get past
-   * silently once started.
+   * session's own set. Empty for a null-session, and empty while the read has not landed cleanly
+   * (`sessionSetMembersState() !== 'ready'`) — the page-level delete lock (`massDeleteLockReasonKey`)
+   * is what actually blocks deleting during that window, not a preemptive drop here.
    */
   protected readonly departedSevenTvEmoteIds = computed<ReadonlySet<string>>(() => {
-    const emoteSetId = this.results()?.emoteSetId;
-    if (emoteSetId == null || !this.sessionSetMembersResource.hasValue()) {
+    const ready = this.sessionSetMembersReady();
+    if (ready === null) {
       return new Set();
     }
-    const preview = this.sessionSetMembersResource.value();
-    if (preview.emoteSetId !== emoteSetId) {
-      return new Set();
-    }
-    const liveIds = new Set(preview.emotes.map((entry) => entry.sevenTvEmoteId));
+    const liveIds = new Set(ready.emotes.map((entry) => entry.sevenTvEmoteId));
     return new Set(
       (this.results()?.emotes ?? [])
         .map((emote) => emote.sevenTvEmoteId)
@@ -569,6 +652,17 @@ export class VoteSessionDetailPage {
     return (
       this.hasUsageData() && !(this.results()?.emoteSetId != null && emote.totalUseCount === null)
     );
+  }
+
+  /**
+   * Whether a row is a set-session member `departedSevenTvEmoteIds` confirms has left the session's
+   * own live set (#227, Opus review P3-c) — reuses the usage page's existing "left" treatment
+   * (void plate, dimmed sprite, `usageStats.setView.leftBadge`) rather than inventing a second
+   * vocabulary for the same idea: without it, a departed row looked identical to a live one, and two
+   * marked cards silently produced "Löschen (1)" with nothing on screen explaining the missing one.
+   */
+  protected isDeparted(emote: VoteSessionResult): boolean {
+    return this.departedSevenTvEmoteIds().has(emote.sevenTvEmoteId);
   }
 
   /**

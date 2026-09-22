@@ -628,17 +628,32 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     expect(data.emoteSetId).toBeNull();
   });
 
-  it("targets a set-session's own NON-active set with the real active set beside it, unlocked (K5's set-scoped sync-deleted lifted Ruling D)", async () => {
+  it("targets a set-session's own NON-active set with the real active set beside it, unlocked once its live membership read lands clean (K5's set-scoped sync-deleted lifted Ruling D)", async () => {
     await mount(results([resultEmote('a')], { emoteSetId: 'halloween-1' }), true);
 
     // The panel's [setId] and [activeSetId] bindings: the session's own set to delete from, the
     // channel's real active set ('set-1' per this describe block's mount()) so the run's
-    // bookkeeping knows the two differ. No lock input any more — the temporary Ruling D lock
-    // existed only until sync-deleted carried { emoteSetId, sevenTvEmoteIds } (K5).
+    // bookkeeping knows the two differ. The temporary Ruling D lock existed only until sync-deleted
+    // carried { emoteSetId, sevenTvEmoteIds } (K5) — deleting is locked again since #227, but only
+    // for as long as the session-set membership read (below) has not landed clean.
     expect(component['canSelectForDelete']()).toBe(true);
     expect(component['massDeletePanelSetId']()).toBe('halloween-1');
     expect(component['activeEmoteSetId']()).toBe('set-1');
-    expect('massDeleteLockReasonKey' in component).toBe(false);
+    expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.loading');
+
+    flushByPath(httpMock, `/api/seventv/channels/${CHANNEL}/emotes`, {
+      channelName: CHANNEL,
+      sevenTvUserId: null,
+      emoteSetId: 'halloween-1',
+      emoteSetName: 'Halloween 2026',
+      capacity: 500,
+      totalCount: 1,
+      truncated: false,
+      emotes: [{ sevenTvEmoteId: '7tv-a', name: 'Emotea', defaultName: 'Emotea', imageUrl: '' }],
+    });
+    await settle();
+
+    expect(component['massDeleteLockReasonKey']()).toBeNull();
   });
 });
 
@@ -751,7 +766,22 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
     });
   }
 
-  it('excludes a member the live read confirms has left the session set, once the read lands', async () => {
+  /** Predicate-based, unlike a plain-string `httpMock.expectNone(EMOTE_SET_PATH)` would be: the
+   *  request always carries `?emoteSetId=…`, and Angular's string matcher compares against
+   *  `urlWithParams` — a bare path string therefore never matches it and `expectNone`/`expectOne`
+   *  would trivially "pass" regardless of whether a request actually went out. `req.url` (unlike
+   *  `urlWithParams`) excludes the query string, same idiom `flushByPath` already uses below. */
+  function matchesEmoteSetPath(req: { url: string }): boolean {
+    return req.url === EMOTE_SET_PATH;
+  }
+
+  // Opus review P1/P2 (#227): while the read is still out (or has failed/truncated), deleting is
+  // now locked at the page level — this used to be pinned as "fail-open" (selectedForDelete still
+  // returned both rows, relying only on MassDeletePanel's own confirm-time backstop to keep a
+  // phantom delete from actually running). The panel-level backstop still exists (P1), but the
+  // primary, visible behaviour a user meets here is now the lock, not a selection quietly staying
+  // wrong until confirm time.
+  it('locks deleting while the live-membership read is out, then excludes the departed member once it lands', async () => {
     const gone = resultEmote('gone', { totalUseCount: null });
     const stays = resultEmote('stays', { totalUseCount: null });
     await mount(results([gone, stays], { emoteSetId: 'halloween-1' }), true);
@@ -760,35 +790,131 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
     component['selection'].onRowClick(stays, { shiftKey: false } as MouseEvent);
     expect(component['selection'].selectedKeys().sort()).toEqual(['gone', 'stays']);
 
-    // Before the live read lands, both stay selectable — the conservative direction: nothing has
-    // confirmed either is departed yet, so neither is preemptively dropped.
-    expect(
-      component['selectedForDelete']()
-        .map((row) => row.emoteId)
-        .sort(),
-    ).toEqual(['gone', 'stays']);
+    // The read is still out: deleting is locked, so the selection's own fail-open content no
+    // longer matters for whether a delete could actually start.
+    expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.loading');
 
     flushSessionSetMembers(['7tv-stays']); // 7tv-gone is no longer a live member
     await settle();
 
+    expect(component['massDeleteLockReasonKey']()).toBeNull();
     expect(component['selectedForDelete']().map((row) => row.emoteId)).toEqual(['stays']);
     // The card selection itself is untouched — clicking it still works, only the delete run drops
     // the departed member from what it actually sends.
     expect(component['selection'].selectedKeys().sort()).toEqual(['gone', 'stays']);
   });
 
+  it('locks deleting when the live-membership read fails (429/503)', async () => {
+    const a = resultEmote('a', { totalUseCount: null });
+    await mount(results([a], { emoteSetId: 'halloween-1' }), true);
+
+    httpMock
+      .match(matchesEmoteSetPath)
+      .forEach((req) =>
+        req.flush('service unavailable', { status: 503, statusText: 'Service Unavailable' }),
+      );
+    await settle();
+
+    expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.unavailable');
+    // Fail-open at the data level, same reasoning as the loading case above: the panel-level
+    // confirm-time read (readLiveAliasesFromSet) is the actual backstop; the lock is what stops
+    // the user from reaching it in the first place.
+    expect(component['departedSevenTvEmoteIds']().size).toBe(0);
+  });
+
+  it('locks deleting when the live-membership read is truncated', async () => {
+    const a = resultEmote('a', { totalUseCount: null });
+    await mount(results([a], { emoteSetId: 'halloween-1' }), true);
+
+    flushByPath(httpMock, EMOTE_SET_PATH, {
+      channelName: CHANNEL,
+      sevenTvUserId: null,
+      emoteSetId: 'halloween-1',
+      emoteSetName: 'Halloween 2026',
+      capacity: 500,
+      totalCount: 1000,
+      truncated: true,
+      emotes: [],
+    });
+    await settle();
+
+    expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.truncated');
+  });
+
   it('makes no live-membership read at all for a null-session', async () => {
     const a = resultEmote('a');
     await mount(results([a]), true);
 
-    httpMock.expectNone(EMOTE_SET_PATH);
+    httpMock.expectNone(matchesEmoteSetPath);
   });
 
   it('makes no live-membership read for a viewer who cannot select for delete', async () => {
     const a = resultEmote('a');
     await mount(results([a], { emoteSetId: 'halloween-1' }), false);
 
-    httpMock.expectNone(EMOTE_SET_PATH);
+    httpMock.expectNone(matchesEmoteSetPath);
+  });
+
+  // Opus review P2-a: `sessionSetMembersResource`'s `params` used to read `results()` directly —
+  // `results` is replaced wholesale on every reload, a new object reference each time, so the
+  // resource was retriggered (and, past its 60 s cache, spent a fresh ForeignEmoteLookup permit) on
+  // every one of them, not only when the session's own set actually changed (it never does,
+  // mid-session). `onDeleted([])` exercises exactly that shape of replacement — its own
+  // `results.update()` — without needing the SSE/debounce pipeline at all.
+  it('does not re-request the live-membership list on a wholesale results() replacement that leaves the session set unchanged', async () => {
+    const a = resultEmote('a', { totalUseCount: null });
+    await mount(results([a], { emoteSetId: 'halloween-1' }), true);
+    flushSessionSetMembers(['7tv-a']);
+    await settle();
+    httpMock.expectNone(matchesEmoteSetPath);
+
+    component['onDeleted']([]); // removes nothing — the point is the new `results` reference alone
+    await settle();
+
+    httpMock.expectNone(matchesEmoteSetPath);
+  });
+
+  // Opus review P2-b: with P2-a's fix, the reload `loadResults()` triggers on `channel.synced` no
+  // longer changes `sessionSetMembersResource`'s params by itself — so the explicit
+  // `sessionSetMembersResource.reload()` right after it is the only thing that can still trigger a
+  // refetch, and it actually reaches the network rather than being silently swallowed by (or racing)
+  // a spurious params-driven one.
+  it('re-requests the live-membership list after a channel.synced live event', async () => {
+    const a = resultEmote('a', { totalUseCount: null });
+    await mount(results([a], { emoteSetId: 'halloween-1' }), true);
+    flushSessionSetMembers(['7tv-a']);
+    await settle();
+    httpMock.expectNone(matchesEmoteSetPath);
+
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: CHANNEL });
+    // Real time, not fake timers: sessionSetMembersResource's own settling already needs real
+    // microtask ticks in this describe block (see settle()), and mixing that with faked timers is
+    // exactly the tension this file's other describe blocks avoid by choosing one or the other.
+    await new Promise((resolve) => setTimeout(resolve, VOTE_RELOAD_DEBOUNCE_MS + 50));
+    flushByPath(
+      httpMock,
+      `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`,
+      results([a], { emoteSetId: 'halloween-1' }),
+    );
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    await settle();
+
+    // Exactly one fresh request — proves the reload() actually reached the network.
+    httpMock.expectOne(matchesEmoteSetPath).flush({
+      channelName: CHANNEL,
+      sevenTvUserId: null,
+      emoteSetId: 'halloween-1',
+      emoteSetName: 'Halloween 2026',
+      capacity: 500,
+      totalCount: 1,
+      truncated: false,
+      emotes: [{ sevenTvEmoteId: '7tv-a', name: 'Emotea', defaultName: 'Emotea', imageUrl: '' }],
+    });
   });
 });
 
