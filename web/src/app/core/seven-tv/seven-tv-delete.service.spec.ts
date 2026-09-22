@@ -708,6 +708,25 @@ describe('SevenTvDeleteService', () => {
       expect(service.confirmedRunPending()).toBe(false);
     });
 
+    it('is dropped outright by clearConfirmedRun, without a notice window', () => {
+      service.beginConfirmedRun();
+
+      service.clearConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
+    it('cancels a notice window already running when clearConfirmedRun comes in', () => {
+      service.beginConfirmedRun();
+      service.endConfirmedRun();
+
+      service.clearConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(false);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS);
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
     it('does not let a first notice window expire onto a second confirmed delete', () => {
       service.beginConfirmedRun();
       service.endConfirmedRun();

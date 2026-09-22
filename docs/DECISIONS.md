@@ -836,21 +836,45 @@ findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
   protocol that looks complete but is not).
 
 **K5 fix round 2026-09-22 (independent review), second pass — the dock knows about a confirmed
-delete before it is a run.** Between the confirmation and the first `REMOVE`, an active-set delete
-is reading the set's live aliases and exists nowhere the host dock can see it: `dockVisible`
-(`usage-stats-page.ts`, via `actionDockHasContent`) counts marked items and shown run panels, and
-the read is neither. A pushed reload landing in that window and pruning every marked key therefore
-unmounted the dock, took `MassDeletePanel` down with it, and the confirmed delete then aborted
-against a destroyed panel — `abortReasonBeforeStart`'s `destroyed` branch, which returns `null`
-precisely so a torn-down panel starts nothing. Nothing was deleted, which is the safe direction, but
-the notice saying so went down with the panel: from the user's side a confirmed, irreversible action
-simply did not happen and never explained itself.
+delete before it is a run; the claim covers the whole confirmation.** From the moment the delete
+confirmation opens until the first `REMOVE`, a delete exists nowhere the host dock can see it:
+`dockVisible` (`usage-stats-page.ts`, via `actionDockHasContent`) counts marked items and shown run
+panels, and neither an open modal nor the active-set delete's live alias read is either. A pushed
+reload landing in that window and pruning every marked key therefore unmounted the dock and took
+`MassDeletePanel` down with it — while the confirmation stayed up, because the CDK dialog is opened
+without a `viewContainerRef` and does not belong to the panel's view. The user then clicked Delete
+against a destroyed panel: `abortReasonBeforeStart`'s `destroyed` branch returns `null` precisely so
+a torn-down panel starts nothing, and there was no view left to say so on. Nothing was deleted,
+which is the safe direction, but from the user's side a confirmed, irreversible action simply did
+not happen and never explained itself. Worse on the way there: the destroyed panel's
+`selectedEmotes()` input still reads its last value, so the emptied-selection guard of the first
+commit does not fire either.
 
-`SevenTvDeleteService` now carries the state as `confirmedRunPending`, written only through
-`beginConfirmedRun()`/`endConfirmedRun()`, which the panel calls around the read;
-`ActionDockState.deleteConfirmPending` feeds it into the dock's marking half. Two decisions inside
+`SevenTvDeleteService` carries the state as `confirmedRunPending`, written only through
+`beginConfirmedRun()` / `endConfirmedRun()` / `clearConfirmedRun()`;
+`ActionDockState.deleteConfirmPending` feeds it into the dock's marking half. Four decisions inside
 that:
 
+- **The claim is taken when the confirmation opens, not when the read starts.** *(Corrected
+  2026-09-22 within the same round: the first version of this fix bracketed only the live alias
+  read, which left the whole life of the modal — the part a user can hold open for minutes —
+  uncovered, and gave the no-read branch no claim at all.)* Every exit of the `closed` callback
+  releases it again, and which release is used is itself the decision: a **dismissed** confirmation
+  takes `clearConfirmedRun()`, an immediate drop, because nothing was confirmed and an 8 s hold over
+  an emptied grid would be exactly the empty bar `actionDockHasContent` exists to prevent; every
+  exit that **attempted** the delete — started, aborted, or refused for an emptied selection — takes
+  `endConfirmedRun()` and its notice window. A leaked claim pins an empty dock, so this is a
+  balance the panel owes on every path, the destroyed-panel path included.
+- **`abortNotice` stays on the panel, deliberately, and is not moved onto the service next to
+  `duplicateNoticePending`.** That flag sits on the service because the service produces it
+  (`startRestore` sets it); every reason the delete aborts for is decided from the panel's own
+  inputs (host lock, frozen set id, arbiter, confirmed selection), so moving the text onto a root
+  singleton would move panel-local knowledge into shared state — and both mounted panels (usage page
+  and vote-session page) would render it, so an abort on one page would surface on the other. The
+  one thing it would buy, a *freshly mounted* panel still showing the notice, is the case where
+  showing it is wrong: a panel is remounted by a route, set or pointer change, i.e. into a view the
+  aborted delete never belonged to. Keeping the panel that set the notice alive is the fix; carrying
+  the notice to a different panel is not.
 - **The claim outlives the read when nothing started.** `endConfirmedRun()` asks its own
   `isRunning()`: a started run carries the dock by itself, so the claim drops at once; an abort has
   nothing but its notice, so the claim is held for `ABORTED_DELETE_NOTICE_MS` (8 s) and then drops

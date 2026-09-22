@@ -630,6 +630,7 @@ type DeleteServiceFake = Pick<
   | 'confirmedRunPending'
   | 'beginConfirmedRun'
   | 'endConfirmedRun'
+  | 'clearConfirmedRun'
 >;
 
 function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteServiceFake {
@@ -640,12 +641,14 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     rateLimitPauseSeconds: signal<number | null>(null),
     lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
     // The dock's claim on a confirmed-but-not-yet-running delete. Spied rather than implemented:
-    // what the *service* does with it (drop it at once for a started run, hold it for the abort
-    // notice otherwise) is pinned in seven-tv-delete.service.spec.ts; what the panel owes is that
-    // it brackets the pre-run read with these two calls at all.
+    // what the *service* does with them (drop at once for a started run, hold for the abort notice
+    // otherwise, drop outright when nothing was confirmed) is pinned in
+    // seven-tv-delete.service.spec.ts; what the panel owes is that every exit of the confirmation
+    // reaches one of them.
     confirmedRunPending: signal(false),
     beginConfirmedRun: vi.fn(),
     endConfirmedRun: vi.fn(),
+    clearConfirmedRun: vi.fn(),
     ...overrides,
   };
 }
@@ -1745,30 +1748,93 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(statusText()).toContain('massDelete.memberRead.truncated');
   });
 
-  // Codex P3, K5 fix round 2: the read itself is the only thing holding a confirmed delete
-  // together, and nothing the host dock gates on knows about it. Bracketing it with these two calls
-  // is what keeps the panel mounted through a reload that prunes the selection — see
-  // SevenTvDeleteService.confirmedRunPending.
-  it('claims the dock for the confirmed delete while the read is out and releases it afterwards', () => {
-    const deleteService = TestBed.inject(SevenTvDeleteService) as unknown as {
-      beginConfirmedRun: ReturnType<typeof vi.fn>;
-      endConfirmedRun: ReturnType<typeof vi.fn>;
-    };
-    fixture.componentInstance['openConfirm']();
-    expect(deleteService.beginConfirmedRun).not.toHaveBeenCalled();
+  /** The three dock-claim calls of the fake service, typed for the block below. */
+  function claimCalls(): {
+    beginConfirmedRun: ReturnType<typeof vi.fn>;
+    endConfirmedRun: ReturnType<typeof vi.fn>;
+    clearConfirmedRun: ReturnType<typeof vi.fn>;
+  } {
+    return TestBed.inject(SevenTvDeleteService) as unknown as ReturnType<typeof claimCalls>;
+  }
 
+  // Opus review P2-1: the claim used to start with the *read*, which left the whole life of the
+  // modal uncovered — and the CDK dialog is opened without a viewContainerRef, so it outlives the
+  // panel. A reload pruning every marked key while the confirmation is up unmounted the dock,
+  // destroyed the panel under it, and the eventual Delete click then ran its checks against a
+  // torn-down component: nothing deleted, nothing said. The claim therefore begins with the dialog.
+  it('claims the dock the moment the confirmation opens, before anything is confirmed', () => {
+    fixture.componentInstance['openConfirm']();
+
+    expect(claimCalls().beginConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+    expect(claimCalls().clearConfirmedRun).not.toHaveBeenCalled();
+  });
+
+  it('drops the claim outright, with no notice window, when the confirmation is dismissed', () => {
+    fixture.componentInstance['openConfirm']();
+
+    closed.next(false);
+
+    // clearConfirmedRun, not endConfirmedRun: nothing was confirmed, so there is no notice to read
+    // and an 8 s hold would be the empty dock actionDockHasContent exists to prevent.
+    expect(claimCalls().clearConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+    expect(startDelete).not.toHaveBeenCalled();
+  });
+
+  it('holds the claim across the read and releases it once the run was attempted', () => {
+    fixture.componentInstance['openConfirm']();
     closed.next(true);
-    expect(deleteService.beginConfirmedRun).toHaveBeenCalledTimes(1);
-    expect(deleteService.endConfirmedRun).not.toHaveBeenCalled();
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
 
     httpMock.expectOne(GQL).flush(entriesPage([]));
-    expect(deleteService.endConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
     // Released only once the run was attempted, so the service can tell a started run (which keeps
     // the dock by itself) from an abort (which has nothing but its notice).
     expect(startDelete).toHaveBeenCalledTimes(1);
     expect(startDelete.mock.invocationCallOrder[0]).toBeLessThan(
-      deleteService.endConfirmedRun.mock.invocationCallOrder[0],
+      claimCalls().endConfirmedRun.mock.invocationCallOrder[0],
     );
+  });
+
+  it('releases the claim on the branch that makes no live read at all', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the claim for a confirmed delete whose selection the reload emptied', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+
+    closed.next(true);
+
+    expect(startDelete).not.toHaveBeenCalled();
+    // endConfirmedRun, not clearConfirmedRun: this exit has a notice, so it needs the window.
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().clearConfirmedRun).not.toHaveBeenCalled();
+  });
+
+  // The P2-1 scenario end to end. The panel is gone before the click — by a route change now that
+  // the dock can no longer drop it — so the delete still starts nothing (abortReasonBeforeStart's
+  // `destroyed` branch, deliberate: a torn-down panel has no selection left to vouch for). What
+  // must not also happen is the claim outliving it and pinning an empty dock on whatever mounts
+  // next.
+  it('starts nothing and leaves no claim behind when the panel was destroyed while the modal was open', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.destroy();
+
+    closed.next(true);
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
   });
 
   it('releases the dock claim on a failed read too, after the abort notice is set', () => {

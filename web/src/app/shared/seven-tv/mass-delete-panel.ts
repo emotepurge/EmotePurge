@@ -406,7 +406,19 @@ export class MassDeletePanel {
   );
 
   /** What stopped the last confirmed delete right before it started (`startDelete`) — a host lock,
-   *  a set switch, or a failed live alias read — or `null`. Shown until the next attempt. */
+   *  a set switch, an emptied selection or a failed live alias read — or `null`. Shown until the
+   *  next attempt.
+   *
+   *  Deliberately panel-local, unlike `SevenTvDeleteService.duplicateNoticePending`, which sits on
+   *  the service because the *service* is what produces it (`startRestore` sets it). Every reason
+   *  here is decided from this panel's own inputs — the host lock, the frozen set id, the arbiter,
+   *  the confirmed selection — so moving the text onto the root singleton would move panel-local
+   *  knowledge into shared state, and both mounted panels (usage page and vote-session page) would
+   *  render the same notice: an abort on one page would surface on the other. The one thing a
+   *  service-held notice would buy — a *freshly mounted* panel still showing it — is precisely the
+   *  case where showing it is wrong: a panel is remounted by a route, set or pointer change, i.e.
+   *  in a view the aborted delete never belonged to. What keeps the notice readable is instead
+   *  keeping the panel that set it alive, which is what `confirmedRunPending` does. */
   protected readonly abortNotice = signal<DeleteAbortNotice | null>(null);
 
   /** A confirmed active-set delete is waiting for its live alias read
@@ -698,8 +710,19 @@ export class MassDeletePanel {
       setName: this.setName() ?? frozenSetId,
       isActiveSet: frozenIsActiveSet,
     };
+    // Claimed from the moment the confirmation opens, not from the moment a read starts: the CDK
+    // dialog is opened without a `viewContainerRef`, so it outlives this panel. A pushed reload that
+    // prunes every marked key while the modal is up unmounts the host dock and destroys the panel
+    // under it, the modal stays, the user clicks Delete — and the confirmed delete then runs its
+    // checks against a torn-down component, which by contract starts nothing and has no view left to
+    // say so on. Holding the dock for the whole life of the confirmation is what keeps that from
+    // happening; the no-read branch, which never had a claim at all, is covered by the same move.
+    // Every exit below releases it (`endConfirmedRun` after an attempt, `clearConfirmedRun` when
+    // nothing was confirmed) — a leaked claim pins an empty dock.
+    this.deleteService.beginConfirmedRun();
     openDeleteConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (!confirmed) {
+        this.deleteService.clearConfirmedRun();
         return;
       }
       // The exact list the dialog last showed, snapshotted **at confirm** and synchronously, before
@@ -731,12 +754,16 @@ export class MassDeletePanel {
           leadKey: 'massDelete.abortedByLock',
           reasonKey: 'massDelete.selectionGoneDuringConfirm',
         });
+        // Not `clearConfirmedRun`: this exit has a notice to show, so it needs the window.
+        this.deleteService.endConfirmedRun();
         return;
       }
       if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
         this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+        this.deleteService.endConfirmedRun();
         return;
       }
+      // Owns the claim from here to the end of the read — see `readLiveAliasesThenDelete`.
       this.readLiveAliasesThenDelete(frozenSetId, frozenChannelName, confirmedSelection);
     });
   }
@@ -759,15 +786,13 @@ export class MassDeletePanel {
     // already doomed must not wait for (or spend) a 7TV read first.
     if (this.abortReasonBeforeStart(frozenSetId) !== undefined) {
       this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+      this.deleteService.endConfirmedRun();
       return;
     }
     this.liveAliasReadPending.set(true);
-    // Tells the host dock that a confirmed delete is in progress even though no run exists yet: its
-    // gate counts marked items and shown run panels, and a pushed reload that prunes every marked
-    // key while this read is out would otherwise unmount the dock — and this panel with it — so the
-    // confirmed delete would abort against a destroyed component with nothing left to say so on
-    // (see `SevenTvDeleteService.confirmedRunPending`). Released in every exit of the read below.
-    this.deleteService.beginConfirmedRun();
+    // The dock claim taken when the confirmation opened (`openConfirmDialog`) is held across this
+    // read and released in the subscribe below — the read is the longest stretch in which a
+    // confirmed delete exists without a run for the dock to see.
     loadSevenTvSetEntries(this.httpClient, frozenSetId)
       .pipe(
         // A hung request (7TV accepts the connection but never answers) must not leave the button

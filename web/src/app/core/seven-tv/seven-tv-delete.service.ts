@@ -129,35 +129,41 @@ export class SevenTvDeleteService {
   readonly lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
 
   /**
-   * A delete was confirmed but is not (yet) a run: `MassDeletePanel`'s pre-run live alias read is
-   * out, or that read has just ended in an abort whose notice is the only outcome there is to show.
-   * Neither state shows up in `isRunning`/`queue`, which is the problem this exists to solve — the
-   * host dock's own gate (`action-dock.ts`, `usage-stats-page.ts`'s `dockVisible`) counts marked
-   * items and shown panels, so a pushed reload that prunes every marked key while the read is in
-   * flight unmounts the dock, takes `MassDeletePanel` down with it, and the confirmed delete then
-   * aborts against a destroyed panel: no `REMOVE` was ever sent and the notice saying so is gone
-   * too. The dock treats this exactly like an in-flight run, same role `duplicateNoticePending`
-   * plays for a fully-refused restore/import.
+   * A delete the user is deciding on, or has decided on, that is not (yet) a run: `MassDeletePanel`
+   * has the confirmation open, its pre-run live alias read is out, or that read has just ended in an
+   * abort whose notice is the only outcome there is to show. None of those show up in
+   * `isRunning`/`queue`, which is the problem this exists to solve — the host dock's own gate
+   * (`action-dock.ts`, `usage-stats-page.ts`'s `dockVisible`) counts marked items and shown panels,
+   * so a pushed reload that prunes every marked key unmounts the dock and takes `MassDeletePanel`
+   * down with it. The CDK dialog is opened without a `viewContainerRef`, so it survives that and the
+   * user still clicks Delete — against a destroyed panel, which by contract starts nothing
+   * (`abortReasonBeforeStart`) and has no view left to say so on: no `REMOVE` sent, no notice,
+   * nothing. The dock treats this claim exactly like an in-flight run, the same role
+   * `duplicateNoticePending` plays for a fully-refused restore/import.
    *
-   * Written only through `beginConfirmedRun`/`endConfirmedRun` below, which the panel calls around
-   * the read.
+   * The claim is therefore taken when the **confirmation opens**, not when the read starts: the
+   * window that must be survived begins with the modal, and the no-read branch has no read to hang
+   * it on at all.
+   *
+   * Written only through `beginConfirmedRun`/`endConfirmedRun`/`clearConfirmedRun` below.
    */
   readonly confirmedRunPending = signal(false);
 
   private confirmedRunTimeout: ReturnType<typeof setTimeout> | undefined;
 
-  /** A confirmed delete has begun its pre-run work — hold the dock open until `endConfirmedRun`. */
+  /** The delete confirmation is open — hold the dock (and the panel inside it) until one of the two
+   *  releases below. Every exit of the confirmation has to reach one of them. */
   beginConfirmedRun(): void {
     clearTimeout(this.confirmedRunTimeout);
     this.confirmedRunPending.set(true);
   }
 
   /**
-   * The pre-run work is over and the run was either started or aborted. A started run carries the
-   * dock by itself from here (`isRunning`/`queue`), so the claim is dropped at once; an abort has
+   * The confirmed delete has been attempted and was either started or aborted. A started run carries
+   * the dock by itself from here (`isRunning`/`queue`), so the claim is dropped at once; an abort has
    * nothing but its notice, so the claim is held for `ABORTED_DELETE_NOTICE_MS` and then dropped.
-   * Asking `isRunning()` rather than taking the answer as a parameter keeps the two callers (and
-   * every future one) from having to agree on what "started" means.
+   * Asking `isRunning()` rather than taking the answer as a parameter keeps every caller from having
+   * to agree on what "started" means.
    */
   endConfirmedRun(): void {
     clearTimeout(this.confirmedRunTimeout);
@@ -169,6 +175,15 @@ export class SevenTvDeleteService {
       () => this.confirmedRunPending.set(false),
       ABORTED_DELETE_NOTICE_MS,
     );
+  }
+
+  /** Drops the claim at once, without the notice window `endConfirmedRun` grants: nothing was
+   *  confirmed and nothing has to be read, so keeping an otherwise empty dock up for 8 s would be
+   *  exactly the empty bar `actionDockHasContent` exists to prevent. The dismissed confirmation is
+   *  this case. */
+  clearConfirmedRun(): void {
+    clearTimeout(this.confirmedRunTimeout);
+    this.confirmedRunPending.set(false);
   }
 
   startDelete(setId: string, channelName: string, emotes: DeleteQueueEmote[]): void {
