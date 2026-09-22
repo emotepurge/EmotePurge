@@ -479,17 +479,48 @@ export class VoteSessionDetailPage {
     return index;
   }
 
-  // One guarded entry point for click/Enter/Space on the sprite, branched on cellAction. Both acting
-  // branches swallow the keyboard default: the element carries role="button", and the ARIA button
-  // pattern requires Space not to scroll the page as well as activate. On the drilldown branch that
-  // is currently invisible — the CDK freezes background scrolling the moment the dialog opens — but
-  // an element does not get to rely on what the thing it opens happens to do. The 'none' branch is
-  // neither focusable nor a button and keeps every default.
+  /**
+   * Whether ONE row's drilldown may open (arbitrated review round 2) — `cellAction()`/`hasUsageData()`
+   * gate the trigger's existence on the page as a whole, this additionally gates a single row on
+   * whether IT has a number to chart. Deliberately NOT `emote.totalUseCount !== null` on its own:
+   * for a null-session, an archived ballot member can carry `totalUseCount === null` for reasons
+   * that have nothing to do with this check (see `drilldownLabelKey`'s own doc comment on the
+   * several things null means there), and its drilldown must keep working — the /daily endpoint
+   * answers by emote id, not by this session's ballot. What actually rules a row out is a
+   * SET-session row whose member was never observed under the session's own set at all
+   * (`results()!.emoteSetId != null` together with a null count) — `results().emoteSetId`, not
+   * anything on `emote` itself, because only the session's own kind (set vs. null) decides which
+   * reading of `totalUseCount === null` applies.
+   */
+  protected canDrilldown(emote: VoteSessionResult): boolean {
+    return (
+      this.hasUsageData() && !(this.results()?.emoteSetId != null && emote.totalUseCount === null)
+    );
+  }
+
+  /**
+   * `cellAction()` downgraded to `'none'` for a row whose own drilldown `canDrilldown` rejects —
+   * the page-wide action still applies to every other row. Drives the cell's role/tabindex/
+   * aria-haspopup/aria-label bindings and `onCardActivate` below, so a row without a chartable
+   * number never claims the dialog button semantics it cannot deliver on.
+   */
+  protected rowAction(emote: VoteSessionResult): 'drilldown' | 'select' | 'none' {
+    const action = this.cellAction();
+    return action === 'drilldown' && !this.canDrilldown(emote) ? 'none' : action;
+  }
+
+  // One guarded entry point for click/Enter/Space on the sprite, branched on rowAction (cellAction
+  // narrowed to this one row, see rowAction's own doc comment). Both acting branches swallow the
+  // keyboard default: the element carries role="button", and the ARIA button pattern requires Space
+  // not to scroll the page as well as activate. On the drilldown branch that is currently invisible
+  // — the CDK freezes background scrolling the moment the dialog opens — but an element does not
+  // get to rely on what the thing it opens happens to do. The 'none' branch is neither focusable nor
+  // a button and keeps every default.
   // Also pins the readout, so a tap on a touch screen (where nothing hovers) still tells the voter
   // which emote they are looking at.
   protected onCardActivate(emote: VoteSessionResult, event: MouseEvent | KeyboardEvent): void {
     this.inspectedId.set(emote.emoteId);
-    const action = this.cellAction();
+    const action = this.rowAction(emote);
     if (action === 'none') {
       return;
     }
@@ -599,7 +630,7 @@ export class VoteSessionDetailPage {
   // set-session's numbers must chart under ITS set, not whatever happens to be active right now.
   protected openDrilldown(emote: VoteSessionResult): void {
     const results = this.results();
-    if (!results) {
+    if (!results || !this.canDrilldown(emote)) {
       return;
     }
     const data: EmoteDrilldownData = {

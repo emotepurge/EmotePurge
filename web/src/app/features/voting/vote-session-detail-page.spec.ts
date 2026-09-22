@@ -641,3 +641,147 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     expect('massDeleteLockReasonKey' in component).toBe(false);
   });
 });
+
+/**
+ * `canDrilldown(emote)`/`rowAction(emote)` (arbitrated review round 2): a per-row narrowing of
+ * `cellAction()` so a set-session row with no chartable usage number never claims the drilldown —
+ * `emote.totalUseCount === null` alone is not the test (a null-session's archived row can carry
+ * that for an unrelated reason and must keep its drilldown), only `results().emoteSetId != null`
+ * together with it is. Mounted on a COARSE pointer, where `cellAction()` is `'drilldown'` for the
+ * whole page whenever `hasUsageData()` holds (same stub as usage-stats-page.spec.ts's own
+ * "mark-all does not exist on a coarse pointer" block) — on a fine pointer `cellAction()` is
+ * `'select'` instead, which would never exercise the downgrade this checks.
+ */
+describe('VoteSessionDetailPage — canDrilldown/rowAction withhold the drilldown from a rowless usage number (arbitrated review round 2)', () => {
+  let fixture: ComponentFixture<VoteSessionDetailPage>;
+  let component: VoteSessionDetailPage;
+  let httpMock: HttpTestingController;
+
+  const CHANNEL = 'sensitron';
+  const SESSION_ID = '7';
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.stubGlobal('matchMedia', () => ({
+      matches: true,
+      media: '',
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(VoteSessionDetailPage, {
+      set: { template: '<div #sheet></div>' },
+    });
+
+    fixture = TestBed.createComponent(VoteSessionDetailPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', CHANNEL);
+    fixture.componentRef.setInput('sessionId', SESSION_ID);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  async function mount(initial: VoteSessionResults): Promise<void> {
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`, initial);
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/permissions`, {
+      canManage: true,
+      canViewUsageStats: true,
+      isGlobalAdmin: false,
+      isTracked: true,
+      isBotActive: true,
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/emote-sets`, {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Main set', isActive: true, kind: 'NORMAL' },
+        { id: 'halloween-1', name: 'Halloween 2026', isActive: false, kind: 'NORMAL' },
+      ],
+    });
+    await settle();
+  }
+
+  it('withholds the drilldown from a set-session row with no chartable usage number, keeps it for the counted row', async () => {
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+    await mount(
+      results(
+        [
+          resultEmote('counted', { totalUseCount: 5 }),
+          resultEmote('uncounted', { totalUseCount: null }),
+        ],
+        { emoteSetId: 'halloween-1' },
+      ),
+    );
+    const [counted, uncounted] = component['results']()!.emotes;
+
+    expect(component['canDrilldown'](counted)).toBe(true);
+    expect(component['rowAction'](counted)).toBe('drilldown');
+    expect(component['canDrilldown'](uncounted)).toBe(false);
+    expect(component['rowAction'](uncounted)).toBe('none');
+
+    component['openDrilldown'](uncounted);
+    expect(openSpy).not.toHaveBeenCalled();
+
+    component['openDrilldown'](counted);
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the drilldown for a null-session's archived row with null usage — a withheld tally, not a set-session gap", async () => {
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+    await mount(
+      results([
+        resultEmote('a', { totalUseCount: 5 }),
+        resultEmote('archived', { totalUseCount: null, isArchived: true, eligible: false }),
+      ]),
+    );
+    const archived = component['results']()!.emotes.find((emote) => emote.emoteId === 'archived')!;
+
+    expect(component['canDrilldown'](archived)).toBe(true);
+    expect(component['rowAction'](archived)).toBe('drilldown');
+
+    component['openDrilldown'](archived);
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+});
