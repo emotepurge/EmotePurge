@@ -353,6 +353,19 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
       totalCount: 1,
       emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
     });
+    await mockSetWarning(page, CHANNEL);
+    let capturedSetId: string | null = null;
+    await mockSevenTvGql(page, (request) => {
+      capturedSetId = request.variables['setId'] as string;
+      return { data: {} };
+    });
+    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ archivedCount: 1, notFoundIds: [] }),
+      }),
+    );
 
     await page.goto(`/channels/${CHANNEL}/usage-stats?emoteSetId=${HALLOWEEN_SET_ID}`);
     await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
@@ -444,21 +457,11 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
 
     // Selecting the ballot's card and starting a delete from THIS page must target the session's
     // own set — the Halloween set — never the channel's active set (F8/section 9, AK 81): the
-    // panel binds `session.emoteSetId ?? activeEmoteSetId()`.
-    await mockSetWarning(page, CHANNEL);
-    let capturedSetId: string | null = null;
-    await mockSevenTvGql(page, (request) => {
-      capturedSetId = request.variables['setId'] as string;
-      return { data: {} };
-    });
-    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ archivedCount: 1, notFoundIds: [] }),
-      }),
-    );
-
+    // panel binds `session.emoteSetId ?? activeEmoteSetId()`. mockSevenTvGql/mockSetWarning/
+    // sync-deleted were all registered up front, before the first page.goto (mockSevenTvGql's own
+    // doc: it sets the 7TV write token via addInitScript, which only takes effect on a page's next
+    // full navigation — registering it here, after the page already loaded, left hasToken() false
+    // and popped the token-prompt dialog instead of the delete-confirm one, T6.3 fix round 1).
     await page.getByRole('button', { name: 'PumpkinAtCreation', exact: true }).click();
     const massDeleteButton = page.getByRole('button', { name: 'Löschen (1)' });
     await expect(massDeleteButton).toBeVisible();

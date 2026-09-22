@@ -4154,6 +4154,76 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
     expect(button!.disabled).toBe(false);
     expect(button!.getAttribute('aria-describedby')).toBeNull();
   });
+
+  it('locks the vote button with the switch reason during a mid-switch, pointing at the same paragraph as delete (a11y, T6.3 fix round 1)', async () => {
+    // The positive case this describe block's own title promises (since K6 the vote lock IS
+    // `sharedSetViewLockReasonKey`, so every vote lock shares the delete button's paragraph):
+    // this asserts the DOM wiring actually holds for it, not just the underlying signals (the
+    // "K4 fix round" describe block checks those, never the rendered button/paragraph pair).
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    // onEmoteSetSelected resolves its id against this list (usage-stats-page.ts's own
+    // `selectedEmoteSetId` comment) — without it flushed, the switch below never registers and
+    // viewSwitching() stays false, which is what silently broke this exact assertion.
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+      ]),
+    );
+    await settle();
+
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: 'https://cdn.7tv.app/emote/x/1x.webp' },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    await settle();
+
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    // A dropdown choice lands behind the marked selection — the view has not caught up yet.
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+
+    expect(component['viewSwitching']()).toBe(true);
+    expect(component['voteLocked']()).toBe(true);
+
+    const button = findVoteButton();
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(true);
+
+    const reasonParagraph = fixture.nativeElement.querySelector(
+      'p[id^="mass-delete-lock-reason-"]',
+    ) as HTMLParagraphElement | null;
+    expect(reasonParagraph).not.toBeNull();
+    expect(reasonParagraph!.textContent?.trim()).toBe('usageStats.setView.lock.switching');
+    // The positive a11y assertion: the locked button still points at the SAME paragraph the
+    // delete button uses, in the one case that still locks both together.
+    expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
+  });
 });
 
 /**

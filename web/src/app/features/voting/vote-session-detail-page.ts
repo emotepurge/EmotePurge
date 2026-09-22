@@ -562,7 +562,10 @@ export class VoteSessionDetailPage {
   // Opened from the card's info icon; only rendered for viewers with usage access (hasUsageData),
   // since /usage-stats/daily sits behind the usage-stats authorization filter. The range is the
   // session's own usage window; the vote block carries the card's tallies — null inside stays
-  // "withheld" and the dialog renders nothing for it.
+  // "withheld" and the dialog renders nothing for it. emoteSetId is the session's own set
+  // (T6.3 fix round 1): omitted/null falls back to the channel's active set inside the dialog
+  // (EmoteDrilldownData's own doc comment), which is exactly right for a null-session — a
+  // set-session's numbers must chart under ITS set, not whatever happens to be active right now.
   protected openDrilldown(emote: VoteSessionResult): void {
     const results = this.results();
     if (!results) {
@@ -575,6 +578,7 @@ export class VoteSessionDetailPage {
       emoteId: emote.emoteId,
       emoteName: emote.emoteName,
       imageUrl: emote.imageUrl,
+      emoteSetId: results.emoteSetId,
       vote: {
         keepVotes: emote.keepVotes,
         deleteVotes: emote.deleteVotes,

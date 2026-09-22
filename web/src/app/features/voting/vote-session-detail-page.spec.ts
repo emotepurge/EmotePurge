@@ -13,16 +13,19 @@
  * `results.emotes` and must be pruned; a fixed-ballot session keeps an archived member listed
  * throughout, so nothing should be pruned for it.
  */
+import { Dialog } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
+import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { VoteSessionResult, VoteSessionResults } from '../../core/voting/vote-session.model';
+import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { VoteSessionDetailPage } from './vote-session-detail-page';
 
 /** Same stand-in as usage-stats-page.spec.ts / core/live/live-reload.spec.ts — jsdom ships no
@@ -577,5 +580,35 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     // The normal label carries the tally in parentheses; the disabled message does not.
     expect(component['keepButtonTitle'](eligible)).toContain('(0)');
     expect(component['keepButtonTitle'](ineligible)).not.toContain('(0)');
+  });
+
+  it("openDrilldown charts the SESSION's own set, not whatever the channel is showing as active (T6.3 fix round 1)", async () => {
+    await mount(
+      results([resultEmote('a', { totalUseCount: 5 })], { emoteSetId: 'halloween-1' }),
+      true,
+    );
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+
+    component['openDrilldown'](component['results']()!.emotes[0]);
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
+    // NOT the channel's active set (activeEmoteSetId() would be 'set-1' per this describe block's
+    // mount()) — a set-session's numbers must chart under its own, frozen set.
+    expect(data.emoteSetId).toBe('halloween-1');
+  });
+
+  it('openDrilldown omits emoteSetId for a null-session (falls back to the active set inside the dialog)', async () => {
+    await mount(results([resultEmote('a', { totalUseCount: 5 })]), true);
+    const openSpy = vi
+      .spyOn(TestBed.inject(Dialog), 'open')
+      .mockReturnValue({ closed: of(undefined) } as ReturnType<Dialog['open']>);
+
+    component['openDrilldown'](component['results']()!.emotes[0]);
+
+    const data = openSpy.mock.calls[0][1]?.data as EmoteDrilldownData;
+    expect(data.emoteSetId).toBeNull();
   });
 });
