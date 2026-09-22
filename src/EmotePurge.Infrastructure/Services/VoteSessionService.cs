@@ -40,15 +40,13 @@ public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreign
             return (startedAtError, null);
         }
 
-        if (!TryNormalizeBallotEmoteIds(request.EmoteIds, out var ballotEmoteIds))
-        {
-            return (CreateVoteSessionResult.EmoteIdsEmpty, null);
-        }
-
         // Set-session exclusion rule (spec 6.9/9), checked on the raw request shape before either list
         // is touched further: emoteSetId set requires a non-empty sevenTvEmoteIds and forbids emoteIds;
-        // emoteSetId absent forbids sevenTvEmoteIds. Distinct rather than deduplicated-and-then-checked,
-        // because the "nicht leer" half of the rule must see the caller's actual list, not a shrunk one.
+        // emoteSetId absent forbids sevenTvEmoteIds. Ahead of TryNormalizeBallotEmoteIds below on
+        // purpose: an empty or whitespace-only emoteIds list (`[]`, `["  "]`) alongside a set-session's
+        // emoteSetId must fail this rule, not fall through to TryNormalizeBallotEmoteIds and come back
+        // as EmoteIdsEmpty instead — that check runs on EmoteIds alone and has no way to know a
+        // set-session ballot was also present.
         var isSetSession = request.EmoteSetId is not null;
         if (isSetSession
             ? request.SevenTvEmoteIds is null || request.SevenTvEmoteIds.Count == 0 || request.EmoteIds is not null
@@ -57,10 +55,15 @@ public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreign
             return (CreateVoteSessionResult.SetBallotInvalid, null);
         }
 
-        // Deduplicated only now, past the exclusion rule's own emptiness check — same reason
-        // TryNormalizeBallotEmoteIds dedupes after establishing the null-session ballot isn't empty.
-        // VoteSessionEmote's (VoteSessionId, EmoteId) primary key would otherwise reject a request that
-        // names the same 7TV emote twice.
+        if (!TryNormalizeBallotEmoteIds(request.EmoteIds, out var ballotEmoteIds))
+        {
+            return (CreateVoteSessionResult.EmoteIdsEmpty, null);
+        }
+
+        // Checked on the raw list above (the exclusion rule needs the caller's actual "was
+        // sevenTvEmoteIds empty" answer, not a shrunk one), deduplicated only now. VoteSessionEmote's
+        // (VoteSessionId, EmoteId) primary key would otherwise reject a request that names the same
+        // 7TV emote twice.
         var sevenTvEmoteIds = isSetSession ? request.SevenTvEmoteIds!.Distinct(StringComparer.Ordinal).ToList() : null;
 
         var channel = await db.LoadChannelAsync(request.ChannelName, cancellationToken);
@@ -82,7 +85,18 @@ public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreign
                 return (CreateVoteSessionResult.SevenTvUnavailable, null);
             }
 
-            liveMembers = lookup.EmoteSet!.Emotes.ToDictionary(e => e.SevenTvEmoteId, StringComparer.Ordinal);
+            // Not ToDictionary: 7TV's own sets routinely list the same emote id twice under two
+            // aliases (measured on real sets — every one examined so far had at least one such pair),
+            // and ToDictionary throws on the second occurrence. First-wins is deterministic and, for
+            // this ballot, harmless either way — Name/ImageUrl only ever seed a never-active row or
+            // freeze VoteSessionEmote.NameAtCreation, neither of which cares which alias won.
+            var liveMembersById = new Dictionary<string, ForeignEmoteRow>(StringComparer.Ordinal);
+            foreach (var emote in lookup.EmoteSet!.Emotes)
+            {
+                liveMembersById.TryAdd(emote.SevenTvEmoteId, emote);
+            }
+
+            liveMembers = liveMembersById;
             if (sevenTvEmoteIds!.Any(id => !liveMembers.ContainsKey(id)))
             {
                 return (CreateVoteSessionResult.EmoteIdsInvalid, null);
@@ -371,8 +385,8 @@ public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreign
     /// <summary>
     /// Archived emotes are never votable in a null-session — in a subset session they stay visible in
     /// the results (badged), but their voting is closed. A set-session drops that gate entirely (spec
-    /// section 9): "steht auf dem Wahlzettel" is the only criterion, since a set-session's ballot rows
-    /// are created archived on purpose (never-active 7TV members) and archived is simply not a signal
+    /// section 9): being on the ballot is the only criterion, since a set-session's ballot rows are
+    /// created archived on purpose (never-active 7TV members) and archived is simply not a signal
     /// about whether that membership still holds. A session with membership rows is a fixed ballot;
     /// one without covers the whole channel set (null-session only — a set-session's invariant
     /// guarantees SessionEmotes is never empty, spec section 9).
@@ -405,12 +419,16 @@ public class VoteSessionService(AppDbContext db, IForeignEmoteSetService foreign
     /// existing <c>(ChannelId, SevenTvEmoteId)</c> unique index); a row that does not exist yet is
     /// created archived (<c>IsArchived = true</c>, <c>ArchivedAt = null</c>, "never active") so a
     /// set-session's ballot never grants a never-synced 7TV emote the appearance of being live in our
-    /// own database. <c>FirstSeenAt</c> is left null for a new row: <see cref="ForeignEmoteRow"/>
-    /// carries no timestamp to source it from (spec's "wenn 7TV es liefert" — it currently never does
-    /// on this path). Runs inside the caller's transaction (spec 9's "konfliktverträglich"), so a
-    /// concurrent worker sync racing this insert either lands first (this INSERT then no-ops and reads
-    /// the synced row back) or after (rare; left to the worker's own retry, spec E10 — out of scope
-    /// here, see AK 78).
+    /// own database. <c>FirstSeenAt</c> is left null for a new row: 7TV's set-entry response does
+    /// carry an "added to set" timestamp (<c>SevenTvGqlSetEntryDto.AddedAt</c>), but
+    /// <see cref="IForeignEmoteSetService"/>'s set-ID read (<see cref="ForeignEmoteRow"/>) does not
+    /// thread it through — this preview path was built for reading, not for backfilling that column.
+    /// If this set later becomes the channel's active one, the worker's regular resync corrects
+    /// <c>FirstSeenAt</c> from the live <c>AddedToSetAt</c> it does carry (<c>SevenTvSyncService</c>,
+    /// the dispatch/REST fill-in around line 538). Runs inside the caller's transaction, so this
+    /// insert never lands without the session it belongs to, or the reverse. A concurrent worker sync
+    /// racing the same insert either lands first (this one then no-ops and reads the synced row back)
+    /// or after (rare; left to the worker's own retry, spec E10 — out of scope here, see AK 78).
     /// </summary>
     private async Task<Dictionary<string, string>> UpsertSetSessionEmotesAsync(
         string channelId, IReadOnlyList<string> sevenTvEmoteIds, IReadOnlyDictionary<string, ForeignEmoteRow> liveMembers,

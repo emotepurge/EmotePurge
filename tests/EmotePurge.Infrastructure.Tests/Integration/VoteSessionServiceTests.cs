@@ -377,6 +377,91 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task CreateAsync_SetSession_WithDuplicateLiveMemberAliases_UsesFirstWinsAndWritesOneRow()
+    {
+        // Real 7TV sets routinely list the same emote id twice under two aliases (issue #74) — a
+        // ToDictionary over the live members would throw ArgumentException on the second occurrence.
+        // First-wins keeps this deterministic without needing to pick a "correct" alias.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setballot5");
+        var foreignEmoteSetService = SubstituteForeignEmoteSetService(
+            channel.ChannelName, "set5",
+            ("7tv-dup", "FirstAlias", "https://cdn.7tv.app/emote/dup/2x.webp"),
+            ("7tv-dup", "SecondAlias", "https://cdn.7tv.app/emote/dup-second/2x.webp"));
+        var service = new VoteSessionService(db, foreignEmoteSetService);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Halloween-Set", AllowedRoles.Everyone,
+                EmoteSetId: "set5", SevenTvEmoteIds: ["7tv-dup"]),
+            Actor);
+
+        Assert.Equal(CreateVoteSessionResult.Success, result);
+        var emote = Assert.Single(await db.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).ToListAsync());
+        Assert.Equal("7tv-dup", emote.SevenTvEmoteId);
+
+        var ballot = Assert.Single(
+            await db.VoteSessionEmotes.AsNoTracking().Where(se => se.VoteSessionId == session!.Id).ToListAsync());
+        Assert.Equal(emote.Id, ballot.EmoteId);
+        Assert.Equal("FirstAlias", ballot.NameAtCreation);
+    }
+
+    [Fact]
+    public async Task CreateAsync_SetSession_WithEmptyEmoteIdsAlongside_ReturnsSetBallotInvalid_NotEmoteIdsEmpty()
+    {
+        // Validation order: the exclusion rule must run on the raw request shape before
+        // TryNormalizeBallotEmoteIds gets a chance to answer EmoteIdsEmpty for an emoteIds list that
+        // was never meant to be a null-session ballot in the first place — it's a set-session request
+        // that also (incorrectly) carried an emoteIds list.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setballot6");
+        var foreignEmoteSetService = Substitute.For<IForeignEmoteSetService>();
+        var service = new VoteSessionService(db, foreignEmoteSetService);
+
+        var (emptyListResult, _) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Halloween-Set", AllowedRoles.Everyone,
+                EmoteIds: [], EmoteSetId: "set6", SevenTvEmoteIds: ["7tv-a"]),
+            Actor);
+        Assert.Equal(CreateVoteSessionResult.SetBallotInvalid, emptyListResult);
+
+        var (whitespaceOnlyResult, _) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Halloween-Set", AllowedRoles.Everyone,
+                EmoteIds: ["  "], EmoteSetId: "set6", SevenTvEmoteIds: ["7tv-a"]),
+            Actor);
+        Assert.Equal(CreateVoteSessionResult.SetBallotInvalid, whitespaceOnlyResult);
+
+        await foreignEmoteSetService.DidNotReceive().GetForeignEmoteSetBySetIdAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        Assert.Empty(await LoadAuditEntriesAsync(db, "setballot6"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_SetSession_PersistsDedupedBallotRows_ForRepeatedSevenTvIds()
+    {
+        // Mirrors CreateAsync_WithEmoteIds_PersistsDedupedBallotRows above, for the 7TV-id ballot:
+        // VoteSessionEmote's (VoteSessionId, EmoteId) primary key would otherwise reject a repeated id.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "setballot7");
+        var foreignEmoteSetService = SubstituteForeignEmoteSetService(
+            channel.ChannelName, "set7", ("7tv-repeat", "Repeat", "https://cdn.7tv.app/emote/repeat/2x.webp"));
+        var service = new VoteSessionService(db, foreignEmoteSetService);
+
+        var (result, session) = await service.CreateAsync(
+            new VoteSessionCreateRequest(
+                channel.ChannelName, "Halloween-Set", AllowedRoles.Everyone,
+                EmoteSetId: "set7", SevenTvEmoteIds: ["7tv-repeat", "7tv-repeat"]),
+            Actor);
+
+        Assert.Equal(CreateVoteSessionResult.Success, result);
+        var ballot = Assert.Single(
+            await db.VoteSessionEmotes.AsNoTracking().Where(se => se.VoteSessionId == session!.Id).ToListAsync());
+        Assert.Equal("Repeat", ballot.NameAtCreation);
+        Assert.Single(await db.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).ToListAsync());
+    }
+
+    [Fact]
     public async Task CastVoteAsync_SubsetSession_AllowsBallotMembers_RejectsOutsiders()
     {
         await using var db = fixture.CreateDbContext();
