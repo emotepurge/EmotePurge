@@ -10,7 +10,7 @@ import {
   output,
   signal,
 } from '@angular/core';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { catchError, finalize, map, of, timeout } from 'rxjs';
 
 import { EmoteAdminService, EmoteSetWarning } from '../../core/emotes/emote-admin.service';
@@ -35,6 +35,7 @@ import {
   purgeRunJson,
 } from '../export/purge-run-export';
 import { Button } from '../ui/button';
+import { PREVIEW_CAP } from '../ui/name-preview-list';
 import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
 import { resyncNoticeKey } from './dock-outcome-announcer';
@@ -74,6 +75,9 @@ type LiveAliasRead = { entries: SevenTvSetEntries } | { blockedReasonKey: string
 interface DeleteAbortNotice {
   leadKey: string;
   reasonKey: string;
+  /** Extra transloco interpolation params for `reasonKey` (e.g. a count for a plural reason) —
+   *  omitted for every reason that needs none, which the template folds onto `{}`. */
+  reasonParams?: Record<string, unknown>;
 }
 
 export interface DeletableEmote {
@@ -86,8 +90,11 @@ export interface DeletableEmote {
    *  `REMOVE` takes whole. Recorded in the protocol so a restore can re-add each. Omitted means
    *  `[name]`. A host that cannot know every alias (the active set's view keeps one name per id)
    *  sets `readLiveAliasesFromActiveSet` instead, and the panel reads them from 7TV itself before
-   *  the run starts. The vote-session page deliberately does neither: its rows stay on `[name]`, so
-   *  a duplicate deleted there still records one alias (DECISIONS, #200 K6 known limitation). */
+   *  the run starts. The vote-session page's rows are frozen at session-creation time
+   *  (`VoteSessionEmote.NameAtCreation`) and so can never know a live alias either — it sets
+   *  `readLiveAliasesFromSet` instead, the same live read against the panel's own (possibly
+   *  non-active) `setId()` rather than only the active one (#227, fixing the #200 K6 known
+   *  limitation this comment used to describe as open). */
   aliases?: readonly string[];
   /** Whether the host page's current filter hides this emote right now (`!selection.isVisible`).
    *  Required, not optional (Konzept "Auswahl überlebt Suche und Filter" 2.1, Codex befund 3b):
@@ -175,12 +182,14 @@ export interface DeletableEmote {
            attempt. -->
       <span role="status" class="sr-only">
         @if (abortNotice(); as notice) {
-          {{ notice.leadKey | transloco }} {{ notice.reasonKey | transloco }}
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
         }
       </span>
       @if (abortNotice(); as notice) {
         <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{ notice.leadKey | transloco }} {{ notice.reasonKey | transloco }}
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
         </p>
       }
 
@@ -319,9 +328,29 @@ export class MassDeletePanel {
    *
    * Opt-in, `false` by default: a non-active set's rows already carry every alias from the live
    * member list the view is built from, so no second read happens there; and the vote-session page
-   * deliberately stays on `[name]` (DECISIONS, #200 K6 known limitation).
+   * reads its own set instead, through `readLiveAliasesFromSet` below — never both.
    */
   readonly readLiveAliasesFromActiveSet = input<boolean>(false);
+
+  /**
+   * The vote-session page's counterpart to `readLiveAliasesFromActiveSet` above (#227, fixing the
+   * #200 K6 known limitation "a delete started from the vote page records only the frozen name as
+   * its alias"): whether a delete reads the panel's own `setId()` live from 7TV right before it
+   * starts, **regardless of whether that set is the channel's active one**. Where the active-set
+   * flag only fires when `setId()` happens to be active (a non-active set's rows there already
+   * carry live aliases from the member list they were built from, E20/K5), the vote page's rows
+   * never carry a live alias at all — `VoteSessionEmote.NameAtCreation` is frozen the moment the
+   * session is created, whether the session's set is active or not — so this reads unconditionally
+   * whenever set at all. Same failure handling as the active-set read: a failed or incomplete read
+   * blocks the run rather than silently deleting under the frozen name (spec 8.3's "a list that
+   * only knows half must not delete") — the exact defect #227 exists to close.
+   *
+   * Opt-in, `false` by default, and mutually exclusive with `readLiveAliasesFromActiveSet` in
+   * practice (only one of the two host pages ever sets either) — nothing here enforces that, since
+   * setting both would simply mean the same read fires from the same `wantsLiveAliasRead` check
+   * either way.
+   */
+  readonly readLiveAliasesFromSet = input<boolean>(false);
 
   /**
    * Whether the `[selection-actions]` slot actually has something projected into it — the panel
@@ -364,6 +393,9 @@ export class MassDeletePanel {
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
   private readonly destroyRef = inject(DestroyRef);
+  /** Only for the missing-row abort reason's "and N more" tail (#227 P2-c) — every other string in
+   *  this component goes through the template's own `TranslocoPipe`. */
+  private readonly translocoService = inject(TranslocoService);
 
   /** `activeSetId()` with the omitted (`undefined`) case folded onto `setId()` — see that input's
    *  own doc for why. An explicit `null` ("known unknown") is left alone. */
@@ -421,9 +453,9 @@ export class MassDeletePanel {
    *  keeping the panel that set it alive, which is what `confirmedRunPending` does. */
   protected readonly abortNotice = signal<DeleteAbortNotice | null>(null);
 
-  /** A confirmed active-set delete is waiting for its live alias read
-   *  (`readLiveAliasesFromActiveSet`) — the delete button stays disabled meanwhile, so a second
-   *  click cannot open a second confirmation for the same selection. */
+  /** A confirmed delete is waiting for its live alias read (`readLiveAliasesFromActiveSet` or
+   *  `readLiveAliasesFromSet`, see `wantsLiveAliasRead`) — the delete button stays disabled
+   *  meanwhile, so a second click cannot open a second confirmation for the same selection. */
   protected readonly liveAliasReadPending = signal(false);
   private destroyed = false;
 
@@ -758,7 +790,7 @@ export class MassDeletePanel {
         this.deleteService.endConfirmedRun();
         return;
       }
-      if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
+      if (!this.wantsLiveAliasRead(frozenIsActiveSet)) {
         // `finally`, because a leaked claim pins an empty dock until the page is reloaded — a worse
         // outcome than whatever threw, and one nothing on screen could explain.
         try {
@@ -774,9 +806,10 @@ export class MassDeletePanel {
   }
 
   /**
-   * The active-set delete's live alias read (`readLiveAliasesFromActiveSet`), at **confirm** time,
-   * not when the dialog opens: the delete confirmation shows nothing alias-dependent (names only,
-   * one per cell), so reading earlier would buy no correct number on screen — it would only spend a
+   * The live alias read (`readLiveAliasesFromActiveSet` or `readLiveAliasesFromSet`, decided by
+   * `wantsLiveAliasRead`), at **confirm** time, not when the dialog opens: the delete confirmation
+   * shows nothing alias-dependent (names only, one per cell), so reading earlier would buy no
+   * correct number on screen — it would only spend a
    * read on every cancelled dialog and record aliases as they stood when the dialog opened rather
    * than at the irreversible moment. The frozen set id (`openConfirmDialog`) is what is read, and
    * `startDelete` repeats every confirm-time check once the answer is in, since the set can switch
@@ -907,6 +940,35 @@ export class MassDeletePanel {
       return;
     }
     const liveEntries = liveAliases?.entries;
+    if (liveEntries !== undefined) {
+      // A live read only ever reaches here complete (an incomplete one was already blocked above,
+      // via `blockedReasonKey`) — so an id it does not know at all under either map means 7TV no
+      // longer has it, not merely that it has no alias. Deleting such a row anyway would issue a
+      // `RemoveEmote` for something that is not there: on the vote page specifically the exact
+      // defect #227 point 2 forbids (a departed set-session member reaching the run), and equally a
+      // bug for the active-set path this same read also serves. Fails the WHOLE batch, not just the
+      // missing rows: a partial run would record a protocol that no longer matches what the
+      // confirmation showed as a whole ("gezeigt = gelöscht", spec §8.3, K5 follow-up #229). The
+      // reason names the missing rows (P2-c, Opus review) rather than only a count, and tells the
+      // user to deselect exactly those and start again — not "reload", which on the usage page's own
+      // legitimate normal case (an emote removed on 7TV directly, ahead of our periodic resync
+      // noticing) would not help at all: our own database still shows the row as present until that
+      // resync runs, so every confirmed selection containing it would keep failing the same way
+      // regardless of how many times the page is reloaded.
+      const missingRows = confirmedSelection.filter(
+        (emote) =>
+          !liveEntries.aliasesById.has(emote.sevenTvEmoteId) &&
+          !liveEntries.aliaslessIds.has(emote.sevenTvEmoteId),
+      );
+      if (missingRows.length > 0) {
+        this.abortNotice.set({
+          leadKey: 'massDelete.nothingDeleted',
+          reasonKey: pluralKey(missingRows.length, 'massDelete.memberRead.missingFromSet'),
+          reasonParams: this.missingRowsReasonParams(missingRows.map((emote) => emote.name)),
+        });
+        return;
+      }
+    }
     const emotes: DeleteQueueEmote[] = confirmedSelection.map((emote) => {
       // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
       // what the host said.
@@ -961,5 +1023,34 @@ export class MassDeletePanel {
       };
     }
     return undefined;
+  }
+
+  /** Whether a confirmed delete reads its target set live from 7TV before it starts (#227) — either
+   *  opt-in that applies: the active-set one only for the set this delete is actually targeting
+   *  (`frozenIsActiveSet`), the vote page's own-set one unconditionally. */
+  private wantsLiveAliasRead(frozenIsActiveSet: boolean): boolean {
+    return (
+      (frozenIsActiveSet && this.readLiveAliasesFromActiveSet()) || this.readLiveAliasesFromSet()
+    );
+  }
+
+  /** Comma-joined, capped names for the missing-row abort reason (#227 P2-c, Opus review). A bare
+   *  count told the user nothing they could act on — this run is blocked outright ("gezeigt =
+   *  gelöscht" stays the rule, spec §8.3), so the way forward is deselecting exactly these rows and
+   *  starting again, which needs their names, not just how many. `PREVIEW_CAP`/the "and N more" tail
+   *  are the identical ones `NamePreviewList` uses for the same "many names" problem in a dialog —
+   *  reused here rather than a second threshold, just rendered as one line of status text instead of
+   *  a scrollable list, since the abort notice has no dialog to put a list into. */
+  private missingRowsReasonParams(missingNames: readonly string[]): Record<string, unknown> {
+    const preview = missingNames.slice(0, PREVIEW_CAP);
+    const remaining = missingNames.length - preview.length;
+    const joined = preview.join(', ');
+    if (remaining <= 0) {
+      return { names: joined };
+    }
+    const tail = this.translocoService.translate(pluralKey(remaining, 'common.andMore'), {
+      count: remaining,
+    });
+    return { names: `${joined} ${tail}` };
   }
 }

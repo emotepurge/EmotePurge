@@ -361,8 +361,25 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
     await mockSevenTvGql(page, (request) => {
       if (request.query.includes('mutation RemoveEmote')) {
         removeSetId = request.variables['setId'] as string;
+        return { data: {} };
       }
-      return { data: {} };
+      // #227: the vote page now reads its target set's live entries before the run starts
+      // (readLiveAliasesFromSet) — answered with the ballot's one live entry so that read succeeds
+      // and the run is not blocked by it (this test is not about the alias fix itself, see the
+      // dedicated describe block below).
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: 1,
+                pageCount: 1,
+                items: [{ alias: 'Pumpkin', emote: { id: '7tv-pump' } }],
+              },
+            },
+          },
+        },
+      };
     });
     let syncDeletedBody: {
       emoteSetId?: string;
@@ -496,5 +513,251 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
     await expect.poll(() => syncDeletedBody?.emoteSetId).toBe(HALLOWEEN_SET_ID);
     await expect.poll(() => syncDeletedBody?.sevenTvEmoteIds).toEqual(['7tv-pump']);
     await expect.poll(() => syncDeletedBody?.emoteIds).toBeUndefined();
+  });
+});
+
+/**
+ * Issue #227 (K6 follow-up), the two "Done when" points, each isolated in its own lightweight
+ * ballot rather than routed through the whole "create from usage page" flow the describe block
+ * above uses — that flow is not what either point is about.
+ */
+test.describe('vote ballot — a set-session delete reads its own set live and excludes departed members (#227)', () => {
+  const CHANNEL = 'sensitron';
+  const HALLOWEEN_SET_ID = 'set-halloween';
+  const SESSION = { id: 99, title: 'Halloween-Aufräumen', emoteSetId: HALLOWEEN_SET_ID };
+
+  async function openHalloweenBallot(page: Page, emotes: MockVoteSessionEmote[]): Promise<void> {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockChannelPermissions(page, CHANNEL);
+    await mockChannelStatus(page, CHANNEL);
+    await mockActiveEmoteSet(page, CHANNEL);
+    await mockChannelEmoteSetList(page, CHANNEL, {
+      activeEmoteSetId: 'set-1',
+      sets: [
+        { id: 'set-1', name: 'Hauptset' },
+        { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+      ],
+    });
+    await mockVoteSessionResults(page, CHANNEL, SESSION, emotes);
+    await mockSetWarning(page, CHANNEL);
+
+    await page.goto(`/channels/${CHANNEL}/vote-sessions/${SESSION.id}`);
+    await expect(page.getByRole('heading', { name: SESSION.title })).toBeVisible();
+  }
+
+  // Point 1 of #227: a delete started from the vote page used to fall back to `[NameAtCreation]`
+  // (the frozen ballot name) as its only alias, regardless of the session's set. It now reads that
+  // set's live entries at confirm time (MassDeletePanel's `readLiveAliasesFromSet`) the same way
+  // the usage page's active-set delete already did — the target here is the session's own,
+  // NON-active Halloween set, which readLiveAliasesFromActiveSet alone would never have covered.
+  test('reads the session set live before the run starts, not just the frozen ballot name', async ({
+    page,
+  }) => {
+    const entriesReadSetIds: string[] = [];
+    let removeVariables: { setId?: string; emoteId?: string } | null = null;
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('mutation RemoveEmote')) {
+        removeVariables = request.variables as { setId?: string; emoteId?: string };
+        return { data: {} };
+      }
+      entriesReadSetIds.push(request.variables['id'] as string);
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: 1,
+                pageCount: 1,
+                items: [{ alias: 'Pumpkin', emote: { id: '7tv-pump' } }],
+              },
+            },
+          },
+        },
+      };
+    });
+    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          archivedCount: 1,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: false,
+        }),
+      }),
+    );
+    // The page-level session-set membership check (#227 P2) — without this, the delete button
+    // would stay locked forever (nothing here answers that request otherwise) rather than reach
+    // the confirm dialog at all. Registered before the navigation, same reasoning as
+    // mockSevenTvGql above.
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
+    });
+
+    await openHalloweenBallot(page, [
+      {
+        emoteId: 'guid-pump',
+        emoteName: 'PumpkinAtCreation',
+        sevenTvEmoteId: '7tv-pump',
+        totalUseCount: null,
+      },
+    ]);
+
+    await page.getByRole('button', { name: 'PumpkinAtCreation', exact: true }).click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+
+    // The live read named the Halloween set — the session's own — never the channel's active one.
+    await expect.poll(() => entriesReadSetIds).toEqual([HALLOWEEN_SET_ID]);
+    // And the RemoveEmote mutation itself: the set and the member it actually removed (Opus review
+    // P3-g) — not just which set the earlier entries read happened to name.
+    await expect.poll(() => removeVariables?.setId).toBe(HALLOWEEN_SET_ID);
+    await expect.poll(() => removeVariables?.emoteId).toBe('7tv-pump');
+  });
+
+  // Point 2 of #227: a set-session member no longer in the session's own live set used to stay
+  // selectable for delete forever (`eligible` never tracks it). Ghost is on the frozen ballot but
+  // missing from the live set preview below — it must never reach the run.
+  test('excludes a member no longer in the session set from the delete run', async ({ page }) => {
+    const removedIds: string[] = [];
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('mutation RemoveEmote')) {
+        // RemoveEmote's own id variable is `emoteId`, not `id` (seven-tv-delete.service.ts's
+        // REMOVE_EMOTE_MUTATION) — the entries-read query above is the one that uses `id`.
+        removedIds.push(request.variables['emoteId'] as string);
+        return { data: {} };
+      }
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: 1,
+                pageCount: 1,
+                items: [{ alias: 'Pumpkin', emote: { id: '7tv-pump' } }],
+              },
+            },
+          },
+        },
+      };
+    });
+    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          archivedCount: 1,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: false,
+        }),
+      }),
+    );
+
+    // The session-set membership check (#227): only Pumpkin is still a live member. Registered
+    // before the navigation below, same reasoning as mockSevenTvGql above — the page issues this
+    // read itself, right after its own initial load, so a route added only after openHalloweenBallot
+    // resolves could lose the race against it.
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
+    });
+
+    await openHalloweenBallot(page, [
+      {
+        emoteId: 'guid-pump',
+        emoteName: 'Pumpkin',
+        sevenTvEmoteId: '7tv-pump',
+        totalUseCount: null,
+      },
+      {
+        emoteId: 'guid-ghost',
+        emoteName: 'Ghost',
+        sevenTvEmoteId: '7tv-ghost',
+        totalUseCount: null,
+      },
+    ]);
+
+    await page.getByRole('button', { name: 'Pumpkin', exact: true }).click();
+    // The left-badge suffix on a departed member's accessible name (#227 P3-c) — same regex idiom
+    // as usage-atlas.e2e.spec.ts's own "left" row assertion.
+    await page.getByRole('button', { name: /^Ghost ·.*Nicht mehr im Set/ }).click();
+
+    // Both cards are marked; the departed one never reaches the panel's own count once the
+    // membership read lands.
+    await expect(page.getByRole('button', { name: 'Löschen (1)' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Löschen (2)' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+
+    await expect.poll(() => removedIds).toEqual(['7tv-pump']);
+  });
+
+  // Opus review P1: the page-level pre-filter (previous test) and the panel's own confirm-time live
+  // read are two independent checks, not one — this covers the panel's backstop on its own, for the
+  // race it exists for: 7TV's live truth diverges from the cached preview between page load and the
+  // confirm click. The cached preview below still lists Pumpkin, so it stays selectable and the
+  // delete button unlocks; the confirm-time read (via mockSevenTvGql, reading 7TV directly) says
+  // otherwise. Nothing must be removed, and the reason must be visible.
+  test('the confirm-time live read still blocks a member the page-level check let through', async ({
+    page,
+  }) => {
+    let removeCalled = false;
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('mutation RemoveEmote')) {
+        removeCalled = true;
+        return { data: {} };
+      }
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } },
+          },
+        },
+      };
+    });
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
+    });
+
+    await openHalloweenBallot(page, [
+      {
+        emoteId: 'guid-pump',
+        emoteName: 'Pumpkin',
+        sevenTvEmoteId: '7tv-pump',
+        totalUseCount: null,
+      },
+    ]);
+
+    await page.getByRole('button', { name: 'Pumpkin', exact: true }).click();
+    const massDeleteButton = page.getByRole('button', { name: 'Löschen (1)' });
+    await expect(massDeleteButton).toBeEnabled();
+    await massDeleteButton.click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+
+    // getByRole('status') + hasText, not a bare getByText(): the abort notice renders twice (an
+    // sr-only role="status" span for screen readers, plus a visible aria-hidden <p> for sighted
+    // users), and a plain getByText() matches both — the status region is the addressable one, and
+    // the idiom the rest of this repo already uses for the same shape (see e.g.
+    // channel-workspace.e2e.spec.ts / usage-atlas.e2e.spec.ts). Text updated for #227 P2-c/P3-d: the
+    // reason now names the row and gives one actionable instruction instead of a bare count plus a
+    // redundant second "nichts gelöscht".
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Pumpkin ist nicht mehr im Set' }),
+    ).toBeVisible();
+    expect(removeCalled).toBe(false);
   });
 });

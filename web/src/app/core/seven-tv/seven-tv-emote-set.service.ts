@@ -104,9 +104,11 @@ export class SevenTvEmoteSetService {
   }
 
   /**
-   * A cached wrapper around {@link loadEmoteSetPreview} for K4's usage-stats page only — **not**
-   * used by K3's `ForeignChannelStep` or the K2/T4.5 import-target loader, which keep calling the
-   * plain method directly. Deliberately scoped this narrowly (operator decision 2026-09-22):
+   * A cached wrapper around {@link loadEmoteSetPreview} for K4's usage-stats page, and since #227
+   * also the vote-session detail page's own live-membership check (K6 follow-up: which ballot rows
+   * are no longer members of the session's set) — **not** used by K3's `ForeignChannelStep` or the
+   * K2/T4.5 import-target loader, which keep calling the plain method directly. Deliberately scoped
+   * this narrowly (operator decision 2026-09-22):
    *
    * - A params-driven load (a set switch) within {@link EMOTE_SET_PREVIEW_CACHE_TTL_MS} of the last
    *   *successful* answer for the same `(channelName, emoteSetId)` is served from here without a
