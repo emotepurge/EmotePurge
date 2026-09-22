@@ -985,7 +985,8 @@
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }})."
     },
-    "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war."
+    "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
+    "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt."
   },
   "import": {
     "copyButton": "Übertragen",

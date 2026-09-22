@@ -985,7 +985,8 @@
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }})."
     },
-    "abortedByLock": "Nothing was deleted – the view changed while the dialog was open."
+    "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
+    "setChangedDuringConfirm": "A different set is selected now."
   },
   "import": {
     "copyButton": "Transfer",

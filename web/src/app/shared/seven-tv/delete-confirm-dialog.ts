@@ -27,8 +27,11 @@ export interface DeleteConfirmDialogData {
    *  which set the dropdown showed when the dialog opened. Falls back to the set id itself when
    *  the host page's set list has not (or no longer) named it, the same convention every other
    *  unnamed-set reader in this app uses. A plain value, not a signal: the panel reads it once,
-   *  right before opening the dialog, and a set switch behind an open dialog is caught by the
-   *  host's own re-check at confirm time (`startDelete`), not by this dialog changing under it. */
+   *  right before opening the dialog — the very same read the panel freezes into the `frozenSetId`
+   *  it later compares its live `setId()` input against in `startDelete`. That comparison, not this
+   *  dialog changing under it, is what catches a set switch behind an open dialog: the panel aborts
+   *  visibly (`abortedByLock`) when the two disagree at confirm time, whether the switch is still in
+   *  progress (an active host lock) or has already settled (#200 K5 finding A). */
   setName: string;
   /** Whether `setName` is the channel's currently active 7TV set — gates the "this set is not
    *  currently active" addition (spec 8.8). */

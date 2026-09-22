@@ -480,6 +480,19 @@ therefore leaves the call firing unconditionally: harmless (the endpoint only ev
 T5.1's own addendum already flagged. AK 57 ('left' rows carry the badge and are not selectable)
 needed no further work here — it was already in place from T4.x/T5.1, nothing in T5.3 touches it.
 
+**K5 fix round 2026-09-22 (independent reviews) — the delete confirmation now freezes the set id
+it names.** `MassDeletePanel.openConfirmDialog` freezes `setId()` into `frozenSetId` the moment it
+builds `DeleteConfirmDialogData`, alongside the `setName`/`isActiveSet` it already froze there, and
+passes it through to `startDelete`. `startDelete`'s existing confirm-time re-check compared only
+`deleteLockReasonKey()` — a `channel.synced` set switch that lands and *settles* while the dialog is
+still open clears that lock again before the dialog closes, so a lock-only re-check let a confirmed
+run start against whatever set was selected by then, not the one the dialog had named. `startDelete`
+now also aborts, with the same visible `abortedByLock` notice (`massDelete.setChangedDuringConfirm`),
+when the live `setId()` no longer matches `frozenSetId` at confirm time — whether the switch is still
+in progress (the existing lock) or has already settled (this gap). The restore-confirm path needed no
+equivalent change: it has read the run's own frozen `DeleteRunInfo.setId` (T5.1), never the panel's
+live `setId()` input, since it was written.
+
 ---
 
 ### 2026-09-21 — An import into a tracked channel's non-active set no longer resyncs the channel, and the dock stops claiming it does

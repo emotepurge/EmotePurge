@@ -1416,6 +1416,23 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
     expect(statusRegion().textContent).toContain('usageStats.setView.lock.switching');
   });
 
+  // #200 K5 finding A: the host's lock only catches a switch still *in progress* — once it
+  // settles (channel.synced moved the page's selected set while the dialog was open), the lock
+  // clears again with nothing else to say the dialog no longer names the set on screen.
+  it('aborts a confirmed delete when the set switched and settled behind the open dialog, with the host lock never engaging', () => {
+    fixture.componentInstance['openConfirm']();
+    // The switch has already settled by the time the dialog closes: the input moved, but no lock
+    // was ever set — the case a plain re-check of deleteLockReasonKey() alone would miss.
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.detectChanges();
+    closed.next(true);
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusRegion().textContent).toContain('massDelete.abortedByLock');
+    expect(statusRegion().textContent).toContain('massDelete.setChangedDuringConfirm');
+  });
+
   it('keeps the status region mounted but empty until an abort, and clears it on the next attempt', () => {
     expect(statusRegion().textContent?.trim()).toBe('');
 

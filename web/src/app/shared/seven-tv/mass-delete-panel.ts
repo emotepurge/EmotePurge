@@ -600,17 +600,23 @@ export class MassDeletePanel {
     // DeleteConfirmDialogData), so the shared-set warning pops in as soon as the check answers.
     this.loadSetWarning();
 
+    // Frozen here, alongside setName/isActiveSet below, not re-read from the live `setId()` input
+    // at confirm time: the dialog outlives the view it was opened on, and a `channel.synced` set
+    // switch can move the host's selected set (and thus this input) while it is still open. Passed
+    // into `startDelete` so it can compare against the live value and abort rather than delete into
+    // whatever set happens to be selected once the dialog closes (#200 K5 finding A).
+    const frozenSetId = this.setId();
     const data: DeleteConfirmDialogData = {
       emotes: this.visibleSelectedEmoteNames,
       hiddenEmotes: this.hiddenSelectedEmoteNames,
       warning: this.setWarning.asReadonly(),
       warningLoading: this.warningLoading.asReadonly(),
-      setName: this.setName() ?? this.setId(),
+      setName: this.setName() ?? frozenSetId,
       isActiveSet: this.isActiveSet(),
     };
     openDeleteConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (confirmed) {
-        this.startDelete();
+        this.startDelete(frozenSetId);
       }
     });
   }
@@ -641,7 +647,9 @@ export class MassDeletePanel {
     });
   }
 
-  private startDelete(): void {
+  /** `frozenSetId` is what the dialog named — `setId()` as it read when `openConfirmDialog` built
+   *  its data, not necessarily what the input reads now. */
+  private startDelete(frozenSetId: string): void {
     // Re-evaluated at confirm time, not only when the dialog opened: the dialog outlives the view
     // it was opened on, and the host can lock deleting behind it (a set switch in the usage page's
     // dropdown — the rows and the selection would then belong to a set other than `setId()`). Abort,
@@ -655,12 +663,20 @@ export class MassDeletePanel {
       this.abortedByLockKey.set(lockKey);
       return;
     }
+    // The lock above only catches a switch still *in progress* — once it settles, the lock clears
+    // and `setId()` has already moved on, silently, to the new set. Comparing against what the
+    // dialog actually named closes that gap: a settled switch behind an open dialog aborts here
+    // too, visibly, instead of deleting into a set the confirmation never showed (#200 K5 finding A).
+    if (this.setId() !== frozenSetId) {
+      this.abortedByLockKey.set('massDelete.setChangedDuringConfirm');
+      return;
+    }
     const emotes: DeleteQueueEmote[] = this.selectedEmotes().map((emote) => ({
       emoteId: emote.emoteId,
       sevenTvEmoteId: emote.sevenTvEmoteId,
       name: emote.name,
       aliases: emote.aliases,
     }));
-    this.deleteService.startDelete(this.setId(), this.channelName(), emotes);
+    this.deleteService.startDelete(frozenSetId, this.channelName(), emotes);
   }
 }
