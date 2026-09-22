@@ -397,14 +397,23 @@ gone (E2); `doneKeys` is the one identity a finished run reports, so a row witho
 `Emote.Id` can no longer drop out of the report, the retry or the panel's `deleted` output. The
 delete queue is keyed by `sevenTvEmoteId` — a #74 duplicate cell is one row and one `REMOVE`, which
 takes both entries (Sonde 5, branch A) — and the restore queue by `${sevenTvEmoteId}#${alias}`, one
-`ADD` per alias, the only key space that contains an alias. **The purge protocol changes format
-without a version bump**, because every old file stays readable: `PurgeRunRow.emoteId` is
+`ADD` per alias, the only key space that contains an alias. **The purge protocol's row shape
+changes, and its own `formatVersion` bumps to 2 for it — corrected 2026-09-22 (K5 fix round): the
+first version of this sentence said "without a version bump", which would have let a pre-K5 reader
+parse a post-K5 file silently short instead of refusing it** — unaware of either new field, it would
+drop every `emoteId: null` row outright and, for a duplicate cell's restore, only re-add one of its
+two aliases, no error, just quietly fewer restores than the file recorded.
+`PurgeRunProtocol.formatVersion` is `PURGE_RUN_FORMAT_VERSION` (`purge-run-export.ts`, `= 2`),
+deliberately **not** a bump of the shared `EXPORT_FORMAT_VERSION` every envelope `kind` uses and
+`import-source-parser.ts` pins its own reads to `1` for — this row-shape change never touched
+those. `PurgeRunRow.emoteId` is
 `string | null` (`null` for a row that never had a local emote), and each row gains `aliases:
 string[]` (every alias the cell sat under; `[name]` for a single entry). The panel no longer filters
 rows without an `emoteId` out of the protocol — that filter produced a silently short protocol, i.e.
 a deletion without a way back that nobody would notice (F3). `parsePurgeRunProtocol` accepts
-`emoteId` as a Guid, `null` or absent, and reads a row without (or with a malformed) `aliases` as
-`[name]`, so protocols written before K5 restore exactly as before. Both run records
+`formatVersion` `1` **and** `2`, `emoteId` as a Guid, `null` or absent, and reads a row without (or
+with a malformed) `aliases` as `[name]`, so protocols written before K5 restore exactly as before.
+Both run records
 (`DeleteRunInfo`, `RestoreRunInfo`) carry the set id **frozen at start**; the first
 `sync-deleted`/`sync-restored` call and every `retrySyncReport` read set and keys from that record,
 never from the page (AK 71), and the panel's restore-from-run re-adds into the run's own set. The

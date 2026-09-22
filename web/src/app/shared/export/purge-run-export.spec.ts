@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import {
+  PURGE_RUN_FORMAT_VERSION,
   buildPurgeRunProtocol,
   parsePurgeRunProtocol,
   purgeRunCsv,
@@ -46,6 +47,14 @@ describe('buildPurgeRunProtocol', () => {
 
   it('contains no token anywhere', () => {
     expect(purgeRunJson(protocol())).not.toMatch(/token|authorization|bearer/i);
+  });
+
+  // #200 K5 finding C: the row shape changed with K5 (nullable emoteId, aliases), so this kind
+  // stamps its own version rather than the shared envelope default — a reader that predates the
+  // change must refuse a file in the new shape, not parse it silently short.
+  it('stamps its own formatVersion, independent of the shared envelope default', () => {
+    expect(protocol().formatVersion).toBe(PURGE_RUN_FORMAT_VERSION);
+    expect(PURGE_RUN_FORMAT_VERSION).toBe(2);
   });
 
   // Spec #200, F3/AK 68: a row without a local emote is written, never dropped — a missing row
@@ -144,11 +153,30 @@ describe('parsePurgeRunProtocol', () => {
   });
 
   it('rejects an unknown format version', () => {
-    const future = purgeRunJson(protocol()).replace('"formatVersion": 1', '"formatVersion": 99');
+    const future = purgeRunJson(protocol()).replace(
+      `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+      '"formatVersion": 99',
+    );
     expect(parsePurgeRunProtocol(future, EXPECTED)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongVersion',
     });
+  });
+
+  // #200 K5 finding C: a file written before K5 carried formatVersion 1 in today's row shape's
+  // absence (a Guid emoteId, no aliases) — it must keep reading, not just the current version.
+  it('accepts formatVersion 1, the version every protocol before K5 wrote', () => {
+    const legacy = purgeRunJson(protocol()).replace(
+      `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+      '"formatVersion": 1',
+    );
+    const result = parsePurgeRunProtocol(legacy, EXPECTED);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts formatVersion 2, today's row shape", () => {
+    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), EXPECTED);
+    expect(result.ok).toBe(true);
   });
 
   it('rejects a protocol from another channel', () => {

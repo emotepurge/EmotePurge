@@ -11,6 +11,22 @@ import { readEnvelope } from './read-envelope';
  * them instead of trusted. Deliberately contains no token of any kind, only emote ids and names.
  */
 
+/**
+ * The purge-run protocol's own row-shape version — deliberately **not** a bump of
+ * `EXPORT_FORMAT_VERSION` (`export-envelope.ts`), which every envelope `kind` shares and
+ * `import-source-parser.ts` pins its own, unrelated reads to `1` for; bumping it would have
+ * version-gated exports this row-shape change never touched. Bumped here instead (spec #200, K5
+ * finding C) because the *row* shape genuinely changed with K5 — `emoteId` went from always a Guid
+ * to `string | null`, and every row gained `aliases: string[]` — and a reader that predates that
+ * change must refuse a file in the new shape rather than parse it silently short: unaware of
+ * either field, it would drop every `emoteId: null` row outright and, for a restored duplicate
+ * cell, only re-add one of its two aliases — no error, just fewer restores than the file actually
+ * recorded, discovered only by whoever later expected the rest to still be there.
+ * `parsePurgeRunProtocol` keeps accepting `1` alongside this version, so no file already on
+ * someone's disk from before this change stops being readable.
+ */
+export const PURGE_RUN_FORMAT_VERSION = 2;
+
 export interface PurgeRunRow {
   /** Local `Emote.Id`, or `null` for a set-view row that never had one (spec #200, 7.2). Kept for
    *  the paper trail only — restoring reads the 7TV id. */
@@ -47,7 +63,7 @@ export function buildPurgeRunProtocol(input: {
   items: readonly RunQueueItem[];
 }): PurgeRunProtocol {
   const statuses = input.items.map((item) => item.status);
-  return buildEnvelope({
+  const envelope = buildEnvelope({
     kind: 'purge-run',
     channelName: input.channelName,
     withheld: [],
@@ -71,6 +87,9 @@ export function buildPurgeRunProtocol(input: {
       errorMessage: item.errorMessage ?? null,
     })),
   });
+  // Overrides the shared envelope's own EXPORT_FORMAT_VERSION (still 1) — see
+  // PURGE_RUN_FORMAT_VERSION's doc above for why this kind versions independently.
+  return { ...envelope, formatVersion: PURGE_RUN_FORMAT_VERSION };
 }
 
 export function purgeRunJson(protocol: PurgeRunProtocol): string {
@@ -123,7 +142,9 @@ export type ProtocolParseResult =
  *
  * Reads every protocol this app has ever written (spec #200, AK 69): `emoteId` as a Guid (before
  * K5), `null` (a row without a local emote), or missing; `aliases` present, or missing — an older
- * file, whose one alias is its `name`. The returned rows are normalised to today's shape.
+ * file, whose one alias is its `name`. The returned rows are normalised to today's shape. Accepts
+ * `formatVersion` `1` (every file written before K5) and `PURGE_RUN_FORMAT_VERSION` (today's row
+ * shape) — anything else is refused rather than parsed short (see that constant's doc).
  */
 export function parsePurgeRunProtocol(
   text: string,
@@ -144,7 +165,7 @@ export function parsePurgeRunProtocol(
     const foreign = envelope.kind ? FOREIGN_KIND_ERROR_KEYS[envelope.kind] : undefined;
     return { ok: false, errorKey: foreign ?? 'restore.import.errors.wrongKind' };
   }
-  if (envelope.formatVersion !== 1) {
+  if (envelope.formatVersion !== 1 && envelope.formatVersion !== PURGE_RUN_FORMAT_VERSION) {
     return { ok: false, errorKey: 'restore.import.errors.wrongVersion' };
   }
   if (envelope.channelName !== expected.channelName) {

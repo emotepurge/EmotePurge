@@ -348,7 +348,9 @@ describe('FileImportStep', () => {
       ['wrongChannel', () => file(purgeRunText({ channelName: 'otherchannel' }))],
       ['wrongSet', () => file(purgeRunText({ emoteSetId: 'set-old' }))],
       ['votingExport', () => file(votingText())],
-      ['wrongVersion', () => file(purgeRunText({ formatVersion: 2 }))],
+      // 2 is PURGE_RUN_FORMAT_VERSION itself (spec #200, K5 finding C) — 99 is unambiguously beyond
+      // every version this parser knows.
+      ['wrongVersion', () => file(purgeRunText({ formatVersion: 99 }))],
       ['noRows', () => file(emoteListText({ rows: [{ sevenTvEmoteId: '', name: 'x' }] }))],
       [
         'noRestorableRows',
