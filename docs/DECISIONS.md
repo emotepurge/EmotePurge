@@ -10,6 +10,81 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-22 — Vote-page deletes read the session's set live, both K6 known limitations closed (#227)
+
+**Betrifft:** `docs/DECISIONS.md` (K6 entry above) · `web/e2e/vote-ballot.e2e.spec.ts` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.html` ·
+`web/src/app/features/voting/vote-session-detail-page.spec.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts`
+
+Closes the two "known limitations, recorded rather than fixed" the K6 entry above named for the
+vote-session detail page's mass-delete panel.
+
+**(a) Live aliases, for any target set, not only the active one.** `MassDeletePanel` gains
+`readLiveAliasesFromSet`, the vote page's counterpart to the usage page's
+`readLiveAliasesFromActiveSet` (2026-09-22, above): where that flag only fires once `setId()`
+happens to be the channel's *active* set (a non-active view's own rows already carry live aliases
+from the member list they were built from, E20/K5), the vote page's rows never carry a live alias at
+all — `VoteSessionEmote.NameAtCreation` is frozen the moment a set-session is created, active target
+set or not — so `readLiveAliasesFromSet` reads unconditionally, regardless of active-ness. Both
+inputs feed one `wantsLiveAliasRead(frozenIsActiveSet)` gate in `openConfirmDialog`; the read itself
+(`readLiveAliasesThenDelete`, `loadSevenTvSetEntries` against the frozen `setId`) and its failure
+handling are unchanged from the active-set case, and the vote-session detail page's panel now binds
+`[readLiveAliasesFromSet]="true"` unconditionally, matching `[setId]` already being the session's own
+set since K6.
+
+**On a failed or incomplete read: nothing is deleted, the same as the active-set case.** The issue
+asked explicitly what happens here, because silently falling back to the frozen name is the exact
+defect being closed. `MassDeletePanel` already had this answer built for the active-set path (spec
+8.3's "a list that only knows half must not delete", K5) — `readLiveAliasesFromSet` reuses it
+verbatim rather than inventing a softer, vote-page-specific fallback: a network failure, a disguised
+7TV 429 (a GraphQL error inside HTTP 200), a timeout (20 s budget) or a truncated/undercounted read
+all block the run with `massDelete.memberRead.unavailable`/`massDelete.memberRead.truncated`, shown
+in the panel's existing abort-notice region. No new behaviour needed inventing; the existing
+"known-half must not delete" rule already covered the vote page's own case in full, it just never
+ran there before this.
+
+**(b) A departed set-session member is excluded from the delete selection.** `eligible` never
+reflects live 7TV departure for a set-session ballot row (K6, this entry's predecessor above: the
+ballot is frozen and voting on it never closes on that account) — a member 7TV no longer carries
+under the session's set stayed selectable for delete forever, and confirming issued a `RemoveEmote`
+for something no longer there. `VoteSessionDetailPage` gains `sessionSetMembersResource`, an
+`rxResource` reading `SevenTvEmoteSetService.loadCachedEmoteSetPreview(channelName, emoteSetId)` —
+the same K4 reader (and cache: 60 s TTL, `ForeignEmoteLookup` bucket) the usage page's non-active view
+already uses for the identical "which of my rows are still live" question. `departedSevenTvEmoteIds`
+computes the set of ballot rows the read confirms are gone; `selectedForDelete` drops them, mirroring
+the usage page's `membership === 'live'` filter (AK 57) — the card itself stays markable (clicking it
+is unaffected), only the delete run's own selection excludes it, same split the usage page already
+has between "selectable in the grid" and "reaches the run".
+
+**Gated on `canSelectForDelete()`, not on every page view.** A plain voter never sees the mass-delete
+panel at all (`@if (results() && canSelectForDelete() && …)`), so their page view must not spend a
+permit off the shared `ForeignEmoteLookup` bucket (10/min, #220) for a check whose only consumer they
+cannot reach — `loadCachedEmoteSetPreview` widens its own doc comment from "K4's usage-stats page
+only" to include this second caller. Also gated on the session actually being a set-session
+(`results()?.emoteSetId != null`) — a null-session has no live-membership concept of its own,
+`isArchived`/`eligible` already cover it in full, and this never fetches for one.
+
+**Fail-open while the read has not landed, deliberately, the same direction K6's own
+`liveMembersSettling` already takes.** A row this check cannot yet confirm departed stays selectable
+in `selectedForDelete` until the read answers — not blocked, not preemptively excluded. This is safe
+because it is not the only gate: a genuinely departed id that slips through this window still meets
+the live alias read at confirm time (point (a) above), and `loadSevenTvSetEntries` finding no entry
+for it there is the actual backstop, not a silent no-op — a 7TV `RemoveEmote` against an id no longer
+in the set is the worst case this window can produce, a visible failed row in the run, never a false
+"deleted" outcome recorded for something that was never removed. Refetched on `channel.synced` (the
+signal an emote inventory just moved) the same way `loadActiveEmoteSetId` already is, bypassing the
+60 s cache for exactly that one read.
+
+**No new backend route.** Both fixes reuse existing frontend readers only — `loadSevenTvSetEntries`
+(shared/seven-tv/seven-tv-set-entries.ts, unchanged) for (a), `SevenTvEmoteSetService.
+loadCachedEmoteSetPreview` (unchanged itself, only its doc comment widened) for (b).
+
+---
+
 ### 2026-09-22 — Voting: "member of the session's set" replaces "not archived"; permission comes from permission (#200, K6)
 
 **Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, 6.10, F8, F12, E4, E10) ·
@@ -169,7 +244,8 @@ set's, which is a design step of its own rather than a one-line follow-up. (b) A
 that has since left the live set stays selectable for delete on the vote page — `eligible` is always
 `true` there by design (this entry, above), it does not track live membership — so confirming a
 delete on such a member issues a `RemoveEmote` for something no longer a member of the target set.
-Both are tracked as a follow-up in epic #200, not fixed in K6.
+Both are tracked as a follow-up in epic #200, not fixed in K6. *(Both fixed 2026-09-22 by #227 — see
+that entry below.)*
 
 **Arbitrated review fixes (round 2, Opus/Codex Sol with a Fable arbitration), same entry, same
 day.** `CreateAsync` now rejects a set-session whose `emoteSetId` is not one of the channel's own
