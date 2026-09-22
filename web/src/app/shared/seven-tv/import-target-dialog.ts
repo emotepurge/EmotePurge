@@ -189,30 +189,39 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
            target and closes the picker (confirmUntrackedTarget() does exactly what the old
            "Kopieren" button did). "Ja, dieses Set" / "Anderes Set wählen" name what each button
            actually does — confirm this target, or go back to choosing — without echoing "kopieren"
-           a second time before the confirm dialog (the actual copy step) has even opened. -->
+           a second time before the confirm dialog (the actual copy step) has even opened.
+
+           The text and its two buttons are stacked (buttons in their own row *below* the text),
+           not laid out side by side (#217, T2 fix): NoticeBanner's own [notice-action] slot is
+           right-aligned next to the content and, with two buttons in it, wrapped into a narrow
+           column that squeezed each button's label to one or two words per line. Neither button
+           uses notice-action here — both live inside the default content slot instead, in their
+           own flex row underneath the paragraph, so the banner's single content item gets the
+           whole width to stack in rather than sharing a row with a right-aligned action area. -->
       @if (pendingUntrackedTarget(); as pending) {
         <app-notice-banner variant="info">
-          {{
-            'import.target.confirmUntracked'
-              | transloco: { setName: pending.setName, ownerDisplayName: pending.ownerDisplayName }
-          }}
-          <button
-            notice-action
-            type="button"
-            appButton="outline"
-            (click)="cancelUntrackedConfirmation()"
-          >
-            {{ 'import.target.confirmUntrackedReject' | transloco }}
-          </button>
-          <button
-            notice-action
-            type="button"
-            appButton="primary"
-            [disabled]="emptyScopeChosen()"
-            (click)="confirmUntrackedTarget()"
-          >
-            {{ 'import.target.confirmUntrackedAccept' | transloco }}
-          </button>
+          <div class="flex flex-col gap-3">
+            <p>
+              {{
+                'import.target.confirmUntracked'
+                  | transloco
+                    : { setName: pending.setName, ownerDisplayName: pending.ownerDisplayName }
+              }}
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" appButton="outline" (click)="cancelUntrackedConfirmation()">
+                {{ 'import.target.confirmUntrackedReject' | transloco }}
+              </button>
+              <button
+                type="button"
+                appButton="primary"
+                [disabled]="emptyScopeChosen()"
+                (click)="confirmUntrackedTarget()"
+              >
+                {{ 'import.target.confirmUntrackedAccept' | transloco }}
+              </button>
+            </div>
+          </div>
         </app-notice-banner>
       }
 
