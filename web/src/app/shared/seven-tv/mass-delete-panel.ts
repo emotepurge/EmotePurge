@@ -86,8 +86,11 @@ export interface DeletableEmote {
    *  `REMOVE` takes whole. Recorded in the protocol so a restore can re-add each. Omitted means
    *  `[name]`. A host that cannot know every alias (the active set's view keeps one name per id)
    *  sets `readLiveAliasesFromActiveSet` instead, and the panel reads them from 7TV itself before
-   *  the run starts. The vote-session page deliberately does neither: its rows stay on `[name]`, so
-   *  a duplicate deleted there still records one alias (DECISIONS, #200 K6 known limitation). */
+   *  the run starts. The vote-session page's rows are frozen at session-creation time
+   *  (`VoteSessionEmote.NameAtCreation`) and so can never know a live alias either — it sets
+   *  `readLiveAliasesFromSet` instead, the same live read against the panel's own (possibly
+   *  non-active) `setId()` rather than only the active one (#227, fixing the #200 K6 known
+   *  limitation this comment used to describe as open). */
   aliases?: readonly string[];
   /** Whether the host page's current filter hides this emote right now (`!selection.isVisible`).
    *  Required, not optional (Konzept "Auswahl überlebt Suche und Filter" 2.1, Codex befund 3b):
@@ -319,9 +322,29 @@ export class MassDeletePanel {
    *
    * Opt-in, `false` by default: a non-active set's rows already carry every alias from the live
    * member list the view is built from, so no second read happens there; and the vote-session page
-   * deliberately stays on `[name]` (DECISIONS, #200 K6 known limitation).
+   * reads its own set instead, through `readLiveAliasesFromSet` below — never both.
    */
   readonly readLiveAliasesFromActiveSet = input<boolean>(false);
+
+  /**
+   * The vote-session page's counterpart to `readLiveAliasesFromActiveSet` above (#227, fixing the
+   * #200 K6 known limitation "a delete started from the vote page records only the frozen name as
+   * its alias"): whether a delete reads the panel's own `setId()` live from 7TV right before it
+   * starts, **regardless of whether that set is the channel's active one**. Where the active-set
+   * flag only fires when `setId()` happens to be active (a non-active set's rows there already
+   * carry live aliases from the member list they were built from, E20/K5), the vote page's rows
+   * never carry a live alias at all — `VoteSessionEmote.NameAtCreation` is frozen the moment the
+   * session is created, whether the session's set is active or not — so this reads unconditionally
+   * whenever set at all. Same failure handling as the active-set read: a failed or incomplete read
+   * blocks the run rather than silently deleting under the frozen name (spec 8.3's "a list that
+   * only knows half must not delete") — the exact defect #227 exists to close.
+   *
+   * Opt-in, `false` by default, and mutually exclusive with `readLiveAliasesFromActiveSet` in
+   * practice (only one of the two host pages ever sets either) — nothing here enforces that, since
+   * setting both would simply mean the same read fires from the same `wantsLiveAliasRead` check
+   * either way.
+   */
+  readonly readLiveAliasesFromSet = input<boolean>(false);
 
   /**
    * Whether the `[selection-actions]` slot actually has something projected into it — the panel
@@ -421,9 +444,9 @@ export class MassDeletePanel {
    *  keeping the panel that set it alive, which is what `confirmedRunPending` does. */
   protected readonly abortNotice = signal<DeleteAbortNotice | null>(null);
 
-  /** A confirmed active-set delete is waiting for its live alias read
-   *  (`readLiveAliasesFromActiveSet`) — the delete button stays disabled meanwhile, so a second
-   *  click cannot open a second confirmation for the same selection. */
+  /** A confirmed delete is waiting for its live alias read (`readLiveAliasesFromActiveSet` or
+   *  `readLiveAliasesFromSet`, see `wantsLiveAliasRead`) — the delete button stays disabled
+   *  meanwhile, so a second click cannot open a second confirmation for the same selection. */
   protected readonly liveAliasReadPending = signal(false);
   private destroyed = false;
 
@@ -758,7 +781,7 @@ export class MassDeletePanel {
         this.deleteService.endConfirmedRun();
         return;
       }
-      if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
+      if (!this.wantsLiveAliasRead(frozenIsActiveSet)) {
         // `finally`, because a leaked claim pins an empty dock until the page is reloaded — a worse
         // outcome than whatever threw, and one nothing on screen could explain.
         try {
@@ -774,9 +797,10 @@ export class MassDeletePanel {
   }
 
   /**
-   * The active-set delete's live alias read (`readLiveAliasesFromActiveSet`), at **confirm** time,
-   * not when the dialog opens: the delete confirmation shows nothing alias-dependent (names only,
-   * one per cell), so reading earlier would buy no correct number on screen — it would only spend a
+   * The live alias read (`readLiveAliasesFromActiveSet` or `readLiveAliasesFromSet`, decided by
+   * `wantsLiveAliasRead`), at **confirm** time, not when the dialog opens: the delete confirmation
+   * shows nothing alias-dependent (names only, one per cell), so reading earlier would buy no
+   * correct number on screen — it would only spend a
    * read on every cancelled dialog and record aliases as they stood when the dialog opened rather
    * than at the irreversible moment. The frozen set id (`openConfirmDialog`) is what is read, and
    * `startDelete` repeats every confirm-time check once the answer is in, since the set can switch
@@ -961,5 +985,14 @@ export class MassDeletePanel {
       };
     }
     return undefined;
+  }
+
+  /** Whether a confirmed delete reads its target set live from 7TV before it starts (#227) — either
+   *  opt-in that applies: the active-set one only for the set this delete is actually targeting
+   *  (`frozenIsActiveSet`), the vote page's own-set one unconditionally. */
+  private wantsLiveAliasRead(frozenIsActiveSet: boolean): boolean {
+    return (
+      (frozenIsActiveSet && this.readLiveAliasesFromActiveSet()) || this.readLiveAliasesFromSet()
+    );
   }
 }

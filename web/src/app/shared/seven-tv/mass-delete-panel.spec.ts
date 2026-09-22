@@ -1995,8 +1995,9 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     ]);
   });
 
-  // The vote-session page deliberately does not opt in: its rows stay on [name] (DECISIONS, #200
-  // K6 known limitation).
+  // A caller that leaves this specific input false makes no active-set read regardless of any
+  // other input — the vote-session page opts into `readLiveAliasesFromSet` instead, its own
+  // unconditional-on-active-ness equivalent (#227), covered in that input's own describe block.
   it('makes no read when the host did not opt in', () => {
     fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
     fixture.detectChanges();
@@ -2117,6 +2118,253 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     httpMock.expectOne(GQL).flush(entriesPage([]));
 
     expect(startDelete.mock.calls[0][1]).toBe('somechannel');
+  });
+});
+
+// #227 (fixing the #200 K6 known limitation): the vote-session page's rows are frozen at
+// session-creation time (VoteSessionEmote.NameAtCreation) and can never carry a live alias — unlike
+// the usage page's active-set flag, this one has to fire for the panel's own set regardless of
+// whether that set happens to be the channel's active one, because the vote page's target is most
+// often a non-active set-session's set (K6).
+describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set regardless of active-ness (#227)", () => {
+  const GQL = 'https://7tv.io/v4/gql';
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startDelete: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+
+  function entriesPage(entries: { id: string; alias?: string }[], pageCount = 1) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length,
+              pageCount,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  async function setUp(inputs: {
+    setId: string;
+    activeSetId: string | null;
+    selectedEmotes: DeletableEmote[];
+  }): Promise<void> {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', inputs.setId);
+    fixture.componentRef.setInput('activeSetId', inputs.activeSetId);
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('readLiveAliasesFromSet', true);
+    fixture.componentRef.setInput('selectedEmotes', inputs.selectedEmotes);
+    fixture.detectChanges();
+  }
+
+  function statusText(): string {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    return region?.textContent ?? '';
+  }
+
+  function confirm(): void {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+    fixture.detectChanges();
+  }
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it("reads the panel's own set, not the active one, once confirmed", async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+
+    const req = httpMock.expectOne(GQL);
+    expect(req.request.body.variables.id).toBe('set-halloween');
+    req.flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-halloween', 'somechannel', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-pump',
+        name: 'PumpkinAtCreation',
+        aliases: ['Pumpkin'],
+      },
+    ]);
+  });
+
+  it('records every alias of a #74 duplicate read live from the non-active set', async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-pump', alias: 'Pumpkin' },
+        { id: '7tv-pump', alias: 'Pumpkin2' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith('set-halloween', 'somechannel', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-pump',
+        name: 'PumpkinAtCreation',
+        aliases: ['Pumpkin', 'Pumpkin2'],
+      },
+    ]);
+  });
+
+  // The behaviour #227's issue explicitly asks for: a delete must not silently continue under the
+  // frozen name when the live read cannot confirm it. Same dedicated massDelete.memberRead.* keys
+  // as the active-set read.
+  it('deletes nothing under the frozen name when the live read fails', async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('network error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
+  it('deletes nothing when the live read only knows part of the non-active set', async () => {
+    await setUp({
+      setId: 'set-halloween',
+      activeSetId: 'set-active',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+    for (let page = 1; page <= 10; page++) {
+      httpMock.expectOne(GQL).flush(entriesPage([], 11));
+    }
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
+  });
+
+  // The flag is unconditional on active-ness (unlike readLiveAliasesFromActiveSet): it still fires
+  // even when the panel's own set happens to equal the channel's active one.
+  it("still reads live even when the panel's own set happens to be the active one", async () => {
+    await setUp({
+      setId: 'set-1',
+      activeSetId: 'set-1',
+      selectedEmotes: [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+      ],
+    });
+
+    confirm();
+
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-pump',
+        name: 'PumpkinAtCreation',
+        aliases: ['Pumpkin'],
+      },
+    ]);
+  });
+
+  it('makes no read at all when the host did not opt in', async () => {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-halloween');
+    fixture.componentRef.setInput('activeSetId', 'set-active');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    // readLiveAliasesFromSet left at its false default — same as readLiveAliasesFromActiveSet's own
+    // "did not opt in" case above.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'PumpkinAtCreation', hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
   });
 });
 
