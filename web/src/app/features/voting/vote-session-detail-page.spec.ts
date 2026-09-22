@@ -643,6 +643,156 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
 });
 
 /**
+ * #227 (K6 follow-up): `eligible` never reflects live departure for a set-session row (see the
+ * describe block above), so a member 7TV no longer carries under the session's own set used to stay
+ * selectable for delete forever — confirming issued a `RemoveEmote` for something no longer there.
+ * `selectedForDelete()` now drops such a row once the live-membership read (`sessionSetMembersResource`)
+ * confirms it, mirroring the usage page's `membership === 'live'` filter. The read itself is gated on
+ * `canSelectForDelete()` (real `rxResource`, hence the same real-timer `settle()` idiom the block
+ * above uses) so a plain voter's page view never spends a permit off the shared `ForeignEmoteLookup`
+ * bucket for a check whose only consumer — the mass-delete panel — they cannot even see.
+ */
+describe('VoteSessionDetailPage — departed set-session members are excluded from the delete selection (#227)', () => {
+  let fixture: ComponentFixture<VoteSessionDetailPage>;
+  let component: VoteSessionDetailPage;
+  let httpMock: HttpTestingController;
+
+  const CHANNEL = 'sensitron';
+  const SESSION_ID = '7';
+  const EMOTE_SET_PATH = `/api/seventv/channels/${CHANNEL}/emotes`;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(VoteSessionDetailPage, {
+      set: { template: '<div #sheet></div>' },
+    });
+
+    fixture = TestBed.createComponent(VoteSessionDetailPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', CHANNEL);
+    fixture.componentRef.setInput('sessionId', SESSION_ID);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  async function mount(initial: VoteSessionResults, canManage: boolean): Promise<void> {
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`, initial);
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/permissions`, {
+      canManage,
+      canViewUsageStats: canManage,
+      isGlobalAdmin: false,
+      isTracked: true,
+      isBotActive: true,
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/emote-sets`, {
+      activeEmoteSetId: 'set-1',
+      sets: [{ id: 'set-1', name: 'Main set', isActive: true, kind: 'NORMAL' }],
+    });
+    // A settle() alone only clears the first hop (permissionsResource -> canManage/
+    // canSelectForDelete); sessionSetMembersResource is a second rxResource reacting to that
+    // computed, so its own request needs a further tick to actually go out.
+    await settle();
+    await settle();
+  }
+
+  function flushSessionSetMembers(sevenTvEmoteIds: string[]): void {
+    flushByPath(httpMock, EMOTE_SET_PATH, {
+      channelName: CHANNEL,
+      sevenTvUserId: null,
+      emoteSetId: 'halloween-1',
+      emoteSetName: 'Halloween 2026',
+      capacity: 500,
+      totalCount: sevenTvEmoteIds.length,
+      truncated: false,
+      emotes: sevenTvEmoteIds.map((id) => ({
+        sevenTvEmoteId: id,
+        name: id,
+        defaultName: id,
+        imageUrl: '',
+        topAllTime: null,
+        trending: null,
+      })),
+    });
+  }
+
+  it('excludes a member the live read confirms has left the session set, once the read lands', async () => {
+    const gone = resultEmote('gone', { totalUseCount: null });
+    const stays = resultEmote('stays', { totalUseCount: null });
+    await mount(results([gone, stays], { emoteSetId: 'halloween-1' }), true);
+
+    component['selection'].onRowClick(gone, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(stays, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['gone', 'stays']);
+
+    // Before the live read lands, both stay selectable — the conservative direction: nothing has
+    // confirmed either is departed yet, so neither is preemptively dropped.
+    expect(
+      component['selectedForDelete']()
+        .map((row) => row.emoteId)
+        .sort(),
+    ).toEqual(['gone', 'stays']);
+
+    flushSessionSetMembers(['7tv-stays']); // 7tv-gone is no longer a live member
+    await settle();
+
+    expect(component['selectedForDelete']().map((row) => row.emoteId)).toEqual(['stays']);
+    // The card selection itself is untouched — clicking it still works, only the delete run drops
+    // the departed member from what it actually sends.
+    expect(component['selection'].selectedKeys().sort()).toEqual(['gone', 'stays']);
+  });
+
+  it('makes no live-membership read at all for a null-session', async () => {
+    const a = resultEmote('a');
+    await mount(results([a]), true);
+
+    httpMock.expectNone(EMOTE_SET_PATH);
+  });
+
+  it('makes no live-membership read for a viewer who cannot select for delete', async () => {
+    const a = resultEmote('a');
+    await mount(results([a], { emoteSetId: 'halloween-1' }), false);
+
+    httpMock.expectNone(EMOTE_SET_PATH);
+  });
+});
+
+/**
  * `canDrilldown(emote)`/`rowAction(emote)` (arbitrated review round 2): a per-row narrowing of
  * `cellAction()` so a set-session row with no chartable usage number never claims the drilldown —
  * `emote.totalUseCount === null` alone is not the test (a null-session's archived row can carry

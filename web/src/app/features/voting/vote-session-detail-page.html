@@ -163,6 +163,7 @@
       [setNames]="emoteSetNames()"
       [channelName]="channelName()"
       [selectedEmotes]="selectedForDelete()"
+      [readLiveAliasesFromSet]="true"
       (deleted)="onDeleted($event)"
       (reloadRequested)="onReloadRequested()"
       (selectionCleared)="selection.clear()"

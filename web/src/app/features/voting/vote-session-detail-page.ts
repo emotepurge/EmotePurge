@@ -262,6 +262,66 @@ export class VoteSessionDetailPage {
   protected readonly canSelectForDelete = this.canManage;
 
   /**
+   * Live 7TV membership of a SET-session's own set (#227, K6 follow-up) — fetched only once both
+   * are true: the session is a set-session (`results()?.emoteSetId != null`) and this viewer can
+   * actually select for delete (`canSelectForDelete()`, the same gate the mass-delete panel's own
+   * `@if` uses in the template). A plain voter never sees the panel, so their page view must never
+   * spend a permit off the shared `ForeignEmoteLookup` bucket (10/min, #220) for a check whose only
+   * consumer they cannot reach. `loadCachedEmoteSetPreview` is the same K4 reader the usage page's
+   * non-active view already uses for the identical "which of my rows are still live" question —
+   * same 60 s TTL, same backend cache, so several managers loading this page within that window
+   * cost no more than one of them would alone.
+   *
+   * `eligible` never reflects live departure for a set-session row (K6: the ballot is frozen and
+   * voting on it never closes) — a member 7TV no longer carries under the session's set stayed
+   * "eligible" and selectable for delete forever before this existed, and confirming issued a
+   * `RemoveEmote` for an id no longer in the target set. This is the read that closes that gap
+   * (`departedSevenTvEmoteIds` below); a null-session has no live-membership concept of its own
+   * (`isArchived`/`eligible` already cover it), so this never fetches for one.
+   */
+  private sessionSetMembersRefreshRequested = false;
+  private readonly sessionSetMembersResource = rxResource({
+    params: () => {
+      const emoteSetId = this.results()?.emoteSetId;
+      return emoteSetId != null && this.canSelectForDelete()
+        ? { channelName: this.channelName(), emoteSetId }
+        : undefined;
+    },
+    stream: ({ params }) => {
+      const refresh = this.sessionSetMembersRefreshRequested;
+      this.sessionSetMembersRefreshRequested = false;
+      return this.emoteSetService.loadCachedEmoteSetPreview(params.channelName, params.emoteSetId, {
+        refresh,
+      });
+    },
+  });
+
+  /**
+   * 7TV ids on this session's ballot that the read above confirms are no longer members of the
+   * session's own set. Empty for a null-session, and empty while the read has not landed (yet, or
+   * at all) — the conservative direction: a row this check cannot yet confirm departed simply stays
+   * selectable here, same as it always was before #227, and the confirm-time live alias read in
+   * `MassDeletePanel` (`readLiveAliasesFromSet`) is the actual gate a delete cannot get past
+   * silently once started.
+   */
+  protected readonly departedSevenTvEmoteIds = computed<ReadonlySet<string>>(() => {
+    const emoteSetId = this.results()?.emoteSetId;
+    if (emoteSetId == null || !this.sessionSetMembersResource.hasValue()) {
+      return new Set();
+    }
+    const preview = this.sessionSetMembersResource.value();
+    if (preview.emoteSetId !== emoteSetId) {
+      return new Set();
+    }
+    const liveIds = new Set(preview.emotes.map((entry) => entry.sevenTvEmoteId));
+    return new Set(
+      (this.results()?.emotes ?? [])
+        .map((emote) => emote.sevenTvEmoteId)
+        .filter((sevenTvEmoteId) => !liveIds.has(sevenTvEmoteId)),
+    );
+  });
+
+  /**
    * What the sprite face does when it is touched or clicked. Two jobs on one surface was fine while
    * hover revealed a separate 20 px drilldown trigger; on a finger it was a coin toss. With the
    * delete engine gone on coarse pointers the face is free, so it carries the drilldown — gated on
@@ -371,17 +431,25 @@ export class VoteSessionDetailPage {
   // the display name, which only the loaded row carries. Should a selected emote vanish from the
   // list between selecting and deleting (archived by the periodic 7TV resync), it silently drops
   // out here — the conservative direction, since it can only ever delete fewer emotes than shown.
-  protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
-    this.selection.selectedItems().map((emote) => ({
-      emoteId: emote.emoteId,
-      sevenTvEmoteId: emote.sevenTvEmoteId,
-      name: emote.emoteName,
-      // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
-      // Suche und Filter" 2.1/3) — this page has no dock counter of its own, so the dialog is the
-      // only place this ever surfaces.
-      hidden: !this.selection.isVisible(emote),
-    })),
-  );
+  //
+  // A row `departedSevenTvEmoteIds` confirms has left the session's own set is dropped the same way
+  // (#227, mirrors the usage page's `membership === 'live'` filter): the card can still be marked —
+  // clicking it is unaffected — but a departed member never reaches the delete run itself.
+  protected readonly selectedForDelete = computed<DeletableEmote[]>(() => {
+    const departed = this.departedSevenTvEmoteIds();
+    return this.selection
+      .selectedItems()
+      .filter((emote) => !departed.has(emote.sevenTvEmoteId))
+      .map((emote) => ({
+        emoteId: emote.emoteId,
+        sevenTvEmoteId: emote.sevenTvEmoteId,
+        name: emote.emoteName,
+        // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
+        // Suche und Filter" 2.1/3) — this page has no dock counter of its own, so the dialog is the
+        // only place this ever surfaces.
+        hidden: !this.selection.isVisible(emote),
+      }));
+  });
 
   /**
    * The emote the readout is describing, held by id rather than by object: every vote reloads the
@@ -453,6 +521,11 @@ export class VoteSessionDetailPage {
         this.loadResults({ freeze: false });
         if (seen.has(LIVE_EVENT_TYPES.channelSynced)) {
           this.loadActiveEmoteSetId();
+          // The emote inventory just moved — the session-set membership check (#227) must not keep
+          // serving a stale cached answer past this point, the same reasoning
+          // `liveMembersRefreshFor` applies on the usage page's own loud reload.
+          this.sessionSetMembersRefreshRequested = true;
+          this.sessionSetMembersResource.reload();
         }
         seen.clear();
       });
