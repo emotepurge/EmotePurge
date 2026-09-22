@@ -687,7 +687,9 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     ]);
 
     await page.getByRole('button', { name: 'Pumpkin', exact: true }).click();
-    await page.getByRole('button', { name: 'Ghost', exact: true }).click();
+    // The left-badge suffix on a departed member's accessible name (#227 P3-c) — same regex idiom
+    // as usage-atlas.e2e.spec.ts's own "left" row assertion.
+    await page.getByRole('button', { name: /^Ghost ·.*Nicht mehr im Set/ }).click();
 
     // Both cards are marked; the departed one never reaches the panel's own count once the
     // membership read lands.
@@ -746,7 +748,16 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
     await massDeleteButton.click();
     await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
 
-    await expect(page.getByText('markiertes Emote ist nicht mehr im Set')).toBeVisible();
+    // getByRole('status') + hasText, not a bare getByText(): the abort notice renders twice (an
+    // sr-only role="status" span for screen readers, plus a visible aria-hidden <p> for sighted
+    // users), and a plain getByText() matches both — the status region is the addressable one, and
+    // the idiom the rest of this repo already uses for the same shape (see e.g.
+    // channel-workspace.e2e.spec.ts / usage-atlas.e2e.spec.ts). Text updated for #227 P2-c/P3-d: the
+    // reason now names the row and gives one actionable instruction instead of a bare count plus a
+    // redundant second "nichts gelöscht".
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Pumpkin ist nicht mehr im Set' }),
+    ).toBeVisible();
     expect(removeCalled).toBe(false);
   });
 });
