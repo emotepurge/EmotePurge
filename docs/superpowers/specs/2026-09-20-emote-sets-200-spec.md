@@ -3184,3 +3184,76 @@ Skeletts; ein unbekanntes aktives Set gilt nie als das gewählte (Import über d
 Set-Pfad, Wiederherstellen gesperrt); das Dropdown ist gesperrt, solange ein Löschlauf schreibt.
 Begründung und Einzelheiten im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is
 identified by its 7TV id …", Abschnitt „Fix round 2026-09-22".
+
+## 39. Nachtrag: Ziel-Picker — ein Layout je Konto, PERSONAL ausgeblendet (#217, 2026-09-22)
+
+§34 hat die beiden Entscheidungen aus Issue #217 nur für den *Quell*-Picker umgesetzt und den
+Ziel-Picker (`import-target-dialog.ts`) ausdrücklich offen gelassen — dessen eigener Nachläufer, so
+der Text dort, würde beide Entscheidungen dort nachziehen. Das ist hier passiert, am 2026-09-22,
+während der Live-Nachprüfung der K2-Fixes: drei Änderungen, alle am Ziel-Picker.
+
+**1. Ein Layout für jedes Konto, unabhängig von der Set-Zahl.** Der Ziel-Picker mischte bisher drei
+Formen: ein Konto mit mehreren Sets zeigte eine Überschrift plus Radios darunter; ein getracktes
+Konto mit genau einem auswählbaren, aktiven Set zeigte stattdessen den Kanalnamen selbst als Radio
+(„#brudivoeller_tv (aktiv: …)“, der 8.6-Ein-Klick-Weg „in Kanal X“); ein Konto mit einem aktiven und
+weiteren Sets zeigte beides gleichzeitig — Kanal-Radio **und** zusätzliche Set-Radios darunter. Jetzt
+ist jedes Konto eine reine, nicht interaktive Überschrift (`<p>`, nie ein Radio, nie ein Stopp in der
+nativen Tab-Reihenfolge der Radiogruppe), und jedes Set — auch ein einzelnes — bekommt sein eigenes
+Radio darunter, aktives Set mit „(aktiv)“ beschriftet. Der gemergte Kanal-Radio-Kurzweg
+(`headerSet()`/`remainingSets()` in `import-target-dialog.ts`) ist ersatzlos entfernt; ein Klick auf
+das einzige oder aktive Set eines Kontos kostet weiterhin genau einen Klick, nur auf dessen eigenem
+Radio statt auf der Kontozeile. Die Radiogruppe selbst rendert wie bisher nur, wenn mindestens ein
+Radio existiert (ARIA-Vorgabe); Vorauswahl bleibt unverändert das aktive Set des **eigenen** Kontos
+(`isOwnAccount`, Finding 4 vom 2026-09-21) — `firstPreselectableTarget()` liest diese Menge jetzt
+direkt aus der (bereits PERSONAL-gefilterten) Set-Liste des eigenen Kontos, statt über die
+weggefallene Kurzweg-Funktion.
+
+**2. PERSONAL-Sets werden ganz ausgeblendet, nicht deaktiviert gezeigt.** Dieselbe Umkehr von 8.6
+(„sichtbar, aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet“), die §34
+für den Quell-Picker bereits vorgenommen hat, jetzt auch hier: `importTargetChoices` filtert
+PERSONAL-Sets vor jeder Verarbeitung aus `account.sets` heraus (`toAccountGroup`), damit sie nie zu
+einer `ImportTargetSetChoice`-Zeile werden. `isPersonal` ist damit aus `ImportTargetSetChoice`
+entfernt — der einzige verbleibende `disabledReason: 'notNormalKind'`-Fall ist `GLOBAL`/`SPECIAL`,
+und die gemeinsame Beschriftung `import.target.kindUnavailable` reicht dafür allein; der
+Übersetzungsschlüssel `import.target.kindPersonal` ist aus beiden Locale-Dateien entfernt.
+**Betreiber-Entscheidung 2026-09-22: `GLOBAL`/`SPECIAL` bleiben bei 8.6s ursprünglicher Behandlung**
+— sichtbar, deaktiviert, beschriftet — unverändert, nur `PERSONAL` ist betroffen.
+
+Ein gemeldetes aktives Set, das selbst `PERSONAL` ist, zählt seitdem wie „kein aktives Set“ (P2-2s
+Muster aus dem Quell-Picker, hier auf `ImportTargetAccountGroup.activeEmoteSetId` übertragen):
+`toAccountGroup` nullt dieses Feld, sobald das gemeldete `account.activeEmoteSetId` auf ein
+PERSONAL-Set zeigt, statt die rohe ID unverändert durchzureichen — sonst hätte weder die Vorauswahl
+noch `import-flow.ts`s `toTargetSelection` (die den „getracktes Ziel und `emoteSetId ===
+activeEmoteSetId`“-Kurzweg genau über dieses Feld entscheidet) einen Weg gehabt zu erkennen, dass die
+ID auf keine gerenderte Zeile mehr zeigt.
+
+**3. Ein Konto ohne nutzbares Set nach dem Filtern bekommt eine eigene, ruhige Notiz.**
+**Betreiber-Entscheidung 2026-09-22:** Bleibt einem Konto nach dem PERSONAL-Filter kein Set mehr
+übrig — sei es, weil es nur PERSONAL-Sets hatte, sei es, weil es von vornherein leer war —, bleibt
+seine Überschrift stehen, und darunter erscheint „Kein nutzbares Set“ (`import.target.noUsableSets`,
+neuer Schlüssel in beiden Locale-Dateien) statt stillschweigend nichts zu zeigen. Bewusst **nicht**
+dieselbe Meldung wie `setsUnavailable` („Sets nicht lesbar“): Letztere bedeutet, die Liste konnte gar
+nicht gelesen werden, Ersteres, sie wurde gelesen und war (nach dem Filtern) leer — zwei
+unterschiedliche Tatsachen, zwei unterschiedliche Texte. Das Transformmodell macht den Unterschied
+explizit über ein neues `ImportTargetAccountGroup.noUsableSets: boolean`
+(`sets.length === 0 && !setsUnavailable`), statt ihn nur in der Vorlage abzuleiten.
+`ImportTargetDialog.hasAnySet()` bleibt unverändert korrekt: sie fragt weiterhin, ob irgendein Konto
+irgendwo mindestens ein Set hat, unabhängig davon, ob ein einzelnes Konto seine eigene
+„kein nutzbares Set“-Notiz zeigt.
+
+**Layout-Korrektur an der ungetrackten Bestätigung (kein Vertragswechsel, aber derselbe Anlass):**
+Die Bestätigungsbox für ein ungetracktes Ziel (8.6, AK 35) legte ihren Text und ihre zwei Buttons
+bisher nebeneinander in `NoticeBanner`s `[notice-action]`-Slot — bei zwei Buttons in einer
+rechtsbündigen Aktionsspalte lief das auf ein bis zwei Wörter pro Zeile hinaus. Die Buttons stehen
+jetzt in einer eigenen Zeile **unter** dem Text, beide im normalen Inhalts-Slot des Banners statt im
+Aktions-Slot — reine Darstellung, der Vertrag (Bestätigung Pflicht, Abbruch stellt den vorherigen
+Radio-Zustand wieder her) ist unverändert.
+
+**Geltungsbereich von §34 damit geschlossen.** §34s eigener Vorbehalt („Der Ziel-Picker
+… zeigt PERSONAL weiterhin deaktiviert und variiert sein Layout weiterhin nach Set-Zahl — Issue #217
+beschreibt genau diesen Ist-Zustand als das, was der Nachläufer dort noch ändern muss“) ist mit
+diesem Abschnitt erledigt: Quell- und Ziel-Picker behandeln PERSONAL und die Layout-Einheitlichkeit
+jetzt gleich.
+
+Details (betroffene Dateien) im Entscheidungslog, Eintrag 2026-09-22 „Target-set picker: one heading
+per account, one radio per set, PERSONAL sets hidden“.

@@ -10,6 +10,76 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-22 — Target-set picker: one heading per account, one radio per set, PERSONAL sets hidden (#217)
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-target-choices.ts` ·
+`web/src/app/shared/seven-tv/import-target-choices.spec.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-target-dialog.spec.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§39 addendum)
+
+Issue #217's follow-up for the *target* picker, applying to it the same two decisions spec addendum
+34 already applied to the *source* picker (`foreign-channel-step.ts`) on 2026-09-21 — that entry
+explicitly left the target side to its own follow-up, which this is.
+
+**One layout regardless of account or set count.** The picker used to mix three shapes: a multi-set
+account showed a heading with radios below it; a single-set tracked account with a selectable active
+set showed the channel name itself as the radio ("#brudivoeller_tv (aktiv: …)", 8.6's "one-click into
+channel X" shortcut); an account with both an active and further sets showed the channel-radio *and*
+nested set radios at once. Every account is now a plain, non-interactive heading (`<p>`, never a
+radio, never a stop in the radiogroup's native tab order) with every set — including a lone one — as
+its own radio below it, the active one labelled "(aktiv)". The merged header-radio shortcut
+(`headerSet()`/`remainingSets()`) is removed outright; picking a single-set or active-set account
+still costs one click, just on that set's own radio instead of the account's name. The radiogroup
+itself keeps rendering only when at least one radio exists (the ARIA constraint, unchanged).
+Preselection is unchanged in contract — still only the caller's own account's active set
+(`isOwnAccount`, finding 4 from 2026-09-21) — but `firstPreselectableTarget()` now reads that set
+directly off the (already PERSONAL-filtered) own account's set list instead of through the removed
+shortcut, so it can never disagree with what the template renders.
+
+**PERSONAL sets are hidden entirely, not shown disabled.** Same reversal of spec 8.6 ("sichtbar,
+aber deaktiviert und beschriftet — nie kommentarlos wählbar, nie ausgeblendet") that addendum 34
+already made for the source picker: `importTargetChoices` filters `PERSONAL` sets out of
+`account.sets` before building any `ImportTargetSetChoice`, so one never reaches the template.
+`isPersonal` is dropped from `ImportTargetSetChoice` — the only remaining `disabledReason:
+'notNormalKind'` case is `GLOBAL`/`SPECIAL`, both sharing `import.target.kindUnavailable`. The
+now-unused `import.target.kindPersonal` key is removed from both locale files. **Operator decision
+2026-09-22: `GLOBAL`/`SPECIAL` keep 8.6's original treatment unchanged** — visible, disabled,
+labelled — only `PERSONAL` is affected.
+
+An account's reported active set that is itself `PERSONAL` now counts as no active set at all
+(mirrors the source picker's P2-2 fix): `toAccountGroup` nulls `ImportTargetAccountGroup.
+activeEmoteSetId` whenever the raw `account.activeEmoteSetId` names a `PERSONAL` set, rather than
+passing that id through unchanged — otherwise neither the preselection effect nor `import-flow.ts`'s
+`toTargetSelection` (which decides its "tracked target and `emoteSetId === activeEmoteSetId`" fast
+path from exactly this field) could tell that the id no longer names a rendered row.
+
+**Operator decision 2026-09-22: an account left with zero sets after filtering gets its own, quiet
+notice.** Whether an account had only `PERSONAL` sets or genuinely none, its heading still renders
+and a new "Kein nutzbares Set" / "No usable set" text (`import.target.noUsableSets`, new key in both
+locale files) appears below it — never silence. Deliberately distinct from `setsUnavailable`'s "Sets
+nicht lesbar": one means the list could not be read at all, the other means it was read and, after
+filtering, held nothing. Made explicit in the transform model via a new
+`ImportTargetAccountGroup.noUsableSets: boolean` (`sets.length === 0 && !setsUnavailable`) rather
+than left implicit in the template. `ImportTargetDialog.hasAnySet()` is unaffected — it still asks
+whether *any* account anywhere has at least one set, independent of a single account's own notice.
+
+**Unrelated layout fix, same commit window.** The untracked-target confirmation banner (8.6, AK 35)
+used to lay its text and two buttons side by side in `NoticeBanner`'s `[notice-action]` slot, which
+squeezed each button's label to one or two words per line at narrow width. The two buttons now sit
+in their own row *below* the text, both inside the banner's default content slot instead of the
+action slot — a rendering change only; the contract (confirmation mandatory, cancel restores the
+prior radio state) is unchanged.
+
+**Addendum 34's scope note closed.** That entry's own caveat — "the target picker still shows
+PERSONAL disabled and still varies its layout by set count … the separate follow-up applies the same
+two decisions there" — is resolved by this entry: source and target pickers now treat PERSONAL and
+layout uniformity identically.
+
+---
+
 ### 2026-09-21 — A row of the set view is identified by its 7TV id; bookkeeping speaks 7TV ids (#200, K4 — first part)
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` ·

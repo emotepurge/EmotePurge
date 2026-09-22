@@ -8,9 +8,14 @@ import {
  *  `kind` value must land as `notNormalKind` without a code change here. */
 export type ImportTargetDisabledReason = 'notNormalKind' | 'isSourceSet';
 
-/** One selectable set row of the target picker (spec 8.6). Carries everything the dialog needs at
- *  selection time to build the eventual `ImportTargetChoice` it closes with — `channelName` is the
- *  account's `channelName` (`null` for an untracked account), not a per-set field. */
+/** One selectable set row of the target picker (spec 8.6, addendum 39). Carries everything the
+ *  dialog needs at selection time to build the eventual `ImportTargetChoice` it closes with —
+ *  `channelName` is the account's `channelName` (`null` for an untracked account), not a per-set
+ *  field. Never a `PERSONAL` set — {@link toAccountGroup} filters those out before this shape ever
+ *  gets built (spec addendum 39, mirroring the source picker's own addendum 34), so there is no
+ *  `isPersonal` field left to carry: the only `disabledReason` a rendered set can still have besides
+ *  `isSourceSet` is `notNormalKind`, and the only kinds left that trigger it (`GLOBAL`/`SPECIAL`)
+ *  share one label either way. */
 export interface ImportTargetSetChoice {
   emoteSetId: string;
   setName: string;
@@ -22,8 +27,6 @@ export interface ImportTargetSetChoice {
   ownerDisplayName: string;
   /** Labeled "aktiv" (spec 8.6) — `EmoteSetTargetSummary.isActive`, from `activeEmoteSetId` (E21). */
   isActive: boolean;
-  /** Only feeds the label, never selectability by itself (E7) — see {@link disabledReason}. */
-  isPersonal: boolean;
   disabled: boolean;
   disabledReason: ImportTargetDisabledReason | null;
 }
@@ -50,11 +53,24 @@ export interface ImportTargetAccountGroup {
    *  can tell a click on this account's active set apart from any other, *without* re-deriving it
    *  from `ImportTargetSetChoice.isActive` a second time at the point that decision actually
    *  matters (`import-flow.ts`'s `toTargetSelection`, spec 8.6/F5/AK 36). `null` for an untracked
-   *  account, which has no channel-scoped "our" notion of active at all. */
+   *  account, which has no channel-scoped "our" notion of active at all — **and** whenever the
+   *  account's reported active set turns out to be `PERSONAL` (spec addendum 39, mirroring the
+   *  source picker's P2-2 fix): a `PERSONAL` active set is filtered out of {@link sets} entirely, so
+   *  nothing may point either the preselection ({@link ImportTargetDialog}'s
+   *  `firstPreselectableTarget`) or the "is this pick the account's active set" comparison in
+   *  `import-flow.ts`'s `toTargetSelection` at an id this picker no longer offers a row for. */
   activeEmoteSetId: string | null;
   /** This account's own set list could not be read — render the account with a visible reason
    *  instead of a silently empty flyout (spec Falle, 8.6). */
   setsUnavailable: boolean;
+  /** {@link sets} is empty *and* {@link setsUnavailable} is `false` — the account's set list was
+   *  read successfully but held nothing offerable, either because it was genuinely empty or because
+   *  every set on it was `PERSONAL` and got filtered out (spec addendum 39, operator decision
+   *  2026-09-22: both read the same to the picker, and distinguishing them would cost a case nobody
+   *  asked for). Distinct from {@link setsUnavailable} — that one means "we couldn't even read the
+   *  list", this one means "we read it, and there is nothing here to offer". The account still
+   *  renders (its heading stays), with a short notice in place of any radio. */
+  noUsableSets: boolean;
   sets: ImportTargetSetChoice[];
 }
 
@@ -94,8 +110,9 @@ function resolveOwnerLabel(
 
 /**
  * Pure transform from 6.2's wire response into the picker's two account groups (spec 8.6, first
- * three bullets). Replaces `import-target-options.ts`'s `importTargetOptions` — the picker chooses
- * *sets*, not *channels*, so the unit of selection changed, not just the data source.
+ * three bullets; layout and PERSONAL-filtering per addendum 39). Replaces
+ * `import-target-options.ts`'s `importTargetOptions` — the picker chooses *sets*, not *channels*,
+ * so the unit of selection changed, not just the data source.
  *
  * `sourceEmoteSetId` is `CapturedImportScope.emoteSetId` — the run's own source set. It disables that
  * one set wherever it appears in the offer list (normally under the account whose `channelName`
@@ -130,15 +147,30 @@ function toAccountGroup(
   sourceEmoteSetId: string,
   unknownOwnerLabel: string,
 ): ImportTargetAccountGroup {
+  // Spec addendum 39 (#217): `PERSONAL` sets never reach the picker at all, not even disabled —
+  // filtered here, before anything downstream (the dialog's template, its preselection) ever sees
+  // one. Mirrors foreign-channel-step.ts's `selectableRadioSets` for the source picker (addendum
+  // 34), just done once here instead of as a template-level computed, since this transform is
+  // already the one place every set passes through.
+  const offerableSets = account.sets.filter((set) => !set.isPersonal);
+
+  // A reported active set that is itself PERSONAL counts as no active set at all (addendum 39,
+  // mirroring the source picker's P2-2 fix) — it has no row in offerableSets to point at, so
+  // nothing downstream may still treat its raw id as meaningful.
+  const activeSetIsPersonal = account.sets.some(
+    (set) => set.id === account.activeEmoteSetId && set.isPersonal,
+  );
+
   return {
     twitchChannelId: account.twitchChannelId,
     twitchLogin: account.twitchLogin,
     channelName: account.trackedChannelName,
     isTracked: account.trackedChannelName !== null,
     isOwnAccount: account.isOwnAccount,
-    activeEmoteSetId: account.activeEmoteSetId,
+    activeEmoteSetId: activeSetIsPersonal ? null : account.activeEmoteSetId,
     setsUnavailable: account.setsUnavailable,
-    sets: account.sets.map((set) => ({
+    noUsableSets: offerableSets.length === 0 && !account.setsUnavailable,
+    sets: offerableSets.map((set) => ({
       emoteSetId: set.id,
       setName: set.name,
       ownerDisplayName: resolveOwnerLabel(
@@ -147,11 +179,11 @@ function toAccountGroup(
         unknownOwnerLabel,
       ),
       isActive: set.isActive,
-      isPersonal: set.isPersonal,
       disabled: set.id === sourceEmoteSetId || set.kind !== 'NORMAL',
       disabledReason:
         // The source takes precedence when (implausibly) both apply — "this is where it came
-        // from" is the more specific, more actionable reason of the two.
+        // from" is the more specific, more actionable reason of the two. `notNormalKind` can now
+        // only ever mean GLOBAL/SPECIAL — PERSONAL is filtered out above before this ternary runs.
         set.id === sourceEmoteSetId
           ? 'isSourceSet'
           : set.kind !== 'NORMAL'

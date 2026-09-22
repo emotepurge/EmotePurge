@@ -109,27 +109,27 @@ describe('importTargetChoices', () => {
     expect(halloween).toMatchObject({ disabled: false, disabledReason: null });
   });
 
-  it.each(['PERSONAL', 'GLOBAL', 'SPECIAL'])(
-    'disables a %s-kind set with reason "notNormalKind"',
-    (kind) => {
-      const result = importTargetChoices(
-        response([
-          account({
-            twitchChannelId: '1',
-            trackedChannelName: 'handofblood',
-            sets: [set({ id: 'set-x', kind })],
-          }),
-        ]),
-        'source-set',
-        UNKNOWN_OWNER,
-      );
+  // PERSONAL is deliberately absent from this table — it is filtered out of the offer entirely
+  // (addendum 39) rather than rendered disabled, so it gets its own describe block below instead of
+  // sharing this "still offered, but disabled" case with GLOBAL/SPECIAL.
+  it.each(['GLOBAL', 'SPECIAL'])('disables a %s-kind set with reason "notNormalKind"', (kind) => {
+    const result = importTargetChoices(
+      response([
+        account({
+          twitchChannelId: '1',
+          trackedChannelName: 'handofblood',
+          sets: [set({ id: 'set-x', kind })],
+        }),
+      ]),
+      'source-set',
+      UNKNOWN_OWNER,
+    );
 
-      expect(result.tracked[0].sets[0]).toMatchObject({
-        disabled: true,
-        disabledReason: 'notNormalKind',
-      });
-    },
-  );
+    expect(result.tracked[0].sets[0]).toMatchObject({
+      disabled: true,
+      disabledReason: 'notNormalKind',
+    });
+  });
 
   it('leaves a NORMAL-kind set enabled', () => {
     const result = importTargetChoices(
@@ -153,7 +153,10 @@ describe('importTargetChoices', () => {
         account({
           twitchChannelId: '1',
           trackedChannelName: 'handofblood',
-          sets: [set({ id: 'set-x', kind: 'PERSONAL' })],
+          // GLOBAL, not PERSONAL: a PERSONAL set is filtered out of the offer before this ternary
+          // ever runs (see the PERSONAL describe block below), so it can no longer stand in for
+          // "some non-NORMAL kind" in this precedence test — GLOBAL still can.
+          sets: [set({ id: 'set-x', kind: 'GLOBAL' })],
         }),
       ]),
       'set-x',
@@ -163,20 +166,148 @@ describe('importTargetChoices', () => {
     expect(result.tracked[0].sets[0].disabledReason).toBe('isSourceSet');
   });
 
-  it('passes isActive and isPersonal through unchanged, for the "aktiv"/"persönliches Set" labels', () => {
+  it('passes isActive through unchanged, for the "aktiv" label', () => {
     const result = importTargetChoices(
       response([
         account({
           twitchChannelId: '1',
           trackedChannelName: 'handofblood',
-          sets: [set({ id: 'set-x', isActive: true, isPersonal: true, kind: 'PERSONAL' })],
+          sets: [set({ id: 'set-x', isActive: true })],
         }),
       ]),
       'source-set',
       UNKNOWN_OWNER,
     );
 
-    expect(result.tracked[0].sets[0]).toMatchObject({ isActive: true, isPersonal: true });
+    expect(result.tracked[0].sets[0]).toMatchObject({ isActive: true });
+  });
+
+  // Addendum 39 (#217): PERSONAL sets are hidden from the target picker entirely, not shown
+  // disabled — a personal 7TV set holds a handful of emotes at most and is not a plausible target.
+  describe('PERSONAL sets are hidden entirely (addendum 39, #217)', () => {
+    it('filters a PERSONAL set out of the offered list, leaving the NORMAL sibling', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: '1',
+            trackedChannelName: 'handofblood',
+            sets: [
+              set({
+                id: 'set-personal',
+                name: 'Personal Emotes',
+                kind: 'PERSONAL',
+                isPersonal: true,
+              }),
+              set({ id: 'set-main', name: 'Main', kind: 'NORMAL' }),
+            ],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.tracked[0].sets.map((s) => s.emoteSetId)).toEqual(['set-main']);
+    });
+
+    it('sets noUsableSets when every set on the account is PERSONAL (filtered down to zero, not a read failure)', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: '1',
+            trackedChannelName: 'handofblood',
+            sets: [set({ id: 'set-personal', kind: 'PERSONAL', isPersonal: true })],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.tracked[0]).toMatchObject({
+        sets: [],
+        noUsableSets: true,
+        setsUnavailable: false,
+      });
+    });
+
+    it('sets noUsableSets when the account genuinely has no sets at all', () => {
+      const result = importTargetChoices(
+        response([account({ twitchChannelId: '1', trackedChannelName: 'handofblood', sets: [] })]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.tracked[0]).toMatchObject({ noUsableSets: true, setsUnavailable: false });
+    });
+
+    it('does not set noUsableSets when at least one non-PERSONAL set remains', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: '1',
+            trackedChannelName: 'handofblood',
+            sets: [set({ id: 'set-main', kind: 'NORMAL' })],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.tracked[0].noUsableSets).toBe(false);
+    });
+
+    it('does not set noUsableSets when the empty list is a read failure (setsUnavailable) — distinct notices', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: '1',
+            trackedChannelName: 'handofblood',
+            setsUnavailable: true,
+            sets: [],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.tracked[0]).toMatchObject({ setsUnavailable: true, noUsableSets: false });
+    });
+
+    it("nulls activeEmoteSetId when the account's reported active set is itself PERSONAL", () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: '1',
+            trackedChannelName: 'handofblood',
+            activeEmoteSetId: 'set-personal',
+            sets: [
+              set({ id: 'set-personal', kind: 'PERSONAL', isPersonal: true, isActive: true }),
+              set({ id: 'set-main', kind: 'NORMAL' }),
+            ],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.tracked[0].activeEmoteSetId).toBeNull();
+    });
+
+    it('keeps activeEmoteSetId when the reported active set is not PERSONAL', () => {
+      const result = importTargetChoices(
+        response([
+          account({
+            twitchChannelId: '1',
+            trackedChannelName: 'handofblood',
+            activeEmoteSetId: 'set-main',
+            sets: [set({ id: 'set-main', kind: 'NORMAL', isActive: true })],
+          }),
+        ]),
+        'source-set',
+        UNKNOWN_OWNER,
+      );
+
+      expect(result.tracked[0].activeEmoteSetId).toBe('set-main');
+    });
   });
 
   it('carries ownerDisplayName and setName per set, for the eventual ImportTargetChoice', () => {
