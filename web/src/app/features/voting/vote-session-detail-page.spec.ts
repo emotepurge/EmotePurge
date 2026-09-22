@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { VoteSessionResult, VoteSessionResults } from '../../core/voting/vote-session.model';
 import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { VoteSessionDetailPage } from './vote-session-detail-page';
@@ -241,6 +242,31 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
     silentReload(results([resultEmote('a', { isArchived: true, eligible: false }), b]));
 
     expect(component['selection'].selectedKeys()).toEqual(['a']);
+  });
+
+  // Opus review P2-b: the card stays selected/markable (the assertion above), but a null-session's
+  // own archived row must not reach the delete run — before this filter existed, a confirmed
+  // selection that included it blocked the ENTIRE run on every attempt once #227 P1 started
+  // fail-closing on any row a live read cannot find (an archived row never left results.emotes for a
+  // fixed ballot, so no reload ever cleared it).
+  it("excludes a null-session's own archived row from selectedForDelete, even while it stays selected", () => {
+    const a = resultEmote('a');
+    const b = resultEmote('b');
+
+    mount(results([a, b]));
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(b, { shiftKey: true } as MouseEvent);
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    expect(
+      component['selectedForDelete']()
+        .map((row) => row.emoteId)
+        .sort(),
+    ).toEqual(['a', 'b']);
+
+    silentReload(results([resultEmote('a', { isArchived: true, eligible: false }), b]));
+
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    expect(component['selectedForDelete']().map((row) => row.emoteId)).toEqual(['b']);
   });
 
   it('a selected row only hidden by the usage filter (not removed from the session) survives a reload untouched', () => {
@@ -861,17 +887,27 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
   // every one of them, not only when the session's own set actually changed (it never does,
   // mid-session). `onDeleted([])` exercises exactly that shape of replacement — its own
   // `results.update()` — without needing the SSE/debounce pipeline at all.
+  // Opus review P3-a: a plain httpMock.expectNone() here would pass even on the OLD, buggy `params`
+  // (reading `results()` directly) too — within loadCachedEmoteSetPreview's own 60 s TTL, a
+  // retriggered, non-refresh call is served from ITS cache without ever reaching HTTP, so the
+  // resource-level retrigger this asserts against is invisible at the network layer. Spying on the
+  // service method itself (which the resource's `stream` always calls, cache hit or not) is what
+  // actually distinguishes "the resource re-ran its stream" from "no HTTP happened to fire" — and
+  // this was verified live: reverting `params` to read `results()` directly turns this red
+  // (`toHaveBeenCalledTimes(1)` sees `2`), confirming the spy is not equally vacuous.
   it('does not re-request the live-membership list on a wholesale results() replacement that leaves the session set unchanged', async () => {
+    const loadSpy = vi.spyOn(TestBed.inject(SevenTvEmoteSetService), 'loadCachedEmoteSetPreview');
+
     const a = resultEmote('a', { totalUseCount: null });
     await mount(results([a], { emoteSetId: 'halloween-1' }), true);
     flushSessionSetMembers(['7tv-a']);
     await settle();
-    httpMock.expectNone(matchesEmoteSetPath);
+    expect(loadSpy).toHaveBeenCalledTimes(1);
 
     component['onDeleted']([]); // removes nothing — the point is the new `results` reference alone
     await settle();
 
-    httpMock.expectNone(matchesEmoteSetPath);
+    expect(loadSpy).toHaveBeenCalledTimes(1);
   });
 
   // Opus review P2-b: with P2-a's fix, the reload `loadResults()` triggers on `channel.synced` no
@@ -905,7 +941,13 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
     await settle();
 
     // Exactly one fresh request — proves the reload() actually reached the network.
-    httpMock.expectOne(matchesEmoteSetPath).flush({
+    const refreshReq = httpMock.expectOne(matchesEmoteSetPath);
+    // And that it actually bypasses loadCachedEmoteSetPreview's own cache (Opus review P3-b) — the
+    // `refresh: true` SevenTvEmoteSetService.loadEmoteSetPreview turns into a `?refresh=true` query
+    // param, not merely "a request happened to go out again" (which could equally be a
+    // cache-serving one, if this describe block's mocks did not go through the real HTTP layer).
+    expect(refreshReq.request.params.get('refresh')).toBe('true');
+    refreshReq.flush({
       channelName: CHANNEL,
       sevenTvUserId: null,
       emoteSetId: 'halloween-1',
