@@ -88,6 +88,7 @@ describe('CreateVoteSessionDialog', () => {
   function render(
     initialIds: readonly string[],
     lockReasonKey?: WritableSignal<string | null>,
+    setSession?: { emoteSetId: string },
   ): Harness {
     const emoteIds = signal<readonly string[]>(initialIds);
 
@@ -96,6 +97,7 @@ describe('CreateVoteSessionDialog', () => {
       emoteIds,
       usageFromDate: '2026-08-01',
       lockReasonKey,
+      setSession,
     };
 
     const fixture = TestBed.createComponent(CreateVoteSessionDialog);
@@ -343,6 +345,44 @@ describe('CreateVoteSessionDialog', () => {
       dialog.submitButton().click();
 
       httpMock.expectOne('/api/channels/sensitron/vote-sessions');
+    });
+  });
+
+  describe('set-session body (spec 6.9, K6)', () => {
+    it('sends emoteSetId and sevenTvEmoteIds instead of emoteIds once the dialog data names a set session', () => {
+      const dialog = render(['7tv-a', '7tv-b'], undefined, { emoteSetId: 'halloween-1' });
+      dialog.fillTitle('Halloween-Wahl');
+
+      dialog.submitButton().click();
+
+      const req = httpMock.expectOne('/api/channels/sensitron/vote-sessions');
+      expect(req.request.body.emoteSetId).toBe('halloween-1');
+      expect(req.request.body.sevenTvEmoteIds).toEqual(['7tv-a', '7tv-b']);
+      expect(req.request.body.emoteIds).toBeUndefined();
+      req.flush({
+        id: 2,
+        title: 'Halloween-Wahl',
+        allowedVoterRoles: 1,
+        isActive: true,
+        startedAt: '2026-08-01T00:00:00Z',
+        endedAt: null,
+        emoteCount: 2,
+        hideResultsUntilEnd: false,
+        emoteSetId: 'halloween-1',
+      });
+      expect(closed).toHaveLength(1);
+    });
+
+    it('still sends the plain emoteIds body, with no emoteSetId/sevenTvEmoteIds, when no set session is named', () => {
+      const dialog = render(['a', 'b']);
+      dialog.fillTitle('Test session');
+
+      dialog.submitButton().click();
+
+      const req = httpMock.expectOne('/api/channels/sensitron/vote-sessions');
+      expect(req.request.body.emoteIds).toEqual(['a', 'b']);
+      expect(req.request.body.emoteSetId).toBeUndefined();
+      expect(req.request.body.sevenTvEmoteIds).toBeUndefined();
     });
   });
 

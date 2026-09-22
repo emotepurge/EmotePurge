@@ -17,13 +17,13 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
             // backdatable (the create form prefills it 30 days back), so ordering by it buries a
             // session created today under older ones. The identity column is the creation order.
             .OrderByDescending(s => s.Id)
-            .Select(s => new { s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, EmoteCount = s.SessionEmotes.Count, s.HideResultsUntilEnd })
+            .Select(s => new { s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, EmoteCount = s.SessionEmotes.Count, s.HideResultsUntilEnd, s.EmoteSetId })
             .ToListAsync(cancellationToken);
 
         // 0 membership rows = dynamic "all emotes" session; the DTO reports that as null, not 0.
         return sessions
             .Select(s => new VoteSessionSummaryDto(
-                s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, s.EmoteCount == 0 ? null : s.EmoteCount, s.HideResultsUntilEnd))
+                s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, s.EmoteCount == 0 ? null : s.EmoteCount, s.HideResultsUntilEnd, s.EmoteSetId))
             .ToList();
     }
 
@@ -39,13 +39,13 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
             .OrderByDescending(s => s.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(s => new { s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, EmoteCount = s.SessionEmotes.Count, s.HideResultsUntilEnd })
+            .Select(s => new { s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, EmoteCount = s.SessionEmotes.Count, s.HideResultsUntilEnd, s.EmoteSetId })
             .ToListAsync(cancellationToken);
 
         // 0 membership rows = dynamic "all emotes" session; the DTO reports that as null, not 0.
         var items = pageRows
             .Select(s => new VoteSessionSummaryDto(
-                s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, s.EmoteCount == 0 ? null : s.EmoteCount, s.HideResultsUntilEnd))
+                s.Id, s.Title, s.AllowedVoterRoles, s.IsActive, s.StartedAt, s.EndedAt, s.EmoteCount == 0 ? null : s.EmoteCount, s.HideResultsUntilEnd, s.EmoteSetId))
             .ToList();
 
         return new PagedResult<VoteSessionSummaryDto>(items, page, pageSize, totalCount);
@@ -72,17 +72,32 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
             .Select(se => se.EmoteId)
             .ToListAsync(cancellationToken);
 
+        // A set-session's ballot is never empty (spec section 9 invariant), so EmoteSetId != null is
+        // the same test as "this is a fixed ballot" here — subsetEmoteIds.Count == 0 already implies
+        // a null-session.
+        var isSetSession = session.EmoteSetId is not null;
+
         // No membership rows = dynamic "all emotes" session: archived emotes vanish from the results,
-        // exactly as before the subset feature. An explicit ballot keeps its archived members visible
-        // (badged in the UI, voting on them closed) so a curated list never loses entries silently.
+        // exactly as before the subset feature. An explicit ballot (null-session subset or
+        // set-session) keeps its members visible even once archived (badged in the UI for a
+        // null-session; a set-session shows no such badge, section 9) so a curated list never loses
+        // entries silently. A fixed ballot reads through VoteSessionEmotes rather than Emotes
+        // directly, so a set-session's frozen NameAtCreation/ImageUrlAtCreation can win over the
+        // live Emote row (null for a null-session's row, where the live Emote is always the answer —
+        // VoteSessionEmote.cs).
         var candidateEmotes = subsetEmoteIds.Count == 0
             ? await db.Emotes
                 .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
                 .Select(e => new CandidateEmote(e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived))
                 .ToListAsync(cancellationToken)
-            : await db.Emotes
-                .Where(e => e.ChannelId == channel.Id && subsetEmoteIds.Contains(e.Id))
-                .Select(e => new CandidateEmote(e.Id, e.Name, e.SevenTvEmoteId, e.ImageUrl, e.IsArchived))
+            : await db.VoteSessionEmotes
+                .Where(se => se.VoteSessionId == sessionId)
+                .Select(se => new CandidateEmote(
+                    se.EmoteId,
+                    se.NameAtCreation ?? se.Emote.Name,
+                    se.Emote.SevenTvEmoteId,
+                    se.ImageUrlAtCreation ?? se.Emote.ImageUrl,
+                    se.Emote.IsArchived))
                 .ToListAsync(cancellationToken);
 
         var myVotesByEmoteId = viewerTwitchUserId is null
@@ -98,13 +113,12 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
         // skipped entirely for everyone else. Scoped to the ballot rather than to the channel: a
         // subset session may hold twenty emotes out of a thousand, and asking for the channel's
         // totals meant zero-filling all thousand only to discard the rest here.
-        // The channel's active set for now: every session that exists today was created against it,
-        // and a session that names its own set does not exist yet. When it does, this reads that
-        // one and falls back to the active one.
+        // A set-session's own set (its ballot was drawn from it, spec section 9); a null-session
+        // reads the channel's active set, exactly as before set-sessions existed.
         var usageByEmoteId = !includeRawUsage || candidateEmotes.Count == 0
             ? new Dictionary<string, int>()
             : await usageStatQueryService.GetTotalsByEmoteIdsAsync(
-                candidateEmotes.Select(e => e.Id).ToList(), from, to, channel.ActiveEmoteSetId, cancellationToken);
+                candidateEmotes.Select(e => e.Id).ToList(), from, to, session.EmoteSetId ?? channel.ActiveEmoteSetId, cancellationToken);
 
         // Same as the usage totals above: not computed at all for a viewer who may not see them.
         var voteTallies = !includeTallies
@@ -125,7 +139,7 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
             .CountAsync(cancellationToken);
 
         var rows = candidateEmotes.Select(e =>
-            BuildResultRow(e, includeTallies, includeRawUsage, voteTallies, myVotesByEmoteId, usageByEmoteId));
+            BuildResultRow(e, isSetSession, includeTallies, includeRawUsage, voteTallies, myVotesByEmoteId, usageByEmoteId));
 
         // With the tallies withheld, the score ordering is the leak: the position of a row would spell
         // out its ranking just as precisely as the numbers did. Name order carries no such signal — and
@@ -143,7 +157,7 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
 
         return new VoteSessionResultsDto(
             session.Id, session.Title, session.AllowedVoterRoles, session.IsActive, session.StartedAt,
-            session.EndedAt, voterCount, session.HideResultsUntilEnd, results);
+            session.EndedAt, voterCount, session.HideResultsUntilEnd, results, session.EmoteSetId);
     }
 
     public async Task<PagedResult<MyVoteSessionDto>> ListMyVoteSessionsAsync(string voterTwitchUserId, int page, int pageSize, CancellationToken cancellationToken = default)
@@ -177,6 +191,7 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
     /// <summary>Assembles one result row from a candidate emote plus the tallies/votes/usage looked up for it.</summary>
     private static VoteSessionResultDto BuildResultRow(
         CandidateEmote emote,
+        bool isSetSession,
         bool includeTallies,
         bool includeRawUsage,
         IReadOnlyDictionary<string, VoteTallyRow> voteTallies,
@@ -189,12 +204,26 @@ public class VoteSessionQueryService(AppDbContext db, IUsageStatQueryService usa
         int? delete = includeTallies ? tally?.Delete ?? 0 : null;
         var myVote = myVotesByEmoteId.TryGetValue(emote.Id, out var voteType) ? voteType : (VoteType?)null;
 
-        // null = withheld (non-manager) or not computed: GetUsageTotalsAsync excludes archived
-        // emotes, and reporting a fabricated 0 for an archived ballot member would just be wrong.
-        int? useCount = includeRawUsage && !emote.IsArchived ? usageByEmoteId.GetValueOrDefault(emote.Id, 0) : null;
+        // "member of the session's set" replaces "not archived" for a set-session (spec section 9):
+        // its fixed ballot never closes to voting just because the member has since left 7TV — that
+        // is exactly what the ballot froze at creation. A null-session keeps the archived-row rule.
+        var eligible = isSetSession || !emote.IsArchived;
+
+        // Non-manager: withheld, same as before. Null-session: unchanged — archived rows report no
+        // usage (a fabricated 0 for a row GetUsageTotalsAsync excludes would be wrong), everything
+        // else defaults a missing dictionary entry to a genuine 0 (no UsageStat row in range means
+        // no use happened, not that the answer is unknown). Set-session: eligible is always true, so
+        // that gate no longer applies — instead a missing dictionary entry means "no UsageStat row
+        // under this set at all" and reports null rather than a fabricated 0 (spec section 9, AK 80).
+        int? useCount = !includeRawUsage
+            ? null
+            : isSetSession
+                ? usageByEmoteId.TryGetValue(emote.Id, out var setUseCount) ? setUseCount : null
+                : !emote.IsArchived ? usageByEmoteId.GetValueOrDefault(emote.Id, 0) : null;
 
         return new VoteSessionResultDto(
-            emote.Id, emote.Name, emote.SevenTvEmoteId, emote.ImageUrl, useCount, keep, delete, keep - delete, emote.IsArchived, myVote);
+            emote.Id, emote.Name, emote.SevenTvEmoteId, emote.ImageUrl, useCount, keep, delete, keep - delete,
+            emote.IsArchived, eligible, myVote);
     }
 
     /// <summary>A candidate ballot row, projected by name instead of an anonymous type so <see cref="BuildResultRow"/> can take it as a parameter.</summary>

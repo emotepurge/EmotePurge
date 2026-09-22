@@ -105,7 +105,7 @@
         class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-2 text-xs text-fg-muted lg:hidden pointer-coarse:hidden"
       >
         <span class="font-medium text-fg">{{ emote.emoteName }}</span>
-        @if (emote.isArchived) {
+        @if (!emote.eligible) {
           <span class="text-warning-fg">{{ 'voting.detail.archivedBadge' | transloco }}</span>
         }
         @if (emote.totalUseCount !== null) {
@@ -152,7 +152,7 @@
 
   <!-- Gated like the cell selection that feeds it — without delete power the panel could only
        ever show an empty selection. -->
-  @if (canSelectForDelete() && !isCoarse() && activeEmoteSetId(); as setId) {
+  @if (canSelectForDelete() && !isCoarse() && massDeletePanelSetId(); as setId) {
     <app-mass-delete-panel
       [setId]="setId"
       [activeSetId]="activeEmoteSetId()"
@@ -244,7 +244,7 @@
                   "
                   [class]="
                     'app-sprite-cell relative block ' +
-                    (emote.isArchived ? 'app-sprite-cell-void ' : '') +
+                    (!emote.eligible ? 'app-sprite-cell-void ' : '') +
                     (cellAction() === 'none' ? '' : 'cursor-pointer ')
                   "
                   [style.height.px]="cellPx()"
@@ -269,7 +269,7 @@
                     [url]="emote.imageUrl"
                     [size]="96"
                     sizes="(min-width: 640px) 64px, 96px"
-                    [dimmed]="emote.isArchived"
+                    [dimmed]="!emote.eligible"
                   />
                   <!-- The usage figure printed onto the sprite, as on the usage atlas. `null` is
                        the server's withholding verdict, not a zero, so it prints nothing. -->
@@ -307,7 +307,7 @@
                         ? 'bg-success-solid text-on-accent hover:bg-success-solid-hover'
                         : 'bg-surface-inset text-fg-secondary hover:bg-surface-inset-hover')
                     "
-                    [disabled]="emote.isArchived"
+                    [disabled]="!emote.eligible"
                     [attr.aria-pressed]="emote.myVote === voteType.Keep"
                     [attr.aria-label]="'voting.detail.keepAriaLabel' | transloco"
                     [attr.title]="keepButtonTitle(emote)"
@@ -340,7 +340,7 @@
                         ? 'bg-danger-solid text-on-accent hover:bg-danger-solid-hover'
                         : 'bg-surface-inset text-fg-secondary hover:bg-surface-inset-hover')
                     "
-                    [disabled]="emote.isArchived"
+                    [disabled]="!emote.eligible"
                     [attr.aria-pressed]="emote.myVote === voteType.Delete"
                     [attr.aria-label]="'voting.detail.deleteAriaLabel' | transloco"
                     [attr.title]="deleteButtonTitle(emote)"
@@ -421,12 +421,12 @@
               <app-emote-sprite-animated
                 [url]="emote.imageUrl"
                 [size]="56"
-                [dimmed]="emote.isArchived"
+                [dimmed]="!emote.eligible"
               />
             </span>
             <div class="min-w-0">
               <p class="text-sm font-semibold break-all text-fg">{{ emote.emoteName }}</p>
-              @if (emote.isArchived) {
+              @if (!emote.eligible) {
                 <p class="mt-0.5 text-[11px] text-warning-fg">
                   {{ 'voting.detail.archivedBadge' | transloco }}
                 </p>

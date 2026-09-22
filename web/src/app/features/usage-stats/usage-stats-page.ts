@@ -735,12 +735,12 @@ export class UsageStatsPage {
    * previous list was itself `truncated` — never merely for being mid-reload. `null` for the
    * active view and for a non-active view whose member list loaded clean.
    *
-   * Shared by `deleteLockReasonKey` (spec #200, 8.3/8.8) and `voteLockReasonKey` (spec 9, K6): a
-   * vote session is still locked for *every* non-active view regardless of this shared reason —
-   * `voteLockReasonKey` adds its own "for now, active set only" text on top when this one is
-   * `null` but the view is still non-active. Deleting has no such blanket reason any more since
-   * K5/T5.3 (spec 8.8): the run is set-aware (T5.1/T5.2) and the confirmation names the set, so a
-   * plain non-active view with a good member list is no longer locked for it.
+   * Shared by `deleteLockReasonKey` (spec #200, 8.3/8.8) and `voteLockReasonKey` (spec 9, K6) —
+   * identically since K6: a plain non-active view with a good member list locks neither. Deleting
+   * is set-aware since K5/T5.3 (T5.1/T5.2, the confirmation names the set); voting creates a
+   * set-session over the shown set since K6. An unreadable or truncated list locks both: the
+   * set-session create validates the ballot against the live member list server-side, so a list
+   * the page cannot read in full cannot back a trustworthy ballot either.
    */
   private readonly sharedSetViewLockReasonKey = computed<string | null>(() => {
     if (this.viewSwitching()) {
@@ -771,13 +771,6 @@ export class UsageStatsPage {
   protected readonly deleteLockReasonKey = computed<string | null>(() =>
     this.sharedSetViewLockReasonKey(),
   );
-
-  /** Element id of the vote button's own lock-reason paragraph (`.html`, next to
-   *  `app-mass-delete-panel`) — needed only since T5.3, when deleting is unlocked but voting still
-   *  is (a plain non-active view). One page instance at a time, so a static id is enough, unlike
-   *  `MassDeletePanel.deleteLockReasonId`, which needs a per-instance suffix because that
-   *  component renders twice on one page. */
-  protected readonly voteOnlyLockReasonId = 'usage-stats-vote-only-lock-reason';
 
   /**
    * Set names by id, for the name-twin marker's tooltip (E24, AK 59) and — since K5/T5.3 — for the
@@ -1387,12 +1380,13 @@ export class UsageStatsPage {
   );
 
   /**
-   * The ballot a vote session created from the selection would carry: `Emote.Id` Guids, resolved
+   * The ballot a NULL-session created from the selection would carry: `Emote.Id` Guids, resolved
    * from the selected rows at the moment it is read — which, handed to the dialog as a signal, is
    * the moment it submits (spec E4, 7.2: the grid's keys are 7TV ids, a null session still speaks
    * Guids). Live, not a snapshot, for the same reason the dialog always took a live signal (#132).
-   * In the active set's view every row has a Guid; a non-active view does not offer the button yet
-   * (set sessions are K6), see `voteLocked`.
+   * Every row of the active set's view has a Guid, so nothing is ever dropped here — this is only
+   * ever read for that view (`openCreateVoteSession`), never for a non-active one, which builds a
+   * SET-session ballot from `voteBallotSevenTvEmoteIds` instead (spec 6.9, K6).
    */
   private readonly voteBallotEmoteIds = computed(() =>
     this.selection
@@ -1400,22 +1394,28 @@ export class UsageStatsPage {
       .flatMap((emote) => (emote.emoteId !== null ? [emote.emoteId] : [])),
   );
 
-  /** A vote session is a session over the channel's **active** set until set sessions exist (K6,
-   *  spec 9) — so a non-active view cannot create one from its selection yet. The dock's lock line
-   *  (`deleteLockReasonKey`'s interim reason) names this together with the delete lock. */
+  /**
+   * The ballot a SET-session created from the selection would carry: 7TV emote ids, the same live
+   * resolution as `voteBallotEmoteIds` above, just against the id every row of *any* view — active
+   * or not, Guid or class-2b — always has (spec 6.9, 7.2). Read only for a non-active view
+   * (`openCreateVoteSession`); the active view's button still speaks Guids.
+   */
+  private readonly voteBallotSevenTvEmoteIds = computed(() =>
+    this.selection.selectedItems().map((emote) => emote.sevenTvEmoteId),
+  );
+
+  /** Voting is locked exactly when deleting is (`sharedSetViewLockReasonKey`): mid-switch (spec
+   *  §36: the selected set is not yet the one shown), or while the shown non-active set's member
+   *  list is loading, unreadable or truncated. A settled non-active view is otherwise a legitimate
+   *  place to vote from since K6 (spec 9): it creates a set-session over the *shown* set rather
+   *  than the null-session the active view creates. The dialog re-checks this at submit time. */
   protected readonly voteLocked = computed(() => this.voteLockReasonKey() !== null);
 
   /** The reason behind `voteLocked`, for the vote dialog, which re-checks it at submit time (the
-   *  dialog outlives the moment its button was enabled). Mid-switch or an unreadable/truncated
-   *  member list: `sharedSetViewLockReasonKey`'s own text (the same paragraph the dock shows next
-   *  to the delete button whenever that reason applies to deleting too). Otherwise, for every
-   *  non-active view regardless: the "for now, active set only" text — unlike deleting (K5/T5.3),
-   *  a vote session over a non-active set does not exist yet (K6, spec 9), so this reason does not
-   *  narrow the way `deleteLockReasonKey`'s did. */
+   *  dialog outlives the moment its button was enabled): `sharedSetViewLockReasonKey`, the same
+   *  reason — and therefore the same paragraph — the dock shows next to the delete button. */
   protected readonly voteLockReasonKey = computed<string | null>(() =>
-    this.viewSwitching() || this.isNonActiveView()
-      ? (this.sharedSetViewLockReasonKey() ?? 'usageStats.setView.lock.nonActiveSet')
-      : null,
+    this.sharedSetViewLockReasonKey(),
   );
 
   /**
@@ -2238,15 +2238,22 @@ export class UsageStatsPage {
   // channel/date-range change — that path is unreachable while a modal dialog has focus, so it is
   // not a case the dialog itself needs to guard against.
   protected openCreateVoteSession(): void {
-    // voteLocked: the dock's button is disabled in a non-active view and mid-switch; this guards a
-    // click that outraces that (see voteLocked).
+    // voteLocked: the dock's button is disabled mid-switch; this guards a click that outraces that
+    // (see voteLocked).
     if (this.selection.selectedKeys().length === 0 || this.voteLocked()) {
       return;
     }
 
+    // A non-active view creates a set-session over the *shown* set (spec 6.9, K6) — the active
+    // view still creates today's null-session over the active set (E4). shownSetId() is non-null
+    // here: voteLocked() above already rejects a click while the view is mid-switch, which is the
+    // only state where it can be null (see its own doc comment).
+    const shownSetId = this.isNonActiveView() ? this.shownSetId() : null;
+
     const data: CreateVoteSessionDialogData = {
       channelName: this.channelName(),
-      emoteIds: this.voteBallotEmoteIds,
+      emoteIds: shownSetId !== null ? this.voteBallotSevenTvEmoteIds : this.voteBallotEmoteIds,
+      ...(shownSetId !== null ? { setSession: { emoteSetId: shownSetId } } : {}),
       // Live, like the ballot: the dialog outlives the moment the button was enabled, and a set
       // switch started behind it must block the submit rather than create a session over the
       // active set while another set is chosen.

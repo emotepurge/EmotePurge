@@ -6,8 +6,14 @@ import {
   installLiveStub,
   mockActiveEmoteSet,
   mockAuthMe,
+  mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
+  mockForeignEmoteSetPreview,
+  mockSetWarning,
+  mockSevenTvGql,
+  mockUsageChannelSeries,
+  mockUsageTotals,
   mockVoteSessionResults,
   mockWorkerHealth,
 } from './support/mocks';
@@ -297,5 +303,172 @@ test.describe('vote ballot', () => {
     expect(resultsRequests - resultsAfterEntry).toBeGreaterThan(0);
     expect(resultsRequests - resultsAfterEntry).toBeLessThanOrEqual(1);
     expect(statusRequests).toBe(statusAfterEntry);
+  });
+});
+
+/**
+ * Spec section 9, 6.9 (T6.3, AK 83): creating a vote session from a NON-active set's view (K6)
+ * builds a set-session — `emoteSetId` + `sevenTvEmoteIds` in the POST body, not the null-session's
+ * `emoteIds` — and the resulting detail page shows the ballot's frozen name/eligibility rather than
+ * the live Emote row's, and points its mass-delete panel at the session's own set, never the
+ * channel's active one.
+ */
+test.describe('vote ballot — a set-session created from a non-active (Halloween) set view', () => {
+  const CHANNEL = 'sensitron';
+  const ACTIVE_SET_ID = 'set-1';
+  const HALLOWEEN_SET_ID = 'set-halloween';
+  const NEW_SESSION_ID = 42;
+
+  test('the create dialog sends a set-session body, and the detail page shows the frozen ballot and targets the Halloween set for delete', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockChannelPermissions(page, CHANNEL);
+    await mockChannelStatus(page, CHANNEL);
+    await mockActiveEmoteSet(page, CHANNEL, ACTIVE_SET_ID);
+    await mockChannelEmoteSetList(page, CHANNEL, {
+      activeEmoteSetId: ACTIVE_SET_ID,
+      sets: [
+        { id: ACTIVE_SET_ID, name: 'Hauptset' },
+        { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+      ],
+    });
+    await mockUsageTotals(page, CHANNEL, [
+      {
+        emoteId: 'e-pump',
+        emoteName: 'Pumpkin',
+        sevenTvEmoteId: '7tv-pump',
+        imageUrl: 'https://cdn.7tv.app/emote/pump/2x.webp',
+        totalUseCount: 5,
+      },
+    ]);
+    await mockUsageChannelSeries(page, CHANNEL, {});
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: HALLOWEEN_SET_ID,
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
+    });
+
+    await page.goto(`/channels/${CHANNEL}/usage-stats?emoteSetId=${HALLOWEEN_SET_ID}`);
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+
+    // Marks the Halloween view's only row (fine pointer + manager ⇒ select, not drilldown).
+    await page.getByRole('button', { name: /^Pumpkin ·/ }).click();
+
+    let createBody: {
+      emoteSetId?: string;
+      sevenTvEmoteIds?: string[];
+      emoteIds?: string[];
+    } | null = null;
+    await page.route(`**/api/channels/${CHANNEL}/vote-sessions`, async (route) => {
+      if (route.request().method() !== 'POST') {
+        return route.fallback();
+      }
+      createBody = route.request().postDataJSON() as {
+        emoteSetId?: string;
+        sevenTvEmoteIds?: string[];
+        emoteIds?: string[];
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: NEW_SESSION_ID,
+          title: 'Halloween-Wahl',
+          allowedVoterRoles: 1,
+          isActive: true,
+          startedAt: '2026-10-01T00:00:00Z',
+          endedAt: null,
+          emoteCount: 1,
+          hideResultsUntilEnd: false,
+          emoteSetId: HALLOWEEN_SET_ID,
+        }),
+      });
+    });
+
+    await page.getByRole('button', { name: 'Zur Abstimmung stellen (1)' }).click();
+    const createDialog = page.getByRole('dialog');
+    await expect(createDialog.locator('#app-dialog-title')).toHaveText(
+      'Abstimmung aus Auswahl erstellen',
+    );
+    await createDialog.locator('#create-vote-session-title-input').fill('Halloween-Wahl');
+
+    // The ballot the detail page is about to load: a frozen name (T6.1's NameAtCreation, "as if" a
+    // later sync had already overwritten the live Emote.Name to something else) on a member that
+    // has since left 7TV (isArchived: true) but stays eligible — a set-session's fixed ballot never
+    // closes to voting on that account (spec section 9, AK 82): no "left the set" badge, no vote
+    // lock, unlike a null-session's archived row.
+    await mockVoteSessionResults(
+      page,
+      CHANNEL,
+      { id: NEW_SESSION_ID, title: 'Halloween-Wahl', emoteSetId: HALLOWEEN_SET_ID },
+      [
+        {
+          emoteId: 'guid-pump',
+          emoteName: 'PumpkinAtCreation',
+          sevenTvEmoteId: '7tv-pump',
+          isArchived: true,
+          eligible: true,
+          totalUseCount: null,
+        },
+      ],
+    );
+
+    await createDialog.getByRole('button', { name: 'Abstimmung erstellen' }).click();
+
+    // The POST carries the set-session shape (E4) — emoteSetId + sevenTvEmoteIds, no emoteIds.
+    // Every read goes through a fresh closure passed to expect.poll(), never a bare `createBody`
+    // expression afterwards — the same idiom this spec's own `voted`/`method` variables use above
+    // (see e.g. "casts a keep vote"), which keeps a captured, closure-mutated `let` from narrowing
+    // to `never` under this project's TypeScript settings.
+    await expect.poll(() => createBody?.emoteSetId).toBe(HALLOWEEN_SET_ID);
+    await expect.poll(() => createBody?.sevenTvEmoteIds).toEqual(['7tv-pump']);
+    await expect.poll(() => createBody?.emoteIds).toBeUndefined();
+
+    // Navigated to the new session's detail page.
+    await expect(page).toHaveURL(new RegExp(`/vote-sessions/${NEW_SESSION_ID}$`));
+    await expect(page.getByRole('heading', { name: 'Halloween-Wahl' })).toBeVisible();
+    // The ballot shows the FROZEN name, not whatever 'Pumpkin' the usage page had it as.
+    await expect(
+      page.getByRole('button', { name: 'PumpkinAtCreation', exact: true }),
+    ).toBeVisible();
+    // Eligible despite isArchived: no badge, votes stay open (AK 82).
+    await expect(page.getByText('Nicht mehr im Set')).toHaveCount(0);
+    await expect(keepButton(page)).toBeEnabled();
+
+    // Selecting the ballot's card and starting a delete from THIS page must target the session's
+    // own set — the Halloween set — never the channel's active set (F8/section 9, AK 81): the
+    // panel binds `session.emoteSetId ?? activeEmoteSetId()`.
+    await mockSetWarning(page, CHANNEL);
+    let capturedSetId: string | null = null;
+    await mockSevenTvGql(page, (request) => {
+      capturedSetId = request.variables['setId'] as string;
+      return { data: {} };
+    });
+    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ archivedCount: 1, notFoundIds: [] }),
+      }),
+    );
+
+    await page.getByRole('button', { name: 'PumpkinAtCreation', exact: true }).click();
+    const massDeleteButton = page.getByRole('button', { name: 'Löschen (1)' });
+    await expect(massDeleteButton).toBeVisible();
+    await massDeleteButton.click();
+
+    const deleteConfirmDialog = page.getByRole('dialog');
+    const startDeleteButton = deleteConfirmDialog.getByRole('button', { name: 'Löschen starten' });
+    await expect(startDeleteButton).toBeEnabled();
+    await startDeleteButton.click();
+
+    await expect.poll(() => capturedSetId).toBe(HALLOWEEN_SET_ID);
   });
 });

@@ -191,6 +191,14 @@ export class VoteSessionDetailPage {
   protected readonly activeEmoteSetId = signal<string | null>(null);
   protected readonly errorMessage = signal<string | null>(null);
 
+  /** The set the mass-delete panel targets (spec section 9): a set-session's own set, so a delete
+   *  run from a Halloween-set ballot never writes against the active set by accident; a
+   *  null-session still falls back to the channel's active set, exactly as before set-sessions
+   *  existed. `null` while neither is known yet — the panel stays unmounted (see the template). */
+  protected readonly massDeletePanelSetId = computed(
+    () => this.results()?.emoteSetId ?? this.activeEmoteSetId(),
+  );
+
   // The one place on this page that asks for the permission instead of inferring it from the data,
   // and it has to: hasUsageData() below reads null-only rows as "not a manager", which is also what
   // a fully archived subset ballot looks like — a manager would then lose the end button on exactly
@@ -204,20 +212,23 @@ export class VoteSessionDetailPage {
     () => this.permissionsResource.value()?.canManage ?? false,
   );
 
-  // The server reports TotalUseCount as null to everyone CanManageChannelAsync rejects, so data
-  // presence *is* the permission verdict — no separate GET /permissions round-trip needed. (An
-  // all-archived subset ballot also yields null-only rows; hiding the usage UI is right there too,
-  // since no usage is being computed for it.)
+  // Gates the usage column and the coarse-pointer drilldown only now (spec section 9, AK 81) — no
+  // longer the delete selection, which a manager needs even on a set-session ballot of nothing but
+  // null rows (every member never used under that set — GetTotalsByEmoteIdsAsync's honest answer,
+  // not a permission gap). The server still reports TotalUseCount as null to everyone
+  // CanManageChannelAsync rejects, so data presence remains the right verdict for these two.
   protected readonly hasUsageData = computed(() =>
     (this.results()?.emotes ?? []).some((emote) => emote.totalUseCount !== null),
   );
 
   // Card selection exists solely to feed the mass-delete panel, so voters without delete power get
-  // plain, non-interactive cards — a selection they can build but never act on is dead UI. The
-  // usage verdict doubles as the gate (same CanManageChannelAsync behind both). Known trade-off: a
-  // 7TV editor who is not also a channel manager gets no usage data either and loses the delete
-  // entry point on this page — the usage-stats grid keeps it for them.
-  protected readonly canSelectForDelete = this.hasUsageData;
+  // plain, non-interactive cards — a selection they can build but never act on is dead UI. Follows
+  // canManage directly (spec section 9, AK 81) rather than hasUsageData: a manager of an all-null
+  // set-session ballot must still see the panel, and hasUsageData reads that exact shape as "not a
+  // manager" (see its own comment). Known trade-off, unchanged: a 7TV editor who is not also a
+  // channel manager gets no usage data either and loses the delete entry point on this page — the
+  // usage-stats grid keeps it for them.
+  protected readonly canSelectForDelete = this.canManage;
 
   /**
    * What the sprite face does when it is touched or clicked. Two jobs on one surface was fine while
@@ -741,7 +752,7 @@ export class VoteSessionDetailPage {
     labelKey: string,
     tally: number | null,
   ): string {
-    if (emote.isArchived) {
+    if (!emote.eligible) {
       return this.translocoService.translate('voting.detail.archivedVoteDisabled');
     }
     const label = this.translocoService.translate(labelKey);

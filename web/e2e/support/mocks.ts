@@ -1076,6 +1076,9 @@ export interface MockVoteSession {
   endedAt?: string | null;
   emoteCount?: number | null;
   hideResultsUntilEnd?: boolean;
+  // The 7TV set a set-session's ballot is scoped to (spec 6.9, K6); null/omitted = a null-session,
+  // the behaviour every existing caller of these mocks already gets.
+  emoteSetId?: string | null;
 }
 
 /**
@@ -1105,6 +1108,7 @@ export async function mockVoteSessionList(
           endedAt: session.endedAt ?? null,
           emoteCount: session.emoteCount ?? null,
           hideResultsUntilEnd: session.hideResultsUntilEnd ?? false,
+          emoteSetId: session.emoteSetId ?? null,
         })),
         page: 1,
         pageSize: 20,
@@ -1125,6 +1129,11 @@ export interface MockVoteSessionEmote {
   deleteVotes?: number | null;
   score?: number | null;
   isArchived?: boolean;
+  // Whether a vote may still be cast on this row (spec section 9, T6.3) — gates the vote buttons
+  // and the "left the set" badge, replacing isArchived for that job. Omitted = !isArchived, the
+  // same rule the server applies to a null-session row, so every existing caller of this mock
+  // (all of them null-session ballots) keeps behaving exactly as before this field existed.
+  eligible?: boolean;
   myVote?: 1 | 2 | null;
 }
 
@@ -1145,6 +1154,7 @@ export async function mockVoteSessionResults(
       endedAt: session.endedAt ?? null,
       voterCount: 3,
       hideResultsUntilEnd: session.hideResultsUntilEnd ?? false,
+      emoteSetId: session.emoteSetId ?? null,
       emotes: emotes.map((emote) => ({
         emoteId: emote.emoteId,
         emoteName: emote.emoteName,
@@ -1158,6 +1168,7 @@ export async function mockVoteSessionResults(
         deleteVotes: emote.deleteVotes === undefined ? 1 : emote.deleteVotes,
         score: emote.score === undefined ? 1 : emote.score,
         isArchived: emote.isArchived ?? false,
+        eligible: emote.eligible ?? !(emote.isArchived ?? false),
         myVote: emote.myVote ?? null,
       })),
     }),

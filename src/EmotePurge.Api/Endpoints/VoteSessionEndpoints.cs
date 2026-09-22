@@ -317,7 +317,7 @@ public static class VoteSessionEndpoints
     // dynamic "all emotes" session, reported as null.
     private static VoteSessionSummaryDto ToSummaryDto(VoteSession session) => new(
         session.Id, session.Title, session.AllowedVoterRoles, session.IsActive, session.StartedAt, session.EndedAt,
-        session.SessionEmotes.Count == 0 ? null : session.SessionEmotes.Count, session.HideResultsUntilEnd);
+        session.SessionEmotes.Count == 0 ? null : session.SessionEmotes.Count, session.HideResultsUntilEnd, session.EmoteSetId);
 
     /// <summary>
     /// Announces "the tally of this session changed" to everyone watching it. Deliberately without

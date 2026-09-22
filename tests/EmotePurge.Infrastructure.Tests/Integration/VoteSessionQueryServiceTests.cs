@@ -264,6 +264,90 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         Assert.Equal(0, results.Emotes[0].DeleteVotes);
     }
 
+    // --- Set-session results (spec section 9, AK 80) --------------------------------------------
+
+    [Fact]
+    public async Task GetResultsAsync_SetSession_ReportsEligibleTrue_EvenForAnArchivedMember()
+    {
+        // AK 80: eligible = true for every set-session row — its fixed ballot never closes to
+        // voting just because the member has since left 7TV, unlike a null-session's archived rows.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteset1");
+        var member = await SeedEmoteAsync(db, channel.Id, "GoneFromSet");
+        member.IsArchived = true;
+        var session = await SeedActiveSetSessionAsync(db, channel.Id, "halloween-1");
+        await SeedSetBallotAsync(db, session.Id, member.Id, "GoneFromSet", member.ImageUrl);
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        var result = Assert.Single(results!.Emotes);
+        Assert.True(result.Eligible);
+        Assert.True(result.IsArchived);
+        Assert.Equal("halloween-1", results.EmoteSetId);
+    }
+
+    [Fact]
+    public async Task GetResultsAsync_SetSession_ScopesUsage_ToTheSessionsOwnSet_NotAnyOtherSet()
+    {
+        // AK 80: an emote with usage under both the main set and the Halloween set shows only the
+        // Halloween figure in the Halloween session's results.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteset2");
+        var member = await SeedEmoteAsync(db, channel.Id, "TwoSets");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        db.UsageStats.Add(new UsageStat { EmoteId = member.Id, EmoteSetId = "main-set", Date = today, UseCount = 40 });
+        db.UsageStats.Add(new UsageStat { EmoteId = member.Id, EmoteSetId = "halloween-2", Date = today, UseCount = 7 });
+        var session = await SeedActiveSetSessionAsync(db, channel.Id, "halloween-2");
+        await SeedSetBallotAsync(db, session.Id, member.Id, "TwoSets", member.ImageUrl);
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        Assert.Equal(7, Assert.Single(results!.Emotes).TotalUseCount);
+    }
+
+    [Fact]
+    public async Task GetResultsAsync_SetSession_ReportsNullUsage_ForAMemberWithNoUsageStatUnderThatSet()
+    {
+        // AK 80: missing entirely from the set's UsageStats (not merely summing to 0) reports null,
+        // not a fabricated 0 — the same "null = withheld/unknown" convention used elsewhere, applied
+        // here to "never observed under this set" rather than to the viewer's own permissions.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteset3");
+        var member = await SeedEmoteAsync(db, channel.Id, "NeverCounted");
+        var session = await SeedActiveSetSessionAsync(db, channel.Id, "halloween-3");
+        await SeedSetBallotAsync(db, session.Id, member.Id, "NeverCounted", member.ImageUrl);
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
+
+        Assert.Null(Assert.Single(results!.Emotes).TotalUseCount);
+    }
+
+    [Fact]
+    public async Task GetResultsAsync_SetSession_ReportsNameAtCreation_EvenAfterASyncOverwritesTheLiveEmoteName()
+    {
+        // AK 80: the ballot's frozen name survives a later sync that renames the live Emote row —
+        // it is what the voter was shown when the session was created, and must stay that way.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteset4");
+        var member = await SeedEmoteAsync(db, channel.Id, "OriginalName");
+        var session = await SeedActiveSetSessionAsync(db, channel.Id, "halloween-4");
+        await SeedSetBallotAsync(db, session.Id, member.Id, "FrozenAtCreation", member.ImageUrl);
+        // Simulates a later 7TV sync overwriting the live row's name.
+        member.Name = "RenamedBySync";
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
+
+        Assert.Equal("FrozenAtCreation", Assert.Single(results!.Emotes).EmoteName);
+    }
+
     [Fact]
     public async Task ListSessionsPagedAsync_ReportsHideResultsUntilEnd()
     {
@@ -539,6 +623,38 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
     private static async Task SeedBallotAsync(AppDbContext db, long sessionId, params string[] emoteIds)
     {
         db.VoteSessionEmotes.AddRange(emoteIds.Select(id => new VoteSessionEmote { VoteSessionId = sessionId, EmoteId = id }));
+        await db.SaveChangesAsync();
+    }
+
+    // A set-session, seeded directly rather than through VoteSessionService.CreateAsync — this test
+    // class has no IForeignEmoteSetService fixture, and GetResultsAsync only cares about the
+    // persisted shape (VoteSession.EmoteSetId, VoteSessionEmotes with frozen NameAtCreation/
+    // ImageUrlAtCreation), which VoteSessionServiceTests already covers being written correctly.
+    private static async Task<VoteSession> SeedActiveSetSessionAsync(AppDbContext db, string channelId, string emoteSetId)
+    {
+        var session = new VoteSession
+        {
+            ChannelId = channelId,
+            Title = "Set Session",
+            AllowedVoterRoles = AllowedRoles.Everyone,
+            IsActive = true,
+            StartedAt = DateTime.UtcNow,
+            EmoteSetId = emoteSetId,
+        };
+        db.VoteSessions.Add(session);
+        await db.SaveChangesAsync();
+        return session;
+    }
+
+    private static async Task SeedSetBallotAsync(AppDbContext db, long sessionId, string emoteId, string nameAtCreation, string imageUrlAtCreation)
+    {
+        db.VoteSessionEmotes.Add(new VoteSessionEmote
+        {
+            VoteSessionId = sessionId,
+            EmoteId = emoteId,
+            NameAtCreation = nameAtCreation,
+            ImageUrlAtCreation = imageUrlAtCreation,
+        });
         await db.SaveChangesAsync();
     }
 }

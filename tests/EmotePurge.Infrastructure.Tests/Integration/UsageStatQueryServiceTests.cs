@@ -300,6 +300,37 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task GetUsageContextAsync_NonActiveSet_StillExcludesAMemberVoteSessionCreationRowed_WithoutAnyUsageUnderThatSet()
+    {
+        // AK 63 (T6.3, class 2b): before a set-session over this set existed, a live member without
+        // a local Emote row was class 2b in the set view — no row here at all, the client unions it
+        // in as null. Creating a set-session over it (T6.1) upserts an archived, "never active" row
+        // (ArchivedAt = null) with no UsageStat rows of its own. The set view must keep reading that
+        // as null, not as a newfound 0: this row still has no aggregates entry under the set
+        // (aggregates.ContainsKey below), so it stays excluded from a non-active set's response
+        // exactly as it was before the row existed, and the client's union still shows null.
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteclass2b1", activeEmoteSetId: "active-set-1");
+        var neverActive = new Emote
+        {
+            ChannelId = channel.Id,
+            Name = "GhostMember",
+            SevenTvEmoteId = "7tv-ghost-1",
+            ImageUrl = "https://cdn.7tv.app/emote/ghost/2x.webp",
+            IsArchived = true,
+            ArchivedAt = null,
+        };
+        db.Emotes.Add(neverActive);
+        await db.SaveChangesAsync();
+
+        var service = new UsageStatQueryService(db);
+        var totals = await service.GetUsageContextAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), emoteSetId: "halloween-set-1");
+
+        Assert.DoesNotContain(totals, t => t.EmoteId == neverActive.Id);
+    }
+
+    [Fact]
     public async Task GetUsageContextAsync_Throws_WhenFromIsAfterTo()
     {
         // The guard runs before any DB access, so no seed is needed here.

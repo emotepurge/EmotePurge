@@ -24,6 +24,7 @@ function resultRow(overrides: Partial<VoteSessionResult> = {}): VoteSessionResul
     deleteVotes: 2,
     score: 3,
     isArchived: false,
+    eligible: true,
     myVote: VoteType.Keep,
     ...overrides,
   };
@@ -43,6 +44,7 @@ function results(
     voterCount: 7,
     hideResultsUntilEnd: true,
     emotes,
+    emoteSetId: null,
     ...overrides,
   };
 }

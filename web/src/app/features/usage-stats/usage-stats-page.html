@@ -1144,14 +1144,13 @@
                ngProjectAs because an @if block itself carries no selector attribute.
                `aria-describedby` only while `voteLocked()` holds (docs/UI-Designsprache.md §10,
                "Disabled explains itself") — an empty selection already says so via the button's own
-               accessible name (the count in the label), and needs no extra reason text. Points at
+               accessible name (the count in the label), and needs no extra reason text. It points at
                the delete button's own `deleteLockReasonId` (`#massDeletePanel`, public for exactly
-               this) whenever deleting is locked too — `voteLocked()` and `deleteLockReasonKey() !==
-               null` were the same condition before K5/T5.3, so the reason already on screen for the
-               delete button applied here unchanged. Since T5.3 (spec 8.8) that premise only holds
-               for switching/unreadable/truncated: a plain non-active view unlocks deleting but not
-               voting (K6 still pending), so the panel renders no paragraph at all in that one case —
-               `voteOnlyLockReasonId` above is this button's own, used only then. -->
+               this) rather than a second paragraph: since K6 `voteLockReasonKey()` and
+               `deleteLockReasonKey()` are the same `sharedSetViewLockReasonKey` (switching, or a
+               loading/unreadable/truncated member list), so whenever `voteLocked()` is `true` the
+               delete button's reason on screen is the identical text — nothing to duplicate,
+               nothing that can drift out of sync. -->
           <ng-container ngProjectAs="[selection-actions]">
             @if (canManage()) {
               <button
@@ -1160,13 +1159,7 @@
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
                 [disabled]="selection.selectedItems().length === 0 || voteLocked()"
-                [attr.aria-describedby]="
-                  voteLocked()
-                    ? deleteLockReasonKey() !== null
-                      ? massDeletePanel.deleteLockReasonId
-                      : voteOnlyLockReasonId
-                    : null
-                "
+                [attr.aria-describedby]="voteLocked() ? massDeletePanel.deleteLockReasonId : null"
                 (click)="openCreateVoteSession()"
               >
                 {{
@@ -1177,19 +1170,6 @@
             }
           </ng-container>
         </app-mass-delete-panel>
-        <!-- Vote-only lock reason (K5/T5.3, spec 9/K6): deleting and voting no longer share one
-             lock state in a plain non-active view with a readable member list — deleting is
-             set-aware since K5 and its confirmation names the set (T5.3, spec 8.8), voting is not
-             yet (a set-session vote is K6). In every OTHER lock state (switching, an unreadable or
-             truncated member list) both are still locked for the same reason, and the panel's own
-             paragraph above already names it — this one only fires for the one case that reason
-             does not cover any more, so the vote button's aria-describedby never points at nothing
-             (docs/UI-Designsprache.md §10, "Disabled explains itself"). -->
-        @if (deleteLockReasonKey() === null && voteLockReasonKey(); as voteOnlyReasonKey) {
-          <p [id]="voteOnlyLockReasonId" class="text-xs text-fg-muted">
-            {{ voteOnlyReasonKey | transloco }}
-          </p>
-        }
       }
       <!-- A copy run into another channel's set — visible on THIS page even when this channel is
            neither the run's source nor its target (R9): the run lives in a root-provided service,
