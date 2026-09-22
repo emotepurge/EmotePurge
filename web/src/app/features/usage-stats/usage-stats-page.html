@@ -1138,8 +1138,12 @@
             {{ 'import.dockCopyButton' | transloco: { count: importShortcutSelectionCount() } }}
           </button>
           <!-- Second consumer of the grid selection besides mass-delete: puts the picked emotes up
-               as a curated vote-session ballot. Count in the label + disabled at zero, mirroring the
-               delete button's conventions; managers only (the endpoint would 403 a 7TV editor).
+               as a curated vote-session ballot. Count in the label + disabled at zero — both read
+               `voteBallotSize()`, the size of the ballot `openCreateVoteSession` would actually
+               send for the view shown now, not the raw selection count; mirrors the delete button's
+               own convention of counting `selectedForDelete()` rather than `selection.selectedItems()`
+               (`mass-delete-panel.html`'s `selectedEmotes().length`). Managers only (the endpoint
+               would 403 a 7TV editor).
                Projected into the panel's action row so both selection consumers share one line;
                ngProjectAs because an @if block itself carries no selector attribute.
                `aria-describedby` only while `voteLocked()` holds (docs/UI-Designsprache.md §10,
@@ -1158,14 +1162,11 @@
                 appButton="primary"
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
-                [disabled]="selection.selectedItems().length === 0 || voteLocked()"
+                [disabled]="voteBallotSize() === 0 || voteLocked()"
                 [attr.aria-describedby]="voteLocked() ? massDeletePanel.deleteLockReasonId : null"
                 (click)="openCreateVoteSession()"
               >
-                {{
-                  'usageStats.createVoteSession'
-                    | transloco: { count: selection.selectedItems().length }
-                }}
+                {{ 'usageStats.createVoteSession' | transloco: { count: voteBallotSize() } }}
               </button>
             }
           </ng-container>

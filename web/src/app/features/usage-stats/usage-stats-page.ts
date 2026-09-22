@@ -1413,6 +1413,21 @@ export class UsageStatsPage {
       .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
   );
 
+  /**
+   * The size of the ballot `openCreateVoteSession` would actually send for the view shown right
+   * now — `voteBallotSevenTvEmoteIds().length` in a non-active view, `voteBallotEmoteIds().length`
+   * in the active one. Not `selection.selectedItems().length`: that counts every selected row
+   * regardless of membership, so a non-active view's selection of `'left'`-only rows would read as
+   * non-empty here while the ballot it would actually submit is empty (`membership === 'live'`
+   * only, see `voteBallotSevenTvEmoteIds`'s own doc comment) — exactly the button-enabled-but-
+   * dialog-opens-empty gap this closes.
+   */
+  protected readonly voteBallotSize = computed(
+    () =>
+      (this.isNonActiveView() ? this.voteBallotSevenTvEmoteIds() : this.voteBallotEmoteIds())
+        .length,
+  );
+
   /** Voting is locked exactly when deleting is (`sharedSetViewLockReasonKey`): mid-switch (spec
    *  §36: the selected set is not yet the one shown), or while the shown non-active set's member
    *  list is loading, unreadable or truncated. A settled non-active view is otherwise a legitimate
@@ -2250,7 +2265,7 @@ export class UsageStatsPage {
     // voteLocked: the dock's button is disabled whenever voteLocked() holds (switching, loading,
     // unavailable, truncated), not only mid-switch; this guards a click that outraces that (see
     // voteLocked).
-    if (this.selection.selectedKeys().length === 0 || this.voteLocked()) {
+    if (this.voteBallotSize() === 0 || this.voteLocked()) {
       return;
     }
 

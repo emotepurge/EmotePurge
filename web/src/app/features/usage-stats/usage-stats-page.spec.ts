@@ -3120,6 +3120,33 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     // all-or-nothing live-membership check (spec section 9 step 2, 400 emote_ids_invalid) and
     // silently drop the two rows that WERE still valid along with it.
     expect([...component['voteBallotSevenTvEmoteIds']()].sort()).toEqual(['7tv-a', '7tv-live2']);
+    // voteBallotSize() is what the vote button's label and [disabled] actually read (arbitrated
+    // review round 2) — it must count the ballot CreateAsync would receive (the two live rows),
+    // not the raw selection (all three rows, including the excluded 'left' one).
+    expect(component['voteBallotSize']()).toBe(2);
+  });
+
+  it("counts the ballot at zero and opens no dialog when only a 'left' row is selected (arbitrated review round 2)", async () => {
+    // Same shape as the sibling test above, but this time only the 'left' row is picked — the
+    // ballot openCreateVoteSession would actually send is then empty even though the selection
+    // itself is not, which is exactly the gap voteBallotSize() (rather than the raw selection
+    // count) closes for both the button's [disabled] and this early return.
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('gone', 'GoneEmote')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    const left = component['emotes']().find((row) => row.membership === 'left')!;
+    component['selection'].onRowClick(left, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-gone']);
+
+    expect(component['voteBallotSize']()).toBe(0);
+    expect(component['voteLocked']()).toBe(false);
+
+    const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open');
+    component['openCreateVoteSession']();
+
+    expect(openSpy).not.toHaveBeenCalled();
   });
 
   // --- T4.4: loading and reloads ---------------------------------------------------------------
