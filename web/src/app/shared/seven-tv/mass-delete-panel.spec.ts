@@ -1822,7 +1822,8 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     ]);
   });
 
-  // The vote-session page does not opt in until K6: its rows stay on [name].
+  // The vote-session page deliberately does not opt in: its rows stay on [name] (DECISIONS, #200
+  // K6 known limitation).
   it('makes no read when the host did not opt in', () => {
     fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
     fixture.detectChanges();

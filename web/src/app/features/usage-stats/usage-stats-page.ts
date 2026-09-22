@@ -2247,8 +2247,9 @@ export class UsageStatsPage {
   // channel/date-range change — that path is unreachable while a modal dialog has focus, so it is
   // not a case the dialog itself needs to guard against.
   protected openCreateVoteSession(): void {
-    // voteLocked: the dock's button is disabled mid-switch; this guards a click that outraces that
-    // (see voteLocked).
+    // voteLocked: the dock's button is disabled whenever voteLocked() holds (switching, loading,
+    // unavailable, truncated), not only mid-switch; this guards a click that outraces that (see
+    // voteLocked).
     if (this.selection.selectedKeys().length === 0 || this.voteLocked()) {
       return;
     }

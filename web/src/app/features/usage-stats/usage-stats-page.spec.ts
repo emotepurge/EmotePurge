@@ -3082,8 +3082,9 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['voteLocked']()).toBe(false);
 
     // A fresh, direct mount on a non-active set — settled, not mid-switch (spec §36) — no longer
-    // locks voting at all (T6.3 lifts the "set sessions are K6" interim lock): only a mid-switch
-    // view still does, see the "K4 fix round" describe block above. Its ballot speaks 7TV ids.
+    // locks voting at all (T6.3 lifts the "set sessions are K6" interim lock): only a view that is
+    // switching, still loading, or whose member list came back unavailable/truncated still does,
+    // see the "K4 fix round" describe block above. Its ballot speaks 7TV ids.
     await openView({
       emoteSetId: 'set-b',
       totals: [emote('a', 'PeepoA')],
