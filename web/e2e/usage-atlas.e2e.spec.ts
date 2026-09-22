@@ -1101,7 +1101,7 @@ test.describe('set view (#200, K4)', () => {
     await expect(page).not.toHaveURL(/emoteSetId=/);
   });
 
-  test('the non-active view groups a countless live member on its own, badges a left-behind row, folds a #74 duplicate into one cell, and locks deleting/voting with a visible reason (spec 8.2, AK 54-58, 62; no NG0955)', async ({
+  test('the non-active view groups a countless live member on its own, badges a left-behind row, folds a #74 duplicate into one cell, and locks voting with a visible reason (deleting unlocked since K5/T5.3; spec 8.2, AK 54-58, 62, 73; no NG0955)', async ({
     page,
   }) => {
     const consoleProblems: string[] = [];
@@ -1197,26 +1197,24 @@ test.describe('set view (#200, K4)', () => {
       }),
     ).toBeVisible();
 
-    // Mark a plain live row and check both interim locks (8.3's "for now, every non-active view").
+    // Mark a plain live row: deleting is unlocked since K5/T5.3 (spec 8.8 — the run is set-aware
+    // and the confirmation names the set), voting is not yet (K6, spec 9 — set sessions do not
+    // exist). The two no longer share one lock state or one reason paragraph in this case.
     await page.getByRole('button', { name: /^GhostA ·/ }).click();
     const deleteButton = page.getByRole('button', { name: 'Löschen (1)' });
     await expect(deleteButton).toBeVisible();
-    await expect(deleteButton).toBeDisabled();
-    await expect(
-      page.getByText('Löschen und Abstimmen gehen vorerst nur im aktiven Set.'),
-    ).toBeVisible();
+    await expect(deleteButton).toBeEnabled();
 
     const voteButton = page.getByRole('button', { name: 'Zur Abstimmung stellen (1)' });
     await expect(voteButton).toBeVisible();
     await expect(voteButton).toBeDisabled();
-    // The a11y fix this test now also covers: the vote button used to have no aria-describedby at
-    // all, so a screen-reader user only ever heard "disabled" with no reason — only the delete
-    // button pointed at the paragraph above. Both buttons now share that one reason via
-    // aria-describedby rather than each carrying (or worse, duplicating) their own.
+    await expect(
+      page.getByText('Löschen und Abstimmen gehen vorerst nur im aktiven Set.'),
+    ).toBeVisible();
+    // The vote button carries its own reason paragraph now (`voteOnlyLockReasonId`) — the delete
+    // panel renders none while deleting itself is unlocked, so a shared aria-describedby would
+    // point at nothing.
     await expect(voteButton).toHaveAccessibleDescription(
-      'Löschen und Abstimmen gehen vorerst nur im aktiven Set.',
-    );
-    await expect(deleteButton).toHaveAccessibleDescription(
       'Löschen und Abstimmen gehen vorerst nur im aktiven Set.',
     );
 

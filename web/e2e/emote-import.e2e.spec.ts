@@ -2569,11 +2569,11 @@ test.describe('dock outcomes: announced from a region that outlives the dock (#1
 });
 
 /**
- * The import trigger's three plain doors follow the page's SELECTED set, not the channel's active
- * one (#200, T4.5/T4.6, spec 8.6 last point) — this is the same channel's header import button
- * used throughout `push flow: the file path` above, just opened while a non-active set is on
- * screen. Restore is the one door K4 does not make set-aware (K5 does): it is locked the moment a
- * purge-run protocol is read, never silently.
+ * All four import doors follow the page's SELECTED set, not the channel's active one (#200,
+ * T4.5/T4.6, spec 8.6 last point) — this is the same channel's header import button used
+ * throughout `push flow: the file path` above, just opened while a non-active set is on screen.
+ * Restore is the door K4 did not make set-aware; K5/T5.3 do — a purge-run protocol for the shown
+ * non-active set restores into it, with the confirmation naming that set (spec 8.8).
  */
 test.describe('set view: the import doors follow the selected set (#200, K4/T4.5)', () => {
   const HALLOWEEN_SET_ID = 'set-halloween';
@@ -2673,17 +2673,26 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
     expect(reportedTargetSetId).toBe(HALLOWEEN_SET_ID);
   });
 
-  test('a purge-run protocol is refused the moment it is read, with the non-active-set reason, and never reaches the set/channel match check (AK 66)', async ({
+  // K5/T5.3 (spec 8.8) lifted the old refusal this test used to prove (`file-import-step.ts`'s
+  // `restoreEnabled` is unconditionally true since K5): a purge-run protocol for the shown
+  // non-active set now restores into it, and the confirmation names that set — the AK 66 match
+  // check (protocol's `meta.emoteSetId` against the set on screen) is unaffected either way.
+  test('a purge-run protocol for the shown non-active set opens the restore confirmation, naming that set, instead of the old refusal (K5/T5.3, AK 66/73)', async ({
     page,
   }) => {
     await mockNonActiveSetView(page);
+    // Seeds the write token (R14) so the flow goes straight to the confirmation instead of the
+    // token prompt — the run itself is out of scope here (unit-level: restore-flow.spec.ts), this
+    // only proves the file is accepted and the dialog names the set.
+    await page.addInitScript(() => {
+      window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
+    });
+
     await gotoHalloweenView(page);
 
     const fileInput = await openFileImportDialog(page);
-    const dialog = page.getByRole('dialog');
-    // The protocol names the very set on screen — proof the rejection is the non-active-set lock,
-    // not the unrelated wrongSet check (`file-import-step.ts`'s `restoreEnabled` is read before
-    // `setId`'s own match check ever runs).
+    // The protocol names the very set on screen — proof the confirmation targets the shown set,
+    // not the channel's active one (AK 66).
     await fileInput.setInputFiles({
       name: 'emotepurge_sensitron_purge_202609211200.json',
       mimeType: 'application/json',
@@ -2715,9 +2724,17 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
       ),
     });
 
+    // The restore confirmation replaces the old refusal — it names the set and flags it as not
+    // currently active (spec 8.8, AK 73).
+    const confirm = page.getByRole('dialog');
     await expect(page.getByRole('dialog')).toHaveCount(1);
-    await expect(dialog.getByRole('alert')).toContainText(
-      'Wiederherstellen geht vorerst nur im aktiven Set — dieses Set ist gerade nicht aktiv.',
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '1 Emote wieder zum Set hinzufügen?',
+    );
+    await expect(confirm.getByText('In das Set „Halloween“.')).toBeVisible();
+    await expect(confirm.getByText('Dieses Set ist gerade nicht aktiv.')).toBeVisible();
+    await expect(confirm.getByText('Wiederherstellen geht vorerst nur im aktiven Set')).toHaveCount(
+      0,
     );
   });
 });

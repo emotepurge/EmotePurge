@@ -869,6 +869,8 @@
       "one": "{{ count }} Emote wieder zum Set hinzufügen?",
       "other": "{{ count }} Emotes wieder zum Set hinzufügen?"
     },
+    "confirmSetLine": "In das Set „{{ setName }}“.",
+    "confirmSetNotActive": "Dieses Set ist gerade nicht aktiv.",
     "confirmExecute": "Wiederherstellen",
     "capacityProjection": "Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.",
     "capacityWarning": "Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.",
@@ -951,6 +953,8 @@
       "one": "{{ count }} Emote von 7TV löschen?",
       "other": "{{ count }} Emotes von 7TV löschen?"
     },
+    "confirmSetLine": "Aus dem Set „{{ setName }}“.",
+    "confirmSetNotActive": "Dieses Set ist gerade nicht aktiv.",
     "checkingSharedSets": "Prüfe geteilte Sets…",
     "sharedSetWarningTitle": "Achtung: Das aktive Emote-Set gehört möglicherweise nicht (nur) diesem Channel.",
     "notOwnSet": "Das aktive Set gehört nicht dem eigenen 7TV-Account dieses Channels.",

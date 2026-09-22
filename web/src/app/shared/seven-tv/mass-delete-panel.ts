@@ -18,6 +18,7 @@ import {
   DeleteQueueEmote,
   SevenTvDeleteService,
 } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -236,6 +237,28 @@ export interface DeletableEmote {
 export class MassDeletePanel {
   readonly setId = input.required<string>();
   readonly channelName = input.required<string>();
+  /** The channel's active 7TV set — `null` when the host does not know it (status unknown/failed).
+   *  Gates `isActiveSet` below for both confirmations (spec #200, 8.8) and which slot-preview
+   *  source the restore confirmation reads (`openRestoreConfirmDialog`): the active set's cheap,
+   *  non-7TV-rate-limited `EmoteAdminService.getSetStatus`, or the live per-set preview otherwise.
+   *  Defaults to `null` rather than folding onto `setId` — unlike `ImportTrigger`'s identically-
+   *  named input, every existing caller of this component predates the distinction and is written
+   *  against the active set already, so a caller that omits it simply never active-matches, which
+   *  only widens `deleteLockReasonKey`'s callers get on their own (this panel does not compute that
+   *  lock) and otherwise just shows the "not active" note it did not show before — never a false
+   *  "active" claim. */
+  readonly activeSetId = input<string | null>(null);
+  /** The selected set's display name, for the delete confirmation (spec #200, 8.8) — falls back to
+   *  the set id itself, same convention as every other unnamed-set reader in this app. */
+  readonly setName = input<string | null>(null);
+  /** Set id → display name, for the restore confirmation: a finished delete run's own frozen set
+   *  (`DeleteRunInfo.setId`) can differ from `setId()` above if the dropdown moved on between the
+   *  delete finishing and Restore being clicked (the dropdown only locks while the run is still
+   *  writing). Falls back to the id itself for a set this map does not name, same convention as
+   *  `setName` above. Defaults to an empty map, which folds every lookup onto that same fallback —
+   *  a caller that predates this (every existing one) sees exactly the id it always effectively
+   *  showed. */
+  readonly setNames = input<ReadonlyMap<string, string>>(new Map());
   readonly selectedEmotes = input.required<DeletableEmote[]>();
   /**
    * Translation key of a reason the host page locks the delete button for, or `null` for no such
@@ -278,11 +301,22 @@ export class MassDeletePanel {
    *  `protected` rather than `private` (#70, Task 4; see docs/DECISIONS.md). */
   protected readonly arbiter = inject(SevenTvRunArbiter);
   private readonly emoteAdminService = inject(EmoteAdminService);
+  /** The non-active set's live slot preview (spec #200, 8.3, K5) — read only when the restore
+   *  confirmation's target set is not the active one; see `openRestoreConfirmDialog`. */
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read in
    *  this component goes through `emoteAdminService`. */
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
   private readonly destroyRef = inject(DestroyRef);
+
+  /** Whether `setId()` — the set the delete button targets — is the channel's active 7TV set
+   *  (spec #200, 8.8). `false` whenever `activeSetId()` is unknown (`null`), the conservative
+   *  direction: an unconfirmed "active" claim is worse than a needless "not active" note. */
+  protected readonly isActiveSet = computed(() => {
+    const active = this.activeSetId();
+    return active !== null && active === this.setId();
+  });
 
   /** Public (not `protected`) on purpose: a host page's own controls outside this component's
    *  template — the usage page's dock vote button, gated on the same `voteLocked()` condition the
@@ -478,24 +512,46 @@ export class MassDeletePanel {
   }
 
   /** `runSetId` is the set the delete run removed from (its frozen record, spec #200 7.2) — the
-   *  restore puts the emotes back there, never into whatever `setId()` says by now. */
+   *  restore puts the emotes back there, never into whatever `setId()` says by now. Named and
+   *  slot-previewed against *that* set (spec 8.8), which the dropdown may since have moved past
+   *  (it only locks while the run is still writing). */
   private openRestoreConfirmDialog(runSetId: string, doneItems: readonly RunQueueItem[]): void {
+    const runIsActiveSet = runSetId === this.activeSetId();
     // Live slot view, so the projection line pops in once the check answers (the dialog is
-    // already open by then) — same pattern as the delete confirm's shared-set warning.
+    // already open by then) — same pattern as the delete confirm's shared-set warning. The active
+    // run's set keeps the cheap, non-7TV-rate-limited status read; any other set reads the live
+    // per-set preview instead (spec 8.3) — `getSetStatus` has no set-scoped form at all.
     this.restoreSlots.set(null);
-    this.emoteAdminService.getSetStatus(this.channelName()).subscribe({
-      next: (status) =>
-        this.restoreSlots.set(
-          status.capacity === null
-            ? null
-            : { occupied: status.occupiedSlots, capacity: status.capacity },
-        ),
-      error: () => this.restoreSlots.set(null),
-    });
+    if (runIsActiveSet) {
+      this.emoteAdminService.getSetStatus(this.channelName()).subscribe({
+        next: (status) =>
+          this.restoreSlots.set(
+            status.capacity === null
+              ? null
+              : { occupied: status.occupiedSlots, capacity: status.capacity },
+          ),
+        error: () => this.restoreSlots.set(null),
+      });
+    } else {
+      this.emoteSetService.loadEmoteSetPreview(this.channelName(), runSetId).subscribe({
+        next: (preview) =>
+          this.restoreSlots.set(
+            preview.capacity === null
+              ? null
+              : { occupied: preview.totalCount, capacity: preview.capacity },
+          ),
+        error: () => this.restoreSlots.set(null),
+      });
+    }
 
     const data: RestoreConfirmDialogData = {
       names: doneItems.map((item) => item.name),
+      // spec #200, 7.2: ADDs, not rows — a #74 duplicate cell's row carries every alias it sat
+      // under and restores once per alias.
+      addCount: doneItems.reduce((sum, item) => sum + (item.aliases?.length ?? 1), 0),
       slots: this.restoreSlots.asReadonly(),
+      setName: this.setNames().get(runSetId) ?? runSetId,
+      isActiveSet: runIsActiveSet,
     };
     openRestoreConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (!confirmed) {
@@ -549,6 +605,8 @@ export class MassDeletePanel {
       hiddenEmotes: this.hiddenSelectedEmoteNames,
       warning: this.setWarning.asReadonly(),
       warningLoading: this.warningLoading.asReadonly(),
+      setName: this.setName() ?? this.setId(),
+      isActiveSet: this.isActiveSet(),
     };
     openDeleteConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (confirmed) {
@@ -558,7 +616,10 @@ export class MassDeletePanel {
   }
 
   private loadSetWarning(): void {
-    this.emoteAdminService.getSetWarning(this.channelName()).subscribe({
+    // Explicit `setId()` since K5 (spec 6.8): this panel's delete target is the page's *selected*
+    // set, not necessarily the channel's active one — the old implicit "check the active set" call
+    // would ask the wrong question in a non-active view.
+    this.emoteAdminService.getSetWarning(this.channelName(), this.setId()).subscribe({
       next: (warning) => {
         this.setWarning.set(warning);
         this.warningLoading.set(false);

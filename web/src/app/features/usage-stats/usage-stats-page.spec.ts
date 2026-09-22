@@ -3370,7 +3370,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['slotBudget']()).toBeNull();
   });
 
-  it('a truncated member list locks deleting with its own reason; a whole one still carries the K5 interim lock; the active view carries none', async () => {
+  it('a truncated member list locks deleting with its own reason; a whole one no longer locks it (K5/T5.3), but voting still does (K6)', async () => {
     await openView({
       emoteSetId: 'set-b',
       totals: [],
@@ -3384,7 +3384,11 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       totals: [],
       members: memberList([member('7tv-a', 'Alpha')]),
     });
-    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+    // K5/T5.3 (spec 8.8): the run is set-aware and both confirmations name the set, so a plain
+    // non-active view with a good member list no longer locks deleting. Voting still does (K6,
+    // spec 9 — set sessions do not exist yet) with the reason deleting used to carry.
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
 
     await openView({ totals: [emote('a', 'Alpha')] });
     expect(component['deleteLockReasonKey']()).toBeNull();
@@ -3443,9 +3447,11 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     liveListRequests().forEach((request) => request.flush(memberList([member('7tv-a', 'PeepoA')])));
     await settle();
 
-    // Landed: the non-active view's own (K5 interim) reason takes over.
+    // Landed: the member list loaded clean, so deleting is unlocked (K5/T5.3, spec 8.8) — voting
+    // still shows the non-active view's own reason (K6, spec 9).
     expect(component['viewSwitching']()).toBe(false);
-    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
   });
 
   it('hands the vote dialog a live lock, so a switch started behind the open dialog blocks its submit (finding A)', async () => {

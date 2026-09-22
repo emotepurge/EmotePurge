@@ -119,8 +119,10 @@ layout uniformity identically.
 `web/src/app/core/seven-tv/seven-tv-restore.service.ts` · `web/src/app/core/emotes/emote-admin.service.ts` ·
 `web/src/app/shared/export/purge-run-export.ts` · `web/src/app/shared/seven-tv/restore-flow.ts` ·
 `web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/shared/seven-tv/delete-confirm-dialog.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
 `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, §35, §36) ·
-`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.2, T5.1)
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.3, T5.2, T5.1)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
 part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
@@ -413,6 +415,60 @@ set would let a delete reach a non-active set behind a confirmation that does no
 done anywhere yet: spec 7.2's `(sevenTvEmoteId, alias)` comparison in the restore's pre-run
 duplicate check; `filterAlreadyPresent` still compares the id alone, so re-running a restore in
 which only one alias of a duplicate came back skips the whole row.
+
+**K5 addendum (T5.3) — both confirmations name the set; the delete and restore locks that stood
+only for a non-active view lift.** `DeleteConfirmDialogData`/`RestoreConfirmDialogData` gain
+`setName: string`/`isActiveSet: boolean` (spec 8.8): the dialog names "aus dem Set '<Name>'"/"in
+das Set '<Name>'" and, only when `isActiveSet` is `false`, adds "dieses Set ist gerade nicht
+aktiv" — no new confirmation step, still today's one dialog. A #74 duplicate cell was already one
+`DeletableEmote` entry (T5.1), so it reads as one deletion in the dialog's name list with no
+exception group; 8.9 stays gone.
+
+`MassDeletePanel` gains `activeSetId`/`setName`/`setNames` inputs (the last a `Map<string, string>`
+the page fills from the same `emoteSetList` the name-twin tooltip already reads) and its `setId`
+input is now bound to the page's *selected* set, not `activeEmoteSetId()` (`.html` ~1053) — the run
+has been set-aware since T5.1/T5.2, so the panel no longer needs the active set as a stand-in.
+`getSetWarning` is now called with the panel's own `setId` explicitly (spec 6.8) instead of
+implicitly checking the active set. A restore offered from a finished delete run reads `run.setId`
+— which the dropdown may have moved past by the time Restore is clicked, since the set menu locks
+only while a run is still *writing* — against the same `setNames` map and against `activeSetId` for
+`isActiveSet`, never against the panel's current `setId()`.
+
+Both restore paths' slot preview (`MassDeletePanel.openRestoreConfirmDialog`,
+`restore-flow.ts`'s `startRestoreFlow`) fork on whether the target is the active set: active keeps
+the cheap, non-7TV-rate-limited `EmoteAdminService.getSetStatus`; any other set reads
+`SevenTvEmoteSetService.loadEmoteSetPreview` instead (spec 8.3) — `getSetStatus` has no set-scoped
+form. The projection itself is now against **ADDs**, not rows (spec 7.2): a #74 duplicate cell's
+row carries two aliases and restores under both, so `RestoreConfirmDialogData` gains `addCount`
+beside `names` (the display list still lists the row once). `startRestoreFlow` takes two new
+parameters, `setName`/`isActiveSet`, frozen at the same moment as `channelName`/`setId`;
+`import-trigger.ts`'s `restoreEnabled` is unconditionally `true` now (`FileImportStep`'s own input
+is untouched, so a future caller can still gate it) — the last of T5.1's "still standing" interim
+locks, and the only one that ever blocked restore outright rather than just naming it wrong.
+
+**The delete lock lifts for a plain, fully-loaded non-active view; the vote lock does not, because
+K6 is what lifts that one.** `deleteLockReasonKey` no longer returns `nonActiveSet` there —
+switching, an unreadable member list and a truncated one still lock it, refactored into a shared
+`sharedSetViewLockReasonKey` both `deleteLockReasonKey` and `voteLockReasonKey` read from.
+`voteLockReasonKey`'s own line had to change to source its text from that shared computed plus its
+own `nonActiveSet` fallback rather than from `deleteLockReasonKey()` directly, since the two stopped
+agreeing the moment `deleteLockReasonKey` narrowed — a one-line, behaviour-preserving decoupling
+(every input that used to lock/unlock voting still does, with the same reason text), not a change to
+when or why voting locks, which stays K6's. One direct consequence of the two locks parting ways:
+the vote button's `aria-describedby` used to point at the delete panel's own reason paragraph on the
+premise that both locks were the same condition; that premise now fails for exactly the
+plain-non-active case (deleting unlocked, voting still locked), so `usage-stats-page.html` gained a
+second, vote-only reason paragraph (`voteOnlyLockReasonId`) shown only then, with the button's
+`aria-describedby` picking whichever of the two paragraphs currently exists.
+
+**Left open, on purpose.** Whether a finished restore's `channelService.resync` call
+(`seven-tv-restore.service.ts`) should skip a non-active-set target the way the K2 import path's
+`targetIsActiveSet` already does (the 2026-09-21 entry above, "the dock stops claiming it does") —
+the spec is silent on this specific point, unlike that import fix, whose own wording covers it. T5.3
+therefore leaves the call firing unconditionally: harmless (the endpoint only ever resyncs the
+*active* set regardless of what triggered it) but pointless for a non-active-set restore, exactly as
+T5.1's own addendum already flagged. AK 57 ('left' rows carry the badge and are not selectable)
+needed no further work here — it was already in place from T4.x/T5.1, nothing in T5.3 touches it.
 
 ---
 

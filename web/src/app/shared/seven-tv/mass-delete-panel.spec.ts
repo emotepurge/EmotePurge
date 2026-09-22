@@ -1267,11 +1267,20 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
   });
 
   /** Mounts the panel, triggers openConfirm() and returns what it handed to Dialog.open(...). */
-  function captureDialogData(selectedEmotes: DeletableEmote[]): DeleteConfirmDialogData {
+  function captureDialogData(
+    selectedEmotes: DeletableEmote[],
+    options: { setName?: string; activeSetId?: string | null } = {},
+  ): DeleteConfirmDialogData {
     const fixture = TestBed.createComponent(MassDeletePanel);
     fixture.componentRef.setInput('setId', 'set-1');
     fixture.componentRef.setInput('channelName', 'somechannel');
     fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    if (options.setName !== undefined) {
+      fixture.componentRef.setInput('setName', options.setName);
+    }
+    if (options.activeSetId !== undefined) {
+      fixture.componentRef.setInput('activeSetId', options.activeSetId);
+    }
     fixture.detectChanges();
 
     openSpy.mockReturnValue({ closed: of(undefined) });
@@ -1316,6 +1325,20 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
 
     expect(host.querySelectorAll('ul')).toHaveLength(1);
     expect(host.textContent).not.toContain('durch den aktuellen Filter ausgeblendet');
+  });
+
+  // spec #200, 8.8: the dialog's set name/active flag come from the panel's own `setId`/`setName`
+  // inputs — the page's *selected* set (bound to `selectedEmoteSetId()` since T5.3) — never from
+  // `activeEmoteSetId()` directly, which the panel does not even read.
+  it("takes the delete-confirm dialog's set name from its own setName input, and marks it active when it matches activeSetId", () => {
+    dialogData = captureDialogData(EMOTES, { setName: 'Halloween', activeSetId: 'set-1' });
+    expect(dialogData.setName).toBe('Halloween');
+    expect(dialogData.isActiveSet).toBe(true);
+  });
+
+  it("marks the delete-confirm dialog's set not active when activeSetId names a different set", () => {
+    dialogData = captureDialogData(EMOTES, { setName: 'Halloween', activeSetId: 'set-other' });
+    expect(dialogData.isActiveSet).toBe(false);
   });
 });
 

@@ -869,6 +869,8 @@
       "one": "Add {{ count }} emote back to the set?",
       "other": "Add {{ count }} emotes back to the set?"
     },
+    "confirmSetLine": "Into the set “{{ setName }}”.",
+    "confirmSetNotActive": "This set is not the active one right now.",
     "confirmExecute": "Restore",
     "capacityProjection": "The set would then hold {{ projected }} of {{ capacity }} slots.",
     "capacityWarning": "That exceeds the capacity — 7TV will reject the surplus emotes.",
@@ -951,6 +953,8 @@
       "one": "Delete {{ count }} emote from 7TV?",
       "other": "Delete {{ count }} emotes from 7TV?"
     },
+    "confirmSetLine": "From the set “{{ setName }}”.",
+    "confirmSetNotActive": "This set is not the active one right now.",
     "checkingSharedSets": "Checking shared sets…",
     "sharedSetWarningTitle": "Warning: the active emote set may not (only) belong to this channel.",
     "notOwnSet": "The active set doesn't belong to this channel's own 7TV account.",

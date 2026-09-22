@@ -724,21 +724,22 @@ export class UsageStatsPage {
   );
 
   /**
-   * Why deleting is locked in the view on screen, as a translation key, or `null` when it is not
-   * (spec 8.3):
+   * The "objective" reasons a non-active set view blocks a writer, independent of *which* writer:
+   * the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
+   * request failed), the member list could not be read (503/429), the member list came back
+   * `truncated`, or the member list is still (re)loading for a settled, non-switching view (same
+   * "not loaded yet" reason as switching — a list not yet confirmed readable must not be trusted
+   * either way). `null` for the active view and for a non-active view whose member list loaded
+   * clean.
    *
-   * - the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
-   *   request failed) — checked first, in every view, because the rows on screen are not the chosen
-   *   set's and the panel's delete target is the active set;
-   * - the member list could not be read (503/429) — a list that knows half the set must not delete;
-   * - the member list came back `truncated` — same rule;
-   * - otherwise, **for now**, every non-active view. The run itself is set-aware since K5 (T5.1/T5.2,
-   *   spec 6.6/7.2: 7TV-id keys, `emoteId: null` in the protocol, the set frozen into the run record
-   *   and reported in the new `sync-deleted` form), but the panel is still bound to the *active* set
-   *   and its confirmation does not name the set yet — both are T5.3 (spec 8.8), which lifts this
-   *   last lock. Until then a delete here would remove from the active set while another is shown.
+   * Shared by `deleteLockReasonKey` (spec #200, 8.3/8.8) and `voteLockReasonKey` (spec 9, K6): a
+   * vote session is still locked for *every* non-active view regardless of this shared reason —
+   * `voteLockReasonKey` adds its own "for now, active set only" text on top when this one is
+   * `null` but the view is still non-active. Deleting has no such blanket reason any more since
+   * K5/T5.3 (spec 8.8): the run is set-aware (T5.1/T5.2) and the confirmation names the set, so a
+   * plain non-active view with a good member list is no longer locked for it.
    */
-  protected readonly deleteLockReasonKey = computed<string | null>(() => {
+  private readonly sharedSetViewLockReasonKey = computed<string | null>(() => {
     if (this.viewSwitching()) {
       return 'usageStats.setView.lock.switching';
     }
@@ -748,21 +749,43 @@ export class UsageStatsPage {
       case 'unavailable':
         return 'usageStats.setView.lock.membersUnavailable';
       case 'ready':
-        if (this.liveMembers()?.truncated) {
-          return 'usageStats.setView.lock.truncated';
-        }
-        return 'usageStats.setView.lock.nonActiveSet';
+        return this.liveMembers()?.truncated ? 'usageStats.setView.lock.truncated' : null;
+      case 'loading':
+        return 'usageStats.setView.lock.switching';
       default:
-        return 'usageStats.setView.lock.nonActiveSet';
+        return null;
     }
   });
 
   /**
-   * Set names by id, for the name-twin marker's tooltip (E24, AK 59). A twin in a set the list does
-   * not (or no longer) name still gets a stable handle: the id's last six characters, the same
-   * short form the audit view uses for a set.
+   * Why deleting is locked in the view on screen, as a translation key, or `null` when it is not
+   * (spec 8.3, 8.8): the view is switching, or the member list could not be read / came back
+   * truncated / is still loading — `sharedSetViewLockReasonKey` above. A plain non-active view with
+   * a good member list is no longer locked for deleting since K5/T5.3: the run is set-aware
+   * (T5.1/T5.2) and the confirmation names the set (spec 8.8), so there is nothing left this lock
+   * protected against.
    */
-  private readonly emoteSetNames = computed(
+  protected readonly deleteLockReasonKey = computed<string | null>(() =>
+    this.sharedSetViewLockReasonKey(),
+  );
+
+  /** Element id of the vote button's own lock-reason paragraph (`.html`, next to
+   *  `app-mass-delete-panel`) — needed only since T5.3, when deleting is unlocked but voting still
+   *  is (a plain non-active view). One page instance at a time, so a static id is enough, unlike
+   *  `MassDeletePanel.deleteLockReasonId`, which needs a per-instance suffix because that
+   *  component renders twice on one page. */
+  protected readonly voteOnlyLockReasonId = 'usage-stats-vote-only-lock-reason';
+
+  /**
+   * Set names by id, for the name-twin marker's tooltip (E24, AK 59) and — since K5/T5.3 — for the
+   * mass-delete panel's `[setNames]` input, which resolves a finished delete run's own frozen set
+   * (possibly not `selectedEmoteSetId()` any more) for the restore confirmation (spec 8.8). A twin
+   * (or a run's set) the list does not (or no longer) name still gets a stable handle: the id's
+   * last six characters, the same short form the audit view uses for a set — that fallback lives
+   * at each reader, not here, so a reader missing from this map is unambiguous (`undefined`, not a
+   * pre-shortened string masquerading as a name).
+   */
+  protected readonly emoteSetNames = computed(
     () => new Map((this.emoteSetList()?.sets ?? []).map((set) => [set.id, set.name])),
   );
 
@@ -1380,11 +1403,16 @@ export class UsageStatsPage {
   protected readonly voteLocked = computed(() => this.voteLockReasonKey() !== null);
 
   /** The reason behind `voteLocked`, for the vote dialog, which re-checks it at submit time (the
-   *  dialog outlives the moment its button was enabled). Mid-switch the switch reason, otherwise the
-   *  non-active view's own reason — exactly the paragraph the dock already shows next to the delete
-   *  button, which the vote button points at. */
+   *  dialog outlives the moment its button was enabled). Mid-switch or an unreadable/truncated
+   *  member list: `sharedSetViewLockReasonKey`'s own text (the same paragraph the dock shows next
+   *  to the delete button whenever that reason applies to deleting too). Otherwise, for every
+   *  non-active view regardless: the "for now, active set only" text — unlike deleting (K5/T5.3),
+   *  a vote session over a non-active set does not exist yet (K6, spec 9), so this reason does not
+   *  narrow the way `deleteLockReasonKey`'s did. */
   protected readonly voteLockReasonKey = computed<string | null>(() =>
-    this.viewSwitching() || this.isNonActiveView() ? this.deleteLockReasonKey() : null,
+    this.viewSwitching() || this.isNonActiveView()
+      ? (this.sharedSetViewLockReasonKey() ?? 'usageStats.setView.lock.nonActiveSet')
+      : null,
   );
 
   /**

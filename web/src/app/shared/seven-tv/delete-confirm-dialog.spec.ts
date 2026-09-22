@@ -19,6 +19,8 @@ const DE_TRANSLATIONS = {
       one: '{{ count }} Emote von 7TV löschen?',
       other: '{{ count }} Emotes von 7TV löschen?',
     },
+    confirmSetLine: 'Aus dem Set „{{ setName }}“.',
+    confirmSetNotActive: 'Dieses Set ist gerade nicht aktiv.',
     startDelete: 'Löschen starten',
     checkingSharedSets: 'Prüfe geteilte Sets…',
     sharedSetWarningTitle:
@@ -72,6 +74,8 @@ interface RenderOptions {
   warning?: EmoteSetWarning | null;
   warningLoading?: boolean;
   hiddenEmotes?: string[];
+  setName?: string;
+  isActiveSet?: boolean;
 }
 
 interface Harness {
@@ -138,7 +142,14 @@ describe('DeleteConfirmDialog', () => {
     const warningLoading = signal(options.warningLoading ?? false);
     const hiddenEmotes = signal(options.hiddenEmotes ?? []);
 
-    dialogData = { emotes, hiddenEmotes, warning, warningLoading };
+    dialogData = {
+      emotes,
+      hiddenEmotes,
+      warning,
+      warningLoading,
+      setName: options.setName ?? 'Main Set',
+      isActiveSet: options.isActiveSet ?? true,
+    };
 
     const fixture = TestBed.createComponent(DeleteConfirmDialog);
     fixture.detectChanges();
@@ -331,6 +342,26 @@ describe('DeleteConfirmDialog', () => {
 
       // render()'s default visible fixture is ['Kappa', 'PogU'] (2) + 2 hidden = 4.
       expect(dialog.text()).toContain('4 Emotes von 7TV löschen?');
+    });
+  });
+
+  // spec #200, 8.8 (AK 73): the dialog names the set the run deletes from, with the "not
+  // currently active" addition gated on isActiveSet alone — never on anything about the run's
+  // targets (a #74 duplicate cell is already one entry in data.emotes(), see mass-delete-panel.ts,
+  // so it needs no exception of its own here; 8.9 is gone).
+  describe('naming the set (spec #200, 8.8)', () => {
+    it('names the set and shows no "not active" note for the active set', () => {
+      const dialog = render({ setName: 'Halloween', isActiveSet: true });
+
+      expect(dialog.text()).toContain('Aus dem Set „Halloween“.');
+      expect(dialog.text()).not.toContain('Dieses Set ist gerade nicht aktiv.');
+    });
+
+    it('adds the "not active" note for a non-active set', () => {
+      const dialog = render({ setName: 'Halloween', isActiveSet: false });
+
+      expect(dialog.text()).toContain('Aus dem Set „Halloween“.');
+      expect(dialog.text()).toContain('Dieses Set ist gerade nicht aktiv.');
     });
   });
 });

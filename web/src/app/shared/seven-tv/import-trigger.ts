@@ -92,16 +92,16 @@ function toImportTarget(
  * and `!isCoarse()` deliberately do NOT appear here: both are already enforced by the `@if` block
  * this trigger is placed inside on the page, alongside "Übertragen" (plan §1.2 point 3).
  *
- * **The file, foreign-channel and leaderboard doors target `setId` itself (spec 8.6, T4.5)** — the
- * page's *selected* set, active or not (`toImportTarget` above). **Restore does not**: a finished
- * restore still books its un-archive through the legacy, set-agnostic
- * `EmoteAdminService.syncRestored(channelName, emoteIds)` call (`restore-flow.ts`), which K5/T5.2
- * makes set-aware. Until then, `FileImportStep`'s `restoreEnabled` input — `true` only while
- * `setId` names the channel's active set (`activeSetId`) — keeps a purge-run protocol from ever
- * reaching `startRestoreFlow` while a non-active set is on screen, with a visible reason shown at
- * the exact moment the file is read (never a silent no-op). The protocol *match* check itself
- * (`setId` vs. the file's own `meta.emoteSetId`) was already generic over whichever set it is given
- * — it needed no change to accept a non-active set's own protocol while that set is shown (AK 66).
+ * **All four doors target `setId` itself (spec 8.6, T4.5), restore included since K5 (T5.2/T5.3)**
+ * — the page's *selected* set, active or not (`toImportTarget` above for the other three;
+ * `startRestoreFlow`'s own `setId`/`setName` parameters for restore). Restore books its un-archive
+ * through the set-aware `EmoteAdminService.syncRestored(channelName, { emoteSetId, … })` call
+ * (`restore-flow.ts`, T5.2), and its confirmation names the set it re-adds into (T5.3, spec 8.8) —
+ * `FileImportStep`'s `restoreEnabled` input therefore stays `true` unconditionally now
+ * (`restoreEnabled: true` below); the input itself is untouched so a future caller can still gate
+ * it. The protocol *match* check itself (`setId` vs. the file's own `meta.emoteSetId`) was already
+ * generic over whichever set it is given — it needed no change to accept a non-active set's own
+ * protocol while that set is shown (AK 66).
  */
 @Component({
   selector: 'app-import-trigger',
@@ -169,56 +169,62 @@ export class ImportTrigger {
     const setId = this.setId();
     const activeSetId = this.activeSetId();
     const setName = this.setName();
-    // Restore stays locked to the active set until K5 (see the class doc) — computed once, here,
-    // from the same frozen ids the rest of this click uses, never re-read once the dialog is open.
-    // An unknown active set (`null`) locks it too: the legacy `sync-restored` call books into
-    // whatever the active set is, and nobody here knows that it is the one on screen.
+    // Restore is set-aware since K5 (T5.2: sync-restored takes { emoteSetId, sevenTvEmoteIds };
+    // T5.3: the confirmation names the set) — no longer locked to the active set. Still computed
+    // once, here, from the same frozen ids the rest of this click uses: `isActiveSet` only
+    // decides which slot-preview source the confirmation reads (`startRestoreFlow`), never
+    // whether the door opens at all.
     const resolvedActiveSetId = resolveActiveSetId(setId, activeSetId);
-    const restoreEnabled = resolvedActiveSetId !== null && resolvedActiveSetId === setId;
+    const restoreIsActiveSet = resolvedActiveSetId !== null && resolvedActiveSetId === setId;
 
-    openImportSourceDialog(this.dialog, { channelName, setId, restoreEnabled }).closed.subscribe(
-      (result) => {
-        if (!result) {
-          return;
-        }
-        if (result.kind === 'restore') {
-          startRestoreFlow(
-            {
-              dialog: this.dialog,
-              emoteAdminService: this.emoteAdminService,
-              httpClient: this.httpClient,
-              tokenService: this.tokenService,
-              restoreService: this.restoreService,
-              arbiter: this.arbiter,
-            },
-            channelName,
-            setId,
-            result.rows,
-          );
-          return;
-        }
-        const importDeps = {
-          dialog: this.dialog,
-          emoteAdminService: this.emoteAdminService,
-          emoteSetService: this.emoteSetService,
-          httpClient: this.httpClient,
-          tokenService: this.tokenService,
-          importService: this.importService,
-          arbiter: this.arbiter,
-        };
-        const target = toImportTarget(channelName, setId, activeSetId, setName);
-        if (result.kind === 'foreign') {
-          startForeignChannelImportFlow(importDeps, result.picked, target);
-          return;
-        }
-        if (result.kind === 'leaderboard') {
-          // Same target rule, and even less to ask for: a leaderboard row belongs to no channel at
-          // all. Foreign is the source, never the target.
-          startLeaderboardImportFlow(importDeps, result.picked, target);
-          return;
-        }
-        startImportFlow(importDeps, result.source, target);
-      },
-    );
+    openImportSourceDialog(this.dialog, {
+      channelName,
+      setId,
+      restoreEnabled: true,
+    }).closed.subscribe((result) => {
+      if (!result) {
+        return;
+      }
+      if (result.kind === 'restore') {
+        startRestoreFlow(
+          {
+            dialog: this.dialog,
+            emoteAdminService: this.emoteAdminService,
+            emoteSetService: this.emoteSetService,
+            httpClient: this.httpClient,
+            tokenService: this.tokenService,
+            restoreService: this.restoreService,
+            arbiter: this.arbiter,
+          },
+          channelName,
+          setId,
+          setName,
+          restoreIsActiveSet,
+          result.rows,
+        );
+        return;
+      }
+      const importDeps = {
+        dialog: this.dialog,
+        emoteAdminService: this.emoteAdminService,
+        emoteSetService: this.emoteSetService,
+        httpClient: this.httpClient,
+        tokenService: this.tokenService,
+        importService: this.importService,
+        arbiter: this.arbiter,
+      };
+      const target = toImportTarget(channelName, setId, activeSetId, setName);
+      if (result.kind === 'foreign') {
+        startForeignChannelImportFlow(importDeps, result.picked, target);
+        return;
+      }
+      if (result.kind === 'leaderboard') {
+        // Same target rule, and even less to ask for: a leaderboard row belongs to no channel at
+        // all. Foreign is the source, never the target.
+        startLeaderboardImportFlow(importDeps, result.picked, target);
+        return;
+      }
+      startImportFlow(importDeps, result.source, target);
+    });
   }
 }

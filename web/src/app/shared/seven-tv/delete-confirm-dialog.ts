@@ -22,6 +22,17 @@ export interface DeleteConfirmDialogData {
   hiddenEmotes: Signal<string[]>;
   warning: Signal<EmoteSetWarning | null>;
   warningLoading: Signal<boolean>;
+  /** The set the run deletes from (spec #200, 8.8) — the page's *selected* set, not necessarily
+   *  the active one. Named here so the confirmation never leaves it to the reader to remember
+   *  which set the dropdown showed when the dialog opened. Falls back to the set id itself when
+   *  the host page's set list has not (or no longer) named it, the same convention every other
+   *  unnamed-set reader in this app uses. A plain value, not a signal: the panel reads it once,
+   *  right before opening the dialog, and a set switch behind an open dialog is caught by the
+   *  host's own re-check at confirm time (`startDelete`), not by this dialog changing under it. */
+  setName: string;
+  /** Whether `setName` is the channel's currently active 7TV set — gates the "this set is not
+   *  currently active" addition (spec 8.8). */
+  isActiveSet: boolean;
 }
 
 /**
@@ -37,6 +48,18 @@ export interface DeleteConfirmDialogData {
   imports: [Button, DialogShell, NamePreviewList, NoticeBanner, TranslocoPipe],
   template: `
     <app-dialog-shell [dialogTitle]="titleKey() | transloco: { count: totalCount() }">
+      <!-- Names the set right under the title (spec 8.8) — a duplicate cell (#74, two aliases,
+           one REMOVE) is still exactly one entry in data.emotes() (mass-delete-panel.ts builds
+           one DeletableEmote per cell), so it reads as one deletion here too, in no group of its
+           own (8.9 is gone). -->
+      <p class="text-sm text-fg-secondary">
+        {{ 'massDelete.confirmSetLine' | transloco: { setName: data.setName } }}
+      </p>
+      @if (!data.isActiveSet) {
+        <p class="text-sm text-fg-secondary">
+          {{ 'massDelete.confirmSetNotActive' | transloco }}
+        </p>
+      }
       <app-name-preview-list [names]="data.emotes()" />
 
       <!-- Uncapped on purpose (Konzept "Auswahl überlebt Suche und Filter" 2.1): the 50-name cap
