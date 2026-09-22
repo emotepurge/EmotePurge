@@ -3210,7 +3210,10 @@ bestätigten Löschen hängt, nie an einem Reload. Die nicht-aktive Ansicht lies
 ihre Zeilen tragen die Aliase schon aus der Mitgliederliste. Die Vote-Session-Detailseite bleibt bis
 K6 bei `[name]`. Quelle (7TV direkt statt Vorschau-Route), Zeitpunkt (beim Bestätigen, nicht beim
 Öffnen) und Begründung im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is identified
-by its 7TV id …", K5-Nachtrag vom 2026-09-22.
+by its 7TV id …", K5-Nachtrag vom 2026-09-22. **Abgelöst durch #227 (2026-09-22):** Der Löschlauf der
+Vote-Session-Detailseite liest seitdem ebenfalls live, unabhängig davon, ob ihr Set gerade aktiv ist —
+`MassDeletePanel.readLiveAliasesFromSet`, siehe Entscheidungslog-Eintrag „Vote-page deletes read the
+session's set live" desselben Tages.
 
 ## 38. Nachtrag: Die Vorprüfung des Restore vergleicht je Alias — die „mittlere Regel" (K5, Betreiber-Entscheidung 2026-09-22)
 
