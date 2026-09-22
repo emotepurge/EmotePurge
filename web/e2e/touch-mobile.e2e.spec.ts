@@ -156,6 +156,63 @@ test.describe('touch: reading and voting only', () => {
     await expect(closeButton).toBeInViewport();
   });
 
+  /**
+   * #226 fix round: full-scroll alone (the case above) does not catch a sticky offset that only
+   * "resolves" at the very end of the scroll range — both the resting position (`scrollTop === 0`)
+   * and the fully-scrolled end are *unstuck*, natural-flow positions; the bug this pins only exists
+   * while the sheet is genuinely *stuck*, i.e. any scroll position strictly between those two. Two
+   * things are checked at that midpoint: the drag handle bar itself — not just its `touch-none`
+   * wrapper zone, the actual visible pill — stays `toBeInViewport()`, and the whole close-button row
+   * (padding included, not just the button) stays inside the pane's own visible rectangle. A first
+   * version of the `DialogShell` fix pinned the handle with `sticky -top-6` and the row with `sticky
+   * -bottom-6` (the offsets mirrored each other, both wrongly): the handle bar was entirely clipped
+   * out of view for the whole time it was stuck, and the row's own bottom padding was clipped away
+   * the same way the desktop case shows — this failed red against both. See `docs/DECISIONS.md`.
+   */
+  test('the sheet keeps the handle bar and the whole close-button row inside the pane while actually stuck mid-scroll (#226 fix round)', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 393, height: 400 });
+    await mockUsageTotals(page, 'sensitron', [TOUCH_EMOTE]);
+    await page.goto('/channels/sensitron/usage-stats');
+    await page.locator('[data-atlas-index="0"]').tap();
+    await expect(page.locator('#app-dialog-title')).toBeVisible();
+
+    const pane = page.locator('.cdk-overlay-pane.app-dialog-panel');
+    const overflow = await pane.evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(overflow).toBeGreaterThan(20);
+
+    // Let the sheet's own open animation settle before reading geometry — it runs a 260ms transform
+    // (`app-sheet-in`, styles.css) that would otherwise be measured mid-flight.
+    await page.waitForTimeout(400);
+
+    await pane.evaluate((el) => {
+      el.scrollTop = Math.round((el.scrollHeight - el.clientHeight) / 2);
+    });
+    // Sticky repositioning itself is synchronous with scroll, but give layout a moment to settle
+    // before reading geometry.
+    await page.waitForTimeout(50);
+
+    // The grab bar's own visible pill (the `<span>`), not its `[data-sheet-handle]` wrapper — the
+    // wrapper is a 44px touch target (`min-h-11`, §10) and stays partly inside the pane long after
+    // the 4px bar itself has scrolled out of the clipped region, so `toBeInViewport()` on the
+    // wrapper would report "visible" while the only thing a reader can actually see there is empty
+    // padding. `.first()` picks the sticky bar over the heading (the second, non-sticky
+    // `data-sheet-handle`, dialog-shell.ts's template).
+    const handle = page
+      .locator('.cdk-overlay-pane.app-dialog-panel [data-sheet-handle]')
+      .first()
+      .locator('span');
+    await expect(handle).toBeInViewport();
+
+    const closeRow = page.getByRole('button', { name: 'Schließen' }).locator('xpath=..');
+    const rowBox = await closeRow.evaluate((el) => el.getBoundingClientRect());
+    const paneBox = await pane.evaluate((el) => el.getBoundingClientRect());
+
+    expect(rowBox.bottom).toBeLessThanOrEqual(paneBox.bottom + 1);
+    expect(rowBox.top).toBeGreaterThanOrEqual(paneBox.top - 1);
+  });
+
   test('the sheet closes when the backdrop is tapped', async ({ page }) => {
     await mockUsageTotals(page, 'sensitron', [TOUCH_EMOTE]);
     await page.goto('/channels/sensitron/usage-stats');

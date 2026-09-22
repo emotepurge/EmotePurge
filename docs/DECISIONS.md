@@ -26,18 +26,37 @@ callers.
 
 The fix sits once in `DialogShell`, not in any one dialog: the action row is `position: sticky` to
 `.cdk-overlay-pane.app-dialog-panel`'s bottom edge, the same bleed-and-pin technique the sheet's own
-drag handle already used at the top (`-mx-6 -mb-6` cancels the shell's `p-6` on three sides so the
-row's margin box reaches the pane's edges, `-bottom-6` cancels that negative margin back out of the
-sticky offset so the pinned position lands flush). Sticky rather than a flex-column height chain
-(`h-full` on the shell, `overflow-y-auto` on the body) deliberately: two component hosts with a
-`display: inline` default sit between the pane and the shell, and a height chain does not survive
-them — the exact reason the pane, not the shell, has been the scroll container all along. The row
-carries its own `bg-surface` and a `border-t border-border` so scrolled content cannot show through
-underneath it and the boundary between "still scrolling" and "always visible" stays legible; it
-rounds its bottom corners to match the shell's own only on a fine pointer, since the sheet's shell
-has no bottom radius to match (flush with the screen edge). `overflow-hidden` on the shell stays
-forbidden, unchanged from the existing sheet-handle rule — it would break both sticky pins the same
-way.
+drag handle already used at the top — `-mx-6 -mb-6` (row) / `-mx-6 -mt-6` (handle) cancel the
+shell's `p-6` on three sides so each one's margin box reaches the pane's edge, and the sticky offset
+itself is plain **`0`** (`bottom-0` / `top-0`), so the pinned position lands flush with that already-
+bled edge. Sticky rather than a flex-column height chain (`h-full` on the shell, `overflow-y-auto`
+on the body) deliberately: two component hosts with a `display: inline` default sit between the pane
+and the shell, and a height chain does not survive them — the exact reason the pane, not the shell,
+has been the scroll container all along. The row carries its own `bg-surface` and a `border-t
+border-border` so scrolled content cannot show through underneath it and the boundary between "still
+scrolling" and "always visible" stays legible; it rounds its bottom corners to match the shell's own
+only on a fine pointer, since the sheet's shell has no bottom radius to match (flush with the screen
+edge). `overflow-hidden` on the shell stays forbidden, unchanged from the existing sheet-handle
+rule — it would break both sticky pins the same way.
+
+**Caught and corrected within the same, still-unmerged branch, worth stating plainly for the next
+reader:** the first version of this fix pinned the row with `sticky -bottom-6` — mirrored, on the
+mistaken belief that the offset had to "cancel" the `-mb-6` margin a second time — and, following the
+same (wrong) reasoning, the sheet's pre-existing drag handle carried `sticky -top-6`. A margin and a
+sticky offset do two different jobs: the margin decides where the box sits in normal flow, the
+offset decides where the *stuck* box is clamped to relative to the pane's own edge. `-6` there does
+not cancel anything a second time, it pins the box 24 px past the pane's true edge — invisible at
+rest and at the very end of a scroll (both are *unstuck*, natural-flow positions), but for every
+scroll position genuinely in between, the handle's own grab bar was clipped completely out of view
+and the row's `pb-6` cushion was clipped away under the pane's edge, leaving its buttons flush
+against the raw bottom with no visible padding. Neither had been noticed before: the handle predates
+this issue entirely and its only test checked it at rest; the row's own first e2e case checked it
+only at full scroll, both *unstuck* states where the bug is invisible. Both now pin at offset `0`.
+Measured with `getBoundingClientRect()` mid-scroll (not `toBeInViewport()` on the button alone, which
+does not notice a clipped-away padding, and not on the handle's touch-target wrapper, which stays
+partly inside the pane long after its 4 px bar has scrolled out) — pinned by
+`web/e2e/dialog-action-row.e2e.spec.ts` and `web/e2e/touch-mobile.e2e.spec.ts`, both confirmed red
+against the `-6` offsets before the fix.
 
 Also fixed in the same change: the audit harness's `usage-stats-import-target-dialog` scenario had
 gone stale since K2 (#206) — it never mocked `GET /api/seventv/me/emote-set-targets`, so its
