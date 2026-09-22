@@ -1473,6 +1473,10 @@ export class UsageStatsPage {
       hasActiveSet: this.selectedEmoteSetId() !== null,
       markedCount: this.selection.selectedKeys().length,
       deleteShown: this.deleteService.isRunning() || this.deleteService.queue().length > 0,
+      // A confirmed delete whose pre-run live alias read is still out — or whose abort notice is
+      // still showing — is invisible in every other clause here, marked count included: the reload
+      // that prunes the selection is exactly the case this covers. See that signal's own doc.
+      deleteConfirmPending: this.deleteService.confirmedRunPending(),
       restoreShown: this.restoreService.isRunning() || this.restoreService.queue().length > 0,
       // An import copies INTO this channel's set only when this channel is the chosen target — but
       // the run stays visible on every usage-stats page it is opened from (R9), source included, so

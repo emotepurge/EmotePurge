@@ -23,6 +23,15 @@ export const MAX_AUTOMATIC_SYNC_RETRIES = 2;
 // manual retry button covers the cases a short backoff cannot.
 export const SYNC_RETRY_DELAY_MS = 2000;
 
+/** How long a confirmed delete that never became a run keeps `confirmedRunPending` set, so the
+ *  panel's abort notice ("Nothing was deleted." plus the reason) can still be read after the host's
+ *  dock lost every other reason to stay mounted. Longer than the restore/import services' 4 s
+ *  duplicate notice: this one reports that an irreversible action the user explicitly confirmed did
+ *  *not* happen, and it is two sentences rather than a count. Self-clearing for the same reason
+ *  those are (docs/UI-Designsprache.md §4.5) — there is no run or queue for a dismiss button to
+ *  attach to. */
+export const ABORTED_DELETE_NOTICE_MS = 8000;
+
 /** v4 dropped the `action` enum in favour of one field per operation; the emote travels inside the
  *  `EmoteSetEmoteId` input object rather than as a sibling argument, and variable types are `Id!`
  *  instead of `ObjectID!`. Removal has no alias, unlike `addEmote` in the import/restore services. */
@@ -118,6 +127,49 @@ export class SevenTvDeleteService {
   /** The finished run, kept for the summary/protocol UI (A6). Cleared on reset() — once the panel
    *  is dismissed, the downloaded protocol file is the only remaining artifact, by design. */
   readonly lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+
+  /**
+   * A delete was confirmed but is not (yet) a run: `MassDeletePanel`'s pre-run live alias read is
+   * out, or that read has just ended in an abort whose notice is the only outcome there is to show.
+   * Neither state shows up in `isRunning`/`queue`, which is the problem this exists to solve — the
+   * host dock's own gate (`action-dock.ts`, `usage-stats-page.ts`'s `dockVisible`) counts marked
+   * items and shown panels, so a pushed reload that prunes every marked key while the read is in
+   * flight unmounts the dock, takes `MassDeletePanel` down with it, and the confirmed delete then
+   * aborts against a destroyed panel: no `REMOVE` was ever sent and the notice saying so is gone
+   * too. The dock treats this exactly like an in-flight run, same role `duplicateNoticePending`
+   * plays for a fully-refused restore/import.
+   *
+   * Written only through `beginConfirmedRun`/`endConfirmedRun` below, which the panel calls around
+   * the read.
+   */
+  readonly confirmedRunPending = signal(false);
+
+  private confirmedRunTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  /** A confirmed delete has begun its pre-run work — hold the dock open until `endConfirmedRun`. */
+  beginConfirmedRun(): void {
+    clearTimeout(this.confirmedRunTimeout);
+    this.confirmedRunPending.set(true);
+  }
+
+  /**
+   * The pre-run work is over and the run was either started or aborted. A started run carries the
+   * dock by itself from here (`isRunning`/`queue`), so the claim is dropped at once; an abort has
+   * nothing but its notice, so the claim is held for `ABORTED_DELETE_NOTICE_MS` and then dropped.
+   * Asking `isRunning()` rather than taking the answer as a parameter keeps the two callers (and
+   * every future one) from having to agree on what "started" means.
+   */
+  endConfirmedRun(): void {
+    clearTimeout(this.confirmedRunTimeout);
+    if (this.isRunning()) {
+      this.confirmedRunPending.set(false);
+      return;
+    }
+    this.confirmedRunTimeout = setTimeout(
+      () => this.confirmedRunPending.set(false),
+      ABORTED_DELETE_NOTICE_MS,
+    );
+  }
 
   startDelete(setId: string, channelName: string, emotes: DeleteQueueEmote[]): void {
     const started: DeleteRunInfo = { channelName, setId, result: null };

@@ -622,7 +622,14 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
  */
 type DeleteServiceFake = Pick<
   SevenTvDeleteService,
-  'isRunning' | 'queue' | 'syncReport' | 'rateLimitPauseSeconds' | 'lastRun'
+  | 'isRunning'
+  | 'queue'
+  | 'syncReport'
+  | 'rateLimitPauseSeconds'
+  | 'lastRun'
+  | 'confirmedRunPending'
+  | 'beginConfirmedRun'
+  | 'endConfirmedRun'
 >;
 
 function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteServiceFake {
@@ -632,6 +639,13 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     syncReport: signal<SyncReportState>('idle'),
     rateLimitPauseSeconds: signal<number | null>(null),
     lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
+    // The dock's claim on a confirmed-but-not-yet-running delete. Spied rather than implemented:
+    // what the *service* does with it (drop it at once for a started run, hold it for the abort
+    // notice otherwise) is pinned in seven-tv-delete.service.spec.ts; what the panel owes is that
+    // it brackets the pre-run read with these two calls at all.
+    confirmedRunPending: signal(false),
+    beginConfirmedRun: vi.fn(),
+    endConfirmedRun: vi.fn(),
     ...overrides,
   };
 }
@@ -1727,6 +1741,45 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
     expect(startDelete).not.toHaveBeenCalled();
     expect(statusText()).toContain('massDelete.memberRead.truncated');
+  });
+
+  // Codex P3, K5 fix round 2: the read itself is the only thing holding a confirmed delete
+  // together, and nothing the host dock gates on knows about it. Bracketing it with these two calls
+  // is what keeps the panel mounted through a reload that prunes the selection — see
+  // SevenTvDeleteService.confirmedRunPending.
+  it('claims the dock for the confirmed delete while the read is out and releases it afterwards', () => {
+    const deleteService = TestBed.inject(SevenTvDeleteService) as unknown as {
+      beginConfirmedRun: ReturnType<typeof vi.fn>;
+      endConfirmedRun: ReturnType<typeof vi.fn>;
+    };
+    fixture.componentInstance['openConfirm']();
+    expect(deleteService.beginConfirmedRun).not.toHaveBeenCalled();
+
+    closed.next(true);
+    expect(deleteService.beginConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(deleteService.endConfirmedRun).not.toHaveBeenCalled();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    expect(deleteService.endConfirmedRun).toHaveBeenCalledTimes(1);
+    // Released only once the run was attempted, so the service can tell a started run (which keeps
+    // the dock by itself) from an abort (which has nothing but its notice).
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(startDelete.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteService.endConfirmedRun.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('releases the dock claim on a failed read too, after the abort notice is set', () => {
+    const deleteService = TestBed.inject(SevenTvDeleteService) as unknown as {
+      endConfirmedRun: ReturnType<typeof vi.fn>;
+    };
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(deleteService.endConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
   });
 
   it('keeps the delete button disabled while the read is out', () => {

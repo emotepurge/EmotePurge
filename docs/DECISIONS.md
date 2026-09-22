@@ -832,6 +832,36 @@ findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
   skipped if that name is already one of them — rather than leaving the entry unrecorded (F3: a
   protocol that looks complete but is not).
 
+**K5 fix round 2026-09-22 (independent review), second pass — the dock knows about a confirmed
+delete before it is a run.** Between the confirmation and the first `REMOVE`, an active-set delete
+is reading the set's live aliases and exists nowhere the host dock can see it: `dockVisible`
+(`usage-stats-page.ts`, via `actionDockHasContent`) counts marked items and shown run panels, and
+the read is neither. A pushed reload landing in that window and pruning every marked key therefore
+unmounted the dock, took `MassDeletePanel` down with it, and the confirmed delete then aborted
+against a destroyed panel — `abortReasonBeforeStart`'s `destroyed` branch, which returns `null`
+precisely so a torn-down panel starts nothing. Nothing was deleted, which is the safe direction, but
+the notice saying so went down with the panel: from the user's side a confirmed, irreversible action
+simply did not happen and never explained itself.
+
+`SevenTvDeleteService` now carries the state as `confirmedRunPending`, written only through
+`beginConfirmedRun()`/`endConfirmedRun()`, which the panel calls around the read;
+`ActionDockState.deleteConfirmPending` feeds it into the dock's marking half. Two decisions inside
+that:
+
+- **The claim outlives the read when nothing started.** `endConfirmedRun()` asks its own
+  `isRunning()`: a started run carries the dock by itself, so the claim drops at once; an abort has
+  nothing but its notice, so the claim is held for `ABORTED_DELETE_NOTICE_MS` (8 s) and then drops
+  itself. Without that second half the fix would keep the panel alive exactly long enough to *set* a
+  notice nobody gets to read. Self-clearing rather than dismissable for the same reason the
+  restore/import services' `duplicateNoticePending` is (docs/UI-Designsprache.md §4.5): there is no
+  run or queue for a dismiss button to hang on. Longer than those 4 s because this notice reports
+  that an irreversible action the user confirmed did *not* happen, and it is two sentences, not a
+  count.
+- **Inside the `hasActiveSet` gate, not beside it** — unlike `importShown`/`importNoticePending`,
+  which sit outside it because the import half has no set gate (R9). The panel this keeps alive
+  renders inside the marking half, so mounting the dock without a set would only bring back the
+  empty accent-framed bar `actionDockHasContent` exists to prevent.
+
 **Known residual, left standing on purpose.** A **non-active** view's delete still does not read
 live from 7TV at all (`readLiveAliasesFromActiveSet` stays off there) — its rows already carry every
 alias from the member list loaded *with that view* (`mergeSetView`'s non-active branch, spec §37).

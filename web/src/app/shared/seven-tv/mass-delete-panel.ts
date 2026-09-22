@@ -754,6 +754,12 @@ export class MassDeletePanel {
       return;
     }
     this.liveAliasReadPending.set(true);
+    // Tells the host dock that a confirmed delete is in progress even though no run exists yet: its
+    // gate counts marked items and shown run panels, and a pushed reload that prunes every marked
+    // key while this read is out would otherwise unmount the dock — and this panel with it — so the
+    // confirmed delete would abort against a destroyed component with nothing left to say so on
+    // (see `SevenTvDeleteService.confirmedRunPending`). Released in every exit of the read below.
+    this.deleteService.beginConfirmedRun();
     loadSevenTvSetEntries(this.httpClient, frozenSetId)
       .pipe(
         // A hung request (7TV accepts the connection but never answers) must not leave the button
@@ -769,6 +775,9 @@ export class MassDeletePanel {
       .subscribe((read) => {
         this.liveAliasReadPending.set(false);
         this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, read);
+        // After `startDelete`, not before: the service decides from its own `isRunning()` whether
+        // the dock still needs holding open for the abort notice or the run now carries it.
+        this.deleteService.endConfirmedRun();
       });
   }
 
