@@ -713,7 +713,8 @@ alias.
   for the sticky lock paragraph they were written for ("Deleting and voting are locked: …"), wrong
   for this one-off abort notice; dedicated `massDelete.memberRead.*` keys replace them.* Nothing is
   deleted; the panel shows and announces "Nichts gelöscht." plus that reason
-  (`massDelete.abortedByMemberRead`) in the status region the lock aborts already use. A selected id
+  (`massDelete.nothingDeleted`, renamed from `massDelete.abortedByMemberRead` in the second fix
+  round below) in the status region the lock aborts already use. A selected id
   the read does not know keeps the host's aliases.
 - **No double fetch.** A non-active view makes no second read: its rows already carry every alias
   from the member list the view is built from (`mergeSetView`'s non-active branch).
@@ -820,7 +821,9 @@ findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
   started from anywhere else on the page, so a silent return could leave nothing on screen
   explaining why a confirmed delete simply did not happen. `startDelete` now sets `abortNotice` with
   the existing `massDelete.abortedByMemberRead` lead and a new `massDelete.anotherRunStarted` reason
-  (wired to i18n text in a later commit; transloco shows the raw key until then).
+  (wired to i18n text in a later commit; transloco shows the raw key until then). *The lead is
+  renamed to `massDelete.nothingDeleted` in the second fix round below, where this re-check stops
+  being the member read's alone.*
 - **The live alias read has a 20 s total timeout** (`LIVE_ALIAS_READ_TIMEOUT_MS`) — a hung request
   (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true` forever,
   the delete button disabled with no way out short of a page reload. A timeout is piped through the
@@ -861,6 +864,24 @@ that:
   which sit outside it because the import half has no set gate (R9). The panel this keeps alive
   renders inside the marking half, so mounting the dock without a set would only bring back the
   empty accent-framed bar `actionDockHasContent` exists to prevent.
+
+**K5 fix round 2026-09-22 (independent review), second pass — the run arbiter is checked on every
+delete start, not only on the one that waited for a read.** `startDelete`'s re-check was qualified
+on `liveAliases !== null`, i.e. it only ran for an active-set delete that had just come back from
+its live alias read. The other branch — a non-active set, or an active one whose host did not opt
+into the read — called `startDelete(..., null)` and relied on `deleteService.startDelete`'s own
+refusal, which is silent: a confirmed delete in a non-active view could evaporate without a word
+whenever an import or restore had claimed the arbiter behind the open confirmation. The window is
+not smaller there, it is larger — the confirmation is a modal a user can leave standing for
+minutes, and a run started anywhere else on the page lands behind it just as well as behind a read.
+
+The check is now unconditional, and the near side of the same contract is guarded too:
+`openConfirm()` asks the arbiter next to its existing host-lock guard, silently, since nothing has
+been confirmed at that point and the run that got there first is already visible in the dock. The
+visible abort's lead key is renamed `massDelete.abortedByMemberRead` → **`massDelete.nothingDeleted`**
+(same text, both locales) — the old name described the one path it happened to be reachable from,
+and would now be read out for an abort that has nothing to do with a member read. It stays the lead
+for the member-read reasons as well, which is what it always said on screen.
 
 **Known residual, left standing on purpose.** A **non-active** view's delete still does not read
 live from 7TV at all (`readLiveAliasesFromActiveSet` stays off there) — its rows already carry every

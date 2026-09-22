@@ -1523,6 +1523,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
   let startDelete: ReturnType<typeof vi.fn>;
   let closed: Subject<boolean | undefined>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
+  let dialogOpen: ReturnType<typeof vi.fn>;
 
   function entriesPage(entries: { id: string; alias?: string }[], pageCount = 1) {
     return {
@@ -1544,11 +1545,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     startDelete = vi.fn();
     closed = new Subject<boolean | undefined>();
     activeRun = signal<SevenTvRunKind | null>(null);
+    dialogOpen = vi.fn().mockReturnValue({ closed });
     const deleteService = { ...fakeDeleteService(), startDelete };
     const providers = panelProviders({
       deleteService,
       arbiter: fakeRunArbiter(activeRun),
-      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      dialogOpen,
       emoteAdminService: {
         getSetWarning: () =>
           of({
@@ -1693,7 +1695,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
-    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    expect(statusText()).toContain('massDelete.nothingDeleted');
     // K5 fix round: dedicated massDelete.memberRead.* keys, not the reused usageStats.setView.lock.*
     // texts ("Deleting and voting are locked: …"), which are wrong for this one-off abort notice.
     expect(statusText()).toContain('massDelete.memberRead.unavailable');
@@ -1806,7 +1808,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       fixture.detectChanges();
 
       expect(startDelete).not.toHaveBeenCalled();
-      expect(statusText()).toContain('massDelete.abortedByMemberRead');
+      expect(statusText()).toContain('massDelete.nothingDeleted');
       expect(statusText()).toContain('massDelete.memberRead.unavailable');
       expect(deleteButton().disabled).toBe(false);
       expect(req.cancelled).toBe(true);
@@ -1837,8 +1839,41 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
-    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    expect(statusText()).toContain('massDelete.nothingDeleted');
     expect(statusText()).toContain('massDelete.anotherRunStarted');
+  });
+
+  // Codex P3, K5 fix round 2: the same re-check, on the branch that has no read to hide behind. It
+  // used to be qualified on `liveAliases !== null`, so a non-active-set delete (and an active one
+  // whose host did not opt in) relied on deleteService.startDelete's own silent refusal — a
+  // confirmed delete evaporating without a word. The confirmation is a modal the user can leave
+  // open for minutes; a run started elsewhere lands behind it just as well as behind a read.
+  it('starts nothing and says so when another run claimed the arbiter behind the confirmation, with no read involved', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    activeRun.set('restore');
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.anotherRunStarted');
+  });
+
+  // The near side of the same contract: the button is already disabled while a run holds the
+  // arbiter, so this only catches a click that outraces one starting — silently, like the host-lock
+  // guard next to it, since nothing has been confirmed yet and the winning run is already visible
+  // in the dock.
+  it('does not even open the confirmation while another 7TV run holds the arbiter', () => {
+    activeRun.set('import');
+
+    fixture.componentInstance['openConfirm']();
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
   });
 
   it('makes no read at all when the host lock already stops the delete', () => {

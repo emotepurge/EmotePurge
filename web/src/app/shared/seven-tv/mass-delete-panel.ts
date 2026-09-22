@@ -498,6 +498,14 @@ export class MassDeletePanel {
     if (this.deleteLockReasonKey() !== null) {
       return;
     }
+    // Same shape, same reason, for the mutual-exclusion contract (design doc §4.3): the button is
+    // disabled while any of the three 7TV-writing runs holds the arbiter, and this catches the
+    // click that outraces such a run starting elsewhere on the page. Silent, like the lock guard
+    // above — nothing has been confirmed yet, and the run that got there first is already visible
+    // in the dock. The re-check in `startDelete` is what covers the far side of the dialog.
+    if (this.arbiter.activeRun() !== null) {
+      return;
+    }
     // No stored 7TV token yet: ask for it first. The prompt closes itself with `true` the moment
     // the token is saved, which chains straight into the confirm dialog — the flow the old
     // hand-built overlay produced via its reactive template switch.
@@ -827,21 +835,24 @@ export class MassDeletePanel {
     }
     if (liveAliases !== null && 'blockedReasonKey' in liveAliases) {
       this.abortNotice.set({
-        leadKey: 'massDelete.abortedByMemberRead',
+        leadKey: 'massDelete.nothingDeleted',
         reasonKey: liveAliases.blockedReasonKey,
       });
       return;
     }
-    // Only reachable after the live alias read, i.e. asynchronously after the confirmation: another
-    // run may have started in between, outside the mutual-exclusion contract the delete button's
-    // own arbiter gate enforces. Unlike the restore paths' identical re-check (silent there — the
-    // run that got there first is always the one whose progress panel is already mounted in *this*
-    // same dock), this abort has to be visible (K5 fix round item 4): the competing run can be any
-    // of the three 7TV-writing kinds, started from anywhere else on the page, and this panel's own
-    // dock would otherwise show nothing at all to explain why a confirmed delete just vanished.
-    if (liveAliases !== null && this.arbiter.activeRun() !== null) {
+    // Unconditional, on both paths (K5 fix round 2): the live alias read is the *longer* window in
+    // which another run can claim the arbiter, not the only one — the confirmation itself is a
+    // modal the user can leave open for minutes, and a run started from anywhere else on the page
+    // lands just as well behind it. Qualifying this on `liveAliases !== null` left the no-read
+    // branch relying on `deleteService.startDelete`'s own refusal, which is silent, so a confirmed
+    // delete in a non-active view simply evaporated. Unlike the restore paths' identical re-check
+    // (silent there — the run that got there first is always the one whose progress panel is
+    // already mounted in *this* same dock), this abort is visible: the competing run can be any of
+    // the three 7TV-writing kinds, started from anywhere on the page, and this panel's own dock
+    // would otherwise show nothing at all to explain why a confirmed delete just vanished.
+    if (this.arbiter.activeRun() !== null) {
       this.abortNotice.set({
-        leadKey: 'massDelete.abortedByMemberRead',
+        leadKey: 'massDelete.nothingDeleted',
         reasonKey: 'massDelete.anotherRunStarted',
       });
       return;
