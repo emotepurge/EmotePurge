@@ -949,6 +949,7 @@ Name kommt aus der Set-Liste der Seite, wie beim Dropdown).
 |---|---|---|
 | `/api/channels/{c}/emote-sets`, `/usage-stats/*`, `/emotes/set-warning` | `InteractiveRead` (Gruppe) | `EmoteEndpoints.cs:29`, `UsageStatsEndpoints.cs:24` |
 | `/api/seventv/me/emote-set-targets`, `/api/seventv/channels/{c}/emote-sets`, `…/emotes?emoteSetId=` | `ForeignEmoteLookup` (10/min) | `RateLimitingOptions.cs:56`, `Program.cs:188` |
+| `POST /api/channels/{c}/vote-sessions` (K6 whole-branch review, Fable A) | `ForeignEmoteLookup` (10/min), nicht mehr `Bookkeeping` | `VoteSessionEndpoints.cs:~72-79`; ein Set-Session-Zweig liest die Live-Mitgliedschaft des Sets von 7TV (paginiert), also derselbe Budget-Anteil wie die anderen `ForeignEmoteLookup`-Routen — ein Null-Session-Anlegen fasst 7TV gar nicht an und läuft unter derselben Police einfach mit; `end`/`delete` bleiben bei `Bookkeeping` |
 | `…/sync-deleted`, `…/sync-restored`, `…/sync-imported`, `/api/seventv/emote-sets/{id}/sync-imported` | `Bookkeeping` (120/min) | `RateLimitingOptions.cs:41`, `Program.cs:167` |
 
 `RateLimitPolicyNames`, `RateLimitingOptions.Validate()` (`:72-80`) bleiben unverändert;

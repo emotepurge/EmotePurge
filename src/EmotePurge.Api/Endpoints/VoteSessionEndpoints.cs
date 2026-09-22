@@ -69,10 +69,15 @@ public static class VoteSessionEndpoints
             };
         })
         .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
-        // The three management mutations here (create, end, delete) had no policy at all until now.
-        // Bookkeeping: writes against our own database with no provider cost, and 120 a minute is far
-        // past anything a mod team does by hand.
-        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+        // ForeignEmoteLookup, not Bookkeeping (K6 whole-branch review, Fable A): a set-session's
+        // branch of VoteSessionService.CreateAsync reads the set's live membership from 7TV
+        // (IForeignEmoteSetService), one or more paginated pages, so this route can cost the shared
+        // provider budget exactly like the other endpoints under that policy — Bookkeeping's 120/min
+        // would let a caller burn through it 12x faster than the routes it's actually shared with. A
+        // null-session create touches no 7TV endpoint at all and simply rides along under the same
+        // policy, the same way an unauthenticated 401 or a validation 400 does on every other route
+        // here — the budget is spent on the request making it this far, not on which branch runs.
+        .RequireRateLimiting(RateLimitPolicyNames.ForeignEmoteLookup);
 
         group.MapPost("/{sessionId:long}/end", async (
             string channelName,
