@@ -12,30 +12,37 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ### 2026-09-22 — Voting: "member of the session's set" replaces "not archived"; permission comes from permission (#200, K6)
 
-**Betrifft:** `src/EmotePurge.Core/Services/IVoteSessionQueryService.cs` ·
-`src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
-`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` ·
-`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` ·
+**Betrifft:** `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, 6.10, F8, F12, E4, E10) ·
 `src/EmotePurge.Api/Endpoints/VoteSessionEndpoints.cs` ·
-`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`src/EmotePurge.Core/Services/IUsageStatQueryService.cs` ·
+`src/EmotePurge.Core/Services/IVoteSessionQueryService.cs` ·
+`src/EmotePurge.Core/Services/IVoteSessionService.cs` ·
 `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionQueryServiceTests.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`src/EmotePurge.Infrastructure/Services/UsageStatQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/VoteSessionService.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/UsageStatQueryServiceTests.cs` ·
-`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
-`web/src/app/core/voting/vote-session.model.ts` · `web/src/app/core/voting/vote-session.service.ts` ·
-`web/src/app/features/voting/vote-session-detail-page.ts` ·
-`web/src/app/features/voting/vote-session-detail-page.html` ·
-`web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
-`web/src/app/shared/export/voting-export.ts` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionQueryServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/VoteSessionServiceTests.cs` ·
+`web/e2e/support/mocks.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`web/e2e/vote-ballot.e2e.spec.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/voting/vote-session.model.ts` ·
+`web/src/app/core/voting/vote-session.service.spec.ts` ·
+`web/src/app/core/voting/vote-session.service.ts` ·
+`web/src/app/features/usage-stats/create-vote-session-dialog.spec.ts` ·
 `web/src/app/features/usage-stats/create-vote-session-dialog.ts` ·
-`web/src/app/features/usage-stats/usage-stats-page.ts` ·
 `web/src/app/features/usage-stats/usage-stats-page.html` ·
-`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`web/e2e/vote-ballot.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
-`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (section 9, 6.9, 6.10, F8, F12, E4, E10) ·
-`docs/plans/Plan-200-Emote-Sets.md` (K6: T6.1–T6.3)
+`web/src/app/features/usage-stats/usage-stats-page.spec.ts` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.html` ·
+`web/src/app/features/voting/vote-session-detail-page.spec.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/features/voting/vote-session-list-page.spec.ts` ·
+`web/src/app/shared/emotes/emote-drilldown-dialog.ts` ·
+`web/src/app/shared/export/voting-export.spec.ts` · `web/src/app/shared/export/voting-export.ts`
 
 A vote session can now be scoped to any 7TV emote set of the channel, not only the active one — a
 **set-session**, created from a non-active set's view in the usage-stats grid (K6, spec section 9),
@@ -86,10 +93,15 @@ allowed to use it. `canSelectForDelete` now follows `canManage` directly; `hasUs
 only the usage column and the coarse-pointer drilldown, which still are permission-shaped. The panel's
 target set (`massDeletePanelSetId`) is `session.EmoteSetId ?? activeEmoteSetId()` — a set-session's
 own set, never the channel's active one under its name. On the usage-stats page, `voteLockReasonKey`
-is cut back to the mid-switch lock alone (spec §36) — a settled non-active view no longer blocks
-creating a vote session at all (the "set sessions are K6" interim lock this revises), because creating
-one reads the live 7TV membership itself, server-side, and does not depend on the page's own cached
-preview the way a delete run's bookkeeping still does. `openCreateVoteSession` picks the ballot's id
+is now exactly the lock deleting uses (`sharedSetViewLockReasonKey`: mid-switch per spec §36, or the
+shown set's member list loading, unreadable or truncated) — a settled non-active view with a good
+member list no longer blocks creating a vote session at all (the "set sessions are K6" interim
+`nonActiveSet` lock this revises; its copy key is removed). An unreadable or truncated list still
+locks voting as it locks deleting: creating a set-session validates the ballot against the live 7TV
+membership server-side, and a member list the page cannot read in full cannot back a ballot that
+check would accept either. Since both locks are one, the vote button's `aria-describedby` always
+points at the delete button's reason paragraph; K5's interim vote-only paragraph
+(`voteOnlyLockReasonId`) is gone again. `openCreateVoteSession` picks the ballot's id
 space by view: `voteBallotEmoteIds` (Guids) in the active view, `voteBallotSevenTvEmoteIds` (7TV ids,
 including class-2b rows a Guid ballot would silently drop) in a non-active one, paired with
 `setSession: { emoteSetId }` on the dialog data only in the latter case — the request body this
@@ -117,23 +129,16 @@ with two `AppDbContext` instances (AK 78) in a way a lock's absence of contentio
 belong to this same contract change, not a separate one: `openDrilldown` on the vote detail page now
 passes the session's own `emoteSetId` to `EmoteDrilldownData` (it used to omit it entirely, which
 made a set-session's drilldown chart the channel's *active* set — silently wrong whenever the two
-differ); the non-active-view lock copy (`usageStats.setView.lock.membersUnavailable`/`truncated`/
-`nonActiveSet`) dropped "und Abstimmen"/"and voting" — those three reasons never lock voting any
-more, only `switching` still does, and the old copy was actively misleading once voting worked
-again in that view; and the vote-session detail page's mass-delete panel now also gates on
+differ); and the vote-session detail page's mass-delete panel now also gates on
 `results()` (not just `canSelectForDelete()`/`massDeletePanelSetId()`), so it cannot briefly mount
 bound to the channel's active set while the session's own results — and with them, its actual
 `emoteSetId` — are still in flight.
 
 **Final fix wave (whole-branch review: Opus, Codex Sol, a Fable arbitration), same entry, same
-day.** **Ruling D (P1, both reviews):** the vote detail page's mass-delete panel now locks —
-delete only, reusing the `nonActiveSet` copy from the usage page's own lock — whenever the
-session's own `EmoteSetId` names a set that is not the channel's currently active one. This is
-temporary, not the final shape: today's `sync-deleted { emoteIds }` still archives by `Emote.Id`
-alone and assumes the *active* set, so deleting a member shared between a set-session's own
-(non-active) set and the active set would remove it correctly on 7TV but archive the wrong row in
-Postgres. A null-session (no set of its own) and a set-session over the active set both stay
-unlocked. The lock lifts once K5's set-scoped `sync-deleted` body lands. **Fable A (P2, rate
+day.** **Ruling D (P1, both reviews):** a temporary lock on the vote detail page's mass-delete
+panel for a set-session over a non-active set existed only until K5's set-scoped `sync-deleted
+{ emoteSetId, sevenTvEmoteIds }` bookkeeping landed, and is lifted: the panel now deletes from the
+session's own set (`[setId]`) with the channel's real active set beside it (`[activeSetId]`). **Fable A (P2, rate
 limit):** `POST /api/channels/{c}/vote-sessions` (create) moved from `Bookkeeping` (120/min) to
 `ForeignEmoteLookup` (10/min, spec 6.10) — a set-session's branch of `CreateAsync` reads the set's
 live 7TV membership, one or more paginated pages, the same provider-budget shape as the other

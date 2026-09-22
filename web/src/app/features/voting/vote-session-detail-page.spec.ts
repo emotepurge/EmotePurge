@@ -612,22 +612,16 @@ describe('VoteSessionDetailPage — canSelectForDelete and the vote lock follow 
     expect(data.emoteSetId).toBeNull();
   });
 
-  it("locks the mass-delete panel over a set-session on a NON-active set (Ruling D, temporary until K5's set-scoped sync-deleted)", async () => {
+  it("targets a set-session's own NON-active set with the real active set beside it, unlocked (K5's set-scoped sync-deleted lifted Ruling D)", async () => {
     await mount(results([resultEmote('a')], { emoteSetId: 'halloween-1' }), true);
 
-    // activeEmoteSetId() is 'set-1' per this describe block's own mount() — 'halloween-1' differs.
-    expect(component['massDeleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
-  });
-
-  it('leaves the mass-delete panel unlocked for a null-session (no set of its own to disagree with the active one)', async () => {
-    await mount(results([resultEmote('a')]), true);
-
-    expect(component['massDeleteLockReasonKey']()).toBeNull();
-  });
-
-  it("leaves the mass-delete panel unlocked for a set-session over the channel's own ACTIVE set", async () => {
-    await mount(results([resultEmote('a')], { emoteSetId: 'set-1' }), true);
-
-    expect(component['massDeleteLockReasonKey']()).toBeNull();
+    // The panel's [setId] and [activeSetId] bindings: the session's own set to delete from, the
+    // channel's real active set ('set-1' per this describe block's mount()) so the run's
+    // bookkeeping knows the two differ. No lock input any more — the temporary Ruling D lock
+    // existed only until sync-deleted carried { emoteSetId, sevenTvEmoteIds } (K5).
+    expect(component['canSelectForDelete']()).toBe(true);
+    expect(component['massDeletePanelSetId']()).toBe('halloween-1');
+    expect(component['activeEmoteSetId']()).toBe('set-1');
+    expect('massDeleteLockReasonKey' in component).toBe(false);
   });
 });

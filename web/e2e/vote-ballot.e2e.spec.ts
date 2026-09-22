@@ -10,6 +10,8 @@ import {
   mockChannelPermissions,
   mockChannelStatus,
   mockForeignEmoteSetPreview,
+  mockSetWarning,
+  mockSevenTvGql,
   mockUsageChannelSeries,
   mockUsageTotals,
   mockVoteSessionResults,
@@ -308,10 +310,9 @@ test.describe('vote ballot', () => {
  * Spec section 9, 6.9 (T6.3, AK 83): creating a vote session from a NON-active set's view (K6)
  * builds a set-session — `emoteSetId` + `sevenTvEmoteIds` in the POST body, not the null-session's
  * `emoteIds` — and the resulting detail page shows the ballot's frozen name/eligibility rather than
- * the live Emote row's. Deleting from that page is locked for as long as the session's own set is
- * not the channel's active one (Ruling D, K6 whole-branch review): today's `sync-deleted` still
- * archives by `Emote.Id` alone and assumes the active set, so a member shared between the two sets
- * would archive the wrong row — temporary until K5's set-scoped body lands.
+ * the live Emote row's. Deleting from that page targets the session's own set (AK 81): the 7TV
+ * RemoveEmote mutation names the Halloween set, and the bookkeeping call reports that set with 7TV
+ * ids (K5's set-scoped `sync-deleted` body) — never the active set, never local Guids.
  */
 test.describe('vote ballot — a set-session created from a non-active (Halloween) set view', () => {
   const CHANNEL = 'sensitron';
@@ -319,7 +320,7 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
   const HALLOWEEN_SET_ID = 'set-halloween';
   const NEW_SESSION_ID = 42;
 
-  test('the create dialog sends a set-session body, the detail page shows the frozen ballot, and delete stays locked for the non-active Halloween set (Ruling D)', async ({
+  test('the create dialog sends a set-session body, the detail page shows the frozen ballot, and deletes from the non-active Halloween set (AK 81, 83)', async ({
     page,
   }) => {
     await mockAuthMe(page, AUTH_USER);
@@ -352,6 +353,37 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
       capacity: 500,
       totalCount: 1,
       emotes: [{ sevenTvEmoteId: '7tv-pump', name: 'Pumpkin' }],
+    });
+    // Registered before the first page.goto: mockSevenTvGql sets the 7TV write token via
+    // addInitScript, which only takes effect on a page's next full navigation.
+    await mockSetWarning(page, CHANNEL);
+    let removeSetId: string | null = null;
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('mutation RemoveEmote')) {
+        removeSetId = request.variables['setId'] as string;
+      }
+      return { data: {} };
+    });
+    let syncDeletedBody: {
+      emoteSetId?: string;
+      sevenTvEmoteIds?: string[];
+      emoteIds?: string[];
+    } | null = null;
+    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) => {
+      syncDeletedBody = route.request().postDataJSON() as {
+        emoteSetId?: string;
+        sevenTvEmoteIds?: string[];
+        emoteIds?: string[];
+      };
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          archivedCount: 0,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: false,
+        }),
+      });
     });
 
     await page.goto(`/channels/${CHANNEL}/usage-stats?emoteSetId=${HALLOWEEN_SET_ID}`);
@@ -442,18 +474,24 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
     await expect(page.getByText('Nicht mehr im Set')).toHaveCount(0);
     await expect(keepButton(page)).toBeEnabled();
 
-    // Selecting the ballot's card: deleting from THIS page is locked (Ruling D, temporary until
-    // K5's set-scoped sync-deleted body lands) — today's sync-deleted still archives by Guid alone
-    // and assumes the ACTIVE set, so a member shared between the Halloween set and the active set
-    // would delete correctly on 7TV but archive the wrong (active-set) row server-side. Voting
-    // stays unaffected (AK 82, asserted above) — only the delete action is locked here.
+    // Selecting the ballot's card and deleting from THIS page targets the session's own set — the
+    // Halloween set — never the channel's active set (F8/section 9, AK 81): the panel binds
+    // `session.emoteSetId ?? activeEmoteSetId()` as its set and the real active set beside it.
     await page.getByRole('button', { name: 'PumpkinAtCreation', exact: true }).click();
     const massDeleteButton = page.getByRole('button', { name: 'Löschen (1)' });
-    await expect(massDeleteButton).toBeVisible();
-    await expect(massDeleteButton).toBeDisabled();
-    await expect(page.getByText('Löschen geht vorerst nur im aktiven Set.')).toBeVisible();
-    await expect(massDeleteButton).toHaveAccessibleDescription(
-      'Löschen geht vorerst nur im aktiven Set.',
-    );
+    await expect(massDeleteButton).toBeEnabled();
+    await massDeleteButton.click();
+
+    const deleteConfirmDialog = page.getByRole('dialog');
+    const startDeleteButton = deleteConfirmDialog.getByRole('button', { name: 'Löschen starten' });
+    await expect(startDeleteButton).toBeEnabled();
+    await startDeleteButton.click();
+
+    // The RemoveEmote mutation itself names the Halloween set, not just any GQL call.
+    await expect.poll(() => removeSetId).toBe(HALLOWEEN_SET_ID);
+    // The bookkeeping speaks the set and 7TV ids (K5), never local Guids.
+    await expect.poll(() => syncDeletedBody?.emoteSetId).toBe(HALLOWEEN_SET_ID);
+    await expect.poll(() => syncDeletedBody?.sevenTvEmoteIds).toEqual(['7tv-pump']);
+    await expect.poll(() => syncDeletedBody?.emoteIds).toBeUndefined();
   });
 });

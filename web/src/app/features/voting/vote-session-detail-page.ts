@@ -199,26 +199,6 @@ export class VoteSessionDetailPage {
     () => this.results()?.emoteSetId ?? this.activeEmoteSetId(),
   );
 
-  /**
-   * Ruling D (temporary, until K5's set-scoped `sync-deleted` body lands): a set-session's delete
-   * run still calls today's `sync-deleted { emoteIds }`, which archives by `Emote.Id` alone and
-   * assumes the ACTIVE set. A member shared between the session's own (non-active) set and the
-   * active set would delete correctly on 7TV but archive the wrong row server-side — silently
-   * corrupting the active set's bookkeeping. Locked whenever the session names a set of its own
-   * that is not the channel's currently active one; a null-session (no set of its own) and a
-   * set-session over the active set are both unaffected. Reuses the usage page's own
-   * `nonActiveSet` copy — it already reads delete-only since the T6.3 fix-round-1 correction, and
-   * the situation it describes is identical: a delete/archive pairing that only holds for the
-   * active set.
-   */
-  protected readonly massDeleteLockReasonKey = computed<string | null>(() => {
-    const sessionSetId = this.results()?.emoteSetId ?? null;
-    if (sessionSetId === null || sessionSetId === this.activeEmoteSetId()) {
-      return null;
-    }
-    return 'usageStats.setView.lock.nonActiveSet';
-  });
-
   // The one place on this page that asks for the permission instead of inferring it from the data,
   // and it has to: hasUsageData() below reads null-only rows as "not a manager", which is also what
   // a fully archived subset ballot looks like — a manager would then lose the end button on exactly
