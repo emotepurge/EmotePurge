@@ -110,6 +110,18 @@ export interface RestoreFilterRow {
  * `ADD` (`${sevenTvEmoteId}#${alias}`), so what the run shows plus what this skipped adds up to the
  * number the dialog named. For every single-alias row — nearly all of them — the two counts are the
  * same thing. Fails open exactly like `filterAlreadyPresent` (see there).
+ *
+ * `complete: false` from the read (the 10-page runaway guard, or a `totalCount` mismatch — K5 fix
+ * round, see `seven-tv-set-entries.ts`) is deliberately **not** treated as a reason to fail open
+ * here, unlike the delete run's own live alias read (`mass-delete-panel.ts`, spec 8.3's "a list
+ * that only knows half must not delete"): failing open would return every row completely
+ * unfiltered, while the per-alias comparison below, even against a partial read, still catches
+ * every duplicate genuinely inside the pages it did see and drops exactly its already-present
+ * aliases — strictly fewer wrong re-adds than discarding that signal outright would produce. This
+ * only widens the existing, already-accepted gap (a window remains, always has, between any read —
+ * complete or not — and each individual `addEmote` call); it does not create a new one. Restore
+ * only ever fails open (available: false, nothing filtered) on an actual fetch/GraphQL error, same
+ * as before this round.
  */
 export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   httpClient: HttpClient,
@@ -117,21 +129,26 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   rows: readonly T[],
 ): Observable<AlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
-    map(({ aliasesById }) => {
+    map(({ aliasesById, aliaslessIds }) => {
       const kept: T[] = [];
       let skipped = 0;
       for (const row of rows) {
         const rowAliases = row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
         const present = aliasesById.get(row.sevenTvEmoteId);
         if (present === undefined) {
+          // Never encountered at all — not in the set, not even under an aliasless entry (every
+          // entry this reader sees, aliased or not, gets a map entry; see `loadSevenTvSetEntries`).
           kept.push(row);
           continue;
         }
-        // An entry 7TV lists without an alias yields an id with an empty alias list — it still
-        // occupies the set under a name the row cannot vouch for, so it takes rule 2 like any
-        // foreign alias would.
+        // An entry 7TV lists without an alias occupies the set under a name the row cannot vouch
+        // for, so it takes rule 2 like any foreign alias would — even when the same id also has an
+        // aliased entry the row does name (K5 fix round, spec §37/§38: an aliasless entry must not
+        // be silently absorbed by a sibling aliased entry of the same id).
         const foreignEntry =
-          present.length === 0 || present.some((alias) => !rowAliases.includes(alias));
+          aliaslessIds.has(row.sevenTvEmoteId) ||
+          present.length === 0 ||
+          present.some((alias) => !rowAliases.includes(alias));
         if (foreignEntry) {
           skipped += rowAliases.length;
           continue;

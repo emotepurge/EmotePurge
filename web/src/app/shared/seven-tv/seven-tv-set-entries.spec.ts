@@ -89,6 +89,67 @@ describe('loadSevenTvSetEntries', () => {
     expect((await result$).complete).toBe(true);
   });
 
+  // K5 fix round: `complete` used to reflect only the 10-page runaway guard — pagination that ends
+  // "normally" (the last page reports itself as the last one) but under-collects against the
+  // query's own `totalCount` looked complete too, even though offset pagination shifting between
+  // two fetches of the same set can silently drop (or duplicate) an entry at a page boundary.
+  it('reports an incomplete read when the last page ends pagination but the collected count does not match totalCount', async () => {
+    const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 3,
+              pageCount: 1,
+              items: [{ emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect((await result$).complete).toBe(false);
+  });
+
+  it('reports a complete read across pages when the cumulative count matches totalCount', async () => {
+    const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: { totalCount: 2, pageCount: 2, items: [{ emote: { id: '7tv-1' } }] },
+          },
+        },
+      },
+    });
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: { totalCount: 2, pageCount: 2, items: [{ emote: { id: '7tv-2' } }] },
+          },
+        },
+      },
+    });
+
+    expect((await result$).complete).toBe(true);
+  });
+
+  // K5 fix round, spec §37/§38: an id that carries both an aliased and an aliasless entry must not
+  // lose the aliasless one just because `aliasesById` already has a (non-empty) entry for that id.
+  it('tracks which ids carry an aliasless entry, even alongside an aliased entry of the same id', async () => {
+    const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    httpMock
+      .expectOne(GQL_ENDPOINT)
+      .flush(page([{ id: '7tv-1', alias: 'PogU' }, { id: '7tv-1' }, { id: '7tv-2' }]));
+
+    const result = await result$;
+    expect(result.aliaslessIds).toEqual(new Set(['7tv-1', '7tv-2']));
+    expect(result.aliasesById.get('7tv-1')).toEqual(['PogU']);
+    expect(result.aliasesById.get('7tv-2')).toEqual([]);
+  });
+
   it('errors on a GraphQL-level rejection disguised as HTTP 200', async () => {
     const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'rate limited' }] });

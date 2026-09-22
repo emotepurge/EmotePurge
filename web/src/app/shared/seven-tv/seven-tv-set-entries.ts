@@ -24,6 +24,7 @@ interface SevenTvGqlEmoteSetEntriesResponse {
     emoteSets?: {
       emoteSet?: {
         emotes?: {
+          totalCount: number;
           pageCount: number;
           items: { alias?: string | null; emote: { id: string } }[];
         } | null;
@@ -37,12 +38,26 @@ interface SevenTvGqlEmoteSetEntriesResponse {
 
 /** What one full read of a set's entries found. */
 export interface SevenTvSetEntries {
-  /** Every 7TV emote id in the set, mapped to every alias it sits under there — two for a #74
-   *  duplicate (the same emote entered twice under two names), in the order 7TV lists them. An entry
-   *  7TV reports without an alias contributes the id with no alias for it. */
+  /** Every 7TV emote id in the set, mapped to every *aliased* entry it sits under there — two for
+   *  a #74 duplicate (the same emote entered twice under two names), in the order 7TV lists them.
+   *  An id that has only aliasless entries still gets a (empty) map entry, so `.has()` alone still
+   *  answers "is this id in the set at all". An id that has both an aliased and an aliasless entry
+   *  keeps only the aliased one here — check `aliaslessIds` for the rest (K5 fix round, spec §37/§38:
+   *  the aliasless entry must not silently disappear once the same id also has a named one). */
   aliasesById: Map<string, string[]>;
-  /** `false` when the read stopped at the runaway guard while 7TV still reported more pages — the
-   *  map then only knows part of the set. A caller for which "part" is not good enough (the delete
+  /** Every 7TV emote id that has **at least one** entry without an alias — set regardless of
+   *  whether that same id also has an aliased entry elsewhere in `aliasesById` (an id can carry
+   *  both: two separate entries of the same emote, one named, one not). A reader that would
+   *  otherwise treat "the id is in the set, and every alias I know of matches" as fully accounted
+   *  for must also check this: an aliasless entry is a slot the row can never name, so it counts as
+   *  foreign no differently than a genuinely different alias string would (K5 fix round, spec
+   *  §37/§38). */
+  aliaslessIds: Set<string>;
+  /** `false` when the read stopped at the runaway guard while 7TV still reported more pages, or
+   *  when the last page's cumulative item count did not match the query's own `totalCount` — offset
+   *  pagination shifting between page fetches can silently drop or duplicate an entry across the
+   *  page boundary even when every page individually looked complete. The map then only knows part
+   *  of the set (or misrepresents it). A caller for which "part" is not good enough (the delete
    *  run's alias read, spec #200 8.3: a list that only knows half must not delete) checks this. */
   complete: boolean;
 }
@@ -73,13 +88,19 @@ function fetchEmoteSetEntriesPage(
  * Errors (network, HTTP, or a GraphQL-level rejection) all become a thrown error — callers decide
  * whether that fails open (the restore check) or blocks (the delete alias read). Stops early once a
  * page reports it was the last one (`page >= pageCount`), and unconditionally at
- * `MAX_SET_ENTRY_PAGES`, reporting `complete: false` if 7TV still promised more.
+ * `MAX_SET_ENTRY_PAGES`, reporting `complete: false` if 7TV still promised more — or, even when
+ * pagination ended "normally" (`page >= pageCount`), if the cumulative item count across every page
+ * does not match the last page's own `totalCount` (K5 fix round): offset pagination shifting
+ * between two fetches of the same set can silently miss (or double-count) an entry at a page
+ * boundary without ever tripping the runaway guard.
  */
 export function loadSevenTvSetEntries(
   httpClient: HttpClient,
   setId: string,
 ): Observable<SevenTvSetEntries> {
   const aliasesById = new Map<string, string[]>();
+  const aliaslessIds = new Set<string>();
+  let collected = 0;
 
   function loadPage(page: number): Observable<SevenTvSetEntries> {
     return fetchEmoteSetEntriesPage(httpClient, setId, page).pipe(
@@ -90,16 +111,21 @@ export function loadSevenTvSetEntries(
         }
         for (const item of emotes.items) {
           const aliases = aliasesById.get(item.emote.id) ?? [];
-          if (item.alias && !aliases.includes(item.alias)) {
-            aliases.push(item.alias);
+          if (item.alias) {
+            if (!aliases.includes(item.alias)) {
+              aliases.push(item.alias);
+            }
+          } else {
+            aliaslessIds.add(item.emote.id);
           }
           aliasesById.set(item.emote.id, aliases);
         }
+        collected += emotes.items.length;
         if (page >= emotes.pageCount) {
-          return of({ aliasesById, complete: true });
+          return of({ aliasesById, aliaslessIds, complete: collected === emotes.totalCount });
         }
         if (page >= MAX_SET_ENTRY_PAGES) {
-          return of({ aliasesById, complete: false });
+          return of({ aliasesById, aliaslessIds, complete: false });
         }
         return loadPage(page + 1);
       }),

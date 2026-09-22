@@ -567,6 +567,35 @@ is one row per `ADD`, so the run's rows plus the skipped count equal the number 
 For single-alias rows, nearly all of them, both counts are the same; a row dropped under rule 2
 counts all of its aliases.
 
+**K5 fix round 2026-09-22 (independent review) — a set read now catches an offset shift, and an
+aliasless entry no longer disappears next to an aliased one.** Two findings against the two K5
+addenda above, both in `seven-tv-set-entries.ts`/`already-present-filter.ts`:
+
+- **`loadSevenTvSetEntries`'s `complete` now also compares the collected item count against the
+  query's own `totalCount` from the last page**, not only the 10-page runaway guard: offset
+  pagination shifting between two page fetches of the same set can silently drop (or double-count)
+  an entry at a page boundary without ever tripping the guard, and a read that ended "normally"
+  (`page >= pageCount`) still looked complete despite that. The delete run's live alias read
+  (`mass-delete-panel.ts`, a later commit) blocks on this exactly as it already did for the guard
+  case — no new branch needed there, since both feed the same `complete` flag. The restore pre-run
+  check (`filterAlreadyPresentForRestore`) deliberately does **not** gate on `complete` the same way:
+  it never has, checked against its own tests, and extending it now would mean failing the whole
+  check open (every row passes through completely unfiltered) whenever a read is merely partial —
+  strictly *more* wrong re-adds than continuing to filter against whatever the (partial) read did
+  see, which still catches every duplicate genuinely inside the pages it read and only stays blind to
+  one beyond them. Restore's fail-open path stays reserved for an actual fetch/GraphQL error, as
+  before this round; this only widens an already-accepted gap (a window between any read and each
+  individual `addEmote` call has always remained), it does not open a new one.
+- **An aliasless 7TV entry is a foreign entry on the id it belongs to, even when the same id also
+  has an aliased entry the row does name.** `loadSevenTvSetEntries` gained `aliaslessIds:
+  Set<string>` alongside `aliasesById`, since an id that carries both an aliased and an aliasless
+  entry used to lose the aliasless one the moment the aliased entry gave `aliasesById` a non-empty
+  array for that id (only a *purely* aliasless id, with `aliasesById.get(id)` still `[]`, was ever
+  caught). `filterAlreadyPresentForRestore`'s foreign-entry rule (the "middle rule" above) now also
+  checks `aliaslessIds.has(id)`, restoring the sentence it always claimed to implement: "a 7TV entry
+  without an alias counts as a foreign alias" now holds for *every* aliasless entry, not only one on
+  an otherwise-unaliased id.
+
 ---
 
 ### 2026-09-21 — An import into a tracked channel's non-active set no longer resyncs the channel, and the dock stops claiming it does

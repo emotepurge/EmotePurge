@@ -205,8 +205,9 @@ describe('filterAlreadyPresent', () => {
   });
 });
 
-/** A page of set entries with their aliases — what the restore variant reads. */
-function entriesPage(entries: { id: string; alias: string }[]) {
+/** A page of set entries with their aliases — what the restore variant reads. `alias` omitted
+ *  models a 7TV entry without one (spec §37/§38's "aliasless" rule). */
+function entriesPage(entries: { id: string; alias?: string }[]) {
   return {
     data: {
       emoteSets: {
@@ -246,7 +247,7 @@ describe('filterAlreadyPresentForRestore', () => {
     httpMock.verify();
   });
 
-  async function run(rows: RestoreRow[], entries: { id: string; alias: string }[]) {
+  async function run(rows: RestoreRow[], entries: { id: string; alias?: string }[]) {
     const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', rows));
     httpMock.expectOne(GQL_ENDPOINT).flush(entriesPage(entries));
     return result$;
@@ -354,5 +355,64 @@ describe('filterAlreadyPresentForRestore', () => {
     httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('network error'));
 
     expect(await result$).toEqual({ rows, skipped: 0, available: false });
+  });
+
+  // K5 fix round, spec §37/§38: an aliasless 7TV entry occupies a slot the row can never name, so
+  // it takes rule 2 (drop the whole row) even when the *same id* also has an aliased entry the row
+  // does name — the aliasless entry must not be silently absorbed by its aliased sibling.
+  it('drops the whole row when the id also carries an aliasless entry, even though the id is present under the alias the row names', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] };
+
+    expect(await run([row], [{ id: '7tv-1', alias: 'PogU' }, { id: '7tv-1' }])).toEqual({
+      rows: [],
+      skipped: 1,
+      available: true,
+    });
+  });
+
+  it('drops a row whose id is present only as an aliasless entry', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] };
+
+    expect(await run([row], [{ id: '7tv-1' }])).toEqual({ rows: [], skipped: 1, available: true });
+  });
+
+  // K5 fix round: `complete: false` (a truncated read) is deliberately not a reason to fail open
+  // here — the per-alias comparison still applies to whatever the (partial) read did see, which
+  // skips strictly more genuine duplicates than discarding the read entirely would. Restore only
+  // fails open on an actual fetch/GraphQL error (see the test above), never on an incomplete one.
+  it('still filters against a read that hit the runaway guard, rather than failing the whole check open', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A'] };
+    const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', [row]));
+
+    for (let requested = 1; requested <= 10; requested++) {
+      const req = httpMock.expectOne(GQL_ENDPOINT);
+      if (requested === 1) {
+        req.flush({
+          data: {
+            emoteSets: {
+              emoteSet: {
+                emotes: {
+                  totalCount: 999,
+                  pageCount: 11,
+                  items: [{ alias: 'A', emote: { id: '7tv-1' } }],
+                },
+              },
+            },
+          },
+        });
+      } else {
+        req.flush({
+          data: {
+            emoteSets: {
+              emoteSet: { emotes: { totalCount: 999, pageCount: 11, items: [] } },
+            },
+          },
+        });
+      }
+    }
+
+    // The row's own id was seen (and matched) on the very first, well within-guard page — the
+    // truncation happened later, for ids this row never needed to know about.
+    expect(await result$).toEqual({ rows: [], skipped: 1, available: true });
   });
 });
