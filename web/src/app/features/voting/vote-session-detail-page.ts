@@ -511,18 +511,29 @@ export class VoteSessionDetailPage {
   );
 
   // Resolved items rather than selection.selectedKeys(): the delete engine needs sevenTvEmoteId and
-  // the display name, which only the loaded row carries. Should a selected emote vanish from the
-  // list between selecting and deleting (archived by the periodic 7TV resync), it silently drops
-  // out here — the conservative direction, since it can only ever delete fewer emotes than shown.
+  // the display name, which only the loaded row carries. Should a selected emote vanish from
+  // results.emotes entirely between selecting and deleting (a dynamic null-session's own results
+  // filter archived rows out, applyResults()'s retainAmong), it silently drops out here — the
+  // conservative direction, since it can only ever delete fewer emotes than shown.
   //
-  // A row `departedSevenTvEmoteIds` confirms has left the session's own set is dropped the same way
-  // (#227, mirrors the usage page's `membership === 'live'` filter): the card can still be marked —
-  // clicking it is unaffected — but a departed member never reaches the delete run itself.
+  // A FIXED ballot (every set-session, and a null-session created from a specific selection rather
+  // than "all active emotes") keeps an archived/departed row listed instead of dropping it from
+  // results.emotes at all (K6) — so this needs two more explicit filters, neither of which the
+  // retainAmong case above covers: a row `departedSevenTvEmoteIds` confirms has left a SET-session's
+  // own set (#227, mirrors the usage page's `membership === 'live'` filter), and — P2-b, the null-
+  // session counterpart of the same defect — a row `!eligible` (a null-session's own archived
+  // members; always `true` for a set-session, K6, so a no-op there). Before this second filter
+  // existed, an archived null-session row stayed selectable forever and, since #227 P1 started
+  // fail-closing the whole run on any row a live read cannot find, blocked every run it was part of
+  // — reloading the page never helped, because the row itself never left `results.emotes` to begin
+  // with. Both filters only decide what reaches the *run*: the card itself can still be marked,
+  // clicking it is unaffected — same split the usage page already has between "selectable in the
+  // grid" and "reaches the run".
   protected readonly selectedForDelete = computed<DeletableEmote[]>(() => {
     const departed = this.departedSevenTvEmoteIds();
     return this.selection
       .selectedItems()
-      .filter((emote) => !departed.has(emote.sevenTvEmoteId))
+      .filter((emote) => emote.eligible && !departed.has(emote.sevenTvEmoteId))
       .map((emote) => ({
         emoteId: emote.emoteId,
         sevenTvEmoteId: emote.sevenTvEmoteId,
