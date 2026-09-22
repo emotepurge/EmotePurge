@@ -1,6 +1,13 @@
+import { Component, signal } from '@angular/core';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
+import { firstValueFrom } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 
 import {
+  DateRangeMenu,
+  DateRangePreset,
+  IsoDateRange,
   MAX_RANGE_DAYS,
   allTimeStart,
   dateRangePresetOptions,
@@ -86,5 +93,114 @@ describe("the 'set-observed' preset (spec #200, 8.5, AK 61)", () => {
     expect(
       setObservedRange([{ fromUtc: '2026-07-20T09:00:00Z', toUtc: '2026-08-02T12:00:00Z' }]),
     ).toEqual({ from: '2026-07-20', to: '2026-08-02' });
+  });
+});
+
+// --- Trigger label for 'set-observed' (operator decision 2026-09-22) --------------------------
+//
+// The real German strings, same convention as usage-range-menu.spec.ts: a selector built from them
+// reads as the sentence the user gets.
+const DE_TRANSLATIONS = {
+  dateRange: {
+    label: 'Zeitraum',
+    menuLabel: 'Zeitraum wählen',
+    presetToday: 'Heute',
+    preset7Days: '7 Tage',
+    preset30Days: '30 Tage',
+    presetAll: 'Seit Beginn',
+    presetSetObserved: 'Während dieses Set beobachtet wurde',
+    presetSetObservedShort: 'beobachtet',
+    presetCustom: 'Eigener Zeitraum',
+    from: 'Von',
+    to: 'Bis',
+  },
+  datetimePicker: {
+    done: 'Fertig',
+  },
+};
+
+@Component({
+  imports: [DateRangeMenu],
+  template: `
+    <app-date-range-menu
+      [(from)]="from"
+      [(to)]="to"
+      [(preset)]="preset"
+      [setObservedRange]="observedRange()"
+    />
+  `,
+})
+class Host {
+  readonly from = signal('2026-09-01');
+  readonly to = signal('2026-09-20');
+  readonly preset = signal<DateRangePreset>('7');
+  readonly observedRange = signal<IsoDateRange | null>({ from: '2026-08-01', to: '2026-09-20' });
+}
+
+/** Accessible-name computation: visible text with `aria-hidden` descendants (the dropdown caret,
+ *  the checkmark on a checked option) stripped out first, same as assistive tech would read it. */
+function accessibleName(element: HTMLElement): string {
+  const clone = element.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('[aria-hidden="true"]').forEach((node) => node.remove());
+  return clone.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+}
+
+describe('DateRangeMenu trigger label', () => {
+  async function render(): Promise<{ fixture: ComponentFixture<Host>; host: HTMLElement }> {
+    await TestBed.configureTestingModule({
+      imports: [
+        Host,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+    }).compileComponents();
+    await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
+
+    const fixture = TestBed.createComponent(Host);
+    fixture.detectChanges();
+    return { fixture, host: fixture.nativeElement };
+  }
+
+  function trigger(host: HTMLElement): HTMLButtonElement {
+    return host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!;
+  }
+
+  function radios(host: HTMLElement): HTMLButtonElement[] {
+    const group = host.querySelector('[role="radiogroup"]');
+    return group ? Array.from(group.querySelectorAll<HTMLButtonElement>('[role="radio"]')) : [];
+  }
+
+  it('shortens only the set-observed trigger label; the option keeps the full sentence', async () => {
+    const { fixture, host } = await render();
+    fixture.componentInstance.preset.set('set-observed');
+    fixture.detectChanges();
+
+    // Short form on the trigger — this is the whole point: the full sentence would push the
+    // neighbouring "Set: …" control out of the toolbar.
+    expect(accessibleName(trigger(host))).toBe('Zeitraum: beobachtet');
+
+    trigger(host).click();
+    fixture.detectChanges();
+
+    const option = radios(host).find((r) => accessibleName(r).includes('beobachtet'))!;
+    expect(accessibleName(option)).toBe('Während dieses Set beobachtet wurde');
+  });
+
+  it('leaves every other preset unchanged: trigger and option read the same text', async () => {
+    const { fixture, host } = await render();
+
+    for (const [preset, expected] of [
+      ['0', 'Heute'],
+      ['7', '7 Tage'],
+      ['30', '30 Tage'],
+      ['all', 'Seit Beginn'],
+    ] as const) {
+      fixture.componentInstance.preset.set(preset);
+      fixture.detectChanges();
+
+      expect(accessibleName(trigger(host))).toBe(`Zeitraum: ${expected}`);
+    }
   });
 });

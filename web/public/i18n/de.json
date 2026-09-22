@@ -144,6 +144,7 @@
     "preset30Days": "30 Tage",
     "presetAll": "Seit Beginn",
     "presetSetObserved": "Während dieses Set beobachtet wurde",
+    "presetSetObservedShort": "beobachtet",
     "presetCustom": "Eigener Zeitraum",
     "from": "Von",
     "to": "Bis"

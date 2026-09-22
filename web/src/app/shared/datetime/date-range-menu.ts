@@ -21,6 +21,14 @@ export type DateRangePreset = '0' | '7' | '30' | 'all' | 'set-observed' | 'custo
 export interface PresetOption {
   value: DateRangePreset;
   labelKey: string;
+  /**
+   * What the trigger names this preset, if different from `labelKey`. Every other preset's option
+   * text already reads as a trigger label ("7 Tage", "Seit Beginn") — only `'set-observed'` writes
+   * out a full sentence for the option ("Während dieses Set beobachtet wurde"), which as a trigger
+   * label pushes the neighbouring "Set: …" control out of the toolbar (operator decision
+   * 2026-09-22). The option keeps the sentence; the trigger falls back to this shorter key.
+   */
+  triggerLabelKey?: string;
 }
 
 const PRESET_OPTIONS: PresetOption[] = [
@@ -28,7 +36,11 @@ const PRESET_OPTIONS: PresetOption[] = [
   { value: '7', labelKey: 'dateRange.preset7Days' },
   { value: '30', labelKey: 'dateRange.preset30Days' },
   { value: 'all', labelKey: 'dateRange.presetAll' },
-  { value: 'set-observed', labelKey: 'dateRange.presetSetObserved' },
+  {
+    value: 'set-observed',
+    labelKey: 'dateRange.presetSetObserved',
+    triggerLabelKey: 'dateRange.presetSetObservedShort',
+  },
   { value: 'custom', labelKey: 'dateRange.presetCustom' },
 ];
 
@@ -290,9 +302,11 @@ export class DateRangeMenu {
     return widest && widest < today ? widest : today;
   });
 
-  protected readonly selectedLabelKey = computed(
-    () => PRESET_OPTIONS.find((option) => option.value === this.preset())?.labelKey ?? '',
-  );
+  /** Trigger text for the current preset — its `triggerLabelKey` if it has one, else `labelKey`. */
+  protected readonly selectedLabelKey = computed(() => {
+    const option = PRESET_OPTIONS.find((candidate) => candidate.value === this.preset());
+    return option?.triggerLabelKey ?? option?.labelKey ?? '';
+  });
 
   // LOCALE_ID is bootstrap-time static and cannot follow a runtime language switch, so dates go
   // through toLocale() — same as the pages that host this.

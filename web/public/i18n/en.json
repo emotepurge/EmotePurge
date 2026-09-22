@@ -144,6 +144,7 @@
     "preset30Days": "30 days",
     "presetAll": "All time",
     "presetSetObserved": "While this set was observed",
+    "presetSetObservedShort": "observed",
     "presetCustom": "Custom range",
     "from": "From",
     "to": "To"
