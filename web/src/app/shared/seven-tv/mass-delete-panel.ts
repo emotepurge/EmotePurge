@@ -682,17 +682,6 @@ export class MassDeletePanel {
     // lifetime) but was the wrong source of truth all the same — the same class of gap finding A
     // closed for `setId`.
     const frozenChannelName = this.channelName();
-    // The exact list the dialog showed, frozen at the same moment as the two above — not re-read
-    // from the live `selectedEmotes()` input wherever the run actually starts (K5 fix round item 1).
-    // For a plain delete that starts synchronously once confirmed this makes no difference, but an
-    // active-set delete's live alias read (`readLiveAliasesThenDelete`) is asynchronous, and the
-    // confirm dialog is already closed while it is out — nothing locks the grid, so the live
-    // selection can change (grow or shrink) in that window. Deleting the frozen snapshot instead of
-    // re-reading the input means: an id removed from the selection afterwards is still deleted (the
-    // user already confirmed it), and an id added afterwards is not swept in (the dialog never
-    // showed it). A defensive copy, not just a reference: `selectedEmotes()` is expected to be a
-    // fresh array per host-page change already, but nothing here depends on that staying true.
-    const frozenSelection = [...this.selectedEmotes()];
     const data: DeleteConfirmDialogData = {
       emotes: this.visibleSelectedEmoteNames,
       hiddenEmotes: this.hiddenSelectedEmoteNames,
@@ -705,11 +694,42 @@ export class MassDeletePanel {
       if (!confirmed) {
         return;
       }
-      if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
-        this.startDelete(frozenSetId, frozenChannelName, frozenSelection, null);
+      // The exact list the dialog last showed, snapshotted **at confirm** and synchronously, before
+      // anything asynchronous can run (operator decision 2026-09-22, amending the K5 fix round's
+      // open-time freeze). The dialog renders the live `visibleSelectedEmoteNames`/
+      // `hiddenSelectedEmoteNames`, both computed over this very input, so a pushed reload
+      // (`channel.synced`, `usage.flushed` → `retainAmong`) that shrinks the selection behind the
+      // open modal changes what is on screen — and an open-time snapshot would then delete emotes
+      // the confirmation had already stopped naming. Reading the same signal the dialog rendered,
+      // at the moment of the irreversible click, makes "what was shown" and "what is deleted" the
+      // same list by construction. From here on the snapshot is what both branches act on: the
+      // active-set delete's live alias read (`readLiveAliasesThenDelete`) is asynchronous and the
+      // dialog is already closed while it is out, so an id deselected afterwards is still deleted
+      // (it was confirmed) and an id selected afterwards is not swept in (it was never shown).
+      // Unlike `frozenSetId`/`frozenIsActiveSet`/`frozenChannelName` above, which stay frozen at
+      // **open** on purpose: those are compared against their live values here and abort the run on
+      // a mismatch, which only works if they still say what the dialog was built from.
+      // A defensive copy, not just a reference: `selectedEmotes()` is expected to be a fresh array
+      // per host-page change already, but nothing here depends on that staying true.
+      const confirmedSelection = [...this.selectedEmotes()];
+      // The same reload can prune the selection down to nothing. Deleting the confirmed snapshot
+      // then means deleting nothing at all, and `deleteService.startDelete` would refuse the empty
+      // list silently — the one outcome this panel must never produce after a confirmed delete
+      // (before the snapshot moved to confirm time, an emptied selection still started a doomed run
+      // whose failed rows were at least visible). Said out loud instead, like every other
+      // last-moment abort here.
+      if (confirmedSelection.length === 0) {
+        this.abortNotice.set({
+          leadKey: 'massDelete.abortedByLock',
+          reasonKey: 'massDelete.selectionGoneDuringConfirm',
+        });
         return;
       }
-      this.readLiveAliasesThenDelete(frozenSetId, frozenChannelName, frozenSelection);
+      if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
+        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+        return;
+      }
+      this.readLiveAliasesThenDelete(frozenSetId, frozenChannelName, confirmedSelection);
     });
   }
 
@@ -725,12 +745,12 @@ export class MassDeletePanel {
   private readLiveAliasesThenDelete(
     frozenSetId: string,
     frozenChannelName: string,
-    frozenSelection: readonly DeletableEmote[],
+    confirmedSelection: readonly DeletableEmote[],
   ): void {
     // The same checks `startDelete` makes, made once before the read as well: a delete that is
     // already doomed must not wait for (or spend) a 7TV read first.
     if (this.abortReasonBeforeStart(frozenSetId) !== undefined) {
-      this.startDelete(frozenSetId, frozenChannelName, frozenSelection, null);
+      this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
       return;
     }
     this.liveAliasReadPending.set(true);
@@ -748,7 +768,7 @@ export class MassDeletePanel {
       )
       .subscribe((read) => {
         this.liveAliasReadPending.set(false);
-        this.startDelete(frozenSetId, frozenChannelName, frozenSelection, read);
+        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, read);
       });
   }
 
@@ -778,14 +798,17 @@ export class MassDeletePanel {
     });
   }
 
-  /** `frozenSetId`/`frozenChannelName`/`frozenSelection` are what the dialog named — read once in
-   *  `openConfirmDialog`, not re-read from the live `setId()`/`channelName()`/`selectedEmotes()`
-   *  inputs here (K5 fix round items 1 and 7). `liveAliases` is the active-set delete's live alias
-   *  read (`readLiveAliasesThenDelete`), or `null` when none was made. */
+  /** `frozenSetId`/`frozenChannelName` are what the dialog was built from — read once in
+   *  `openConfirmDialog` and compared against their live inputs below, not re-read as the truth
+   *  here (K5 fix round item 7). `confirmedSelection` is the list the dialog last *showed*,
+   *  snapshotted in the `closed` callback at confirm time (operator decision 2026-09-22) — never
+   *  the live `selectedEmotes()` input at this point, which an async live alias read can have let
+   *  move on. `liveAliases` is the active-set delete's live alias read
+   *  (`readLiveAliasesThenDelete`), or `null` when none was made. */
   private startDelete(
     frozenSetId: string,
     frozenChannelName: string,
-    frozenSelection: readonly DeletableEmote[],
+    confirmedSelection: readonly DeletableEmote[],
     liveAliases: LiveAliasRead | null,
   ): void {
     const abort = this.abortReasonBeforeStart(frozenSetId);
@@ -815,7 +838,7 @@ export class MassDeletePanel {
       return;
     }
     const liveEntries = liveAliases?.entries;
-    const emotes: DeleteQueueEmote[] = frozenSelection.map((emote) => {
+    const emotes: DeleteQueueEmote[] = confirmedSelection.map((emote) => {
       // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
       // what the host said.
       const live = liveEntries?.aliasesById.get(emote.sevenTvEmoteId);

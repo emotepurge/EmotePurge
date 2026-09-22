@@ -1870,10 +1870,13 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(deletedIds).toEqual(['7tv-1', '7tv-2']);
   });
 
-  // The selection is frozen at dialog OPEN, not at confirm — this is the "no live read" branch
-  // (readLiveAliasesFromActiveSet toggled off), so a selection change between open and confirm is
-  // the only window there is to observe the freeze point.
-  it('freezes the selection at dialog open, not at confirm, on the no-read branch', () => {
+  // Operator decision 2026-09-22, replacing the K5 fix round's open-time freeze: the dialog renders
+  // the panel's live name lists, so a pushed reload (channel.synced / usage.flushed -> retainAmong)
+  // landing behind the open modal changes what the confirmation says. The snapshot is therefore
+  // taken at confirm, from those same signals — displayed == deleted by construction. This is the
+  // "no live read" branch, where a change between open and confirm is the only window there is to
+  // observe the snapshot point at all.
+  it('snapshots the selection at confirm, not at dialog open, on the no-read branch', () => {
     fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
     fixture.detectChanges();
     fixture.componentInstance['openConfirm']();
@@ -1885,8 +1888,50 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
     expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
       { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
     ]);
+  });
+
+  // The same thing on the branch that actually matters, checked against what the dialog itself last
+  // rendered rather than against the input alone: the signals handed to DeleteConfirmDialogData are
+  // the panel's own, so asking them after the reload landed is asking what is on screen. The live
+  // alias read is then made for exactly that list.
+  it('deletes what the confirmation last showed when a reload shrinks the selection behind the open dialog', () => {
+    const shown = fixture.componentInstance as unknown as {
+      visibleSelectedEmoteNames: () => string[];
+    };
+    fixture.componentInstance['openConfirm']();
+    // The reload lands while the modal is still open: KEKW is gone from the grid, so the dialog —
+    // which reads these very signals — has stopped naming it.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    expect(shown.visibleSelectedEmoteNames()).toEqual(['PogU']);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+    ]);
+  });
+
+  // The extreme of the same reload: nothing is left to delete at confirm time. startDelete would
+  // refuse the empty list without a word, which is the one outcome a confirmed delete must not
+  // produce — before the snapshot moved to confirm time, an emptied selection at least started a
+  // doomed run whose failed rows were visible.
+  it('says so instead of silently doing nothing when the reload left nothing selected', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByLock');
+    expect(statusText()).toContain('massDelete.selectionGoneDuringConfirm');
   });
 
   // K5 fix round item 7: the run used to read the live channelName() input at the point

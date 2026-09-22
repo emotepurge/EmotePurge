@@ -11,7 +11,14 @@ import { NamePreviewList } from '../ui/name-preview-list';
 import { NoticeBanner } from '../ui/notice-banner';
 
 /** Live view onto the host panel's state: the warning check finishes while the dialog is open,
- *  so the dialog reads the panel's signals instead of taking a snapshot. */
+ *  so the dialog reads the panel's signals instead of taking a snapshot.
+ *
+ *  The two name lists are live for a second reason, and it is load-bearing rather than incidental:
+ *  a pushed reload can prune the host's selection while this dialog is open, and the last screen
+ *  before an irreversible write must name what will actually be deleted. `MassDeletePanel` reads
+ *  the very same signals again, synchronously, in the `closed` callback (operator decision
+ *  2026-09-22), so what the confirmation last showed and what the run deletes are the same list by
+ *  construction. Whoever changes these two to plain values must move that snapshot with them. */
 export interface DeleteConfirmDialogData {
   /** The visible names — same capped preview as before (Konzept "Auswahl überlebt Suche und
    *  Filter" 2.1: they are on screen already, so the 50-name cap costs nothing here). */

@@ -777,17 +777,36 @@ selection it confirmed, the run's channel is frozen too, a stuck arbiter re-chec
 hung read times out, and the delete's own alias enrichment picks up an aliasless entry.** Four more
 findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
 
-- **The confirmed selection is snapshotted at dialog open, next to `frozenSetId`.** `startDelete`
-  used to re-read the live `selectedEmotes()` input after `readLiveAliasesThenDelete`'s async read
+- **The confirmed selection is snapshotted at confirm — the set id, the channel and
+  `isActiveSet` stay frozen at dialog open, and the difference is deliberate.** `startDelete` used
+  to re-read the live `selectedEmotes()` input after `readLiveAliasesThenDelete`'s async read
   answered — the confirm dialog is already closed by then and nothing locks the grid, so an id could
-  be added to or removed from the selection while the read was out. `openConfirmDialog` now freezes
-  the exact `DeletableEmote[]` the dialog showed (`frozenSelection`) and both the read and no-read
-  paths delete precisely that list, enriched with live aliases where the active-set read applies —
-  never fewer (an id later deselected was still confirmed) and never more (an id selected only
-  afterwards was never shown). The freeze happens once, at dialog open, the same moment as
-  `frozenSetId`/`frozenIsActiveSet`; a selection change while the dialog is still open (before
-  confirm) is therefore also not picked up — consistent with those two already being frozen at that
-  same moment, not at confirm.
+  be added to or removed from the selection while the read was out. The first version of this fix
+  froze the list at dialog *open*, next to `frozenSetId`; the independent review that followed
+  showed why that is the wrong moment, and the **operator decision of 2026-09-22** settled it:
+  **snapshot at confirm.** The dialog renders the panel's live
+  `visibleSelectedEmoteNames`/`hiddenSelectedEmoteNames` (both `computed` over `selectedEmotes()`,
+  passed as `Signal`s in `DeleteConfirmDialogData`), so a pushed reload (`channel.synced`,
+  `usage.flushed` → `retainAmong`) landing behind the open modal changes what the confirmation says
+  — and an open-time snapshot would then delete emotes the screen had already stopped naming. The
+  snapshot is now taken synchronously inside the dialog's `closed` callback, before any async work,
+  from those very same signals: **what the confirmation last showed and what the run deletes are the
+  same list by construction**, which is the only formulation that survives an asynchronous reload.
+  Everything downstream acts on that snapshot — the live alias read, both branches, the queue and the
+  protocol — so an id deselected *after* the click is still deleted (it was confirmed) and an id
+  selected *after* it is not swept in (it was never shown).
+
+  **Why the other three stay frozen at open.** `frozenSetId`/`frozenIsActiveSet`/`frozenChannelName`
+  are not inputs to the run the way the selection is: they are the identity of the *view the dialog
+  was built from*, and `startDelete` compares them against their live values to abort on a mismatch
+  (`massDelete.setChangedDuringConfirm`). A confirm-time re-read would make that comparison compare
+  a value with itself and silently delete into whatever set the dropdown moved to — the exact gap
+  finding A closed. So: what is **named** on the confirmation is frozen at open and checked at
+  confirm; what is **listed** on it is read at confirm, because the list is live on screen until
+  then. One new i18n key falls out of it — an emptied selection at confirm time
+  (`massDelete.selectionGoneDuringConfirm`, under the existing `abortedByLock` lead): the run would
+  otherwise be `startDelete`'s silent "refused, empty list", where the open-time snapshot at least
+  started a doomed run whose failed rows were visible. A confirmed delete never ends in silence.
 - **The run's channel name is frozen at dialog open too** (`frozenChannelName`, alongside
   `frozenSetId`) — `deleteService.startDelete` used to read the live `channelName()` input at the
   point it was actually called, the same class of gap finding A closed for `setId`: harmless today

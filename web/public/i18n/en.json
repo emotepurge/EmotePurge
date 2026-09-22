@@ -985,6 +985,7 @@
     },
     "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
     "setChangedDuringConfirm": "A different set is selected now.",
+    "selectionGoneDuringConfirm": "The confirmed emotes are no longer marked.",
     "abortedByMemberRead": "Nothing was deleted.",
     "memberRead": {
       "unavailable": "The set’s current entries could not be read from 7TV.",

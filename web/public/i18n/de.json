@@ -985,6 +985,7 @@
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
     "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
+    "selectionGoneDuringConfirm": "Die bestätigten Emotes sind inzwischen nicht mehr markiert.",
     "abortedByMemberRead": "Nichts gelöscht.",
     "memberRead": {
       "unavailable": "Die aktuellen Einträge dieses Sets konnten nicht von 7TV gelesen werden.",
