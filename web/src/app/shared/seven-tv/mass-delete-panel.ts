@@ -11,7 +11,7 @@ import {
   signal,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { catchError, map, of } from 'rxjs';
+import { catchError, map, of, timeout } from 'rxjs';
 
 import { EmoteAdminService, EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import { pluralKey } from '../../core/i18n/plural';
@@ -52,6 +52,14 @@ let nextDeleteLockReasonId = 0;
  *  read or came back incomplete — a list that only knows half must not delete. */
 const MEMBERS_UNAVAILABLE_REASON_KEY = 'usageStats.setView.lock.membersUnavailable';
 const MEMBERS_TRUNCATED_REASON_KEY = 'usageStats.setView.lock.truncated';
+
+/** Total time budget for the active-set delete's live alias read (K5 fix round) — a hung request
+ *  (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true`
+ *  forever, with the delete button disabled and no way out short of reloading the page. Generous
+ *  for a same-origin-adjacent GraphQL call reading at most 10 pages of up to 500 entries each; a
+ *  timeout is treated exactly like any other failed read — nothing is deleted, and the reason is
+ *  shown. */
+const LIVE_ALIAS_READ_TIMEOUT_MS = 20_000;
 
 /** Outcome of the live alias read `openConfirmDialog` starts for an active-set delete: the entries,
  *  or the translation key of the reason the delete is blocked. */
@@ -662,6 +670,23 @@ export class MassDeletePanel {
     // whatever set happens to be selected once the dialog closes (#200 K5 finding A).
     const frozenSetId = this.setId();
     const frozenIsActiveSet = this.isActiveSet();
+    // Same reasoning, same moment, for the run's channel (K5 fix round item 7): the panel's own
+    // `deleteService.startDelete` call used to read the live `channelName()` input instead, which
+    // just happens to be stable in production (a panel only ever sees one channel across a run's
+    // lifetime) but was the wrong source of truth all the same — the same class of gap finding A
+    // closed for `setId`.
+    const frozenChannelName = this.channelName();
+    // The exact list the dialog showed, frozen at the same moment as the two above — not re-read
+    // from the live `selectedEmotes()` input wherever the run actually starts (K5 fix round item 1).
+    // For a plain delete that starts synchronously once confirmed this makes no difference, but an
+    // active-set delete's live alias read (`readLiveAliasesThenDelete`) is asynchronous, and the
+    // confirm dialog is already closed while it is out — nothing locks the grid, so the live
+    // selection can change (grow or shrink) in that window. Deleting the frozen snapshot instead of
+    // re-reading the input means: an id removed from the selection afterwards is still deleted (the
+    // user already confirmed it), and an id added afterwards is not swept in (the dialog never
+    // showed it). A defensive copy, not just a reference: `selectedEmotes()` is expected to be a
+    // fresh array per host-page change already, but nothing here depends on that staying true.
+    const frozenSelection = [...this.selectedEmotes()];
     const data: DeleteConfirmDialogData = {
       emotes: this.visibleSelectedEmoteNames,
       hiddenEmotes: this.hiddenSelectedEmoteNames,
@@ -675,10 +700,10 @@ export class MassDeletePanel {
         return;
       }
       if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
-        this.startDelete(frozenSetId, null);
+        this.startDelete(frozenSetId, frozenChannelName, frozenSelection, null);
         return;
       }
-      this.readLiveAliasesThenDelete(frozenSetId);
+      this.readLiveAliasesThenDelete(frozenSetId, frozenChannelName, frozenSelection);
     });
   }
 
@@ -691,16 +716,23 @@ export class MassDeletePanel {
    * `startDelete` repeats every confirm-time check once the answer is in, since the set can switch
    * while the read is out.
    */
-  private readLiveAliasesThenDelete(frozenSetId: string): void {
+  private readLiveAliasesThenDelete(
+    frozenSetId: string,
+    frozenChannelName: string,
+    frozenSelection: readonly DeletableEmote[],
+  ): void {
     // The same checks `startDelete` makes, made once before the read as well: a delete that is
     // already doomed must not wait for (or spend) a 7TV read first.
     if (this.abortReasonBeforeStart(frozenSetId) !== undefined) {
-      this.startDelete(frozenSetId, null);
+      this.startDelete(frozenSetId, frozenChannelName, frozenSelection, null);
       return;
     }
     this.liveAliasReadPending.set(true);
     loadSevenTvSetEntries(this.httpClient, frozenSetId)
       .pipe(
+        // A hung request (7TV accepts the connection but never answers) must not leave the button
+        // disabled forever — treated exactly like any other failed read (K5 fix round item 5).
+        timeout(LIVE_ALIAS_READ_TIMEOUT_MS),
         map((entries): LiveAliasRead =>
           entries.complete ? { entries } : { blockedReasonKey: MEMBERS_TRUNCATED_REASON_KEY },
         ),
@@ -708,7 +740,7 @@ export class MassDeletePanel {
       )
       .subscribe((read) => {
         this.liveAliasReadPending.set(false);
-        this.startDelete(frozenSetId, read);
+        this.startDelete(frozenSetId, frozenChannelName, frozenSelection, read);
       });
   }
 
@@ -738,10 +770,16 @@ export class MassDeletePanel {
     });
   }
 
-  /** `frozenSetId` is what the dialog named — `setId()` as it read when `openConfirmDialog` built
-   *  its data, not necessarily what the input reads now. `liveAliases` is the active-set delete's
-   *  live alias read (`readLiveAliasesThenDelete`), or `null` when none was made. */
-  private startDelete(frozenSetId: string, liveAliases: LiveAliasRead | null): void {
+  /** `frozenSetId`/`frozenChannelName`/`frozenSelection` are what the dialog named — read once in
+   *  `openConfirmDialog`, not re-read from the live `setId()`/`channelName()`/`selectedEmotes()`
+   *  inputs here (K5 fix round items 1 and 7). `liveAliases` is the active-set delete's live alias
+   *  read (`readLiveAliasesThenDelete`), or `null` when none was made. */
+  private startDelete(
+    frozenSetId: string,
+    frozenChannelName: string,
+    frozenSelection: readonly DeletableEmote[],
+    liveAliases: LiveAliasRead | null,
+  ): void {
     const abort = this.abortReasonBeforeStart(frozenSetId);
     if (abort !== undefined) {
       this.abortNotice.set(abort);
@@ -756,24 +794,44 @@ export class MassDeletePanel {
     }
     // Only reachable after the live alias read, i.e. asynchronously after the confirmation: another
     // run may have started in between, outside the mutual-exclusion contract the delete button's
-    // own arbiter gate enforces. Silent, like the restore paths' identical re-check — the run that
-    // got there first is already visible in the dock.
+    // own arbiter gate enforces. Unlike the restore paths' identical re-check (silent there — the
+    // run that got there first is always the one whose progress panel is already mounted in *this*
+    // same dock), this abort has to be visible (K5 fix round item 4): the competing run can be any
+    // of the three 7TV-writing kinds, started from anywhere else on the page, and this panel's own
+    // dock would otherwise show nothing at all to explain why a confirmed delete just vanished.
     if (liveAliases !== null && this.arbiter.activeRun() !== null) {
+      this.abortNotice.set({
+        leadKey: 'massDelete.abortedByMemberRead',
+        reasonKey: 'massDelete.anotherRunStarted',
+      });
       return;
     }
-    const liveAliasesById = liveAliases?.entries.aliasesById;
-    const emotes: DeleteQueueEmote[] = this.selectedEmotes().map((emote) => {
-      // The live read knows every entry the one `REMOVE` will take; a cell it does not know (or
-      // knows without an alias) keeps what the host said.
-      const live = liveAliasesById?.get(emote.sevenTvEmoteId);
+    const liveEntries = liveAliases?.entries;
+    const emotes: DeleteQueueEmote[] = frozenSelection.map((emote) => {
+      // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
+      // what the host said.
+      const live = liveEntries?.aliasesById.get(emote.sevenTvEmoteId);
+      // An id that also carries an aliasless entry (spec §37/§38's "aliasless" rule, K5 fix round
+      // item 3) has one more slot than `live` alone shows — 7TV requires an alias string to restore
+      // it, and the read cannot invent one, so this falls back to the emote's own display name
+      // rather than leaving that entry unrecorded (a protocol that looks complete but is not, F3).
+      // Skipped if `live` already happens to contain that exact name — nothing to add twice.
+      const hasAliaslessEntry = liveEntries?.aliaslessIds.has(emote.sevenTvEmoteId) ?? false;
+      const liveWithAliasless =
+        live !== undefined && hasAliaslessEntry && !live.includes(emote.name)
+          ? [...live, emote.name]
+          : live;
       return {
         emoteId: emote.emoteId,
         sevenTvEmoteId: emote.sevenTvEmoteId,
         name: emote.name,
-        aliases: live !== undefined && live.length > 0 ? live : emote.aliases,
+        aliases:
+          liveWithAliasless !== undefined && liveWithAliasless.length > 0
+            ? liveWithAliasless
+            : emote.aliases,
       };
     });
-    this.deleteService.startDelete(frozenSetId, this.channelName(), emotes);
+    this.deleteService.startDelete(frozenSetId, frozenChannelName, emotes);
   }
 
   /**

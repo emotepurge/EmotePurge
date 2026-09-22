@@ -1510,7 +1510,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
   let closed: Subject<boolean | undefined>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
 
-  function entriesPage(entries: { id: string; alias: string }[], pageCount = 1) {
+  function entriesPage(entries: { id: string; alias?: string }[], pageCount = 1) {
     return {
       data: {
         emoteSets: {
@@ -1622,6 +1622,57 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(startDelete.mock.calls[0][2][1].aliases).toEqual(['KEKW']);
   });
 
+  // K5 fix round, spec §37/§38: an aliasless 7TV entry is a slot the one REMOVE also takes, but it
+  // has no alias to restore under — the enrichment falls back to the emote's own display name for
+  // that entry rather than losing it (F3: a protocol that looks complete but is not).
+  it("falls back to the emote's own name for an aliasless entry, appended to the aliased entry the live read also finds under the same id", () => {
+    confirm();
+    httpMock
+      .expectOne(GQL)
+      .flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogUOld' },
+          { id: '7tv-1' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogUOld', 'PogU'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  // The degenerate case: the fallback name happens to already be one of the live aliases — nothing
+  // is appended a second time under the same string.
+  it('does not duplicate an alias that already equals the fallback name', () => {
+    confirm();
+    httpMock
+      .expectOne(GQL)
+      .flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogU' },
+          { id: '7tv-1' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+    expect(startDelete.mock.calls[0][2][0].aliases).toEqual(['PogU']);
+  });
+
+  it('falls back to the name for a cell that is entirely aliasless in the live set', () => {
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+    ]);
+  });
+
   it('deletes nothing when the live read fails, and says why', () => {
     confirm();
     httpMock.expectOne(GQL).error(new ProgressEvent('network error'));
@@ -1652,6 +1703,30 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(statusText()).toContain('usageStats.setView.lock.truncated');
   });
 
+  // K5 fix round: `complete` now also compares the collected item count against the query's own
+  // `totalCount` from the last page, not only the 10-page runaway guard — offset pagination
+  // shifting between page fetches can silently miss an entry without ever hitting the guard.
+  it('deletes nothing when the live read ends normally but under-counts against the reported total', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 5,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('usageStats.setView.lock.truncated');
+  });
+
   it('keeps the delete button disabled while the read is out', () => {
     confirm();
     expect(deleteButton().disabled).toBe(true);
@@ -1659,6 +1734,30 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     httpMock.expectOne(GQL).flush(entriesPage([]));
     fixture.detectChanges();
     expect(deleteButton().disabled).toBe(false);
+  });
+
+  // K5 fix round item 5: a hung request used to leave liveAliasReadPending true forever, with the
+  // delete button disabled and no way out short of reloading. A 20 s total budget treats a request
+  // that never answers exactly like one that answers with an error.
+  it('blocks the run and re-enables the button when the live read hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      confirm();
+      const req = httpMock.expectOne(GQL);
+      expect(deleteButton().disabled).toBe(true);
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.abortedByMemberRead');
+      expect(statusText()).toContain('usageStats.setView.lock.membersUnavailable');
+      expect(deleteButton().disabled).toBe(false);
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('aborts when the set switched while the read was out', () => {
@@ -1672,12 +1771,19 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(statusText()).toContain('massDelete.setChangedDuringConfirm');
   });
 
-  it('starts nothing when another run claimed the arbiter while the read was out', () => {
+  // K5 fix round item 4: this re-check used to abort silently, like the restore paths' identical
+  // one — but there, the run that got there first is always visible in the *same* dock. Here the
+  // competing run can be any of the three 7TV-writing kinds, started from elsewhere on the page, so
+  // a silent return left nothing on screen explaining why a confirmed delete just vanished.
+  it('starts nothing when another run claimed the arbiter while the read was out, and says so', () => {
     confirm();
     activeRun.set('import');
     httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    expect(statusText()).toContain('massDelete.anotherRunStarted');
   });
 
   it('makes no read at all when the host lock already stops the delete', () => {
@@ -1723,6 +1829,73 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
     httpMock.expectNone(GQL);
     expect(startDelete).toHaveBeenCalledTimes(1);
+  });
+
+  // K5 fix round item 1: the dialog closes on confirm and nothing locks the grid, so the page's
+  // live selection can change while this async read is still out. The run must delete exactly what
+  // the dialog showed, not whatever the selection happens to be once the read answers.
+  it('deletes the selection the dialog showed, unaffected by a shrink of the live selection while the read is pending', () => {
+    confirm();
+    // The selection loses one of its two entries while the read is still in flight — nothing on
+    // screen prevented this once the dialog closed.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  it('does not sweep in an id added to the live selection only after the dialog was confirmed', () => {
+    confirm();
+    fixture.componentRef.setInput('selectedEmotes', [
+      ...EMOTES.map((emote) => ({ ...emote, aliases: [emote.name] })),
+      { emoteId: 'e3', sevenTvEmoteId: '7tv-3', name: 'NEW', aliases: ['NEW'], hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    const deletedIds = startDelete.mock.calls[0][2].map(
+      (emote: { sevenTvEmoteId: string }) => emote.sevenTvEmoteId,
+    );
+    expect(deletedIds).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // The selection is frozen at dialog OPEN, not at confirm — this is the "no live read" branch
+  // (readLiveAliasesFromActiveSet toggled off), so a selection change between open and confirm is
+  // the only window there is to observe the freeze point.
+  it('freezes the selection at dialog open, not at confirm, on the no-read branch', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  // K5 fix round item 7: the run used to read the live channelName() input at the point
+  // deleteService.startDelete was finally called, instead of the value frozen at dialog open.
+  it("freezes the run's channel name at dialog open", () => {
+    confirm();
+    fixture.componentRef.setInput('channelName', 'otherchannel');
+    fixture.detectChanges();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    expect(startDelete.mock.calls[0][1]).toBe('somechannel');
   });
 });
 

@@ -596,6 +596,54 @@ addenda above, both in `seven-tv-set-entries.ts`/`already-present-filter.ts`:
   without an alias counts as a foreign alias" now holds for *every* aliasless entry, not only one on
   an otherwise-unaliased id.
 
+**K5 fix round 2026-09-22 (independent review), continued — `MassDeletePanel` deletes exactly the
+selection it confirmed, the run's channel is frozen too, a stuck arbiter re-check now speaks up, a
+hung read times out, and the delete's own alias enrichment picks up an aliasless entry.** Four more
+findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
+
+- **The confirmed selection is snapshotted at dialog open, next to `frozenSetId`.** `startDelete`
+  used to re-read the live `selectedEmotes()` input after `readLiveAliasesThenDelete`'s async read
+  answered — the confirm dialog is already closed by then and nothing locks the grid, so an id could
+  be added to or removed from the selection while the read was out. `openConfirmDialog` now freezes
+  the exact `DeletableEmote[]` the dialog showed (`frozenSelection`) and both the read and no-read
+  paths delete precisely that list, enriched with live aliases where the active-set read applies —
+  never fewer (an id later deselected was still confirmed) and never more (an id selected only
+  afterwards was never shown). The freeze happens once, at dialog open, the same moment as
+  `frozenSetId`/`frozenIsActiveSet`; a selection change while the dialog is still open (before
+  confirm) is therefore also not picked up — consistent with those two already being frozen at that
+  same moment, not at confirm.
+- **The run's channel name is frozen at dialog open too** (`frozenChannelName`, alongside
+  `frozenSetId`) — `deleteService.startDelete` used to read the live `channelName()` input at the
+  point it was actually called, the same class of gap finding A closed for `setId`: harmless today
+  (a panel only ever sees one channel across a run's lifetime) but the wrong source of truth
+  regardless.
+- **The arbiter re-check after the live alias read is no longer silent.** Every other
+  confirm-time-async arbiter re-check in this file stays silent on a block
+  (`openRestoreConfirmDialog`, the restore's own pre-run-check race) because the run that got there
+  first is always the one whose progress panel is already mounted in the *same* dock the user is
+  looking at. This one is different: the competing run can be any of the three 7TV-writing kinds,
+  started from anywhere else on the page, so a silent return could leave nothing on screen
+  explaining why a confirmed delete simply did not happen. `startDelete` now sets `abortNotice` with
+  the existing `massDelete.abortedByMemberRead` lead and a new `massDelete.anotherRunStarted` reason
+  (wired to i18n text in a later commit; transloco shows the raw key until then).
+- **The live alias read has a 20 s total timeout** (`LIVE_ALIAS_READ_TIMEOUT_MS`) — a hung request
+  (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true` forever,
+  the delete button disabled with no way out short of a page reload. A timeout is piped through the
+  same `catchError` as a network error, so it blocks exactly like one.
+- **The active-set delete's alias enrichment falls back to the emote's own display name for an
+  aliasless entry**, built on the `aliaslessIds` the read now tracks (previous commit): 7TV requires
+  an alias string to restore an entry, and the read cannot invent one for a slot it lists without
+  one, so this is appended to whatever aliased entries the read also found under the same id —
+  skipped if that name is already one of them — rather than leaving the entry unrecorded (F3: a
+  protocol that looks complete but is not).
+
+**Known residual, left standing on purpose.** A **non-active** view's delete still does not read
+live from 7TV at all (`readLiveAliasesFromActiveSet` stays off there) — its rows already carry every
+alias from the member list loaded *with that view* (`mergeSetView`'s non-active branch, spec §37).
+An entry added to the set on 7TV after that list loaded is therefore not reflected in the run's
+protocol even if it duplicates a selected id; this is accepted by spec §37 itself ("die
+nicht-aktive Ansicht liest nicht ein zweites Mal") and unchanged by this round.
+
 ---
 
 ### 2026-09-21 — An import into a tracked channel's non-active set no longer resyncs the channel, and the dock stops claiming it does
