@@ -687,12 +687,15 @@ export class VoteSessionDetailPage {
     });
   }
 
-  protected onDeleted(deletedIds: string[]): void {
+  // The panel reports 7TV ids (spec #200, E18, F12), so rows are matched on `sevenTvEmoteId`; this
+  // page's own selection stays keyed by the Guid, which every ballot row has.
+  protected onDeleted(deletedSevenTvEmoteIds: string[]): void {
+    const deleted = new Set(deletedSevenTvEmoteIds);
     this.results.update((results) =>
       results
         ? {
             ...results,
-            emotes: results.emotes.filter((emote) => !deletedIds.includes(emote.emoteId)),
+            emotes: results.emotes.filter((emote) => !deleted.has(emote.sevenTvEmoteId)),
           }
         : results,
     );

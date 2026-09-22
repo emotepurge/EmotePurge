@@ -732,11 +732,11 @@ export class UsageStatsPage {
    *   set's and the panel's delete target is the active set;
    * - the member list could not be read (503/429) — a list that knows half the set must not delete;
    * - the member list came back `truncated` — same rule;
-   * - otherwise, **for now**, every non-active view: the delete run still reports its bookkeeping in
-   *   the legacy `sync-deleted { emoteIds }` form, which archives `Emote` rows as if they had left the
-   *   *active* set, and still keys its queue and protocol by `Emote.Id`. Both become set-aware in K5
-   *   (T5.1/T5.2, spec 6.6/7.2), which is what lifts this last lock — until then a delete here would
-   *   run against the active set's bookkeeping while a different set is on screen.
+   * - otherwise, **for now**, every non-active view. The run itself is set-aware since K5 (T5.1/T5.2,
+   *   spec 6.6/7.2: 7TV-id keys, `emoteId: null` in the protocol, the set frozen into the run record
+   *   and reported in the new `sync-deleted` form), but the panel is still bound to the *active* set
+   *   and its confirmation does not name the set yet — both are T5.3 (spec 8.8), which lifts this
+   *   last lock. Until then a delete here would remove from the active set while another is shown.
    */
   protected readonly deleteLockReasonKey = computed<string | null>(() => {
     if (this.viewSwitching()) {
@@ -1302,21 +1302,21 @@ export class UsageStatsPage {
   // cannot resolve is a key that was actually removed from emotes() (reload, finished delete),
   // which retainAmong()/clear() already keep out of selectedKeys() before this ever reads it.
   //
-  // Two kinds of row never reach the delete run (spec #200, 8.2), and both only exist in a
-  // non-active set's view: a `'left'` row is no longer in the set, so there is nothing to remove
-  // (E23, AK 57); a row without `Emote.Id` stays out *for now* — the run still keys its queue and its
-  // protocol by that Guid until T5.1 moves them onto the 7TV id. `DeletableEmote.emoteId` therefore
-  // stays a required `string`, which makes this filter a compile-time guarantee rather than a
-  // convention. While the non-active view's own delete lock stands (`deleteLockReasonKey`) neither
-  // exclusion is reachable anyway.
+  // One kind of row never reaches the delete run (spec #200, 8.2): a `'left'` row is no longer in
+  // the set, so there is nothing to remove (E23, AK 57) — it only exists in a non-active set's view.
+  // A row without `Emote.Id` goes in like any other since K5 (spec 7.2): the run is keyed by the 7TV
+  // id and the protocol writes `emoteId: null` for it. A #74 duplicate cell is one row with both
+  // aliases — one `REMOVE` takes both entries (Sonde 5, branch A), and the protocol keeps both names
+  // so the restore can re-add each.
   protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
     this.selection.selectedItems().flatMap((emote) =>
-      emote.membership === 'live' && emote.emoteId !== null
+      emote.membership === 'live'
         ? [
             {
-              emoteId: emote.emoteId,
+              emoteId: emote.emoteId ?? undefined,
               sevenTvEmoteId: emote.sevenTvEmoteId,
               name: emote.emoteName,
+              aliases: emote.aliases,
               // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl
               // überlebt Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the
               // dock's own hiddenSelectedCount is built from, so the two numbers can never disagree.
@@ -2155,15 +2155,15 @@ export class UsageStatsPage {
     });
   }
 
-  // `deletedIds` are still `Emote.Id` Guids until T5.1 switches the panel's output to 7TV ids (E18);
-  // a delete run only ever starts from the active set's view today, whose rows all carry one.
+  // `deletedSevenTvEmoteIds` are the run's keys — 7TV ids (spec #200, E18) — so rows are matched by
+  // `sevenTvEmoteId`, never by the Guid a row may not have.
   //
   // Edits the rows on screen only when they are the run's own set of the run's own channel: the set
   // dropdown is locked for the length of the run (`deleteRunActive`), but a sync can still move the
   // active set, and the delete service outlives a channel switch. A run of another channel has
   // nothing to say about this one's rows; a run whose set is no longer the one on screen reloads
   // instead of subtracting another set's emotes and slots (the selection reconciles against it).
-  protected onDeleted(deletedIds: string[]): void {
+  protected onDeleted(deletedSevenTvEmoteIds: string[]): void {
     const run = this.deleteService.lastRun();
     if (!run || run.channelName !== this.totalsChannel()) {
       return;
@@ -2172,13 +2172,19 @@ export class UsageStatsPage {
       this.refresh();
       return;
     }
-    this.totalsRows.update((items) => items.filter((item) => !deletedIds.includes(item.emoteId)));
+    const deleted = new Set(deletedSevenTvEmoteIds);
+    // A cell frees `slotCount` entries, not one (spec 7.2, AK 72) — a #74 duplicate took two with
+    // its one `REMOVE`. Summed over the rows on screen before they are dropped.
+    const freedSlots = this.emotes()
+      .filter((emote) => emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId))
+      .reduce((sum, emote) => sum + emote.slotCount, 0);
+    this.totalsRows.update((items) => items.filter((item) => !deleted.has(item.sevenTvEmoteId)));
     // Freed slots are shown right away rather than waiting for the channel.synced round trip the
     // bookkeeping call triggers — the emptied bar is the feedback the delete was run for. The
     // refetch that follows a moment later confirms or corrects it.
     this.setStatus.update((status) =>
       status
-        ? { ...status, occupiedSlots: Math.max(status.occupiedSlots - deletedIds.length, 0) }
+        ? { ...status, occupiedSlots: Math.max(status.occupiedSlots - freedSlots, 0) }
         : status,
     );
     this.selection.clear();

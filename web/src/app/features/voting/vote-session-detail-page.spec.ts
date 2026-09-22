@@ -288,6 +288,22 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
     expect(component['selectedForDelete']().every((row) => row.hidden)).toBe(true);
   });
 
+  // Spec #200, E18/F12/AK 72: the delete panel reports 7TV ids now, so this page drops the rows by
+  // `sevenTvEmoteId` — while its own selection stays keyed by the Guid every ballot row carries.
+  it('drops the rows the delete panel reports by their 7TV id and keeps its selection keyed by the Guid', () => {
+    const a = resultEmote('a');
+    const b = resultEmote('b');
+
+    mount(results([a, b]));
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+
+    component['onDeleted'](['7tv-a']);
+
+    expect(component['results']()?.emotes.map((emote) => emote.emoteId)).toEqual(['b']);
+    expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+
   it('a silent reload that loses nothing selected leaves the selection alone', () => {
     const a = resultEmote('a');
     const b = resultEmote('b');

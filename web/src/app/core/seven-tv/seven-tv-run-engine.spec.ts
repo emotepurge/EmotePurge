@@ -135,13 +135,12 @@ describe('SevenTvRunEngine', () => {
 
     expect(engine.isRunning()).toBe(false);
     expect(results).toHaveLength(1);
-    expect(results[0].doneIds).toEqual(['internal-1']);
     expect(results[0].doneKeys).toEqual(['internal-1']);
     expect(results[0].items.map((item) => item.status)).toEqual(['done', 'failed']);
     expect(results[0].finishedAt).toBeGreaterThanOrEqual(results[0].startedAt);
   });
 
-  it('carries a row without an emoteId through the queue — doneKeys sees it, doneIds does not', () => {
+  it('carries a row without an emoteId through the queue and reports its key', () => {
     const emote: RunQueueEmote = { key: 'import-1', sevenTvEmoteId: '7tv-9', name: 'PogU' };
     expect(start([emote])).toBe(true);
 
@@ -150,7 +149,6 @@ describe('SevenTvRunEngine', () => {
 
     expect(engine.isRunning()).toBe(false);
     expect(results[0].doneKeys).toEqual(['import-1']);
-    expect(results[0].doneIds).toEqual([]);
   });
 
   it('matches a queue key exactly, never as a prefix', () => {
@@ -171,7 +169,7 @@ describe('SevenTvRunEngine', () => {
     vi.advanceTimersByTime(RUN_DELAY_MS);
   });
 
-  it('keeps only the present guids in doneIds while doneKeys lists every finished row', () => {
+  it('lists every finished row in doneKeys, whether or not it carries an emoteId', () => {
     const emotes: RunQueueEmote[] = [
       { key: 'k1', emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU' },
       { key: 'k2', sevenTvEmoteId: '7tv-2', name: 'KEKW' },
@@ -183,8 +181,48 @@ describe('SevenTvRunEngine', () => {
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
-    expect(results[0].doneIds).toEqual(['internal-1']);
     expect(results[0].doneKeys).toEqual(['k1', 'k2']);
+  });
+
+  // Spec #200, E2/AK 67–68: the Guid list beside doneKeys is gone — keys are the one identity a
+  // finished run reports, and they are whatever the calling service minted (7TV ids for a delete).
+  it('reports doneKeys as the only identity of a finished run — no Guid list beside it', () => {
+    const emotes: RunQueueEmote[] = [
+      { key: '7tv-1', emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU' },
+      { key: '7tv-2', emoteId: 'internal-2', sevenTvEmoteId: '7tv-2', name: 'KEKW' },
+    ];
+    expect(start(emotes)).toBe(true);
+
+    httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    expect(results[0].doneKeys).toEqual(['7tv-2']);
+    expect(Object.keys(results[0]).sort()).toEqual([
+      'doneKeys',
+      'finishedAt',
+      'items',
+      'startedAt',
+    ]);
+  });
+
+  it('runs a delete-shaped row without an emoteId like any other and keeps its aliases on the item', () => {
+    const emote: RunQueueEmote = {
+      key: '7tv-9',
+      sevenTvEmoteId: '7tv-9',
+      name: 'PogU',
+      aliases: ['PogU', 'PogU2'],
+    };
+    expect(start([emote])).toBe(true);
+
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    expect(results[0].doneKeys).toEqual(['7tv-9']);
+    expect(results[0].items[0].emoteId).toBeUndefined();
+    expect(results[0].items[0].aliases).toEqual(['PogU', 'PogU2']);
+    expect(results[0].items[0].status).toBe('done');
   });
 
   it('waits out a GQL rate limit and retries instead of failing the emote', () => {
@@ -200,7 +238,7 @@ describe('SevenTvRunEngine', () => {
     vi.advanceTimersByTime(1000);
 
     expect(engine.queue()[0].status).toBe('done');
-    expect(results[0].doneIds).toEqual(['internal-1']);
+    expect(results[0].doneKeys).toEqual(['internal-1']);
   });
 
   it('backs off a bare HTTP 429 for a full window', () => {
@@ -260,7 +298,7 @@ describe('SevenTvRunEngine', () => {
     expect(engine.isRunning()).toBe(false);
     expect(engine.queue().map((item) => item.status)).toEqual(['done', 'cancelled']);
     expect(results).toHaveLength(1);
-    expect(results[0].doneIds).toEqual(['internal-1']);
+    expect(results[0].doneKeys).toEqual(['internal-1']);
 
     vi.advanceTimersByTime(RUN_DELAY_MS);
     httpMock.expectNone(GQL_ENDPOINT);
@@ -321,7 +359,6 @@ describe('SevenTvRunEngine', () => {
       expect(engine.isRunning()).toBe(false);
       expect(engine.queue().map((item) => item.status)).toEqual(['done', 'failed']);
       expect(results).toHaveLength(1);
-      expect(results[0].doneIds).toEqual(['internal-1']);
       expect(results[0].doneKeys).toEqual(['internal-1']);
     });
 

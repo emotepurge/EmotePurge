@@ -27,7 +27,14 @@ const SET_ID = 'frozen-set';
 
 function rows(): PurgeRunRow[] {
   return [
-    { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done', errorMessage: null },
+    {
+      emoteId: 'e1',
+      sevenTvEmoteId: '7tv-1',
+      name: 'PogU',
+      aliases: ['PogU'],
+      status: 'done',
+      errorMessage: null,
+    },
   ];
 }
 
@@ -165,7 +172,7 @@ describe('startRestoreFlow', () => {
     expect(startRestore).toHaveBeenCalledWith(
       SET_ID,
       CHANNEL,
-      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       0,
       true,
     );
@@ -234,7 +241,7 @@ describe('startRestoreFlow', () => {
       expect(startRestore).toHaveBeenCalledWith(
         SET_ID,
         CHANNEL,
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
       );
@@ -254,7 +261,7 @@ describe('startRestoreFlow', () => {
       expect(startRestore).toHaveBeenCalledWith(
         SET_ID,
         CHANNEL,
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         false,
       );

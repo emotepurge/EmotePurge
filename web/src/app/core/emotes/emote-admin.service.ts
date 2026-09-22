@@ -6,14 +6,29 @@ import { LeaderboardSort } from '../seven-tv/leaderboard.model';
 import { EmoteListItem } from './emote-list-item.model';
 import { EmoteSetStatus } from './emote-set-status.model';
 
+/** Request body of syncDeleted/syncRestored (spec #200, 6.6): the set the run wrote into, frozen
+ *  in the run record when it started, and the 7TV ids it finished — deduplicated, one per emote
+ *  even when a restore re-added it under two aliases. The server still accepts the legacy
+ *  `{ emoteIds }` (Guid) form for tabs opened before the deploy (E3); this client never sends it. */
+export interface SyncBookkeepingBody {
+  emoteSetId: string;
+  sevenTvEmoteIds: string[];
+}
+
 export interface SyncDeletedResult {
   archivedCount: number;
+  /** 7TV ids the server found no row for (new body form). */
   notFoundIds: string[];
+  /** `false`: the reported set is not the channel's active one, so the call was paper only — an
+   *  audit entry, no row archived, `archivedCount` 0 by design rather than a shortfall. */
+  targetIsActiveSetOfChannel: boolean;
 }
 
 export interface SyncRestoredResult {
   restoredCount: number;
   notFoundIds: string[];
+  /** Same meaning as on `SyncDeletedResult`. */
+  targetIsActiveSetOfChannel: boolean;
 }
 
 export interface EmoteSetWarning {
@@ -55,20 +70,23 @@ interface EmoteListResponse {
 export class EmoteAdminService {
   private readonly http = inject(HttpClient);
 
-  /** Reports already-deleted (7TV-side) internal emote ids so Postgres reflects it immediately —
-   *  the 1-minute SevenTvPeriodicResyncWorker is the actual safety net regardless. */
-  syncDeleted(channelName: string, emoteIds: string[]): Observable<SyncDeletedResult> {
+  /** Reports already-deleted (7TV-side) emotes of one set so Postgres reflects it immediately —
+   *  the 1-minute SevenTvPeriodicResyncWorker is the actual safety net regardless. For a
+   *  non-active set the server only writes the audit entry (spec #200, 6.6). */
+  syncDeleted(channelName: string, body: SyncBookkeepingBody): Observable<SyncDeletedResult> {
     return this.http.post<SyncDeletedResult>(`/api/channels/${channelName}/emotes/sync-deleted`, {
-      emoteIds,
+      emoteSetId: body.emoteSetId,
+      sevenTvEmoteIds: body.sevenTvEmoteIds,
     });
   }
 
   /** The restore counterpart of syncDeleted: un-archives the re-added emotes server-side and —
    *  its actual purpose — writes the emotes.syncRestored audit entry. Without it a restore only
    *  ever appeared in the log as an anonymous channel.resync. */
-  syncRestored(channelName: string, emoteIds: string[]): Observable<SyncRestoredResult> {
+  syncRestored(channelName: string, body: SyncBookkeepingBody): Observable<SyncRestoredResult> {
     return this.http.post<SyncRestoredResult>(`/api/channels/${channelName}/emotes/sync-restored`, {
-      emoteIds,
+      emoteSetId: body.emoteSetId,
+      sevenTvEmoteIds: body.sevenTvEmoteIds,
     });
   }
 

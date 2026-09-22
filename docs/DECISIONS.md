@@ -115,8 +115,12 @@ layout uniformity identically.
 `web/e2e/support/mocks.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
 `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` · `src/EmotePurge.Core/Services/IEmoteService.cs` ·
 `src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` · `web/src/app/core/emotes/emote-admin.service.ts` ·
+`web/src/app/shared/export/purge-run-export.ts` · `web/src/app/shared/seven-tv/restore-flow.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
 `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, §35, §36) ·
-`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.2)
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.2, T5.1)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
 part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
@@ -375,6 +379,40 @@ false`. `channel.synced` keeps its existing gate (`NewlyArchivedCount > 0`) unch
 fires for a non-active-set report. `notFoundIds` carries 7TV ids for the new form, Guids for the
 legacy one, per the response shape (spec 6.6). Threading the set id into the delete/restore run
 record and the frontend's own body construction is T5.1, not this commit.
+
+**K5 addendum (T5.1) — delete and restore runs speak 7TV ids end to end.** `RunResult.doneIds` is
+gone (E2); `doneKeys` is the one identity a finished run reports, so a row without a local
+`Emote.Id` can no longer drop out of the report, the retry or the panel's `deleted` output. The
+delete queue is keyed by `sevenTvEmoteId` — a #74 duplicate cell is one row and one `REMOVE`, which
+takes both entries (Sonde 5, branch A) — and the restore queue by `${sevenTvEmoteId}#${alias}`, one
+`ADD` per alias, the only key space that contains an alias. **The purge protocol changes format
+without a version bump**, because every old file stays readable: `PurgeRunRow.emoteId` is
+`string | null` (`null` for a row that never had a local emote), and each row gains `aliases:
+string[]` (every alias the cell sat under; `[name]` for a single entry). The panel no longer filters
+rows without an `emoteId` out of the protocol — that filter produced a silently short protocol, i.e.
+a deletion without a way back that nobody would notice (F3). `parsePurgeRunProtocol` accepts
+`emoteId` as a Guid, `null` or absent, and reads a row without (or with a malformed) `aliases` as
+`[name]`, so protocols written before K5 restore exactly as before. Both run records
+(`DeleteRunInfo`, `RestoreRunInfo`) carry the set id **frozen at start**; the first
+`sync-deleted`/`sync-restored` call and every `retrySyncReport` read set and keys from that record,
+never from the page (AK 71), and the panel's restore-from-run re-adds into the run's own set. The
+client sends only `{ emoteSetId, sevenTvEmoteIds }` — deduplicated, so a restore that re-added one
+emote under two aliases reports one id — and never the legacy `{ emoteIds }`; an answer with
+`targetIsActiveSetOfChannel: false` counts as succeeded, since `archivedCount: 0` is the paper-only
+contract there, not a shortfall. The panel's `deleted` emits the run's keys; the usage page drops
+cells by `sevenTvEmoteId` and frees `slotCount` slots per cell, the vote-session detail page drops
+rows by `sevenTvEmoteId` while its own selection stays keyed by the Guid (F12). **Interim locks of
+the K4 part above:** lifted here — `DeletableEmote.emoteId`/`DeleteQueueEmote.emoteId` are optional,
+the usage page no longer filters Guid-less rows out of the delete selection (`'left'` rows stay out,
+AK 57), `onDeleted` matches by 7TV id and subtracts `slotCount`. **Still standing, for T5.3:** the
+delete lock in every non-active view (`usageStats.setView.lock.nonActiveSet`), the panel's binding
+to the *active* set, the restore lock while a non-active set is shown (`restoreEnabled`), the
+restore dialog's slot preview from the active set's status and per name rather than per `ADD`, and
+the set name in both confirmations (spec 8.8) — lifting the delete lock before the dialog names the
+set would let a delete reach a non-active set behind a confirmation that does not say which. Not
+done anywhere yet: spec 7.2's `(sevenTvEmoteId, alias)` comparison in the restore's pre-run
+duplicate check; `filterAlreadyPresent` still compares the id alone, so re-running a restore in
+which only one alias of a duplicate came back skips the whole row.
 
 ---
 

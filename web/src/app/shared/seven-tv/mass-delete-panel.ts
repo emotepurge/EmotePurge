@@ -45,9 +45,15 @@ import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 let nextDeleteLockReasonId = 0;
 
 export interface DeletableEmote {
-  emoteId: string;
+  /** Local `Emote.Id` — optional (spec #200, 7.2): a live member of a non-active set may never
+   *  have had one. The run is keyed by `sevenTvEmoteId`; this only reaches the protocol. */
+  emoteId?: string;
   sevenTvEmoteId: string;
   name: string;
+  /** Every alias the emote sits under in the set — two for a #74 duplicate cell, which one
+   *  `REMOVE` takes whole. Recorded in the protocol so a restore can re-add each. Omitted means
+   *  `[name]` (the vote-session page, whose rows are always single entries). */
+  aliases?: readonly string[];
   /** Whether the host page's current filter hides this emote right now (`!selection.isVisible`).
    *  Required, not optional (Konzept "Auswahl überlebt Suche und Filter" 2.1, Codex befund 3b):
    *  this panel has no filter/visibility knowledge of its own and must never silently assume
@@ -157,7 +163,7 @@ export interface DeletableEmote {
               <button type="button" appButton="neutral" (click)="openProtocolExport()">
                 {{ 'massDelete.summary.downloadProtocol' | transloco }}
               </button>
-              @if (run.result.doneIds.length > 0 && arbiter.activeRun() === null) {
+              @if (run.result.doneKeys.length > 0 && arbiter.activeRun() === null) {
                 <!-- The two-tier *shape* of the destructive convention, not its colour: outline
                      triggers, the dialog's primary-solid executes — restore is constructive. -->
                 <button type="button" appButton="outline" (click)="openRestoreConfirm()">
@@ -252,8 +258,9 @@ export class MassDeletePanel {
    */
   readonly leadingActionsPresent = input<boolean>(false);
 
-  /** Ids the host page may drop from its list without a refetch — emitted only once the backend has
-   *  confirmed it archived them. */
+  /** 7TV ids (the run's `doneKeys`, spec #200 E18) the host page may drop from its list without a
+   *  refetch — emitted only once the backend has confirmed the report. Hosts match them against
+   *  `sevenTvEmoteId`, never against a Guid. */
   readonly deleted = output<string[]>();
 
   /** The run finished on 7TV, but the backend does not (fully) know about it. The host page must
@@ -356,12 +363,12 @@ export class MassDeletePanel {
         return;
       }
 
-      // RunResult.doneIds, not a re-derivation from the queue — it already excludes rows without
-      // an emoteId (none exist on a delete run), so no `?? ''` is needed to satisfy the string[]
-      // output.
-      const doneIds = this.deleteService.lastRun()?.result.doneIds ?? [];
-      if (doneIds.length > 0) {
-        this.deleted.emit(doneIds);
+      // RunResult.doneKeys, not a re-derivation from the queue: a delete run keys every row by its
+      // 7TV id, so these are exactly the ids that left the set — rows without a local emote
+      // included (spec #200, E18).
+      const doneKeys = this.deleteService.lastRun()?.result.doneKeys ?? [];
+      if (doneKeys.length > 0) {
+        this.deleted.emit(doneKeys);
       }
     });
 
@@ -409,20 +416,15 @@ export class MassDeletePanel {
     if (!run) {
       return;
     }
-    // The engine's RunResult is generic over rows that may lack an internal emoteId (an import
-    // run has none), but a delete run is built from DeleteQueueEmote, which requires it — so this
-    // narrowing is where that guarantee is actually known, rather than inside the shared export
-    // helper where a dropped row would become a silently short protocol. Filtered once and reused,
-    // so the envelope's counts and rows cannot drift apart.
-    const items = run.result.items.filter(
-      (item): item is RunQueueItem & { emoteId: string } => item.emoteId !== undefined,
-    );
+    // Every row of the run, unfiltered (spec #200, F3): a row without a local emote is written with
+    // `emoteId: null`. Filtering it out here — as this panel once did — produced a silently short
+    // protocol, i.e. a deletion without a way back that nobody would notice until they needed it.
     const protocol = buildPurgeRunProtocol({
       channelName: run.channelName,
       emoteSetId: run.setId,
       startedAt: run.result.startedAt,
       finishedAt: run.result.finishedAt,
-      items,
+      items: run.result.items,
     });
     const data: ExportDialogData = {
       rowCount: protocol.rows.length,
@@ -458,12 +460,8 @@ export class MassDeletePanel {
     if (!run || this.arbiter.activeRun() !== null) {
       return;
     }
-    // A delete run always sets emoteId on every row; the guard below narrows the type rather than
-    // papering over a hole that cannot occur here (see R3 in docs/DECISIONS.md).
-    const doneItems = run.result.items.filter(
-      (item): item is RunQueueItem & { emoteId: string } =>
-        item.status === 'done' && item.emoteId !== undefined,
-    );
+    // Every done row, with or without a local emote — the restore is keyed by the 7TV id.
+    const doneItems = run.result.items.filter((item) => item.status === 'done');
     if (doneItems.length === 0) {
       return;
     }
@@ -471,17 +469,17 @@ export class MassDeletePanel {
     if (!this.tokenService.hasToken()) {
       openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
         if (saved) {
-          this.openRestoreConfirmDialog(doneItems);
+          this.openRestoreConfirmDialog(run.setId, doneItems);
         }
       });
       return;
     }
-    this.openRestoreConfirmDialog(doneItems);
+    this.openRestoreConfirmDialog(run.setId, doneItems);
   }
 
-  private openRestoreConfirmDialog(
-    doneItems: { emoteId: string; sevenTvEmoteId: string; name: string }[],
-  ): void {
+  /** `runSetId` is the set the delete run removed from (its frozen record, spec #200 7.2) — the
+   *  restore puts the emotes back there, never into whatever `setId()` says by now. */
+  private openRestoreConfirmDialog(runSetId: string, doneItems: readonly RunQueueItem[]): void {
     // Live slot view, so the projection line pops in once the check answers (the dialog is
     // already open by then) — same pattern as the delete confirm's shared-set warning.
     this.restoreSlots.set(null);
@@ -507,6 +505,7 @@ export class MassDeletePanel {
         emoteId: item.emoteId,
         sevenTvEmoteId: item.sevenTvEmoteId,
         name: item.name,
+        aliases: item.aliases,
       }));
       // #149/T5: a restore never had any duplicate protection at all — filter it fresh, right here,
       // against the target set's current contents, read from 7TV itself rather than our database
@@ -514,7 +513,7 @@ export class MassDeletePanel {
       // which runs *because* something already went wrong and our mirror may still be stale) for
       // why this sits at confirm-time rather than dialog-open-time and for the residual race it
       // does not close.
-      filterAlreadyPresent(this.httpClient, this.setId(), emotes).subscribe(
+      filterAlreadyPresent(this.httpClient, runSetId, emotes).subscribe(
         ({ rows: toRestore, skipped, available }) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
@@ -526,7 +525,7 @@ export class MassDeletePanel {
             return;
           }
           this.restoreService.startRestore(
-            this.setId(),
+            runSetId,
             this.channelName(),
             toRestore,
             skipped,
@@ -599,6 +598,7 @@ export class MassDeletePanel {
       emoteId: emote.emoteId,
       sevenTvEmoteId: emote.sevenTvEmoteId,
       name: emote.name,
+      aliases: emote.aliases,
     }));
     this.deleteService.startDelete(this.setId(), this.channelName(), emotes);
   }

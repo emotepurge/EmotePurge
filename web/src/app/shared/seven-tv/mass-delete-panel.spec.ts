@@ -27,6 +27,7 @@ import { DeletableEmote, MassDeletePanel } from './mass-delete-panel';
 interface CapturedDownload {
   filename: string;
   mimeType: string;
+  blob: Blob;
 }
 
 /** Spies on the same two seams `downloadFile` touches — restore via `vi.restoreAllMocks()` in
@@ -37,7 +38,7 @@ function captureDownloads(): CapturedDownload[] {
     Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
   }
   vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
-    downloads.push({ filename: '', mimeType: (blob as Blob).type });
+    downloads.push({ filename: '', mimeType: (blob as Blob).type, blob: blob as Blob });
     return 'blob:test';
   });
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
@@ -237,10 +238,11 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
       setId: 'set-1',
       channelName: 'somechannel',
       result: {
-        doneIds: ['e1'],
-        doneKeys: ['e1'],
+        doneKeys: ['7tv-1', '7tv-live'],
         items: [
-          { key: 'e1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          // A set-view row without a local emote (spec #200, 7.1) — see the no-filter case below.
+          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
         ],
         startedAt: Date.parse('2026-09-01T12:00:00Z'),
         finishedAt: Date.parse('2026-09-01T12:05:00Z'),
@@ -331,6 +333,23 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
     expect(downloads[0].filename).toBe('emotepurge_somechannel_purge_2026-09-01-1205.json');
     expect(downloads[0].mimeType).toBe(JSON_MIME);
     expect(panel['protocolSaved']()).toBe(true);
+  });
+
+  // Spec #200, F3/AK 72: this panel used to filter rows without an emoteId out of the protocol
+  // ("a silently short protocol") — which, with set-view rows that have none, would make their
+  // deletion irreversible and traceless. Every row of the run is written.
+  it('writes every row of the run into the protocol, a row without an emoteId included', async () => {
+    openSpy.mockReturnValue({ closed: of({ optionId: 'json', scope: 'visible' }) });
+
+    panel['openProtocolExport']();
+
+    const written = JSON.parse(await downloads[0].blob.text());
+    expect(written.rows.map((row: { sevenTvEmoteId: string }) => row.sevenTvEmoteId)).toEqual([
+      '7tv-1',
+      '7tv-live',
+    ]);
+    expect(written.rows[1].emoteId).toBeNull();
+    expect(written.meta.counts.succeeded).toBe(2);
   });
 
   it('downloads nothing and leaves protocolSaved alone when the dialog closes with nothing', () => {
@@ -723,14 +742,14 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   let syncReport: WritableSignal<SyncReportState>;
   let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
 
-  function runResult(doneIds: string[]): RunResult {
+  // A delete run keys every row by its 7TV id, so key and sevenTvEmoteId are the same value.
+  function runResult(doneKeys: string[]): RunResult {
     return {
-      doneIds,
-      doneKeys: doneIds,
-      items: doneIds.map((id) => ({
+      doneKeys,
+      items: doneKeys.map((id) => ({
         key: id,
-        emoteId: id,
-        sevenTvEmoteId: `7tv-${id}`,
+        emoteId: `guid-${id}`,
+        sevenTvEmoteId: id,
         name: id,
         status: 'done',
       })),
@@ -767,7 +786,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
   });
 
-  it('emits deleted with the run doneIds once the closing sync report succeeds', () => {
+  it('emits deleted with the run doneKeys once the closing sync report succeeds', () => {
     const deleted: string[][] = [];
     panel.deleted.subscribe((ids) => deleted.push(ids));
 
@@ -837,7 +856,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   });
 
   it('emits nothing at all when the run succeeded but nothing was actually deleted', () => {
-    // doneIds.length === 0: there is nothing to drop from the host list and nothing wrong to
+    // doneKeys.length === 0: there is nothing to drop from the host list and nothing wrong to
     // report either, so neither output is the right call.
     const deleted: string[][] = [];
     const reloads: void[] = [];
@@ -883,6 +902,34 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
 
     expect(reloads).toHaveLength(1);
     expect(deleted).toEqual([]);
+  });
+
+  // AK 72 / E18: `deleted` speaks 7TV ids — the run's keys — and a row that never had a local
+  // emote is among them like any other, so the host can drop its cell.
+  it('emits deleted as the 7TV-id keys of the run, a row without an emoteId included', () => {
+    const deleted: string[][] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('succeeded');
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: {
+        doneKeys: ['7tv-1', '7tv-live'],
+        items: [
+          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['7tv-1', '7tv-live']]);
   });
 
   it('re-arms the latch and resets protocolSaved once a new run starts', () => {
@@ -1361,6 +1408,30 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
     fixture.componentInstance['openConfirm']();
     fixture.detectChanges();
     expect(statusRegion().textContent?.trim()).toBe('');
+  });
+
+  // Sonde 5, branch A (spec 7.2/8.9, AK 68): a #74 duplicate cell and a row without a local emote
+  // go into the run like any other row — no exception group, both aliases carried along.
+  it('hands a duplicate cell and a row without an emoteId to the run like any other row', () => {
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        aliases: ['PogU', 'PogU2'],
+        hidden: false,
+      },
+      { sevenTvEmoteId: '7tv-live', name: 'LiveOnly', hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+      { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
+    ]);
   });
 
   it('starts nothing once the panel itself is gone when the dialog confirms', () => {

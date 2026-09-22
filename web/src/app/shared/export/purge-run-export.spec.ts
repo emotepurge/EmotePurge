@@ -9,9 +9,7 @@ import {
   purgeRunJson,
 } from './purge-run-export';
 
-// Narrowed like the production call site: a protocollable run always carries an internal emoteId
-// (see buildPurgeRunProtocol's signature).
-const ITEMS: (RunQueueItem & { emoteId: string })[] = [
+const ITEMS: RunQueueItem[] = [
   { key: 'i1', emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
   {
     key: 'i2',
@@ -48,6 +46,37 @@ describe('buildPurgeRunProtocol', () => {
 
   it('contains no token anywhere', () => {
     expect(purgeRunJson(protocol())).not.toMatch(/token|authorization|bearer/i);
+  });
+
+  // Spec #200, F3/AK 68: a row without a local emote is written, never dropped — a missing row
+  // would be a deletion with no way back.
+  it('writes a row without an emoteId with emoteId null and counts it', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      items: [
+        ITEMS[0],
+        { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+      ],
+    });
+    expect(proto.rows.map((row) => row.emoteId)).toEqual(['i1', null]);
+    expect(proto.meta.counts.succeeded).toBe(2);
+  });
+
+  it('writes every alias of a duplicate cell, and the name alone for a single entry', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      items: [
+        { ...ITEMS[0], aliases: ['PogU', 'PogU2'] },
+        { key: '7tv-4', sevenTvEmoteId: '7tv-4', name: 'Solo', status: 'done' },
+      ],
+    });
+    expect(proto.rows.map((row) => row.aliases)).toEqual([['PogU', 'PogU2'], ['Solo']]);
   });
 });
 
@@ -150,6 +179,73 @@ describe('parsePurgeRunProtocol', () => {
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
+  });
+
+  // AK 69: today's protocol — a row without a local emote and a duplicate's two aliases — reads
+  // back restorable, aliases intact.
+  it('reads a row with emoteId null and its aliases back as restorable', () => {
+    const proto = buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      items: [
+        {
+          key: '7tv-live',
+          sevenTvEmoteId: '7tv-live',
+          name: 'LiveOnly',
+          aliases: ['LiveOnly', 'LiveTwo'],
+          status: 'done',
+        },
+      ],
+    });
+    const result = parsePurgeRunProtocol(purgeRunJson(proto), EXPECTED);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toEqual([
+        {
+          emoteId: null,
+          sevenTvEmoteId: '7tv-live',
+          name: 'LiveOnly',
+          aliases: ['LiveOnly', 'LiveTwo'],
+          status: 'done',
+          errorMessage: null,
+        },
+      ]);
+    }
+  });
+
+  // AK 69: a protocol written before K5 carries a Guid and no `aliases` — it stays restorable, its
+  // one alias being the row's `name`.
+  it('reads an old protocol with a Guid and without aliases as restorable under its name', () => {
+    const old = JSON.parse(purgeRunJson(protocol()));
+    for (const row of old.rows) {
+      delete row.aliases;
+    }
+    const result = parsePurgeRunProtocol(JSON.stringify(old), EXPECTED);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toEqual([
+        {
+          emoteId: 'i1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU'],
+          status: 'done',
+          errorMessage: null,
+        },
+      ]);
+    }
+  });
+
+  it('keeps a row whose aliases field is malformed, restoring it under its name', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.rows[0].aliases = ['PogU', 42];
+    const result = parsePurgeRunProtocol(JSON.stringify(proto), EXPECTED);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows.map((row) => row.aliases)).toEqual([['PogU']]);
+    }
   });
 
   it('drops malformed rows and rejects when nothing restorable remains', () => {

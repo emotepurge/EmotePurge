@@ -208,7 +208,7 @@ describe('ImportProgressSection', () => {
           targetChannelName: 'zielkanal',
           targetSetName: 'wegwerf',
           targetIsActiveSet: false,
-          result: { doneIds: [], doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+          result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
         }),
       );
 
@@ -230,7 +230,7 @@ describe('ImportProgressSection', () => {
           targetChannelName: 'zielkanal',
           targetSetName: 'wegwerf',
           targetIsActiveSet: false,
-          result: { doneIds: [], doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+          result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
         }),
       );
       // The service never sets resyncTrigger away from 'idle' for a non-active target

@@ -47,16 +47,23 @@ const RATE_LIMIT_PACING_MARGIN = 1.1;
 
 export interface RunQueueEmote {
   /** Identity of this row within one run's queue — what `setStatus` matches on and what
-   *  `RunResult.doneKeys` reports. Set by the calling service: delete/restore mirror it from
-   *  `emoteId`, an import run (K2) mints its own. Must be unique within a run; the engine never
-   *  deduplicates (that is the importing parser's job). */
+   *  `RunResult.doneKeys` reports. Set by the calling service (spec #200, 7.2): a delete run keys
+   *  by `sevenTvEmoteId` (one row per set-view cell, a #74 duplicate included — one `REMOVE` takes
+   *  every entry), a restore run by `${sevenTvEmoteId}#${alias}` (one `ADD` per alias), an import
+   *  run (K2) by `sevenTvEmoteId` too. Must be unique within a run; the engine never deduplicates
+   *  (the calling service does). */
   key: string;
-  /** Internal id — used for the closing bookkeeping (`RunResult.doneIds`) and optimistic list
-   *  updates. Present for delete/restore; absent for an import run, which has nothing to look up
-   *  yet (the emote does not exist in our database before the import succeeds). */
+  /** Internal `Emote.Id`, carried through for the purge protocol only — nothing in the run or its
+   *  bookkeeping reads it any more. Absent for an import run (the emote does not exist in our
+   *  database yet) and for a set-view row that never had a local row at all (spec #200, 7.1). */
   emoteId?: string;
   sevenTvEmoteId: string;
+  /** What the operation sends as the name: for a restore row the alias its `ADD` restores. */
   name: string;
+  /** Delete runs only: every alias the cell sat under in the set — two for a #74 duplicate, whose
+   *  one `REMOVE` takes both entries. Written into the purge protocol, which is the only place a
+   *  later restore can learn them from. Absent means `[name]`. */
+  aliases?: readonly string[];
 }
 
 export type RunItemStatus = 'pending' | 'in-progress' | 'done' | 'failed' | 'cancelled';
@@ -115,11 +122,10 @@ export interface RunOperation {
 }
 
 export interface RunResult {
-  /** Internal guids of the 'done' rows, in queue order. A row without an `emoteId` (import) does
-   *  not contribute here — see `doneKeys` for the identity that always exists. */
-  doneIds: string[];
-  /** Queue keys (`RunQueueEmote.key`) of every 'done' row, in queue order. Unlike `doneIds` this
-   *  never omits a row, which is what makes it the closing identity for an import run. */
+  /** Queue keys (`RunQueueEmote.key`) of every 'done' row, in queue order — the one identity a
+   *  finished run reports back (spec #200, E2). There is deliberately no Guid list beside it: a
+   *  row without an `emoteId` would drop out of one, and every reader of such a list (report,
+   *  retry, the panel's `deleted`) would then lose that row without a trace. */
   doneKeys: string[];
   items: RunQueueItem[];
   startedAt: number;
@@ -623,9 +629,6 @@ export class SevenTvRunEngine {
     const items = this.queue();
     const doneItems = items.filter((item) => item.status === 'done');
     const result: RunResult = {
-      doneIds: doneItems
-        .filter((item): item is RunQueueItem & { emoteId: string } => item.emoteId !== undefined)
-        .map((item) => item.emoteId),
       doneKeys: doneItems.map((item) => item.key),
       items,
       startedAt: this.runStartedAt,

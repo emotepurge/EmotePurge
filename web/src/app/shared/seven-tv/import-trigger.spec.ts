@@ -36,7 +36,14 @@ const CURRENT_SET = 'set-current';
 
 function rows(): PurgeRunRow[] {
   return [
-    { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done', errorMessage: null },
+    {
+      emoteId: 'e1',
+      sevenTvEmoteId: '7tv-1',
+      name: 'PogU',
+      aliases: ['PogU'],
+      status: 'done',
+      errorMessage: null,
+    },
   ];
 }
 
@@ -260,7 +267,7 @@ describe('ImportTrigger', () => {
       expect(startRestore).toHaveBeenCalledWith(
         'set-a',
         'channel-a',
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
       );
@@ -292,7 +299,7 @@ describe('ImportTrigger', () => {
       expect(startRestore).toHaveBeenCalledWith(
         CURRENT_SET,
         CURRENT_CHANNEL,
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
       );

@@ -79,10 +79,14 @@ export function startRestoreFlow(
       if (deps.arbiter.activeRun() !== null) {
         return;
       }
+      // `emoteId` is `null` for a row that never had a local emote (spec #200, 7.2) — the restore
+      // does not need it. `aliases` goes through whole: the restore service sends one `ADD` per
+      // alias, so a #74 duplicate comes back under both of its names.
       const emotes: DeleteQueueEmote[] = rows.map((row) => ({
-        emoteId: row.emoteId,
+        emoteId: row.emoteId ?? undefined,
         sevenTvEmoteId: row.sevenTvEmoteId,
         name: row.name,
+        aliases: row.aliases,
       }));
       // #149/T5: a restore never had any duplicate protection at all — filter it fresh, right here,
       // against the target set's current contents, read from 7TV itself rather than our database

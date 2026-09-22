@@ -239,7 +239,7 @@ describe('DockOutcomeAnnouncer', () => {
       targetSetName: 'wegwerf',
       targetIsActiveSet: false,
       origin: { kind: 'channel', channelName: 'quellkanal' },
-      result: { doneIds: [], doneKeys: ['7tv-1'], items: [], startedAt: 0, finishedAt: 1 },
+      result: { doneKeys: ['7tv-1'], items: [], startedAt: 0, finishedAt: 1 },
     });
     importService.resyncTrigger.set('idle');
     fixture.detectChanges();

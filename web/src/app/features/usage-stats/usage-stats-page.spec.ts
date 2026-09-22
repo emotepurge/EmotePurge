@@ -57,6 +57,7 @@ import {
   EmoteSetListResponse,
   EmoteSetSummary,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -3241,6 +3242,46 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     // The budget is the member list's, not the active set's status (600 / 10).
     expect(component['slotBudget']()).toEqual({ capacity: 1000, occupied: 3 });
     expect(component['projectedSlots']()).toEqual({ projected: 1, capacity: 1000 });
+  });
+
+  // --- T5.1: the delete run speaks 7TV ids (spec 7.2, E18, AK 72) ------------------------------
+
+  it('hands a live member without a Guid and a duplicate cell with both aliases to the delete run', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('d', 'Dupe', 5)],
+      members: memberList([
+        member('7tv-d', 'Dupe'),
+        member('7tv-d', 'DupeAlias'),
+        member('7tv-x', 'PumpkinX'),
+      ]),
+    });
+    for (const row of component['emotes']()) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+
+    const forDelete = component['selectedForDelete']();
+    expect(forDelete.map((row) => [row.sevenTvEmoteId, row.emoteId, row.aliases])).toEqual([
+      ['7tv-d', 'd', ['Dupe', 'DupeAlias']],
+      ['7tv-x', undefined, ['PumpkinX']],
+    ]);
+  });
+
+  it('drops the deleted cells by their 7TV id and frees their slots once the panel reports them (AK 72)', async () => {
+    await openView({ totals: [emote('a', 'Alpha', 40), emote('b', 'Beta', 60)] });
+    // The panel's `deleted` names the run's keys; onDeleted edits the rows only for the run of the
+    // set and channel on screen.
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+    });
+
+    component['onDeleted'](['7tv-a']);
+
+    // The Guid of this row is 'a' — a Guid-keyed filter would have kept it.
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-b']);
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 9 });
   });
 
   it('names a name twin by the set the dropdown list calls it, and never adds its numbers (AK 59)', async () => {
