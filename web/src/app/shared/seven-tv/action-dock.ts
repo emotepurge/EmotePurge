@@ -21,6 +21,16 @@ export interface ActionDockState {
   readonly markedCount: number;
   /** A delete run is in flight or settled-but-still-shown (its protocol download lives there). */
   readonly deleteShown: boolean;
+  /** A delete has been confirmed but is not a run yet — `MassDeletePanel`'s pre-run live alias read
+   *  is out — or it just ended without becoming one and its abort notice is still showing
+   *  (`SevenTvDeleteService.confirmedRunPending`). Neither state is visible in `deleteShown`, and
+   *  neither needs anything to be marked: a pushed reload can prune every marked key while the read
+   *  is in flight, which used to unmount the dock, destroy the panel underneath it and turn the
+   *  confirmed delete into a silent no-op — no `REMOVE` sent and no notice left to say so. Inside
+   *  the `hasActiveSet` gate like the two above, not beside it: the panel this keeps alive renders
+   *  inside the marking half, so mounting the dock without a set would only bring the empty bar
+   *  back. */
+  readonly deleteConfirmPending: boolean;
   /** A restore run is in flight or settled-but-still-shown. */
   readonly restoreShown: boolean;
   /** An import run is in flight or settled-but-still-shown. Independent of `hasActiveSet` on
@@ -41,7 +51,8 @@ export interface ActionDockState {
 }
 
 export function actionDockHasContent(state: ActionDockState): boolean {
-  const markingShown = state.markedCount > 0 || state.deleteShown || state.restoreShown;
+  const markingShown =
+    state.markedCount > 0 || state.deleteShown || state.restoreShown || state.deleteConfirmPending;
   return (
     (state.hasActiveSet && markingShown) ||
     state.importShown ||

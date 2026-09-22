@@ -622,7 +622,15 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
  */
 type DeleteServiceFake = Pick<
   SevenTvDeleteService,
-  'isRunning' | 'queue' | 'syncReport' | 'rateLimitPauseSeconds' | 'lastRun'
+  | 'isRunning'
+  | 'queue'
+  | 'syncReport'
+  | 'rateLimitPauseSeconds'
+  | 'lastRun'
+  | 'confirmedRunPending'
+  | 'beginConfirmedRun'
+  | 'endConfirmedRun'
+  | 'clearConfirmedRun'
 >;
 
 function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteServiceFake {
@@ -632,6 +640,15 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     syncReport: signal<SyncReportState>('idle'),
     rateLimitPauseSeconds: signal<number | null>(null),
     lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
+    // The dock's claim on a confirmed-but-not-yet-running delete. Spied rather than implemented:
+    // what the *service* does with them (drop at once for a started run, hold for the abort notice
+    // otherwise, drop outright when nothing was confirmed) is pinned in
+    // seven-tv-delete.service.spec.ts; what the panel owes is that every exit of the confirmation
+    // reaches one of them.
+    confirmedRunPending: signal(false),
+    beginConfirmedRun: vi.fn(),
+    endConfirmedRun: vi.fn(),
+    clearConfirmedRun: vi.fn(),
     ...overrides,
   };
 }
@@ -1509,6 +1526,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
   let startDelete: ReturnType<typeof vi.fn>;
   let closed: Subject<boolean | undefined>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
+  let dialogOpen: ReturnType<typeof vi.fn>;
 
   function entriesPage(entries: { id: string; alias?: string }[], pageCount = 1) {
     return {
@@ -1530,11 +1548,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     startDelete = vi.fn();
     closed = new Subject<boolean | undefined>();
     activeRun = signal<SevenTvRunKind | null>(null);
+    dialogOpen = vi.fn().mockReturnValue({ closed });
     const deleteService = { ...fakeDeleteService(), startDelete };
     const providers = panelProviders({
       deleteService,
       arbiter: fakeRunArbiter(activeRun),
-      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      dialogOpen,
       emoteAdminService: {
         getSetWarning: () =>
           of({
@@ -1679,7 +1698,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
-    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    expect(statusText()).toContain('massDelete.nothingDeleted');
     // K5 fix round: dedicated massDelete.memberRead.* keys, not the reused usageStats.setView.lock.*
     // texts ("Deleting and voting are locked: …"), which are wrong for this one-off abort notice.
     expect(statusText()).toContain('massDelete.memberRead.unavailable');
@@ -1729,6 +1748,108 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(statusText()).toContain('massDelete.memberRead.truncated');
   });
 
+  /** The three dock-claim calls of the fake service, typed for the block below. */
+  function claimCalls(): {
+    beginConfirmedRun: ReturnType<typeof vi.fn>;
+    endConfirmedRun: ReturnType<typeof vi.fn>;
+    clearConfirmedRun: ReturnType<typeof vi.fn>;
+  } {
+    return TestBed.inject(SevenTvDeleteService) as unknown as ReturnType<typeof claimCalls>;
+  }
+
+  // Opus review P2-1: the claim used to start with the *read*, which left the whole life of the
+  // modal uncovered — and the CDK dialog is opened without a viewContainerRef, so it outlives the
+  // panel. A reload pruning every marked key while the confirmation is up unmounted the dock,
+  // destroyed the panel under it, and the eventual Delete click then ran its checks against a
+  // torn-down component: nothing deleted, nothing said. The claim therefore begins with the dialog.
+  it('claims the dock the moment the confirmation opens, before anything is confirmed', () => {
+    fixture.componentInstance['openConfirm']();
+
+    expect(claimCalls().beginConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+    expect(claimCalls().clearConfirmedRun).not.toHaveBeenCalled();
+  });
+
+  it('drops the claim outright, with no notice window, when the confirmation is dismissed', () => {
+    fixture.componentInstance['openConfirm']();
+
+    closed.next(false);
+
+    // clearConfirmedRun, not endConfirmedRun: nothing was confirmed, so there is no notice to read
+    // and an 8 s hold would be the empty dock actionDockHasContent exists to prevent.
+    expect(claimCalls().clearConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+    expect(startDelete).not.toHaveBeenCalled();
+  });
+
+  it('holds the claim across the read and releases it once the run was attempted', () => {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+    expect(claimCalls().endConfirmedRun).not.toHaveBeenCalled();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+    // Released only once the run was attempted, so the service can tell a started run (which keeps
+    // the dock by itself) from an abort (which has nothing but its notice).
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(startDelete.mock.invocationCallOrder[0]).toBeLessThan(
+      claimCalls().endConfirmedRun.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('releases the claim on the branch that makes no live read at all', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the claim for a confirmed delete whose selection the reload emptied', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+
+    closed.next(true);
+
+    expect(startDelete).not.toHaveBeenCalled();
+    // endConfirmedRun, not clearConfirmedRun: this exit has a notice, so it needs the window.
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(claimCalls().clearConfirmedRun).not.toHaveBeenCalled();
+  });
+
+  // The P2-1 scenario end to end. The panel is gone before the click — by a route change now that
+  // the dock can no longer drop it — so the delete still starts nothing (abortReasonBeforeStart's
+  // `destroyed` branch, deliberate: a torn-down panel has no selection left to vouch for). What
+  // must not also happen is the claim outliving it and pinning an empty dock on whatever mounts
+  // next.
+  it('starts nothing and leaves no claim behind when the panel was destroyed while the modal was open', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.destroy();
+
+    closed.next(true);
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(claimCalls().endConfirmedRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the dock claim on a failed read too, after the abort notice is set', () => {
+    const deleteService = TestBed.inject(SevenTvDeleteService) as unknown as {
+      endConfirmedRun: ReturnType<typeof vi.fn>;
+    };
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(deleteService.endConfirmedRun).toHaveBeenCalledTimes(1);
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
   it('keeps the delete button disabled while the read is out', () => {
     confirm();
     expect(deleteButton().disabled).toBe(true);
@@ -1753,7 +1874,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       fixture.detectChanges();
 
       expect(startDelete).not.toHaveBeenCalled();
-      expect(statusText()).toContain('massDelete.abortedByMemberRead');
+      expect(statusText()).toContain('massDelete.nothingDeleted');
       expect(statusText()).toContain('massDelete.memberRead.unavailable');
       expect(deleteButton().disabled).toBe(false);
       expect(req.cancelled).toBe(true);
@@ -1784,8 +1905,60 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
 
     expect(startDelete).not.toHaveBeenCalled();
-    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    expect(statusText()).toContain('massDelete.nothingDeleted');
     expect(statusText()).toContain('massDelete.anotherRunStarted');
+  });
+
+  // Codex P3, K5 fix round 2: the same re-check, on the branch that has no read to hide behind. It
+  // used to be qualified on `liveAliases !== null`, so a non-active-set delete (and an active one
+  // whose host did not opt in) relied on deleteService.startDelete's own silent refusal — a
+  // confirmed delete evaporating without a word. The confirmation is a modal the user can leave
+  // open for minutes; a run started elsewhere lands behind it just as well as behind a read.
+  it('starts nothing and says so when another run claimed the arbiter behind the confirmation, with no read involved', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    activeRun.set('restore');
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.anotherRunStarted');
+  });
+
+  // The near side of the same contract: the button is already disabled while a run holds the
+  // arbiter, so this only catches a click that outraces one starting — silently, like the host-lock
+  // guard next to it, since nothing has been confirmed yet and the winning run is already visible
+  // in the dock.
+  it('does not even open the confirmation while another 7TV run holds the arbiter', () => {
+    activeRun.set('import');
+
+    fixture.componentInstance['openConfirm']();
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+  });
+
+  // Opus review P3-2: the third way deleteService.startDelete refuses in silence. A 401 from any
+  // 7TV call behind the open confirmation clears the stored token, and the engine then declines
+  // without a word — with the dock claim of this round holding an empty dock over it.
+  it('says so instead of vanishing when the 7TV token was cleared behind the confirmation', () => {
+    const tokenService = TestBed.inject(SevenTvTokenService) as unknown as {
+      hasToken: WritableSignal<boolean>;
+    };
+    fixture.componentInstance['openConfirm']();
+    tokenService.hasToken.set(false);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+    expect(statusText()).toContain('massDelete.tokenGoneDuringConfirm');
   });
 
   it('makes no read at all when the host lock already stops the delete', () => {
@@ -1870,10 +2043,13 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(deletedIds).toEqual(['7tv-1', '7tv-2']);
   });
 
-  // The selection is frozen at dialog OPEN, not at confirm — this is the "no live read" branch
-  // (readLiveAliasesFromActiveSet toggled off), so a selection change between open and confirm is
-  // the only window there is to observe the freeze point.
-  it('freezes the selection at dialog open, not at confirm, on the no-read branch', () => {
+  // Operator decision 2026-09-22, replacing the K5 fix round's open-time freeze: the dialog renders
+  // the panel's live name lists, so a pushed reload (channel.synced / usage.flushed -> retainAmong)
+  // landing behind the open modal changes what the confirmation says. The snapshot is therefore
+  // taken at confirm, from those same signals — displayed == deleted by construction. This is the
+  // "no live read" branch, where a change between open and confirm is the only window there is to
+  // observe the snapshot point at all.
+  it('snapshots the selection at confirm, not at dialog open, on the no-read branch', () => {
     fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
     fixture.detectChanges();
     fixture.componentInstance['openConfirm']();
@@ -1885,8 +2061,50 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
     expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
       { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
     ]);
+  });
+
+  // The same thing on the branch that actually matters, checked against what the dialog itself last
+  // rendered rather than against the input alone: the signals handed to DeleteConfirmDialogData are
+  // the panel's own, so asking them after the reload landed is asking what is on screen. The live
+  // alias read is then made for exactly that list.
+  it('deletes what the confirmation last showed when a reload shrinks the selection behind the open dialog', () => {
+    const shown = fixture.componentInstance as unknown as {
+      visibleSelectedEmoteNames: () => string[];
+    };
+    fixture.componentInstance['openConfirm']();
+    // The reload lands while the modal is still open: KEKW is gone from the grid, so the dialog —
+    // which reads these very signals — has stopped naming it.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    expect(shown.visibleSelectedEmoteNames()).toEqual(['PogU']);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+    ]);
+  });
+
+  // The extreme of the same reload: nothing is left to delete at confirm time. startDelete would
+  // refuse the empty list without a word, which is the one outcome a confirmed delete must not
+  // produce — before the snapshot moved to confirm time, an emptied selection at least started a
+  // doomed run whose failed rows were visible.
+  it('says so instead of silently doing nothing when the reload left nothing selected', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByLock');
+    expect(statusText()).toContain('massDelete.selectionGoneDuringConfirm');
   });
 
   // K5 fix round item 7: the run used to read the live channelName() input at the point

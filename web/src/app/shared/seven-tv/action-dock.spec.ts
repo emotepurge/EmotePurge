@@ -7,6 +7,7 @@ function state(overrides: Partial<ActionDockState> = {}): ActionDockState {
     hasActiveSet: true,
     markedCount: 0,
     deleteShown: false,
+    deleteConfirmPending: false,
     restoreShown: false,
     importShown: false,
     importNoticePending: false,
@@ -33,6 +34,22 @@ describe('actionDockHasContent', () => {
     expect(actionDockHasContent(state({ hasActiveSet: false, markedCount: 3 }))).toBe(false);
     expect(actionDockHasContent(state({ hasActiveSet: false, deleteShown: true }))).toBe(false);
     expect(actionDockHasContent(state({ hasActiveSet: false, restoreShown: true }))).toBe(false);
+  });
+
+  // The regression this closes: a confirmed delete whose pre-run live alias read is still out shows
+  // up in none of the clauses above — no run, no queue — so a pushed reload that pruned every
+  // marked key unmounted the dock, took MassDeletePanel down with it, and the delete then aborted
+  // against a destroyed panel: nothing deleted and nothing said about it either.
+  it('keeps the marking half for a confirmed delete that is not a run yet, with nothing marked', () => {
+    expect(actionDockHasContent(state({ markedCount: 0, deleteConfirmPending: true }))).toBe(true);
+  });
+
+  it('still stays empty for a pending confirmed delete without an active set', () => {
+    // Inside the hasActiveSet gate on purpose: the panel it keeps alive renders inside the marking
+    // half, so mounting the bar without a set would bring the empty-bar regression back instead.
+    expect(actionDockHasContent(state({ hasActiveSet: false, deleteConfirmPending: true }))).toBe(
+      false,
+    );
   });
 
   it('shows an import run without an active set — the import half has no set gate (R9)', () => {

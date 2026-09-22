@@ -23,6 +23,15 @@ export const MAX_AUTOMATIC_SYNC_RETRIES = 2;
 // manual retry button covers the cases a short backoff cannot.
 export const SYNC_RETRY_DELAY_MS = 2000;
 
+/** How long a confirmed delete that never became a run keeps `confirmedRunPending` set, so the
+ *  panel's abort notice ("Nothing was deleted." plus the reason) can still be read after the host's
+ *  dock lost every other reason to stay mounted. Longer than the restore/import services' 4 s
+ *  duplicate notice: this one reports that an irreversible action the user explicitly confirmed did
+ *  *not* happen, and it is two sentences rather than a count. Self-clearing for the same reason
+ *  those are (docs/UI-Designsprache.md §4.5) — there is no run or queue for a dismiss button to
+ *  attach to. */
+export const ABORTED_DELETE_NOTICE_MS = 8000;
+
 /** v4 dropped the `action` enum in favour of one field per operation; the emote travels inside the
  *  `EmoteSetEmoteId` input object rather than as a sibling argument, and variable types are `Id!`
  *  instead of `ObjectID!`. Removal has no alias, unlike `addEmote` in the import/restore services. */
@@ -119,6 +128,72 @@ export class SevenTvDeleteService {
    *  is dismissed, the downloaded protocol file is the only remaining artifact, by design. */
   readonly lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
 
+  /**
+   * A delete the user is deciding on, or has decided on, that is not (yet) a run: `MassDeletePanel`
+   * has the confirmation open, its pre-run live alias read is out, or that read has just ended in an
+   * abort whose notice is the only outcome there is to show. None of those show up in
+   * `isRunning`/`queue`, which is the problem this exists to solve — the host dock's own gate
+   * (`action-dock.ts`, `usage-stats-page.ts`'s `dockVisible`) counts marked items and shown panels,
+   * so a pushed reload that prunes every marked key unmounts the dock and takes `MassDeletePanel`
+   * down with it. The CDK dialog is opened without a `viewContainerRef`, so it survives that and the
+   * user still clicks Delete — against a destroyed panel, which by contract starts nothing
+   * (`abortReasonBeforeStart`) and has no view left to say so on: no `REMOVE` sent, no notice,
+   * nothing. The dock treats this claim exactly like an in-flight run, the same role
+   * `duplicateNoticePending` plays for a fully-refused restore/import.
+   *
+   * The claim is therefore taken when the **confirmation opens**, not when the read starts: the
+   * window that must be survived begins with the modal, and the no-read branch has no read to hang
+   * it on at all.
+   *
+   * Written only through `beginConfirmedRun`/`endConfirmedRun`/`clearConfirmedRun` below.
+   */
+  readonly confirmedRunPending = signal(false);
+
+  private confirmedRunTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  /** The delete confirmation is open — hold the dock (and the panel inside it) until one of the two
+   *  releases below. Every exit of the confirmation has to reach one of them. */
+  beginConfirmedRun(): void {
+    clearTimeout(this.confirmedRunTimeout);
+    this.confirmedRunPending.set(true);
+  }
+
+  /**
+   * The confirmed delete has been attempted and was either started or aborted. A started run carries
+   * the dock by itself from here (`isRunning`/`queue`), so the claim is dropped at once; an abort has
+   * nothing but its notice, so the claim is held for `ABORTED_DELETE_NOTICE_MS` and then dropped.
+   * Asking `isRunning()` rather than taking the answer as a parameter keeps every caller from having
+   * to agree on what "started" means.
+   */
+  endConfirmedRun(): void {
+    clearTimeout(this.confirmedRunTimeout);
+    // Only a claim that is still held may be extended into a notice window. Something else can have
+    // dropped it from under this delete while its read was out — `reset()`, or the workspace
+    // switching channel — and in both cases the dock it belonged to is gone; re-arming a timer here
+    // would pin an empty one somewhere the aborted delete never belonged.
+    if (!this.confirmedRunPending()) {
+      return;
+    }
+    if (this.isRunning()) {
+      this.confirmedRunPending.set(false);
+      return;
+    }
+    this.confirmedRunTimeout = setTimeout(
+      () => this.confirmedRunPending.set(false),
+      ABORTED_DELETE_NOTICE_MS,
+    );
+  }
+
+  /** Drops the claim at once, without the notice window `endConfirmedRun` grants: nothing was
+   *  confirmed and nothing has to be read, so keeping an otherwise empty dock up for 8 s would be
+   *  exactly the empty bar `actionDockHasContent` exists to prevent. Three cases: the dismissed
+   *  confirmation, `reset()`, and the channel workspace moving to another channel — the last two
+   *  because an abort notice belongs to the dock it was raised in and to no other. */
+  clearConfirmedRun(): void {
+    clearTimeout(this.confirmedRunTimeout);
+    this.confirmedRunPending.set(false);
+  }
+
   startDelete(setId: string, channelName: string, emotes: DeleteQueueEmote[]): void {
     const started: DeleteRunInfo = { channelName, setId, result: null };
     const engineStarted = this.engine.start(
@@ -148,6 +223,9 @@ export class SevenTvDeleteService {
     this.syncReport.set('idle');
     this.run = null;
     this.lastRun.set(null);
+    // The restore service clears its own transient notice flag here for the same reason: whatever
+    // this dock was still holding open, the user has dismissed it.
+    this.clearConfirmedRun();
   }
 
   /** The panel is a root-service singleton, so a finished run used to follow the user into the

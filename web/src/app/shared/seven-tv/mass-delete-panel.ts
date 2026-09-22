@@ -11,7 +11,7 @@ import {
   signal,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { catchError, map, of, timeout } from 'rxjs';
+import { catchError, finalize, map, of, timeout } from 'rxjs';
 
 import { EmoteAdminService, EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import { pluralKey } from '../../core/i18n/plural';
@@ -406,7 +406,19 @@ export class MassDeletePanel {
   );
 
   /** What stopped the last confirmed delete right before it started (`startDelete`) — a host lock,
-   *  a set switch, or a failed live alias read — or `null`. Shown until the next attempt. */
+   *  a set switch, an emptied selection or a failed live alias read — or `null`. Shown until the
+   *  next attempt.
+   *
+   *  Deliberately panel-local, unlike `SevenTvDeleteService.duplicateNoticePending`, which sits on
+   *  the service because the *service* is what produces it (`startRestore` sets it). Every reason
+   *  here is decided from this panel's own inputs — the host lock, the frozen set id, the arbiter,
+   *  the confirmed selection — so moving the text onto the root singleton would move panel-local
+   *  knowledge into shared state, and both mounted panels (usage page and vote-session page) would
+   *  render the same notice: an abort on one page would surface on the other. The one thing a
+   *  service-held notice would buy — a *freshly mounted* panel still showing it — is precisely the
+   *  case where showing it is wrong: a panel is remounted by a route, set or pointer change, i.e.
+   *  in a view the aborted delete never belonged to. What keeps the notice readable is instead
+   *  keeping the panel that set it alive, which is what `confirmedRunPending` does. */
   protected readonly abortNotice = signal<DeleteAbortNotice | null>(null);
 
   /** A confirmed active-set delete is waiting for its live alias read
@@ -496,6 +508,14 @@ export class MassDeletePanel {
     // The button is already disabled under a host lock; this only guards a click that outraces the
     // lock arriving (a set switch landing while the pointer is on the button).
     if (this.deleteLockReasonKey() !== null) {
+      return;
+    }
+    // Same shape, same reason, for the mutual-exclusion contract (design doc §4.3): the button is
+    // disabled while any of the three 7TV-writing runs holds the arbiter, and this catches the
+    // click that outraces such a run starting elsewhere on the page. Silent, like the lock guard
+    // above — nothing has been confirmed yet, and the run that got there first is already visible
+    // in the dock. The re-check in `startDelete` is what covers the far side of the dialog.
+    if (this.arbiter.activeRun() !== null) {
       return;
     }
     // No stored 7TV token yet: ask for it first. The prompt closes itself with `true` the moment
@@ -682,17 +702,6 @@ export class MassDeletePanel {
     // lifetime) but was the wrong source of truth all the same — the same class of gap finding A
     // closed for `setId`.
     const frozenChannelName = this.channelName();
-    // The exact list the dialog showed, frozen at the same moment as the two above — not re-read
-    // from the live `selectedEmotes()` input wherever the run actually starts (K5 fix round item 1).
-    // For a plain delete that starts synchronously once confirmed this makes no difference, but an
-    // active-set delete's live alias read (`readLiveAliasesThenDelete`) is asynchronous, and the
-    // confirm dialog is already closed while it is out — nothing locks the grid, so the live
-    // selection can change (grow or shrink) in that window. Deleting the frozen snapshot instead of
-    // re-reading the input means: an id removed from the selection afterwards is still deleted (the
-    // user already confirmed it), and an id added afterwards is not swept in (the dialog never
-    // showed it). A defensive copy, not just a reference: `selectedEmotes()` is expected to be a
-    // fresh array per host-page change already, but nothing here depends on that staying true.
-    const frozenSelection = [...this.selectedEmotes()];
     const data: DeleteConfirmDialogData = {
       emotes: this.visibleSelectedEmoteNames,
       hiddenEmotes: this.hiddenSelectedEmoteNames,
@@ -701,15 +710,66 @@ export class MassDeletePanel {
       setName: this.setName() ?? frozenSetId,
       isActiveSet: frozenIsActiveSet,
     };
+    // Claimed from the moment the confirmation opens, not from the moment a read starts: the CDK
+    // dialog is opened without a `viewContainerRef`, so it outlives this panel. A pushed reload that
+    // prunes every marked key while the modal is up unmounts the host dock and destroys the panel
+    // under it, the modal stays, the user clicks Delete — and the confirmed delete then runs its
+    // checks against a torn-down component, which by contract starts nothing and has no view left to
+    // say so on. Holding the dock for the whole life of the confirmation is what keeps that from
+    // happening; the no-read branch, which never had a claim at all, is covered by the same move.
+    // Every exit below releases it (`endConfirmedRun` after an attempt, `clearConfirmedRun` when
+    // nothing was confirmed) — a leaked claim pins an empty dock.
+    this.deleteService.beginConfirmedRun();
     openDeleteConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (!confirmed) {
+        this.deleteService.clearConfirmedRun();
+        return;
+      }
+      // The exact list the dialog last showed, snapshotted **at confirm** and synchronously, before
+      // anything asynchronous can run (operator decision 2026-09-22, amending the K5 fix round's
+      // open-time freeze). The dialog renders the live `visibleSelectedEmoteNames`/
+      // `hiddenSelectedEmoteNames`, both computed over this very input, so a pushed reload
+      // (`channel.synced`, `usage.flushed` → `retainAmong`) that shrinks the selection behind the
+      // open modal changes what is on screen — and an open-time snapshot would then delete emotes
+      // the confirmation had already stopped naming. Reading the same signal the dialog rendered,
+      // at the moment of the irreversible click, makes "what was shown" and "what is deleted" the
+      // same list by construction. From here on the snapshot is what both branches act on: the
+      // active-set delete's live alias read (`readLiveAliasesThenDelete`) is asynchronous and the
+      // dialog is already closed while it is out, so an id deselected afterwards is still deleted
+      // (it was confirmed) and an id selected afterwards is not swept in (it was never shown).
+      // Unlike `frozenSetId`/`frozenIsActiveSet`/`frozenChannelName` above, which stay frozen at
+      // **open** on purpose: those are compared against their live values here and abort the run on
+      // a mismatch, which only works if they still say what the dialog was built from.
+      // A defensive copy, not just a reference: `selectedEmotes()` is expected to be a fresh array
+      // per host-page change already, but nothing here depends on that staying true.
+      const confirmedSelection = [...this.selectedEmotes()];
+      // The same reload can prune the selection down to nothing. Deleting the confirmed snapshot
+      // then means deleting nothing at all, and `deleteService.startDelete` would refuse the empty
+      // list silently — the one outcome this panel must never produce after a confirmed delete
+      // (before the snapshot moved to confirm time, an emptied selection still started a doomed run
+      // whose failed rows were at least visible). Said out loud instead, like every other
+      // last-moment abort here.
+      if (confirmedSelection.length === 0) {
+        this.abortNotice.set({
+          leadKey: 'massDelete.abortedByLock',
+          reasonKey: 'massDelete.selectionGoneDuringConfirm',
+        });
+        // Not `clearConfirmedRun`: this exit has a notice to show, so it needs the window.
+        this.deleteService.endConfirmedRun();
         return;
       }
       if (!frozenIsActiveSet || !this.readLiveAliasesFromActiveSet()) {
-        this.startDelete(frozenSetId, frozenChannelName, frozenSelection, null);
+        // `finally`, because a leaked claim pins an empty dock until the page is reloaded — a worse
+        // outcome than whatever threw, and one nothing on screen could explain.
+        try {
+          this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+        } finally {
+          this.deleteService.endConfirmedRun();
+        }
         return;
       }
-      this.readLiveAliasesThenDelete(frozenSetId, frozenChannelName, frozenSelection);
+      // Owns the claim from here to the end of the read — see `readLiveAliasesThenDelete`.
+      this.readLiveAliasesThenDelete(frozenSetId, frozenChannelName, confirmedSelection);
     });
   }
 
@@ -725,15 +785,22 @@ export class MassDeletePanel {
   private readLiveAliasesThenDelete(
     frozenSetId: string,
     frozenChannelName: string,
-    frozenSelection: readonly DeletableEmote[],
+    confirmedSelection: readonly DeletableEmote[],
   ): void {
     // The same checks `startDelete` makes, made once before the read as well: a delete that is
     // already doomed must not wait for (or spend) a 7TV read first.
     if (this.abortReasonBeforeStart(frozenSetId) !== undefined) {
-      this.startDelete(frozenSetId, frozenChannelName, frozenSelection, null);
+      try {
+        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, null);
+      } finally {
+        this.deleteService.endConfirmedRun();
+      }
       return;
     }
     this.liveAliasReadPending.set(true);
+    // The dock claim taken when the confirmation opened (`openConfirmDialog`) is held across this
+    // read and released in the subscribe below — the read is the longest stretch in which a
+    // confirmed delete exists without a run for the dock to see.
     loadSevenTvSetEntries(this.httpClient, frozenSetId)
       .pipe(
         // A hung request (7TV accepts the connection but never answers) must not leave the button
@@ -745,10 +812,17 @@ export class MassDeletePanel {
         catchError(() =>
           of<LiveAliasRead>({ blockedReasonKey: MEMBER_READ_UNAVAILABLE_REASON_KEY }),
         ),
+        // Released here rather than at the end of the `next` handler: `finalize` runs after that
+        // handler on the completing path *and* on every other way out, so a throw inside
+        // `startDelete` cannot leak the claim and pin an empty dock until the page is reloaded.
+        // The service decides from its own `isRunning()` whether the dock still needs holding for
+        // the abort notice or the run now carries it, so the ordering (after `startDelete`) is what
+        // matters, not the call site.
+        finalize(() => this.deleteService.endConfirmedRun()),
       )
       .subscribe((read) => {
         this.liveAliasReadPending.set(false);
-        this.startDelete(frozenSetId, frozenChannelName, frozenSelection, read);
+        this.startDelete(frozenSetId, frozenChannelName, confirmedSelection, read);
       });
   }
 
@@ -778,14 +852,17 @@ export class MassDeletePanel {
     });
   }
 
-  /** `frozenSetId`/`frozenChannelName`/`frozenSelection` are what the dialog named — read once in
-   *  `openConfirmDialog`, not re-read from the live `setId()`/`channelName()`/`selectedEmotes()`
-   *  inputs here (K5 fix round items 1 and 7). `liveAliases` is the active-set delete's live alias
-   *  read (`readLiveAliasesThenDelete`), or `null` when none was made. */
+  /** `frozenSetId`/`frozenChannelName` are what the dialog was built from — read once in
+   *  `openConfirmDialog` and compared against their live inputs below, not re-read as the truth
+   *  here (K5 fix round item 7). `confirmedSelection` is the list the dialog last *showed*,
+   *  snapshotted in the `closed` callback at confirm time (operator decision 2026-09-22) — never
+   *  the live `selectedEmotes()` input at this point, which an async live alias read can have let
+   *  move on. `liveAliases` is the active-set delete's live alias read
+   *  (`readLiveAliasesThenDelete`), or `null` when none was made. */
   private startDelete(
     frozenSetId: string,
     frozenChannelName: string,
-    frozenSelection: readonly DeletableEmote[],
+    confirmedSelection: readonly DeletableEmote[],
     liveAliases: LiveAliasRead | null,
   ): void {
     const abort = this.abortReasonBeforeStart(frozenSetId);
@@ -795,27 +872,42 @@ export class MassDeletePanel {
     }
     if (liveAliases !== null && 'blockedReasonKey' in liveAliases) {
       this.abortNotice.set({
-        leadKey: 'massDelete.abortedByMemberRead',
+        leadKey: 'massDelete.nothingDeleted',
         reasonKey: liveAliases.blockedReasonKey,
       });
       return;
     }
-    // Only reachable after the live alias read, i.e. asynchronously after the confirmation: another
-    // run may have started in between, outside the mutual-exclusion contract the delete button's
-    // own arbiter gate enforces. Unlike the restore paths' identical re-check (silent there — the
-    // run that got there first is always the one whose progress panel is already mounted in *this*
-    // same dock), this abort has to be visible (K5 fix round item 4): the competing run can be any
-    // of the three 7TV-writing kinds, started from anywhere else on the page, and this panel's own
-    // dock would otherwise show nothing at all to explain why a confirmed delete just vanished.
-    if (liveAliases !== null && this.arbiter.activeRun() !== null) {
+    // Unconditional, on both paths (K5 fix round 2): the live alias read is the *longer* window in
+    // which another run can claim the arbiter, not the only one — the confirmation itself is a
+    // modal the user can leave open for minutes, and a run started from anywhere else on the page
+    // lands just as well behind it. Qualifying this on `liveAliases !== null` left the no-read
+    // branch relying on `deleteService.startDelete`'s own refusal, which is silent, so a confirmed
+    // delete in a non-active view simply evaporated. Unlike the restore paths' identical re-check
+    // (silent there — the run that got there first is always the one whose progress panel is
+    // already mounted in *this* same dock), this abort is visible: the competing run can be any of
+    // the three 7TV-writing kinds, started from anywhere on the page, and this panel's own dock
+    // would otherwise show nothing at all to explain why a confirmed delete just vanished.
+    if (this.arbiter.activeRun() !== null) {
       this.abortNotice.set({
-        leadKey: 'massDelete.abortedByMemberRead',
+        leadKey: 'massDelete.nothingDeleted',
         reasonKey: 'massDelete.anotherRunStarted',
       });
       return;
     }
+    // The third way `deleteService.startDelete` can refuse without a word — the other two, a run
+    // already going and an empty list, are caught above. The engine needs the stored 7TV token, and
+    // any 401 from 7TV behind the open confirmation clears it (`SevenTvTokenService.clearToken`);
+    // the dock claim of the commits above would then hold an empty dock over a delete that simply
+    // never happened.
+    if (!this.tokenService.hasToken()) {
+      this.abortNotice.set({
+        leadKey: 'massDelete.nothingDeleted',
+        reasonKey: 'massDelete.tokenGoneDuringConfirm',
+      });
+      return;
+    }
     const liveEntries = liveAliases?.entries;
-    const emotes: DeleteQueueEmote[] = frozenSelection.map((emote) => {
+    const emotes: DeleteQueueEmote[] = confirmedSelection.map((emote) => {
       // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
       // what the host said.
       const live = liveEntries?.aliasesById.get(emote.sevenTvEmoteId);

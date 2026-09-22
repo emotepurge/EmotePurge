@@ -713,7 +713,8 @@ alias.
   for the sticky lock paragraph they were written for ("Deleting and voting are locked: …"), wrong
   for this one-off abort notice; dedicated `massDelete.memberRead.*` keys replace them.* Nothing is
   deleted; the panel shows and announces "Nichts gelöscht." plus that reason
-  (`massDelete.abortedByMemberRead`) in the status region the lock aborts already use. A selected id
+  (`massDelete.nothingDeleted`, renamed from `massDelete.abortedByMemberRead` in the second fix
+  round below) in the status region the lock aborts already use. A selected id
   the read does not know keeps the host's aliases.
 - **No double fetch.** A non-active view makes no second read: its rows already carry every alias
   from the member list the view is built from (`mergeSetView`'s non-active branch).
@@ -777,17 +778,46 @@ selection it confirmed, the run's channel is frozen too, a stuck arbiter re-chec
 hung read times out, and the delete's own alias enrichment picks up an aliasless entry.** Four more
 findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
 
-- **The confirmed selection is snapshotted at dialog open, next to `frozenSetId`.** `startDelete`
-  used to re-read the live `selectedEmotes()` input after `readLiveAliasesThenDelete`'s async read
+- **The confirmed selection is snapshotted at confirm — the set id, the channel and
+  `isActiveSet` stay frozen at dialog open, and the difference is deliberate.** `startDelete` used
+  to re-read the live `selectedEmotes()` input after `readLiveAliasesThenDelete`'s async read
   answered — the confirm dialog is already closed by then and nothing locks the grid, so an id could
-  be added to or removed from the selection while the read was out. `openConfirmDialog` now freezes
-  the exact `DeletableEmote[]` the dialog showed (`frozenSelection`) and both the read and no-read
-  paths delete precisely that list, enriched with live aliases where the active-set read applies —
-  never fewer (an id later deselected was still confirmed) and never more (an id selected only
-  afterwards was never shown). The freeze happens once, at dialog open, the same moment as
-  `frozenSetId`/`frozenIsActiveSet`; a selection change while the dialog is still open (before
-  confirm) is therefore also not picked up — consistent with those two already being frozen at that
-  same moment, not at confirm.
+  be added to or removed from the selection while the read was out. The first version of this fix
+  froze the list at dialog *open*, next to `frozenSetId`; the independent review that followed
+  showed why that is the wrong moment, and the **operator decision of 2026-09-22** settled it:
+  **snapshot at confirm.** The dialog renders the panel's live
+  `visibleSelectedEmoteNames`/`hiddenSelectedEmoteNames` (both `computed` over `selectedEmotes()`,
+  passed as `Signal`s in `DeleteConfirmDialogData`), so a pushed reload (`channel.synced`,
+  `usage.flushed` → `retainAmong`) landing behind the open modal changes what the confirmation says
+  — and an open-time snapshot would then delete emotes the screen had already stopped naming. The
+  snapshot is now taken synchronously inside the dialog's `closed` callback, before any async work,
+  from those very same signals: **what the confirmation last showed and what the run deletes are the
+  same list by construction**, which is the only formulation that survives an asynchronous reload.
+  Everything downstream acts on that snapshot — the live alias read, both branches, the queue and the
+  protocol — so an id deselected *after* the click is still deleted (it was confirmed) and an id
+  selected *after* it is not swept in (it was never shown).
+
+  **Why the other three stay frozen at open.** `frozenSetId`/`frozenIsActiveSet`/`frozenChannelName`
+  are not inputs to the run the way the selection is: they are the identity of the *view the dialog
+  was built from*, and `startDelete` compares them against their live values to abort on a mismatch
+  (`massDelete.setChangedDuringConfirm`). A confirm-time re-read would make that comparison compare
+  a value with itself and silently delete into whatever set the dropdown moved to — the exact gap
+  finding A closed. So: what is **named** on the confirmation is frozen at open and checked at
+  confirm; what is **listed** on it is read at confirm, because the list is live on screen until
+  then. One new i18n key falls out of it — an emptied selection at confirm time
+  (`massDelete.selectionGoneDuringConfirm`, under the existing `abortedByLock` lead): the run would
+  otherwise be `startDelete`'s silent "refused, empty list", where the open-time snapshot at least
+  started a doomed run whose failed rows were visible. A confirmed delete never ends in silence.
+
+  **The confirmation itself locks on the same condition** (`DeleteConfirmDialog`,
+  `confirmLockReasonKey`, i18n `massDelete.confirmSelectionEmpty`): because the lists are live, that
+  same reload leaves the dialog showing "0 Emotes von 7TV löschen?", two empty lists — and, before
+  this, an enabled red button. The panel-side abort stays as the backstop (the dialog can be
+  confirmed in the same frame the reload lands), but the last screen before an irreversible write
+  must not invite a click it is going to refuse, and a disabled control states its reason
+  (docs/UI-Designsprache.md §10) in the hint slot the shared-set check already uses. Emptiness
+  counts over *both* lists, hidden names included — a filtered-out target is still a target — and it
+  outranks the "still checking shared sets" reason when both hold, being the final one of the two.
 - **The run's channel name is frozen at dialog open too** (`frozenChannelName`, alongside
   `frozenSetId`) — `deleteService.startDelete` used to read the live `channelName()` input at the
   point it was actually called, the same class of gap finding A closed for `setId`: harmless today
@@ -801,7 +831,9 @@ findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
   started from anywhere else on the page, so a silent return could leave nothing on screen
   explaining why a confirmed delete simply did not happen. `startDelete` now sets `abortNotice` with
   the existing `massDelete.abortedByMemberRead` lead and a new `massDelete.anotherRunStarted` reason
-  (wired to i18n text in a later commit; transloco shows the raw key until then).
+  (wired to i18n text in a later commit; transloco shows the raw key until then). *The lead is
+  renamed to `massDelete.nothingDeleted` in the second fix round below, where this re-check stops
+  being the member read's alone.*
 - **The live alias read has a 20 s total timeout** (`LIVE_ALIAS_READ_TIMEOUT_MS`) — a hung request
   (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true` forever,
   the delete button disabled with no way out short of a page reload. A timeout is piped through the
@@ -812,6 +844,78 @@ findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
   one, so this is appended to whatever aliased entries the read also found under the same id —
   skipped if that name is already one of them — rather than leaving the entry unrecorded (F3: a
   protocol that looks complete but is not).
+
+**K5 fix round 2026-09-22 (independent review), second pass — the dock knows about a confirmed
+delete before it is a run; the claim covers the whole confirmation.** From the moment the delete
+confirmation opens until the first `REMOVE`, a delete exists nowhere the host dock can see it:
+`dockVisible` (`usage-stats-page.ts`, via `actionDockHasContent`) counts marked items and shown run
+panels, and neither an open modal nor the active-set delete's live alias read is either. A pushed
+reload landing in that window and pruning every marked key therefore unmounted the dock and took
+`MassDeletePanel` down with it — while the confirmation stayed up, because the CDK dialog is opened
+without a `viewContainerRef` and does not belong to the panel's view. The user then clicked Delete
+against a destroyed panel: `abortReasonBeforeStart`'s `destroyed` branch returns `null` precisely so
+a torn-down panel starts nothing, and there was no view left to say so on. Nothing was deleted,
+which is the safe direction, but from the user's side a confirmed, irreversible action simply did
+not happen and never explained itself. Worse on the way there: the destroyed panel's
+`selectedEmotes()` input still reads its last value, so the emptied-selection guard of the first
+commit does not fire either.
+
+`SevenTvDeleteService` carries the state as `confirmedRunPending`, written only through
+`beginConfirmedRun()` / `endConfirmedRun()` / `clearConfirmedRun()`;
+`ActionDockState.deleteConfirmPending` feeds it into the dock's marking half. Four decisions inside
+that:
+
+- **The claim is taken when the confirmation opens, not when the read starts.** *(Corrected
+  2026-09-22 within the same round: the first version of this fix bracketed only the live alias
+  read, which left the whole life of the modal — the part a user can hold open for minutes —
+  uncovered, and gave the no-read branch no claim at all.)* Every exit of the `closed` callback
+  releases it again, and which release is used is itself the decision: a **dismissed** confirmation
+  takes `clearConfirmedRun()`, an immediate drop, because nothing was confirmed and an 8 s hold over
+  an emptied grid would be exactly the empty bar `actionDockHasContent` exists to prevent; every
+  exit that **attempted** the delete — started, aborted, or refused for an emptied selection — takes
+  `endConfirmedRun()` and its notice window. A leaked claim pins an empty dock, so this is a
+  balance the panel owes on every path, the destroyed-panel path included.
+- **`abortNotice` stays on the panel, deliberately, and is not moved onto the service next to
+  `duplicateNoticePending`.** That flag sits on the service because the service produces it
+  (`startRestore` sets it); every reason the delete aborts for is decided from the panel's own
+  inputs (host lock, frozen set id, arbiter, confirmed selection), so moving the text onto a root
+  singleton would move panel-local knowledge into shared state — and both mounted panels (usage page
+  and vote-session page) would render it, so an abort on one page would surface on the other. The
+  one thing it would buy, a *freshly mounted* panel still showing the notice, is the case where
+  showing it is wrong: a panel is remounted by a route, set or pointer change, i.e. into a view the
+  aborted delete never belonged to. Keeping the panel that set the notice alive is the fix; carrying
+  the notice to a different panel is not.
+- **The claim outlives the read when nothing started.** `endConfirmedRun()` asks its own
+  `isRunning()`: a started run carries the dock by itself, so the claim drops at once; an abort has
+  nothing but its notice, so the claim is held for `ABORTED_DELETE_NOTICE_MS` (8 s) and then drops
+  itself. Without that second half the fix would keep the panel alive exactly long enough to *set* a
+  notice nobody gets to read. Self-clearing rather than dismissable for the same reason the
+  restore/import services' `duplicateNoticePending` is (docs/UI-Designsprache.md §4.5): there is no
+  run or queue for a dismiss button to hang on. Longer than those 4 s because this notice reports
+  that an irreversible action the user confirmed did *not* happen, and it is two sentences, not a
+  count.
+- **Inside the `hasActiveSet` gate, not beside it** — unlike `importShown`/`importNoticePending`,
+  which sit outside it because the import half has no set gate (R9). The panel this keeps alive
+  renders inside the marking half, so mounting the dock without a set would only bring back the
+  empty accent-framed bar `actionDockHasContent` exists to prevent.
+
+**K5 fix round 2026-09-22 (independent review), second pass — the run arbiter is checked on every
+delete start, not only on the one that waited for a read.** `startDelete`'s re-check was qualified
+on `liveAliases !== null`, i.e. it only ran for an active-set delete that had just come back from
+its live alias read. The other branch — a non-active set, or an active one whose host did not opt
+into the read — called `startDelete(..., null)` and relied on `deleteService.startDelete`'s own
+refusal, which is silent: a confirmed delete in a non-active view could evaporate without a word
+whenever an import or restore had claimed the arbiter behind the open confirmation. The window is
+not smaller there, it is larger — the confirmation is a modal a user can leave standing for
+minutes, and a run started anywhere else on the page lands behind it just as well as behind a read.
+
+The check is now unconditional, and the near side of the same contract is guarded too:
+`openConfirm()` asks the arbiter next to its existing host-lock guard, silently, since nothing has
+been confirmed at that point and the run that got there first is already visible in the dock. The
+visible abort's lead key is renamed `massDelete.abortedByMemberRead` → **`massDelete.nothingDeleted`**
+(same text, both locales) — the old name described the one path it happened to be reachable from,
+and would now be read out for an abort that has nothing to do with a member read. It stays the lead
+for the member-read reasons as well, which is what it always said on screen.
 
 **Known residual, left standing on purpose.** A **non-active** view's delete still does not read
 live from 7TV at all (`readLiveAliasesFromActiveSet` stays off there) — its rows already carry every
@@ -826,6 +930,27 @@ is new. `restore.skippedDuplicates` is reworded from "{{count}} emotes …" to "
 the string counts `ADD`s (aliases) since the "middle rule" addendum, and a #74 duplicate cell is one
 emote but can contribute more than one skipped alias, so "emote" both undercounted the entity being
 reported and invited a reader to expect one skipped notice per emote rather than per alias.
+
+**The second fix round's i18n keys, completing that list.** Renamed:
+`massDelete.abortedByMemberRead` → **`massDelete.nothingDeleted`** (same text, both locales — the
+lead is no longer the member read's alone). New, all in both locales:
+**`massDelete.selectionGoneDuringConfirm`** (a reload emptied the confirmed selection; worded
+membership-neutral — "gehören nicht mehr zu diesem Set" / "are no longer part of this set" — rather
+than "no longer marked", because its most reachable path is a non-active view where the rows flip to
+`membership: 'left'` and stay marked), **`massDelete.tokenGoneDuringConfirm`** (the stored 7TV token
+was cleared by a 401 behind the open confirmation — the third and last of
+`deleteService.startDelete`'s silent refusals, now all three spoken: a run already going, an empty
+list, no token) and **`massDelete.confirmSelectionEmpty`** (the confirmation's own lock reason, see
+the snapshot bullet above).
+
+**Two lifetime rules for the dock claim, from the same round.** `SevenTvDeleteService.reset()` drops
+it — whatever the dock was still holding open, the user has dismissed it, exactly as the restore
+service clears its own transient notice flag there — and `channel-workspace-layout.ts` drops it on a
+channel change through a call of its own, since `resetIfChannelChanged` returns early when there is
+no run record and a confirmed-but-unstarted delete is precisely that state. Correspondingly,
+`endConfirmedRun()` refuses to re-arm a claim that is no longer held: a read that answers after
+either of those two would otherwise open a notice window on a dock the aborted delete no longer
+belongs to.
 
 ---
 

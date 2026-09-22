@@ -954,6 +954,7 @@
     "confirmSetLine": "From the set “{{ setName }}”.",
     "confirmSetNotActive": "This set is not the active one right now.",
     "checkingSharedSets": "Checking shared sets…",
+    "confirmSelectionEmpty": "Nothing is left to delete — the selection has been emptied in the meantime.",
     "sharedSetWarningTitle": "Warning: this emote set may not (only) belong to this channel.",
     "notOwnSet": "This set doesn't belong to this channel's own 7TV account.",
     "knownAffected": "Known to us as also affected: {{ list }}",
@@ -985,7 +986,9 @@
     },
     "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
     "setChangedDuringConfirm": "A different set is selected now.",
-    "abortedByMemberRead": "Nothing was deleted.",
+    "selectionGoneDuringConfirm": "The confirmed emotes are no longer part of this set.",
+    "tokenGoneDuringConfirm": "The stored 7TV token is gone — please enter it again.",
+    "nothingDeleted": "Nothing was deleted.",
     "memberRead": {
       "unavailable": "The set’s current entries could not be read from 7TV.",
       "truncated": "The set’s entries could only be read partly."

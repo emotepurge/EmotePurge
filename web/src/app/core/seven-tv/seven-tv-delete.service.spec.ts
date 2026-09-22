@@ -5,7 +5,12 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DELETE_DELAY_MS, DeleteQueueEmote, SevenTvDeleteService } from './seven-tv-delete.service';
+import {
+  ABORTED_DELETE_NOTICE_MS,
+  DELETE_DELAY_MS,
+  DeleteQueueEmote,
+  SevenTvDeleteService,
+} from './seven-tv-delete.service';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
@@ -656,6 +661,106 @@ describe('SevenTvDeleteService', () => {
 
       expect(service.isRunning()).toBe(false);
       expect(arbiter.activeRun()).toBeNull();
+    });
+  });
+
+  /**
+   * Codex P3, K5 fix round 2: a confirmed delete is invisible to the host dock between the
+   * confirmation and the first `REMOVE` — `MassDeletePanel` is reading the set's live aliases, and
+   * neither `isRunning` nor `queue` says anything yet. A pushed reload that prunes every marked key
+   * in that window used to unmount the dock, destroy the panel and turn the confirmed delete into a
+   * silent no-op. This is the claim the panel holds across that window; `action-dock.spec.ts` pins
+   * what the dock does with it.
+   */
+  describe('the dock claim on a confirmed delete that is not a run yet', () => {
+    it('is raised by beginConfirmedRun', () => {
+      expect(service.confirmedRunPending()).toBe(false);
+
+      service.beginConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(true);
+    });
+
+    it('is dropped at once once the confirmed delete actually became a run', () => {
+      service.beginConfirmedRun();
+      service.startDelete('set-1', 'sensitron', EMOTES);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+
+      service.endConfirmedRun();
+
+      // The run carries the dock by itself from here (isRunning/queue), so holding the claim any
+      // longer would only keep the dock open past the run's own summary.
+      expect(service.confirmedRunPending()).toBe(false);
+
+      service.cancel();
+      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 1, notFoundIds: [] });
+    });
+
+    it('is held for the abort notice when no run started, and clears itself afterwards', () => {
+      service.beginConfirmedRun();
+
+      service.endConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(true);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 1);
+      expect(service.confirmedRunPending()).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
+    it('is dropped outright by clearConfirmedRun, without a notice window', () => {
+      service.beginConfirmedRun();
+
+      service.clearConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
+    it('cancels a notice window already running when clearConfirmedRun comes in', () => {
+      service.beginConfirmedRun();
+      service.endConfirmedRun();
+
+      service.clearConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(false);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS);
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
+    it('is dropped by reset(), window and all — the user dismissed the dock it belonged to', () => {
+      service.beginConfirmedRun();
+      service.endConfirmedRun();
+
+      service.reset();
+
+      expect(service.confirmedRunPending()).toBe(false);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS);
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
+    it('cannot be re-armed by a release that arrives after the claim was dropped elsewhere', () => {
+      // The read of a confirmed delete is still out when reset() or a channel change drops the
+      // claim; its eventual endConfirmedRun must not open a notice window on a dock that now
+      // belongs to something else.
+      service.beginConfirmedRun();
+      service.clearConfirmedRun();
+
+      service.endConfirmedRun();
+
+      expect(service.confirmedRunPending()).toBe(false);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS);
+      expect(service.confirmedRunPending()).toBe(false);
+    });
+
+    it('does not let a first notice window expire onto a second confirmed delete', () => {
+      service.beginConfirmedRun();
+      service.endConfirmedRun();
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 1);
+
+      service.beginConfirmedRun();
+      vi.advanceTimersByTime(1);
+
+      expect(service.confirmedRunPending()).toBe(true);
     });
   });
 });

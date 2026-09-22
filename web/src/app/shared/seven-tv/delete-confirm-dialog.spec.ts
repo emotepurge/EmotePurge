@@ -23,6 +23,8 @@ const DE_TRANSLATIONS = {
     confirmSetNotActive: 'Dieses Set ist gerade nicht aktiv.',
     startDelete: 'Löschen starten',
     checkingSharedSets: 'Prüfe geteilte Sets…',
+    confirmSelectionEmpty:
+      'Es ist nichts mehr zum Löschen übrig — die Auswahl wurde inzwischen geleert.',
     sharedSetWarningTitle:
       'Achtung: Das aktive Emote-Set gehört möglicherweise nicht (nur) diesem Channel.',
     notOwnSet: 'Das aktive Set gehört nicht dem eigenen 7TV-Account dieses Channels.',
@@ -71,6 +73,7 @@ const CHECK_FAILED_LOOKS_ALARMING: EmoteSetWarning = {
 };
 
 interface RenderOptions {
+  emotes?: string[];
   warning?: EmoteSetWarning | null;
   warningLoading?: boolean;
   hiddenEmotes?: string[];
@@ -80,6 +83,7 @@ interface RenderOptions {
 
 interface Harness {
   fixture: ComponentFixture<DeleteConfirmDialog>;
+  emotes: WritableSignal<string[]>;
   warning: WritableSignal<EmoteSetWarning | null>;
   warningLoading: WritableSignal<boolean>;
   hiddenEmotes: WritableSignal<string[]>;
@@ -131,7 +135,7 @@ describe('DeleteConfirmDialog', () => {
    * `DeleteConfirmDialogData`).
    */
   function render(options: RenderOptions = {}): Harness {
-    const emotes = signal(['Kappa', 'PogU']);
+    const emotes = signal(options.emotes ?? ['Kappa', 'PogU']);
     // Default only when the option is absent — `options.warning ?? OWN_SET` would also default an
     // explicit `warning: null`, which is exactly the pending state the host passes while the
     // ownership check is still running (mass-delete-panel.ts) and the confirm-lock tests below
@@ -161,6 +165,7 @@ describe('DeleteConfirmDialog', () => {
 
     return {
       fixture,
+      emotes,
       warning,
       warningLoading,
       hiddenEmotes,
@@ -216,6 +221,43 @@ describe('DeleteConfirmDialog', () => {
       // Quiet otherwise: the check hasn't answered yet, so neither finding banner has an opinion.
       expect(dialog.roleElements('alert')).toHaveLength(0);
       expect(dialog.roleElements('status')).toHaveLength(0);
+    });
+
+    // Opus review P2-2: the two name lists are live (DeleteConfirmDialogData), so a pushed reload
+    // behind the open modal can prune the selection to nothing — and the dialog then offered an
+    // enabled red button over "0 Emotes von 7TV löschen?" and two empty lists. The panel refuses
+    // such a confirmation anyway, but the last screen before an irreversible write must not invite
+    // a click it is going to reject.
+    it('locks the confirm button once a reload has emptied the selection behind the open dialog, and says why', () => {
+      const dialog = render();
+      expect(dialog.button(START_DELETE).disabled).toBe(false);
+
+      dialog.emotes.set([]);
+      dialog.detect();
+
+      const confirm = dialog.button(START_DELETE);
+      expect(confirm.disabled).toBe(true);
+      const hint = dialog.describedBy(confirm);
+      expect(hint).toBe(dialog.element('delete-confirm-hint'));
+      expect(hint?.textContent).toContain('Es ist nichts mehr zum Löschen übrig');
+    });
+
+    it('counts the hidden names too before calling the selection empty', () => {
+      const dialog = render({ emotes: [], hiddenEmotes: ['OnlyHidden'] });
+
+      // A target the filter hides is still a target — locking here would refuse a legitimate
+      // delete of exactly the rows the uncapped hidden block exists to keep identifiable.
+      expect(dialog.button(START_DELETE).disabled).toBe(false);
+      expect(dialog.element('delete-confirm-hint')).toBeNull();
+    });
+
+    it('states the emptied selection rather than the still-running check when both are true', () => {
+      const dialog = render({ emotes: [], warning: null, warningLoading: true });
+
+      // "Nothing is left" is final, "still checking" is merely not-yet.
+      expect(dialog.element('delete-confirm-hint')?.textContent).toContain(
+        'Es ist nichts mehr zum Löschen übrig',
+      );
     });
 
     it('releases the lock once the check finishes, and drops the aria-describedby reference', () => {

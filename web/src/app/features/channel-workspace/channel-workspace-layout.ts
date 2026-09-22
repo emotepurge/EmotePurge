@@ -154,6 +154,11 @@ export class ChannelWorkspaceLayout {
       // A finished mass-delete or restore run from another channel must not follow the user in here.
       this.deleteService.resetIfChannelChanged(channelName);
       this.restoreService.resetIfChannelChanged(channelName);
+      // Its own call, not part of the reset above: `resetIfChannelChanged` deliberately returns
+      // early when there is no run record at all, which is exactly the state a confirmed-but-not-yet
+      // started delete is in. Its dock claim would otherwise survive the channel change and hold
+      // this channel's dock open — empty — for the length of its notice window.
+      this.deleteService.clearConfirmedRun();
       this.loadPermissions(channelName);
     });
 
