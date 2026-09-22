@@ -624,6 +624,62 @@ describe('ImportTargetDialog', () => {
     });
   });
 
+  // P2 fix, #217 review round (Opus + Codex): since addendum 39 removed the merged account-header
+  // radio, a set's own radio is the *only* thing naming an account any more — two accounts that
+  // each happen to have an active set of the same name render two radios with the exact same
+  // accessible name ("Main (aktiv)"), indistinguishable to a screen reader without this fix.
+  describe("accessibility — a set radio's account is programmatically discoverable (P2 fix, #217 review round)", () => {
+    it('associates each radio with its own account heading via aria-describedby, keeping two same-named active sets on different accounts distinguishable', async () => {
+      const dialog = render();
+      await resolve(
+        dialog,
+        0,
+        targetsResult({
+          accounts: [
+            account({
+              twitchChannelId: '1',
+              trackedChannelName: 'chan1',
+              sets: [set({ id: 'set-1', name: 'Main', isActive: true })],
+            }),
+            account({
+              twitchChannelId: '2',
+              trackedChannelName: 'chan2',
+              sets: [set({ id: 'set-2', name: 'Main', isActive: true })],
+            }),
+          ],
+        }),
+      );
+
+      const host: HTMLElement = dialog.fixture.nativeElement;
+      const radios = Array.from(
+        host.querySelectorAll<HTMLInputElement>('input[name="import-target"]'),
+      );
+      expect(radios).toHaveLength(2);
+
+      function describedText(radio: HTMLInputElement): string {
+        const id = radio.getAttribute('aria-describedby');
+        expect(id).toBeTruthy();
+        const heading = host.querySelector(`#${id}`);
+        expect(heading).not.toBeNull();
+        return heading?.textContent ?? '';
+      }
+
+      // Both radios share the exact same accessible name — the label text starts with it
+      // unchanged, so a name-based lookup (getByRole('radio', { name: 'Main (aktiv)' }), same as
+      // the e2e suite uses) still finds either one; only the description tells them apart.
+      for (const radio of radios) {
+        expect(radio.closest('label')?.textContent?.trim().startsWith('Main (aktiv)')).toBe(true);
+      }
+      expect(describedText(radios[0])).toContain('chan1');
+      expect(describedText(radios[0])).not.toContain('chan2');
+      expect(describedText(radios[1])).toContain('chan2');
+      expect(describedText(radios[1])).not.toContain('chan1');
+      // Each account's id is unique — the two radios are never accidentally wired to the same
+      // description.
+      expect(new Set(radios.map((radio) => radio.getAttribute('aria-describedby'))).size).toBe(2);
+    });
+  });
+
   describe("preselection — the caller's own account's active set (finding 4)", () => {
     it("preselects the active, selectable set of the caller's own account once the data loads", async () => {
       const dialog = render();

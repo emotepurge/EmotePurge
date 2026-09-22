@@ -253,8 +253,19 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
              tracked account's selectable active set is gone: a <p>, never an <input>, so it is
              never a radio and never a stop in the radiogroup's native roving tab order. Every set
              below it, including a single one, gets its own radio row instead — the same shape every
-             account gets, one click on that radio being the whole cost either way. -->
-        <p class="text-xs font-medium text-fg-secondary">
+             account gets, one click on that radio being the whole cost either way.
+
+             The heading's own [id] (accountHeadingId(group), twitchChannelId-based and therefore
+             unique per account) is what every set radio below points back to via
+             aria-describedby (#217 review round, P2): with the account-header radio gone since
+             addendum 39, two accounts that each have an active set of the same name (e.g. two
+             "Main"s) render two radios with the exact same accessible name ("Main (aktiv)") and
+             nothing else to tell them apart for a screen reader. aria-describedby rather than
+             aria-labelledby deliberately leaves the accessible *name* alone — it still starts with
+             the set's own visible label, so it keeps matching existing name-based lookups
+             (getByRole('radio', { name: 'Main (aktiv)' }) in the e2e suite) — and instead adds the
+             account as an accessible *description*, read after the name. -->
+        <p [id]="accountHeadingId(group)" class="text-xs font-medium text-fg-secondary">
           @if (group.channelName !== null) {
             #{{ group.channelName }}
           } @else {
@@ -285,6 +296,7 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
               name="import-target"
               [disabled]="set.disabled"
               [checked]="isSetChecked(set.emoteSetId)"
+              [attr.aria-describedby]="accountHeadingId(group)"
               (change)="selectSet(group, set)"
             />
             {{ set.setName }}
@@ -444,6 +456,14 @@ export class ImportTargetDialog {
     }
     const current = this.target();
     return current !== null && current.emoteSetId === emoteSetId;
+  }
+
+  /** The id an account's own heading renders under, and what every one of its set radios points
+   *  back to via `aria-describedby` (P2 fix, #217 review round) — see the template's own comment on
+   *  the heading for why. `twitchChannelId`-based, so it stays unique across every account the
+   *  picker ever renders, tracked or untracked, without needing a second counter of its own. */
+  protected accountHeadingId(group: ImportTargetAccountGroup): string {
+    return `import-target-account-${group.twitchChannelId}`;
   }
 
   /**
