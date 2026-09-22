@@ -127,7 +127,9 @@ layout uniformity identically.
 `web/src/app/shared/audit/audit-row.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
 `web/src/app/core/audit/audit.model.ts` · `web/src/app/shared/audit/audit-row.spec.ts` ·
 `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, 8.10, §35, §36) ·
-`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.3, T5.2, T5.1)
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.3, T5.2, T5.1) ·
+`web/src/app/shared/seven-tv/seven-tv-set-entries.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (spec §37)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
 part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
@@ -501,6 +503,48 @@ when the live `setId()` no longer matches `frozenSetId` at confirm time — whet
 in progress (the existing lock) or has already settled (this gap). The restore-confirm path needed no
 equivalent change: it has read the run's own frozen `DeleteRunInfo.setId` (T5.1), never the panel's
 live `setId()` input, since it was written.
+
+**K5 addendum, operator decision 2026-09-22 — a delete from the active set's view records every
+alias of a duplicate; spec E20 amended (spec §37).** E20 left the active view's #74 duplicate at
+"today's picture": that view builds its rows from our database, which keeps one name per 7TV id, so
+every row there is `slotCount: 1, aliases: [emoteName]` (`mergeSetView`). Harmless for display, not
+for deleting: one `REMOVE` takes every entry of the id (Sonde 5, branch A), so the protocol recorded
+one alias of two and a restore from it silently re-added one — a protocol that looks complete but is
+not (F3). A delete started from the active view now reads the set's entries live, once, before the
+queue and the protocol are built, and records every alias 7TV lists for each selected id
+(`MassDeletePanel.readLiveAliasesFromActiveSet`, opt-in, set by the usage page only). E20 now reads:
+the active *view* still shows one name per id and fetches no live list for display (E16 unchanged —
+the read hangs on a confirmed delete, never on a reload), but the active-set *delete* knows every
+alias.
+
+- **Source:** 7TV's own v4 `emoteSet` entries through `loadSevenTvSetEntries`
+  (`seven-tv-set-entries.ts`) — the reader the restore's pre-run check already used, moved out of
+  `already-present-filter.ts` and extended by `alias` — not the Api's preview route
+  (`loadEmoteSetPreview`). Both carry every alias per id; the direct read is fresh by construction
+  (neither the 60 s client cache nor the Api cache sits in front of it), and it draws on 7TV's global
+  bucket instead of the shared `ForeignEmoteLookup` limiter (10 permits/60 s), which a few set
+  switches before the delete can already have drained — a delete must not be refused by our own
+  budget.
+- **When:** at confirm, not at dialog open. The delete confirmation shows nothing alias-dependent
+  (names, one per cell), so an open-time read would put no better number on screen; it would spend a
+  read on every cancelled dialog and record the set as it stood when the dialog opened instead of at
+  the irreversible moment. It reads the set id frozen at open (the fix-round freeze above stays
+  intact); the lock and set-switch checks run before the read (a doomed delete spends nothing) and
+  again after it, followed by a silent arbiter re-check like the restore paths'. The delete button
+  stays disabled while the read is out.
+- **Failure blocks.** A failed read (network, HTTP, a GraphQL error inside HTTP 200 — 7TV's disguised
+  429) blocks the run with `usageStats.setView.lock.membersUnavailable`; an incomplete one (the
+  10-page runaway guard hit while 7TV promises more) with `…lock.truncated` — spec 8.3's "a list that
+  only knows half must not delete". Nothing is deleted; the panel shows and announces "Nichts
+  gelöscht." plus that reason (`massDelete.abortedByMemberRead`) in the status region the lock aborts
+  already use. A selected id the read does not know keeps the host's aliases.
+- **No double fetch.** A non-active view makes no second read: its rows already carry every alias
+  from the member list the view is built from (`mergeSetView`'s non-active branch).
+- **Slots.** `onDeleted` frees per cell the larger of its `slotCount` and the alias count the run
+  recorded, so the active view's slot bar drops by two for a duplicate right away instead of waiting
+  for the `channel.synced` refetch.
+- **Still open, on purpose:** the vote-session detail page does not opt in. Its rows stay on
+  `[name]` until K6, so a duplicate deleted there still records one alias.
 
 ---
 

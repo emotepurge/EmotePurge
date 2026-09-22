@@ -1,84 +1,7 @@
 import { HttpClient } from '@angular/common/http';
-import { Observable, catchError, map, of, switchMap, throwError } from 'rxjs';
+import { Observable, catchError, map, of } from 'rxjs';
 
-/** Host-absolute, same endpoint the write mutations already use (`seven-tv-run-engine.ts`) —
- *  reading a set's contents is public on `v4`, so unlike the mutations this needs no
- *  `Authorization` header and no 7TV token. */
-const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
-
-// Mirrors SevenTvApiClient.cs's GqlEmoteSetPreviewQuery/SetEntriesPerPage/MaxSetEntryPages
-// (`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs`): 500 per page keeps even a
-// subscriber-sized set (capacity can exceed 1000) at a handful of requests, and the 10-page cap is
-// a runaway guard, not an expected limit — nothing in this codebase has ever seen a set anywhere
-// near 5000 entries. Only `emote.id` is requested: unlike the backend's preview query (which also
-// needs alias/name/scores for a human-facing list), this only ever compares ids.
-const SET_ENTRIES_PER_PAGE = 500;
-const MAX_SET_ENTRY_PAGES = 10;
-
-const GQL_EMOTE_SET_IDS_QUERY =
-  'query($id: Id!, $page: Int!, $perPage: Int!) { emoteSets { emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { totalCount pageCount items { emote { id } } } } } }';
-
-interface SevenTvGqlEmoteSetIdsResponse {
-  data?: {
-    emoteSets?: {
-      emoteSet?: {
-        emotes?: {
-          pageCount: number;
-          items: { emote: { id: string } }[];
-        } | null;
-      } | null;
-    } | null;
-  };
-  // 7TV can answer a GraphQL-level rejection (e.g. an unknown set id) with HTTP 200 — presence of
-  // this array, regardless of content, is what `loadAllSevenTvEmoteIds` treats as "no usable data".
-  errors?: unknown[];
-}
-
-function fetchEmoteSetIdsPage(
-  httpClient: HttpClient,
-  targetSetId: string,
-  page: number,
-): Observable<SevenTvGqlEmoteSetIdsResponse> {
-  return httpClient.post<SevenTvGqlEmoteSetIdsResponse>(SEVEN_TV_GQL_ENDPOINT, {
-    query: GQL_EMOTE_SET_IDS_QUERY,
-    variables: { id: targetSetId, page, perPage: SET_ENTRIES_PER_PAGE },
-  });
-}
-
-/** Walks every page of `targetSetId`'s current contents and collects the 7TV emote ids in it.
- *  Errors (network, HTTP, or a GraphQL-level rejection) all become a thrown error here — a single
- *  place for `filterAlreadyPresent`'s `catchError` below to fail open from, rather than each page
- *  reporting failure its own way. Stops early once a page reports it was the last one
- *  (`page >= pageCount`), and unconditionally at `MAX_SET_ENTRY_PAGES` — a set that size has never
- *  been seen in this codebase, so stopping there and using what was gathered so far mirrors the
- *  backend's own truncation behaviour (`GetEmoteSetPreviewAsync`) rather than failing the whole
- *  check over it. */
-function loadAllSevenTvEmoteIds(
-  httpClient: HttpClient,
-  targetSetId: string,
-): Observable<Set<string>> {
-  const ids = new Set<string>();
-
-  function loadPage(page: number): Observable<Set<string>> {
-    return fetchEmoteSetIdsPage(httpClient, targetSetId, page).pipe(
-      switchMap((response) => {
-        const emotes = response.data?.emoteSets?.emoteSet?.emotes;
-        if ((response.errors?.length ?? 0) > 0 || !emotes) {
-          return throwError(() => new Error('7TV emote set read failed'));
-        }
-        for (const item of emotes.items) {
-          ids.add(item.emote.id);
-        }
-        if (page >= emotes.pageCount || page >= MAX_SET_ENTRY_PAGES) {
-          return of(ids);
-        }
-        return loadPage(page + 1);
-      }),
-    );
-  }
-
-  return loadPage(1);
-}
+import { loadSevenTvSetEntries } from './seven-tv-set-entries';
 
 export interface AlreadyPresentFilterResult<T> {
   /** `rows` minus every entry already present in the target set. What the run should actually send —
@@ -146,9 +69,9 @@ export function filterAlreadyPresent<T extends { sevenTvEmoteId: string }>(
   targetSetId: string,
   rows: readonly T[],
 ): Observable<AlreadyPresentFilterResult<T>> {
-  return loadAllSevenTvEmoteIds(httpClient, targetSetId).pipe(
-    map((targetIds) => {
-      const filtered = rows.filter((row) => !targetIds.has(row.sevenTvEmoteId));
+  return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
+    map(({ aliasesById }) => {
+      const filtered = rows.filter((row) => !aliasesById.has(row.sevenTvEmoteId));
       return { rows: filtered, skipped: rows.length - filtered.length, available: true };
     }),
     catchError(() => of({ rows: [...rows], skipped: 0, available: false })),

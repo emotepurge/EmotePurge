@@ -81,8 +81,8 @@ describe('filterAlreadyPresent', () => {
     ];
     // Same 7TV id as row 1 — #149/T5's actual hole: 7TV's addEmote only checks the alias string,
     // not the emote id, so a second entry under a different alias would otherwise be pushed too.
-    // This filter does not even see aliases any more (#149 P1), only ids — the query never asks
-    // for one.
+    // This filter compares ids alone (#149 P1; spec #200 7.2 keeps import on the id axis) — the
+    // entries here carry no alias at all, and none is needed.
 
     const result$ = firstValueFrom(filterAlreadyPresent(httpClient, 'target-set', rows));
     httpMock.expectOne(GQL_ENDPOINT).flush(page(['7tv-1']));

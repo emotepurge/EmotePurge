@@ -3284,6 +3284,35 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 9 });
   });
 
+  // Operator decision 2026-09-22: the active view knows one name per id (slotCount 1), but the
+  // panel recorded both aliases of a #74 duplicate from its live read — the one REMOVE freed two.
+  it('frees every entry the run recorded for a cell in the active view, not just its one slot', async () => {
+    await openView({ totals: [emote('a', 'Alpha', 40), emote('b', 'Beta', 60)] });
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      result: {
+        doneKeys: ['7tv-a'],
+        items: [
+          {
+            key: '7tv-a',
+            emoteId: 'a',
+            sevenTvEmoteId: '7tv-a',
+            name: 'Alpha',
+            aliases: ['Alpha', 'AlphaTwo'],
+            status: 'done',
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+
+    component['onDeleted'](['7tv-a']);
+
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
   it('names a name twin by the set the dropdown list calls it, and never adds its numbers (AK 59)', async () => {
     await openView({
       emoteSetId: 'set-b',

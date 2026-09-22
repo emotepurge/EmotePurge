@@ -1499,6 +1499,233 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
   });
 });
 
+// Operator decision 2026-09-22 (amending spec #200 E20): the active set's view keeps one name per
+// 7TV id, but one REMOVE takes every entry of a #74 duplicate. A delete there reads the set's live
+// entries from 7TV first and records every alias — or, if that read fails, deletes nothing.
+describe('MassDeletePanel — an active-set delete records every alias from a live read', () => {
+  const GQL = 'https://7tv.io/v4/gql';
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startDelete: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+  let activeRun: WritableSignal<SevenTvRunKind | null>;
+
+  function entriesPage(entries: { id: string; alias: string }[], pageCount = 1) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length,
+              pageCount,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  beforeEach(async () => {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    activeRun = signal<SevenTvRunKind | null>(null);
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      arbiter: fakeRunArbiter(activeRun),
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', true);
+    // What the active view hands in: one name per id, the duplicate included.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'], hidden: false },
+    ]);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  function statusText(): string {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    return region?.textContent ?? '';
+  }
+
+  function deleteButton(): HTMLButtonElement {
+    return (fixture.nativeElement as HTMLElement).querySelector('button') as HTMLButtonElement;
+  }
+
+  function confirm(): void {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+    fixture.detectChanges();
+  }
+
+  it('reads the frozen set from 7TV only once the dialog is confirmed', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock.expectNone(GQL);
+
+    closed.next(true);
+    const req = httpMock.expectOne(GQL);
+    expect(req.request.body.variables.id).toBe('set-1');
+    req.flush(entriesPage([]));
+  });
+
+  it('hands a duplicate both of its live aliases, and leaves a single entry as it was', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+        { id: '7tv-1', alias: 'PogU2' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  it('keeps the host aliases of a cell the live read does not know', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+    expect(startDelete.mock.calls[0][2][1].aliases).toEqual(['KEKW']);
+  });
+
+  it('deletes nothing when the live read fails, and says why', () => {
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('network error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    expect(statusText()).toContain('usageStats.setView.lock.membersUnavailable');
+  });
+
+  it('deletes nothing when 7TV answers the read with a GraphQL error disguised as HTTP 200', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush({ errors: [{ message: 'rate limited' }] });
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('usageStats.setView.lock.membersUnavailable');
+  });
+
+  it('deletes nothing when the live read only knows part of the set', () => {
+    confirm();
+    for (let page = 1; page <= 10; page++) {
+      httpMock.expectOne(GQL).flush(entriesPage([], 11));
+    }
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('usageStats.setView.lock.truncated');
+  });
+
+  it('keeps the delete button disabled while the read is out', () => {
+    confirm();
+    expect(deleteButton().disabled).toBe(true);
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+    expect(deleteButton().disabled).toBe(false);
+  });
+
+  it('aborts when the set switched while the read was out', () => {
+    confirm();
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.componentRef.setInput('activeSetId', 'set-2');
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.setChangedDuringConfirm');
+  });
+
+  it('starts nothing when another run claimed the arbiter while the read was out', () => {
+    confirm();
+    activeRun.set('import');
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    expect(startDelete).not.toHaveBeenCalled();
+  });
+
+  it('makes no read at all when the host lock already stops the delete', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByLock');
+  });
+
+  // A non-active view's rows already carry every alias from the member list the view is built
+  // from — no second read.
+  it('makes no read in a non-active set, handing the host aliases through', () => {
+    fixture.componentRef.setInput('activeSetId', 'set-active');
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: undefined,
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        aliases: ['PogU', 'PogU2'],
+        hidden: false,
+      },
+    ]);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+    ]);
+  });
+
+  // The vote-session page does not opt in until K6: its rows stay on [name].
+  it('makes no read when the host did not opt in', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
+  });
+});
+
 // #200 K5 finding F: the restore-confirm path used to read `this.channelName()` — the panel's
 // live input — at three call sites, instead of the finished run's own frozen `channelName`
 // (`DeleteRunInfo.channelName`). Harmless while a panel only ever sees one channel across a run's

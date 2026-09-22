@@ -985,7 +985,8 @@
       "genericStatus": "7TV error (status {{ status }})."
     },
     "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
-    "setChangedDuringConfirm": "A different set is selected now."
+    "setChangedDuringConfirm": "A different set is selected now.",
+    "abortedByMemberRead": "Nothing was deleted."
   },
   "import": {
     "copyButton": "Transfer",

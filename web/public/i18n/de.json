@@ -985,7 +985,8 @@
       "genericStatus": "7TV-Fehler (Status {{ status }})."
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
-    "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt."
+    "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
+    "abortedByMemberRead": "Nichts gelöscht."
   },
   "import": {
     "copyButton": "Übertragen",

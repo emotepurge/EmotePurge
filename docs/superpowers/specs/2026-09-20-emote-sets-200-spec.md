@@ -3185,6 +3185,25 @@ Set-Pfad, Wiederherstellen gesperrt); das Dropdown ist gesperrt, solange ein Lö
 Begründung und Einzelheiten im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is
 identified by its 7TV id …", Abschnitt „Fix round 2026-09-22".
 
+## 37. Nachtrag: Löschen aus der aktiven Ansicht kennt alle Aliase einer Duplikat-Zelle (K5, Betreiber-Entscheidung 2026-09-22)
+
+E20 ließ die #74-Duplikat-Zelle in der **aktiven** Ansicht beim heutigen Bild: die Zeilen kommen aus
+unserer Datenbank, die je 7TV-ID einen Namen kennt (`slotCount: 1`, `aliases: [emoteName]`). Für die
+Anzeige ist das harmlos, für das Löschen nicht: ein `REMOVE` nimmt **alle** Einträge der ID (Sonde 5,
+Zweig A), das Protokoll hielt aber nur einen Alias fest, und ein Restore daraus legte still nur einen
+wieder an — ein Protokoll, das vollständig aussieht und es nicht ist (F3).
+
+Der Betreiber hat am 2026-09-22 entschieden: **Ein Löschlauf aus der aktiven Ansicht liest die
+Einträge des aktiven Sets einmal live und schreibt je gewählter ID alle Aliase in Queue und
+Protokoll.** Scheitert das Lesen (503/429/jeder Fehler) oder bleibt es unvollständig, wird **nichts**
+gelöscht, und der Grund aus 8.3 steht sichtbar da („eine Liste, die nur die Hälfte kennt, darf nicht
+löschen"). E20 gilt damit nur noch für die **Anzeige**; E16 bleibt unberührt, weil das Lesen an einem
+bestätigten Löschen hängt, nie an einem Reload. Die nicht-aktive Ansicht liest nicht ein zweites Mal —
+ihre Zeilen tragen die Aliase schon aus der Mitgliederliste. Die Vote-Session-Detailseite bleibt bis
+K6 bei `[name]`. Quelle (7TV direkt statt Vorschau-Route), Zeitpunkt (beim Bestätigen, nicht beim
+Öffnen) und Begründung im Entscheidungslog, Eintrag 2026-09-21 „A row of the set view is identified
+by its 7TV id …", K5-Nachtrag vom 2026-09-22.
+
 ## 39. Nachtrag: Ziel-Picker — ein Layout je Konto, PERSONAL ausgeblendet (#217, 2026-09-22)
 
 §34 hat die beiden Entscheidungen aus Issue #217 nur für den *Quell*-Picker umgesetzt und den

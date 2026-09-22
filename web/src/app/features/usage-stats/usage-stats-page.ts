@@ -2204,11 +2204,21 @@ export class UsageStatsPage {
       return;
     }
     const deleted = new Set(deletedSevenTvEmoteIds);
-    // A cell frees `slotCount` entries, not one (spec 7.2, AK 72) — a #74 duplicate took two with
-    // its one `REMOVE`. Summed over the rows on screen before they are dropped.
+    // A cell frees one slot per entry, not one (spec 7.2, AK 72) — a #74 duplicate took two with
+    // its one `REMOVE`. In the active view a cell's own `slotCount` is always 1 (one name per id,
+    // E20), so the run's row is asked first: the panel read the set's live entries before the run
+    // (`readLiveAliasesFromActiveSet`) and recorded every alias the `REMOVE` took. Summed over the
+    // rows on screen before they are dropped.
+    const runAliasCounts = new Map(
+      run.result.items.map((item) => [item.sevenTvEmoteId, item.aliases?.length ?? 0]),
+    );
     const freedSlots = this.emotes()
       .filter((emote) => emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId))
-      .reduce((sum, emote) => sum + emote.slotCount, 0);
+      .reduce(
+        (sum, emote) =>
+          sum + Math.max(emote.slotCount, runAliasCounts.get(emote.sevenTvEmoteId) ?? 0),
+        0,
+      );
     this.totalsRows.update((items) => items.filter((item) => !deleted.has(item.sevenTvEmoteId)));
     // Freed slots are shown right away rather than waiting for the channel.synced round trip the
     // bookkeeping call triggers — the emptied bar is the feedback the delete was run for. The
