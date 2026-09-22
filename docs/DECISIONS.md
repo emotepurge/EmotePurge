@@ -20,15 +20,20 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/features/voting/vote-session-detail-page.spec.ts` ·
 `web/src/app/features/voting/vote-session-detail-page.ts` ·
 `web/src/app/shared/seven-tv/mass-delete-panel.spec.ts` ·
-`web/src/app/shared/seven-tv/mass-delete-panel.ts`
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/ui/name-preview-list.ts`
 
 Closes the two "known limitations, recorded rather than fixed" the K6 entry above named for the
 vote-session detail page's mass-delete panel. First landed as four commits, then corrected by a
 second round after an independent Opus review found the first round's live-alias fix left the actual
 "defect #227 exists to close" open (P1 below) and its departed-member fix undercounted its own fetch
-cost (P2). Both rounds are folded into this one entry rather than left as two, since the first
-round's own text made claims about the code that the second round's fixes falsified — recording them
-as if they had always been true would misdescribe what shipped.
+cost (P2), then by a third round — this time with the E2E suite actually run — after a further Opus
+review found the second round's own fix incomplete for a null-session (P2-b), its missing-row reason
+actionable only by count (P2-c), one of its own new Vitest cases provably vacuous (P3-a, confirmed
+live by a deliberate counter-check, see that finding below), and three smaller UX/doc gaps (P3-c
+through P3-f). All three rounds are folded into this one entry rather than left as three, since the
+first two rounds' own text made claims about the code that a later round's fixes falsified —
+recording them as if they had always been true would misdescribe what shipped.
 
 **(a) Live aliases, for any target set, not only the active one.** `MassDeletePanel` gains
 `readLiveAliasesFromSet`, the vote page's counterpart to the usage page's
@@ -60,9 +65,18 @@ this fallback as "the actual backstop, not a silent no-op" was simply wrong abou
 missing, not merely unaliased, and the whole batch is blocked, not just that row: a partial run would
 record a protocol that no longer matches what the confirmation showed as a whole ("gezeigt =
 gelöscht", spec §8.3, K5 follow-up #229). New keys `massDelete.memberRead.missingFromSet.one`/
-`.other` (plural via `pluralKey`, count interpolated) name it in the panel's existing abort-notice
-region; `DeleteAbortNotice` gained an optional `reasonParams` for the interpolation. Applies to
-**both** live-alias inputs — the active-set path (usage page) had the identical gap.
+`.other` (plural via `pluralKey` on the missing count, which only decides *which* key — see (P2-c)
+below for what the key itself says) name it in the panel's existing abort-notice region;
+`DeleteAbortNotice` gained an optional `reasonParams` for the interpolation. Applies to **both**
+live-alias inputs — the active-set path (usage page) had the identical gap.
+
+This check is inherently TOCTOU (third round, P3-e): the confirm-time read and the `RemoveEmote` it
+gates are two separate 7TV round trips, and nothing stops the set from changing again in the narrow
+window between them. That window is not closed by this fix — closing it completely would need 7TV to
+support a conditional/compare-and-swap remove, which it does not — only narrowed to "between the read
+and the mutation" instead of "between page load (or a stale cache) and the mutation", which is what
+made the vote page's version of the bug so much wider than the active-set path's own already-accepted
+residual window (the same trade-off spec §37/8.3 already made for that path).
 
 **(b) A departed set-session member is excluded from the delete selection, and deleting is locked
 while that is still unconfirmed.** `eligible` never reflects live 7TV departure for a set-session
@@ -98,10 +112,11 @@ not on every page view.** A plain voter — or a manager on a coarse pointer, wh
 mounts either — must not spend a permit off the shared `ForeignEmoteLookup` bucket (10/min, #220) for
 a check whose only consumer they cannot reach. `loadCachedEmoteSetPreview` widens its own doc comment
 from "K4's usage-stats page only" to include this second caller. Also gated on the session actually
-being a set-session (`sessionSetEmoteSetId() !== null`) — a null-session has no *pre-filter* of its
-own kind (`isArchived`/`eligible` already gate its ballot's voting and selectability the way they
-always have), so this resource never fetches for one — see the null-session note below for what a
-null-session's delete still goes through.
+being a set-session (`sessionSetEmoteSetId() !== null`) — a null-session has no live-membership
+*resource* of its own kind, so this never fetches for one, but its ballot is not left without an
+equivalent pre-filter: `eligible` (`!isArchived`) already gated its voting before this entry, and
+`selectedForDelete` now filters on it too (third round, P2-b below) — see the null-session note
+below for what a null-session's delete still goes through.
 
 **(d) Second-round fix, params bug (P2-a/b): the resource's `params` used to read `results()`
 directly.** `results` is replaced wholesale on every reload (`usage.flushed` roughly every 30 s,
@@ -116,10 +131,20 @@ also fixes: the `channel.synced` handler's explicit `sessionSetMembersResource.r
 loud reload) used to race against the very same reload's `results.set(...)` retriggering `params` on
 its own — the explicit, cache-bypassing reload could be silently superseded by an incidental,
 cache-serving one. With `params` no longer reacting to `results()` at all, the explicit `reload()` is
-the only thing that can still trigger a refetch, and it reaches the network — covered by a Vitest
-case that asserts a second HTTP request actually goes out after a `channel.synced` live event, and a
-second one that asserts `onDeleted([])` (a wholesale `results()` replacement that changes nothing
-else) triggers no request at all.
+the only thing that can still trigger a refetch, and it reaches the network with `refresh: true`
+(asserted on the request's own `?refresh=true` query param, third round P3-b — not merely "a request
+went out", which a cache-serving one could equally produce).
+
+**(d, third round correction, P3-a) The `onDeleted([])` "no spurious refetch" case is a
+`vi.spyOn(SevenTvEmoteSetService, 'loadCachedEmoteSetPreview')` call count, not an
+`httpMock.expectNone()`.** The first version of this case used `expectNone` and would have stayed
+green against the *unfixed* `params` too: `loadCachedEmoteSetPreview` itself is what caches — a
+retriggered `stream()` call within the 60 s TTL asks the service again, and the service serves it
+from its own in-memory map without ever reaching `HttpClient`, so the resource-level retrigger this
+case exists to catch is invisible at the network layer. Verified live by reverting `params` to read
+`results()` directly again: the spy then counts 2 calls where the fixed code counts 1, and the
+`channel.synced` refresh case (P3-b, above) fails too, differently — `Cannot flush a cancelled
+request`, the race P2-b's own fix closes surfacing directly.
 
 **(e) Second-round addition (P3-c): a departed member gets the usage page's existing "left"
 treatment** (void plate, dimmed sprite, `usageStats.setView.leftBadge` — reused key, no new string)
@@ -134,9 +159,61 @@ panel-level, confirm-time live read and P1's fail-closed check (a) like every ot
 a null-session delete is not "unchecked" merely because `sessionSetMembersResource` never fetches
 for it.
 
+**(g) Third round (P2-b): a null-session's own archived rows get the same pre-filter set-sessions
+already had.** `cellAction`/`rowAction` never gated on `eligible` (a null-session's ballot member,
+`!isArchived`) — only voting was, and that was by design (K6). Harmless before P1 existed: an
+archived row simply got deleted with its stale name, the very defect #227 was filed over. Fail-closed
+since P1, it stopped being harmless — a confirmed selection that still included such a row now
+blocked the *entire run*, on every attempt, because reloading the page changes nothing about it (the
+row never leaves `results.emotes` for a fixed ballot, K6, and our own database still reports it
+`IsArchived` regardless of how many times the page reloads). `selectedForDelete` now filters
+`!eligible` rows the same way it filters `departedSevenTvEmoteIds` — a no-op for a set-session, where
+`eligible` is always `true` by design, so this only ever changes a null-session's behaviour.
+
+**(h) Third round (P2-c): the missing-row reason names the rows, not only a count, and asks for
+something the user can actually do.** The usage page has a legitimate normal case P1's blanket "try
+again" advice did not cover: an emote removed directly on 7TV, ahead of the periodic resync noticing
+— every run that includes it fails the same way, repeatedly, and "please reload" is not a fix for
+that, because the staleness is in *our* database, not in the page. The reason now lists the missing
+rows' own names (`MassDeletePanel.missingRowsReasonParams`, `{{names}}` interpolated into
+`massDelete.memberRead.missingFromSet.one`/`.other`) and tells the user to deselect exactly those and
+start again — actionable regardless of *why* a row went missing, and unlike a resync it takes effect
+immediately rather than waiting on the next sync tick. Capped and tailed exactly like
+`NamePreviewList`'s own list (`PREVIEW_CAP`, now exported and reused rather than a second constant,
+plus the shared `common.andMore` key) — the same "many names" problem, rendered as one line of status
+text instead of a scrollable `<ul>`, since the abort notice has no dialog to put a list into.
+Deliberately **not** an automatic resync or a new button: the deselect-and-retry path is immediate
+and needs no new write path, and an automatic resync the panel triggers on its own would be a second,
+undiscussed behaviour change riding along with this fix.
+
+**(i) Third round (P3-c): the `unavailable`/`truncated` lock reasons name an escape.** Both used to
+describe only the problem, with nothing on screen saying what — if anything — a manager could do
+about it. Reloading the page genuinely helps here (unlike (h) above): the lock reflects
+`sessionSetMembersResource`'s own state, and a reload starts that read fresh rather than reusing a
+failed or truncated answer. Both keys gain "Seite neu laden, um es erneut zu versuchen." /
+"Reload the page to try again." — no new retry button, the existing reload is enough and adding a
+second, panel-local one would duplicate it.
+
+**(j) Third round (P3-d): the missing-row reason no longer says "nothing was deleted" twice.** The
+first version's reason text ended on its own "…, nichts gelöscht"/"…, nothing deleted", on top of the
+abort notice's `leadKey` (`massDelete.nothingDeleted`, "Nichts gelöscht."/"Nothing was deleted.")
+already saying it once. Both locales' `missingFromSet` keys drop the repeated phrase now that they
+also carry the names+advice from (h).
+
+**(k) Third round (P3-f): the *non-active usage view* does not read live and (a, P1) never applies to
+it, by spec.** Spec §37 (K5) already decided this for the alias side — a non-active set's rows are
+built from `mergeSetView`'s live member list to begin with (E16), so a second, confirm-time read of
+the same set would be redundant, and `MassDeletePanel` skips it (`readLiveAliasesFromActiveSet` never
+fires there, only for the *active* set). The same absence of a read means P1's missing-row check has
+nothing to run against either: `liveEntries` stays `undefined` on that path, and `startDelete`'s
+`if (liveEntries !== undefined)` guard is exactly what keeps the check from firing at all — a
+non-active usage delete keeps whatever risk of a stale row it already had before #227, unchanged by
+either round of this entry.
+
 **No new backend route.** Every fix reuses existing frontend readers only — `loadSevenTvSetEntries`
 (shared/seven-tv/seven-tv-set-entries.ts, unchanged) for (a)/(a, P1), `SevenTvEmoteSetService.
-loadCachedEmoteSetPreview` (unchanged itself, only its doc comment widened) for (b)/(c)/(d).
+loadCachedEmoteSetPreview` (unchanged itself, only its doc comment widened) for (b)/(c)/(d),
+`NamePreviewList`'s `PREVIEW_CAP` (now exported) for (h).
 
 ---
 
