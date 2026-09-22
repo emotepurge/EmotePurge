@@ -81,18 +81,8 @@ export class FileImportStep {
   /** The set a purge-run protocol's `meta.emoteSetId` is matched against — the caller's own
    *  *selected* set (spec #200, T4.5), active or not: this check was already generic over
    *  whichever set it is handed, so a protocol naming a non-active set is accepted while that set
-   *  is shown and rejected while another is (AK 66). Whether a *matching* protocol is even allowed
-   *  to start a restore at all is a separate question — see {@link restoreEnabled}. */
+   *  is shown and rejected while another is (AK 66). */
   readonly setId = input.required<string>();
-  /** Whether this step may treat a purge-run protocol as a restore at all — `true` unless the
-   *  caller says otherwise (every caller before T4.5, and any test that predates it, sees no
-   *  change). `import-trigger.ts` passes `false` while a non-active set is on screen: a finished
-   *  restore still books its un-archive through the legacy, set-agnostic `sync-restored` call
-   *  (K5/T5.2 makes it set-aware), so restoring here would silently book against the *active* set's
-   *  bookkeeping regardless of which set `setId` actually names. A locked protocol never reaches
-   *  {@link setId}'s own match check — the reason is shown immediately, at the exact point the file
-   *  was read, the same way every other rejection here already is. */
-  readonly restoreEnabled = input(true);
 
   readonly picked = output<FileImportResult>();
 
@@ -147,10 +137,6 @@ export class FileImportStep {
   }
 
   private handlePurgeRunProtocol(text: string): void {
-    if (!this.restoreEnabled()) {
-      this.errorKey.set('restore.import.errors.restoreNonActiveSet');
-      return;
-    }
     const parsed = parsePurgeRunProtocol(text, {
       channelName: this.channelName(),
       emoteSetId: this.setId(),

@@ -38,11 +38,13 @@ export type AuditDetailKind =
   | 'importedFromLeaderboard';
 
 /**
- * The import ladder's target (spec 2026-09-20, 6.7), present on an import `AuditLogDetail`
- * whenever the row's `DetailsJson` named a target set: optionally on the channel-scoped
- * `sync-imported` (E5) or always on the set-centric endpoint. `id`/`ownerLogin` are never a display
+ * An action's target set (spec 2026-09-20), present on an `AuditLogDetail` whenever the row's
+ * `DetailsJson` named one. Two independent write paths feed this: the import ladder (6.7) —
+ * optionally on the channel-scoped `sync-imported` (E5) or always on the set-centric endpoint —
+ * and the set-scoped `sync-deleted`/`sync-restored` (6.6, K5). `id`/`ownerLogin` are never a display
  * name — identification is by id, and the paper trail records a Twitch login rather than 7TV's own
- * (changeable) display name.
+ * (changeable) display name. `ownerLogin` is exclusively an import-ladder field —
+ * `sync-deleted`/`sync-restored` never resolves one.
  */
 export interface AuditLogTargetEmoteSet {
   id: string;

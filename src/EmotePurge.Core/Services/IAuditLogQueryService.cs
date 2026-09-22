@@ -1,15 +1,17 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
-/// The import ladder's target, projected onto an <see cref="AuditLogDetail"/> whenever
-/// <c>DetailsJson</c> carries a <c>targetEmoteSetId</c> (spec 6.7) — from either
-/// <c>emotes.MarkImportedAsync</c> (a set on the channel-scoped endpoint, E5) or
-/// <c>emotes.MarkImportedToSetAsync</c> (the set-centric endpoint, always). <see cref="Id"/> and
-/// <see cref="OwnerLogin"/> are never a display name: identification is always by id
-/// (<c>targetOwnerSevenTvUserId</c>, the entry's own <c>TargetId</c>), and the paper trail records a
-/// Twitch login rather than 7TV's own display name, which can change without the account changing
-/// (spec 6.7's deliberate split between the confirmation dialog's <c>ownerDisplayName</c> and this
-/// field).
+/// An action's target set, projected onto an <see cref="AuditLogDetail"/> whenever
+/// <c>DetailsJson</c> names one. Two independent write paths feed this: the import ladder
+/// (<c>targetEmoteSetId</c>, spec 6.7) — from either <c>emotes.MarkImportedAsync</c> (a set on the
+/// channel-scoped endpoint, E5) or <c>emotes.MarkImportedToSetAsync</c> (the set-centric endpoint,
+/// always) — and the set-scoped <c>emotes.syncDeleted</c>/<c>emotes.syncRestored</c>
+/// (<c>emoteSetId</c>, spec 6.6, K5/T5.2). <see cref="Id"/> and <see cref="OwnerLogin"/> are never a
+/// display name: identification is always by id (<c>targetOwnerSevenTvUserId</c>, the entry's own
+/// <c>TargetId</c>), and the paper trail records a Twitch login rather than 7TV's own display name,
+/// which can change without the account changing (spec 6.7's deliberate split between the
+/// confirmation dialog's <c>ownerDisplayName</c> and this field). <see cref="OwnerLogin"/> is
+/// exclusively an import-ladder field — sync-deleted/sync-restored never resolves one.
 /// </summary>
 /// <param name="Id">The target set's 7TV id — the entry's own <c>TargetId</c>, echoed here so a
 /// consumer never has to cross-reference the two.</param>
@@ -17,7 +19,9 @@ namespace EmotePurge.Core.Services;
 /// Three-valued (E5): <c>true</c>/<c>false</c> when the channel-scoped endpoint compared the
 /// reported set against <c>Channel.ActiveEmoteSetId</c> at write time, <c>null</c> when no set was
 /// reported at all, or — for the set-centric endpoint — because the target set has no channel of
-/// ours to compare against in the first place.
+/// ours to compare against in the first place. The set-scoped sync-deleted/sync-restored always
+/// writes <c>true</c> or <c>false</c> when it names a target at all (spec 6.6) — it never reports a
+/// set without comparing it against the channel's active one.
 /// </param>
 /// <param name="OwnerLogin">
 /// The Twitch login of the set's owner (the set-centric endpoint's own account, or the matching

@@ -113,8 +113,23 @@ layout uniformity identically.
 `web/src/app/shared/seven-tv/file-import-step.ts` · `web/src/app/shared/seven-tv/import-source-dialog.ts` ·
 `web/src/app/shared/export/usage-export.ts` · `web/src/app/shared/export/usage-export-purposes.ts` ·
 `web/e2e/support/mocks.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
-`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (7, 8.1–8.6, §35, §36) ·
-`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5)
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` · `src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` · `web/src/app/core/emotes/emote-admin.service.ts` ·
+`web/src/app/shared/export/purge-run-export.ts` · `web/src/app/shared/seven-tv/restore-flow.ts` ·
+`web/src/app/features/voting/vote-session-detail-page.ts` ·
+`web/src/app/shared/seven-tv/delete-confirm-dialog.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`web/e2e/emote-import.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` ·
+`src/EmotePurge.Core/Services/IAuditLogQueryService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` ·
+`web/src/app/shared/audit/audit-row.ts` · `web/src/app/shared/audit/audit-actions.ts` ·
+`web/src/app/core/audit/audit.model.ts` · `web/src/app/shared/audit/audit-row.spec.ts` ·
+`docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (6.6, 7, 8.1–8.6, 8.10, §35, §36) ·
+`docs/plans/Plan-200-Emote-Sets.md` (T4.0–T4.5, T5.3, T5.2, T5.1) ·
+`web/src/app/shared/seven-tv/seven-tv-set-entries.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` (spec §37, §38)
 
 Entry 4 of the four DECISIONS entries the #200 spec announces (spec section 23). This is its **first
 part**, written with the K4 key switch (plan T4.3 + T4.4, one commit); K5 appends the bookkeeping half
@@ -339,6 +354,307 @@ mutation need nothing new" was only true of the 7TV mutation itself — everythi
 (selection key, queue key, report, optimistic update, protocol, voting wire) hung on the Guid; 6.2
 "live members without a row are still usable for deleting" holds only once that identity contract is
 in place, i.e. from K5 on.
+
+**K5 addendum (T5.2) — sync-deleted/sync-restored speak set-scoped bookkeeping too.**
+`SyncDeletedRequest`/`SyncRestoredRequest` become one record with two shapes (spec 6.6): the legacy
+`{ emoteIds }` (Guid, active set only) stays valid, transitionally, behind the same gate as `/series`'s
+dual fields above (E3, follow-up issue 1) — `EmoteService` now logs one Information line per legacy
+call ("sync-deleted: legacy body form {EmoteIds} used", and the restore mirror), so retiring it is a
+measured decision, not a guess. The new shape is `{ emoteSetId, sevenTvEmoteIds }`. A shared
+`ValidateSyncBookkeepingBody` (`EmoteEndpoints.cs`) enforces spec 6.6's four-step ladder ahead of both
+handlers: both lists empty → `emote_ids_empty` (unchanged); both non-empty → `emote_ids_invalid`
+(reused from the vote-session ballot); `sevenTvEmoteIds` set without `emoteSetId` →
+`emote_set_id_empty` (already defined for T2.3, reused rather than duplicated); a malformed
+`emoteSetId` → `invalid_emote_set_id`, checked inline — a body field, not a query/route value, so
+`EmoteSetIdValidationFilter` never sees it, the same reason `sync-imported`'s own `TargetEmoteSetId`
+check is inline.
+
+`IEmoteService` gains a set-scoped overload of `MarkDeletedAsync`/`MarkRestoredAsync` rather than
+replacing the Guid-keyed one, taking the plan's own recommendation as-is: the legacy form still needs
+the old path until follow-up issue 1 retires it, and every one of the twelve pre-existing
+`EmoteServiceTests` keeps passing unchanged. When `emoteSetId == channel.ActiveEmoteSetId`, the
+overload matches by `(ChannelId, SevenTvEmoteId)` instead of `Emote.Id` — the unique index on that
+pair (`AppDbContext.cs:31`) gives the same precision the Guid match had, and is the only identity a
+live-only member (a set-view row the grid never saw a `UsageStat` for, K4) has at all — archives/
+un-archives and audits exactly like today, with `emoteSetId` and `targetIsActiveSetOfChannel: true`
+added to the audit details and `TargetType = "emoteSet"`/`TargetId = emoteSetId` on the entry itself.
+
+A **different** `emoteSetId` is paper-only, a nachtrag to the soft-archive entry of 2026-07-26: this
+database never archived a row under any set but the active one, so there is nothing to match outside
+it — no `Emote` row changes, and the audit entry (`emoteCount` = the deduplicated 7TV id count,
+`targetIsActiveSetOfChannel: false`) is written unconditionally, since there is no per-id match left
+to gate it on. The reported response is `archivedCount: 0, notFoundIds: [], targetIsActiveSetOfChannel:
+false`. `channel.synced` keeps its existing gate (`NewlyArchivedCount > 0`) unchanged, so it never
+fires for a non-active-set report. `notFoundIds` carries 7TV ids for the new form, Guids for the
+legacy one, per the response shape (spec 6.6). Threading the set id into the delete/restore run
+record and the frontend's own body construction is T5.1, not this commit.
+
+The admin audit view (spec 8.10) reads this same `emoteSetId` back off the two actions' details —
+`AuditLogQueryService.ReadTargetEmoteSet` took the property name as a parameter instead of a second
+copy, because the import ladder's own equivalent field is spelled `targetEmoteSetId` (K5/T5.2 gap
+close, closed alongside #209).
+
+**K5 addendum (T5.1) — delete and restore runs speak 7TV ids end to end.** `RunResult.doneIds` is
+gone (E2); `doneKeys` is the one identity a finished run reports, so a row without a local
+`Emote.Id` can no longer drop out of the report, the retry or the panel's `deleted` output. The
+delete queue is keyed by `sevenTvEmoteId` — a #74 duplicate cell is one row and one `REMOVE`, which
+takes both entries (Sonde 5, branch A) — and the restore queue by `${sevenTvEmoteId}#${alias}`, one
+`ADD` per alias, the only key space that contains an alias. **The purge protocol's row shape
+changes, and its own `formatVersion` bumps to 2 for it — corrected 2026-09-22 (K5 fix round): the
+first version of this sentence said "without a version bump", which would have let a pre-K5 reader
+parse a post-K5 file silently short instead of refusing it** — unaware of either new field, it would
+drop every `emoteId: null` row outright and, for a duplicate cell's restore, only re-add one of its
+two aliases, no error, just quietly fewer restores than the file recorded.
+`PurgeRunProtocol.formatVersion` is `PURGE_RUN_FORMAT_VERSION` (`purge-run-export.ts`, `= 2`),
+deliberately **not** a bump of the shared `EXPORT_FORMAT_VERSION` every envelope `kind` uses and
+`import-source-parser.ts` pins its own reads to `1` for — this row-shape change never touched
+those. `PurgeRunRow.emoteId` is
+`string | null` (`null` for a row that never had a local emote), and each row gains `aliases:
+string[]` (every alias the cell sat under; `[name]` for a single entry). The panel no longer filters
+rows without an `emoteId` out of the protocol — that filter produced a silently short protocol, i.e.
+a deletion without a way back that nobody would notice (F3). `parsePurgeRunProtocol` accepts
+`formatVersion` `1` **and** `2`, `emoteId` as a Guid, `null` or absent, and reads a row without (or
+with a malformed) `aliases` as `[name]`, so protocols written before K5 restore exactly as before.
+Both run records
+(`DeleteRunInfo`, `RestoreRunInfo`) carry the set id **frozen at start**; the first
+`sync-deleted`/`sync-restored` call and every `retrySyncReport` read set and keys from that record,
+never from the page (AK 71), and the panel's restore-from-run re-adds into the run's own set. The
+client sends only `{ emoteSetId, sevenTvEmoteIds }` — deduplicated, so a restore that re-added one
+emote under two aliases reports one id — and never the legacy `{ emoteIds }`; an answer with
+`targetIsActiveSetOfChannel: false` counts as succeeded, since `archivedCount: 0` is the paper-only
+contract there, not a shortfall. The panel's `deleted` emits the run's keys; the usage page drops
+cells by `sevenTvEmoteId` and frees `slotCount` slots per cell, the vote-session detail page drops
+rows by `sevenTvEmoteId` while its own selection stays keyed by the Guid (F12). **Interim locks of
+the K4 part above:** lifted here — `DeletableEmote.emoteId`/`DeleteQueueEmote.emoteId` are optional,
+the usage page no longer filters Guid-less rows out of the delete selection (`'left'` rows stay out,
+AK 57), `onDeleted` matches by 7TV id and subtracts `slotCount`. **Still standing, for T5.3:** the
+delete lock in every non-active view (`usageStats.setView.lock.nonActiveSet`), the panel's binding
+to the *active* set, the restore lock while a non-active set is shown (`restoreEnabled`), the
+restore dialog's slot preview from the active set's status and per name rather than per `ADD`, and
+the set name in both confirmations (spec 8.8) — lifting the delete lock before the dialog names the
+set would let a delete reach a non-active set behind a confirmation that does not say which. Not
+done anywhere yet: spec 7.2's `(sevenTvEmoteId, alias)` comparison in the restore's pre-run
+duplicate check; `filterAlreadyPresent` still compares the id alone, so re-running a restore in
+which only one alias of a duplicate came back skips the whole row. *(Closed on 2026-09-22 by the
+"middle rule" addendum below.)*
+
+**K5 addendum (T5.3) — both confirmations name the set; the delete and restore locks that stood
+only for a non-active view lift.** `DeleteConfirmDialogData`/`RestoreConfirmDialogData` gain
+`setName: string`/`isActiveSet: boolean` (spec 8.8): the dialog names "aus dem Set '<Name>'"/"in
+das Set '<Name>'" and, only when `isActiveSet` is `false`, adds "dieses Set ist gerade nicht
+aktiv" — no new confirmation step, still today's one dialog. A #74 duplicate cell was already one
+`DeletableEmote` entry (T5.1), so it reads as one deletion in the dialog's name list with no
+exception group; 8.9 stays gone.
+
+`MassDeletePanel` gains `activeSetId`/`setName`/`setNames` inputs (the last a `Map<string, string>`
+the page fills from the same `emoteSetList` the name-twin tooltip already reads) and its `setId`
+input is now bound to the page's *selected* set, not `activeEmoteSetId()` (`.html` ~1053) — the run
+has been set-aware since T5.1/T5.2, so the panel no longer needs the active set as a stand-in.
+`getSetWarning` is now called with the panel's own `setId` explicitly (spec 6.8) instead of
+implicitly checking the active set. A restore offered from a finished delete run reads `run.setId`
+— which the dropdown may have moved past by the time Restore is clicked, since the set menu locks
+only while a run is still *writing* — against the same `setNames` map and against `activeSetId` for
+`isActiveSet`, never against the panel's current `setId()`.
+
+Both restore paths' slot preview (`MassDeletePanel.openRestoreConfirmDialog`,
+`restore-flow.ts`'s `startRestoreFlow`) fork on whether the target is the active set: active keeps
+the cheap, non-7TV-rate-limited `EmoteAdminService.getSetStatus`; any other set reads
+`SevenTvEmoteSetService.loadEmoteSetPreview` instead (spec 8.3) — `getSetStatus` has no set-scoped
+form. The projection itself is now against **ADDs**, not rows (spec 7.2): a #74 duplicate cell's
+row carries two aliases and restores under both, so `RestoreConfirmDialogData` gains `addCount`
+beside `names` (the display list still lists the row once). `startRestoreFlow` takes two new
+parameters, `setName`/`isActiveSet`, frozen at the same moment as `channelName`/`setId`;
+`import-trigger.ts`'s `restoreEnabled` is unconditionally `true` now (`FileImportStep`'s own input
+is untouched, so a future caller can still gate it) — the last of T5.1's "still standing" interim
+locks, and the only one that ever blocked restore outright rather than just naming it wrong.
+
+**The delete lock lifts for a plain, fully-loaded non-active view; the vote lock does not, because
+K6 is what lifts that one.** `deleteLockReasonKey` no longer returns `nonActiveSet` there —
+switching, an unreadable member list and a truncated one still lock it, refactored into a shared
+`sharedSetViewLockReasonKey` both `deleteLockReasonKey` and `voteLockReasonKey` read from.
+`voteLockReasonKey`'s own line had to change to source its text from that shared computed plus its
+own `nonActiveSet` fallback rather than from `deleteLockReasonKey()` directly, since the two stopped
+agreeing the moment `deleteLockReasonKey` narrowed — a one-line, behaviour-preserving decoupling
+(every input that used to lock/unlock voting still does, with the same reason text), not a change to
+when or why voting locks, which stays K6's. One direct consequence of the two locks parting ways:
+the vote button's `aria-describedby` used to point at the delete panel's own reason paragraph on the
+premise that both locks were the same condition; that premise now fails for exactly the
+plain-non-active case (deleting unlocked, voting still locked), so `usage-stats-page.html` gained a
+second, vote-only reason paragraph (`voteOnlyLockReasonId`) shown only then, with the button's
+`aria-describedby` picking whichever of the two paragraphs currently exists.
+
+**Left open, on purpose.** Whether a finished restore's `channelService.resync` call
+(`seven-tv-restore.service.ts`) should skip a non-active-set target the way the K2 import path's
+`targetIsActiveSet` already does (the 2026-09-21 entry above, "the dock stops claiming it does") —
+the spec is silent on this specific point, unlike that import fix, whose own wording covers it. T5.3
+therefore leaves the call firing unconditionally: harmless (the endpoint only ever resyncs the
+*active* set regardless of what triggered it) but pointless for a non-active-set restore, exactly as
+T5.1's own addendum already flagged. AK 57 ('left' rows carry the badge and are not selectable)
+needed no further work here — it was already in place from T4.x/T5.1, nothing in T5.3 touches it.
+
+**K5 fix round 2026-09-22 (independent reviews) — the delete confirmation now freezes the set id
+it names.** `MassDeletePanel.openConfirmDialog` freezes `setId()` into `frozenSetId` the moment it
+builds `DeleteConfirmDialogData`, alongside the `setName`/`isActiveSet` it already froze there, and
+passes it through to `startDelete`. `startDelete`'s existing confirm-time re-check compared only
+`deleteLockReasonKey()` — a `channel.synced` set switch that lands and *settles* while the dialog is
+still open clears that lock again before the dialog closes, so a lock-only re-check let a confirmed
+run start against whatever set was selected by then, not the one the dialog had named. `startDelete`
+now also aborts, with the same visible `abortedByLock` notice (`massDelete.setChangedDuringConfirm`),
+when the live `setId()` no longer matches `frozenSetId` at confirm time — whether the switch is still
+in progress (the existing lock) or has already settled (this gap). The restore-confirm path needed no
+equivalent change: it has read the run's own frozen `DeleteRunInfo.setId` (T5.1), never the panel's
+live `setId()` input, since it was written.
+
+**K5 addendum, operator decision 2026-09-22 — a delete from the active set's view records every
+alias of a duplicate; spec E20 amended (spec §37).** E20 left the active view's #74 duplicate at
+"today's picture": that view builds its rows from our database, which keeps one name per 7TV id, so
+every row there is `slotCount: 1, aliases: [emoteName]` (`mergeSetView`). Harmless for display, not
+for deleting: one `REMOVE` takes every entry of the id (Sonde 5, branch A), so the protocol recorded
+one alias of two and a restore from it silently re-added one — a protocol that looks complete but is
+not (F3). A delete started from the active view now reads the set's entries live, once, before the
+queue and the protocol are built, and records every alias 7TV lists for each selected id
+(`MassDeletePanel.readLiveAliasesFromActiveSet`, opt-in, set by the usage page only). E20 now reads:
+the active *view* still shows one name per id and fetches no live list for display (E16 unchanged —
+the read hangs on a confirmed delete, never on a reload), but the active-set *delete* knows every
+alias.
+
+- **Source:** 7TV's own v4 `emoteSet` entries through `loadSevenTvSetEntries`
+  (`seven-tv-set-entries.ts`) — the reader the restore's pre-run check already used, moved out of
+  `already-present-filter.ts` and extended by `alias` — not the Api's preview route
+  (`loadEmoteSetPreview`). Both carry every alias per id; the direct read is fresh by construction
+  (neither the 60 s client cache nor the Api cache sits in front of it), and it draws on 7TV's global
+  bucket instead of the shared `ForeignEmoteLookup` limiter (10 permits/60 s), which a few set
+  switches before the delete can already have drained — a delete must not be refused by our own
+  budget.
+- **When:** at confirm, not at dialog open. The delete confirmation shows nothing alias-dependent
+  (names, one per cell), so an open-time read would put no better number on screen; it would spend a
+  read on every cancelled dialog and record the set as it stood when the dialog opened instead of at
+  the irreversible moment. It reads the set id frozen at open (the fix-round freeze above stays
+  intact); the lock and set-switch checks run before the read (a doomed delete spends nothing) and
+  again after it, followed by a silent arbiter re-check like the restore paths'. The delete button
+  stays disabled while the read is out.
+- **Failure blocks.** A failed read (network, HTTP, a GraphQL error inside HTTP 200 — 7TV's disguised
+  429) blocks the run with `massDelete.memberRead.unavailable`; an incomplete one (the 10-page
+  runaway guard hit while 7TV promises more — or, since the K5 fix round below, a `totalCount`
+  mismatch on an otherwise normally-ending read) with `massDelete.memberRead.truncated` — spec 8.3's
+  "a list that only knows half must not delete". *Corrected 2026-09-22 (K5 fix round below): the
+  first version of this sentence named the reused `usageStats.setView.lock.*` keys — correct wording
+  for the sticky lock paragraph they were written for ("Deleting and voting are locked: …"), wrong
+  for this one-off abort notice; dedicated `massDelete.memberRead.*` keys replace them.* Nothing is
+  deleted; the panel shows and announces "Nichts gelöscht." plus that reason
+  (`massDelete.abortedByMemberRead`) in the status region the lock aborts already use. A selected id
+  the read does not know keeps the host's aliases.
+- **No double fetch.** A non-active view makes no second read: its rows already carry every alias
+  from the member list the view is built from (`mergeSetView`'s non-active branch).
+- **Slots.** `onDeleted` frees per cell the larger of its `slotCount` and the alias count the run
+  recorded, so the active view's slot bar drops by two for a duplicate right away instead of waiting
+  for the `channel.synced` refetch.
+- **Still open, on purpose:** the vote-session detail page does not opt in. Its rows stay on
+  `[name]` until K6, so a duplicate deleted there still records one alias.
+
+**K5 addendum, operator decision 2026-09-22 — the restore's pre-run check compares per alias, the
+"middle rule" (spec §38).** `filterAlreadyPresentForRestore` (`already-present-filter.ts`), used by
+both restore entry points (`restore-flow.ts` and the panel's restore-from-run), decides per protocol
+row against the target set's live entries: (1) the id is not in the set → the row goes through
+unchanged; (2) the id is in the set under an alias the row does not name → the whole row is dropped,
+as the id-only check always did; (3) the id is in the set only under aliases the row names → those
+are dropped from the row and the rest re-added (none left → the row drops out). This refines spec
+7.2's literal `(sevenTvEmoteId, alias)` comparison, which would re-add `A` next to an existing `C` of
+the same id — the #149 hole (7TV's `addEmote` rejects only a colliding alias string, never a second
+entry of the same id) this check exists to keep shut. Rule 3 is what the literal comparison was
+meant for: a partly failed restore of a duplicate cell can be re-run from the same protocol and adds
+just the missing alias. Import (`filterAlreadyPresent`) and the delete path stay on the id axis.
+Aliases compare exactly, case included. A 7TV entry without an alias counts as a foreign alias.
+
+The "already present" notice (`restore.skippedDuplicates`) counts **skipped aliases** — `ADD`s not
+sent — not rows: the restore confirmation already speaks in `ADD`s (`addCount`), and the run queue
+is one row per `ADD`, so the run's rows plus the skipped count equal the number the user confirmed.
+For single-alias rows, nearly all of them, both counts are the same; a row dropped under rule 2
+counts all of its aliases.
+
+**K5 fix round 2026-09-22 (independent review) — a set read now catches an offset shift, and an
+aliasless entry no longer disappears next to an aliased one.** Two findings against the two K5
+addenda above, both in `seven-tv-set-entries.ts`/`already-present-filter.ts`:
+
+- **`loadSevenTvSetEntries`'s `complete` now also compares the collected item count against the
+  query's own `totalCount` from the last page**, not only the 10-page runaway guard: offset
+  pagination shifting between two page fetches of the same set can silently drop (or double-count)
+  an entry at a page boundary without ever tripping the guard, and a read that ended "normally"
+  (`page >= pageCount`) still looked complete despite that. The delete run's live alias read
+  (`mass-delete-panel.ts`, a later commit) blocks on this exactly as it already did for the guard
+  case — no new branch needed there, since both feed the same `complete` flag. The restore pre-run
+  check (`filterAlreadyPresentForRestore`) deliberately does **not** gate on `complete` the same way:
+  it never has, checked against its own tests, and extending it now would mean failing the whole
+  check open (every row passes through completely unfiltered) whenever a read is merely partial —
+  strictly *more* wrong re-adds than continuing to filter against whatever the (partial) read did
+  see, which still catches every duplicate genuinely inside the pages it read and only stays blind to
+  one beyond them. Restore's fail-open path stays reserved for an actual fetch/GraphQL error, as
+  before this round; this only widens an already-accepted gap (a window between any read and each
+  individual `addEmote` call has always remained), it does not open a new one.
+- **An aliasless 7TV entry is a foreign entry on the id it belongs to, even when the same id also
+  has an aliased entry the row does name.** `loadSevenTvSetEntries` gained `aliaslessIds:
+  Set<string>` alongside `aliasesById`, since an id that carries both an aliased and an aliasless
+  entry used to lose the aliasless one the moment the aliased entry gave `aliasesById` a non-empty
+  array for that id (only a *purely* aliasless id, with `aliasesById.get(id)` still `[]`, was ever
+  caught). `filterAlreadyPresentForRestore`'s foreign-entry rule (the "middle rule" above) now also
+  checks `aliaslessIds.has(id)`, restoring the sentence it always claimed to implement: "a 7TV entry
+  without an alias counts as a foreign alias" now holds for *every* aliasless entry, not only one on
+  an otherwise-unaliased id.
+
+**K5 fix round 2026-09-22 (independent review), continued — `MassDeletePanel` deletes exactly the
+selection it confirmed, the run's channel is frozen too, a stuck arbiter re-check now speaks up, a
+hung read times out, and the delete's own alias enrichment picks up an aliasless entry.** Four more
+findings against the same two K5 addenda, all in `mass-delete-panel.ts`:
+
+- **The confirmed selection is snapshotted at dialog open, next to `frozenSetId`.** `startDelete`
+  used to re-read the live `selectedEmotes()` input after `readLiveAliasesThenDelete`'s async read
+  answered — the confirm dialog is already closed by then and nothing locks the grid, so an id could
+  be added to or removed from the selection while the read was out. `openConfirmDialog` now freezes
+  the exact `DeletableEmote[]` the dialog showed (`frozenSelection`) and both the read and no-read
+  paths delete precisely that list, enriched with live aliases where the active-set read applies —
+  never fewer (an id later deselected was still confirmed) and never more (an id selected only
+  afterwards was never shown). The freeze happens once, at dialog open, the same moment as
+  `frozenSetId`/`frozenIsActiveSet`; a selection change while the dialog is still open (before
+  confirm) is therefore also not picked up — consistent with those two already being frozen at that
+  same moment, not at confirm.
+- **The run's channel name is frozen at dialog open too** (`frozenChannelName`, alongside
+  `frozenSetId`) — `deleteService.startDelete` used to read the live `channelName()` input at the
+  point it was actually called, the same class of gap finding A closed for `setId`: harmless today
+  (a panel only ever sees one channel across a run's lifetime) but the wrong source of truth
+  regardless.
+- **The arbiter re-check after the live alias read is no longer silent.** Every other
+  confirm-time-async arbiter re-check in this file stays silent on a block
+  (`openRestoreConfirmDialog`, the restore's own pre-run-check race) because the run that got there
+  first is always the one whose progress panel is already mounted in the *same* dock the user is
+  looking at. This one is different: the competing run can be any of the three 7TV-writing kinds,
+  started from anywhere else on the page, so a silent return could leave nothing on screen
+  explaining why a confirmed delete simply did not happen. `startDelete` now sets `abortNotice` with
+  the existing `massDelete.abortedByMemberRead` lead and a new `massDelete.anotherRunStarted` reason
+  (wired to i18n text in a later commit; transloco shows the raw key until then).
+- **The live alias read has a 20 s total timeout** (`LIVE_ALIAS_READ_TIMEOUT_MS`) — a hung request
+  (7TV accepts the connection but never answers) used to leave `liveAliasReadPending` `true` forever,
+  the delete button disabled with no way out short of a page reload. A timeout is piped through the
+  same `catchError` as a network error, so it blocks exactly like one.
+- **The active-set delete's alias enrichment falls back to the emote's own display name for an
+  aliasless entry**, built on the `aliaslessIds` the read now tracks (previous commit): 7TV requires
+  an alias string to restore an entry, and the read cannot invent one for a slot it lists without
+  one, so this is appended to whatever aliased entries the read also found under the same id —
+  skipped if that name is already one of them — rather than leaving the entry unrecorded (F3: a
+  protocol that looks complete but is not).
+
+**Known residual, left standing on purpose.** A **non-active** view's delete still does not read
+live from 7TV at all (`readLiveAliasesFromActiveSet` stays off there) — its rows already carry every
+alias from the member list loaded *with that view* (`mergeSetView`'s non-active branch, spec §37).
+An entry added to the set on 7TV after that list loaded is therefore not reflected in the run's
+protocol even if it duplicates a selected id; this is accepted by spec §37 itself ("die
+nicht-aktive Ansicht liest nicht ein zweites Mal") and unchanged by this round.
+
+**New/renamed i18n keys, closing the K5 fix round.** `massDelete.memberRead.unavailable`/`.truncated`
+replace the reused `usageStats.setView.lock.*` texts (corrected above); `massDelete.anotherRunStarted`
+is new. `restore.skippedDuplicates` is reworded from "{{count}} emotes …" to "{{count}} entries …" —
+the string counts `ADD`s (aliases) since the "middle rule" addendum, and a #74 duplicate cell is one
+emote but can contribute more than one skipped alias, so "emote" both undercounted the entity being
+reported and invited a reader to expect one skipped notice per emote rather than per alias.
 
 ---
 

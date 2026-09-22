@@ -29,10 +29,6 @@ import { LeaderboardStep } from './leaderboard-step';
 export interface ImportSourceDialogData {
   channelName: string;
   setId: string;
-  /** Forwarded to the file step's own `restoreEnabled` (spec #200, T4.5) — `undefined`/omitted
-   *  reads as `true`, the behaviour every caller before T4.5 already had. `false` while the
-   *  channel's usage page shows a non-active set (see `ImportTrigger`'s class doc for why). */
-  restoreEnabled?: boolean;
 }
 
 /**
@@ -165,7 +161,6 @@ const SOURCE_OPTIONS: SourceOption[] = [
           <app-file-import-step
             [channelName]="data.channelName"
             [setId]="data.setId"
-            [restoreEnabled]="data.restoreEnabled ?? true"
             (picked)="dialogRef.close($event)"
           />
         }

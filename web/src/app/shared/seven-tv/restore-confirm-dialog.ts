@@ -11,11 +11,25 @@ import { NoticeBanner } from '../ui/notice-banner';
 import { projectSlots } from './slot-projection';
 
 export interface RestoreConfirmDialogData {
-  /** Names of the emotes about to be re-added — the preview list, capped like the delete's. */
+  /** Names of the emotes about to be re-added — the preview list, capped like the delete's. One
+   *  entry per row of the source (protocol or finished delete run), not one per `ADD`: a #74
+   *  duplicate cell is one row here even though it restores under two aliases (see `addCount`). */
   names: readonly string[];
+  /** How many `ADD` mutations the run will actually send — spec #200, 7.2: a #74 duplicate cell
+   *  restores under both of its aliases, so it counts as two here even though `names` lists it
+   *  once. This, not `names.length`, is what the capacity projection below is computed against;
+   *  using the row count instead would understate the projection by one slot per duplicate and
+   *  could silently miss the overflow warning. */
+  addCount: number;
   /** Live view of the set status, so the capacity line pops in once the check answers.
    *  null = unknown (no capacity reported) — then no projection line is shown at all. */
   slots: Signal<{ occupied: number; capacity: number } | null>;
+  /** The set the run re-adds into (spec #200, 8.8) — falls back to the set id itself when unnamed,
+   *  same convention as the delete confirmation's `setName`. */
+  setName: string;
+  /** Whether `setName` is the channel's currently active 7TV set — gates the "this set is not
+   *  currently active" addition (spec 8.8). */
+  isActiveSet: boolean;
 }
 
 /**
@@ -29,6 +43,14 @@ export interface RestoreConfirmDialogData {
   imports: [Button, DialogShell, NamePreviewList, NoticeBanner, TranslocoPipe],
   template: `
     <app-dialog-shell [dialogTitle]="titleKey | transloco: { count: data.names.length }">
+      <p class="text-sm text-fg-secondary">
+        {{ 'restore.confirmSetLine' | transloco: { setName: data.setName } }}
+      </p>
+      @if (!data.isActiveSet) {
+        <p class="text-sm text-fg-secondary">
+          {{ 'restore.confirmSetNotActive' | transloco }}
+        </p>
+      }
       <app-name-preview-list [names]="data.names" />
 
       @if (projection(); as slots) {
@@ -87,7 +109,9 @@ export class RestoreConfirmDialog {
     if (!slots) {
       return null;
     }
-    return projectSlots(slots.occupied, slots.capacity, this.data.names.length);
+    // spec #200, 7.2: projected against the number of ADDs, not the number of rows — a #74
+    // duplicate cell is one row in `names` but two ADDs (one per alias).
+    return projectSlots(slots.occupied, slots.capacity, this.data.addCount);
   });
 }
 

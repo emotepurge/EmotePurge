@@ -1,5 +1,6 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
@@ -27,6 +28,7 @@ import { DeletableEmote, MassDeletePanel } from './mass-delete-panel';
 interface CapturedDownload {
   filename: string;
   mimeType: string;
+  blob: Blob;
 }
 
 /** Spies on the same two seams `downloadFile` touches — restore via `vi.restoreAllMocks()` in
@@ -37,7 +39,7 @@ function captureDownloads(): CapturedDownload[] {
     Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
   }
   vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
-    downloads.push({ filename: '', mimeType: (blob as Blob).type });
+    downloads.push({ filename: '', mimeType: (blob as Blob).type, blob: blob as Blob });
     return 'blob:test';
   });
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
@@ -237,10 +239,11 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
       setId: 'set-1',
       channelName: 'somechannel',
       result: {
-        doneIds: ['e1'],
-        doneKeys: ['e1'],
+        doneKeys: ['7tv-1', '7tv-live'],
         items: [
-          { key: 'e1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          // A set-view row without a local emote (spec #200, 7.1) — see the no-filter case below.
+          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
         ],
         startedAt: Date.parse('2026-09-01T12:00:00Z'),
         finishedAt: Date.parse('2026-09-01T12:05:00Z'),
@@ -331,6 +334,23 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
     expect(downloads[0].filename).toBe('emotepurge_somechannel_purge_2026-09-01-1205.json');
     expect(downloads[0].mimeType).toBe(JSON_MIME);
     expect(panel['protocolSaved']()).toBe(true);
+  });
+
+  // Spec #200, F3/AK 72: this panel used to filter rows without an emoteId out of the protocol
+  // ("a silently short protocol") — which, with set-view rows that have none, would make their
+  // deletion irreversible and traceless. Every row of the run is written.
+  it('writes every row of the run into the protocol, a row without an emoteId included', async () => {
+    openSpy.mockReturnValue({ closed: of({ optionId: 'json', scope: 'visible' }) });
+
+    panel['openProtocolExport']();
+
+    const written = JSON.parse(await downloads[0].blob.text());
+    expect(written.rows.map((row: { sevenTvEmoteId: string }) => row.sevenTvEmoteId)).toEqual([
+      '7tv-1',
+      '7tv-live',
+    ]);
+    expect(written.rows[1].emoteId).toBeNull();
+    expect(written.meta.counts.succeeded).toBe(2);
   });
 
   it('downloads nothing and leaves protocolSaved alone when the dialog closes with nothing', () => {
@@ -723,14 +743,14 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   let syncReport: WritableSignal<SyncReportState>;
   let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
 
-  function runResult(doneIds: string[]): RunResult {
+  // A delete run keys every row by its 7TV id, so key and sevenTvEmoteId are the same value.
+  function runResult(doneKeys: string[]): RunResult {
     return {
-      doneIds,
-      doneKeys: doneIds,
-      items: doneIds.map((id) => ({
+      doneKeys,
+      items: doneKeys.map((id) => ({
         key: id,
-        emoteId: id,
-        sevenTvEmoteId: `7tv-${id}`,
+        emoteId: `guid-${id}`,
+        sevenTvEmoteId: id,
         name: id,
         status: 'done',
       })),
@@ -767,7 +787,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
   });
 
-  it('emits deleted with the run doneIds once the closing sync report succeeds', () => {
+  it('emits deleted with the run doneKeys once the closing sync report succeeds', () => {
     const deleted: string[][] = [];
     panel.deleted.subscribe((ids) => deleted.push(ids));
 
@@ -837,7 +857,7 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
   });
 
   it('emits nothing at all when the run succeeded but nothing was actually deleted', () => {
-    // doneIds.length === 0: there is nothing to drop from the host list and nothing wrong to
+    // doneKeys.length === 0: there is nothing to drop from the host list and nothing wrong to
     // report either, so neither output is the right call.
     const deleted: string[][] = [];
     const reloads: void[] = [];
@@ -883,6 +903,34 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
 
     expect(reloads).toHaveLength(1);
     expect(deleted).toEqual([]);
+  });
+
+  // AK 72 / E18: `deleted` speaks 7TV ids — the run's keys — and a row that never had a local
+  // emote is among them like any other, so the host can drop its cell.
+  it('emits deleted as the 7TV-id keys of the run, a row without an emoteId included', () => {
+    const deleted: string[][] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    syncReport.set('succeeded');
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: {
+        doneKeys: ['7tv-1', '7tv-live'],
+        items: [
+          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([['7tv-1', '7tv-live']]);
   });
 
   it('re-arms the latch and resets protocolSaved once a new run starts', () => {
@@ -1220,11 +1268,20 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
   });
 
   /** Mounts the panel, triggers openConfirm() and returns what it handed to Dialog.open(...). */
-  function captureDialogData(selectedEmotes: DeletableEmote[]): DeleteConfirmDialogData {
+  function captureDialogData(
+    selectedEmotes: DeletableEmote[],
+    options: { setName?: string; activeSetId?: string | null } = {},
+  ): DeleteConfirmDialogData {
     const fixture = TestBed.createComponent(MassDeletePanel);
     fixture.componentRef.setInput('setId', 'set-1');
     fixture.componentRef.setInput('channelName', 'somechannel');
     fixture.componentRef.setInput('selectedEmotes', selectedEmotes);
+    if (options.setName !== undefined) {
+      fixture.componentRef.setInput('setName', options.setName);
+    }
+    if (options.activeSetId !== undefined) {
+      fixture.componentRef.setInput('activeSetId', options.activeSetId);
+    }
     fixture.detectChanges();
 
     openSpy.mockReturnValue({ closed: of(undefined) });
@@ -1269,6 +1326,35 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
 
     expect(host.querySelectorAll('ul')).toHaveLength(1);
     expect(host.textContent).not.toContain('durch den aktuellen Filter ausgeblendet');
+  });
+
+  // spec #200, 8.8: the dialog's set name/active flag come from the panel's own `setId`/`setName`
+  // inputs — the page's *selected* set (bound to `selectedEmoteSetId()` since T5.3) — never from
+  // `activeEmoteSetId()` directly, which the panel does not even read.
+  it("takes the delete-confirm dialog's set name from its own setName input, and marks it active when it matches activeSetId", () => {
+    dialogData = captureDialogData(EMOTES, { setName: 'Halloween', activeSetId: 'set-1' });
+    expect(dialogData.setName).toBe('Halloween');
+    expect(dialogData.isActiveSet).toBe(true);
+  });
+
+  it("marks the delete-confirm dialog's set not active when activeSetId names a different set", () => {
+    dialogData = captureDialogData(EMOTES, { setName: 'Halloween', activeSetId: 'set-other' });
+    expect(dialogData.isActiveSet).toBe(false);
+  });
+
+  // #200 K5 finding B: the vote-session-detail page mounted this panel without ever binding
+  // `[activeSetId]` at all — an omitted input defaulted to `null`, read as a *known* "not active",
+  // so its delete confirmation wrongly said "this set is not currently active" even though that
+  // page's run is always against the active set. An omission must not read the same as an explicit
+  // `null` ("we checked and don't know"); it folds onto `setId()` instead.
+  it('marks the delete-confirm dialog set active when the host never bound activeSetId at all', () => {
+    dialogData = captureDialogData(EMOTES);
+    expect(dialogData.isActiveSet).toBe(true);
+  });
+
+  it('still marks the delete-confirm dialog set not active for an explicit null activeSetId (a known unknown, not an omission)', () => {
+    dialogData = captureDialogData(EMOTES, { activeSetId: null });
+    expect(dialogData.isActiveSet).toBe(false);
   });
 });
 
@@ -1346,6 +1432,23 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
     expect(statusRegion().textContent).toContain('usageStats.setView.lock.switching');
   });
 
+  // #200 K5 finding A: the host's lock only catches a switch still *in progress* — once it
+  // settles (channel.synced moved the page's selected set while the dialog was open), the lock
+  // clears again with nothing else to say the dialog no longer names the set on screen.
+  it('aborts a confirmed delete when the set switched and settled behind the open dialog, with the host lock never engaging', () => {
+    fixture.componentInstance['openConfirm']();
+    // The switch has already settled by the time the dialog closes: the input moved, but no lock
+    // was ever set — the case a plain re-check of deleteLockReasonKey() alone would miss.
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.detectChanges();
+    closed.next(true);
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusRegion().textContent).toContain('massDelete.abortedByLock');
+    expect(statusRegion().textContent).toContain('massDelete.setChangedDuringConfirm');
+  });
+
   it('keeps the status region mounted but empty until an abort, and clears it on the next attempt', () => {
     expect(statusRegion().textContent?.trim()).toBe('');
 
@@ -1363,11 +1466,556 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
     expect(statusRegion().textContent?.trim()).toBe('');
   });
 
+  // Sonde 5, branch A (spec 7.2/8.9, AK 68): a #74 duplicate cell and a row without a local emote
+  // go into the run like any other row — no exception group, both aliases carried along.
+  it('hands a duplicate cell and a row without an emoteId to the run like any other row', () => {
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        aliases: ['PogU', 'PogU2'],
+        hidden: false,
+      },
+      { sevenTvEmoteId: '7tv-live', name: 'LiveOnly', hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+      { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
+    ]);
+  });
+
   it('starts nothing once the panel itself is gone when the dialog confirms', () => {
     fixture.componentInstance['openConfirm']();
     fixture.destroy();
     closed.next(true);
 
     expect(startDelete).not.toHaveBeenCalled();
+  });
+});
+
+// Operator decision 2026-09-22 (amending spec #200 E20): the active set's view keeps one name per
+// 7TV id, but one REMOVE takes every entry of a #74 duplicate. A delete there reads the set's live
+// entries from 7TV first and records every alias — or, if that read fails, deletes nothing.
+describe('MassDeletePanel — an active-set delete records every alias from a live read', () => {
+  const GQL = 'https://7tv.io/v4/gql';
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let startDelete: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+  let activeRun: WritableSignal<SevenTvRunKind | null>;
+
+  function entriesPage(entries: { id: string; alias?: string }[], pageCount = 1) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length,
+              pageCount,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  beforeEach(async () => {
+    startDelete = vi.fn();
+    closed = new Subject<boolean | undefined>();
+    activeRun = signal<SevenTvRunKind | null>(null);
+    const deleteService = { ...fakeDeleteService(), startDelete };
+    const providers = panelProviders({
+      deleteService,
+      arbiter: fakeRunArbiter(activeRun),
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', true);
+    // What the active view hands in: one name per id, the duplicate included.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'], hidden: false },
+    ]);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  function statusText(): string {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('[role="status"]');
+    return region?.textContent ?? '';
+  }
+
+  function deleteButton(): HTMLButtonElement {
+    return (fixture.nativeElement as HTMLElement).querySelector('button') as HTMLButtonElement;
+  }
+
+  function confirm(): void {
+    fixture.componentInstance['openConfirm']();
+    closed.next(true);
+    fixture.detectChanges();
+  }
+
+  it('reads the frozen set from 7TV only once the dialog is confirmed', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock.expectNone(GQL);
+
+    closed.next(true);
+    const req = httpMock.expectOne(GQL);
+    expect(req.request.body.variables.id).toBe('set-1');
+    req.flush(entriesPage([]));
+  });
+
+  it('hands a duplicate both of its live aliases, and leaves a single entry as it was', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'PogU' },
+        { id: '7tv-2', alias: 'KEKW' },
+        { id: '7tv-1', alias: 'PogU2' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  it('keeps the host aliases of a cell the live read does not know', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+    expect(startDelete.mock.calls[0][2][1].aliases).toEqual(['KEKW']);
+  });
+
+  // K5 fix round, spec §37/§38: an aliasless 7TV entry is a slot the one REMOVE also takes, but it
+  // has no alias to restore under — the enrichment falls back to the emote's own display name for
+  // that entry rather than losing it (F3: a protocol that looks complete but is not).
+  it("falls back to the emote's own name for an aliasless entry, appended to the aliased entry the live read also finds under the same id", () => {
+    confirm();
+    httpMock
+      .expectOne(GQL)
+      .flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogUOld' },
+          { id: '7tv-1' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogUOld', 'PogU'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  // The degenerate case: the fallback name happens to already be one of the live aliases — nothing
+  // is appended a second time under the same string.
+  it('does not duplicate an alias that already equals the fallback name', () => {
+    confirm();
+    httpMock
+      .expectOne(GQL)
+      .flush(
+        entriesPage([
+          { id: '7tv-1', alias: 'PogU' },
+          { id: '7tv-1' },
+          { id: '7tv-2', alias: 'KEKW' },
+        ]),
+      );
+
+    expect(startDelete.mock.calls[0][2][0].aliases).toEqual(['PogU']);
+  });
+
+  it('falls back to the name for a cell that is entirely aliasless in the live set', () => {
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+    ]);
+  });
+
+  it('deletes nothing when the live read fails, and says why', () => {
+    confirm();
+    httpMock.expectOne(GQL).error(new ProgressEvent('network error'));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    // K5 fix round: dedicated massDelete.memberRead.* keys, not the reused usageStats.setView.lock.*
+    // texts ("Deleting and voting are locked: …"), which are wrong for this one-off abort notice.
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
+  it('deletes nothing when 7TV answers the read with a GraphQL error disguised as HTTP 200', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush({ errors: [{ message: 'rate limited' }] });
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.unavailable');
+  });
+
+  it('deletes nothing when the live read only knows part of the set', () => {
+    confirm();
+    for (let page = 1; page <= 10; page++) {
+      httpMock.expectOne(GQL).flush(entriesPage([], 11));
+    }
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
+  });
+
+  // K5 fix round: `complete` now also compares the collected item count against the query's own
+  // `totalCount` from the last page, not only the 10-page runaway guard — offset pagination
+  // shifting between page fetches can silently miss an entry without ever hitting the guard.
+  it('deletes nothing when the live read ends normally but under-counts against the reported total', () => {
+    confirm();
+    httpMock.expectOne(GQL).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 5,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.memberRead.truncated');
+  });
+
+  it('keeps the delete button disabled while the read is out', () => {
+    confirm();
+    expect(deleteButton().disabled).toBe(true);
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+    expect(deleteButton().disabled).toBe(false);
+  });
+
+  // K5 fix round item 5: a hung request used to leave liveAliasReadPending true forever, with the
+  // delete button disabled and no way out short of reloading. A 20 s total budget treats a request
+  // that never answers exactly like one that answers with an error.
+  it('blocks the run and re-enables the button when the live read hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      confirm();
+      const req = httpMock.expectOne(GQL);
+      expect(deleteButton().disabled).toBe(true);
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.abortedByMemberRead');
+      expect(statusText()).toContain('massDelete.memberRead.unavailable');
+      expect(deleteButton().disabled).toBe(false);
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts when the set switched while the read was out', () => {
+    confirm();
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.componentRef.setInput('activeSetId', 'set-2');
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.setChangedDuringConfirm');
+  });
+
+  // K5 fix round item 4: this re-check used to abort silently, like the restore paths' identical
+  // one — but there, the run that got there first is always visible in the *same* dock. Here the
+  // competing run can be any of the three 7TV-writing kinds, started from elsewhere on the page, so
+  // a silent return left nothing on screen explaining why a confirmed delete just vanished.
+  it('starts nothing when another run claimed the arbiter while the read was out, and says so', () => {
+    confirm();
+    activeRun.set('import');
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByMemberRead');
+    expect(statusText()).toContain('massDelete.anotherRunStarted');
+  });
+
+  it('makes no read at all when the host lock already stops the delete', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('deleteLockReasonKey', 'usageStats.setView.lock.switching');
+    closed.next(true);
+    fixture.detectChanges();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.abortedByLock');
+  });
+
+  // A non-active view's rows already carry every alias from the member list the view is built
+  // from — no second read.
+  it('makes no read in a non-active set, handing the host aliases through', () => {
+    fixture.componentRef.setInput('activeSetId', 'set-active');
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: undefined,
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        aliases: ['PogU', 'PogU2'],
+        hidden: false,
+      },
+    ]);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+    ]);
+  });
+
+  // The vote-session page does not opt in until K6: its rows stay on [name].
+  it('makes no read when the host did not opt in', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+
+    confirm();
+
+    httpMock.expectNone(GQL);
+    expect(startDelete).toHaveBeenCalledTimes(1);
+  });
+
+  // K5 fix round item 1: the dialog closes on confirm and nothing locks the grid, so the page's
+  // live selection can change while this async read is still out. The run must delete exactly what
+  // the dialog showed, not whatever the selection happens to be once the read answers.
+  it('deletes the selection the dialog showed, unaffected by a shrink of the live selection while the read is pending', () => {
+    confirm();
+    // The selection loses one of its two entries while the read is still in flight — nothing on
+    // screen prevented this once the dialog closed.
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  it('does not sweep in an id added to the live selection only after the dialog was confirmed', () => {
+    confirm();
+    fixture.componentRef.setInput('selectedEmotes', [
+      ...EMOTES.map((emote) => ({ ...emote, aliases: [emote.name] })),
+      { emoteId: 'e3', sevenTvEmoteId: '7tv-3', name: 'NEW', aliases: ['NEW'], hidden: false },
+    ]);
+    fixture.detectChanges();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    const deletedIds = startDelete.mock.calls[0][2].map(
+      (emote: { sevenTvEmoteId: string }) => emote.sevenTvEmoteId,
+    );
+    expect(deletedIds).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // The selection is frozen at dialog OPEN, not at confirm — this is the "no live read" branch
+  // (readLiveAliasesFromActiveSet toggled off), so a selection change between open and confirm is
+  // the only window there is to observe the freeze point.
+  it('freezes the selection at dialog open, not at confirm, on the no-read branch', () => {
+    fixture.componentRef.setInput('readLiveAliasesFromActiveSet', false);
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    fixture.componentRef.setInput('selectedEmotes', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },
+    ]);
+    fixture.detectChanges();
+    closed.next(true);
+
+    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
+      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+    ]);
+  });
+
+  // K5 fix round item 7: the run used to read the live channelName() input at the point
+  // deleteService.startDelete was finally called, instead of the value frozen at dialog open.
+  it("freezes the run's channel name at dialog open", () => {
+    confirm();
+    fixture.componentRef.setInput('channelName', 'otherchannel');
+    fixture.detectChanges();
+
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    expect(startDelete.mock.calls[0][1]).toBe('somechannel');
+  });
+});
+
+// #200 K5 finding F: the restore-confirm path used to read `this.channelName()` — the panel's
+// live input — at three call sites, instead of the finished run's own frozen `channelName`
+// (`DeleteRunInfo.channelName`). Harmless while a panel only ever sees one channel across a run's
+// lifetime, which is true today, but the wrong source of truth all the same — the same class of
+// bug finding A fixed for `setId`. Pinned here against a panel whose live `channelName` input
+// disagrees with the run's own, which cannot happen in production today but must not silently
+// resolve to the live value if it ever does.
+describe("MassDeletePanel — the restore-confirm path reads the run's own channelName, not the live input (#200 K5 finding F)", () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let getSetStatus: ReturnType<typeof vi.fn>;
+  let startRestore: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+
+  const RUN_CHANNEL = 'runchannel';
+  const LIVE_CHANNEL = 'livechannel';
+
+  beforeEach(async () => {
+    closed = new Subject<boolean | undefined>();
+    getSetStatus = vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 }));
+    startRestore = vi.fn();
+    const lastRun: WritableSignal<{
+      setId: string;
+      channelName: string;
+      result: RunResult;
+    } | null> = signal({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      result: {
+        doneKeys: ['7tv-1'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    const restoreService = { ...fakeRestoreService(), startRestore };
+    const emoteAdminService = { getSetStatus } as unknown as Partial<EmoteAdminService>;
+    const providers = panelProviders({
+      deleteService: fakeDeleteService({ lastRun }),
+      restoreService,
+      dialogOpen: vi.fn().mockReturnValue({ closed }),
+      emoteAdminService,
+    });
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('activeSetId', 'set-1');
+    fixture.componentRef.setInput('channelName', LIVE_CHANNEL);
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  it("reads the slot-status check from the run's channelName, not the panel's live one", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+
+    expect(getSetStatus).toHaveBeenCalledWith(RUN_CHANNEL);
+    expect(getSetStatus).not.toHaveBeenCalledWith(LIVE_CHANNEL);
+  });
+
+  it("starts the restore against the run's channelName, not the panel's live one", () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    closed.next(true);
+
+    // filterAlreadyPresent's own 7TV read — fails open, same as a network hiccup would.
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(startRestore).toHaveBeenCalledTimes(1);
+    expect(startRestore.mock.calls[0][1]).toBe(RUN_CHANNEL);
+  });
+  // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
+  // same per-alias check as the file restore — here, the run's one alias is already back.
+  it('skips an alias of the run that is already back in the set, counted per alias', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    closed.next(true);
+
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(startRestore).toHaveBeenCalledWith('set-1', RUN_CHANNEL, [], 1, true);
   });
 });

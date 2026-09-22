@@ -105,7 +105,11 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('treats an under-count as partial — all ids in notFoundIds used to look like success', () => {
-      runOneDeleteToSyncRequest().flush({ archivedCount: 0, notFoundIds: ['internal-1'] });
+      runOneDeleteToSyncRequest().flush({
+        archivedCount: 0,
+        notFoundIds: ['7tv-1'],
+        targetIsActiveSetOfChannel: true,
+      });
 
       expect(service.syncReport()).toBe('partial');
     });
@@ -146,7 +150,7 @@ describe('SevenTvDeleteService', () => {
       service.retrySyncReport();
 
       const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
-      expect(retryReq.request.body).toEqual({ emoteIds: ['internal-1'] });
+      expect(retryReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
       retryReq.flush({ archivedCount: 1, notFoundIds: [] });
 
       expect(service.syncReport()).toBe('succeeded');
@@ -176,10 +180,10 @@ describe('SevenTvDeleteService', () => {
     expect(service.isRunning()).toBe(false);
   });
 
-  it('keys every queue row by its emoteId', () => {
+  it('keys every queue row by its 7TV id', () => {
     service.startDelete('set-1', 'sensitron', EMOTES);
 
-    expect(service.queue().map((item) => item.key)).toEqual(['internal-1', 'internal-2']);
+    expect(service.queue().map((item) => item.key)).toEqual(['7tv-1', '7tv-2']);
 
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
@@ -215,7 +219,10 @@ describe('SevenTvDeleteService', () => {
     expect(service.progress()).toEqual({ finished: 2, total: 2 });
 
     const syncReq = httpMock.expectOne('/api/channels/sensitron/emotes/sync-deleted');
-    expect(syncReq.request.body).toEqual({ emoteIds: ['internal-1', 'internal-2'] });
+    expect(syncReq.request.body).toEqual({
+      emoteSetId: 'set-1',
+      sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+    });
     syncReq.flush({ archivedCount: 2, notFoundIds: [] });
   });
 
@@ -233,7 +240,7 @@ describe('SevenTvDeleteService', () => {
 
     // Only the successful one gets synced back to Postgres.
     const syncReq = httpMock.expectOne('/api/channels/sensitron/emotes/sync-deleted');
-    expect(syncReq.request.body).toEqual({ emoteIds: ['internal-2'] });
+    expect(syncReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-2'] });
     syncReq.flush({ archivedCount: 1, notFoundIds: [] });
   });
 
@@ -400,7 +407,7 @@ describe('SevenTvDeleteService', () => {
 
     // Only the already-done emote gets synced back.
     const syncReq = httpMock.expectOne('/api/channels/sensitron/emotes/sync-deleted');
-    expect(syncReq.request.body).toEqual({ emoteIds: ['internal-1'] });
+    expect(syncReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
     syncReq.flush({ archivedCount: 1, notFoundIds: [] });
 
     // Advancing time afterwards must not fire the second (cancelled) request.
@@ -492,13 +499,98 @@ describe('SevenTvDeleteService', () => {
 
     expect(service.syncReport()).toBe('succeeded');
     expect(service.lastRun()?.channelName).toBe('other-channel');
-    expect(service.lastRun()?.result.doneIds).toEqual(['internal-2']);
+    expect(service.lastRun()?.result.doneKeys).toEqual(['7tv-2']);
 
-    // A retry now must send run 2's ids to run 2's channel, never run 1's.
+    // A retry now must send run 2's ids to run 2's channel and set, never run 1's.
     service.retrySyncReport();
     const retryReq = httpMock.expectOne('/api/channels/other-channel/emotes/sync-deleted');
-    expect(retryReq.request.body).toEqual({ emoteIds: ['internal-2'] });
+    expect(retryReq.request.body).toEqual({ emoteSetId: 'set-2', sevenTvEmoteIds: ['7tv-2'] });
     retryReq.flush({ archivedCount: 1, notFoundIds: [] });
+  });
+
+  // Spec #200, 7.2 / AK 68: a set-view row may have no local emote at all — it runs, is reported by
+  // its 7TV id, and keeps `emoteId` absent on the item the protocol is written from.
+  it('runs a row without an emoteId and reports it by its 7TV id', () => {
+    service.startDelete('set-1', 'sensitron', [{ sevenTvEmoteId: '7tv-live', name: 'LiveOnly' }]);
+
+    expect(service.queue()[0].key).toBe('7tv-live');
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+    const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
+    expect(syncReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-live'] });
+    syncReq.flush({ archivedCount: 1, notFoundIds: [] });
+    expect(service.lastRun()?.result.doneKeys).toEqual(['7tv-live']);
+    expect(service.lastRun()?.result.items[0].emoteId).toBeUndefined();
+  });
+
+  // AK 71: the set is frozen into the run record when the run starts. Whatever the page chooses
+  // afterwards (modelled here by a refused second start naming another set), the first report and
+  // the manual retry both name the run's own set.
+  it('reports and retries with the set id frozen at the start of the run', () => {
+    service.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+    service.startDelete('set-2', 'sensitron', [EMOTES[1]]);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+    const firstReport = httpMock.expectOne(SYNC_ENDPOINT);
+    expect(firstReport.request.body.emoteSetId).toBe('set-1');
+    firstReport.flush(null, { status: 401, statusText: 'Unauthorized' });
+    expect(service.lastRun()?.setId).toBe('set-1');
+
+    service.retrySyncReport();
+    const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
+    expect(retryReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
+    retryReq.flush({ archivedCount: 1, notFoundIds: [] });
+  });
+
+  // Spec 6.6, E3: the legacy `{ emoteIds }` body stays valid on the server for old tabs, but this
+  // client never sends it — not even when every row carries a Guid.
+  it('sends only the set-scoped body form, never the legacy emoteIds', () => {
+    service.startDelete('set-1', 'sensitron', EMOTES);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(DELETE_DELAY_MS);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+    const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
+    expect(Object.keys(syncReq.request.body).sort()).toEqual(['emoteSetId', 'sevenTvEmoteIds']);
+    expect(syncReq.request.body.emoteIds).toBeUndefined();
+    syncReq.flush({ archivedCount: 2, notFoundIds: [] });
+  });
+
+  // Sonde 5, branch A (spec 7.2, AK 68): one REMOVE without an alias takes both entries of a #74
+  // duplicate, so the cell is one queue row and one request — carrying both aliases for the
+  // protocol.
+  it('runs a duplicate cell as one row with one REMOVE and keeps both aliases', () => {
+    service.startDelete('set-1', 'sensitron', [
+      { emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+    ]);
+
+    expect(service.queue()).toHaveLength(1);
+    expect(service.queue()[0].key).toBe('7tv-1');
+    expect(service.queue()[0].aliases).toEqual(['PogU', 'PogU2']);
+
+    const removeReq = httpMock.expectOne(GQL_ENDPOINT);
+    expect(removeReq.request.body.variables).toEqual({ setId: 'set-1', emoteId: '7tv-1' });
+    removeReq.flush({});
+    vi.advanceTimersByTime(DELETE_DELAY_MS);
+    httpMock.expectNone(GQL_ENDPOINT);
+
+    httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 1, notFoundIds: [] });
+    expect(service.lastRun()?.result.doneKeys).toEqual(['7tv-1']);
+  });
+
+  // Spec 6.6: a report for a set that is not the channel's active one is paper only — the server
+  // archives nothing by design, so `archivedCount: 0` there is not a shortfall.
+  it('treats a paper-only answer for a non-active set as succeeded, not partial', () => {
+    runOneDeleteToSyncRequest().flush({
+      archivedCount: 0,
+      notFoundIds: [],
+      targetIsActiveSetOfChannel: false,
+    });
+
+    expect(service.syncReport()).toBe('succeeded');
   });
 
   it('does not start a second run while one is already in progress', () => {

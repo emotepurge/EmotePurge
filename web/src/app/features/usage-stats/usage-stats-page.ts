@@ -724,21 +724,25 @@ export class UsageStatsPage {
   );
 
   /**
-   * Why deleting is locked in the view on screen, as a translation key, or `null` when it is not
-   * (spec 8.3):
+   * The "objective" reasons a non-active set view blocks a writer, independent of *which* writer:
+   * the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
+   * request failed), the member list could not be read (503/429), the member list came back
+   * `truncated`, or the member list is still loading for the first time in a settled,
+   * non-switching view (same "not loaded yet" reason as switching — a list not yet confirmed
+   * readable must not be trusted either way). A *loud* reload (`channel.synced`, the refresh
+   * button) does not hit that last case: it keeps serving the previous list as `'ready'` while it
+   * refetches (spec's own "second review round" addendum in DECISIONS), so it locks only if that
+   * previous list was itself `truncated` — never merely for being mid-reload. `null` for the
+   * active view and for a non-active view whose member list loaded clean.
    *
-   * - the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
-   *   request failed) — checked first, in every view, because the rows on screen are not the chosen
-   *   set's and the panel's delete target is the active set;
-   * - the member list could not be read (503/429) — a list that knows half the set must not delete;
-   * - the member list came back `truncated` — same rule;
-   * - otherwise, **for now**, every non-active view: the delete run still reports its bookkeeping in
-   *   the legacy `sync-deleted { emoteIds }` form, which archives `Emote` rows as if they had left the
-   *   *active* set, and still keys its queue and protocol by `Emote.Id`. Both become set-aware in K5
-   *   (T5.1/T5.2, spec 6.6/7.2), which is what lifts this last lock — until then a delete here would
-   *   run against the active set's bookkeeping while a different set is on screen.
+   * Shared by `deleteLockReasonKey` (spec #200, 8.3/8.8) and `voteLockReasonKey` (spec 9, K6): a
+   * vote session is still locked for *every* non-active view regardless of this shared reason —
+   * `voteLockReasonKey` adds its own "for now, active set only" text on top when this one is
+   * `null` but the view is still non-active. Deleting has no such blanket reason any more since
+   * K5/T5.3 (spec 8.8): the run is set-aware (T5.1/T5.2) and the confirmation names the set, so a
+   * plain non-active view with a good member list is no longer locked for it.
    */
-  protected readonly deleteLockReasonKey = computed<string | null>(() => {
+  private readonly sharedSetViewLockReasonKey = computed<string | null>(() => {
     if (this.viewSwitching()) {
       return 'usageStats.setView.lock.switching';
     }
@@ -748,21 +752,43 @@ export class UsageStatsPage {
       case 'unavailable':
         return 'usageStats.setView.lock.membersUnavailable';
       case 'ready':
-        if (this.liveMembers()?.truncated) {
-          return 'usageStats.setView.lock.truncated';
-        }
-        return 'usageStats.setView.lock.nonActiveSet';
+        return this.liveMembers()?.truncated ? 'usageStats.setView.lock.truncated' : null;
+      case 'loading':
+        return 'usageStats.setView.lock.switching';
       default:
-        return 'usageStats.setView.lock.nonActiveSet';
+        return null;
     }
   });
 
   /**
-   * Set names by id, for the name-twin marker's tooltip (E24, AK 59). A twin in a set the list does
-   * not (or no longer) name still gets a stable handle: the id's last six characters, the same
-   * short form the audit view uses for a set.
+   * Why deleting is locked in the view on screen, as a translation key, or `null` when it is not
+   * (spec 8.3, 8.8): the view is switching, or the member list could not be read / came back
+   * truncated / is still loading — `sharedSetViewLockReasonKey` above. A plain non-active view with
+   * a good member list is no longer locked for deleting since K5/T5.3: the run is set-aware
+   * (T5.1/T5.2) and the confirmation names the set (spec 8.8), so there is nothing left this lock
+   * protected against.
    */
-  private readonly emoteSetNames = computed(
+  protected readonly deleteLockReasonKey = computed<string | null>(() =>
+    this.sharedSetViewLockReasonKey(),
+  );
+
+  /** Element id of the vote button's own lock-reason paragraph (`.html`, next to
+   *  `app-mass-delete-panel`) — needed only since T5.3, when deleting is unlocked but voting still
+   *  is (a plain non-active view). One page instance at a time, so a static id is enough, unlike
+   *  `MassDeletePanel.deleteLockReasonId`, which needs a per-instance suffix because that
+   *  component renders twice on one page. */
+  protected readonly voteOnlyLockReasonId = 'usage-stats-vote-only-lock-reason';
+
+  /**
+   * Set names by id, for the name-twin marker's tooltip (E24, AK 59) and — since K5/T5.3 — for the
+   * mass-delete panel's `[setNames]` input, which resolves a finished delete run's own frozen set
+   * (possibly not `selectedEmoteSetId()` any more) for the restore confirmation (spec 8.8). A twin
+   * (or a run's set) the list does not (or no longer) name still gets a stable handle: the id's
+   * last six characters, the same short form the audit view uses for a set — that fallback lives
+   * at each reader, not here, so a reader missing from this map is unambiguous (`undefined`, not a
+   * pre-shortened string masquerading as a name).
+   */
+  protected readonly emoteSetNames = computed(
     () => new Map((this.emoteSetList()?.sets ?? []).map((set) => [set.id, set.name])),
   );
 
@@ -1302,21 +1328,21 @@ export class UsageStatsPage {
   // cannot resolve is a key that was actually removed from emotes() (reload, finished delete),
   // which retainAmong()/clear() already keep out of selectedKeys() before this ever reads it.
   //
-  // Two kinds of row never reach the delete run (spec #200, 8.2), and both only exist in a
-  // non-active set's view: a `'left'` row is no longer in the set, so there is nothing to remove
-  // (E23, AK 57); a row without `Emote.Id` stays out *for now* — the run still keys its queue and its
-  // protocol by that Guid until T5.1 moves them onto the 7TV id. `DeletableEmote.emoteId` therefore
-  // stays a required `string`, which makes this filter a compile-time guarantee rather than a
-  // convention. While the non-active view's own delete lock stands (`deleteLockReasonKey`) neither
-  // exclusion is reachable anyway.
+  // One kind of row never reaches the delete run (spec #200, 8.2): a `'left'` row is no longer in
+  // the set, so there is nothing to remove (E23, AK 57) — it only exists in a non-active set's view.
+  // A row without `Emote.Id` goes in like any other since K5 (spec 7.2): the run is keyed by the 7TV
+  // id and the protocol writes `emoteId: null` for it. A #74 duplicate cell is one row with both
+  // aliases — one `REMOVE` takes both entries (Sonde 5, branch A), and the protocol keeps both names
+  // so the restore can re-add each.
   protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
     this.selection.selectedItems().flatMap((emote) =>
-      emote.membership === 'live' && emote.emoteId !== null
+      emote.membership === 'live'
         ? [
             {
-              emoteId: emote.emoteId,
+              emoteId: emote.emoteId ?? undefined,
               sevenTvEmoteId: emote.sevenTvEmoteId,
               name: emote.emoteName,
+              aliases: emote.aliases,
               // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl
               // überlebt Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the
               // dock's own hiddenSelectedCount is built from, so the two numbers can never disagree.
@@ -1380,11 +1406,16 @@ export class UsageStatsPage {
   protected readonly voteLocked = computed(() => this.voteLockReasonKey() !== null);
 
   /** The reason behind `voteLocked`, for the vote dialog, which re-checks it at submit time (the
-   *  dialog outlives the moment its button was enabled). Mid-switch the switch reason, otherwise the
-   *  non-active view's own reason — exactly the paragraph the dock already shows next to the delete
-   *  button, which the vote button points at. */
+   *  dialog outlives the moment its button was enabled). Mid-switch or an unreadable/truncated
+   *  member list: `sharedSetViewLockReasonKey`'s own text (the same paragraph the dock shows next
+   *  to the delete button whenever that reason applies to deleting too). Otherwise, for every
+   *  non-active view regardless: the "for now, active set only" text — unlike deleting (K5/T5.3),
+   *  a vote session over a non-active set does not exist yet (K6, spec 9), so this reason does not
+   *  narrow the way `deleteLockReasonKey`'s did. */
   protected readonly voteLockReasonKey = computed<string | null>(() =>
-    this.viewSwitching() || this.isNonActiveView() ? this.deleteLockReasonKey() : null,
+    this.viewSwitching() || this.isNonActiveView()
+      ? (this.sharedSetViewLockReasonKey() ?? 'usageStats.setView.lock.nonActiveSet')
+      : null,
   );
 
   /**
@@ -2155,15 +2186,15 @@ export class UsageStatsPage {
     });
   }
 
-  // `deletedIds` are still `Emote.Id` Guids until T5.1 switches the panel's output to 7TV ids (E18);
-  // a delete run only ever starts from the active set's view today, whose rows all carry one.
+  // `deletedSevenTvEmoteIds` are the run's keys — 7TV ids (spec #200, E18) — so rows are matched by
+  // `sevenTvEmoteId`, never by the Guid a row may not have.
   //
   // Edits the rows on screen only when they are the run's own set of the run's own channel: the set
   // dropdown is locked for the length of the run (`deleteRunActive`), but a sync can still move the
   // active set, and the delete service outlives a channel switch. A run of another channel has
   // nothing to say about this one's rows; a run whose set is no longer the one on screen reloads
   // instead of subtracting another set's emotes and slots (the selection reconciles against it).
-  protected onDeleted(deletedIds: string[]): void {
+  protected onDeleted(deletedSevenTvEmoteIds: string[]): void {
     const run = this.deleteService.lastRun();
     if (!run || run.channelName !== this.totalsChannel()) {
       return;
@@ -2172,13 +2203,29 @@ export class UsageStatsPage {
       this.refresh();
       return;
     }
-    this.totalsRows.update((items) => items.filter((item) => !deletedIds.includes(item.emoteId)));
+    const deleted = new Set(deletedSevenTvEmoteIds);
+    // A cell frees one slot per entry, not one (spec 7.2, AK 72) — a #74 duplicate took two with
+    // its one `REMOVE`. In the active view a cell's own `slotCount` is always 1 (one name per id,
+    // E20), so the run's row is asked first: the panel read the set's live entries before the run
+    // (`readLiveAliasesFromActiveSet`) and recorded every alias the `REMOVE` took. Summed over the
+    // rows on screen before they are dropped.
+    const runAliasCounts = new Map(
+      run.result.items.map((item) => [item.sevenTvEmoteId, item.aliases?.length ?? 0]),
+    );
+    const freedSlots = this.emotes()
+      .filter((emote) => emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId))
+      .reduce(
+        (sum, emote) =>
+          sum + Math.max(emote.slotCount, runAliasCounts.get(emote.sevenTvEmoteId) ?? 0),
+        0,
+      );
+    this.totalsRows.update((items) => items.filter((item) => !deleted.has(item.sevenTvEmoteId)));
     // Freed slots are shown right away rather than waiting for the channel.synced round trip the
     // bookkeeping call triggers — the emptied bar is the feedback the delete was run for. The
     // refetch that follows a moment later confirms or corrects it.
     this.setStatus.update((status) =>
       status
-        ? { ...status, occupiedSlots: Math.max(status.occupiedSlots - deletedIds.length, 0) }
+        ? { ...status, occupiedSlots: Math.max(status.occupiedSlots - freedSlots, 0) }
         : status,
     );
     this.selection.clear();

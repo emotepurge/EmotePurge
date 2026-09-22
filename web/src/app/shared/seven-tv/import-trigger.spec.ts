@@ -36,7 +36,14 @@ const CURRENT_SET = 'set-current';
 
 function rows(): PurgeRunRow[] {
   return [
-    { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done', errorMessage: null },
+    {
+      emoteId: 'e1',
+      sevenTvEmoteId: '7tv-1',
+      name: 'PogU',
+      aliases: ['PogU'],
+      status: 'done',
+      errorMessage: null,
+    },
   ];
 }
 
@@ -227,7 +234,6 @@ describe('ImportTrigger', () => {
       expect(dataAt(0)).toEqual({
         channelName: 'achannel',
         setId: 'aset',
-        restoreEnabled: true,
       });
     });
 
@@ -260,7 +266,7 @@ describe('ImportTrigger', () => {
       expect(startRestore).toHaveBeenCalledWith(
         'set-a',
         'channel-a',
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
       );
@@ -292,7 +298,7 @@ describe('ImportTrigger', () => {
       expect(startRestore).toHaveBeenCalledWith(
         CURRENT_SET,
         CURRENT_CHANNEL,
-        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU' }],
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
       );
@@ -521,16 +527,42 @@ describe('ImportTrigger', () => {
     });
   });
 
-  describe('a non-active set on screen (#200, T4.5): the three import doors follow it, restore stays locked', () => {
-    it('marks the source-dialog data as restore-locked when setId differs from activeSetId', () => {
-      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: CURRENT_SET });
+  describe('a non-active set on screen (#200, T4.5): all four doors follow it, restore included since K5', () => {
+    // K5/T5.3: restore's own slot preview follows the same active/non-active fork the other three
+    // doors already had (spec 8.3) — the run itself was already set-aware since T5.1/T5.2.
+    it('restores into the non-active set, reading its slot preview live instead of EmoteSetStatus', () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: CURRENT_CHANNEL,
+          sevenTvUserId: null,
+          emoteSetId: 'set-halloween',
+          emoteSetName: 'Halloween',
+          capacity: 1000,
+          totalCount: 900,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render(CURRENT_CHANNEL, 'set-halloween', {
+        activeSetId: CURRENT_SET,
+        setName: 'Halloween',
+      });
       dialog.click();
 
-      expect(dataAt(0)).toEqual({
-        channelName: CURRENT_CHANNEL,
-        setId: 'set-halloween',
-        restoreEnabled: false,
-      });
+      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        'set-halloween',
+        CURRENT_CHANNEL,
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+        0,
+        true,
+      );
     });
 
     it('reads the non-active set live instead of assuming it is the channel’s active one — the file/import door', () => {
@@ -697,17 +729,6 @@ describe('ImportTrigger', () => {
         emotes: [],
       });
     }
-
-    it('locks restore when the host passes activeSetId null (status unknown), unlike an omitted input', () => {
-      const dialog = render(CURRENT_CHANNEL, 'set-halloween', { activeSetId: null });
-      dialog.click();
-
-      expect(dataAt(0)).toEqual({
-        channelName: CURRENT_CHANNEL,
-        setId: 'set-halloween',
-        restoreEnabled: false,
-      });
-    });
 
     it("takes the explicit 'trackedSet' path for the selected set instead of the active-set fast path", () => {
       loadEmoteSetPreview.mockReturnValue(preview());

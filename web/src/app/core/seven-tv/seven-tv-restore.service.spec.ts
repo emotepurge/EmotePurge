@@ -63,10 +63,10 @@ describe('SevenTvRestoreService', () => {
     vi.restoreAllMocks();
   });
 
-  it('keys every queue row by its emoteId', () => {
+  it('keys every queue row by its 7TV id and alias', () => {
     service.startRestore('set-1', 'sensitron', EMOTES);
 
-    expect(service.queue().map((item) => item.key)).toEqual(['internal-1', 'internal-2']);
+    expect(service.queue().map((item) => item.key)).toEqual(['7tv-1#PogU', '7tv-2#KEKW']);
 
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -115,7 +115,7 @@ describe('SevenTvRestoreService', () => {
     httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
   });
 
-  it('reports the finished run to sync-restored with the restored internal ids', () => {
+  it('reports the finished run to sync-restored with the set and the restored 7TV ids', () => {
     service.startRestore('set-1', 'sensitron', EMOTES);
 
     httpMock.expectOne(GQL_ENDPOINT).flush({});
@@ -124,7 +124,10 @@ describe('SevenTvRestoreService', () => {
     vi.advanceTimersByTime(RUN_DELAY_MS);
 
     const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
-    expect(reportReq.request.body).toEqual({ emoteIds: ['internal-1', 'internal-2'] });
+    expect(reportReq.request.body).toEqual({
+      emoteSetId: 'set-1',
+      sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+    });
     expect(service.syncReport()).toBe('pending');
     reportReq.flush({ restoredCount: 2, notFoundIds: [] });
 
@@ -139,7 +142,7 @@ describe('SevenTvRestoreService', () => {
 
     httpMock
       .expectOne(SYNC_RESTORED_ENDPOINT)
-      .flush({ restoredCount: 0, notFoundIds: ['internal-1'] });
+      .flush({ restoredCount: 0, notFoundIds: ['7tv-1'], targetIsActiveSetOfChannel: true });
 
     expect(service.syncReport()).toBe('partial');
     httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
@@ -158,8 +161,89 @@ describe('SevenTvRestoreService', () => {
 
     service.retrySyncReport();
     const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
-    expect(retryReq.request.body).toEqual({ emoteIds: ['internal-1'] });
+    expect(retryReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
     retryReq.flush({ restoredCount: 1, notFoundIds: [] });
+
+    expect(service.syncReport()).toBe('succeeded');
+    httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
+  // Sonde 5, branch A (spec 7.2, AK 69): 7TV takes the same emote under two aliases, so a protocol
+  // row of a #74 duplicate becomes one queue row — and one ADD — per alias. The bookkeeping report
+  // still names the emote once.
+  it('restores a row with two aliases as two ADDs keyed id#alias, reported as one 7TV id', () => {
+    service.startRestore('set-1', 'sensitron', [
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+    ]);
+
+    expect(service.queue().map((item) => item.key)).toEqual(['7tv-1#PogU', '7tv-1#PogU2']);
+
+    const firstAdd = httpMock.expectOne(GQL_ENDPOINT);
+    expect(firstAdd.request.body.variables).toEqual({
+      setId: 'set-1',
+      emoteId: '7tv-1',
+      alias: 'PogU',
+    });
+    firstAdd.flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    const secondAdd = httpMock.expectOne(GQL_ENDPOINT);
+    expect(secondAdd.request.body.variables).toEqual({
+      setId: 'set-1',
+      emoteId: '7tv-1',
+      alias: 'PogU2',
+    });
+    secondAdd.flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+    expect(reportReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
+    reportReq.flush({ restoredCount: 1, notFoundIds: [] });
+    expect(service.syncReport()).toBe('succeeded');
+    httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
+  // AK 71: the set is frozen into the run record at the start — the report and the manual retry
+  // name it even when the next run the page asks for names another set.
+  it('reports and retries with the set id frozen at the start of the run', () => {
+    service.startRestore('set-1', 'sensitron', [EMOTES[0]]);
+    service.startRestore('set-2', 'sensitron', [EMOTES[1]]);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const firstReport = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+    expect(firstReport.request.body.emoteSetId).toBe('set-1');
+    firstReport.flush({}, { status: 401, statusText: 'Unauthorized' });
+    httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+
+    service.retrySyncReport();
+    const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+    expect(retryReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
+    retryReq.flush({ restoredCount: 1, notFoundIds: [] });
+  });
+
+  // Spec 6.6, E3: only the set-scoped body — also for a protocol row that never had a local emote.
+  it('sends only the set-scoped body form for a row without an emoteId, never the legacy emoteIds', () => {
+    service.startRestore('set-1', 'sensitron', [{ sevenTvEmoteId: '7tv-live', name: 'LiveOnly' }]);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+    expect(Object.keys(reportReq.request.body).sort()).toEqual(['emoteSetId', 'sevenTvEmoteIds']);
+    expect(reportReq.request.body.sevenTvEmoteIds).toEqual(['7tv-live']);
+    reportReq.flush({ restoredCount: 1, notFoundIds: [] });
+    httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
+  // Spec 6.6: a restore into a non-active set is paper only on the server — `restoredCount: 0` is
+  // by design there, not a shortfall.
+  it('treats a paper-only answer for a non-active set as succeeded, not partial', () => {
+    service.startRestore('set-1', 'sensitron', [EMOTES[0]]);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    httpMock
+      .expectOne(SYNC_RESTORED_ENDPOINT)
+      .flush({ restoredCount: 0, notFoundIds: [], targetIsActiveSetOfChannel: false });
 
     expect(service.syncReport()).toBe('succeeded');
     httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });

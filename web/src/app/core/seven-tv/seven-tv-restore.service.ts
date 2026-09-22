@@ -61,6 +61,9 @@ export type ResyncTriggerState = 'idle' | 'pending' | 'succeeded' | 'cooldown' |
  */
 interface RestoreRunInfo {
   channelName: string;
+  /** The set the run re-adds into, frozen when it starts (spec #200, 7.2, AK 71) — the report and
+   *  every retry name this set. */
+  setId: string;
   /** `null` while the run is in flight; set once the engine reports the run complete. */
   result: RunResult | null;
 }
@@ -103,8 +106,9 @@ export class SevenTvRestoreService {
 
   readonly resyncTrigger = signal<ResyncTriggerState>('idle');
 
-  /** How many rows the caller's pre-run duplicate check (#149/T5, `already-present-filter.ts`)
-   *  dropped before ever calling `startRestore` — surfaced so a run where every row was already
+  /** How many `ADD`s — one per alias of a protocol row, counted per alias since the 2026-09-22
+   *  "middle rule" (`filterAlreadyPresentForRestore`) — the caller's pre-run duplicate check
+   *  (#149/T5, `already-present-filter.ts`) dropped before ever calling `startRestore` — surfaced so a run where every row was already
    *  present is not a silent no-op. Set unconditionally, even when the engine then refuses to start
    *  (an empty `emotes` list, e.g. because everything was a duplicate) — that case is exactly the
    *  one this exists to make visible. */
@@ -148,11 +152,12 @@ export class SevenTvRestoreService {
     this.skippedDuplicates.set(skippedDuplicates);
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
     this.showDuplicateNotice(skippedDuplicates > 0 || !duplicateCheckAvailable);
-    // Same key-mirrors-emoteId reasoning as the delete service (see R3 in docs/DECISIONS.md).
-    const queueEmotes: RunQueueEmote[] = emotes.map((emote) => ({ ...emote, key: emote.emoteId }));
-    const started: RestoreRunInfo = { channelName, result: null };
-    const engineStarted = this.engine.start(setId, queueEmotes, ADD_OPERATION, (result) =>
-      this.onRunComplete(started, result),
+    const started: RestoreRunInfo = { channelName, setId, result: null };
+    const engineStarted = this.engine.start(
+      setId,
+      toRestoreQueue(emotes),
+      ADD_OPERATION,
+      (result) => this.onRunComplete(started, result),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — leave every signal as it was, except
@@ -189,20 +194,20 @@ export class SevenTvRestoreService {
   }
 
   /** Manual retry for the closing report — the 7TV re-adds are long done, so this only re-sends
-   *  the bookkeeping call. Safe to repeat: ids already un-archived still count as restored. Channel
-   *  *and* ids come from the same record, so a retry can never mix one run's ids with another's
-   *  channel (R15). */
+   *  the bookkeeping call. Safe to repeat: ids already un-archived still count as restored.
+   *  Channel, set *and* keys come from the same record, so a retry can never mix one run's ids with
+   *  another's channel or with a set chosen after the run started (R15, AK 71). */
   retrySyncReport(): void {
     const current = this.run;
     if (
       this.syncReport() === 'pending' ||
       !current?.result ||
-      current.result.doneIds.length === 0
+      current.result.doneKeys.length === 0
     ) {
       return;
     }
 
-    this.reportRestored(current, current.channelName, current.result.doneIds);
+    this.reportRestored(current, current.result);
   }
 
   private onRunComplete(started: RestoreRunInfo, result: RunResult): void {
@@ -215,12 +220,12 @@ export class SevenTvRestoreService {
     const finished: RestoreRunInfo = { ...started, result };
     this.run = finished;
 
-    if (result.doneIds.length === 0) {
+    if (result.doneKeys.length === 0) {
       return;
     }
     // Deliberately both, in parallel: the report is bookkeeping + audit trail for exactly these
     // ids, the resync is reconciliation against 7TV as the authority. Neither replaces the other.
-    this.reportRestored(finished, finished.channelName, result.doneIds);
+    this.reportRestored(finished, result);
     this.resyncTrigger.set('pending');
     this.channelService.resync(finished.channelName).subscribe({
       next: () => this.applyIfCurrent(finished, () => this.resyncTrigger.set('succeeded')),
@@ -233,11 +238,12 @@ export class SevenTvRestoreService {
     });
   }
 
-  private reportRestored(run: RestoreRunInfo, channelName: string, emoteIds: string[]): void {
+  private reportRestored(run: RestoreRunInfo, result: RunResult): void {
     this.syncReport.set('pending');
+    const sevenTvEmoteIds = doneSevenTvEmoteIds(result);
 
     this.emoteAdminService
-      .syncRestored(channelName, emoteIds)
+      .syncRestored(run.channelName, { emoteSetId: run.setId, sevenTvEmoteIds })
       .pipe(
         // Same policy as the delete's report: waiting can fix a 429/5xx, not a 401/403.
         retry({
@@ -249,9 +255,15 @@ export class SevenTvRestoreService {
         }),
       )
       .subscribe({
-        next: (result: SyncRestoredResult) =>
+        next: (answer: SyncRestoredResult) =>
+          // Paper only for a non-active set (spec #200, 6.6) — `restoredCount` is 0 by design there.
           this.applyIfCurrent(run, () =>
-            this.syncReport.set(result.restoredCount >= emoteIds.length ? 'succeeded' : 'partial'),
+            this.syncReport.set(
+              answer.targetIsActiveSetOfChannel === false ||
+                answer.restoredCount >= sevenTvEmoteIds.length
+                ? 'succeeded'
+                : 'partial',
+            ),
           ),
         error: () => this.applyIfCurrent(run, () => this.syncReport.set('failed')),
       });
@@ -283,4 +295,37 @@ export class SevenTvRestoreService {
       DUPLICATE_NOTICE_MS,
     );
   }
+}
+
+/** One queue row per alias (spec #200, 7.2, Sonde 5 branch A): 7TV accepts the same emote twice
+ *  under two aliases, and restoring a #74 duplicate cell takes one `ADD` each, so the restore is
+ *  the one run keyed `${sevenTvEmoteId}#${alias}`. `name` carries the alias the `ADD` sends. A row
+ *  without `aliases` (an old protocol, a vote-page run) restores under its `name`. A key seen
+ *  twice is dropped: the engine updates status per key, and a second identical `ADD` could only
+ *  collide with the first. */
+function toRestoreQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
+  const rows = new Map<string, RunQueueEmote>();
+  for (const emote of emotes) {
+    const aliases = emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+    for (const alias of aliases) {
+      const key = `${emote.sevenTvEmoteId}#${alias}`;
+      if (!rows.has(key)) {
+        rows.set(key, {
+          key,
+          emoteId: emote.emoteId,
+          sevenTvEmoteId: emote.sevenTvEmoteId,
+          name: alias,
+        });
+      }
+    }
+  }
+  return [...rows.values()];
+}
+
+/** The 7TV ids a restore run finished, read off its `doneKeys` — once each, even when two aliases
+ *  of one emote came back (spec #200, AK 69: two `ADD`s, one id in the report). */
+function doneSevenTvEmoteIds(result: RunResult): string[] {
+  const done = new Set(result.doneKeys);
+  const ids = result.items.filter((item) => done.has(item.key)).map((item) => item.sevenTvEmoteId);
+  return [...new Set(ids)];
 }

@@ -2,12 +2,15 @@ namespace EmotePurge.Core.Services;
 
 // ArchivedCount is the idempotent "goal state reached" count (already-archived rows included) that
 // the caller reports back to the user; NewlyArchivedCount is the subset this call actually wrote —
-// the only thing that may trigger a channel.synced live event. Not part of the HTTP response.
-public record SyncDeletedResultDto(int ArchivedCount, IReadOnlyList<string> NotFoundIds, int NewlyArchivedCount);
+// the only thing that may trigger a channel.synced live event.
+// TargetIsActiveSetOfChannel (spec 6.6, T5.2) is part of the HTTP response: the legacy call always
+// targets the active set (E3), which is why it defaults to true — the set-scoped overload below is
+// the only caller that ever passes false.
+public record SyncDeletedResultDto(int ArchivedCount, IReadOnlyList<string> NotFoundIds, int NewlyArchivedCount, bool TargetIsActiveSetOfChannel = true);
 
 // Mirror of SyncDeletedResultDto for the restore direction: RestoredCount is the goal-state count,
 // NewlyRestoredCount the subset this call actually un-archived.
-public record SyncRestoredResultDto(int RestoredCount, IReadOnlyList<string> NotFoundIds, int NewlyRestoredCount);
+public record SyncRestoredResultDto(int RestoredCount, IReadOnlyList<string> NotFoundIds, int NewlyRestoredCount, bool TargetIsActiveSetOfChannel = true);
 
 public interface IEmoteService
 {
@@ -21,12 +24,33 @@ public interface IEmoteService
     // whenever the goal-state count is > 0, not only when this call changed rows: the user's delete
     // on 7TV happened either way, and gating the paper trail on winning the race against the live
     // sync made most real deletes invisible in the audit log.
+    // This is the legacy body form (spec 6.6, E3): it logs one Information line ("sync-deleted:
+    // legacy body form {emoteIds} used") per call, so the decision when to retire it (Folge-Issue 1,
+    // 14 days after deploy at the earliest) is measured rather than guessed.
     Task<SyncDeletedResultDto> MarkDeletedAsync(string channelName, IReadOnlyList<string> emoteIds, AuditActor actor, CancellationToken cancellationToken = default);
 
     // The restore counterpart (A6 in-app restore): un-archives (IsArchived=false, ArchivedAt=null)
-    // the given emotes after the browser re-added them to the 7TV set. Same idempotence and audit
-    // semantics as MarkDeletedAsync, with emotes.syncRestored as the audit action.
+    // the given emotes after the browser re-added them to the 7TV set. Same idempotence, audit and
+    // legacy-logging semantics as MarkDeletedAsync ("sync-restored: legacy body form {emoteIds}
+    // used"), with emotes.syncRestored as the audit action.
     Task<SyncRestoredResultDto> MarkRestoredAsync(string channelName, IReadOnlyList<string> emoteIds, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // The set-scoped overload (spec 6.6, T5.2): supplements the Guid-keyed overload above rather than
+    // replacing it — the legacy body form (E3) still needs it until Folge-Issue 1 retires that form,
+    // 14 days after deploy at the earliest and only once the API log shows no more legacy callers.
+    // emoteSetId == channel.ActiveEmoteSetId matches by (ChannelId, SevenTvEmoteId) instead of
+    // Emote.Id — the unique index on that pair gives the same precision the Guid match had — and
+    // archives/audits exactly like the legacy path, with emoteSetId and
+    // TargetIsActiveSetOfChannel = true added to the audit details, plus TargetType = "emoteSet",
+    // TargetId = emoteSetId on the entry itself. A different emoteSetId is paper-only: no Emote row
+    // exists to match against outside the active set, so nothing is archived — only the audit trail
+    // (emoteCount = the deduplicated 7TV id count, TargetIsActiveSetOfChannel = false) records that
+    // the report happened. sevenTvEmoteIds is deduplicated ordinally before counting, the same
+    // discipline MarkImportedAsync already uses.
+    Task<SyncDeletedResultDto> MarkDeletedAsync(string channelName, string emoteSetId, IReadOnlyList<string> sevenTvEmoteIds, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // Mirror of the set-scoped MarkDeletedAsync overload, in the restore direction.
+    Task<SyncRestoredResultDto> MarkRestoredAsync(string channelName, string emoteSetId, IReadOnlyList<string> sevenTvEmoteIds, AuditActor actor, CancellationToken cancellationToken = default);
 
     // Unlike MarkDeletedAsync/MarkRestoredAsync, this touches no Emote row at all: an import never
     // creates or un-archives anything here, the target channel's own resync does that afterwards

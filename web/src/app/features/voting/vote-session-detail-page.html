@@ -155,6 +155,7 @@
   @if (canSelectForDelete() && !isCoarse() && activeEmoteSetId(); as setId) {
     <app-mass-delete-panel
       [setId]="setId"
+      [activeSetId]="activeEmoteSetId()"
       [channelName]="channelName()"
       [selectedEmotes]="selectedForDelete()"
       (deleted)="onDeleted($event)"

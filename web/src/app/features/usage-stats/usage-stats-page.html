@@ -1045,12 +1045,13 @@
       <!-- The marking half of the dock acts on THIS channel's set, so it needs one. The import
            section below does not (see its own comment), which is why the set gate sits here and
            not around the whole bar. Gated on the SELECTED set since spec #200 (8.1) — the marks
-           belong to whichever set is on screen. The panel itself stays bound to the ACTIVE set:
-           a delete (and the restore offered on its summary) can so far only start from the active
-           set's view (deleteLockReasonKey locks every other view), so every run this panel shows
-           belongs to the active set, even after the dropdown moved on. K5 freezes the set into the
-           run record and lifts that. -->
-      @if (selectedEmoteSetId() && activeEmoteSetId(); as setId) {
+           belong to whichever set is on screen. The panel is bound to that same SELECTED set since
+           K5/T5.3: the run is set-aware (T5.1/T5.2) and both confirmations name it (spec 8.8), so
+           deleting from — and restoring into — a non-active view no longer needs the active set as
+           a stand-in. `activeSetId`/`setName`/`setNames` feed the confirmations' "not currently
+           active" note and their set name (a finished run's own frozen set can differ from `setId`
+           by the time Restore is clicked — see `setNames`' own doc). -->
+      @if (selectedEmoteSetId(); as setId) {
         <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <!-- Reachable in the accessibility tree again (Opus review, 2026-09-19 — was aria-hidden
                before): the permanently mounted app-dock-outcome-announcer above no longer mirrors
@@ -1101,9 +1102,13 @@
         <app-mass-delete-panel
           #massDeletePanel
           [setId]="setId"
+          [activeSetId]="activeEmoteSetId()"
+          [setName]="selectedEmoteSetName()"
+          [setNames]="emoteSetNames()"
           [channelName]="channelName()"
           [selectedEmotes]="selectedForDelete()"
           [deleteLockReasonKey]="deleteLockReasonKey()"
+          [readLiveAliasesFromActiveSet]="true"
           [leadingActionsPresent]="true"
           (deleted)="onDeleted($event)"
           (reloadRequested)="onReloadRequested()"
@@ -1113,8 +1118,8 @@
                second entry point, not a doubled command). Rendered unconditionally rather than
                behind an @if: it only ever exists here because the dock is already gated on
                !isCoarse() (usage-stats-page.html's `@if (dockVisible() && !isCoarse())`) and this
-               branch is already gated on a set (`@if (selectedEmoteSetId() &&
-               activeEmoteSetId(); as setId)` above) — the header's own two rendering gates, so repeating either would test a
+               branch is already gated on a set (`@if (selectedEmoteSetId(); as setId)` above) —
+               the header's own two rendering gates, so repeating either would test a
                condition that can never be false at this point. The remaining locks
                (importScopeCurrent, any active 7TV run, plus the empty-selection case that only
                applies to this forced-scope entry point) are extracted in importShortcutDisabled —
@@ -1139,12 +1144,14 @@
                ngProjectAs because an @if block itself carries no selector attribute.
                `aria-describedby` only while `voteLocked()` holds (docs/UI-Designsprache.md §10,
                "Disabled explains itself") — an empty selection already says so via the button's own
-               accessible name (the count in the label), and needs no extra reason text. It points at
-               the delete button's own `deleteLockReasonId` (`#massDeletePanel`, now public for
-               exactly this) rather than a second paragraph: `voteLocked()` and `deleteLockReasonKey()
-               !== null` are the same condition (both keyed off `isNonActiveView()`, see
-               usage-stats-page.ts), so the reason already on screen for the delete button applies
-               here unchanged — nothing to duplicate, nothing that can drift out of sync. -->
+               accessible name (the count in the label), and needs no extra reason text. Points at
+               the delete button's own `deleteLockReasonId` (`#massDeletePanel`, public for exactly
+               this) whenever deleting is locked too — `voteLocked()` and `deleteLockReasonKey() !==
+               null` were the same condition before K5/T5.3, so the reason already on screen for the
+               delete button applied here unchanged. Since T5.3 (spec 8.8) that premise only holds
+               for switching/unreadable/truncated: a plain non-active view unlocks deleting but not
+               voting (K6 still pending), so the panel renders no paragraph at all in that one case —
+               `voteOnlyLockReasonId` above is this button's own, used only then. -->
           <ng-container ngProjectAs="[selection-actions]">
             @if (canManage()) {
               <button
@@ -1153,7 +1160,13 @@
                 buttonSize="lg"
                 class="disabled:cursor-not-allowed"
                 [disabled]="selection.selectedItems().length === 0 || voteLocked()"
-                [attr.aria-describedby]="voteLocked() ? massDeletePanel.deleteLockReasonId : null"
+                [attr.aria-describedby]="
+                  voteLocked()
+                    ? deleteLockReasonKey() !== null
+                      ? massDeletePanel.deleteLockReasonId
+                      : voteOnlyLockReasonId
+                    : null
+                "
                 (click)="openCreateVoteSession()"
               >
                 {{
@@ -1164,6 +1177,19 @@
             }
           </ng-container>
         </app-mass-delete-panel>
+        <!-- Vote-only lock reason (K5/T5.3, spec 9/K6): deleting and voting no longer share one
+             lock state in a plain non-active view with a readable member list — deleting is
+             set-aware since K5 and its confirmation names the set (T5.3, spec 8.8), voting is not
+             yet (a set-session vote is K6). In every OTHER lock state (switching, an unreadable or
+             truncated member list) both are still locked for the same reason, and the panel's own
+             paragraph above already names it — this one only fires for the one case that reason
+             does not cover any more, so the vote button's aria-describedby never points at nothing
+             (docs/UI-Designsprache.md §10, "Disabled explains itself"). -->
+        @if (deleteLockReasonKey() === null && voteLockReasonKey(); as voteOnlyReasonKey) {
+          <p [id]="voteOnlyLockReasonId" class="text-xs text-fg-muted">
+            {{ voteOnlyReasonKey | transloco }}
+          </p>
+        }
       }
       <!-- A copy run into another channel's set — visible on THIS page even when this channel is
            neither the run's source nor its target (R9): the run lives in a root-provided service,

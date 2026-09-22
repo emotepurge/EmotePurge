@@ -57,6 +57,7 @@ import {
   EmoteSetListResponse,
   EmoteSetSummary,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -3243,6 +3244,75 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['projectedSlots']()).toEqual({ projected: 1, capacity: 1000 });
   });
 
+  // --- T5.1: the delete run speaks 7TV ids (spec 7.2, E18, AK 72) ------------------------------
+
+  it('hands a live member without a Guid and a duplicate cell with both aliases to the delete run', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('d', 'Dupe', 5)],
+      members: memberList([
+        member('7tv-d', 'Dupe'),
+        member('7tv-d', 'DupeAlias'),
+        member('7tv-x', 'PumpkinX'),
+      ]),
+    });
+    for (const row of component['emotes']()) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+
+    const forDelete = component['selectedForDelete']();
+    expect(forDelete.map((row) => [row.sevenTvEmoteId, row.emoteId, row.aliases])).toEqual([
+      ['7tv-d', 'd', ['Dupe', 'DupeAlias']],
+      ['7tv-x', undefined, ['PumpkinX']],
+    ]);
+  });
+
+  it('drops the deleted cells by their 7TV id and frees their slots once the panel reports them (AK 72)', async () => {
+    await openView({ totals: [emote('a', 'Alpha', 40), emote('b', 'Beta', 60)] });
+    // The panel's `deleted` names the run's keys; onDeleted edits the rows only for the run of the
+    // set and channel on screen.
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+    });
+
+    component['onDeleted'](['7tv-a']);
+
+    // The Guid of this row is 'a' — a Guid-keyed filter would have kept it.
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-b']);
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 9 });
+  });
+
+  // Operator decision 2026-09-22: the active view knows one name per id (slotCount 1), but the
+  // panel recorded both aliases of a #74 duplicate from its live read — the one REMOVE freed two.
+  it('frees every entry the run recorded for a cell in the active view, not just its one slot', async () => {
+    await openView({ totals: [emote('a', 'Alpha', 40), emote('b', 'Beta', 60)] });
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      result: {
+        doneKeys: ['7tv-a'],
+        items: [
+          {
+            key: '7tv-a',
+            emoteId: 'a',
+            sevenTvEmoteId: '7tv-a',
+            name: 'Alpha',
+            aliases: ['Alpha', 'AlphaTwo'],
+            status: 'done',
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+
+    component['onDeleted'](['7tv-a']);
+
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
   it('names a name twin by the set the dropdown list calls it, and never adds its numbers (AK 59)', async () => {
     await openView({
       emoteSetId: 'set-b',
@@ -3329,7 +3399,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['slotBudget']()).toBeNull();
   });
 
-  it('a truncated member list locks deleting with its own reason; a whole one still carries the K5 interim lock; the active view carries none', async () => {
+  it('a truncated member list locks deleting with its own reason; a whole one no longer locks it (K5/T5.3), but voting still does (K6)', async () => {
     await openView({
       emoteSetId: 'set-b',
       totals: [],
@@ -3343,7 +3413,11 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       totals: [],
       members: memberList([member('7tv-a', 'Alpha')]),
     });
-    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+    // K5/T5.3 (spec 8.8): the run is set-aware and both confirmations name the set, so a plain
+    // non-active view with a good member list no longer locks deleting. Voting still does (K6,
+    // spec 9 — set sessions do not exist yet) with the reason deleting used to carry.
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
 
     await openView({ totals: [emote('a', 'Alpha')] });
     expect(component['deleteLockReasonKey']()).toBeNull();
@@ -3402,9 +3476,11 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     liveListRequests().forEach((request) => request.flush(memberList([member('7tv-a', 'PeepoA')])));
     await settle();
 
-    // Landed: the non-active view's own (K5 interim) reason takes over.
+    // Landed: the member list loaded clean, so deleting is unlocked (K5/T5.3, spec 8.8) — voting
+    // still shows the non-active view's own reason (K6, spec 9).
     expect(component['viewSwitching']()).toBe(false);
-    expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.nonActiveSet');
   });
 
   it('hands the vote dialog a live lock, so a switch started behind the open dialog blocks its submit (finding A)', async () => {

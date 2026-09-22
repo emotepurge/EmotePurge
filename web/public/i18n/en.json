@@ -869,6 +869,8 @@
       "one": "Add {{ count }} emote back to the set?",
       "other": "Add {{ count }} emotes back to the set?"
     },
+    "confirmSetLine": "Into the set “{{ setName }}”.",
+    "confirmSetNotActive": "This set is not the active one right now.",
     "confirmExecute": "Restore",
     "capacityProjection": "The set would then hold {{ projected }} of {{ capacity }} slots.",
     "capacityWarning": "That exceeds the capacity — 7TV will reject the surplus emotes.",
@@ -904,13 +906,12 @@
         "noRows": "The file contains no importable emotes.",
         "wrongChannel": "The protocol belongs to a different channel.",
         "wrongSet": "The protocol belongs to a different emote set — the channel switched its active set.",
-        "restoreNonActiveSet": "For now, restoring only works in the active set — this set is not the active one right now.",
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore."
       }
     },
     "skippedDuplicates": {
-      "one": "{{ count }} emote is already in the target set and was skipped.",
-      "other": "{{ count }} emotes are already in the target set and were skipped."
+      "one": "{{ count }} entry was already in the target set and was skipped.",
+      "other": "{{ count }} entries were already in the target set and were skipped."
     },
     "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
   },
@@ -951,9 +952,11 @@
       "one": "Delete {{ count }} emote from 7TV?",
       "other": "Delete {{ count }} emotes from 7TV?"
     },
+    "confirmSetLine": "From the set “{{ setName }}”.",
+    "confirmSetNotActive": "This set is not the active one right now.",
     "checkingSharedSets": "Checking shared sets…",
-    "sharedSetWarningTitle": "Warning: the active emote set may not (only) belong to this channel.",
-    "notOwnSet": "The active set doesn't belong to this channel's own 7TV account.",
+    "sharedSetWarningTitle": "Warning: this emote set may not (only) belong to this channel.",
+    "notOwnSet": "This set doesn't belong to this channel's own 7TV account.",
     "knownAffected": "Known to us as also affected: {{ list }}",
     "moderatedAffected": "Moderated by you, also affected: {{ list }}",
     "ownershipCheckUnavailable": "We couldn't check right now whether this set really belongs to this channel — please verify on 7tv.app yourself before deleting.",
@@ -981,7 +984,14 @@
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }})."
     },
-    "abortedByLock": "Nothing was deleted – the view changed while the dialog was open."
+    "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
+    "setChangedDuringConfirm": "A different set is selected now.",
+    "abortedByMemberRead": "Nothing was deleted.",
+    "memberRead": {
+      "unavailable": "The set’s current entries could not be read from 7TV.",
+      "truncated": "The set’s entries could only be read partly."
+    },
+    "anotherRunStarted": "Another 7TV run started in the meantime."
   },
   "import": {
     "copyButton": "Transfer",

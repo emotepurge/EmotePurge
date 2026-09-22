@@ -1,84 +1,7 @@
 import { HttpClient } from '@angular/common/http';
-import { Observable, catchError, map, of, switchMap, throwError } from 'rxjs';
+import { Observable, catchError, map, of } from 'rxjs';
 
-/** Host-absolute, same endpoint the write mutations already use (`seven-tv-run-engine.ts`) —
- *  reading a set's contents is public on `v4`, so unlike the mutations this needs no
- *  `Authorization` header and no 7TV token. */
-const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
-
-// Mirrors SevenTvApiClient.cs's GqlEmoteSetPreviewQuery/SetEntriesPerPage/MaxSetEntryPages
-// (`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs`): 500 per page keeps even a
-// subscriber-sized set (capacity can exceed 1000) at a handful of requests, and the 10-page cap is
-// a runaway guard, not an expected limit — nothing in this codebase has ever seen a set anywhere
-// near 5000 entries. Only `emote.id` is requested: unlike the backend's preview query (which also
-// needs alias/name/scores for a human-facing list), this only ever compares ids.
-const SET_ENTRIES_PER_PAGE = 500;
-const MAX_SET_ENTRY_PAGES = 10;
-
-const GQL_EMOTE_SET_IDS_QUERY =
-  'query($id: Id!, $page: Int!, $perPage: Int!) { emoteSets { emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { totalCount pageCount items { emote { id } } } } } }';
-
-interface SevenTvGqlEmoteSetIdsResponse {
-  data?: {
-    emoteSets?: {
-      emoteSet?: {
-        emotes?: {
-          pageCount: number;
-          items: { emote: { id: string } }[];
-        } | null;
-      } | null;
-    } | null;
-  };
-  // 7TV can answer a GraphQL-level rejection (e.g. an unknown set id) with HTTP 200 — presence of
-  // this array, regardless of content, is what `loadAllSevenTvEmoteIds` treats as "no usable data".
-  errors?: unknown[];
-}
-
-function fetchEmoteSetIdsPage(
-  httpClient: HttpClient,
-  targetSetId: string,
-  page: number,
-): Observable<SevenTvGqlEmoteSetIdsResponse> {
-  return httpClient.post<SevenTvGqlEmoteSetIdsResponse>(SEVEN_TV_GQL_ENDPOINT, {
-    query: GQL_EMOTE_SET_IDS_QUERY,
-    variables: { id: targetSetId, page, perPage: SET_ENTRIES_PER_PAGE },
-  });
-}
-
-/** Walks every page of `targetSetId`'s current contents and collects the 7TV emote ids in it.
- *  Errors (network, HTTP, or a GraphQL-level rejection) all become a thrown error here — a single
- *  place for `filterAlreadyPresent`'s `catchError` below to fail open from, rather than each page
- *  reporting failure its own way. Stops early once a page reports it was the last one
- *  (`page >= pageCount`), and unconditionally at `MAX_SET_ENTRY_PAGES` — a set that size has never
- *  been seen in this codebase, so stopping there and using what was gathered so far mirrors the
- *  backend's own truncation behaviour (`GetEmoteSetPreviewAsync`) rather than failing the whole
- *  check over it. */
-function loadAllSevenTvEmoteIds(
-  httpClient: HttpClient,
-  targetSetId: string,
-): Observable<Set<string>> {
-  const ids = new Set<string>();
-
-  function loadPage(page: number): Observable<Set<string>> {
-    return fetchEmoteSetIdsPage(httpClient, targetSetId, page).pipe(
-      switchMap((response) => {
-        const emotes = response.data?.emoteSets?.emoteSet?.emotes;
-        if ((response.errors?.length ?? 0) > 0 || !emotes) {
-          return throwError(() => new Error('7TV emote set read failed'));
-        }
-        for (const item of emotes.items) {
-          ids.add(item.emote.id);
-        }
-        if (page >= emotes.pageCount || page >= MAX_SET_ENTRY_PAGES) {
-          return of(ids);
-        }
-        return loadPage(page + 1);
-      }),
-    );
-  }
-
-  return loadPage(1);
-}
+import { loadSevenTvSetEntries } from './seven-tv-set-entries';
 
 export interface AlreadyPresentFilterResult<T> {
   /** `rows` minus every entry already present in the target set. What the run should actually send —
@@ -103,10 +26,12 @@ export interface AlreadyPresentFilterResult<T> {
  * the duplicate. This became reachable once #149 moved the write surface to `v4`, whose alias
  * validator lets umlaut aliases through where `v3` used to reject them before the push ever ran.
  *
- * Used at the last moment before a run actually starts — both restore's two entry points
- * (`restore-flow.ts`, `mass-delete-panel.ts`) and import's (`import-flow.ts`) call this right in the
- * confirm-dialog-closed handler, immediately before handing rows to `startRestore`/`startImport` —
- * so the fetch it does is always fresh, never a dialog-open-time snapshot reused later. For import
+ * Used at the last moment before a run actually starts — import (`import-flow.ts`) calls this, and
+ * both restore entry points (`restore-flow.ts`, `mass-delete-panel.ts`) call its restore variant
+ * `filterAlreadyPresentForRestore` below, right in the confirm-dialog-closed handler, immediately
+ * before handing rows to `startRestore`/`startImport` — so the fetch it does is always fresh, never
+ * a dialog-open-time snapshot reused later. This one compares the 7TV id alone (spec #200, 7.2: the
+ * import and the delete path stay on the id axis). For import
  * this sits *on top of* `buildImportPreview`'s own dialog-time filter (`import-preview.ts`), not
  * instead of it: that filter can already be stale by the time the user actually confirms (another
  * editor, another tab, a long-open dialog), so this re-checks right before anything is sent.
@@ -146,10 +71,95 @@ export function filterAlreadyPresent<T extends { sevenTvEmoteId: string }>(
   targetSetId: string,
   rows: readonly T[],
 ): Observable<AlreadyPresentFilterResult<T>> {
-  return loadAllSevenTvEmoteIds(httpClient, targetSetId).pipe(
-    map((targetIds) => {
-      const filtered = rows.filter((row) => !targetIds.has(row.sevenTvEmoteId));
+  return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
+    map(({ aliasesById }) => {
+      const filtered = rows.filter((row) => !aliasesById.has(row.sevenTvEmoteId));
       return { rows: filtered, skipped: rows.length - filtered.length, available: true };
+    }),
+    catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
+  );
+}
+
+/** A restore row: one purge-protocol row, re-added once per alias (spec #200, 7.2). `aliases`
+ *  missing or empty means `[name]`, the same fallback the restore queue applies. */
+export interface RestoreFilterRow {
+  sevenTvEmoteId: string;
+  name: string;
+  aliases?: readonly string[];
+}
+
+/**
+ * The restore run's pre-run check — `filterAlreadyPresent`'s id comparison, refined per alias
+ * ("middle rule", operator decision 2026-09-22, refining spec #200 7.2's literal
+ * `(sevenTvEmoteId, alias)` comparison). Per row, against the target set's live entries:
+ *
+ * 1. **The id is not in the set** — the row goes through unchanged.
+ * 2. **The id sits in the set under an alias the row does not name** — the whole row is dropped,
+ *    exactly as the id-only check always did. Re-adding any of its aliases would put the same emote
+ *    into the set a second time under another name: the #149 hole this filter exists for (7TV's
+ *    `addEmote` only rejects a colliding alias string, never a second entry of the same id).
+ * 3. **The id sits in the set only under aliases the row names** — those aliases are dropped from
+ *    the row, the rest are re-added. This is the partial retry of a #74 duplicate cell: a restore
+ *    in which `A` came back and `B` failed is re-run from the same protocol, and `B` is the only
+ *    thing still missing. The id-only check dropped the whole row there, and `B` was then
+ *    unrecoverable from the protocol (spec 7.2, "Vorprüfung des Restore"). A row all of whose
+ *    aliases are already present drops out entirely.
+ *
+ * `skipped` counts **aliases**, i.e. `ADD`s not sent, not rows: the restore confirmation already
+ * speaks in `ADD`s (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per
+ * `ADD` (`${sevenTvEmoteId}#${alias}`), so what the run shows plus what this skipped adds up to the
+ * number the dialog named. For every single-alias row — nearly all of them — the two counts are the
+ * same thing. Fails open exactly like `filterAlreadyPresent` (see there).
+ *
+ * `complete: false` from the read (the 10-page runaway guard, or a `totalCount` mismatch — K5 fix
+ * round, see `seven-tv-set-entries.ts`) is deliberately **not** treated as a reason to fail open
+ * here, unlike the delete run's own live alias read (`mass-delete-panel.ts`, spec 8.3's "a list
+ * that only knows half must not delete"): failing open would return every row completely
+ * unfiltered, while the per-alias comparison below, even against a partial read, still catches
+ * every duplicate genuinely inside the pages it did see and drops exactly its already-present
+ * aliases — strictly fewer wrong re-adds than discarding that signal outright would produce. This
+ * only widens the existing, already-accepted gap (a window remains, always has, between any read —
+ * complete or not — and each individual `addEmote` call); it does not create a new one. Restore
+ * only ever fails open (available: false, nothing filtered) on an actual fetch/GraphQL error, same
+ * as before this round.
+ */
+export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
+  httpClient: HttpClient,
+  targetSetId: string,
+  rows: readonly T[],
+): Observable<AlreadyPresentFilterResult<T>> {
+  return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
+    map(({ aliasesById, aliaslessIds }) => {
+      const kept: T[] = [];
+      let skipped = 0;
+      for (const row of rows) {
+        const rowAliases = row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
+        const present = aliasesById.get(row.sevenTvEmoteId);
+        if (present === undefined) {
+          // Never encountered at all — not in the set, not even under an aliasless entry (every
+          // entry this reader sees, aliased or not, gets a map entry; see `loadSevenTvSetEntries`).
+          kept.push(row);
+          continue;
+        }
+        // An entry 7TV lists without an alias occupies the set under a name the row cannot vouch
+        // for, so it takes rule 2 like any foreign alias would — even when the same id also has an
+        // aliased entry the row does name (K5 fix round, spec §37/§38: an aliasless entry must not
+        // be silently absorbed by a sibling aliased entry of the same id).
+        const foreignEntry =
+          aliaslessIds.has(row.sevenTvEmoteId) ||
+          present.length === 0 ||
+          present.some((alias) => !rowAliases.includes(alias));
+        if (foreignEntry) {
+          skipped += rowAliases.length;
+          continue;
+        }
+        const missing = rowAliases.filter((alias) => !present.includes(alias));
+        skipped += rowAliases.length - missing.length;
+        if (missing.length > 0) {
+          kept.push({ ...row, aliases: missing });
+        }
+      }
+      return { rows: kept, skipped, available: true };
     }),
     catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
   );
