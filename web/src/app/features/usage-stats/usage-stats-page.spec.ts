@@ -3748,6 +3748,95 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['selection'].selectedKeys()).toEqual(['7tv-a']);
     expect(component['selectionPrunedFeedback']()?.count).toBe(1);
   });
+
+  // --- Client-side member-list cache (operator decision 2026-09-22) -----------------------------
+  // A fast A→B→A switch hit 429 on the shared ForeignEmoteLookup limiter even though the backend's
+  // own 60 s cache sat behind it — a cache hit there still spends a permit. liveMembersResource now
+  // reads through SevenTvEmoteSetService.loadCachedEmoteSetPreview, which mirrors that TTL
+  // client-side for a params-driven load only; see that method's own spec for the cache's rules in
+  // isolation (fresh hit, expiry, refresh bypass, no caching of an error, separate keys).
+
+  it('serves a set switch back to a recently-shown set from the client cache — A, B, A issues exactly two live-list requests', async () => {
+    configure();
+    router = TestBed.inject(Router);
+    await router.navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    await settle();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/emote-sets')
+      .flush(
+        emoteSetList([
+          emoteSet({ id: 'set-a', isActive: true }),
+          emoteSet({ id: 'set-b', name: 'Halloween', isActive: false }),
+          emoteSet({ id: 'set-c', name: 'Winter', isActive: false }),
+        ]),
+      );
+    await settle();
+
+    // Initial load of B (set-b) — a real request.
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    let requests = liveListRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].request.params.get('emoteSetId')).toBe('set-b');
+    requests[0].flush(memberList([member('7tv-a', 'PeepoA')], { emoteSetId: 'set-b' }));
+    await settle();
+
+    // Switch to a different, never-loaded non-active set (set-c) — also a real request.
+    component['onEmoteSetSelected']('set-c');
+    await settle();
+    flushByPath(httpMock, TOTALS_URL, []);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    requests = liveListRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].request.params.get('emoteSetId')).toBe('set-c');
+    requests[0].flush(memberList([member('7tv-z', 'Zulu')], { emoteSetId: 'set-c' }));
+    await settle();
+
+    // Back to set-b, within the 60 s TTL: no live-list request at all — served from the cache.
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    flushByPath(httpMock, TOTALS_URL, [emote('a', 'PeepoA')]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    await settle();
+
+    expect(liveListRequests()).toHaveLength(0);
+    expect(component['liveMembersState']()).toBe('ready');
+    expect(component['emotes']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+  });
+
+  it('a loud channel.synced reload still bypasses a warm client cache and fetches fresh', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+    // The cache is now warm for (a, set-b) from openView's own initial load.
+    vi.useFakeTimers();
+    const source = FakeEventSource.instances[0];
+
+    source.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const reloaded = liveListRequests();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.params.get('refresh')).toBe('true');
+  });
 });
 
 /**

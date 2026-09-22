@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ForeignEmoteSetResponse } from './foreign-emote-set.model';
 import { EmoteSetListResponse, EmoteSetTargetsResponse } from './seven-tv-emote-set.model';
@@ -157,6 +157,142 @@ describe('SevenTvEmoteSetService', () => {
           candidate.params.get('refresh') === 'true',
       );
       req.flush(previewResponse());
+    });
+  });
+
+  // K4 fix round (2026-09-22): a fast A→B→A switch on the usage page hit 429 on the shared
+  // ForeignEmoteLookup limiter even though the backend's own 60 s cache sat behind it — a cache hit
+  // there still spends a permit. loadCachedEmoteSetPreview mirrors that TTL client-side, for this
+  // one caller (K4's usage-stats page) only; K3/K2 keep calling the plain loadEmoteSetPreview above.
+  describe('loadCachedEmoteSetPreview — K4 client-side cache (2026-09-22)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('serves a fresh entry from the cache without a second request', () => {
+      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
+      const payload = previewResponse();
+      httpMock
+        .expectOne(
+          (candidate) =>
+            candidate.url === '/api/seventv/channels/handofblood/emotes' &&
+            candidate.params.get('emoteSetId') === 'set-halloween',
+        )
+        .flush(payload);
+
+      let result: ForeignEmoteSetResponse | undefined;
+      service
+        .loadCachedEmoteSetPreview('handofblood', 'set-halloween')
+        .subscribe((r) => (result = r));
+
+      expect(result).toEqual(payload);
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.url === '/api/seventv/channels/handofblood/emotes' &&
+          candidate.params.get('emoteSetId') === 'set-halloween',
+      );
+    });
+
+    it('refetches once the entry has expired', () => {
+      vi.useFakeTimers();
+      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
+        .flush(previewResponse());
+
+      vi.advanceTimersByTime(60_001);
+
+      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
+        .flush(previewResponse());
+    });
+
+    it('a refresh:true call bypasses a warm entry, fetches, and replaces it for the next plain read', () => {
+      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
+        .flush(previewResponse({ totalCount: 1 }));
+
+      service
+        .loadCachedEmoteSetPreview('handofblood', 'set-halloween', { refresh: true })
+        .subscribe();
+      const refreshReq = httpMock.expectOne(
+        (candidate) =>
+          candidate.params.get('emoteSetId') === 'set-halloween' &&
+          candidate.params.get('refresh') === 'true',
+      );
+      const refreshed = previewResponse({ totalCount: 2 });
+      refreshReq.flush(refreshed);
+
+      let result: ForeignEmoteSetResponse | undefined;
+      service
+        .loadCachedEmoteSetPreview('handofblood', 'set-halloween')
+        .subscribe((r) => (result = r));
+
+      expect(result).toEqual(refreshed);
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.url === '/api/seventv/channels/handofblood/emotes' &&
+          candidate.params.get('refresh') !== 'true',
+      );
+    });
+
+    it('never caches an error — a retry after a 429 always asks again', () => {
+      service
+        .loadCachedEmoteSetPreview('handofblood', 'set-halloween')
+        .subscribe({ error: () => undefined });
+      httpMock
+        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
+        .flush({ errorCode: 'rate_limited' }, { status: 429, statusText: 'Too Many Requests' });
+
+      service.loadCachedEmoteSetPreview('handofblood', 'set-halloween').subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-halloween')
+        .flush(previewResponse());
+    });
+
+    it('keys separately per emote set within the same channel', () => {
+      service.loadCachedEmoteSetPreview('handofblood', 'set-a').subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-a')
+        .flush(previewResponse({ emoteSetId: 'set-a' }));
+
+      service.loadCachedEmoteSetPreview('handofblood', 'set-b').subscribe();
+      httpMock
+        .expectOne((candidate) => candidate.params.get('emoteSetId') === 'set-b')
+        .flush(previewResponse({ emoteSetId: 'set-b' }));
+    });
+
+    it('keys separately per channel for the same emote set id, and normalizes the channel name (rule 9)', () => {
+      service.loadCachedEmoteSetPreview('HandOfBlood', 'set-shared').subscribe();
+      httpMock
+        .expectOne(
+          (candidate) =>
+            candidate.url === '/api/seventv/channels/handofblood/emotes' &&
+            candidate.params.get('emoteSetId') === 'set-shared',
+        )
+        .flush(previewResponse({ channelName: 'handofblood', emoteSetId: 'set-shared' }));
+
+      // Same emote set id, a different channel — must not be served from handofblood's entry.
+      service.loadCachedEmoteSetPreview('otherchannel', 'set-shared').subscribe();
+      httpMock
+        .expectOne(
+          (candidate) =>
+            candidate.url === '/api/seventv/channels/otherchannel/emotes' &&
+            candidate.params.get('emoteSetId') === 'set-shared',
+        )
+        .flush(previewResponse({ channelName: 'otherchannel', emoteSetId: 'set-shared' }));
+
+      // Mixed-case navigation back to the first channel still hits the cached entry.
+      let result: ForeignEmoteSetResponse | undefined;
+      service.loadCachedEmoteSetPreview('handofblood', 'set-shared').subscribe((r) => (result = r));
+      expect(result?.channelName).toBe('handofblood');
+      httpMock.expectNone(
+        (candidate) =>
+          candidate.url === '/api/seventv/channels/handofblood/emotes' &&
+          candidate.params.get('emoteSetId') === 'set-shared',
+      );
     });
   });
 

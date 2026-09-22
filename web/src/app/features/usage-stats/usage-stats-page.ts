@@ -644,7 +644,11 @@ export class UsageStatsPage {
       this.liveMembersRefreshFor = null;
       const refresh =
         asked?.channelName === params.channelName && asked.emoteSetId === params.emoteSetId;
-      return this.emoteSetService.loadEmoteSetPreview(params.channelName, params.emoteSetId, {
+      // Cached, not the plain method: switching back to a recently-shown set within the cache's
+      // TTL must cost no request at all (operator decision 2026-09-22) — see
+      // SevenTvEmoteSetService.loadCachedEmoteSetPreview's doc for the TTL and why this is the one
+      // caller that gets it. `refresh` (channel.synced, the refresh button) still bypasses it.
+      return this.emoteSetService.loadCachedEmoteSetPreview(params.channelName, params.emoteSetId, {
         refresh,
       });
     },

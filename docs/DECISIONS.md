@@ -226,6 +226,25 @@ active id: during a channel switch inside the route, the header's set-gated writ
 dock's marking half are unmounted until the new channel's status lands, instead of staying mounted
 (disabled) over the previous channel's set id.
 
+**A client-side cache for the non-active member list (operator decision 2026-09-22).** Switching
+back and forth between sets quickly still hit 429 on the shared `ForeignEmoteLookup` limiter (10
+permits/60 s) even with the Api-side cache above, because that cache sits *behind* the limiter — a
+hit there still spends a permit. `SevenTvEmoteSetService` gained `loadCachedEmoteSetPreview`, used
+only by `liveMembersResource`'s params-driven load: a client-side `Map` keyed `(channelName,
+emoteSetId)`, TTL 60 s (the same figure as the Api-side cache, named `EMOTE_SET_PREVIEW_CACHE_TTL_MS`
+so a future change to one is a prompt to check the other), so a switch back to a recently-shown set
+within that window costs no request at all — A, B, A now costs two, not three. A loud reload
+(`channel.synced`, the refresh button) still passes `refresh: true` straight through, bypassing the
+client cache exactly as it already bypassed the Api's, and replaces the cached entry; an error
+response is never cached. `loadEmoteSetPreview` itself is unchanged and is what K3's
+`ForeignChannelStep` and the K2/T4.5 import-target loader keep calling — deliberately not folded in:
+K3 already carries its own component-scoped, indefinitely-lived preview cache with its own
+same-set-id race guard (P3-5, an older answer must never overwrite a newer one), a guarantee this
+TTL cache does not make on its own, and layering it underneath K3's would risk resurrecting exactly
+that race one layer down for no gain K3 does not already have. Giving the tracked-channel preview
+(K4) its own rate-limit bucket instead of continuing to share `ForeignEmoteLookup` with K2/K3 is a
+follow-up issue.
+
 **Two corrected sentences of the concept** (`docs/Konzept-Emote-Sets-2026-09-19.md`): 7.1 "engine and
 mutation need nothing new" was only true of the 7TV mutation itself — everything around the run
 (selection key, queue key, report, optimistic update, protocol, voting wire) hung on the Guid; 6.2
