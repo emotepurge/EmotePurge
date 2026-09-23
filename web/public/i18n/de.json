@@ -1271,7 +1271,7 @@
     "removalSyncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",
     "removalSyncFailed": "Die Emotes sind bei 7TV aus dem Zielset entfernt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
     "removalSyncRetry": "Erneut melden",
-    "removalSyncRetrySucceeded": "Rückmeldung über die Entfernung erfolgreich nachgeholt.",
+    "removalSyncSucceeded": "Rückmeldung über die Entfernung erfolgreich.",
     "resync": {
       "pending": "Abgleich des Zielkanals wird angestoßen…",
       "succeeded": "Abgleich angestoßen — der Zielkanal zeigt die Emotes gleich.",

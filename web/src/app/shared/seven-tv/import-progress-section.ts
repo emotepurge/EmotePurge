@@ -173,7 +173,7 @@ import { RunProgressPanel } from './run-progress-panel';
                 importService.removalReport() === 'succeeded' && !importService.isRunning()
               ) {
                 <span class="text-xs text-fg-muted">
-                  {{ 'import.removalSyncRetrySucceeded' | transloco }}
+                  {{ 'import.removalSyncSucceeded' | transloco }}
                 </span>
               }
               <!-- A tracked *non*-active target never gets the resync notice (onRunComplete skips

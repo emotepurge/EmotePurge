@@ -39,7 +39,7 @@ const DE_TRANSLATIONS = {
     removalSyncFailedTitle: 'Entfernungs-Rückmeldung fehlgeschlagen',
     removalSyncFailed: 'Entfernungs-Rückmeldung an EmotePurge fehlgeschlagen.',
     removalSyncRetry: 'Entfernung erneut melden',
-    removalSyncRetrySucceeded: 'Entfernungs-Rückmeldung erfolgreich.',
+    removalSyncSucceeded: 'Entfernungs-Rückmeldung erfolgreich.',
     summary: {
       counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
       target: 'Ziel: {{ channel }}',

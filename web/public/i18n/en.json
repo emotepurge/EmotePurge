@@ -1271,7 +1271,7 @@
     "removalSyncFailedTitle": "Reporting the removal back to EmotePurge failed",
     "removalSyncFailed": "The emotes were removed from the target set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
     "removalSyncRetry": "Report again",
-    "removalSyncRetrySucceeded": "Removal reported back successfully.",
+    "removalSyncSucceeded": "Removal reported back successfully.",
     "resync": {
       "pending": "Triggering the target channel's sync…",
       "succeeded": "Sync triggered — the target channel shows the emotes in a moment.",
