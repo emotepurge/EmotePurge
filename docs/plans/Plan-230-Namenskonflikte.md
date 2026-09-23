@@ -195,9 +195,13 @@ zu dem Zeitpunkt schon nicht mehr gegeben hätte, wenn der Tab mitten im Lauf st
 6. **Restfenster:** Zwischen dem letzten Lesen und jedem einzelnen REMOVE bleibt ein Fenster, in
    dem ein anderer Editor dem Ziel-Eintrag einen Alias geben kann, den die Datei nicht kennt. Es
    ist ohne atomare Operation auf 7TVs Seite nicht zu schließen — `already-present-filter.ts:55-57`
-   sagt dasselbe für den Duplikatfilter, und dieser Plan behauptet nichts anderes. Das
-   Ergebnisprotokoll trägt deshalb je Replace-Zeile zusätzlich die Aliase, die der REMOVE
-   **tatsächlich** genommen hat, soweit das Nachlesen nach dem Lauf sie liefert (T5).
+   sagt dasselbe für den Duplikatfilter, und dieser Plan behauptet nichts anderes. **Korrektur
+   (§7):** Das Ergebnisprotokoll kann die tatsächlich genommenen Aliase entgegen der ursprünglichen
+   Absicht **nicht** aus einem Nachlesen nach dem Lauf tragen — ein Read, der nach dem REMOVE läuft,
+   sieht den entfernten Eintrag nicht mehr. Gebaut ist stattdessen: `removedTarget` trägt die Aliase
+   des **bestätigten Zielstands aus dem Plan**, also des live-verifizierten Reads vor dem ersten
+   REMOVE (`stampReplaceTargets`) — das ist, was die Zeile beim REMOVE tatsächlich mitnahm, soweit
+   dieser Read es kannte; ein danach eingetretenes Restfenster-Ereignis bleibt unsichtbar.
 
 **Was nach dem Lauf bleibt, und was aus der ersten Fassung entfällt:**
 
@@ -1318,6 +1322,10 @@ neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
 | **Adopt-only-Plan** | nicht behandelt | eigener Titel „N Namen im Zielset angleichen?" plus eine neutrale Umbenennen-Zeile, sobald ein Plan ausschließlich adoptiert | Betreiber-Entscheidung 2026-09-23: ein Titel, der weiter „N Emotes kopieren" sagt, obwohl kein ADD läuft, beschreibt einen Lauf, den es nicht gibt |
 | **„Zurück" im Auflösungsschritt** | nicht spezifiziert | „Zurück" verwirft nichts — die Gruppe bleibt als Entwurf erhalten, nur „Übernehmen" schreibt sie in die entschiedenen Zeilen | ein Klick auf „Zurück" ist eine Navigation, kein Abbruch; eine dabei gelöschte Eingabe wäre eine Falle für jeden, der versehentlich zurückklickt |
 | **Später Antwort-Schutz beim Live-Read** | nicht spezifiziert | eine überholte Antwort (Dialog inzwischen geschlossen, Plan seither geändert) ändert nie mehr den Zustand | dieselbe R15-Disziplin wie überall sonst im Lauf: ein Read, der nicht mehr zum aktuellen Zustand gehört, darf ihn nicht überschreiben |
+| **`destructiveRunActive` deckt auch das Nachlesen ab** | Abschnitt 2 und T5 spellen das Signal als `isRunning() && plan.rows.some(replace)`; Abschnitt 2 sagt zusätzlich „nach dem Lauf feuert nichts mehr" | tatsächlich `(isRunning() \|\| run?.settlement === 'pending') && plan.rows.some(replace)` — der Guard bleibt scharf, bis der Lauf `settled` ist, nicht nur bis die Engine anhält | T5-Review M6, bestätigt im Whole-Branch-Review: zwischen Laufende und Settlement ist die Löschmeldung noch nicht raus; ein Tab, der in genau diesem Fenster stirbt, würde sie ohne den erweiterten Guard verlieren |
+| **`reset()` während des Nachlesens sendet trotzdem** | T5-Testliste: „Antwort fallen gelassen, keine Meldung" | die Antwort wird tatsächlich fallen gelassen — nur `run()` wird nicht mehr auf sie gesetzt —, aber `sendFollowUp` läuft davon unabhängig: die Meldungen gehen unverändert raus | Whole-Branch-Review: sie belegen eine 7TV-Änderung, die wirklich passiert ist, unabhängig davon, was gerade auf dem Bildschirm steht — dieselbe Begründung, die schon für die Löschmeldung selbst gilt |
+| **`cancel()` während eine Anfrage unterwegs ist** | T4 nennt nur „`cancel()` zwischen Schritt 1 und Schritt 2" ⇒ `failed` | steckt der Abbruch mitten in einer laufenden Anfrage einer Operation mit `transportLossIsUnknown`, endet genau diese Zeile an diesem Schritt `unknown`, nicht `failed` — die Antwort kommt nie an, 7TV kann trotzdem geschrieben haben (`cancelRemainingRows`) | Whole-Branch-Review, Befund zu T4 Minor 2: dieselbe Unsicherheit wie ein Transport-Verlust während des Laufs; ein abgebrochener Request ist kein Beweis, dass nichts passiert ist |
+| **Aliase im Ergebnisprotokoll: aus dem Plan, nicht aus einem Nachlesen** | §2 Punkt 6 und §9 Runde 1 #1: „das Ergebnisprotokoll trägt … die Aliase, die der REMOVE tatsächlich genommen hat, soweit das Nachlesen nach dem Lauf sie liefert" | nicht so gebaut: `removedTarget` trägt die Aliase des bestätigten Zielstands **aus dem Plan** — dem live-verifizierten Read vor dem ersten REMOVE (`stampReplaceTargets`) —, nicht aus einem Read nach dem Lauf | Whole-Branch-Review: ein Nachlesen nach dem Lauf sieht einen bereits entfernten Eintrag nicht mehr, das Versprechen war so nicht einlösbar; §2 Punkt 6 ist entsprechend korrigiert |
 
 ---
 
