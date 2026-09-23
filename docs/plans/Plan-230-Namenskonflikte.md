@@ -11,9 +11,16 @@ als Formvorbild (K6b im Epic #200), `CLAUDE.md`, `web/.claude/CLAUDE.md`,
 auf `f35ff68` — jede Datei aus der Referenzliste des Issues ist gelesen, nicht vermutet.
 
 **Das Issue ist die Vertragsquelle; dieser Plan trägt Reihenfolge, Schnitt, Grenzfälle, Tests und
-Gates.** Wo Issue und Code auseinanderlaufen, steht es in Abschnitt 6 als Frage an den Betreiber,
-nicht als stille Entscheidung. Der Plan enthält keinen Code: Signaturen und Typformen stehen nur,
-wo sie ein Vertrag zwischen zwei Tasks sind.
+Gates.** Wo Issue und Code auseinanderlaufen, steht es in Abschnitt 6 — seit der zweiten Fassung
+als **Entscheidung des Betreibers vom 2026-09-23**, nicht mehr als offene Frage. Der Plan enthält
+keinen Code: Signaturen und Typformen stehen nur, wo sie ein Vertrag zwischen zwei Tasks sind.
+
+**Fassung 2 (2026-09-23).** Die erste Fassung (`83e6ce8`) ist an zwei Stellen überarbeitet: die
+acht Betreiber-Antworten auf Abschnitt 6 sind eingearbeitet — Frage 4 **gegen** die erste Fassung
+von Abschnitt 2 (Pflicht-Download der Rückweg-Datei **vor** dem ersten REMOVE statt Banner und
+Rückfrage danach) —, und die sechs Befunde des adversarialen Codex-Reviews (gpt-6-sol) sind je
+übernommen oder mit Grund zurückgewiesen (Abschnitt 9). Betroffen sind T3, T4, T5, T7, T8, T9,
+T10 sowie die Abschnitte 1, 2, 4, 5, 7 und 8.
 
 ---
 
@@ -33,6 +40,16 @@ wo sie ein Vertrag zwischen zwei Tasks sind.
   Bestätigungsdialog**, keine Seite, (4) bei Teilfehlschlag (REMOVE gelingt, ADD scheitert) bleibt
   die Lücke, kein Auto-Rollback, (5) je Zeile REMOVE, dann ADD, ein Lauf, (6) Absicherung nur über
   die Löschzahl in der Zusammenfassung, keine getippte Bestätigung.
+- **Acht weitere Betreiber-Entscheidungen vom 2026-09-23** (Antworten auf Abschnitt 6, dort im
+  Wortlaut): set-zentrierter `sync-deleted` wie vorgeschlagen, #224 bleibt getrennt · Adopt ohne
+  Audit-Meldung · Abbruch mitten in der Zeile endet `failed` mit Lückengrund · Auflösungsschritt mit
+  der Breitklasse `app-dialog-panel-wide` · kein `imageUrl` im `emote-list`-Export, Envelope-
+  `channelName` `''` bei ungetracktem Ziel · Adopt gibt den alten Alias nicht frei · und, **gegen**
+  die erste Fassung: **Enthält der Lauf mindestens ein „Ziel ersetzen", ist vor dem ersten REMOVE
+  ein Pflicht-Download der Rückweg-Datei nötig** — im Dialog, nach der Zusammenfassung, vor
+  „Starten"; ohne Download startet der Lauf nicht; Läufe ohne Replace sind unberührt; keine
+  `localStorage`-Ablage. Der Pflicht-Download ist **keine** getippte Bestätigung — Entscheidung 6
+  bleibt unberührt. Abschnitt 2 trägt die Ausgestaltung.
 - **#226 ist gemergt** (`e0293d8`, PR #232): die Aktionszeile jedes `DialogShell` klebt am unteren
   Rand des Panes. Die Layout-Voraussetzung des Issues ist damit erfüllt; T8 hat keine offene
   Abhängigkeit mehr.
@@ -55,6 +72,9 @@ wo sie ein Vertrag zwischen zwei Tasks sind.
 | **Der Audit-Leseweg kennt den Besitzer-Login schon** für eine `emoteCount`-Zeile mit `emoteSetId`: `ReadTargetEmoteSet(root, "emoteSetId")` liest `targetOwnerTwitchLogin` mit, `renderTargetSet` zeigt dann die „von {owner}"-Form. Der neue set-zentrierte `sync-deleted` braucht also **keine** Änderung an Projektion oder `audit-row.ts`, wenn sein Details-JSON `emoteSetId` **und** `targetOwnerTwitchLogin` trägt. | `AuditLogQueryService.cs:155-162, 250-263`, `audit-row.ts:128-146` | T6 legt das Details-Shape fest |
 | **`EmoteUsageTotal` trägt `imageUrl`, `ForeignEmoteRow` ebenso, die Datei nicht.** Drei `toImportRow`-Stellen: `usage-export-purposes.ts:58`, `foreign-import-flow.ts:52, 99`; der Parser `import-source-parser.ts:52` kennt kein Bild. | s. links | T1: drei Produzenten liefern die URL, der vierte `null` |
 | **Der `ImportOrigin`-Union-Mechanismus** (zwei erschöpfende Helfer, `assertUnreachableOrigin`) zeigt, wie hier Vokabeln gesichert werden. Das neue Aktions-Union der Auflösung bekommt dasselbe Muster: jede Auseinandernahme erschöpfend, ein fünfter Wert ein Compile-Fehler. | `import-source.ts:88-135` | T3, T5, T7 |
+| **Ein Transportfehler ist heute ein Fehlschlag.** `runOne` fängt jede `HttpErrorResponse` außer 429 und macht daraus `success: false` mit `httpStatus = error.status` — für einen Netzwerkabbruch Angulars `0`, übersetzt als `networkError`. Ob die Mutation bei 7TV angekommen ist, weiß niemand; für einen REMOVE oder ADD ohne Antwort heißt `failed` also „unbekannt", und die Meldung ließe eine womöglich hinzugefügte Id aus (Codex-Finding 3). | `seven-tv-run-engine.ts:406-424, 566-568` | T4 führt den Ausgang `unknown` ein, T5 klärt ihn per Live-Nachlesen |
+| **Zwei Quellzeilen mit gleichem Namen und verschiedener Id landen heute beide in `toAdd`.** `dedupeImportRows` faltet nur nach `sevenTvEmoteId`, `buildImportPreview` prüft Namen nur gegen das Ziel, nie untereinander. 7TV lehnt dann die zweite ab — heutiges Verhalten, informativ wie `invalidNames`. Eine Validierung, die „keine zwei erzeugten Aliase gleich" wörtlich nimmt, blockierte diesen unveränderten Dialog (Codex-Finding 6). | `import-source.ts:141-144`, `import-preview.ts:110-117` | T3 nimmt die Bestandsdoppel von der Regel aus |
+| **Der `filterAlreadyPresent`-Read liest bereits alle Aliase je Id** (`aliasesById`), tokenlos, aus dem globalen Bucket. Genau diese Daten braucht die Live-Verifikation der Replace-Ziele vor dem Download (Codex-Finding 1) — ein Read, drei Verwendungen: Duplikatfilter, Zielprüfung, Rückweg-Datei. | `seven-tv-set-entries.ts:39-60`, `already-present-filter.ts:87-99` | T5, T8 |
 
 ### 0.3 Modelle je Task
 
@@ -84,17 +104,19 @@ und was der Plan **zusätzlich** zum Issue festlegt (mit Grund in Abschnitt 7).
 | Vertrag | Quelle | Tasks | Plan-Zusatz |
 |---|---|---|---|
 | Aktionen je Zeile, Ausschlüsse, Defaults | Issue „Actions per row" | T3, T8 | — |
-| Laufform: eine Queue-Zeile je Entscheidung, zwei Mutationen je Replace, Pacing/Backoff zwischen REMOVE und ADD | Issue „Run shape" | T4, T5 | Zeile trägt `failedStep`; Abbruch (`cancel`) zwischen REMOVE und ADD endet **`failed`** mit Lückengrund, nicht `cancelled` (Abschnitt 7) |
-| Teilfehlschlag ohne Rollback | Issue „Partial failure", Entscheidung 4 | T4, T5, T7 | Lückengrund ist übersetzter Text **und** Feld `failedStep: 'add'` im Protokoll |
+| Laufform: eine Queue-Zeile je Entscheidung, zwei Mutationen je Replace, Pacing/Backoff zwischen REMOVE und ADD | Issue „Run shape" | T4, T5 | Zeile trägt `failedStep`; Abbruch (`cancel`) zwischen REMOVE und ADD endet **`failed`** mit Lückengrund, nicht `cancelled` (Frage 3, entschieden) |
+| Teilfehlschlag ohne Rollback | Issue „Partial failure", Entscheidung 4 | T4, T5, T7 | Lückengrund ist übersetzter Text **und** Feld `failedStep` im Protokoll |
+| **Verlorene Antwort ist kein Fehlschlag** | Codex-Finding 3 | T4, T5, T7 | Ausgang `unknown` für einen Schritt ohne Antwort aus 7TVs GraphQL-Schicht (Status 0, 502, 503, 504); nach dem Lauf **ein** Live-Nachlesen klärt jede `unknown`-Zeile zu `done`/`failed`; bleibt es unklärbar, meldet der Lauf **keine** Lücke und die Id erscheint in **keiner** Meldung (Abschnitt 7) |
 | Laufzeitkollision (Name inzwischen belegt) | T0-Kommentar | T4, T5 | Erkennung an `extensions.status === 409`, eigener Grund `import.errors.nameTakenNow`, **kein** Laufabbruch |
-| `transfer-run`-Protokoll, Rückwegverbot | Issue „The transfer protocol" | T7 | eigene `TRANSFER_RUN_FORMAT_VERSION = 1`; Envelope-`channelName` = Zielkanal oder `''` bei ungetracktem Ziel, `meta` trägt Set, Besitzer, Herkunft |
-| Protokoll-Rückweg vor dem Schließen | Vorsession | T7 | Abschnitt 2 |
+| **Live-Verifikation der Replace-Ziele vor dem Lauf** | Codex-Finding 1 | T5, T8 | vor dem Download liest der Dialog das Ziel-Set live (`loadSevenTvSetEntries`); weicht ein Replace-Ziel vom bestätigten Stand ab (andere Aliase, Eintrag weg, Name anderer Id), gibt es keinen Download und keine Startfreigabe, sondern Neuladen und Neu-Bestätigen; die Rückweg-Datei entsteht aus den **live gelesenen** Aliasen; der Frischcheck in `import-flow.ts` prüft dieselben Ziele ein zweites Mal als letztes Tor. Restfenster: zwischen letztem Lesen und jedem einzelnen REMOVE, nicht zu schließen (`already-present-filter.ts:55-57`) |
+| `transfer-run`-Protokoll in **zwei Stufen**, Rückwegverbot | Issue „The transfer protocol", Frage 4 (entschieden) | T7, T8 | eine Envelope-Art, `meta.stage: 'planned' \| 'finished'`; eigene `TRANSFER_RUN_FORMAT_VERSION = 1`; Envelope-`channelName` = Zielkanal oder `''` bei ungetracktem Ziel, `meta` trägt Set, Besitzer, Herkunft |
+| **Pflicht-Download vor dem ersten REMOVE** | Frage 4 (entschieden) | T7, T8 | im Dialog, nach der Zusammenfassung, vor „Starten"; nur bei `removeCount > 0`; Abschnitt 2 |
 | Löschzahl in der Zusammenfassung, keine getippte Bestätigung | Issue „Guard", Entscheidung 6 | T3, T8 | Zahl wird aus **denselben** Entscheidungen abgeleitet, aus denen der Lauf gebaut wird — eine Quelle |
-| Meldungen: `sync-imported` + Löschmeldung, getrackt/ungetrackt | Issue „Backend bookkeeping" | T5, T6 | Details-Shape des set-zentrierten `sync-deleted` (T6); **Adopt meldet nichts** (Frage 2) |
+| Meldungen: `sync-imported` + Löschmeldung, getrackt/ungetrackt | Issue „Backend bookkeeping" | T5, T6 | Details-Shape des set-zentrierten `sync-deleted` (T6); **Adopt meldet nichts** (Frage 2, entschieden) |
 | Bilder: `imageUrl` in beiden Modellen, Platzhalter statt abgeleiteter URL | Issue „Images" | T1, T8 | — |
-| Entscheidungs-Validierung über den ganzen Lauf | Issue „Decision validation" | T3 | fünfte Regel: kein Zieleintrag wird von zwei Zeilen berührt (Replace **und** Adopt derselben Ziel-Id); Adopt gibt den alten Alias **nicht** frei (konservativ) |
-| Layout: Schritt statt Gruppenbox, virtuelles Scrollen, gestapelt bei 360 px, roving tabindex | Issue „Layout" | T8 | Muster `foreign-emote-grid` (einziger Scrollcontainer, `dvh`-Höhe, Breitklasse während des Schritts) |
-| Slot-Projektion: Rename +1, Replace +1 − entfernte Einträge | AK 21 | T3 | — |
+| Entscheidungs-Validierung über den ganzen Lauf | Issue „Decision validation" | T3 | fünfte Regel: kein Zieleintrag wird von zwei Zeilen berührt; Adopt gibt den alten Alias **nicht** frei (Frage 7, entschieden); **ein Replace gibt seine Aliase nur für seine eigene Zeile frei**, nicht für eine fremde (Codex-Finding 4); **Namensdoppel innerhalb der unveränderten `toAdd`-Zeilen sind keine Verletzung** (Codex-Finding 6) |
+| Layout: Schritt statt Gruppenbox, virtuelles Scrollen, gestapelt bei 360 px, roving tabindex | Issue „Layout" | T8 | Muster `foreign-emote-grid` (einziger Scrollcontainer, `dvh`-Höhe, Breitklasse während des Schritts — Frage 5, entschieden) |
+| Slot-Projektion | AK 21, Codex-Finding 5 | T3 | `delta = addCount − removedEntryCount`, wobei `addCount` **jede ADD-Mutation** zählt (Add-, Rename- und Replace-Zeilen) — nicht Add plus Rename plus Replace obendrauf |
 
 ---
 
@@ -106,32 +128,68 @@ Aliassen entfernt wurde. Heute geht das Purge-Protokoll mit dem Tab verloren, un
 schützt es nicht (0.2). Für einen Add-only-Import war das egal; für einen Replace ist es die
 einzige Rückwegdatei.
 
-**Was der Plan festlegt (T7), von innen nach außen:**
+**Entscheidung des Betreibers (2026-09-23, Frage 4), gegen die erste Fassung dieses Abschnitts:**
+Die Rückweg-Datei liegt **vor der ersten Löschung auf der Platte**. Das übersteht Absturz und
+Tab-Schließen, was `beforeunload` nie leistet; es gibt einen Weg und keine neue Ablage-Oberfläche;
+und es ist keine getippte Bestätigung (Entscheidung 6 bleibt). Die erste Fassung — Banner nach dem
+Lauf, Rückfrage beim Schließen, Guard für das fertige Protokoll — schützte ein Dokument, das es
+zu dem Zeitpunkt schon nicht mehr gegeben hätte, wenn der Tab mitten im Lauf stirbt.
 
-1. **Das Protokoll wird nach jedem Übertragungslauf angeboten** (AK 16), im Dock neben den
-   Zählern, mit demselben Hinweis wie beim Löschen (`protocolNotSaved`-Muster).
-2. **Enthält der Lauf mindestens eine erfolgreiche REMOVE**, ist das kein Hinweistext mehr, sondern
-   ein `warning`-Banner mit dem Download-Knopf **im Banner** (`notice-action`-Slot, wie
-   `import.confirm.loadFailed`). Farbe heißt „dieser Lauf ist ungewöhnlich" (§7) — genau das ist
-   er: er hat gelöscht. Ein Lauf ohne REMOVE bleibt beim stillen Hinweis.
-3. **Der Leave-Guard und `beforeunload` decken den ungespeicherten Replace-Fall.**
-   `usageStatsLeaveGuard` bekommt eine zweite Bedingung neben `isRunning()`: ein fertiger Lauf
-   mit `removedCount > 0` und `protocolSaved === false`. Dieselbe Bedingung hängt ein
-   `beforeunload` an das Fenster (Tab schließen, Reload) — der Browser zeigt seinen eigenen
-   Dialog, mehr erlaubt er nicht. Beides lebt im Import-Service als ein Signal
-   (`unsavedRemovalProtocol`), damit Guard und Listener nicht zwei Wahrheiten haben. Der
-   In-App-Wechsel zwischen Kanälen bleibt frei (Root-Service, das Dock folgt — bewiesen in
-   `emote-import.e2e.spec.ts:1985-1997`).
-4. **„Schließen" am Panel bei ungespeichertem Replace-Protokoll** löst denselben `ConfirmDialog`
-   aus wie der Leave-Guard (Nachricht: „Protokoll nicht gespeichert — trotzdem verwerfen?"), statt
-   still `reset()` zu rufen. Ein Lauf ohne REMOVE schließt wie heute ohne Rückfrage.
+**Wie der Download im Dialogfluss sitzt (T8, Datei aus T7, Verifikation mit T5):**
 
-**Was der Plan bewusst nicht baut, mit Grund:** eine Ablage im `localStorage` („letzte
-Protokolle"). Sie würde eine neue Oberfläche brauchen (wo liegt die Liste, wer räumt sie auf), sie
-läge außerhalb des Zero-Knowledge-Rahmens nur knapp (Emote-Ids und Aliase, kein Token — vertretbar),
-und sie löst ein Problem, das die Punkte 2–4 auf den einen Handgriff „Download klicken" verengen.
-Das Purge-Protokoll hat dieselbe Lücke seit A6 und der Betreiber hat sie akzeptiert. Sollte der
-Betreiber die Ablage trotzdem wollen, ist sie ein eigener Task nach T7 (Frage 4).
+1. **Schritt 1 des Dialogs, unterhalb der Zusammenfassung mit der Löschzahl** (AK 20), ändert sich
+   die Aktionszeile genau dann, wenn `removeCount > 0`: statt „Kopieren" steht dort **„Rückweg
+   sichern"** (`primary`, `lg`). Ohne Replace bleibt die Zeile byte-identisch zu heute — „Kopieren",
+   kein Download, kein Lesen (AK 2, 5).
+2. **Der Klick liest das Ziel-Set live** — tokenlos, `loadSevenTvSetEntries`, ein Request aus dem
+   globalen Bucket, derselbe Leser wie `filterAlreadyPresent` — und vergleicht jedes Replace-Ziel
+   mit dem bestätigten Stand: dieselbe Id, **dieselbe Alias-Menge**, der kollidierende Name gehört
+   noch dieser Id, `complete === true`. Solange der Read läuft, ist der Knopf gesperrt und der
+   Grund steht daneben (`aria-describedby`, wie `loadingHint`).
+3. **Weicht ein Ziel ab**, gibt es **keinen** Download und **keine** Startfreigabe: ein Banner
+   nennt die betroffenen Zeilen, der Knopf „Ziel neu laden" ruft `data.retry()`, die Vorschau wird
+   neu gebaut, die Entscheidungen der abgewichenen Zeilen fallen auf Skip zurück (die übrigen
+   bleiben, sofern sie die Validierung noch bestehen), und der Nutzer bestätigt neu. Ein
+   unvollständiger Read (`complete: false`) oder ein Lesefehler zählt als Abweichung — eine Liste,
+   die nur die Hälfte kennt, darf keine Löschung freigeben (Muster 8.3 aus der #200-Spec).
+4. **Stimmt alles**, wird die Rückweg-Datei aus den **live gelesenen** Aliasen gebaut (Stufe
+   `planned`, T7) und sofort per `downloadFile` als JSON heruntergeladen — ein Klick, eine Datei,
+   kein `ExportDialog` (die Formatwahl bekommt das Ergebnisprotokoll nach dem Lauf). Danach zeigt
+   die Aktionszeile **„Starten"**; erst der ausgelöste Download gibt ihn frei. Mehr als „der
+   Download wurde ausgelöst" kann der Browser nicht bestätigen; das ist die Grenze des Vertrags.
+5. **„Starten" schließt den Dialog** mit dem Plan; danach wie heute Token-Prompt und der Frischcheck
+   in `import-flow.ts`. Dieser zweite Read (er existiert schon) prüft die Replace-Ziele **noch
+   einmal** — zwischen Download und Start kann der Token-Prompt liegen. Ist ein Ziel inzwischen
+   abgewichen, fällt **diese** Zeile aus dem Lauf, gezählt und im Dock genannt
+   (`import.summary.replaceSkippedDrift`, Mechanik wie `skippedDuplicates`); nichts Destruktives
+   läuft auf veralteten Daten. Das ist bewusst kein erneutes Öffnen des Dialogs: der Nutzer hat
+   die Datei, die Zeile ist nur nicht passiert, das Ergebnisprotokoll sagt es.
+6. **Restfenster:** Zwischen dem letzten Lesen und jedem einzelnen REMOVE bleibt ein Fenster, in
+   dem ein anderer Editor dem Ziel-Eintrag einen Alias geben kann, den die Datei nicht kennt. Es
+   ist ohne atomare Operation auf 7TVs Seite nicht zu schließen — `already-present-filter.ts:55-57`
+   sagt dasselbe für den Duplikatfilter, und dieser Plan behauptet nichts anderes. Das
+   Ergebnisprotokoll trägt deshalb je Replace-Zeile zusätzlich die Aliase, die der REMOVE
+   **tatsächlich** genommen hat, soweit das Nachlesen nach dem Lauf sie liefert (T5).
+
+**Was nach dem Lauf bleibt, und was aus der ersten Fassung entfällt:**
+
+- **Das Ergebnisprotokoll** (Stufe `finished`, mit Status je Zeile, `failedStep`, `unknown`) wird
+  nach **jedem** Übertragungslauf im Dock angeboten (AK 16), mit dem stillen Hinweis
+  `protocolNotSaved` wie beim Löschen. Es ist ein Dokument **zweiten Rangs**: die Rückweg-Datei
+  sagt, was weg sein kann; das Ergebnisprotokoll sagt, was davon wirklich passiert ist und welche
+  ADDs fehlschlugen. Das Dock zeigt dieselben Ausgänge, das Audit-Log die Zählwerte.
+- **Entfallen:** das `warning`-Banner nach dem Lauf, die Rückfrage beim Schließen und der
+  Leave-Guard für ein **fertiges** ungespeichertes Protokoll. Alle drei schützten das
+  Ergebnisprotokoll, weil es die einzige Datei war; jetzt ist es die zweite. Ein Guard für ein
+  Dokument zweiten Rangs wäre die Reibung, die Entscheidung 6 gerade vermeidet.
+- **Bleibt und wird erweitert:** der Schutz des **laufenden** destruktiven Laufs. `usageStatsLeaveGuard`
+  fragt heute bei jedem laufenden Import (R11) — das bleibt. Neu ist ein `beforeunload`, solange
+  `isRunning()` **und** der Plan Replace-Zeilen hat (`destructiveRunActive`, ein Signal im
+  Import-Service): ein Tab, der mitten zwischen REMOVE und ADD stirbt, hinterlässt eine Lücke ohne
+  Ergebnisprotokoll, und die Rückweg-Datei allein sagt nicht, **welche** Zeile es war. Für einen
+  Add-only-Lauf feuert er nie. Nach dem Lauf feuert nichts mehr.
+- **Keine `localStorage`-Ablage** (Betreiber-Entscheidung). Die Begründung der ersten Fassung
+  gilt weiter, gestärkt: mit einer Datei vor jeder Löschung löst die Ablage kein Problem mehr.
 
 ---
 
@@ -239,36 +297,56 @@ Kein Angular, kein DOM.
   `skip` (Default) · `renameSource { alias }` · `replaceTarget` · `adoptSourceName`.
   Erschöpfende Auseinandernahme nach dem `ImportOrigin`-Muster (0.2).
 - `validateResolution(preview, decisions) → { ok: true } | { ok: false; violations: Violation[] }`,
-  jede Violation mit Regelname und den Schlüsseln der beteiligten Zeilen. Regeln: die vier aus dem
-  Issue („produced alias" schließt die `toAdd`-Zeilen ein; ein Replace gibt **alle** Aliase seiner
-  Ziel-Id frei; jeder erzeugte Alias passiert `isNameRejectedBySevenTv`; keine zwei Zeilen ersetzen
-  denselben Zieleintrag) plus die fünfte aus Abschnitt 1: **kein Zieleintrag wird von zwei Zeilen
-  berührt** — ein Replace und ein Adopt auf dieselbe Ziel-Id schließen sich aus. Adopt gibt den
-  alten Zielalias **nicht** frei (konservativ; Grund in Abschnitt 7). Eine Rename-Entscheidung mit
-  leerem oder nur aus Leerraum bestehendem Alias ist eine Verletzung, keine Ausnahme.
+  jede Violation mit Regelname und den Schlüsseln der beteiligten Zeilen. **Sechs Regeln**, alle
+  unabhängig von der Zeilenreihenfolge (Codex-Finding 4 — eine Regel, die nur in einer Reihenfolge
+  gilt, ist keine):
+  1. **Kein erzeugter Alias doppelt** — „erzeugt" sind die Aliase aller Add-, Rename-, Replace- und
+     Adopt-Zeilen. **Ausnahme (Codex-Finding 6):** ein Doppel zwischen zwei **unveränderten**
+     `toAdd`-Zeilen ist keine Verletzung — das ist heutiges Verhalten (7TV lehnt die zweite ab,
+     informativ wie `invalidNames`), und ein Dialog, an dem niemand etwas geändert hat, darf nicht
+     blockieren (AK 2/5). Sobald eine **Entscheidung** an einem der beiden Enden hängt, gilt die
+     Regel voll: ein Rename auf den Namen einer `toAdd`-Zeile ist eine Verletzung.
+  2. **Kein erzeugter Alias gleich einem Namen, den das Ziel beim Öffnen hält** — mit **einer**
+     Ausnahme: die Aliase des **eigenen** Replace-Ziels (der ADD einer Replace-Zeile darf den Namen
+     tragen, den ihr REMOVE freigibt; das ist der Sinn der Aktion). Ein Alias, den ein **anderes**
+     Replace oder ein Adopt in diesem Lauf freigäbe, bleibt gesperrt (Codex-Finding 4, konsistent
+     mit Frage 7): die Engine läuft in Quellreihenfolge, der Rename könnte vor dem Replace kommen und
+     bekäme 409; eine Abhängigkeitsordnung im Lauf wäre Komplexität für einen Fall, der sich in
+     zwei Läufen sauber lösen lässt. Abschnitt 7 hält das als Abweichung vom Issue fest.
+  3. **Jeder erzeugte Alias passiert `isNameRejectedBySevenTv`**; leer oder nur Leerraum ist eine
+     Verletzung, keine Ausnahme.
+  4. **Keine zwei Zeilen ersetzen denselben Zieleintrag.**
+  5. **Kein Zieleintrag wird von zwei Zeilen berührt** — Replace und Adopt derselben Ziel-Id
+     schließen sich aus (Abschnitt 1, fünfte Regel der ersten Fassung).
+  6. **Adopt nur bei `adoptBlocked === null`** — das Modul verlässt sich nicht auf die UI.
+  Adopt gibt den alten Zielalias **nicht** frei (Frage 7, entschieden).
 - `buildTransferPlan(preview, decisions) → TransferPlan` mit `rows: TransferRow[]` in Quellreihenfolge:
   jede Zeile `{ action: 'add' | 'renameSource' | 'replace' | 'adoptSourceName', source: ImportRow,
   alias: string, target?: { sevenTvEmoteId, aliases: string[] } }`. `toAdd` wird zu `add`;
   `skip` erzeugt keine Zeile. Nur nach `ok: true` aufrufbar (wirft sonst).
-- `summarizeTransferPlan(plan) → { addCount, removeCount, removedEntryCount }` — `removeCount` zählt
-  Replace-Zeilen (die Löschzahl der Zusammenfassung, AK 20), `removedEntryCount` die Einträge, die
-  die REMOVEs nehmen (Slot-Projektion, AK 21).
+- `summarizeTransferPlan(plan) → { addCount, removeCount, removedEntryCount }` — **`addCount` zählt
+  jede ADD-Mutation**, also Add-, Rename- **und** Replace-Zeilen (Codex-Finding 5: die erste
+  Fassung addierte Rename und Replace zusätzlich zu einem `addCount`, das sie schon enthielt);
+  `removeCount` zählt Replace-Zeilen (die Löschzahl, AK 20); `removedEntryCount` die Einträge, die
+  die REMOVEs nehmen (zwei bei einem #74-Duplikat).
 - `projectSlots(occupied, capacity, delta)`: die Signatur bleibt, der dritte Parameter wird als
-  **Netto-Delta** dokumentiert; der Aufrufer rechnet `addCount + renameCount + replaceCount −
-  removedEntryCount`. Alternativ eine zweite Funktion, die den Plan nimmt — Entscheidung des
-  Implementers, beide Wege sind ein Test.
+  **Netto-Delta** dokumentiert: **`delta = addCount − removedEntryCount`**, nichts weiter. Ein
+  Rename ist +1, ein gewöhnlicher Replace 0, ein Replace auf ein doppelt belegtes Ziel −1 (AK 21).
 
 **Grenzfälle (alle als Testfall):** Zwei Renames auf denselben Alias · Rename auf den Namen einer
-unangetasteten `toAdd`-Zeile · Rename auf einen Namen, den ein Replace **in diesem Lauf** freigibt
-(erlaubt) · Rename auf einen Namen, den ein Adopt frei machen würde (blockiert, konservativ) ·
-Rename auf einen der beiden Aliase eines #74-Ziel-Duplikats, das ein Replace nimmt (erlaubt, beide
-frei) · zwei Replaces auf dieselbe Ziel-Id · Replace und Adopt auf dieselbe Ziel-Id · Adopt mit
-`adoptBlocked !== null` ist eine Verletzung, auch wenn die UI sie nicht anbieten sollte (Modul
-verlässt sich nicht auf die UI) · Alias mit Leerzeichen / 101 Zeichen / leer · leere Entscheidungen
-⇒ Plan enthält **exakt** `preview.toAdd` als `add`-Zeilen, `removeCount === 0` (AK 5) · Projektion:
-Rename +1, Replace ±0, Replace auf #74-Duplikat −1, gemischt.
+unangetasteten `toAdd`-Zeile (Verletzung) · **zwei unveränderte `toAdd`-Zeilen mit gleichem Alias
+und ohne Zielkonflikt (keine Verletzung, Plan wie heute)** · Rename auf einen Namen, den ein
+**anderes** Replace in diesem Lauf freigibt (**Verletzung, in beiden Zeilenreihenfolgen**) · der
+ADD einer Replace-Zeile auf den Namen des eigenen Ziels (erlaubt) · Rename auf einen Namen, den ein
+Adopt frei machen würde (Verletzung) · Rename auf einen der beiden Aliase eines #74-Ziel-Duplikats,
+das ein **anderes** Replace nimmt (Verletzung) · zwei Replaces auf dieselbe Ziel-Id · Replace und
+Adopt auf dieselbe Ziel-Id · Adopt mit `adoptBlocked !== null` · Alias mit Leerzeichen / 101
+Zeichen / leer · leere Entscheidungen ⇒ Plan enthält **exakt** `preview.toAdd` als `add`-Zeilen,
+`removeCount === 0` (AK 5) · Projektion: einzelner Rename +1, gewöhnlicher Replace 0, Replace auf
+doppelt belegtes Ziel −1, gemischt (Add + Rename + Replace auf Duplikat = 3 − 2 = +1).
 
-**Tests:** `conflict-resolution.spec.ts` **+12** (Liste oben), `slot-projection.spec.ts` **+2**.
+**Tests:** `conflict-resolution.spec.ts` **+15** (Liste oben), `slot-projection.spec.ts` **+3**
+(die drei Fälle aus Codex-Finding 5 einzeln).
 
 **Abnahme:** Modul pur, ohne TestBed testbar; jede Verletzung nennt Zeilen. **AK 5, 10, 11
 (Logikseite), 20 (Zahl), 21.**
@@ -276,11 +354,13 @@ Rename +1, Replace ±0, Replace auf #74-Duplikat −1, gemischt.
 **Commit:** `feat(import): derive one transfer plan from per-row conflict decisions`.
 **Abhängigkeiten:** T2. **Modell:** `sonnet`.
 
-### T4 — Engine: mehrschrittige Zeilen, `gqlStatus` in der Fehlermeldung
+### T4 — Engine: mehrschrittige Zeilen, `gqlStatus`, der Ausgang `unknown`
 
 **Ziel:** Eine Queue-Zeile kann mehr als eine Mutation brauchen; Status, Pacing, Backoff und
-Abbruch behandeln jeden Schritt wie heute eine ganze Zeile. Delete, Restore und der heutige Import
-verhalten sich **byte-identisch** (ein Schritt).
+Abbruch behandeln jeden Schritt wie heute eine ganze Zeile. Ein Schritt, dessen Antwort nie aus
+7TVs GraphQL-Schicht kam, gilt nicht als gescheitert, sondern als **unbekannt** — für die
+Operationen, die das verlangen. Delete, Restore und der heutige Import verhalten sich
+**byte-identisch** (ein Schritt, kein `unknown`).
 
 **Dateien:** `web/src/app/core/seven-tv/seven-tv-run-engine.ts:48-130, 245-310, 340-400` +
 `.spec.ts`.
@@ -307,40 +387,70 @@ verhalten sich **byte-identisch** (ein Schritt).
   gemeinsamer Namensraum wie die anderen Engine-Texte), nicht `cancelled`. Grund: 7TV hat sich
   geändert, und `cancelled` heißt im Protokoll „nichts passiert" (Abschnitt 7, Frage 3).
 - `progress` zählt weiter Zeilen, nicht Schritte — die Fortschrittsleiste zeigt Entscheidungen.
+- **Der Ausgang `unknown` (Codex-Finding 3).** `RunItemStatus` bekommt den Wert `'unknown'`. Ein
+  Schritt endet so, wenn **keine Antwort aus 7TVs GraphQL-Schicht** vorliegt: `httpStatus` `0`
+  (Netzwerkabbruch, Timeout — heute `describeHttpError`s `networkError`-Zweig, `:566`) oder `502`,
+  `503`, `504` (ein Proxy antwortete, nicht 7TV; die Mutation kann angewendet sein oder nicht).
+  `500` bleibt `failed` — dort hat 7TV geantwortet, und der Vertrag „Fehler heißt nicht angewendet"
+  ist so gut wie er bei jeder anderen Ablehnung ist. Eine GQL-Ablehnung über HTTP 200 ist **nie**
+  `unknown`. Nur eine Operation, die es verlangt (`RunOperation.transportLossIsUnknown: true`),
+  bekommt den Ausgang; die Voreinstellung `false` reproduziert heute: Delete, Restore und der
+  Import-Lauf ohne Replace bleiben bei `failed`. Eine `unknown`-Zeile: kein weiterer Schritt (ein
+  ADD auf ein womöglich noch besetztes Ziel ist ein Ticket für einen 409), `failedStep` = der
+  Schritt ohne Antwort, `abortOn` wird **nicht** gerufen (es gibt keinen Grund zu bewerten), der
+  Lauf geht weiter, `progress` zählt sie als erledigt, `doneKeys` enthält sie **nicht**.
+- **`settle(key, status: 'done' | 'failed', errorMessage?)`**, nur außerhalb eines Laufs aufrufbar
+  und nur für `unknown`-Zeilen: der Weg, auf dem T5s Nachlesen die Zeile klärt, bevor Dock und
+  Protokoll sie zeigen. Eine geklärte `done`-Zeile wird in `doneKeys` **nicht** nachgetragen — das
+  `RunResult` ist geschrieben; der Import-Service liest für seine Meldungen ohnehin die `items`.
 
 **Grenzfälle:** Rate-Limit-Pause **zwischen** REMOVE und ADD — die Zeile steht `in-progress`, die
 Anzeige zeigt den Countdown wie heute; nach der Pause läuft der ADD, nicht der REMOVE noch einmal
 (Retry gilt je Schritt). `abortOn` sagt bei Schritt 2 „abbrechen" ⇒ die Zeile ist `failed` mit
 `failedStep = 1`, der Rest `cancelled`. Ein Hook, der wirft, wird je Schritt wie heute behandelt.
+Ein 429 bleibt Backoff, nie `unknown` — 7TV hat geantwortet. Ein `unknown` in Schritt 1 einer
+Replace-Zeile ⇒ Schritt 2 wird nicht gesendet.
 
-**Tests:** `seven-tv-run-engine.spec.ts` (24) **+7**: zwei Schritte in Reihenfolge mit Pacing
+**Tests:** `seven-tv-run-engine.spec.ts` (24) **+10**: zwei Schritte in Reihenfolge mit Pacing
 dazwischen; Schritt-1-Fehler unterdrückt Schritt 2; Schritt-2-Fehler ⇒ `failedStep = 1`, Lauf geht
-weiter; Rate-Limit zwischen den Schritten wiederholt nur Schritt 2; `cancel()` zwischen den
-Schritten ⇒ `failed` + `failedStep = 1`; `gqlStatus` erreicht `abortOn` (409-Fixture aus dem
-T0-Kommentar); Einschritt-Operation unverändert (Snapshot der gesendeten Requests eines
-Zwei-Zeilen-Laufs gegen den heutigen Stand — erlaubt, weil Wire-Vertrag, nicht Vorlage).
-`seven-tv-delete.service.spec.ts` / `seven-tv-restore.service.spec.ts` / `seven-tv-import.service.spec.ts`:
-nur Signatur-Fixtures, **0 neue Fälle**, alle bestehenden grün.
+weiter; Rate-Limit zwischen den Schritten wiederholt nur Schritt 2; **`cancel()` zwischen den
+Schritten ⇒ `failed` + `failedStep = 1`, kein ADD gesendet, Rest `cancelled`** (Codex-Finding 2);
+`gqlStatus` erreicht `abortOn` (409-Fixture aus dem T0-Kommentar); **Status 0 auf einer Operation
+mit `transportLossIsUnknown` ⇒ `unknown`, kein Schritt 2, `abortOn` nicht gerufen**; **derselbe
+Status 0 auf einer Operation ohne das Flag ⇒ `failed` wie heute**; **`settle` klärt eine
+`unknown`-Zeile und verweigert sich einer `failed`-Zeile und einem laufenden Lauf**; Einschritt-
+Operation unverändert (Snapshot der gesendeten Requests eines Zwei-Zeilen-Laufs gegen den heutigen
+Stand — erlaubt, weil Wire-Vertrag, nicht Vorlage). `run-progress-panel.spec.ts` **+1**
+(`unknown` zählt in `finished`, erscheint in der Fehlerliste mit eigener Wortfamilie
+`<prefix>.unknownOutcome`). `seven-tv-delete.service.spec.ts` / `seven-tv-restore.service.spec.ts` /
+`seven-tv-import.service.spec.ts`: nur Signatur-Fixtures, **0 neue Fälle**, alle bestehenden grün.
 
-**Abnahme:** `grep -n "doneKeys" web/src` unverändert; drei Bestandsdienste ohne Verhaltensänderung.
-**AK 13 (Reihenfolge, Nachbarschaft), 14, 15 (Engine-Hälfte).**
+**Abnahme:** `grep -n "doneKeys" web/src` unverändert; drei Bestandsdienste ohne Verhaltensänderung;
+`purge-run-export.ts`' `readProtocolRow` liest `status as RunItemStatus` weiter — ein `unknown`
+kann dort nur aus einer Datei kommen, die dieser Build nicht schreibt, und fällt als „nicht `done`"
+aus dem Restore, wie jeder andere Nicht-`done`-Status. **AK 13 (Reihenfolge, Nachbarschaft), 14, 15
+(Engine-Hälfte).**
 
 **Commit:** `feat(seventv): let one run row issue a sequence of mutations`.
 **Abhängigkeiten:** keine (parallel zu T1, T6). **Modell:** `opus` — die Engine trägt drei Läufe,
 ein Fehler in Pacing oder Statusführung ist in allen dreien und nur live sichtbar.
 
-### T5 — Import-Service: der Lauf aus dem Plan, drei Mutationen, zwei Meldungen, eine Filterausnahme
+### T5 — Import-Service: der Lauf aus dem Plan, drei Mutationen, zwei Meldungen, Filterausnahme, Ziel-Verifikation, Nachlesen
 
 **Ziel:** `SevenTvImportService` startet einen `TransferPlan` statt einer Zeilenliste, baut je
-Aktion die richtigen Mutationen, meldet Hinzugefügtes und Entferntes getrennt, und der Frischcheck
-wirft keine Adopt-Zeile mehr weg.
+Aktion die richtigen Mutationen, meldet Hinzugefügtes und Entferntes getrennt, klärt `unknown`-Zeilen
+per Live-Nachlesen, bevor irgendetwas gemeldet wird; der Frischcheck wirft keine Adopt-Zeile mehr
+weg und verifiziert die Replace-Ziele ein zweites Mal.
 
 **Dateien:** `web/src/app/core/seven-tv/seven-tv-import.service.ts:34-50, 118-140, 210-260, 300-360`
 + `.spec.ts`; `web/src/app/shared/seven-tv/import-flow.ts:230-290` + `.spec.ts`;
-`web/src/app/shared/seven-tv/already-present-filter.ts` (nur Doku-Kommentar);
+`web/src/app/shared/seven-tv/already-present-filter.ts` (eine dritte Funktion
+`verifyReplaceTargets(entries, plan)` neben den zwei Filtern — pur, über einem schon gelesenen
+`SevenTvSetEntries`, damit Dialog (T8) und Flow denselben Vergleich rechnen) + `.spec.ts`;
 `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts:167` (Aufrufer von T6s Methode);
 `web/public/i18n/{de,en}.json` (`import.errors.nameTakenNow`, `import.errors.removedButNotAdded`,
-`import.summary.removed`).
+`import.errors.unknownOutcome`, `import.summary.removed`, `import.summary.replaceSkippedDrift`,
+`import.summary.unknownRows`).
 
 **Vertrag:**
 
@@ -359,40 +469,78 @@ wirft keine Adopt-Zeile mehr weg.
   einem Replace ⇒ `import.errors.removedButNotAdded` (der Lückengrund, AK 15), unabhängig vom
   7TV-Text; der rohe 7TV-Text wandert ins Protokoll (`errorMessage`), der übersetzte in die
   Anzeige. `abortsForMissingPrivileges` unverändert.
-- **Meldungen nach dem Lauf:** `syncImported` für jede `done`-Zeile mit Aktion `add`,
-  `renameSource`, `replace` (die hinzugefügten Ids, wie heute); zusätzlich eine **Löschmeldung** für
-  jede Zeile, deren REMOVE erfolgreich war — also `done`-Replaces **und** `failed`-Replaces mit
-  `failedStep === 1` (der REMOVE ist passiert, die Lücke ist real). Getracktes Ziel ⇒
-  `emoteAdminService.syncDeleted(channel, { emoteSetId, sevenTvEmoteIds })` (der bestehende Weg,
+- **`transportLossIsUnknown` ist genau dann gesetzt, wenn der Plan mindestens eine Replace-Zeile
+  hat.** Ein Add-only-Lauf bleibt damit byte-identisch zu heute (Regel 24); ein Lauf, der löscht,
+  bekommt den ehrlicheren Ausgang für **alle** seine Zeilen — auch Rename und Adopt, denn dort
+  gilt dasselbe: eine verlorene Antwort heißt nicht „nicht angewendet" (Codex-Finding 3).
+- **Nachlesen nach dem Lauf, vor jeder Meldung.** Hat das `RunResult` mindestens eine
+  `unknown`-Zeile, liest der Service das Ziel-Set **einmal** live (`loadSevenTvSetEntries`,
+  tokenlos, globaler Bucket) und klärt jede Zeile per `engine.settle`:
+  - ADD-Schritt unbekannt (Add, Rename, Replace-Schritt 2): Quell-Id unter dem Plan-Alias im Set ⇒
+    `done`; nicht im Set ⇒ `failed` — bei Replace mit `removedButNotAdded`, sonst mit dem generischen
+    `unknownOutcome`-Grund plus 7TVs letztem Text.
+  - REMOVE-Schritt unbekannt (Replace-Schritt 1): Ziel-Id noch im Set ⇒ `failed`, `failedStep 0`,
+    nichts ist passiert; Ziel-Id weg ⇒ `failed` mit `removedButNotAdded` — der REMOVE ist passiert,
+    der ADD wurde nie gesendet; die Id gehört in die Löschmeldung.
+  - Adopt unbekannt: Ziel-Id unter dem Quellnamen ⇒ `done`; unter dem alten Alias ⇒ `failed`.
+  - **Das Nachlesen scheitert oder ist `complete: false`:** die Zeilen bleiben `unknown`. Sie
+    erscheinen in **keiner** Meldung — nicht als hinzugefügt, nicht als entfernt —, das
+    Ergebnisprotokoll schreibt `unknown`, und das Dock sagt es (`import.summary.unknownRows`, mit
+    der Aufforderung, das Set bei 7TV zu prüfen). Eine unbekannte Zeile als Lücke zu melden wäre
+    dieselbe falsche Sicherheit wie sie als Erfolg zu melden.
+- **Meldungen nach dem Lauf (nach dem Nachlesen):** `syncImported` für jede `done`-Zeile mit Aktion
+  `add`, `renameSource`, `replace` (die hinzugefügten Ids, wie heute); zusätzlich eine
+  **Löschmeldung** für jede Zeile, deren REMOVE **bestätigt** ist — `done`-Replaces, `failed`-Replaces
+  mit `failedStep === 1`, und per Nachlesen geklärte Replaces, deren Ziel weg ist. Getracktes Ziel
+  ⇒ `emoteAdminService.syncDeleted(channel, { emoteSetId, sevenTvEmoteIds })` (der bestehende Weg,
   Papierfall bei nicht-aktivem Set); ungetracktes Ziel ⇒ `emoteSetService.reportDeletedFromSet`
-  (T6). `adoptSourceName` meldet **nichts** (Frage 2). Beide Meldungen haben eigene
+  (T6). `adoptSourceName` meldet **nichts** (Frage 2, entschieden). Beide Meldungen haben eigene
   `SyncReportState`-Signale (`syncReport` bleibt für den Import, `removalReport` neu), eigenen
   Retry, und beide hängen am `ImportRunInfo`-Objekt (R15-Muster).
-- `ImportRunInfo` wächst um `plan` und um `removedCount` (abgeleitet, für Dock und Guard);
-  `unsavedRemovalProtocol` als Signal für Abschnitt 2 (gesetzt in T7).
+- `ImportRunInfo` wächst um `plan`, `removedCount` (bestätigte REMOVEs, für Dock und Protokoll) und
+  `unknownCount`; der Service trägt das Signal **`destructiveRunActive`** = `isRunning() &&
+  plan.rows.some(replace)` für den `beforeunload` aus Abschnitt 2 (T7 hängt ihn an).
 - **`filterAlreadyPresent` in `import-flow.ts`** läuft nur über die Planzeilen mit Aktion `add`,
   `renameSource`, `replace` — eine `adoptSourceName`-Zeile ist per Definition im Ziel und darf nicht
   herausfallen. Eine `replace`-Zeile, deren **Quell**-Id inzwischen im Ziel steht, fällt ganz heraus
   (kein REMOVE ohne ADD — konservativ, richtig).
+- **`verifyReplaceTargets(entries, plan)` — das zweite Tor (Codex-Finding 1, Abschnitt 2 Punkt 5).**
+  Aus **demselben** Read, den `filterAlreadyPresent` ohnehin macht, wird jede Replace-Zeile geprüft:
+  Ziel-Id im Set, Alias-Menge gleich der Planzeile (`target.aliases`, die T8 aus der ersten
+  Live-Verifikation geschrieben hat), kollidierender Name gehört dieser Id. Eine abgewichene Zeile
+  fällt aus dem Lauf, gezählt in `replaceSkippedDrift` und im Dock genannt; der Rest läuft. Ein
+  fehlgeschlagener oder unvollständiger Read lässt **keine** Replace-Zeile durch (anders als der
+  Duplikatfilter, der offen ausfällt — eine Löschung auf ungeprüfter Grundlage ist der schlechtere
+  Ausgang) und meldet es als `available: false`, wie heute.
 
-**Grenzfälle:** Der Ziel-Eintrag eines Replace ist zur Laufzeit schon weg ⇒ `removeEmote` scheitert,
-Zeile `failed` mit `failedStep = 0`, kein ADD — genau AK 14, und der Nutzer sieht 7TVs Grund. Der
-Quellname eines Adopt ist zur Laufzeit belegt ⇒ 409 ⇒ `nameTakenNow`. Ein Lauf ohne einzige
-erfolgreiche REMOVE sendet **keine** Löschmeldung (Endpunkt verlangt nicht-leere Liste). Ein
-Replace-Lauf gegen ein Set, in dem das Token kein Schreibrecht hat, bricht beim **ersten** REMOVE
-ab — vor dem ersten ADD, keine Lücke.
+**Grenzfälle:** Der Ziel-Eintrag eines Replace ist zur Laufzeit schon weg ⇒ das zweite Tor fängt
+es, oder — im Restfenster — `removeEmote` scheitert, Zeile `failed` mit `failedStep = 0`, kein ADD
+(AK 14), der Nutzer sieht 7TVs Grund. Der Quellname eines Adopt ist zur Laufzeit belegt ⇒ 409 ⇒
+`nameTakenNow`. Ein Lauf ohne einzige bestätigte REMOVE sendet **keine** Löschmeldung (Endpunkt
+verlangt nicht-leere Liste). Ein Replace-Lauf gegen ein Set, in dem das Token kein Schreibrecht hat,
+bricht beim **ersten** REMOVE ab — vor dem ersten ADD, keine Lücke. Das Nachlesen trifft ein Set,
+in dem ein Dritter inzwischen dieselbe Quell-Id hinzugefügt hat ⇒ die unbekannte ADD-Zeile wird zu
+`done` geklärt, obwohl vielleicht der Dritte es war — hinnehmbar, denn das Emote **ist** unter dem
+Alias im Set, und genau das meldet `syncImported`.
 
-**Tests:** `seven-tv-import.service.spec.ts` (29) **+8**: Rename sendet den Alias, nicht den
+**Tests:** `seven-tv-import.service.spec.ts` (29) **+13**: Rename sendet den Alias, nicht den
 Quellnamen; Replace sendet REMOVE dann ADD, dieselbe `setId`, benachbart; Adopt sendet
 `updateEmoteAlias` mit altem Alias im `id` und neuem als Argument, **kein** `addEmote`; 409 ⇒
 `nameTakenNow`, Lauf läuft weiter; `failedStep = 1` ⇒ `removedButNotAdded` **und** Id in der
 Löschmeldung; Löschmeldung getrackt (`syncDeleted` mit `emoteSetId`) / ungetrackt
 (`reportDeletedFromSet`); Lauf ohne REMOVE ⇒ keine Löschmeldung; Retry der Löschmeldung nutzt
-denselben Laufdatensatz. `import-flow.spec.ts` **+2**: Adopt-Zeile überlebt den Frischcheck;
-Replace mit inzwischen vorhandener Quell-Id fällt ganz weg.
+denselben Laufdatensatz; **Add-only-Plan setzt `transportLossIsUnknown` nicht, Replace-Plan schon;
+unbekannter ADD wird per Nachlesen zu `done` geklärt und gemeldet; unbekannter REMOVE mit
+verschwundenem Ziel wird zu `failed`/Lücke und landet in der Löschmeldung; gescheitertes Nachlesen
+lässt `unknown` stehen und hält die Id aus beiden Meldungen; Meldungen warten auf das Nachlesen**.
+`already-present-filter.spec.ts` **+3** (`verifyReplaceTargets`: gleich, abgewichen durch neuen
+Alias, abgewichen durch fremden Namensinhaber). `import-flow.spec.ts` **+4**: Adopt-Zeile überlebt
+den Frischcheck; Replace mit inzwischen vorhandener Quell-Id fällt ganz weg; **abgewichenes
+Replace-Ziel fällt weg und wird gezählt; fehlgeschlagener Read hält jede Replace-Zeile zurück**.
 
 **Abnahme:** Ein `TransferPlan` nur aus `add`-Zeilen erzeugt **exakt** die heutigen Requests und
-Meldungen (Wire-Snapshot wie in T4). **AK 7 (Mutation), 12, 13, 15 (Grund), 19 (Client-Hälfte).**
+Meldungen (Wire-Snapshot wie in T4). **AK 7 (Mutation), 12, 13, 15 (Grund), 17 (live verifizierte
+Ziel-Aliase), 19 (Client-Hälfte).**
 
 **Commit:** `feat(import): run a transfer plan with rename, replace and adopt rows`.
 **Abhängigkeiten:** T3 (Plan-Typ), T4 (Schritte, `gqlStatus`), T6 (`reportDeletedFromSet`).
@@ -446,93 +594,114 @@ Gruppe). `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs
 als `docs: point F7 at the set-centric endpoint in 6.7` im selben PR, eigener Commit.
 **Abhängigkeiten:** keine (parallel zu T1, T4). **Modell:** `sonnet`.
 
-### T7 — Das Transfer-Protokoll: Envelope, Download, Rückweg, Abweisung beim Einlesen
+### T7 — Das Transfer-Protokoll in zwei Stufen: Rückweg-Datei vor dem Lauf, Ergebnis danach, Abweisung beim Einlesen, Schutz des laufenden Laufs
 
-**Ziel:** Jeder Übertragungslauf hinterlässt eine Datei, die sagt, was hinzugefügt, umbenannt und
-**entfernt** wurde — und diese Datei kann nirgends als Emote-Liste oder Restore missverstanden
-werden. Dazu der Rückweg aus Abschnitt 2.
+**Ziel:** Vor der ersten Löschung liegt eine Datei auf der Platte, die je Replace-Zeile die live
+verifizierte Ziel-Id und **alle** ihre Aliase nennt; nach jedem Übertragungslauf eine zweite, die
+sagt, was davon wirklich passiert ist. Keine der beiden kann als Emote-Liste oder Restore
+missverstanden werden. Dazu der `beforeunload` für den laufenden destruktiven Lauf (Abschnitt 2).
+Den Download-Knopf **im Dialog** baut T8 — T7 liefert Datei, Dateiname und den Schutz.
 
 **Dateien:** `web/src/app/shared/export/export-envelope.ts:9` (`ExportKind` + `'transfer-run'`),
-`web/src/app/shared/export/transfer-run-export.ts` (neu: build, JSON, CSV, Dateiname,
+`web/src/app/shared/export/transfer-run-export.ts` (neu: `buildTransferPlanRecord` für die Stufe
+`planned`, `buildTransferRunProtocol` für `finished`, JSON, CSV, zwei Dateinamen,
 `TRANSFER_RUN_FORMAT_VERSION`) + `.spec.ts`, `web/src/app/shared/export/import-source-parser.ts:33-38`
 (`transfer-run` **namentlich** abweisen, Key `restore.import.errors.transferRun`),
 `web/src/app/shared/export/purge-run-export.ts:109-111` (`FOREIGN_KIND_ERROR_KEYS` + derselbe Key),
 `web/src/app/shared/seven-tv/file-import-step.ts` (nur Doku: die Dispatch-Reihenfolge bleibt),
-`web/src/app/shared/seven-tv/import-progress-section.ts:95-125` (Download im `run-actions`-Slot,
-Hinweis/Banner, Schließen-Rückfrage), `web/src/app/core/seven-tv/seven-tv-import.service.ts`
-(`protocolSaved`, `unsavedRemovalProtocol`), `web/src/app/features/usage-stats/usage-stats-leave.guard.ts:38`
-(zweite Bedingung), `beforeunload`-Listener (Ort: der Import-Service, der ohnehin Root ist, oder
-ein kleiner `core/`-Helfer mit `DestroyRef`), `web/public/i18n/{de,en}.json`
-(`import.summary.downloadProtocol`, `import.summary.protocolNotSaved`,
-`import.summary.protocolRemovalsUnsaved`, `import.leaveUnsavedProtocol.*`,
-`restore.import.errors.transferRun`, `restore.import.sorts.*` **unverändert** — die Datei ist keine
+`web/src/app/shared/seven-tv/import-progress-section.ts:95-125` (Ergebnisprotokoll im
+`run-actions`-Slot mit dem stillen `protocolNotSaved`-Hinweis, Zeile `unknownRows`),
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`protocolSaved`; `beforeunload` an
+`destructiveRunActive` — Ort: der Import-Service, der ohnehin Root ist, mit `DestroyRef`),
+`web/public/i18n/{de,en}.json` (`import.summary.downloadProtocol`, `import.summary.protocolNotSaved`,
+`restore.import.errors.transferRun`; `restore.import.sorts.*` **unverändert** — die Datei ist keine
 Einlesesorte).
 
 **Vertrag:**
 
-- Zeilenform aus dem Issue, plus `failedStep: number | null` (Abschnitt 1) und `sourceName`
-  (der Quellname, auch wenn `alias` davon abweicht — sonst ist ein Rename im Protokoll nicht
-  rekonstruierbar). `removedTarget` genau bei `replace`, mit **allen** Aliasen der Ziel-Id, gefüllt
-  aus der Planzeile (T5), nicht aus der Queue. Zeilen **ungefiltert** (F3: auch `failed` und
-  `cancelled`).
-- `meta`: `targetEmoteSetId`, `targetChannelName: string | null`, `targetOwnerDisplayName: string |
-  null`, `origin` (die `ImportOrigin`, verbatim), `startedAt`, `finishedAt`, `counts` wie beim
-  Purge-Protokoll **plus** `removed` (erfolgreiche REMOVEs). Envelope-`channelName` = Zielkanal
-  oder `''` (Frage 6); Dateiname `emotepurge_<kanal-oder-setid>_transfer_<yyyy-mm-dd-HHmm>.<ext>`.
-- `TRANSFER_RUN_FORMAT_VERSION = 1`, **kein** Bump von `EXPORT_FORMAT_VERSION` (Issue). CSV-Spalten:
-  `action`, `source_name`, `alias`, `seven_tv_emote_id`, `status`, `failed_step`, `error_message`,
-  `removed_seven_tv_emote_id`, `removed_aliases` (durch `|` getrennt — CSV ist Leseformat, der JSON
-  ist der Datensatz).
-- **Rückweg:** `parseImportSource` antwortet auf `kind === 'transfer-run'` mit dem eigenen Key
-  **vor** der `emote-list`/`usage`-Prüfung; `parsePurgeRunProtocol` ebenso über
-  `FOREIGN_KIND_ERROR_KEYS`. Ein unbekannter `kind` bleibt `wrongKind` (schon heute „mit Grund" —
-  AK 18 zweiter Satz ist damit erfüllt, kein neuer Code). Es gibt **keinen** Parser für
-  `transfer-run` (Issue: Aufzeichnung, keine Liste).
-- **Download-Angebot** im Dock nach Abschnitt 2, Punkte 1–4; `ExportDialog` mit
-  `FORMAT_EXPORT_OPTIONS`, `selectionCount: null` (wie das Purge-Protokoll). `protocolSaved` wird
-  beim Start eines neuen Laufs zurückgesetzt.
+- **Eine Envelope-Art, zwei Stufen.** `meta.stage: 'planned' | 'finished'`. Die Rückweg-Datei
+  (`planned`) entsteht in T8 aus dem **live gelesenen** Ziel-Set: je Replace-Zeile `removedTarget`
+  mit Ziel-Id und **allen** Aliasen aus dem Read, nicht aus der Vorschau (Codex-Finding 1); alle
+  Zeilen `status: 'pending'`, `failedStep: null`, `errorMessage: null`; `counts` mit `planned`,
+  `removals`. Das Ergebnisprotokoll (`finished`) trägt dieselben Zeilen mit Ausgang: `status` (auch
+  `unknown`), `failedStep: number | null`, `errorMessage` (7TVs Rohtext), und bei Replace zusätzlich
+  `removedTarget.confirmed: boolean` (REMOVE bestätigt, direkt oder per Nachlesen). Zeilen
+  **ungefiltert** (F3: auch `failed`, `cancelled`, `unknown`).
+- Zeilenform aus dem Issue, plus `failedStep`, `sourceName` (der Quellname, auch wenn `alias`
+  davon abweicht — sonst ist ein Rename nicht rekonstruierbar) und `removedTarget.confirmed`.
+- `meta`: `stage`, `targetEmoteSetId`, `targetChannelName: string | null`, `targetOwnerDisplayName:
+  string | null`, `origin` (die `ImportOrigin`, verbatim), `verifiedAt` (Zeitpunkt des Reads, Stufe
+  `planned`) bzw. `startedAt`/`finishedAt` (Stufe `finished`), `counts` (`finished`: wie beim
+  Purge-Protokoll plus `removed` = bestätigte REMOVEs und `unknown`). Envelope-`channelName` =
+  Zielkanal oder `''` (Frage 6, entschieden). Dateinamen
+  `emotepurge_<kanal-oder-setid>_transfer-plan_<yyyy-mm-dd-HHmm>.json` und
+  `emotepurge_<kanal-oder-setid>_transfer_<yyyy-mm-dd-HHmm>.<ext>` — zwei Suffixe, damit die zwei
+  Dateien eines Laufs nebeneinander auf der Platte unterscheidbar sind.
+- `TRANSFER_RUN_FORMAT_VERSION = 1`, **kein** Bump von `EXPORT_FORMAT_VERSION` (Issue). CSV nur für
+  die Stufe `finished`: `action`, `source_name`, `alias`, `seven_tv_emote_id`, `status`,
+  `failed_step`, `error_message`, `removed_seven_tv_emote_id`, `removed_aliases` (durch `|`
+  getrennt), `removed_confirmed`. Die Rückweg-Datei ist **nur JSON** — ein Klick, eine Datei.
+- **Rückweg-Verbot:** `parseImportSource` antwortet auf `kind === 'transfer-run'` — **beide
+  Stufen** — mit dem eigenen Key **vor** der `emote-list`/`usage`-Prüfung; `parsePurgeRunProtocol`
+  ebenso über `FOREIGN_KIND_ERROR_KEYS`. Ein unbekannter `kind` bleibt `wrongKind` (schon heute
+  „mit Grund" — AK 18 zweiter Satz, kein neuer Code). Es gibt **keinen** Parser für `transfer-run`.
+- **Ergebnisprotokoll im Dock** nach jedem Lauf (AK 16): `ExportDialog` mit `FORMAT_EXPORT_OPTIONS`,
+  `selectionCount: null` (wie das Purge-Protokoll), stiller Hinweis `protocolNotSaved`, kein Banner,
+  keine Rückfrage beim Schließen (Abschnitt 2). `protocolSaved` wird beim Start eines neuen Laufs
+  zurückgesetzt.
+- **`beforeunload`** hängt an `destructiveRunActive` (T5): registriert, solange das Signal `true`
+  ist, entfernt danach; der Browser zeigt seinen eigenen Dialog. Der Leave-Guard bleibt, wie er ist
+  (er fragt schon bei jedem laufenden Import). **Kein** Guard nach dem Lauf.
 
 **Grenzfälle:** Ein Lauf, der per `abortOn` nach der ersten Zeile abbricht, hat trotzdem ein
-Protokoll (alle Zeilen, eine `failed`, Rest `cancelled`). Ein Lauf nur aus Adopt-Zeilen hat
-`counts.removed = 0` und `added = 0` — das Protokoll erscheint trotzdem (AK 16). Ein untracked Ziel
-ohne Anzeigenamen ⇒ `targetOwnerDisplayName: null`, Dateiname aus der Set-Id. Der `beforeunload`
-darf **nie** feuern, solange kein Replace gelaufen ist — sonst bestraft er jeden Add-Import.
+Ergebnisprotokoll (alle Zeilen, eine `failed`, Rest `cancelled`). Ein Lauf nur aus Adopt-Zeilen hat
+`counts.removed = 0` und `added = 0` — das Protokoll erscheint trotzdem (AK 16), eine Rückweg-Datei
+gibt es für ihn **nicht** (kein Replace). Ein untracked Ziel ohne Anzeigenamen ⇒
+`targetOwnerDisplayName: null`, Dateiname aus der Set-Id. Der `beforeunload` darf **nie** feuern,
+solange kein Replace im Plan ist, und **nie** nach dem Lauf. Ein `unknown`, das das Nachlesen nicht
+klären konnte, steht als `unknown` im Ergebnisprotokoll — kein Leser darf es als `failed` lesen.
 
-**Tests:** `transfer-run-export.spec.ts` **+6**: Build aus einem gemischten Lauf (jede Aktion einmal,
-Replace mit #74-Duplikat ⇒ zwei Aliase in `removedTarget`); `failed` mit `failedStep = 1` bleibt
-als Zeile; CSV-Spalten und Dateiname; `counts.removed` zählt auch den `failedStep = 1`-Replace;
-Envelope-Felder für getrackt/ungetrackt. `import-source-parser.spec.ts` **+1**, `purge-run-export.spec.ts`
-**+1**, `file-import-step.spec.ts` **+1** (die Datei landet bei keinem `picked`, Banner nennt den
-Transfer-Grund). `import-progress-section.spec.ts` (18) **+4**: Download-Knopf nach jedem Lauf;
-Hinweis vs. Banner je `removedCount`; Schließen mit ungespeichertem Replace-Protokoll öffnet die
-Rückfrage, ohne `reset()`; ohne REMOVE schließt sofort. `usage-stats-leave.guard.spec.ts` **+2**
-(fertiger Lauf mit ungespeichertem Replace fragt; nach `protocolSaved` nicht mehr).
-`seven-tv-import.service.spec.ts` **+2** (`unsavedRemovalProtocol` Übergänge).
+**Tests:** `transfer-run-export.spec.ts` **+8**: Rückweg-Datei aus Plan + Live-Read (Replace mit
+#74-Duplikat ⇒ zwei Aliase in `removedTarget`, `status: 'pending'`, `stage: 'planned'`);
+Ergebnisprotokoll aus einem gemischten Lauf (jede Aktion einmal); `failed` mit `failedStep = 1` und
+`removedTarget.confirmed: true`; `unknown`-Zeile bleibt `unknown`, zählt in `counts.unknown`, nicht
+in `removed`; CSV-Spalten; beide Dateinamen; Envelope-Felder für getrackt/ungetrackt.
+`import-source-parser.spec.ts` **+2** (beide Stufen abgewiesen), `purge-run-export.spec.ts` **+1**,
+`file-import-step.spec.ts` **+1** (die Datei landet bei keinem `picked`, Banner nennt den
+Transfer-Grund). `import-progress-section.spec.ts` (18) **+3**: Download-Knopf nach jedem Lauf;
+stiller Hinweis bis `protocolSaved`; Schließen ruft `reset()` ohne Rückfrage.
+`seven-tv-import.service.spec.ts` **+2** (`beforeunload` registriert genau während
+`destructiveRunActive`, danach entfernt; Add-only-Lauf registriert nichts).
 
-**Abnahme:** Kein Weg führt aus einer `transfer-run`-Datei in `startImportFlow` oder
-`startRestoreFlow`; der Guard fragt genau dann, wenn Abschnitt 2 es sagt. **AK 16, 17, 18.**
+**Abnahme:** Kein Weg führt aus einer `transfer-run`-Datei (beide Stufen) in `startImportFlow` oder
+`startRestoreFlow`; `beforeunload` feuert genau während eines laufenden Replace-Laufs. **AK 16, 17
+(Dateiform), 18.**
 
-**Commit:** `feat(import): record every transfer run in a downloadable protocol` (Envelope, Export,
-Abweisung) und `feat(import): guard an unsaved removal protocol before it is lost` (Dock, Guard,
-`beforeunload`) — zwei Commits, weil der zweite den Vertrag des Leave-Guards ändert.
-**Abhängigkeiten:** T5 (Planzeilen am Laufdatensatz, `removedCount`). **Modell:** `sonnet`.
+**Commit:** `feat(import): record a transfer run before and after it runs` (Envelope, beide
+Builder, Abweisung, Dock) und `feat(import): warn before unloading a running destructive transfer`
+(`beforeunload`) — zwei Commits, weil der zweite Fensterverhalten ändert. **Abhängigkeiten:** T5
+(Planzeilen und `destructiveRunActive` am Laufdatensatz). **Modell:** `sonnet`.
 
-### T8 — Der Auflösungsschritt im Bestätigungsdialog; Zusammenfassung; DECISIONS-Eintrag
+### T8 — Der Auflösungsschritt im Bestätigungsdialog; Zusammenfassung; Pflicht-Download; DECISIONS-Eintrag
 
 **Ziel:** Aus beiden Konfliktgruppen öffnet sich der zweite Schritt: eine virtualisierte Tabelle
 mit Quellbild/-name links, Zielbild/-name rechts, Aktion je Zeile; zurück im ersten Schritt zeigt
-die Zusammenfassung Hinzufügungen und Entfernungen getrennt, und „Kopieren" ist gesperrt, bis der
-Plan gültig ist.
+die Zusammenfassung Hinzufügungen und Entfernungen getrennt. Enthält der Plan ein Replace, führt
+die Aktionszeile über Live-Verifikation und Pflicht-Download zur Startfreigabe (Abschnitt 2);
+sonst ist sie byte-identisch zu heute.
 
 **Dateien:** `web/src/app/shared/seven-tv/import-confirm-dialog.ts` (Schrittzustand, Einstiegs-
-Controls an den beiden Gruppen `:266, :274`, Zusammenfassung, Sperrgrund, `execute()` schließt mit
-dem `TransferPlan`, Breitklasse über `DialogRef.overlayRef` wie `import-source-dialog.ts:269`),
-`web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` (neu, + `.spec.ts`),
-`web/src/app/shared/seven-tv/import-flow.ts` (Outcome-Typ), `web/src/app/shared/emotes/emote-sprite.ts`
-(unverändert — nur Aufrufer), `web/public/i18n/{de,en}.json` (`import.resolve.*`),
+Controls an den beiden Gruppen `:266, :274`, Zusammenfassung, Sperrgrund, **Aktionszeile mit drei
+Zuständen** bei `removeCount > 0`, `execute()` schließt mit dem `TransferPlan`, Breitklasse über
+`DialogRef.overlayRef` wie `import-source-dialog.ts:269`), `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts`
+(neu, + `.spec.ts`), `web/src/app/shared/seven-tv/import-flow.ts` (Outcome-Typ; `ImportFlowDeps`
+bekommt den `HttpClient` für den Read schon heute — er reicht ihn an den Dialog durch),
+`web/src/app/shared/emotes/emote-sprite.ts` (unverändert — nur Aufrufer), `web/public/i18n/{de,en}.json`
+(`import.resolve.*`, `import.confirm.saveRecovery`, `import.confirm.start`,
+`import.confirm.verifying`, `import.confirm.targetDrifted`, `import.confirm.reloadTarget`),
 `docs/DECISIONS.md` (Eintrag, Regel 3), `docs/UI-Designsprache.md` §7.2 (Zeilenreihenfolge des
-Dialogs um die zwei Einstiegs-Controls und die Entfernungszeile ergänzen — der Abschnitt ist
-Vertrag).
+Dialogs um die zwei Einstiegs-Controls, die Entfernungszeile und die dreistufige Aktionszeile
+ergänzen — der Abschnitt ist Vertrag).
 
 **Vertrag:**
 
@@ -566,40 +735,64 @@ Vertrag).
   **nicht im DOM**, Tab allein erreicht sie nie — deshalb die Zeilennavigation.
 - **Zusammenfassung in Schritt 1:** neben der heutigen Titelzahl eine Zeile „N Emotes werden aus
   dem Zielset entfernt" genau bei `removeCount > 0` (AK 20), als `warning`-Banner (§7: dieses
-  Merkmal macht den Lauf ungewöhnlich); die Titelzahl zählt `addCount` (inkl. Rename und Replace);
-  Slot-Projektion aus `summarizeTransferPlan` (AK 21). Beide Zahlen kommen aus **demselben** Plan,
-  den `execute()` zurückgibt.
-- `ImportConfirmOutcome.rows` wird `plan: TransferPlan`; `import-flow.ts` reicht ihn an T5 durch.
-  Keine Entscheidungen ⇒ Plan aus `toAdd` (AK 5 — Test vergleicht den Plan eines unberührten
-  Dialogs mit `preview.toAdd`).
+  Merkmal macht den Lauf ungewöhnlich); die Titelzahl zählt `addCount` (jede ADD-Mutation, T3);
+  Slot-Projektion mit `delta = addCount − removedEntryCount` (AK 21, Codex-Finding 5). Beide Zahlen
+  kommen aus **demselben** Plan, den `execute()` zurückgibt.
+- **Aktionszeile bei `removeCount > 0` — drei Zustände, ein Knopf (Abschnitt 2, Punkte 1–5):**
+  `idle` zeigt „Rückweg sichern" (`primary`, `lg`), gesperrt wie heute „Kopieren" durch
+  `blockReason`/`runBlocked`; der Klick geht nach `verifying` (Knopf gesperrt, Grund
+  `import.confirm.verifying` daneben, `aria-describedby`), der Read läuft über
+  `loadSevenTvSetEntries` mit dem `HttpClient` aus den Flow-Deps, der Vergleich über
+  `verifyReplaceTargets` (T5). **Abweichung** ⇒ zurück nach `idle`, Banner `targetDrifted` nennt die
+  Zeilen (`error`, mit `notice-action` „Ziel neu laden" → `data.retry()`; die abgewichenen Zeilen
+  fallen auf Skip zurück, die übrigen Entscheidungen werden neu validiert). **Gleichstand** ⇒
+  Rückweg-Datei bauen (`buildTransferPlanRecord`, T7, aus den **gelesenen** Aliasen), `downloadFile`
+  auslösen, Zustand `saved`: der Knopf heißt jetzt „Starten" und schließt mit dem Plan. Jede
+  Änderung an den Entscheidungen nach `saved` (Schritt 2 erneut geöffnet und übernommen) setzt auf
+  `idle` zurück — die Datei auf der Platte beschreibt einen anderen Plan. Ohne Replace bleibt die
+  Zeile **byte-identisch** zu heute: „Kopieren", kein Read, kein Download (AK 2, 5).
+- `ImportConfirmOutcome.rows` wird `plan: TransferPlan`; die Planzeilen tragen bei Replace die
+  **live gelesenen** `target.aliases` (das zweite Tor in `import-flow.ts` vergleicht dagegen).
+  `import-flow.ts` reicht ihn an T5 durch. Keine Entscheidungen ⇒ Plan aus `toAdd` (AK 5 — Test
+  vergleicht den Plan eines unberührten Dialogs mit `preview.toAdd`).
 - **Kein Sheet:** keine `isCoarse`-Verzweigung im Schritt; der Dialog ist auf Touch nicht erreichbar
   (0.1). Ein Kommentar am Schritt sagt das.
 
 **Grenzfälle (alle als Spec-Fall, außer wo E2E steht):** Gruppe mit 200 Zeilen ⇒ Viewport, nicht
 `app-name-preview-list` · Zeile mit `imageUrl: null` links, Bild rechts · Dialog ohne Änderung
-öffnen/schließen ⇒ heutiger Plan · Rename mit Leerzeichen ⇒ Feldfehler, Übernehmen gesperrt ·
-zwei Renames gleich ⇒ Grund nennt beide Quellnamen · Replace auf eine Ziel-Id, die eine andere
-Zeile adoptiert ⇒ gesperrt mit Grund · Sprachwechsel bei offenem Schritt re-übersetzt Labels
-(`lang()`-Muster wie `aliasMismatchRows`) · `runBlocked` sperrt „Kopieren" weiter still.
+öffnen/schließen ⇒ heutiger Plan, kein Read · Rename mit Leerzeichen ⇒ Feldfehler, Übernehmen
+gesperrt · zwei Renames gleich ⇒ Grund nennt beide Quellnamen · Replace auf eine Ziel-Id, die eine
+andere Zeile adoptiert ⇒ gesperrt mit Grund · Sprachwechsel bei offenem Schritt re-übersetzt Labels
+(`lang()`-Muster wie `aliasMismatchRows`) · `runBlocked` sperrt „Rückweg sichern" und „Starten"
+weiter still · Read liefert `complete: false` ⇒ wie Abweichung · Read scheitert (Netz) ⇒ wie
+Abweichung, Banner nennt den Lesefehler statt Zeilen · nach `saved` wird Schritt 2 geöffnet und eine
+Zeile geändert ⇒ „Rückweg sichern" erscheint erneut · Dialog wird im Zustand `saved` abgebrochen ⇒
+kein Lauf, die Datei auf der Platte beschreibt einen Plan, der nie lief (unschädlich, `stage:
+'planned'` sagt es).
 
 **Tests:** `import-conflict-resolution-step.spec.ts` **+8**: Aktionsverfügbarkeit je Konfliktart
 (AK 6); Adopt deaktiviert mit Grund bei `nameTaken`/`duplicateTarget`; Default Skip; Rename
 öffnet Feld, Feldfehler bei ungültigem Alias; Übernehmen gesperrt mit Zeilen im Grund; zugänglicher
 Name je Aktionsgruppe nennt die Zeile; Pfeiltaste ruft `scrollToIndex` und verschiebt den Fokus;
-Platzhalter ohne `<img>` bei `null`. `import-confirm-dialog.spec.ts` (43) **+6**: kein
+Platzhalter ohne `<img>` bei `null`. `import-confirm-dialog.spec.ts` (43) **+12**: kein
 Einstiegs-Control ohne Konflikte, Reihenfolge nach §7.2 unverändert (AK 2); Control je Gruppe
-(AK 3); Entfernungszeile nur bei Replace (AK 20); Projektion mit gemischten Entscheidungen (AK 21);
-Outcome ist der Plan, unberührt = `toAdd` (AK 5); Breitklasse nur in Schritt 2. `import-flow.spec.ts`
-**+1** (Plan wird durchgereicht).
+(AK 3); Entfernungszeile nur bei Replace (AK 20); Projektion mit gemischten Entscheidungen (AK 21,
+die drei Fälle aus Codex-Finding 5); Outcome ist der Plan, unberührt = `toAdd` (AK 5); Breitklasse
+nur in Schritt 2; **ohne Replace kein Read und „Kopieren"; mit Replace „Rückweg sichern", Read
+gegen das gemockte Set, Download ausgelöst, dann „Starten"; „Starten" vor dem Download nicht
+erreichbar; Abweichung ⇒ kein Download, Banner mit Zeilen, Zeilen auf Skip; Änderung nach `saved` ⇒
+zurück auf `idle`; Planzeilen tragen die gelesenen Aliase**. `import-flow.spec.ts` **+1** (Plan
+wird durchgereicht).
 
 **Abnahme:** UI-Audit-Harness-Szenario `usage-stats-import-confirm-dialog` weiter grün, plus ein
-neues Szenario für Schritt 2 (T9). **AK 2, 3, 4 (Anzeige), 5, 6, 7 (Angebot), 8, 10, 11, 20, 21
-(Anzeige), 22, 23.**
+neues Szenario für Schritt 2 (T9). **AK 2, 3, 4 (Anzeige), 5, 6, 7 (Angebot), 8, 10, 11, 17
+(Rückweg-Datei mit live gelesenen Aliasen), 20, 21 (Anzeige), 22, 23.**
 
 **Commit:** `feat(import): resolve name conflicts per row inside the confirm dialog` — mit dem
-DECISIONS-Eintrag (0.4) und der §7.2-Ergänzung. **Abhängigkeiten:** T3, T5 (Outcome-Typ), T7 nicht
-(Download ist Dock-Sache). **Modell:** `opus` — größter UI-Entwurf der Runde, Barrierefreiheit in
-einem virtualisierten Raster, und die eine Stelle, an der der Nutzer eine Löschung auslöst.
+DECISIONS-Eintrag (0.4) und der §7.2-Ergänzung. **Abhängigkeiten:** T3, T5 (Outcome-Typ,
+`verifyReplaceTargets`), **T7** (`buildTransferPlanRecord`). **Modell:** `opus` — größter
+UI-Entwurf der Runde, Barrierefreiheit in einem virtualisierten Raster, und die eine Stelle, an
+der der Nutzer eine Löschung auslöst.
 
 ### T9 — E2E, Harness-Szenario, Doku-Korrekturen, Coverage, Zweitmeinung
 
@@ -614,15 +807,22 @@ aufzeichnen), `web/e2e/audit/ui-audit.audit.ts` (Szenario `usage-stats-import-re
 `docs/Feature-Ideen-2026-08-01.md` (nur prüfen, ob eine Idee betroffen ist — #230 ist keine
 Backlog-Idee; ohne Treffer keine Änderung), `CLAUDE.md` (keine Änderung erwartet).
 
-**E2E (+3):** (1) Kollision + Alias-Abweichung im Mock; eine Zeile je Aktion (Rename, Replace,
-Adopt), Kopieren; Assertion auf die **Reihenfolge und Argumente** der GQL-Requests (REMOVE vor ADD,
-Alias aus dem Rename, `updateEmoteAlias` mit altem/neuem Alias) und auf **beide** Meldungen
+**E2E (+5):** (1) Kollision + Alias-Abweichung im Mock; eine Zeile je Aktion (Rename, Replace,
+Adopt); „Rückweg sichern" ⇒ der gemockte Set-Read antwortet, ein Download feuert (Playwrights
+`waitForEvent('download')`, Inhalt: `stage: 'planned'`, `removedTarget` mit allen Aliasen) ⇒
+„Starten"; Assertion auf die **Reihenfolge und Argumente** der GQL-Requests (REMOVE vor ADD, Alias
+aus dem Rename, `updateEmoteAlias` mit altem/neuem Alias) und auf **beide** Meldungen
 (`sync-imported` mit den hinzugefügten Ids, `sync-deleted` mit der entfernten) — `page.clock`
-vor `goto`, `runFor` statt `fastForward` (CLAUDE.md Tests). (2) Replace, dessen ADD mit 409 scheitert
-⇒ Zeile rot mit Lückengrund, Löschmeldung enthält die Id trotzdem, Protokoll-Banner erscheint,
-Download liefert eine Datei mit `removedTarget`. (3) Dialog mit Konflikten öffnen, nichts anfassen,
-Kopieren ⇒ nur `addEmote`-Requests, exakt die `toAdd`-Zahl, keine Entfernungszeile (AK 5 durch den
-Browser).
+vor `goto`, `runFor` statt `fastForward` (CLAUDE.md Tests). (2) Replace, dessen ADD mit 409
+scheitert ⇒ Zeile rot mit Lückengrund, Löschmeldung enthält die Id trotzdem, Ergebnisprotokoll
+(`stage: 'finished'`) trägt `failedStep: 1`, `removedTarget.confirmed: true`. (3) Dialog mit
+Konflikten öffnen, nichts anfassen, Kopieren ⇒ **kein** Set-Read, **kein** Download, nur
+`addEmote`-Requests, exakt die `toAdd`-Zahl, keine Entfernungszeile (AK 5 durch den Browser).
+(4) **Abweichung:** der gemockte Set-Read gibt dem Replace-Ziel einen dritten Alias ⇒ kein Download,
+Banner nennt die Zeile, „Starten" nicht vorhanden; nach „Ziel neu laden" zeigt die Vorschau die neue
+Alias-Menge. (5) **Verlorene Antwort:** der gemockte ADD eines Replace bricht die Verbindung ab
+(`route.abort()`), der Nachlese-Read zeigt die Quell-Id unter dem Alias ⇒ Zeile grün, Id in
+`sync-imported`; Variante: der Read zeigt sie nicht ⇒ Zeile rot mit Lückengrund.
 
 **Gates:** alle drei Suiten; `node scripts/coverage-local.mjs` (Näherung — Sonar zählt Zweige mit,
 lokal pessimistisch; bei < 80 % nachsehen, ob es die neue `import-conflict-resolution-step.ts`
@@ -651,18 +851,26 @@ eine Emote-Liste-Datei (dann `imageUrl: null` links — auch das ist ein Prüfpu
 
 1. Schritt 2 zeigt drei Zeilen mit Bildern; die Datei-Quelle zeigt links die Platte ohne Request
    (Netzwerktab: kein `cdn.7tv.app`-Aufruf mit der Quell-Id).
-2. Rename, Replace (auf das Duplikat) und Adopt in einem Lauf: Reihenfolge der Requests im
+2. **Pflicht-Download:** „Rückweg sichern" liest das Set (ein tokenloser Request im Netzwerktab),
+   die Datei landet auf der Platte **bevor** irgendein REMOVE gesendet ist, `stage: 'planned'`,
+   `removedTarget` des Duplikats mit **beiden** Aliassen; erst dann steht „Starten".
+3. Rename, Replace (auf das Duplikat) und Adopt in einem Lauf: Reihenfolge der Requests im
    Netzwerktab REMOVE → ADD benachbart; das Set danach per tokenlosem Read-back (Probe D aus dem
    T0-Kommentar) exakt wie erwartet — Duplikat mit **beiden** Aliassen weg, Quell-Emote unter
    Quellname drin, Adopt-Eintrag unter Quellname, Eintragszahl um genau eins gesunken.
-3. Audit-Log (globale Admin-Ansicht): ein `syncImported`- und ein `syncDeleted`-Eintrag mit
+4. Audit-Log (globale Admin-Ansicht): ein `syncImported`- und ein `syncDeleted`-Eintrag mit
    `ChannelName = null`, „von olaf_olaf_son", Zählwerte 2 und 1.
-4. Protokoll heruntergeladen: `removedTarget` mit zwei Aliassen, `counts.removed = 1`; die Datei
-   danach im Import-Dialog einlesen ⇒ Abweisung mit dem Transfer-Grund, kein Dialog geöffnet.
-5. Laufzeitkollision: vor dem Kopieren im 7TV-Web einen Rename-Zielnamen belegen ⇒ genau diese
+5. Ergebnisprotokoll heruntergeladen: `stage: 'finished'`, `removedTarget.confirmed: true`,
+   `counts.removed = 1`; **beide** Dateien danach im Import-Dialog einlesen ⇒ je Abweisung mit dem
+   Transfer-Grund, kein Dialog geöffnet.
+6. Laufzeitkollision: vor dem Kopieren im 7TV-Web einen Rename-Zielnamen belegen ⇒ genau diese
    Zeile rot mit `nameTakenNow`, Lauf läuft weiter.
-6. Tab schließen mit ungespeichertem Replace-Protokoll ⇒ Browser-Rückfrage; nach Download keine.
-7. Rate-Limit-Beobachtung aus der Konsolen-Abschlussmessung (`requestsSent` = Zeilen + Replaces).
+7. **Abweichung:** im 7TV-Web dem Replace-Ziel zwischen Dialogöffnen und „Rückweg sichern" einen
+   dritten Alias geben ⇒ kein Download, Banner nennt die Zeile; nach „Ziel neu laden" drei Aliase
+   in der Vorschau.
+8. Tab schließen **während** eines Replace-Laufs ⇒ Browser-Rückfrage; nach dem Lauf keine.
+9. Rate-Limit-Beobachtung aus der Konsolen-Abschlussmessung (`requestsSent` = Zeilen + Replaces;
+   die zwei Set-Reads zählen nicht mit — sie laufen nicht durch die Engine).
 
 Der Betreiber führt die Handgriffe aus; ein Subagent (`sonnet`) bereitet die Read-back-Abfrage und
 die Erwartungswerte vor und schreibt die Befunde in den PR-Text. **Kein Commit**, außer ein Fund
@@ -688,13 +896,13 @@ verlangt einen `fix(import): …`. **AK 7 (live), 19 (live), 24.**
 | 12 | Rename sendet den Alias | T5 |
 | 13 | Replace: REMOVE dann ADD, dieselbe `setId`, benachbart | T4, T5, T9 (E2E 1) |
 | 14 | REMOVE scheitert ⇒ kein ADD, `failed` | T4 |
-| 15 | ADD scheitert nach REMOVE ⇒ eigener Grund, Lauf geht weiter | T4, T5, T9 (E2E 2) |
-| 16 | Protokoll nach jedem Lauf | T7 |
-| 17 | Replace-Zeile trägt Ziel-Id und alle Aliase | T7 |
-| 18 | `transfer-run` wird namentlich abgewiesen; unbekannter `kind` mit Grund | T7 |
-| 19 | Löschmeldung getrackt / ungetrackt, Audit zeigt beides | T5, T6, T10 |
+| 15 | ADD scheitert nach REMOVE ⇒ eigener Grund, Lauf geht weiter — **eine verlorene Antwort ist kein Scheitern** (`unknown`, Nachlesen) | T4, T5, T9 (E2E 2, 5) |
+| 16 | Protokoll nach jedem Lauf (Ergebnisprotokoll); **zusätzlich Rückweg-Datei vor jedem Lauf mit Replace** | T7, T8 |
+| 17 | Replace-Zeile trägt Ziel-Id und **alle** Aliase — **live gelesen** vor dem Download, nicht aus der Vorschau; Ergebnis mit `confirmed` | T2, T5, T7, T8, T9 (E2E 1, 4), T10 (Punkte 2, 7) |
+| 18 | `transfer-run` wird namentlich abgewiesen (beide Stufen); unbekannter `kind` mit Grund | T7 |
+| 19 | Löschmeldung getrackt / ungetrackt, Audit zeigt beides — nur **bestätigte** REMOVEs | T5, T6, T10 |
 | 20 | Entfernungszeile genau bei Replace | T3, T8 |
-| 21 | Projektion: Rename +1, Replace ±0 / −1 bei Duplikat | T3, T8 |
+| 21 | Projektion: `addCount − removedEntryCount` — Rename +1, Replace 0, Replace auf Duplikat −1 | T3, T8 |
 | 22 | 200 Zeilen, 360 px, kein horizontaler Scroll, kein Bildsturm | T8 |
 | 23 | Tastatur, zugänglicher Name je Zeile | T8 |
 | 24 | Tests grün, keine Regression in Import/Delete/Restore | alle, T9 |
@@ -711,7 +919,8 @@ T1 ─┐            T4 ─┐        T6 ─┐
     ▼                ▼            ▼
     T3 ─────────────► T5 ◄────────┘
     │                 │
-    │                 ├──► T7
+    │                 ▼
+    │                 T7
     ▼                 ▼
     T8 ◄──────────────┘
     ▼
@@ -721,8 +930,10 @@ T1 ─┐            T4 ─┐        T6 ─┐
 - **Welle 1 (parallel, drei Worktrees oder sequenziell in einem):** T1, T4, T6.
 - **Welle 2:** T2 (nach T1), dann T3.
 - **Welle 3:** T5 (nach T3, T4, T6).
-- **Welle 4 (parallel):** T7 und T8 (beide nach T5; T8 zusätzlich nach T3).
-- **Welle 5:** T9, dann T10.
+- **Welle 4:** T7 (nach T5).
+- **Welle 5:** T8 (nach T3, T5, T7 — der Pflicht-Download im Dialog braucht T7s Builder; in der
+  ersten Fassung liefen T7 und T8 parallel).
+- **Welle 6:** T9, dann T10.
 
 Zwischen T4 und T5 ist der Build grün (Signaturanpassung in T4 schließt die drei Dienste ein);
 zwischen T3 und T8 ist der Dialog unverändert (der neue Plan-Typ hat noch keinen Aufrufer). Es gibt
@@ -730,44 +941,37 @@ keinen roten Zwischenstand, der zwei Tasks in einen Commit zwingt.
 
 ---
 
-## 6. Offene Fragen an den Betreiber
+## 6. Fragen an den Betreiber — **entschieden 2026-09-23**
 
-Nichts davon ist im Plan still entschieden; wo der Plan einen Vorschlag macht, steht er dabei.
+Die acht Fragen der ersten Fassung, je mit der Antwort des Betreibers. Sieben Vorschläge sind
+angenommen, einer (Frage 4) ist **gegen** den Vorschlag entschieden. Nichts hier ist mehr offen;
+neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
 
-1. **Ungetracktes Zielset — das Issue markiert es selbst als ungeklärt.** Die #200-Spec kennt
-   keinen set-zentrierten `sync-deleted` (6.6 setzt einen Kanal voraus). Der Plan baut den Endpunkt
-   so, wie das Issue ihn vorschlägt (T6), mit dem Details-Shape aus 0.2, damit die Audit-Ansicht
-   ohne Änderung „von {owner}" zeigt. **Zu bestätigen:** Endpunkt so bauen? Und soll #224 (der
-   kanalgebundene Set-Report meldet Erfolg für einen unbekannten Kanal) im selben Zug auf dasselbe
-   Shape gezogen werden, oder bleibt #224 getrennt? Der Plan lässt #224 unangetastet.
-2. **Adopt hat keine Buchführung.** Weder `sync-imported` noch `sync-deleted` passen (nichts kommt
-   hinzu, nichts geht); ein Alias-Wechsel hat heute keinen Audit-Vertrag. Der Plan meldet **nichts**
-   und lässt die Lücke offen sichtbar (Protokoll trägt die Zeile). Alternative: ein dritter Report
-   `sync-alias-changed` — neuer Endpunkt, neue Audit-Vokabel, neue Ansicht. Vorschlag: nicht in #230.
-3. **`cancel()` zwischen REMOVE und ADD** endet im Plan `failed` mit Lückengrund, nicht `cancelled`
-   (Abschnitt 1, T4). Das Issue sagt dazu nichts. Vorschlag steht; Alternative wäre ein vierter
-   Status, was Protokoll-Leser und Panel ändert.
-4. **Protokoll-Rückweg (Abschnitt 2):** Hinweis→Banner bei Replace, Leave-Guard und `beforeunload`
-   für den ungespeicherten Fall, Rückfrage beim Schließen. **Keine** `localStorage`-Ablage.
-   Reicht das, oder soll die Ablage ein eigener Task werden?
-5. **Nested Scroll im Auflösungsschritt.** Das Issue verlangt virtuelles Scrollen; DECISIONS #226
-   lehnt einen zweiten Scrollbereich im Dialog ab; `foreign-emote-grid` ist der eine sanktionierte
-   Fall (Viewport = einziger Scrollcontainer + Breitklasse). Der Plan folgt diesem Muster (T8).
-   **Zu bestätigen:** Breitklasse `app-dialog-panel-wide` auch für den Auflösungsschritt (zwei
-   Bilder plus Radiogroup je Zeile brauchen sie ab ~5 sichtbaren Zeilen nicht, aber 72rem gibt der
-   Tabelle Luft) — oder 28rem behalten und nur stapeln?
-6. **Dateiformate:** `emote-list`-Export schreibt weiterhin **kein** `imageUrl` (sonst
-   Format-Version-Frage, und die Datei ist eine Liste, kein Bildkatalog); Envelope-`channelName`
-   des `transfer-run` ist `''` bei ungetracktem Ziel (das Feld ist im Envelope `string`, nicht
-   nullbar; ein Nullable-Umbau hieße alle vier Bestands-Kinds anfassen). Beides ok?
-7. **Adopt gibt den alten Zielalias nicht frei** (T3, konservativ): ein Rename auf genau den Alias,
-   den ein Adopt in derselben Runde abgibt, wird blockiert, obwohl er in Queue-Reihenfolge klappen
-   könnte. Vorschlag: so lassen (die Reihenfolge ist keine Vertragszusage der Engine; ein Fehler
-   hier kostet einen 409 zur Laufzeit, kein Datenverlust). Freigeben wäre eine Zeile in T3.
-8. **Das Issue nennt für T4 „Adopt" die Ziel-Id-Prüfung `targetGroup[0].name`** (AK 8) — der Plan
-   liest den aktuellen Alias aus `target.aliases[0]` und garantiert per `adoptBlocked` genau einen
-   Alias. Deckt sich mit AK 8; nur zur Kenntnis, falls #74 vorher geschlossen wird und die Regel
-   dann fällt.
+1. **Ungetracktes Zielset.** Die #200-Spec kennt keinen set-zentrierten `sync-deleted` (6.6 setzt
+   einen Kanal voraus); der Plan baut den Endpunkt wie im Issue vorgeschlagen (T6), mit dem
+   Details-Shape aus 0.2. — **Entschieden: so bauen; #224 bleibt getrennt** und unangetastet.
+2. **Adopt hat keine Buchführung.** Weder `sync-imported` noch `sync-deleted` passen; ein
+   Alias-Wechsel hat keinen Audit-Vertrag. — **Entschieden: Adopt meldet nichts**; die Zeile steht
+   im Ergebnisprotokoll, ein dritter Report ist nicht Teil von #230.
+3. **`cancel()` zwischen REMOVE und ADD** endet `failed` mit Lückengrund, nicht `cancelled` (T4). —
+   **Entschieden: so.** Test dazu in T4 (Codex-Finding 2).
+4. **Protokoll-Rückweg.** Vorschlag der ersten Fassung: Banner nach dem Lauf, Leave-Guard und
+   `beforeunload` für das ungespeicherte fertige Protokoll, Rückfrage beim Schließen, keine Ablage.
+   — **Entschieden gegen den Vorschlag: Pflicht-Download der Rückweg-Datei vor dem ersten REMOVE**,
+   im Dialog nach der Zusammenfassung und vor „Starten"; die Datei nennt je Replace-Zeile die live
+   verifizierte Ziel-Id und alle ihre Aliase; ohne Download kein Lauf; Läufe ohne Replace
+   unberührt; **keine** `localStorage`-Ablage; keine getippte Bestätigung (Entscheidung 6 bleibt);
+   das Ergebnisprotokoll nach dem Lauf bleibt zusätzlich; Leave-Guard und `beforeunload` decken den
+   **laufenden** destruktiven Lauf. Ausgestaltung: Abschnitt 2; Tasks T5, T7, T8.
+5. **Nested Scroll im Auflösungsschritt.** Der Plan folgt dem `foreign-emote-grid`-Muster (Viewport
+   = einziger Scrollcontainer). — **Entschieden: mit der Breitklasse `app-dialog-panel-wide`**
+   während Schritt 2 (T8).
+6. **Dateiformate.** — **Entschieden: `emote-list`-Export weiterhin ohne `imageUrl`;
+   Envelope-`channelName` des `transfer-run` ist `''` bei ungetracktem Ziel** (T1, T7).
+7. **Adopt gibt den alten Zielalias nicht frei** (T3, konservativ). — **Entschieden: so lassen.**
+   Codex-Finding 4 zieht daraus die konsistente Folge für fremde Replace-Freigaben (T3, Regel 2).
+8. **`targetGroup[0].name` vs. `target.aliases[0]`** — nur zur Kenntnis, deckungsgleich mit AK 8;
+   keine Entscheidung nötig.
 
 ---
 
@@ -778,15 +982,20 @@ Nichts davon ist im Plan still entschieden; wo der Plan einen Vorschlag macht, s
 | Fünfte Validierungsregel | vier Regeln | plus „kein Zieleintrag von zwei Zeilen berührt" (Replace + Adopt derselben Id) | Am Code sichtbar: eine Ziel-Id kann **gleichzeitig** Namensinhaber (Kollisionszeile) und Alias-Abweichungs-Gegenstück sein; ohne die Regel verspricht der Dialog eine Umbenennung eines Eintrags, den er gerade entfernt |
 | `failedStep` im Protokoll und in der Queue | „distinct reason that names the gap" (Text) | Text **und** Feld | Ein übersetzter Text ist kein maschinenlesbares Merkmal; ein späteres #201 oder ein Skript des Betreibers muss die Lücke ohne Wortlautvergleich finden |
 | Löschmeldung bei `failedStep = 1` | „reports the removed ids" | schließt Replaces ein, deren ADD scheiterte | Die REMOVE ist passiert; ein Audit, das nur fertige Replaces zählt, unterschlüge genau die Lücke |
-| `cancel()` mitten in der Zeile | nicht behandelt | `failed` + Lückengrund | s. Frage 3 |
+| `cancel()` mitten in der Zeile | nicht behandelt | `failed` + Lückengrund | Frage 3, entschieden |
 | `gqlStatus` in der Engine | nicht erwähnt | neues Feld in `RunOneResult`/`abortOn` | Das Issue verlangt „detect it by `status`, not by text"; die Engine trägt den Status heute nicht durch |
-| Protokoll-Rückweg | nicht Teil des Issues | Abschnitt 2 | Auflage der Vorsession |
+| **Rückweg-Datei vor dem Lauf** | „Offered after every transfer run" (nur danach) | zusätzlich Pflicht-Download **vor** dem ersten REMOVE, `stage: 'planned'`, aus live gelesenen Aliasen | Betreiber-Entscheidung Frage 4 und Codex-Findings 1/2: eine Datei, die erst nach dem Lauf entsteht, gibt es nicht, wenn der Tab mitten im Lauf stirbt; eine Datei aus der Vorschau kann Aliase nicht kennen, die seither dazukamen |
+| **Ausgang `unknown`** | „if the ADD fails, the row ends `failed`" | ein Schritt ohne Antwort aus 7TVs GraphQL-Schicht endet `unknown`; ein Nachlesen klärt ihn; unklärbar heißt: in keiner Meldung | Codex-Finding 3: eine verlorene Antwort ist kein Beweis, dass nichts passiert ist; `failed` würde eine womöglich hinzugefügte Id aus `sync-imported` halten und eine Lücke behaupten, die es nicht gibt |
+| **Fremde Freigabe im selben Lauf** | „a replace frees its target's name for use in the same run, and that has to be allowed" | frei nur für die **eigene** Replace-Zeile; ein Rename auf einen Namen, den ein **anderes** Replace freigibt, ist eine Verletzung | Codex-Finding 4: die Engine läuft in Quellreihenfolge, der Rename kann vor dem Replace kommen und 409 bekommen; die Alternative — Abhängigkeiten im Lauf ordnen — kostet eine Topologie samt Zyklusfall für etwas, das in zwei Läufen sauber geht. Der eigene Fall (REMOVE gibt frei, der ADD derselben Zeile nimmt) bleibt erlaubt und ist, was das Issue mit „the whole point of the action" meint |
+| **Bestandsdoppel in `toAdd`** | „No two produced aliases may be equal" | Doppel zwischen zwei **unveränderten** `toAdd`-Zeilen sind keine Verletzung | Codex-Finding 6, am Code belegt: `dedupeImportRows` faltet nur nach Id, der Fall existiert heute, 7TV lehnt die zweite Zeile ab; die Regel wörtlich genommen blockierte einen unveränderten Dialog gegen AK 2/5 |
+| **Slot-Formel** | „renames as +1 and a replace as +1 minus the number of target entries" | `delta = addCount − removedEntryCount`, `addCount` = alle ADD-Mutationen | Codex-Finding 5: keine Abweichung vom Issue, sondern die Korrektur einer Doppelzählung in der ersten Fassung dieses Plans |
 | `sourceName` in der Protokollzeile | nur `alias` | beides | Ein Rename ist sonst nicht rekonstruierbar |
+| `removedTarget.confirmed` | nicht spezifiziert | im Ergebnisprotokoll je Replace | Mit `unknown` gibt es Zeilen, deren REMOVE weder bestätigt noch widerlegt ist; ein Leser muss das ohne Statusvergleich sehen |
 | `transfer-run`-CSV | nicht spezifiziert | Spaltenliste in T7 | Der Export-Dialog bietet immer CSV neben JSON (§7.4); ohne Spaltenvertrag entstünde er ad hoc |
 | Spec-Querverweis F7 | „correct … while this issue is being built" | eigener `docs:`-Commit in T6 | Regel 2: logisch getrennter Commit |
 | Konzept-Ausblick auf #201 | „point the outlook at this issue" | T9 | reine Doku, ans Ende |
 | i18n als eigener Task | eigene Aufwandszeile | in jedem Task, der Text erzeugt | Hausregel: Schlüssel landen mit dem Feature in beiden Locales, nicht als Sammelschritt |
-| Effort-Schätzung | 41 h | nicht neu geschätzt | Der Plan ändert den Umfang nur um Abschnitt 2 (grob +3 h) und die fünfte Regel (+0,5 h) |
+| Effort-Schätzung | 41 h | nicht neu geschätzt | Fassung 2 ändert den Umfang um den Pflicht-Download mit Live-Verifikation (grob +4 h), den Ausgang `unknown` samt Nachlesen (+4 h) und die zwei Validierungskorrekturen (+1 h); Abschnitt 2 der ersten Fassung (+3 h) entfällt größtenteils |
 
 ---
 
@@ -794,7 +1003,32 @@ Nichts davon ist im Plan still entschieden; wo der Plan einen Vorschlag macht, s
 
 Frontend-Änderungen sind per Revert des PR rückgängig; die eine additive DTO-Eigenschaft
 (`EmoteListItemDto.ImageUrl`) und der neue Endpunkt sind unabhängig davon harmlos, wenn sie bleiben
-(kein Aufrufer, kein Schema). Keine Migration. Bereits heruntergeladene `transfer-run`-Dateien
-bleiben in einem revertierten Build **mit Grund** unlesbar (`wrongKind`) — das ist die vorgesehene
-Antwort, kein Bruch. Ein bereits gelaufener Replace ist **nicht** durch Revert rückgängig; sein
-Protokoll ist der einzige Rückweg, und genau deshalb steht Abschnitt 2 in diesem Plan.
+(kein Aufrufer, kein Schema). Keine Migration. Bereits heruntergeladene `transfer-run`-Dateien —
+Rückweg-Datei wie Ergebnisprotokoll — bleiben in einem revertierten Build **mit Grund** unlesbar
+(`wrongKind`) — das ist die vorgesehene Antwort, kein Bruch; als JSON bleiben sie für einen
+Menschen lesbar, und nur darauf kommt es beim Rückweg an. Ein bereits gelaufener Replace ist
+**nicht** durch Revert rückgängig; die Rückweg-Datei, die vor seinem ersten REMOVE auf der Platte
+lag, ist der einzige Weg zurück — deshalb der Pflicht-Download, deshalb die Live-Verifikation davor.
+Eine `unknown`-Zeile im Ergebnisprotokoll ist nach einem Revert genauso unbekannt wie davor: der
+Nutzer prüft das Set bei 7TV, wie das Dock es ihm gesagt hat.
+
+---
+
+## 9. Nachtrag: Codex-Review vom 2026-09-23 (gpt-6-sol, adversarial)
+
+Sechs Befunde über die erste Fassung. Je übernommen oder mit Grund zurückgewiesen; die Folgen
+stehen in den Tasks und den Abschnitten 1, 2, 4, 7.
+
+| # | Schwere | Befund | Entscheidung | Folge |
+|---|---|---|---|---|
+| 1 | high | Replace kann Aliase löschen, die im Rückweg-Record fehlen: `removedTarget` kam aus der Vorschau, die Vorprüfung testete nur die Quell-Id | **Übernommen.** Vor dem Download liest der Dialog das Ziel-Set live und vergleicht jede Replace-Ziel-Id samt Alias-Menge; bei Abweichung kein Download, kein Start, Neuladen und Neu-Bestätigen; die Datei entsteht aus dem Read. Der Frischcheck im Flow prüft ein zweites Mal. Das Restfenster zwischen letztem Lesen und jedem REMOVE bleibt und ist nicht zu schließen (`already-present-filter.ts:55-57`); das Ergebnisprotokoll trägt deshalb, was das Nachlesen nach dem Lauf über die tatsächlich genommenen Aliase liefert | Abschnitt 2, T5 (`verifyReplaceTargets`), T8 |
+| 2 | high | Die Rückweg-Datei entsteht zu spät | **Übernommen**, durch Frage 4 entschieden: Pflicht-Download vor dem ersten REMOVE. Test für den Abbruch zwischen den beiden Mutationen: T4 (`cancel()` zwischen Schritt 1 und 2 ⇒ `failed`, `failedStep 1`, kein ADD gesendet) | Abschnitt 2, T4, T7, T8 |
+| 3 | high | Eine verlorene ADD-Antwort gilt als bestätigte Lücke | **Übernommen.** Am Code geprüft: `runOne` macht aus jeder `HttpErrorResponse` außer 429 ein `failed` mit `httpStatus = error.status`, Status 0 wird `networkError` (`seven-tv-run-engine.ts:406-424, 566`). Vertrag: Status 0/502/503/504 ⇒ `unknown` für Operationen mit `transportLossIsUnknown` (der Import-Lauf mit Replace, für alle seine Zeilen — Add, Rename, Replace, Adopt); 500 und jede GQL-Ablehnung bleiben `failed`; ein Live-Nachlesen nach dem Lauf klärt jede `unknown`-Zeile vor jeder Meldung; unklärbar ⇒ in keiner Meldung, `unknown` im Protokoll, Hinweis im Dock. Delete/Restore/Add-only unverändert | T4, T5, T7 |
+| 4 | medium | Quellreihenfolge verhindert eine erlaubte Alias-Wiederverwendung | **Übernommen, Variante „ablehnen".** Regel 2 in T3 gibt die Aliase eines Replace nur für die eigene Zeile frei; ein Rename auf einen fremd freigegebenen Namen ist eine Verletzung, in beiden Zeilenreihenfolgen getestet. Grund: konsistent mit Frage 7, keine Abhängigkeitsordnung samt Zyklusfall in der Engine, der Fall geht in zwei Läufen. Abweichung vom Issue-Wortlaut in Abschnitt 7 festgehalten | T3, Abschnitt 7 |
+| 5 | medium | Slot-Formel zählt Rename und Replace doppelt | **Übernommen** — der Befund traf zu: die erste Fassung addierte `renameCount` und `replaceCount` auf ein `addCount`, das sie schon enthielt. Jetzt `delta = addCount − removedEntryCount`, `addCount` = alle ADD-Mutationen; drei Einzeltests (Rename, Replace, Replace auf Duplikat) in T3 und T8 | T3, T8, AK 21 |
+| 6 | medium | Die Laufvalidierung kann einen unveränderten Import blockieren | **Übernommen** — am Code belegt: `dedupeImportRows` faltet nur nach `sevenTvEmoteId`, `buildImportPreview` prüft Namen nur gegen das Ziel; zwei Quellzeilen gleichen Namens landen heute beide in `toAdd`, 7TV lehnt die zweite ab. Regel 1 in T3 nimmt Doppel zwischen zwei **unveränderten** `toAdd`-Zeilen aus; sobald eine Entscheidung beteiligt ist, gilt sie voll. Test: zwei `toAdd`-Ids mit gleichem Alias, kein Zielkonflikt ⇒ `ok: true`, Plan wie heute | T3 |
+
+Keiner der sechs Befunde ist zurückgewiesen. Offene Fragen an den Betreiber ergeben sich aus der
+Runde nicht: die Entscheidungen zu 4 (ablehnen statt ordnen) und 3 (Statusliste 0/502/503/504,
+500 bleibt `failed`) sind Planentscheidungen mit Grund, die der Betreiber beim Lesen kippen kann,
+ohne dass ein Task davon abhängt, bevor er beginnt.
