@@ -10,6 +10,49 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Codex Sol review of #247: a dedicated rate-limit budget, resilient footer availability, wrapping footers, audit coverage
+
+**Betrifft:** `src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` ·
+`src/EmotePurge.Api/RateLimiting/RateLimitingOptions.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Api/Endpoints/LegalEndpoints.cs` · `src/EmotePurge.Api/appsettings.json` ·
+`tests/EmotePurge.Api.Tests/RateLimitRejectionTests.cs` ·
+`web/src/app/core/legal/legal.service.ts` (+ spec) · `web/src/app/features/landing/landing-page.html` ·
+`web/src/app/features/shell/app-shell.ts` · `web/src/app/features/login/login-page.ts` ·
+`web/e2e/audit/ui-audit.audit.ts` · `docs/Operations.md`
+
+Three P2 findings from Codex Sol's review of the #247 branch, all accepted.
+
+1. **The two legal endpoints shared `PublicHealth`'s 30/min budget** with `GET /api/health`. The two
+   have unrelated legitimate callers — `PublicHealth`'s are two machines on fixed cadences (the
+   container HEALTHCHECK, the uptime monitor), the legal endpoints' are browser visitors, who can
+   arrive in numbers behind one shared IP (an office or campus NAT) that neither machine caller
+   ever does. Sharing the counter meant ordinary visitor traffic could 429 the health check away,
+   or the reverse. Split into its own `PublicLegal` policy, sized at 60/min: one availability check
+   per SPA load, one document fetch per page view of `/imprint`/`/privacy`, one more per language
+   switch while on one of those pages — a single visitor's session rarely exceeds half a dozen such
+   requests, so 60/min gives headroom for roughly a dozen visitors a minute from one shared IP.
+   `RateLimitRejectionTests.PublicLegalBudget_ExhaustsIndependently_FromPublicHealth` (rule 11)
+   proves the two budgets are now independent in both directions.
+2. **A failed availability request used to hide both footer links for the rest of the SPA session.**
+   `LegalService` fetched `GET /api/legal/availability` exactly once, in its constructor, and
+   `catchError` folded any failure (including a transient 429, before the split above existed) into
+   the same "nothing configured" `{false, false}` state as a genuinely empty deployment — with no
+   way back for the rest of that page load. Fixed by tracking a failed fetch separately from "not
+   configured" and retrying once per completed navigation (`Router`'s `NavigationEnd`) until it
+   succeeds — paced by the visitor's own navigation rather than a timer, so a retry never adds load
+   on its own and a transient failure (the window resetting, a dropped connection) self-heals the
+   next time the visitor moves to another page. Covered in `legal.service.spec.ts`.
+3. **The landing page's existing footer row (`flex gap-5`) doesn't wrap**, and the two new footers
+   added to `AppShell`/`LoginPage` copied that shape — on a narrow phone the added legal links could
+   overflow the row or break mid-word. Zero horizontal overflow is a hard rule
+   (`web/.claude/CLAUDE.md`; `docs/UI-Designsprache.md`, accessibility checklist). Fixed by adding
+   `flex-wrap` to all three footer rows, so extra items drop to a second line instead of pushing the
+   viewport wider.
+
+Additionally: `/imprint` and `/privacy` scenarios added to the UI audit harness
+(`web/e2e/audit/ui-audit.audit.ts`) with mocked document responses, following the existing
+registration pattern for other pages.
+
 ### 2026-09-23 — Operator-supplied imprint/privacy pages, read from a mounted directory, never from the repo (#247)
 
 **Betrifft:** `src/EmotePurge.Core/Services/ILegalContentService.cs` ·
@@ -41,9 +84,9 @@ German" instead of silently mixing languages or 404ing on a document that does e
 
 Two new anonymous endpoints, `GET /api/legal/availability` (which documents exist, so the footer
 can hide a link entirely rather than show one that then 404s) and
-`GET /api/legal/{imprint,privacy}/{de,en}`, both behind the existing `PublicHealth` rate-limit
-policy — the only anonymous, IP-partitioned policy this API already had, and its budget
-comfortably covers a footer link's traffic. Markdown renders to HTML **server-side** via Markdig
+`GET /api/legal/{imprint,privacy}/{de,en}`, both behind their own new anonymous, IP-partitioned
+`PublicLegal` rate-limit policy (60/min) — not a share of `PublicHealth`'s, see the Codex Sol
+review entry below for why. Markdown renders to HTML **server-side** via Markdig
 with `DisableHtml()`, so a literal `<script>` (or any other raw HTML) typed into the operator's
 file is escaped on output rather than passed through; the frontend still binds the result through
 Angular's `[innerHTML]` sanitizer on top of that as defence in depth. Rendered HTML is cached per

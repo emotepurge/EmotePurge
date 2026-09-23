@@ -97,10 +97,11 @@ An edit to an existing file is picked up on the **next request**, not only on a 
 re-renders only when that changes, so there is no cache to flush by hand. Markdown is rendered
 to HTML **server-side** with raw HTML disabled (Markdig `DisableHtml()`), so a literal
 `<script>` typed into the source file cannot execute — it is escaped like any other text. Both
-`/api/legal/availability` (tells the frontend which links to show) and the document endpoints sit
-behind the same anonymous, IP-partitioned rate-limit policy as `GET /api/health`
-(`RateLimitPolicyNames.PublicHealth`), since both are unauthenticated by design (reachable before
-the Twitch OAuth redirect, per issue #247's requirement 3).
+`/api/legal/availability` (tells the frontend which links to show) and the document endpoints are
+anonymous and IP-partitioned like `GET /api/health`, but behind their own `PublicLegal` policy
+(`RateLimiting:PublicLegal`, 60/min by default) rather than a share of `PublicHealth`'s — the two
+have unrelated legitimate callers (browser visitors vs. two machines on fixed cadences) and must
+not be able to exhaust each other's budget.
 
 `.env.example`-style template: none is checked in, because every line would either be empty or a
 placeholder path with nothing to demonstrate — `Legal:ContentPath` is documented here instead,

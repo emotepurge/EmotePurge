@@ -17,10 +17,9 @@ public static class LegalEndpoints
         var group = app.MapGroup("/api/legal");
 
         // Tells the frontend which footer links to show at all — never which *language* exists,
-        // that is what GetDocumentAsync's German-fallback flag is for. Reused PublicHealth is the
-        // only anonymous, IP-partitioned policy this app already has; its budget (30/min per the
-        // default appsettings.json) comfortably covers a footer link's traffic, which is at most one
-        // hit per page load.
+        // that is what GetDocumentAsync's German-fallback flag is for. Its own PublicLegal policy,
+        // not a share of PublicHealth's — see RateLimitPolicyNames.PublicLegal for why the two must
+        // not share a counter (Codex Sol review of #247, P2).
         group.MapGet("/availability", async (ILegalContentService legalContent, CancellationToken ct) =>
         {
             var availability = await legalContent.GetAvailabilityAsync(ct);
@@ -29,7 +28,7 @@ public static class LegalEndpoints
                 imprintAvailable = availability.ImprintAvailable,
                 privacyAvailable = availability.PrivacyAvailable,
             });
-        }).RequireRateLimiting(RateLimitPolicyNames.PublicHealth);
+        }).RequireRateLimiting(RateLimitPolicyNames.PublicLegal);
 
         group.MapGet("/{kind}/{language}", async (
             string kind, string language, ILegalContentService legalContent, CancellationToken ct) =>
@@ -46,7 +45,7 @@ public static class LegalEndpoints
             }
 
             return Results.Ok(new { html = document.Html, isGermanFallback = document.IsGermanFallback });
-        }).RequireRateLimiting(RateLimitPolicyNames.PublicHealth);
+        }).RequireRateLimiting(RateLimitPolicyNames.PublicLegal);
     }
 
     private static bool TryParseKind(string value, out LegalDocumentKind kind)

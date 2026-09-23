@@ -29,6 +29,20 @@ internal static class RateLimitPolicyNames
     internal const string PublicHealth = "PublicHealth";
 
     /// <summary>
+    /// The anonymous legal-pages endpoints (<c>GET /api/legal/availability</c>,
+    /// <c>GET /api/legal/{kind}/{language}</c>, issue #247), partitioned by remote IP like
+    /// <see cref="PublicHealth"/> — but its own policy, not a share of it. <c>PublicHealth</c>'s
+    /// budget is sized for two machine callers on fixed cadences (the container HEALTHCHECK, the
+    /// uptime monitor); this one is sized for browser visitors, who can arrive from behind one
+    /// shared NAT in numbers neither of those callers ever does. Codex Sol review of #247 (P2):
+    /// under the shared budget, a burst of ordinary visitor traffic on a NAT'd network could 429
+    /// the health check's own budget away, or a health-check blip could 429 every visitor's footer
+    /// links for the rest of their session — two unrelated failure domains that had no business
+    /// sharing one counter.
+    /// </summary>
+    internal const string PublicLegal = "PublicLegal";
+
+    /// <summary>
     /// <c>GET /api/seventv/channels/{channelName}/emotes</c> (foreign-channel-import spec, E5a).
     /// Per-user only — the provider-wide budget across all users (E5b) is a separate, in-process
     /// concern the hardening decorator around <c>IForeignEmoteSetService</c> owns, not an ASP.NET
