@@ -989,12 +989,97 @@ const SCENARIOS: Scenario[] = [
       // deliberately does not pin down.
       await picker.getByRole('radio', { name: /^Main/ }).check();
       await picker.locator('[dialog-actions]').last().click();
-      // The target load starts async and the dialog opens on its loading skeleton (R8). The dialog
-      // title itself already carries the channel name the moment the dialog opens — before the
-      // target data has loaded — so waiting on the mocked set id instead (only rendered once
-      // `ready()` is true, and, like the channel login, never translated) is what actually proves
-      // the confirm dialog has filled in rather than still showing its skeleton.
-      await page.getByText('target-set').first().waitFor();
+      // The target load starts async and the dialog opens on its loading skeleton (R8). Waiting on
+      // the resolve-collisions trigger (an element id, present only once `ready()` is true AND the
+      // mocked target actually collides, which Emote3PogU/target-99 above always does) is what
+      // actually proves the confirm dialog has filled in rather than still showing its skeleton —
+      // unlike a wait on the raw set id text, the header now shows the set's resolved NAME ("Main")
+      // once a picker choice carries one (Codex P2, third round), so the id itself never appears.
+      await page.locator('#import-confirm-resolve-nameCollision').waitFor();
+    },
+  },
+  {
+    // The confirm dialog's second step (#230): the per-row resolution table for the one name
+    // collision the mock below already produces (Emote3PogU/7tv-3 colliding with a different
+    // target id, same data as usage-stats-import-confirm-dialog above — one step further, not a
+    // new fixture). No coarse-pointer variant exists for this step at all (every 7TV write path is
+    // behind `!isCoarse()`), which is what `requiresFinePointer` below is for.
+    slug: 'usage-stats-import-resolve-step',
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(24));
+      await mockMyChannelsWithFlags(page, [
+        ...TYPICAL_CHANNELS,
+        { channelName: 'aatrociity', isSevenTvEditor: true, isTracked: true },
+      ]);
+      await mockEmoteSetTargets(page, [
+        {
+          twitchChannelId: 'aatrociity-id',
+          twitchLogin: 'aatrociity',
+          trackedChannelName: 'aatrociity',
+          activeEmoteSetId: 'target-set',
+          sets: [{ id: 'target-set', name: 'Main', isActive: true }],
+        },
+      ]);
+      await mockActiveEmoteSet(page, 'aatrociity', 'target-set', {
+        capacity: 1000,
+        occupiedSlots: 3,
+      });
+      await mockSetWarning(page, 'aatrociity');
+      await mockEmoteList(page, 'aatrociity', [
+        { sevenTvEmoteId: '7tv-1', name: 'Emote1PogU' },
+        { sevenTvEmoteId: 'target-99', name: 'Emote3PogU' },
+      ]);
+    },
+    afterLoad: async (page) => {
+      // Same opening sequence as usage-stats-import-confirm-dialog above (position-based header
+      // click, unnamed-radio-by-prefix, last dialog-actions element). The resolve-collisions
+      // trigger below both proves the confirm dialog has filled in (it only renders once `ready()`
+      // is true, same reasoning as that scenario's own wait) and is the very element this scenario
+      // exists to open — an element id, not a translated label, same reason as everywhere else in
+      // this file that needs to work under both locale projects.
+      await page.locator('main header button').nth(1).click();
+      const picker = page.getByRole('dialog');
+      await picker.getByRole('radio', { name: /^Main/ }).check();
+      await picker.locator('[dialog-actions]').last().click();
+      await page.locator('#import-confirm-resolve-nameCollision').click();
+      await page.locator('[data-resolve-index="0"]').waitFor();
+
+      // AK 22 (plan §0.1, docs/plans/Plan-230-Namenskonflikte.md): since the resolution step has no
+      // coarse-pointer variant, its 360 px requirement means a squeezed DESKTOP window with a
+      // mouse — not the matrix's own 'mobile' viewport, which is coarse and this scenario never
+      // reaches (requiresFinePointer above). Resizing within the already fine-pointer-emulated
+      // viewport reproduces exactly that state. Pinned once — at the 'desktop-narrow' matrix cell,
+      // dark theme only (light only runs at 'desktop') — rather than redundantly at every fine
+      // viewport this afterLoad also runs at.
+      const original = page.viewportSize();
+      if (original?.width === 1024) {
+        await page.setViewportSize({ width: 360, height: original.height });
+        await page.waitForTimeout(50);
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        expect(
+          scrollWidth,
+          'AK 22: no horizontal scroll inside the dialog pane at 360px',
+        ).toBeLessThanOrEqual(360);
+        // Rows stack source over target below the step's own narrow threshold (720px content
+        // width, comfortably crossed at 360px viewport) — read geometrically (the target block
+        // starts at or below the source block's bottom edge) rather than off a CSS class, which a
+        // redesign could rename without the layout itself changing.
+        const row = page.locator('[data-resolve-index="0"] > div');
+        const sourceBox = await row.locator('> div').nth(0).boundingBox();
+        const targetBox = await row.locator('> div').nth(1).boundingBox();
+        if (sourceBox && targetBox) {
+          expect(
+            targetBox.y,
+            'AK 22: rows stack source over target at 360px',
+          ).toBeGreaterThanOrEqual(sourceBox.y + sourceBox.height - 2);
+        }
+        await page.setViewportSize(original);
+        await page.waitForTimeout(50);
+      }
     },
   },
   {
