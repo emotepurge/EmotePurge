@@ -7,6 +7,10 @@ namespace EmotePurge.Infrastructure.Services;
 
 public class UserService(AppDbContext db, ITokenCipher tokenCipher, IModRoleCache modRoleCache) : IUserService
 {
+    // Throttle window for the LastSeenAtUtc stamp in CheckSessionAsync — see that method's
+    // contract comment on IUserService for why 24 hours keeps this a cheap per-request side effect.
+    private static readonly TimeSpan LastSeenStampThrottle = TimeSpan.FromHours(24);
+
     public async Task<User> UpsertLoginAsync(string twitchUserId, string twitchUsername, string displayName, CancellationToken cancellationToken = default)
     {
         var user = await db.Users.SingleOrDefaultAsync(u => u.Id == twitchUserId, cancellationToken);
@@ -26,15 +30,42 @@ public class UserService(AppDbContext db, ITokenCipher tokenCipher, IModRoleCach
         return user;
     }
 
-    public async Task<DateTime?> GetSessionsValidFromUtcAsync(string twitchUserId, CancellationToken cancellationToken = default)
+    public async Task<SessionCheckResult?> CheckSessionAsync(string twitchUserId, CancellationToken cancellationToken = default)
     {
-        // Runs on every authenticated request (see OnValidatePrincipal): a single primary-key lookup,
-        // projected to the one column so it stays an index-only read and nothing gets tracked.
-        return await db.Users
+        // Runs on every authenticated request (see OnValidatePrincipal): a single primary-key
+        // lookup, projected to both columns this needs so it stays an index-only read and nothing
+        // gets tracked — the same projection that used to carry SessionsValidFromUtc alone now also
+        // carries LastSeenAtUtc, so the throttle check below costs no extra roundtrip on its own.
+        var row = await db.Users
             .AsNoTracking()
             .Where(u => u.Id == twitchUserId)
-            .Select(u => u.SessionsValidFromUtc)
+            .Select(u => new { u.SessionsValidFromUtc, u.LastSeenAtUtc })
             .SingleOrDefaultAsync(cancellationToken);
+        if (row is null)
+        {
+            // No row to stamp or read a cutoff from — the caller must reject the principal instead
+            // of reading this as "never revoked" (see the interface comment).
+            return null;
+        }
+
+        var now = DateTime.UtcNow;
+        if (row.LastSeenAtUtc is null || row.LastSeenAtUtc < now - LastSeenStampThrottle)
+        {
+            // A single conditional UPDATE, not a load-modify-save: the WHERE clause is re-evaluated
+            // against the current row when the statement runs, so it is safe against several
+            // concurrent requests for the same user racing this. Whichever commits first moves
+            // LastSeenAtUtc to "now" (no longer older than the throttle window), so every other
+            // concurrent request's WHERE clause then matches zero rows instead of overwriting the
+            // same value again — no lost update, no duplicate write. Not gated on user existence
+            // separately: the row was just read to exist above, and a delete racing this either
+            // commits first (this affects zero rows, harmless) or commits after (its own DELETE
+            // then removes whatever this just wrote).
+            await db.Users
+                .Where(u => u.Id == twitchUserId && (u.LastSeenAtUtc == null || u.LastSeenAtUtc < now - LastSeenStampThrottle))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.LastSeenAtUtc, now), cancellationToken);
+        }
+
+        return new SessionCheckResult(row.SessionsValidFromUtc);
     }
 
     public async Task<bool> RevokeSessionsAsync(string twitchUserId, AuditActor? actor, CancellationToken cancellationToken = default)

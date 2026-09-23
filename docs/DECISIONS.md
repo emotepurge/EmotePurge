@@ -10,6 +10,36 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — A session whose user row is gone is rejected, and `LastSeenAtUtc` is written at most daily from the principal check (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IUserService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UserService.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Core/Services/IAdminUserQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AdminUserQueryService.cs`
+
+Second step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T2), building on T1's new
+`User.LastSeenAtUtc` column.
+
+- **`IUserService.GetSessionsValidFromUtcAsync` is replaced by `CheckSessionAsync`**, which returns
+  `SessionCheckResult?` instead of a bare `DateTime?`. The old contract could not tell a missing
+  user row apart from a present one that was never revoked — both read as `null`. That distinction
+  used to be harmless (no code path deleted a `User` row), but the retention job and admin account
+  deletion (later tasks) both do. `Program.cs`'s `OnValidatePrincipal` now rejects the principal and
+  signs the cookie out when the row is gone, the same as it already does for a cookie predating
+  session tracking — without this, a deleted account's cookie would keep authenticating until it
+  expired on its own, up to 14 days later.
+- **The same call stamps `LastSeenAtUtc` to now, throttled to once per 24 hours per user.** The read
+  already runs on every authenticated request; the throttle check rides the same projection
+  (`SessionsValidFromUtc` and `LastSeenAtUtc` in one query), so the common case — a stamp already
+  fresh — costs no extra roundtrip. The write itself is one conditional `UPDATE` (`WHERE ... AND
+  (LastSeenAtUtc IS NULL OR LastSeenAtUtc < now - 24h)`) rather than a load-modify-save, which makes
+  it safe under several concurrent requests for the same user: whichever commits first moves the
+  stamp inside the throttle window, so every other concurrent `UPDATE`'s `WHERE` clause then matches
+  zero rows instead of re-writing the same value or losing an update.
+- **`AdminUserDto` gains `LastSeenAtUtc`.** The admin user list keeps sorting by `LastLogin`;
+  rendering the new field in the UI is out of scope for this task.
+
 ### 2026-09-23 — Two retention timestamps, both backfilled to migration time: `LastSeenAtUtc` and `DeactivatedAtUtc` (#243/#244)
 
 **Betrifft:** `src/EmotePurge.Core/Entities/User.cs` · `src/EmotePurge.Core/Entities/Channel.cs` ·
