@@ -237,6 +237,10 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var survivor = await SeedChannelAsync(db, "identityswapold", "10006", isBotActive: false);
         var loser = await SeedChannelAsync(db, "identityswapnew", twitchChannelId: null);
+        // Set directly on the already-saved row: the survivor was deactivated some time ago, and the
+        // merge making it active again must clear this the same way CompleteJoinAsync's reactivation
+        // branch does.
+        survivor.DeactivatedAtUtc = DateTime.UtcNow.AddDays(-10);
         db.ChannelLiveDays.Add(new ChannelLiveDay { ChannelId = loser.Id, Date = new DateOnly(2026, 8, 4), LiveMinutes = 12 });
         await db.SaveChangesAsync();
         var harness = CreateHarness(db, [new TwitchUserIdentity("10006", "IdentitySwapNew")]);
@@ -251,6 +255,9 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Equal("identityswapnew", merged.ChannelName);
         // survivor.IsBotActive |= loser.IsBotActive — the merged channel is the one the bot is in.
         Assert.True(merged.IsBotActive);
+        // The merge is what reactivated the survivor, so its retention clock must stop the same way
+        // a reactivating join's does.
+        Assert.Null(merged.DeactivatedAtUtc);
         Assert.Empty(await verify.Channels.AsNoTracking().Where(c => c.Id == loser.Id).ToListAsync());
         Assert.Equal(1, await verify.ChannelLiveDays.AsNoTracking().CountAsync(d => d.ChannelId == survivor.Id));
 

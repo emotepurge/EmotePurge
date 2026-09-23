@@ -123,6 +123,54 @@ public class ChannelServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task LeaveAsync_StampsDeactivatedAtUtc()
+    {
+        // The measuring point RetentionPolicy's 180-day channel purge reads from.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, "channelserviceretention1");
+        Assert.Null(joined.DeactivatedAtUtc);
+        var before = DateTime.UtcNow;
+
+        await service.LeaveAsync("channelserviceretention1", Actor);
+
+        var channel = await service.GetByNameAsync("channelserviceretention1");
+        Assert.NotNull(channel!.DeactivatedAtUtc);
+        Assert.InRange(channel.DeactivatedAtUtc.Value, before.AddMilliseconds(-1), DateTime.UtcNow.AddMilliseconds(1));
+    }
+
+    [Fact]
+    public async Task JoinAsync_AfterLeave_NullsDeactivatedAtUtc()
+    {
+        // A reactivated channel must not stay a retention-purge candidate.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        await JoinChannelAsync(service, "channelserviceretention2");
+        await service.LeaveAsync("channelserviceretention2", Actor);
+        var deactivated = await service.GetByNameAsync("channelserviceretention2");
+        Assert.NotNull(deactivated!.DeactivatedAtUtc);
+
+        var rejoined = await JoinChannelAsync(service, "channelserviceretention2");
+
+        Assert.Null(rejoined.DeactivatedAtUtc);
+    }
+
+    [Fact]
+    public async Task JoinAsync_OnAnAlreadyActiveChannel_DoesNotChangeDeactivatedAtUtc()
+    {
+        // The channel was never deactivated, so a join on it (no-op for coverage) must not touch a
+        // column that is already an honest null.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, "channelserviceretention3");
+        Assert.Null(joined.DeactivatedAtUtc);
+
+        var joinedAgain = await JoinChannelAsync(service, "channelserviceretention3");
+
+        Assert.Null(joinedAgain.DeactivatedAtUtc);
+    }
+
+    [Fact]
     public async Task JoinAsync_WhenTwitchKnowsTheLogin_StampsTheTwitchIdOnTheNewRow()
     {
         // The whole point of resolving the identity at join time: a row created here already carries
