@@ -312,13 +312,16 @@
                     [attr.title]="keepButtonTitle(emote)"
                     (click)="vote(emote, voteType.Keep)"
                   >
-                    @if (showVoteIcons()) {
+                    @if (stripIconMode(emote.keepVotes) !== 'none') {
                       <svg
                         viewBox="0 0 24 24"
                         fill="currentColor"
                         aria-hidden="true"
                         focusable="false"
-                        class="h-3.5 w-3.5 shrink-0"
+                        [class]="
+                          (stripIconMode(emote.keepVotes) === 'full' ? 'h-3.5 w-3.5' : 'h-2 w-2') +
+                          ' shrink-0'
+                        "
                       >
                         <path
                           d="M2 21h2a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1H2v11ZM22 11.5a2 2 0 0 0-2-2h-5.6l.8-4a2 2 0 0 0-2-2.4h-.2L8 9v12h11a2 2 0 0 0 1.9-1.4l1.9-6.6a2 2 0 0 0 .1-.5v-1Z"
@@ -345,13 +348,17 @@
                     [attr.title]="deleteButtonTitle(emote)"
                     (click)="vote(emote, voteType.Delete)"
                   >
-                    @if (showVoteIcons()) {
+                    @if (stripIconMode(emote.deleteVotes) !== 'none') {
                       <svg
                         viewBox="0 0 24 24"
                         fill="currentColor"
                         aria-hidden="true"
                         focusable="false"
-                        class="h-3.5 w-3.5 shrink-0 rotate-180"
+                        [class]="
+                          (stripIconMode(emote.deleteVotes) === 'full'
+                            ? 'h-3.5 w-3.5'
+                            : 'h-2 w-2') + ' shrink-0 rotate-180'
+                        "
                       >
                         <path
                           d="M2 21h2a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1H2v11ZM22 11.5a2 2 0 0 0-2-2h-5.6l.8-4a2 2 0 0 0-2-2.4h-.2L8 9v12h11a2 2 0 0 0 1.9-1.4l1.9-6.6a2 2 0 0 0 .1-.5v-1Z"

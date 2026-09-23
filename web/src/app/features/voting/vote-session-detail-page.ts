@@ -25,6 +25,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { LIVE_EVENT_TYPES, LiveEvent, channelLiveUrl } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { VoteStripIconMode, voteStripIconMode } from '../../core/voting/vote-strip-icon';
 import {
   VoteSessionResult,
   VoteSessionResults,
@@ -167,8 +168,6 @@ export class VoteSessionDetailPage {
   protected readonly stripPx = computed(() =>
     this.cellPx() === CELL_NARROW_PX ? STRIP_NARROW_PX : STRIP_WIDE_PX,
   );
-  /** Enough room for the thumb icon beside the tally; below it the number carries the button. */
-  protected readonly showVoteIcons = computed(() => this.stripPx() >= STRIP_NARROW_PX);
   protected readonly rowHeight = computed(
     () => this.cellPx() + this.stripPx() + RATIO_BAR_PX + ATLAS_GAP_PX,
   );
@@ -463,6 +462,12 @@ export class VoteSessionDetailPage {
 
   protected inspect(emote: VoteSessionResult): void {
     this.inspectedId.set(emote.emoteId);
+  }
+
+  /** Thin wrapper over the pure `voteStripIconMode` (`core/voting/vote-strip-icon.ts`) — it needs
+   *  the current strip context, which lives here, not there. */
+  protected stripIconMode(tally: number | null): VoteStripIconMode {
+    return voteStripIconMode(this.stripPx() === STRIP_NARROW_PX, tally);
   }
 
   /** Share of the keep votes in the ratio bar under the strip; null while a tally is withheld. */

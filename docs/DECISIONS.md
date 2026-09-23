@@ -10,6 +10,47 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — The dense ballot strip's thumb icon is not optional any more; a fit measurement decides when the number wins (amends 2026-08-06 "Zug 3, erste Fläche")
+
+**Betrifft:** `web/src/app/core/voting/vote-strip-icon.ts` (neu) ·
+`web/src/app/core/voting/vote-strip-icon.spec.ts` (neu) ·
+`web/src/app/features/voting/vote-session-detail-page.{ts,html}`
+
+The 2026-08-06 entry fixed the dense (desktop, 64 px cell / 24 px strip) half of the ballot's vote
+strip on "number only" — right for the icon's *size* at the time, wrong for what a voter sees when
+`hideResultsUntilEnd` withholds the tally on an active session: two grey slabs with no number and,
+on the dense strip, no icon either, so nothing on the card said "these are buttons". The mobile
+strip (96 px cell / 44 px, thumb icon + number) never had this problem — more room, and the icon
+was never gated there.
+
+**The icon now always renders, on both strips — it signals "clickable", it does not replace the
+number.** The decision is `voteStripIconMode(isNarrowStrip, tally): 'full' | 'compact' | 'none'`,
+a pure function in the new `core/voting/vote-strip-icon.ts` (following the same
+extraction-next-to-the-component pattern as `core/voting/vote-audience.ts`), with its own
+`vote-strip-icon.spec.ts` — the page's `stripIconMode()` is a thin wrapper that supplies the
+current strip context. On the mobile strip it is always `'full'` (14 px, `h-3.5 w-3.5`) — there was
+never a fit problem there, at any tally width. On the dense strip: a **withheld** tally (`null`)
+also gets `'full'` — an 8 px icon there would be a speck exactly where a voter most needs to see
+"this is a button", and nothing shares the 32 px half with it when there is no number to render. A **rendered** tally gets `'compact'`
+(8 px, `h-2 w-2`) below `STRIP_ICON_DENSE_OVERFLOW_AT = 1000`, or `'none'` at or past it.
+
+That threshold is a fit measurement, done twice: first in isolation (a production build's compiled
+Tailwind CSS, rendered headlessly with Playwright at the exact 64 px cell width the dense strip's
+two halves share), then confirmed against the running app with its real, self-hosted fonts — the
+two disagreed by a couple of px, and the app is the one that counts. The existing 14 px icon
+overflows badly the moment a tally needs more than two digits — a 3-digit tally forces each half to
+roughly a 36 px min-content width against the 31.5 px it actually has. The 8 px `'compact'` icon
+does far better: a 3-digit tally ("999") overflows its half by only about 1.5 px, which the 4 px
+`gap-1` between grid columns absorbs without a visible seam — confirmed by a full-page screenshot of
+three sample tallies (1/2/3 digits) at that icon size, no clipping or bleed into the next cell. A
+4-digit tally overflows by several times that, well past what the gap could hide, so past
+`STRIP_ICON_DENSE_OVERFLOW_AT` the icon gives way entirely (keep and delete checked independently,
+since one side's tally can cross the line without the other's doing so — confirmed live with a
+1234/987 pair rendering as number-only/icon-plus-number respectively). No emote in this app has
+ever collected 1000 keep or delete votes, so this is a safety margin rather than an observed case.
+The strip's own height/width contract (24 px / 44 px strip, 64 px / 96 px cell) is unchanged — the
+fit came from shrinking the icon, not from growing the strip.
+
 ### 2026-09-23 — A hard cap on simultaneously active channels: 80 by default, admins exempt, overshoot accepted (supersedes the "display only" half of the 2026-08-01 roster entry)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IChannelService.cs` ·
