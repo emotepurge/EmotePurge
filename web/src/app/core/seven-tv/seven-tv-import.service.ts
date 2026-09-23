@@ -1,5 +1,5 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Service, Signal, computed, inject, signal } from '@angular/core';
+import { DestroyRef, Service, Signal, computed, effect, inject, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { catchError, of, retry, throwError, timeout, timer } from 'rxjs';
 
@@ -226,6 +226,7 @@ interface ImportRunContext {
 @Service()
 export class SevenTvImportService {
   private readonly channelService = inject(ChannelService);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly emoteAdminService = inject(EmoteAdminService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly httpClient = inject(HttpClient);
@@ -325,6 +326,22 @@ export class SevenTvImportService {
 
   /** The plan rows of the shown run by queue key — what `items` attaches to the engine's rows. */
   private readonly transferRowsByKey = computed(() => indexPlanRows(this.run()?.plan ?? null));
+
+  constructor() {
+    // The `beforeunload` guard (Abschnitt 2): registered exactly while `destructiveRunActive` is
+    // `true`, removed the moment it flips back — never after the run (settlement clears it), never
+    // for a plan without a replace row. `preventUnload` is a module-level function, not a closure
+    // created here, so `removeEventListener` always targets the exact reference `addEventListener`
+    // registered; an inline arrow function would silently fail to remove itself.
+    effect(() => {
+      if (this.destructiveRunActive()) {
+        window.addEventListener('beforeunload', preventUnload);
+      } else {
+        window.removeEventListener('beforeunload', preventUnload);
+      }
+    });
+    this.destroyRef.onDestroy(() => window.removeEventListener('beforeunload', preventUnload));
+  }
 
   /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source id, validated —
    *  and already re-checked against the live target set right before this call (`import-flow.ts`);
@@ -728,6 +745,18 @@ export class SevenTvImportService {
       DUPLICATE_NOTICE_MS,
     );
   }
+}
+
+/** The standard `beforeunload` incantation (MDN): calling `preventDefault()` and setting a
+ *  non-undefined `returnValue` is what makes the browser show its own confirmation prompt — neither
+ *  Chromium, Firefox nor Safari display a custom string any more, so the exact value assigned here
+ *  is irrelevant, only that one is set. A plain module-level function, not a closure created inside
+ *  the constructor's `effect()`, so `removeEventListener` always targets the exact function
+ *  reference `addEventListener` registered — an inline arrow recreated on every effect run would
+ *  silently fail to remove itself. */
+function preventUnload(event: BeforeUnloadEvent): void {
+  event.preventDefault();
+  event.returnValue = '';
 }
 
 /** Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a
