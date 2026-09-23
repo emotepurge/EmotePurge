@@ -202,7 +202,7 @@ import { Popover } from '../../shared/ui/popover';
            operator has configured neither document (issue #247, requirement 4). -->
       @if (hasLegalLinks()) {
         <footer class="border-t border-border px-4 py-4">
-          <div class="mx-auto flex max-w-7xl gap-5 text-sm text-fg-muted">
+          <div class="mx-auto flex max-w-7xl flex-wrap gap-5 text-sm text-fg-muted">
             <app-legal-footer-links />
           </div>
         </footer>
