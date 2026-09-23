@@ -9,7 +9,7 @@ import {
   ImportTargetSelection,
   loadImportTarget,
 } from '../../core/emotes/import-target-loader';
-import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -35,8 +35,9 @@ export interface ImportFlowDeps {
    *  channel-only entry points (file, foreign channel, leaderboard) never reach it, since they
    *  always resolve `'activeSet'`. */
   emoteSetService: SevenTvEmoteSetService;
-  /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read in
-   *  this flow goes through `emoteAdminService`. */
+  /** Only for the direct reads against 7TV — `filterAlreadyPresent` right before the run (#149 P1
+   *  fix), and the confirm dialog's live check of the replace targets before it saves the recovery
+   *  file. Every other read in this flow goes through `emoteAdminService`. */
   httpClient: HttpClient;
   tokenService: SevenTvTokenService;
   importService: SevenTvImportService;
@@ -232,11 +233,6 @@ export function recheckTransferPlan(
   );
 }
 
-/** The plan of a confirmation that resolved nothing: one `add` row per row, under its own name. */
-function addOnlyPlan(rows: readonly ImportRow[]): TransferPlan {
-  return { rows: rows.map((row) => ({ action: 'add', source: row, alias: row.name })) };
-}
-
 /**
  * Confirms and starts one copy run: target data → confirmation → 7TV token → run.
  *
@@ -309,14 +305,14 @@ export function startImportFlow(
     if (deps.arbiter.activeRun() !== null) {
       return;
     }
-    // #149/T5: `outcome.rows` already passed `buildImportPreview`'s filter against the target set's
+    // #149/T5: `outcome.plan` already passed `buildImportPreview`'s filter against the target set's
     // contents as of when the confirm dialog opened — that snapshot can be stale by the time the
     // user actually confirms (another editor, another tab, a long-open dialog). Re-check fresh,
     // right here, immediately before anything is sent, against 7TV itself rather than our database
     // (see `filterAlreadyPresent`'s doc for why that distinction matters and for the residual race
     // this does not close). The same read verifies every replace target a second time
     // (`recheckTransferPlan`).
-    recheckTransferPlan(deps.httpClient, outcome.targetSetId, addOnlyPlan(outcome.rows)).subscribe(
+    recheckTransferPlan(deps.httpClient, outcome.targetSetId, outcome.plan).subscribe(
       ({ plan, skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift }) => {
         // #149 P2 review fix: the arbiter check above ran *before* this fetch, which the mutual
         // exclusion contract (design doc §4.3, the SevenTvRunArbiter paragraph) does not actually
@@ -373,6 +369,7 @@ export function startImportFlow(
     target: targetState.asReadonly(),
     retry: load,
     runBlocked: computed(() => deps.arbiter.activeRun() !== null),
+    httpClient: deps.httpClient,
   });
 
   confirmRef.closed.subscribe((outcome) => {

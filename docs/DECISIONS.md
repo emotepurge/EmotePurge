@@ -10,6 +10,80 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — The import dialog becomes a deleting operation: name conflicts resolved per row, recovery file before the first removal (#230)
+
+**Betrifft:** `docs/UI-Designsprache.md` (§7.2) · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` · `web/src/app/core/seven-tv/transfer-plan.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` · `web/src/app/shared/export/export-envelope.ts` ·
+`web/src/app/shared/export/import-source-parser.ts` · `web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` ·
+`web/src/app/shared/seven-tv/import-preview.ts` · `web/src/app/shared/seven-tv/slot-projection.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+
+Until now a transfer into a 7TV set only ever added: a source row whose name the target already
+held, or whose emote the target held under another alias, was counted and left out. Since this
+change the confirm dialog resolves those rows one by one — and one of the resolutions deletes. The
+plan (docs/plans/Plan-230-Namenskonflikte.md) carries the full reasoning; this entry records the
+contracts that changed.
+
+**What the user can decide, per row.** Both conflict groups open a second step of the *same*
+dialog (no page, no second overlay): a name collision offers skip, rename (the source is added under
+a typed alias) and **replace** (the target entry is removed, then the source is added under the
+freed name); an alias mismatch offers skip and adopt (the target entry is renamed to the source
+alias, nothing is added). Skip is the default, so an untouched dialog closes with exactly the plan
+it always had — `toAdd`, one `add` row each (`ImportConfirmOutcome` now carries `plan: TransferPlan`
+instead of `rows`). The rules a set of decisions must satisfy are one pure function,
+`validateResolution` (seven rules, independent of row order); the dialog blocks "Apply" with the
+violating rows named beside it and never builds a plan that fails them. Replace is **only offered
+for a tracked target** — deleting from an untracked set would have no way back — and is shown
+disabled with that reason instead of hidden. Decisions live in the dialog until it closes: "Apply"
+commits a group's edits, "Back" keeps the committed ones and the edits for the next opening.
+
+**One run row can now be two mutations.** A replace row is REMOVE, then ADD, in one row of one run
+(the run engine's sequence of steps per row). A REMOVE that fails ends the row without its ADD; an
+ADD that fails after a successful REMOVE leaves the gap — deliberately no automatic rollback — and
+says so in the row's own reason. The plan runs every replace first, then adopts, then plain adds,
+then renames, so a replace can only lower the set's peak occupancy. The slot projection uses the
+net change (`addCount − removedEntryCount`): a replace on a #74 duplicate or on an id with an
+aliasless sibling removes more entries than it adds back.
+
+**The safeguard is a file, not a typed confirmation.** A plan with at least one replace turns the
+executor into a three-state button: "Save recovery file" reads the target set live, checks every
+replace target at entry level (same id, same set of aliases, same aliasless entry, the name still
+held by that id, a complete read — `verifyReplaceTargets`), downloads the recovery file (the
+`transfer-run` envelope, stage `planned`, built from that read), and only then offers "Start".
+Nothing else is asked; the removal count stands in the dialog as a warning line. A drifted target
+releases nothing: its row goes back to skip, the resolution step shows the live counterpart instead
+of the stale one, and the user confirms again (operator decision). A failed or incomplete read
+releases nothing either, but keeps the decisions — it cannot say which target changed, if any. Only
+the newest read may answer (a new read cancels the one before it, and the resolve triggers are
+locked while one runs), and a reload that no longer fits a committed decision drops it and names it
+in the same banner. Any change to the decisions after the download asks for a new file. The replace targets of the plan the
+dialog closes with carry the read's aliases and 7TV default names, so the run protocol can name an
+aliasless entry and the flow's own second check compares against the read, not the preview.
+
+**A second check right before the run, and what remains open.** Between the download and the start
+can lie the token prompt, so `import-flow.ts` reads the set once more: a replace row whose target
+drifted by then is dropped and counted in the dock (`replaceSkippedDrift`) rather than reopening
+the dialog, and a failed or incomplete read lets no replace row through. A window between that read
+and each individual REMOVE remains — it cannot be closed without an atomic operation on 7TV's side,
+the same residual race the duplicate filter already documents.
+
+**After the run.** The result protocol (stage `finished`) is offered in the dock after every
+transfer run; both stages load back through the existing "Restore" entry, which re-adds only the
+removed target entries and only where the gap is still open. While a run with replace rows is
+active, closing the tab asks first (`beforeunload`); an add-only run never does. No
+`localStorage` copy of either file.
+
+---
+
 ### 2026-09-23 — Restore leaves out an alias another emote now holds, for every restore source (#230)
 
 **Betrifft:** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·

@@ -182,7 +182,9 @@ describe('startForeignChannelImportFlow', () => {
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',
       targetSetName: 'set-target',
-      rows: [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      plan: {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
     });
 
     // Fourth argument is the #149/T5 fresh duplicate-check skip count — 0 because the fresh 7TV
@@ -346,7 +348,9 @@ describe('startLeaderboardImportFlow', () => {
     closedSubject<unknown>(dialogOpen, 0).next({
       targetSetId: 'set-target',
       targetSetName: 'set-target',
-      rows: [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      plan: {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
     });
 
     expect(startImport).toHaveBeenCalledWith(

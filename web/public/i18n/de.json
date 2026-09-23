@@ -1156,7 +1156,70 @@
       },
       "sameChannelFile": "Diese Liste stammt aus diesem Kanal.",
       "runNotice": "Das Hinzufügen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
-      "execute": "Kopieren"
+      "execute": "Kopieren",
+      "removals": {
+        "one": "{{ count }} Emote wird aus dem Zielset entfernt und durch das Quell-Emote ersetzt.",
+        "other": "{{ count }} Emotes werden aus dem Zielset entfernt und durch die Quell-Emotes ersetzt."
+      },
+      "saveRecovery": "Rückweg sichern",
+      "start": "Starten",
+      "verifying": "Das Zielset wird gerade live geprüft…",
+      "targetDrifted": "Das Zielset hat sich seit der Vorschau geändert: {{ rows }}. Diese Zeilen stehen wieder auf „Überspringen“ und zeigen jetzt das aktuelle Gegenstück — bitte prüfen und erneut bestätigen.",
+      "targetReadFailed": "Das Zielset ließ sich gerade nicht vollständig lesen. Ohne vollständigen Stand wird nichts entfernt — bitte erneut versuchen.",
+      "saveRecoveryFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
+      "reloadTarget": "Ziel neu laden",
+      "decisionsDropped": "Nach dem Neuladen passt die Entscheidung für diese Zeilen nicht mehr, sie stehen wieder auf „Überspringen“: {{ rows }}."
+    },
+    "resolve": {
+      "open": "Auflösen",
+      "openCollisions": "Namenskollisionen auflösen",
+      "openMismatches": "Abweichende Namen auflösen",
+      "resolvedCount": "Davon aufgelöst: {{ count }}",
+      "titleCollisions": {
+        "one": "{{ count }} Namenskollision auflösen",
+        "other": "{{ count }} Namenskollisionen auflösen"
+      },
+      "titleMismatches": {
+        "one": "{{ count }} abweichenden Namen auflösen",
+        "other": "{{ count }} abweichende Namen auflösen"
+      },
+      "hintCollisions": "Der Name ist im Zielset schon vergeben. Umbenennen fügt das Emote unter einem neuen Namen hinzu, „Ziel ersetzen“ entfernt das Emote im Ziel und fügt dieses an seiner Stelle ein.",
+      "hintMismatches": "Das Emote ist im Zielset schon vorhanden, heißt dort aber anders. „Namen übernehmen“ benennt es im Ziel um, fügt aber nichts hinzu.",
+      "listLabelCollisions": "Namenskollisionen",
+      "listLabelMismatches": "Abweichende Namen",
+      "rowLabel": "{{ source }}, im Ziel: {{ target }}",
+      "targetGone": "nicht mehr im Zielset",
+      "aliaslessEntry": "+ ein Eintrag ohne Namen",
+      "actionGroupLabel": "Aktion für {{ sourceName }}",
+      "action": {
+        "skip": "Überspringen",
+        "renameSource": "Umbenennen",
+        "replaceTarget": "Ziel ersetzen",
+        "adoptSourceName": "Namen übernehmen"
+      },
+      "replaceNeedsTracked": "Nur für getrackte Kanäle wiederherstellbar",
+      "reloadTargetFirst": "Ziel hat sich geändert — erst neu laden",
+      "adoptBlocked": {
+        "nameTaken": "Name im Zielset vergeben",
+        "duplicateTarget": "im Ziel doppelt vorhanden"
+      },
+      "renameLabel": "Neuer Name",
+      "fieldError": {
+        "invalid": "Diesen Namen nimmt 7TV nicht an.",
+        "taken": "Dieser Name ist im Zielset schon vergeben.",
+        "duplicate": "Diesen Namen erzeugt auch eine andere Zeile."
+      },
+      "violation": {
+        "duplicateGeneratedAlias": "Mehrere Zeilen erzeugen denselben Namen: {{ rows }}.",
+        "aliasHeldByTarget": "Name im Zielset schon vergeben: {{ rows }}.",
+        "invalidTypedAlias": "Name, den 7TV nicht annimmt: {{ rows }}.",
+        "duplicateReplaceTarget": "Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.",
+        "targetTouchedByReplaceAndAdopt": "Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.",
+        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}.",
+        "replaceNeedsTrackedTarget": "Ziel ersetzen geht nur bei getrackten Kanälen: {{ rows }}."
+      },
+      "back": "Zurück",
+      "apply": "Übernehmen"
     },
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Kopierfortschritt",

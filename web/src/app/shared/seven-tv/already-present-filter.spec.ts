@@ -10,6 +10,7 @@ import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import {
   filterAlreadyPresent,
   filterAlreadyPresentForRestore,
+  stampReplaceTargets,
   verifyReplaceTargets,
 } from './already-present-filter';
 
@@ -704,6 +705,42 @@ describe('verifyReplaceTargets', () => {
     expect(verifyReplaceTargets(gone, replacePlan(['Kappa']))).toEqual({
       available: true,
       drifted: [{ key: 'src-1', reason: 'targetGone', live: null }],
+    });
+  });
+});
+
+describe('stampReplaceTargets', () => {
+  it('gives each replace target the read’s aliases in the read’s order, its aliasless entry and its default name', () => {
+    const entries = setEntries([
+      { id: 'tgt-1', alias: 'KappaDup' },
+      { id: 'tgt-1', alias: 'Kappa' },
+      { id: 'tgt-1', alias: null },
+    ]);
+    entries.defaultNameById.set('tgt-1', 'KappaDefault');
+    const plan = replacePlan(['Kappa', 'KappaDup'], true);
+
+    const stamped = stampReplaceTargets(plan, entries);
+
+    expect(stamped.rows[0]).toEqual({
+      ...plan.rows[0],
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['KappaDup', 'Kappa'],
+        hasAliaslessEntry: true,
+        defaultName: 'KappaDefault',
+      },
+    });
+    // Rows that touch no target entry leave unchanged.
+    expect(stamped.rows[1]).toBe(plan.rows[1]);
+    // The input plan is not mutated.
+    expect(plan.rows[0].action === 'replace' && plan.rows[0].target.defaultName).toBeNull();
+  });
+
+  it('keeps the confirmed aliases and names no default when the read does not know the target', () => {
+    const stamped = stampReplaceTargets(replacePlan(['Kappa']), setEntries([]));
+
+    expect(stamped.rows[0]).toMatchObject({
+      target: { aliases: ['Kappa'], hasAliaslessEntry: false, defaultName: null },
     });
   });
 });

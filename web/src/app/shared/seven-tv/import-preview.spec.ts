@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
-import { buildImportPreview } from './import-preview';
+import { buildImportPreview, overlayPreview } from './import-preview';
 
 const TARGET_IMAGE_URL = 'https://cdn.7tv.app/placeholder/1x.webp';
 
@@ -567,5 +567,47 @@ describe('buildImportPreview', () => {
         result.nameCollisionRowCount +
         result.aliasMismatches.length,
     ).toBe(sourceRows.length);
+  });
+});
+
+describe('overlayPreview', () => {
+  const built = buildImportPreview(
+    source([
+      { sevenTvEmoteId: 'src-1', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'src-2', name: 'Pog', imageUrl: null },
+    ]),
+    [
+      { sevenTvEmoteId: 'tgt-1', name: 'Kappa', imageUrl: TARGET_IMAGE_URL },
+      { sevenTvEmoteId: 'tgt-2', name: 'Pog', imageUrl: TARGET_IMAGE_URL },
+    ],
+  );
+
+  it('returns the preview itself when nothing is overlaid', () => {
+    expect(overlayPreview(built, new Map())).toBe(built);
+  });
+
+  it('points an overlaid collision row at its live counterpart and leaves every other row alone', () => {
+    const overlaid = overlayPreview(
+      built,
+      new Map([['src-1', { aliases: ['Kappa', 'KappaToo'], hasAliaslessEntry: true }]]),
+    );
+
+    expect(overlaid.nameCollisionRows[0]).toEqual({
+      ...built.nameCollisionRows[0],
+      targetAliases: ['Kappa', 'KappaToo'],
+      targetHasAliaslessEntry: true,
+    });
+    expect(overlaid.nameCollisionRows[1]).toBe(built.nameCollisionRows[1]);
+    expect(overlaid.toAdd).toBe(built.toAdd);
+    expect(overlaid.targetNames).toBe(built.targetNames);
+  });
+
+  it('leaves a gone target with no alias and no aliasless entry', () => {
+    const overlaid = overlayPreview(built, new Map([['src-2', null]]));
+
+    expect(overlaid.nameCollisionRows[1]).toMatchObject({
+      targetAliases: [],
+      targetHasAliaslessEntry: false,
+    });
   });
 });

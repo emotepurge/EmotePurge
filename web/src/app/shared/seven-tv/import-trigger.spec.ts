@@ -368,10 +368,10 @@ describe('ImportTrigger', () => {
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
       expect(startImport).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // Only now, after the confirmation, does the missing-token case appear.
@@ -408,10 +408,10 @@ describe('ImportTrigger', () => {
       });
       expect(dialogOpen).toHaveBeenCalledTimes(2);
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // No third dialog: the flow's own (already-satisfied) token check does not prompt twice.
@@ -464,10 +464,10 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -515,10 +515,10 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -604,10 +604,10 @@ describe('ImportTrigger', () => {
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
       expect(getSetStatus).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -663,10 +663,10 @@ describe('ImportTrigger', () => {
 
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -714,10 +714,10 @@ describe('ImportTrigger', () => {
 
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -759,10 +759,10 @@ describe('ImportTrigger', () => {
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
       expect(getSetStatus).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // Not the active set: no post-run resync of the channel is implied either.

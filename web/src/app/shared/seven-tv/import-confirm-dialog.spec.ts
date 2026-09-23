@@ -1,15 +1,18 @@
 import { DIALOG_DATA, DialogRef } from '@angular/cdk/dialog';
+import { HttpClient, provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import { ImportTargetLoadState } from '../../core/emotes/import-target-loader';
 import { LanguageService } from '../../core/i18n/language.service';
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { TransferPlan } from '../../core/seven-tv/transfer-plan';
 import {
   ImportConfirmDialog,
   ImportConfirmDialogData,
@@ -111,6 +114,91 @@ const DE_TRANSLATIONS = {
       sameChannelFile: 'Diese Liste stammt aus diesem Kanal.',
       runNotice: 'Das Hinzufügen läuft danach automatisch nacheinander.',
       execute: 'Kopieren',
+      removals: {
+        one: '{{ count }} Emote wird aus dem Zielset entfernt.',
+        other: '{{ count }} Emotes werden aus dem Zielset entfernt.',
+      },
+      saveRecovery: 'Rückweg sichern',
+      start: 'Starten',
+      verifying: 'Das Zielset wird gerade live geprüft…',
+      targetDrifted: 'Das Zielset hat sich seit der Vorschau geändert: {{ rows }}.',
+      targetReadFailed: 'Das Zielset ließ sich gerade nicht vollständig lesen.',
+      saveRecoveryFailed: 'Der Browser hat den Download der Rückweg-Datei verweigert.',
+      reloadTarget: 'Ziel neu laden',
+      decisionsDropped:
+        'Nach dem Neuladen passt die Entscheidung für diese Zeilen nicht mehr: {{ rows }}.',
+    },
+    resolve: {
+      open: 'Auflösen',
+      openCollisions: 'Namenskollisionen auflösen',
+      openMismatches: 'Abweichende Namen auflösen',
+      resolvedCount: 'Davon aufgelöst: {{ count }}',
+      titleCollisions: {
+        one: '{{ count }} Namenskollision auflösen',
+        other: '{{ count }} Namenskollisionen auflösen',
+      },
+      titleMismatches: {
+        one: '{{ count }} abweichenden Namen auflösen',
+        other: '{{ count }} abweichende Namen auflösen',
+      },
+      hintCollisions: 'Der Name ist im Zielset schon vergeben.',
+      hintMismatches: 'Das Emote ist im Zielset schon vorhanden, heißt dort aber anders.',
+      listLabelCollisions: 'Namenskollisionen',
+      listLabelMismatches: 'Abweichende Namen',
+      rowLabel: '{{ source }}, im Ziel: {{ target }}',
+      targetGone: 'nicht mehr im Zielset',
+      aliaslessEntry: '+ ein Eintrag ohne Namen',
+      actionGroupLabel: 'Aktion für {{ sourceName }}',
+      action: {
+        skip: 'Überspringen',
+        renameSource: 'Umbenennen',
+        replaceTarget: 'Ziel ersetzen',
+        adoptSourceName: 'Namen übernehmen',
+      },
+      replaceNeedsTracked: 'Nur für getrackte Kanäle wiederherstellbar',
+      reloadTargetFirst: 'Ziel hat sich geändert — erst neu laden',
+      adoptBlocked: {
+        nameTaken: 'Name im Zielset vergeben',
+        duplicateTarget: 'im Ziel doppelt vorhanden',
+      },
+      renameLabel: 'Neuer Name',
+      fieldError: {
+        invalid: 'Diesen Namen nimmt 7TV nicht an.',
+        taken: 'Dieser Name ist im Zielset schon vergeben.',
+        duplicate: 'Diesen Namen erzeugt auch eine andere Zeile.',
+      },
+      violation: {
+        duplicateGeneratedAlias: 'Mehrere Zeilen erzeugen denselben Namen: {{ rows }}.',
+        aliasHeldByTarget: 'Name im Zielset schon vergeben: {{ rows }}.',
+        invalidTypedAlias: 'Name, den 7TV nicht annimmt: {{ rows }}.',
+        duplicateReplaceTarget: 'Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.',
+        targetTouchedByReplaceAndAdopt: 'Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.',
+        adoptBlocked: 'Namen übernehmen ist hier nicht möglich: {{ rows }}.',
+        replaceNeedsTrackedTarget: 'Ziel ersetzen geht nur bei getrackten Kanälen: {{ rows }}.',
+      },
+      back: 'Zurück',
+      apply: 'Übernehmen',
+    },
+  },
+};
+
+/** The few English texts the language-switch case reads — enough to see the open step re-translate. */
+const EN_TRANSLATIONS = {
+  import: {
+    resolve: {
+      titleCollisions: {
+        one: 'Resolve {{ count }} name collision',
+        other: 'Resolve {{ count }} name collisions',
+      },
+      actionGroupLabel: 'Action for {{ sourceName }}',
+      action: {
+        skip: 'Skip',
+        renameSource: 'Rename',
+        replaceTarget: 'Replace target',
+        adoptSourceName: 'Adopt name',
+      },
+      back: 'Back',
+      apply: 'Apply',
     },
   },
 };
@@ -138,8 +226,26 @@ const UNAVAILABLE_WARNING: EmoteSetWarning = {
 
 type ReadyTarget = Extract<ImportTargetLoadState, { status: 'ready' }>;
 
+/** jsdom has no ResizeObserver, and the resolution step's CDK viewport reads it during init. */
+class FakeResizeObserver {
+  observe(): void {
+    /* no-op */
+  }
+  unobserve(): void {
+    /* no-op */
+  }
+  disconnect(): void {
+    /* no-op */
+  }
+}
+
 function row(sevenTvEmoteId: string, name: string): ImportRow {
   return { sevenTvEmoteId, name, imageUrl: null };
+}
+
+/** The plan of a dialog nobody resolved anything in: one `add` row per row, under its own name. */
+function addPlan(rows: ImportRow[]): TransferPlan {
+  return { rows: rows.map((each) => ({ action: 'add', source: each, alias: each.name })) };
 }
 
 function channelSource(rows: ImportRow[], overrides: Partial<ImportSource> = {}): ImportSource {
@@ -258,32 +364,54 @@ describe('ImportConfirmDialog', () => {
   let dialogData: ImportConfirmDialogData;
   let closed: (ImportConfirmOutcome | undefined)[];
   let retryCalls: number;
+  let panelClasses: Set<string>;
 
   beforeEach(async () => {
     closed = [];
     retryCalls = 0;
+    panelClasses = new Set();
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
 
     await TestBed.configureTestingModule({
       imports: [
         ImportConfirmDialog,
         TranslocoTestingModule.forRoot({
-          langs: { de: DE_TRANSLATIONS },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+          langs: { de: DE_TRANSLATIONS, en: EN_TRANSLATIONS },
+          // As in app.config.ts: a language switch re-renders what is already on screen.
+          translocoConfig: {
+            availableLangs: ['de', 'en'],
+            defaultLang: 'de',
+            reRenderOnLangChange: true,
+          },
         }),
       ],
       providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
         // Resolved when the component is created, so a test may shape the data first.
         { provide: DIALOG_DATA, useFactory: () => dialogData },
         {
           provide: DialogRef,
           useValue: {
             close: (result?: ImportConfirmOutcome) => closed.push(result),
+            // The pane the dialog widens for its second step.
+            overlayRef: {
+              addPanelClass: (name: string) => panelClasses.add(name),
+              removePanelClass: (name: string) => panelClasses.delete(name),
+            },
           },
         },
       ],
     }).compileComponents();
 
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
+  });
+
+  afterEach(() => {
+    // No test may leave a live read of the target set unanswered — or fire one it did not expect.
+    TestBed.inject(HttpTestingController).verify();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   /**
@@ -308,6 +436,7 @@ describe('ImportConfirmDialog', () => {
         retryCalls += 1;
       },
       runBlocked,
+      httpClient: TestBed.inject(HttpClient),
     };
 
     const fixture = TestBed.createComponent(ImportConfirmDialog);
@@ -563,7 +692,7 @@ describe('ImportConfirmDialog', () => {
         {
           targetSetId: 'set-42',
           targetSetName: 'set-42',
-          rows: [row('new-1', 'Kappa')],
+          plan: addPlan([row('new-1', 'Kappa')]),
         },
       ]);
     });
@@ -917,7 +1046,7 @@ describe('ImportConfirmDialog', () => {
         {
           targetSetId: 'set-42',
           targetSetName: 'set-42',
-          rows: [row('new-1', 'Kappa')],
+          plan: addPlan([row('new-1', 'Kappa')]),
         },
       ]);
     });
@@ -1124,9 +1253,651 @@ describe('ImportConfirmDialog', () => {
       // AK 40: none of the excluded rows (collisions or alias mismatches) reach the run at all —
       // the eventual `failed` count downstream is 0 for them, because they were never attempted.
       dialog.button(EXECUTE).click();
-      expect(closed[0]?.rows.length).toBe(TO_ADD_COUNT);
-      expect(closed[0]?.rows.some((r) => r.name.startsWith('Collide'))).toBe(false);
-      expect(closed[0]?.rows.some((r) => r.name.startsWith('SourceAlias'))).toBe(false);
+      expect(closed[0]?.plan.rows.length).toBe(TO_ADD_COUNT);
+      expect(closed[0]?.plan.rows.some((r) => r.source.name.startsWith('Collide'))).toBe(false);
+      expect(closed[0]?.plan.rows.some((r) => r.source.name.startsWith('SourceAlias'))).toBe(false);
+    });
+  });
+
+  describe('resolving conflicts per row (#230)', () => {
+    const IMG = 'https://cdn.7tv.app/placeholder/1x.webp';
+    const GQL = 'https://7tv.io/v4/gql';
+
+    function emote(sevenTvEmoteId: string, name: string): EmoteListItem {
+      return { sevenTvEmoteId, name, imageUrl: IMG };
+    }
+
+    /** One plain add, two name collisions (the second onto a #74 duplicate with two aliases) and
+     *  one alias mismatch. */
+    function conflictSource(): ImportSource {
+      return channelSource([
+        row('new-1', 'Kappa'),
+        row('src-a', 'Collides'),
+        row('src-b', 'Dup'),
+        row('src-m', 'Pog'),
+      ]);
+    }
+
+    function conflictTarget(): ImportTargetLoadState {
+      return readyTarget({
+        setId: 'set-9',
+        occupiedSlots: 10,
+        capacity: 1000,
+        emotes: [
+          emote('tgt-a', 'Collides'),
+          emote('tgt-b', 'Dup'),
+          emote('tgt-b', 'Dup2'),
+          emote('src-m', 'PogOld'),
+        ],
+      });
+    }
+
+    interface LiveEntry {
+      id: string;
+      alias: string | null;
+      defaultName?: string;
+    }
+
+    /** The target set as 7TV's live read reports it — unchanged since the preview by default. */
+    const LIVE_UNCHANGED: LiveEntry[] = [
+      { id: 'tgt-a', alias: 'Collides', defaultName: 'CollidesDefault' },
+      { id: 'tgt-b', alias: 'Dup', defaultName: 'DupDefault' },
+      { id: 'tgt-b', alias: 'Dup2', defaultName: 'DupDefault' },
+      { id: 'src-m', alias: 'PogOld', defaultName: 'Pog' },
+    ];
+
+    function setRead(entries: LiveEntry[], totalCount = entries.length) {
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount,
+                pageCount: 1,
+                items: entries.map((entry) => ({
+                  alias: entry.alias,
+                  emote: { id: entry.id, defaultName: entry.defaultName ?? entry.alias },
+                })),
+              },
+            },
+          },
+        },
+      };
+    }
+
+    interface CapturedDownload {
+      filename: string;
+      blob: Blob;
+    }
+
+    /** Spies on the two seams `downloadFile` touches — same approach as `usage-stats-page.spec.ts`,
+     *  since the unit-test builder refuses `vi.mock` for relative imports. */
+    function captureDownloads(): CapturedDownload[] {
+      const downloads: CapturedDownload[] = [];
+      if (!('createObjectURL' in URL)) {
+        Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
+      }
+      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+        downloads.push({ filename: '', blob: blob as Blob });
+        return 'blob:test';
+      });
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+      const originalCreateElement = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+        const element = originalCreateElement(tag);
+        if (tag === 'a') {
+          vi.spyOn(element as HTMLAnchorElement, 'click').mockImplementation(() => {
+            const pending = downloads[downloads.length - 1];
+            if (pending) {
+              pending.filename = (element as HTMLAnchorElement).download;
+            }
+          });
+        }
+        return element;
+      });
+      return downloads;
+    }
+
+    /** jsdom has no layout — the step's viewport renders its rows on an animation frame. */
+    async function waitFor(dialog: Harness, done: () => boolean): Promise<void> {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        dialog.detect();
+        if (done()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await dialog.fixture.whenStable();
+      }
+      throw new Error('condition not reached');
+    }
+
+    function host(dialog: Harness): HTMLElement {
+      return dialog.fixture.nativeElement;
+    }
+
+    async function openStep(
+      dialog: Harness,
+      group: 'nameCollision' | 'aliasMismatch',
+    ): Promise<void> {
+      const trigger = dialog.element(`import-confirm-resolve-${group}`);
+      if (!trigger) {
+        throw new Error(`no resolve control for ${group}`);
+      }
+      trigger.click();
+      await waitFor(dialog, () => host(dialog).querySelector('[data-resolve-index]') !== null);
+    }
+
+    function option(dialog: Harness, sourceName: string, kind: string): HTMLInputElement {
+      const found = host(dialog).querySelector<HTMLInputElement>(
+        `[role="radiogroup"][aria-label="Aktion für ${sourceName}"] input[value="${kind}"],` +
+          `[role="radiogroup"][aria-label="Action for ${sourceName}"] input[value="${kind}"]`,
+      );
+      if (!found) {
+        throw new Error(`no ${kind} option for ${sourceName}`);
+      }
+      return found;
+    }
+
+    function choose(dialog: Harness, sourceName: string, kind: string): void {
+      option(dialog, sourceName, kind).click();
+      dialog.detect();
+    }
+
+    function typeAlias(dialog: Harness, key: string, value: string): void {
+      const field = host(dialog).querySelector<HTMLInputElement>(`#resolve-alias-${key}`);
+      if (!field) {
+        throw new Error(`no rename field for ${key}`);
+      }
+      field.value = value;
+      field.dispatchEvent(new Event('input'));
+      dialog.detect();
+    }
+
+    function apply(dialog: Harness): void {
+      dialog.button('Übernehmen').click();
+      dialog.detect();
+    }
+
+    function answerRead(dialog: Harness, body: object): void {
+      TestBed.inject(HttpTestingController).expectOne(GQL).flush(body);
+      dialog.detect();
+    }
+
+    /** Resolves `Collides` by replacing its target and saves the recovery file from a clean read. */
+    async function replaceAndSave(dialog: Harness, live: LiveEntry[] = LIVE_UNCHANGED) {
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(live));
+    }
+
+    it('shows no resolve control and today’s action row when nothing conflicts (AK 2)', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')]),
+        target: readyTarget({ emotes: [emote('other', 'Other')] }),
+      });
+
+      expect(dialog.hasButton('Auflösen')).toBe(false);
+      expect(dialog.hasButton('Rückweg sichern')).toBe(false);
+      // The §7.2 sequence is untouched by the new rows, which only exist with a conflict.
+      const contract = [
+        '1 Emote nach targetchannel kopieren?',
+        'Aus Kanal sourcechannel',
+        'Ziel: targetchannel · Set set-1',
+        'Das Set hätte danach 11 von 1000 Slots belegt.',
+        'Das Hinzufügen läuft danach automatisch nacheinander.',
+      ];
+      expect(inRenderedOrder(dialog.text(), contract)).toEqual(contract);
+      expect(dialog.text()).not.toContain('aus dem Zielset entfernt');
+
+      dialog.button(EXECUTE).click();
+      expect(closed).toEqual([
+        { targetSetId: 'set-1', targetSetName: 'set-1', plan: addPlan([row('new-1', 'Kappa')]) },
+      ]);
+    });
+
+    it('offers one resolve control per conflict group, each described by its own finding (AK 3)', () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      const collisions = dialog.element('import-confirm-resolve-nameCollision');
+      const mismatches = dialog.element('import-confirm-resolve-aliasMismatch');
+      expect(collisions?.textContent?.trim()).toBe('Auflösen');
+      expect(mismatches?.textContent?.trim()).toBe('Auflösen');
+      expect(
+        dialog.element(collisions?.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toContain('2 Namen sind im Zielset schon vergeben');
+      expect(
+        dialog.element(mismatches?.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toContain('1 ist vorhanden, heißt dort aber anders');
+      // Two buttons with the same visible text: the accessible name says which group each opens.
+      expect(collisions?.getAttribute('aria-label')).toBe('Namenskollisionen auflösen');
+      expect(mismatches?.getAttribute('aria-label')).toBe('Abweichende Namen auflösen');
+    });
+
+    it('re-translates the open step on a language switch', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      expect(option(dialog, 'Collides', 'skip').parentElement?.textContent).toContain(
+        'Überspringen',
+      );
+
+      const transloco = TestBed.inject(TranslocoService);
+      await firstValueFrom(transloco.load('en'));
+      transloco.setActiveLang('en');
+      await waitFor(dialog, () => dialog.title() === 'Resolve 2 name collisions');
+
+      // The row's action group is found by its English name now.
+      expect(option(dialog, 'Collides', 'skip').parentElement?.textContent).toContain('Skip');
+      expect(dialog.hasButton('Apply')).toBe(true);
+      expect(dialog.hasButton('Back')).toBe(true);
+    });
+
+    it('locks Übernehmen when a replace here meets an adopt of the same target in the other group', async () => {
+      // `PogOld` collides with the target entry `src-m`, which is also the emote the mismatch row
+      // `Pog` would rename — replacing it and adopting it at once contradict each other.
+      const dialog = render({
+        source: channelSource([row('src-m', 'Pog'), row('src-z', 'PogOld')]),
+        target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+      });
+      await openStep(dialog, 'aliasMismatch');
+      choose(dialog, 'Pog', 'adoptSourceName');
+      apply(dialog);
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'PogOld', 'replaceTarget');
+
+      const applyButton = dialog.button('Übernehmen');
+      expect(applyButton.disabled).toBe(true);
+      expect(
+        dialog.element(applyButton.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toContain('Dasselbe Ziel wird ersetzt und umbenannt: PogOld, Pog.');
+    });
+
+    it('widens the pane only while the resolution step is up', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      expect(panelClasses.has('app-dialog-panel-wide')).toBe(false);
+
+      await openStep(dialog, 'nameCollision');
+      expect(panelClasses.has('app-dialog-panel-wide')).toBe(true);
+      expect(dialog.title()).toBe('2 Namenskollisionen auflösen');
+
+      dialog.button('Zurück').click();
+      dialog.detect();
+      expect(panelClasses.has('app-dialog-panel-wide')).toBe(false);
+      expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+    });
+
+    it('closes a dialog nobody resolved anything in with the plan of toAdd, without reading the set (AK 5)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      await openStep(dialog, 'nameCollision');
+      dialog.button('Zurück').click();
+      dialog.detect();
+      await openStep(dialog, 'aliasMismatch');
+      dialog.button('Zurück').click();
+      dialog.detect();
+      dialog.button(EXECUTE).click();
+
+      expect(closed).toEqual([
+        { targetSetId: 'set-9', targetSetName: 'set-9', plan: addPlan([row('new-1', 'Kappa')]) },
+      ]);
+    });
+
+    it('keeps replace visible but disabled for an untracked target, while rename and adopt stay selectable (R5)', async () => {
+      const dialog = render({
+        source: conflictSource(),
+        target: conflictTarget(),
+        targetChannelName: null,
+        targetOwnerDisplayName: 'SomeEditor',
+      });
+
+      await openStep(dialog, 'nameCollision');
+      for (const name of ['Collides', 'Dup']) {
+        expect(option(dialog, name, 'replaceTarget').disabled).toBe(true);
+        expect(option(dialog, name, 'renameSource').disabled).toBe(false);
+      }
+      expect(dialog.text()).toContain('(Nur für getrackte Kanäle wiederherstellbar)');
+      dialog.button('Zurück').click();
+      dialog.detect();
+
+      await openStep(dialog, 'aliasMismatch');
+      choose(dialog, 'Pog', 'adoptSourceName');
+      apply(dialog);
+
+      // No plan with a replace can exist here, so there is no removal line and no recovery step.
+      expect(dialog.text()).not.toContain('aus dem Zielset entfernt');
+      expect(dialog.hasButton(EXECUTE)).toBe(true);
+    });
+
+    it('shows the removal line only once a replace is applied, and swaps Kopieren for Rückweg sichern (AK 20)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      expect(dialog.element('import-confirm-removals')).toBeNull();
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      expect(dialog.element('import-confirm-removals')?.textContent).toContain(
+        '1 Emote wird aus dem Zielset entfernt.',
+      );
+      expect(dialog.hasButton(EXECUTE)).toBe(false);
+      expect(dialog.button('Rückweg sichern').disabled).toBe(false);
+      // Replacing still adds: the title counts every ADD of the plan.
+      expect(dialog.title()).toBe('2 Emotes nach targetchannel kopieren?');
+    });
+
+    it('projects the slots from the net change: rename +1, replace 0, replace on a duplicate −1 (AK 21)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      const projected = () => /danach (\d+) von 1000/.exec(dialog.text())?.[1];
+      expect(projected()).toBe('11');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'renameSource');
+      typeAlias(dialog, 'src-a', 'CollidesNew');
+      apply(dialog);
+      expect(projected()).toBe('12');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      expect(projected()).toBe('11');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Dup', 'replaceTarget');
+      apply(dialog);
+      // Dup's target holds two entries (Dup, Dup2); the REMOVE takes both, the ADD puts one back.
+      expect(projected()).toBe('10');
+      expect(dialog.element('import-confirm-removals')?.textContent).toContain(
+        '2 Emotes werden aus dem Zielset entfernt.',
+      );
+    });
+
+    it('locks Übernehmen while a rename is invalid, naming the row next to the button (AK 10)', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+
+      choose(dialog, 'Collides', 'renameSource');
+      typeAlias(dialog, 'src-a', 'Collides neu');
+
+      const applyButton = dialog.button('Übernehmen');
+      expect(applyButton.disabled).toBe(true);
+      const reason = dialog.element(applyButton.getAttribute('aria-describedby') ?? '');
+      expect(reason?.textContent).toContain('Name, den 7TV nicht annimmt: Collides.');
+
+      typeAlias(dialog, 'src-a', 'CollidesNeu');
+      expect(dialog.button('Übernehmen').disabled).toBe(false);
+    });
+
+    it('starts a plan without replace straight away — no read, no download, still Kopieren', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'renameSource');
+      typeAlias(dialog, 'src-a', 'CollidesNew');
+      apply(dialog);
+      await openStep(dialog, 'aliasMismatch');
+      choose(dialog, 'Pog', 'adoptSourceName');
+      apply(dialog);
+
+      dialog.button(EXECUTE).click();
+
+      expect(downloads).toEqual([]);
+      expect(closed[0]?.plan.rows.map((each) => [each.action, each.alias])).toEqual([
+        ['adoptSourceName', 'Pog'],
+        ['add', 'Kappa'],
+        ['renameSource', 'CollidesNew'],
+      ]);
+    });
+
+    it('with a replace, reads the set live, saves the recovery file and only then offers Starten (AK 16, 17)', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+
+      // While the read runs: locked, with its reason beside it, and no way to start yet.
+      const pending = dialog.button('Rückweg sichern');
+      expect(pending.disabled).toBe(true);
+      expect(pending.getAttribute('aria-describedby')).toBe('import-confirm-verifying');
+      expect(dialog.element('import-confirm-verifying')?.textContent).toContain(
+        'Das Zielset wird gerade live geprüft…',
+      );
+      expect(dialog.hasButton('Starten')).toBe(false);
+      expect(downloads).toEqual([]);
+
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      expect(downloads).toHaveLength(1);
+      expect(downloads[0].filename).toMatch(/^emotepurge_targetchannel_transfer-plan_.*\.json$/);
+      const record = JSON.parse(await downloads[0].blob.text());
+      expect(record.kind).toBe('transfer-run');
+      expect(record.meta.stage).toBe('planned');
+      expect(record.meta.counts).toEqual({ planned: 2, removals: 1 });
+      expect(closed).toEqual([]);
+
+      // A run elsewhere still locks the start silently, like "Kopieren" (§4.2).
+      dialog.runBlocked.set(true);
+      dialog.detect();
+      expect(dialog.button('Starten').disabled).toBe(true);
+      dialog.runBlocked.set(false);
+      dialog.detect();
+
+      dialog.button('Starten').click();
+      expect(closed[0]?.plan.rows.map((each) => each.action)).toEqual(['replace', 'add']);
+    });
+
+    it('carries the live-read aliases and default name on each replace target of the closed plan (AK 17)', async () => {
+      captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Dup', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      // Same entries as the preview, listed in another order by 7TV.
+      answerRead(
+        dialog,
+        setRead([
+          { id: 'tgt-b', alias: 'Dup2', defaultName: 'DupDefault' },
+          { id: 'tgt-b', alias: 'Dup', defaultName: 'DupDefault' },
+          { id: 'tgt-a', alias: 'Collides' },
+          { id: 'src-m', alias: 'PogOld' },
+        ]),
+      );
+
+      dialog.button('Starten').click();
+
+      const replace = closed[0]?.plan.rows.find((each) => each.action === 'replace');
+      expect(replace?.action === 'replace' ? replace.target : null).toEqual({
+        sevenTvEmoteId: 'tgt-b',
+        aliases: ['Dup2', 'Dup'],
+        hasAliaslessEntry: false,
+        defaultName: 'DupDefault',
+      });
+    });
+
+    it('on a drifted target: no download, the banner names the row, and the row is back on skip showing its live counterpart', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      await replaceAndSave(dialog, [
+        { id: 'tgt-a', alias: 'Collides' },
+        { id: 'tgt-a', alias: 'CollidesToo' },
+        ...LIVE_UNCHANGED.slice(1),
+      ]);
+
+      expect(downloads).toEqual([]);
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset hat sich seit der Vorschau geändert: Collides.',
+      );
+      expect(dialog.element('import-confirm-removals')).toBeNull();
+      expect(dialog.hasButton(EXECUTE)).toBe(true);
+      expect(dialog.hasButton('Starten')).toBe(false);
+
+      dialog.button('Ziel neu laden').click();
+      expect(retryCalls).toBe(1);
+
+      await openStep(dialog, 'nameCollision');
+      expect(option(dialog, 'Collides', 'skip').checked).toBe(true);
+      // The user now confirms against the target as it is: both of its live aliases.
+      const collidesRow = host(dialog).querySelector('[data-resolve-index="0"]');
+      expect(collidesRow?.getAttribute('aria-label')).toBe(
+        'Collides, im Ziel: Collides, CollidesToo',
+      );
+    });
+
+    it('releases nothing on a failed or incomplete read, keeping the decision for another try', async () => {
+      const downloads = captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      TestBed.inject(HttpTestingController).expectOne(GQL).error(new ProgressEvent('network'));
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset ließ sich gerade nicht vollständig lesen.',
+      );
+      expect(dialog.element('import-confirm-removals')).not.toBeNull();
+      expect(dialog.button('Rückweg sichern').disabled).toBe(false);
+
+      // A read whose count does not add up is treated the same — it cannot vouch for a removal.
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED, LIVE_UNCHANGED.length + 1));
+
+      expect(dialog.element('import-confirm-target-check')).not.toBeNull();
+      expect(dialog.hasButton('Starten')).toBe(false);
+      expect(downloads).toEqual([]);
+    });
+
+    it('starts one read per click, locks the resolve triggers while it runs, and lets only the newest read answer', async () => {
+      const downloads = captureDownloads();
+      const http = TestBed.inject(HttpTestingController);
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      // A double click reads once.
+      dialog.button('Rückweg sichern').click();
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const [first] = http.match(GQL);
+      expect(http.match(GQL)).toEqual([]);
+      // No plan change from the dialog itself while the read runs.
+      expect(
+        (dialog.element('import-confirm-resolve-nameCollision') as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (dialog.element('import-confirm-resolve-aliasMismatch') as HTMLButtonElement).disabled,
+      ).toBe(true);
+
+      // The target reloads mid-read: a new plan, so the executor offers a fresh read.
+      dialog.target.set(conflictTarget());
+      dialog.detect();
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const second = http.expectOne(GQL);
+
+      // The older read is cancelled — its answer can no longer land on the newer state.
+      expect(first.cancelled).toBe(true);
+      expect(() => first.flush(setRead(LIVE_UNCHANGED))).toThrow();
+      expect(dialog.button('Rückweg sichern').disabled).toBe(true);
+      expect(dialog.element('import-confirm-verifying')).not.toBeNull();
+
+      second.flush(setRead(LIVE_UNCHANGED));
+      dialog.detect();
+      expect(downloads).toHaveLength(1);
+      expect(dialog.hasButton('Starten')).toBe(true);
+    });
+
+    it('lets a failing older read change nothing once a newer read is running', async () => {
+      captureDownloads();
+      const http = TestBed.inject(HttpTestingController);
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const first = http.expectOne(GQL);
+
+      dialog.target.set(conflictTarget());
+      dialog.detect();
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const second = http.expectOne(GQL);
+
+      expect(first.cancelled).toBe(true);
+      expect(() => first.error(new ProgressEvent('network'))).toThrow();
+      dialog.detect();
+      // No failure banner for the newer read, which is still running.
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+      expect(dialog.element('import-confirm-verifying')).not.toBeNull();
+
+      second.flush(setRead(LIVE_UNCHANGED));
+      dialog.detect();
+      expect(dialog.hasButton('Starten')).toBe(true);
+    });
+
+    it('names committed decisions a reload of the target no longer fits', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      choose(dialog, 'Dup', 'replaceTarget');
+      apply(dialog);
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+
+      // After the reload both names belong to one target entry: two replaces of the same target.
+      dialog.target.set(
+        readyTarget({
+          setId: 'set-9',
+          emotes: [emote('tgt-x', 'Collides'), emote('tgt-x', 'Dup'), emote('src-m', 'PogOld')],
+        }),
+      );
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Nach dem Neuladen passt die Entscheidung für diese Zeilen nicht mehr: Collides, Dup.',
+      );
+      expect(dialog.element('import-confirm-removals')).toBeNull();
+      // Nothing to reload again, the user just did.
+      expect(dialog.hasButton('Ziel neu laden')).toBe(false);
+
+      // The next commit settles it.
+      await openStep(dialog, 'nameCollision');
+      apply(dialog);
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+    });
+
+    it('asks for a new recovery file after a change, but not after an unchanged apply', async () => {
+      captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await replaceAndSave(dialog);
+      expect(dialog.hasButton('Starten')).toBe(true);
+
+      await openStep(dialog, 'nameCollision');
+      apply(dialog);
+      expect(dialog.hasButton('Starten')).toBe(true);
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Dup', 'renameSource');
+      typeAlias(dialog, 'src-b', 'DupNew');
+      apply(dialog);
+      // The file on disk describes the old plan.
+      expect(dialog.hasButton('Starten')).toBe(false);
+      expect(dialog.hasButton('Rückweg sichern')).toBe(true);
     });
   });
 });

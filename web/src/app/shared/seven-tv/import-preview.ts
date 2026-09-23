@@ -174,6 +174,10 @@ export interface ImportPreview {
   targetNames: ReadonlySet<string>;
 }
 
+/** The live counterpart of a replace target, as a later read of the target set found it — `null`
+ *  when the target id is gone from the set. Same shape as `ReplaceTargetDrift.live`. */
+export type TargetOverlay = { aliases: string[]; hasAliaslessEntry: boolean } | null;
+
 /**
  * Projects an `ImportSource` onto a target set's current emotes, splitting it into what the run
  * would add, what it would skip outright (already present, under the same or a different alias, or
@@ -400,3 +404,31 @@ const SEVEN_TV_REJECTED_ALIAS_CHARS = new Set([
   '~',
   '^',
 ]);
+
+/** `preview` with each name-collision row keyed in `overlays` (by its source id) pointing at the
+ *  live counterpart of its target instead of the one the preview was built from — a gone target
+ *  keeps no alias and no aliasless entry. Every other field is left as it is: the overlay only
+ *  changes what a replace of that row would remove. */
+export function overlayPreview(
+  preview: ImportPreview,
+  overlays: ReadonlyMap<string, TargetOverlay>,
+): ImportPreview {
+  if (overlays.size === 0) {
+    return preview;
+  }
+  return {
+    ...preview,
+    nameCollisionRows: preview.nameCollisionRows.map((collision) => {
+      const key = collision.row.sevenTvEmoteId;
+      if (!overlays.has(key)) {
+        return collision;
+      }
+      const live = overlays.get(key) ?? null;
+      return {
+        ...collision,
+        targetAliases: live === null ? [] : [...live.aliases],
+        targetHasAliaslessEntry: live?.hasAliaslessEntry ?? false,
+      };
+    }),
+  };
+}

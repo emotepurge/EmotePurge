@@ -9,8 +9,11 @@ import {
   RowDecision,
   ViolationRule,
   buildTransferPlan,
+  sameDecisions,
   summarizeTransferPlan,
   validateResolution,
+  withoutSkips,
+  withoutViolations,
 } from './conflict-resolution';
 import { AliasMismatchRow, ImportPreview, NameCollisionRow } from './import-preview';
 import { projectSlots } from './slot-projection';
@@ -541,5 +544,72 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
       capacity: 100,
       overflow: false,
     });
+  });
+});
+
+describe('withoutViolations', () => {
+  const kappa = importRow('src-1', 'Kappa');
+  const pog = importRow('src-2', 'Pog');
+  const sadge = importRow('src-3', 'Sadge');
+  const resolvable = preview({
+    nameCollisionRows: [
+      collisionRow(kappa, emoteListItem('tgt-1', 'Kappa'), ['Kappa']),
+      collisionRow(pog, emoteListItem('tgt-2', 'Pog'), ['Pog']),
+    ],
+    aliasMismatchRows: [mismatchRow(sadge, ['SadgeOld'])],
+    targetNames: new Set(['Kappa', 'Pog', 'SadgeOld']),
+  });
+
+  it('returns decisions that validate as they are', () => {
+    const valid = decisions([
+      ['src-1', { kind: 'renameSource', alias: 'KappaNew' }],
+      ['src-3', { kind: 'adoptSourceName' }],
+    ]);
+
+    expect(withoutViolations(resolvable, valid, TRACKED)).toBe(valid);
+  });
+
+  it('drops every decision a violation names and keeps the rest', () => {
+    const clashing = decisions([
+      ['src-1', { kind: 'renameSource', alias: 'Same' }],
+      ['src-2', { kind: 'renameSource', alias: 'Same' }],
+      ['src-3', { kind: 'adoptSourceName' }],
+    ]);
+
+    const kept = withoutViolations(resolvable, clashing, TRACKED);
+
+    expect([...kept]).toEqual([['src-3', { kind: 'adoptSourceName' }]]);
+    expect(validateResolution(resolvable, kept, TRACKED)).toEqual({ ok: true });
+  });
+
+  it('drops a replace that an untracked target does not allow', () => {
+    const replace = decisions([['src-1', { kind: 'replaceTarget' }]]);
+
+    expect(withoutViolations(resolvable, replace, UNTRACKED).size).toBe(0);
+  });
+});
+
+describe('withoutSkips and sameDecisions', () => {
+  it('treats an explicit skip like an absent decision once skips are dropped', () => {
+    const withSkip = decisions([
+      ['a', { kind: 'skip' }],
+      ['b', { kind: 'adoptSourceName' }],
+    ]);
+    const without = decisions([['b', { kind: 'adoptSourceName' }]]);
+
+    expect([...withoutSkips(withSkip)]).toEqual([['b', { kind: 'adoptSourceName' }]]);
+    expect(sameDecisions(withSkip, without)).toBe(false);
+    expect(sameDecisions(withoutSkips(withSkip), without)).toBe(true);
+  });
+
+  it('tells decisions apart by kind and by typed alias', () => {
+    const rename = (alias: string) => decisions([['a', { kind: 'renameSource', alias }]]);
+
+    expect(sameDecisions(rename('One'), rename('One'))).toBe(true);
+    expect(sameDecisions(rename('One'), rename('Two'))).toBe(false);
+    expect(sameDecisions(rename('One'), decisions([['a', { kind: 'replaceTarget' }]]))).toBe(false);
+    expect(
+      sameDecisions(rename('One'), decisions([['b', { kind: 'renameSource', alias: 'One' }]])),
+    ).toBe(false);
   });
 });

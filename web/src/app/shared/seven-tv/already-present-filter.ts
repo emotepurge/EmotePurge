@@ -295,6 +295,32 @@ export function verifyReplaceTargets(
   return { available: true, drifted };
 }
 
+/** `plan` with every replace target as `entries` read it: its aliases (in the read's order), its
+ *  aliasless entry and its 7TV default name. Meant for a read {@link verifyReplaceTargets} has just
+ *  passed, so the aliases only change in order — the second check right before the run
+ *  (`recheckTransferPlan` in `import-flow.ts`) compares against exactly these, and the finished run
+ *  protocol names an aliasless entry by the default name. Rows of any other action are returned
+ *  unchanged. */
+export function stampReplaceTargets(plan: TransferPlan, entries: SevenTvSetEntries): TransferPlan {
+  return {
+    rows: plan.rows.map((row) => {
+      if (row.action !== 'replace') {
+        return row;
+      }
+      const id = row.target.sevenTvEmoteId;
+      return {
+        ...row,
+        target: {
+          ...row.target,
+          aliases: [...(entries.aliasesById.get(id) ?? row.target.aliases)],
+          hasAliaslessEntry: entries.aliaslessIds.has(id),
+          defaultName: entries.defaultNameById.get(id) ?? null,
+        },
+      };
+    }),
+  };
+}
+
 function replaceTargetDriftReason(
   entries: SevenTvSetEntries,
   row: ReplaceOrAdoptTransferRow,

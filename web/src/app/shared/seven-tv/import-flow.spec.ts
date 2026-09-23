@@ -339,7 +339,7 @@ describe('startImportFlow', () => {
     const outcome: ImportConfirmOutcome = {
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     };
     confirmClosed(dialogOpen).next(outcome);
 
@@ -357,7 +357,7 @@ describe('startImportFlow', () => {
         isActiveSet: true,
       },
       src.origin,
-      addPlan(outcome.rows),
+      outcome.plan,
       0,
       true,
       0,
@@ -366,7 +366,45 @@ describe('startImportFlow', () => {
     expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
 
-  // #149/T5: `outcome.rows` already passed `buildImportPreview`'s dialog-open-time filter — this
+  it('hands the confirmed plan through to the run, resolved rows included, and gives the dialog its client', () => {
+    const { deps, dialogOpen, startImport } = setup();
+    startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+    // The confirm dialog reads the target set itself before a plan with a replace row may leave it.
+    expect(confirmData(dialogOpen).httpClient).toBe(deps.httpClient);
+
+    const kappa: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null };
+    const pog: ImportRow = { sevenTvEmoteId: '7tv-2', name: 'Pog', imageUrl: null };
+    const plan: TransferPlan = {
+      rows: [
+        {
+          action: 'adoptSourceName',
+          source: pog,
+          alias: 'Pog',
+          target: {
+            sevenTvEmoteId: '7tv-2',
+            aliases: ['PogOld'],
+            hasAliaslessEntry: false,
+            defaultName: null,
+          },
+        },
+        { action: 'renameSource', source: kappa, alias: 'KappaNew' },
+      ],
+    };
+    confirmClosed(dialogOpen).next({ targetSetId: 'set-1', targetSetName: 'set-1', plan });
+
+    // The harness's 7TV read reports an empty set: nothing drops, and the rename and the adopt row
+    // reach the run exactly as the dialog closed with them — not re-derived from any `rows`.
+    expect(startImport).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: 'set-1' }),
+      expect.anything(),
+      plan,
+      0,
+      true,
+      0,
+    );
+  });
+
+  // #149/T5: `outcome.plan` already passed `buildImportPreview`'s dialog-open-time filter — this
   // pins the *second*, fresh check that runs right before the send, catching a row that became a
   // duplicate only after the dialog opened (another editor, another tab, a long-open dialog).
   describe('fresh pre-send duplicate check (#149/T5)', () => {
@@ -382,7 +420,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
         targetSetName: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       });
 
       // The fresh check runs right here, at confirm time — against 7TV directly (#149 P1), not
@@ -407,7 +445,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
         targetSetName: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -438,7 +476,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
         targetSetName: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -472,7 +510,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
 
     // A delete run starts elsewhere while this import's own fresh check is still awaiting 7TV.
@@ -501,7 +539,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
 
     expect(startImport).not.toHaveBeenCalled();
@@ -515,7 +553,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
 
     expect(dialogOpen).toHaveBeenCalledTimes(2);
@@ -534,7 +572,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+      plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
     });
     tokenPromptClosed(dialogOpen).next(false);
 
@@ -677,7 +715,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       });
 
       // setName/isActiveSet (findings 2/3): the picked set is not the account's active one
@@ -802,7 +840,7 @@ describe('startImportFlow', () => {
         // Mirrors liveTarget()'s default emoteSetName ('Halloween') — the mocked response above
         // only overrides channelName/emoteSetId, not the name.
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
       };
       confirmClosed(dialogOpen).next(outcome);
 
@@ -818,7 +856,7 @@ describe('startImportFlow', () => {
           isActiveSet: false,
         },
         src.origin,
-        addPlan(outcome.rows),
+        outcome.plan,
         0,
         true,
         0,

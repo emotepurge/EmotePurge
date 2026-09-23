@@ -353,15 +353,54 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   or file with export date/channel) → target row "Target: channel · set …" as soon as the target data
   are there → exactly **one** of three loading states (hand-rolled skeleton per the §6.1 pattern /
   `no-set` banner / `failed` banner with retry) → shared-set warning (error) or "check not
-  possible" (warning) → slot projection (overflow as a warning banner, otherwise quiet text) →
+  possible" (warning) → **removal line** (warning banner "N emotes will be removed from the target
+  set", only while the plan replaces a target — #230) → **target-check banner** (error, only after
+  a live read did not release the run: the drifted rows by name, or the failed read, or a refused
+  download; notice action "Reload target" — and, in the same banner, the committed decisions a
+  reload of the target no longer fits, by name) → slot projection (overflow as a warning banner,
+  otherwise quiet text; net change of the plan, so a replace counts its removed entries) →
   stale notice if the last sync of the target failed → "already in the target set" row →
-  name-collisions row + `NamePreviewList` → invalid-names row + `NamePreviewList`
+  name-collisions row with its **"Resolve" trigger** (`outline`, visible text "Resolve", accessible
+  name naming the group, locked while a live read runs) + "resolved: N" (only once a row
+  of the group carries a decision) + `NamePreviewList` → alias-mismatch row with its own
+  "Resolve" trigger + "resolved: N" + `NamePreviewList` → invalid-names row + `NamePreviewList`
   (non-ASCII characters in the emote name — both rows say "7TV will reject this" and therefore
   stand next to each other) → **discarded rows before collapsed
   duplicates** (real data loss weighs more than mere consolidation — the reason is stated at
   `discardedRows`/`duplicatesCollapsed`) → "nothing to add" banner → "This list comes from
   this channel" → the quiet notice about the automatic run → (only in the loading state: the
-  loading hint next to the action buttons) → Cancel / Copy.
+  loading hint next to the action buttons; only while the live read runs: the verifying hint in the
+  same place) → Cancel / the executor. Without a conflict none of the #230 rows exists and the
+  dialog reads exactly as before.
+- **The executor has three states, one button — but only when the plan removes something**
+  (#230, docs/plans/Plan-230-Namenskonflikte.md section 2). Without a replace it is "Copy", as
+  always: no read, no download. With one it reads "Save recovery file" (`primary`, `lg`); the
+  click reads the target set live and checks every replace target at entry level (button locked,
+  the verifying hint beside it via `aria-describedby`), then downloads the recovery file and the
+  button turns into "Start", which closes the dialog with the plan. "Start" is not reachable before
+  the download, and only the newest read may answer — a new read cancels the one before it. A
+  drifted target sends the button back to "Save recovery file", sets that row back
+  to skip and shows its live counterpart in the resolution step; a failed or incomplete read
+  releases nothing and keeps the decisions. Any change to the decisions after the file was saved
+  makes the button ask for a new file — the one on disk describes a plan that no longer is.
+  `runBlocked` locks all three states silently, like "Copy".
+- **The resolution step is the second step of the same dialog, not an overlay of its own.**
+  One conflict group per opening; the pane widens to `app-dialog-panel-wide` for exactly this step
+  and narrows again on the way back. Row order: a quiet explanation of the actions → the
+  virtualized table (source sprite and name, target sprite and name(s) — both aliases for a #74
+  duplicate —, then a radio group per row named "Action for {source}") → "Back" / "Apply" in the
+  action row, the lock reason beside "Apply" naming the rows by source name. Actions that do not
+  apply to a row stay listed, disabled, with their reason in brackets (the target picker's idiom
+  above) — replace for an untracked target, adopt where the target name is taken or duplicated. A
+  rename opens a text field prefilled with the source name, with the §5.3 field error. "Apply"
+  commits the group's decisions; "Back" keeps the committed ones as they were and keeps the edits
+  for the next opening. The rows carry a roving tabindex (arrow up/down, Home/End, scrolled into
+  the viewport first), because a virtualized row outside the buffer is not in the DOM and Tab alone
+  never reaches it. The roving tabindex covers the row containers only: the controls inside the
+  rows keep their natural tab stops, so Tab walks through the radio group and rename field of each
+  rendered row in turn and on into the next one, up to the end of the buffer. The viewport is the only scroll container (`dvh`
+  sizing as in the foreign emote grid), and there is no sheet variant: the 7TV write paths are
+  hidden on a coarse pointer.
 - **The target-data loader (`core/emotes/import-target-loader.ts`, `loadImportTarget`) emits exactly
   once and never throws** — the three inner requests (`getSetStatus`, `listEmotes`,
   `getSetWarning`) catch their own error and deliver a tagged value instead of letting the `forkJoin`
@@ -382,6 +421,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   later. **This difference is intentional, not a straggler** — when unifying,
   read up here first, do not "correct" the import.
 - **Reference:** `web/src/app/shared/seven-tv/import-target-dialog.ts`, `import-confirm-dialog.ts`,
+  `import-conflict-resolution-step.ts`, `conflict-resolution.ts`,
   `import-target-options.ts`, `import-preview.ts`, `slot-projection.ts`,
   `web/src/app/core/emotes/import-target-loader.ts`; caller `web/src/app/shared/seven-tv/import-flow.ts`.
 

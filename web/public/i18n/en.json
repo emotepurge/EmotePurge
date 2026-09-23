@@ -1156,7 +1156,70 @@
       },
       "sameChannelFile": "This list comes from this channel.",
       "runNotice": "Adding then runs automatically, one emote at a time, with a short delay between each.",
-      "execute": "Copy"
+      "execute": "Copy",
+      "removals": {
+        "one": "{{ count }} emote will be removed from the target set and replaced by the source emote.",
+        "other": "{{ count }} emotes will be removed from the target set and replaced by the source emotes."
+      },
+      "saveRecovery": "Save recovery file",
+      "start": "Start",
+      "verifying": "Checking the target set live…",
+      "targetDrifted": "The target set has changed since the preview: {{ rows }}. These rows are back on “Skip” and now show the current counterpart — please review and confirm again.",
+      "targetReadFailed": "The target set could not be read completely just now. Nothing is removed without a complete read — please try again.",
+      "saveRecoveryFailed": "The browser refused to download the recovery file. No run that removes anything starts without it.",
+      "reloadTarget": "Reload target",
+      "decisionsDropped": "After the reload these rows’ decisions no longer fit and are back on “Skip”: {{ rows }}."
+    },
+    "resolve": {
+      "open": "Resolve",
+      "openCollisions": "Resolve name collisions",
+      "openMismatches": "Resolve differing names",
+      "resolvedCount": "Resolved: {{ count }}",
+      "titleCollisions": {
+        "one": "Resolve {{ count }} name collision",
+        "other": "Resolve {{ count }} name collisions"
+      },
+      "titleMismatches": {
+        "one": "Resolve {{ count }} differing name",
+        "other": "Resolve {{ count }} differing names"
+      },
+      "hintCollisions": "The name is already taken in the target set. Rename adds the emote under a new name; “Replace target” removes the emote in the target and adds this one in its place.",
+      "hintMismatches": "The emote is already in the target set, but under a different name. “Adopt name” renames it in the target and adds nothing.",
+      "listLabelCollisions": "Name collisions",
+      "listLabelMismatches": "Differing names",
+      "rowLabel": "{{ source }}, in the target: {{ target }}",
+      "targetGone": "no longer in the target set",
+      "aliaslessEntry": "+ one entry without a name",
+      "actionGroupLabel": "Action for {{ sourceName }}",
+      "action": {
+        "skip": "Skip",
+        "renameSource": "Rename",
+        "replaceTarget": "Replace target",
+        "adoptSourceName": "Adopt name"
+      },
+      "replaceNeedsTracked": "Only restorable for tracked channels",
+      "reloadTargetFirst": "Target has changed — reload first",
+      "adoptBlocked": {
+        "nameTaken": "name taken in the target set",
+        "duplicateTarget": "listed twice in the target"
+      },
+      "renameLabel": "New name",
+      "fieldError": {
+        "invalid": "7TV does not accept this name.",
+        "taken": "This name is already taken in the target set.",
+        "duplicate": "Another row produces this name too."
+      },
+      "violation": {
+        "duplicateGeneratedAlias": "Several rows produce the same name: {{ rows }}.",
+        "aliasHeldByTarget": "Name already taken in the target set: {{ rows }}.",
+        "invalidTypedAlias": "Name 7TV does not accept: {{ rows }}.",
+        "duplicateReplaceTarget": "The same target is replaced more than once: {{ rows }}.",
+        "targetTouchedByReplaceAndAdopt": "The same target is replaced and renamed: {{ rows }}.",
+        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}.",
+        "replaceNeedsTrackedTarget": "Replacing a target only works for tracked channels: {{ rows }}."
+      },
+      "back": "Back",
+      "apply": "Apply"
     },
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Copy progress",

@@ -193,6 +193,46 @@ export function buildTransferPlan(
   return { rows: deriveTransferRows(preview, decisions) };
 }
 
+/** `decisions` minus every decision a violation names — repeated until the rest validates. Dropping
+ *  a decision only ever removes rows from the plan, so this terminates; the bound is a guard. */
+export function withoutViolations(
+  preview: ImportPreview,
+  decisions: ResolutionDecisions,
+  context: ResolutionContext,
+): ResolutionDecisions {
+  let current = decisions;
+  for (let pass = 0; pass <= decisions.size; pass++) {
+    const validation = validateResolution(preview, current, context);
+    if (validation.ok) {
+      return current;
+    }
+    const named = new Set(validation.violations.flatMap((violation) => violation.rowKeys));
+    current = new Map([...current].filter(([key]) => !named.has(key)));
+  }
+  return new Map();
+}
+
+/** A skip decision and an absent one mean the same (see {@link decisionFor}) — this drops the
+ *  explicit ones, so two maps that resolve to the same plan also compare equal. */
+export function withoutSkips(decisions: ResolutionDecisions): ResolutionDecisions {
+  return new Map([...decisions].filter(([, decision]) => decision.kind !== 'skip'));
+}
+
+/** Whether two decision maps hold the same decision for every key — compare {@link withoutSkips}
+ *  of both when an explicit skip and an absent key should count as equal. */
+export function sameDecisions(a: ResolutionDecisions, b: ResolutionDecisions): boolean {
+  if (a.size !== b.size) {
+    return false;
+  }
+  for (const [key, decision] of a) {
+    const other = b.get(key);
+    if (other === undefined || JSON.stringify(other) !== JSON.stringify(decision)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** The summary numbers behind a confirm dialog and a run protocol — see {@link TransferPlanSummary}
  *  for what each field counts. */
 export function summarizeTransferPlan(plan: TransferPlan): TransferPlanSummary {
