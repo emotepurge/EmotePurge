@@ -37,6 +37,8 @@ const DE_TRANSLATIONS = {
           'Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.',
         noRestorableRows:
           'Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.',
+        transferRun:
+          'Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.',
       },
     },
   },
@@ -108,6 +110,21 @@ function votingText(): string {
     channelName: 'otherchannel',
     withheld: [],
     meta: {},
+    rows: [],
+  });
+}
+
+/** #230: neither stage has a restore branch here yet — it falls through to `parseImportSource`,
+ *  which names it rather than trying to read it as an emote list. */
+function transferRunText(stage: 'planned' | 'finished' = 'finished'): string {
+  return JSON.stringify({
+    source: 'emotepurge',
+    kind: 'transfer-run',
+    formatVersion: 1,
+    exportedAt: '2026-09-23T10:00:00Z',
+    channelName: 'otherchannel',
+    withheld: [],
+    meta: { stage },
     rows: [],
   });
 }
@@ -321,7 +338,7 @@ describe('FileImportStep', () => {
     });
   });
 
-  describe('read/validation errors — all nine keys, none of them report a result', () => {
+  describe('read/validation errors — all ten keys, none of them report a result', () => {
     it.each([
       ['notJson', () => file('not json{')],
       ['csvInsteadOfJson', () => file('seven_tv_emote_id,name\n7tv-1,PogU\n')],
@@ -329,6 +346,9 @@ describe('FileImportStep', () => {
       ['wrongChannel', () => file(purgeRunText({ channelName: 'otherchannel' }))],
       ['wrongSet', () => file(purgeRunText({ emoteSetId: 'set-old' }))],
       ['votingExport', () => file(votingText())],
+      // #230: neither stage has a restore branch here yet — the file falls through to
+      // parseImportSource, which names it rather than treating it as a wrongKind file.
+      ['transferRun', () => file(transferRunText('planned'))],
       // 2 is PURGE_RUN_FORMAT_VERSION itself (spec #200, K5 finding C) — 99 is unambiguously beyond
       // every version this parser knows.
       ['wrongVersion', () => file(purgeRunText({ formatVersion: 99 }))],

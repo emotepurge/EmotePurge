@@ -902,6 +902,7 @@
         "csvInsteadOfJson": "That is the CSV version. The import needs the same file as JSON — pick the JSON format when exporting.",
         "wrongKind": "The file is not an EmotePurge export. Importable are purge protocols, emote lists and usage exports in JSON format.",
         "votingExport": "That is a vote export, not a purge protocol. An importable protocol is only created by a delete run and offered for download right afterwards.",
+        "transferRun": "That is a transfer run's protocol (back-out file or result), not an emote list to copy from — such files only serve to restore removed emotes.",
         "wrongVersion": "The file comes from a newer EmotePurge version.",
         "noRows": "The file contains no importable emotes.",
         "wrongChannel": "The protocol belongs to a different channel.",
@@ -1180,12 +1181,18 @@
       "unknownRows": {
         "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
         "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
-      }
+      },
+      "downloadProtocol": "Download protocol",
+      "protocolNotSaved": "Protocol not saved yet — it is gone once you close this."
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were added on 7TV, but EmotePurge could not record it. The target channel still picks them up on its next sync.",
     "syncRetry": "Report again",
     "syncRetrySucceeded": "Reported back successfully.",
+    "removalSyncFailedTitle": "Reporting the removal back to EmotePurge failed",
+    "removalSyncFailed": "The emotes were removed from the target set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
+    "removalSyncRetry": "Report again",
+    "removalSyncRetrySucceeded": "Removal reported back successfully.",
     "resync": {
       "pending": "Triggering the target channel's sync…",
       "succeeded": "Sync triggered — the target channel shows the emotes in a moment.",

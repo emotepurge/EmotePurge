@@ -8,7 +8,7 @@ import { loadSevenTvSetEntries } from './seven-tv-set-entries';
 
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 
-function page(entries: { id: string; alias?: string }[], pageCount = 1) {
+function page(entries: { id: string; alias?: string; defaultName?: string }[], pageCount = 1) {
   return {
     data: {
       emoteSets: {
@@ -16,7 +16,10 @@ function page(entries: { id: string; alias?: string }[], pageCount = 1) {
           emotes: {
             totalCount: entries.length,
             pageCount,
-            items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            items: entries.map(({ id, alias, defaultName }) => ({
+              alias,
+              emote: { id, defaultName },
+            })),
           },
         },
       },
@@ -148,6 +151,18 @@ describe('loadSevenTvSetEntries', () => {
     expect(result.aliaslessIds).toEqual(new Set(['7tv-1', '7tv-2']));
     expect(result.aliasesById.get('7tv-1')).toEqual(['PogU']);
     expect(result.aliasesById.get('7tv-2')).toEqual([]);
+  });
+
+  // The transfer-run protocol names an aliasless entry by its 7TV default name.
+  it("captures each id's 7TV default name, falling back to '' when 7TV omits it", async () => {
+    const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    httpMock
+      .expectOne(GQL_ENDPOINT)
+      .flush(page([{ id: '7tv-1', alias: 'PogU', defaultName: 'Pog' }, { id: '7tv-2' }]));
+
+    const result = await result$;
+    expect(result.defaultNameById.get('7tv-1')).toBe('Pog');
+    expect(result.defaultNameById.get('7tv-2')).toBe('');
   });
 
   it('errors on a GraphQL-level rejection disguised as HTTP 200', async () => {

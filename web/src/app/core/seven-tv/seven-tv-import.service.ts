@@ -301,10 +301,11 @@ export class SevenTvImportService {
    *  it keep reading as "checked, nothing to skip". */
   readonly duplicateCheckAvailable = signal(true);
 
-  /** #149 P2 (independent review): whether the notice built from the two signals above should
+  /** #149 P2 (independent review): whether the notice built from the signals above should
    *  currently be shown — true for `DUPLICATE_NOTICE_MS` after any `startImport` call that had
-   *  something to report (`skippedDuplicates > 0 || !duplicateCheckAvailable`), including a refused
-   *  (all-duplicates) call. `dockVisible()` (`usage-stats-page.ts`, via `action-dock.ts`) treats this
+   *  something to report (`skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift
+   *  > 0`), including a refused (all-duplicates, or all-drift) call.
+   *  `dockVisible()` (`usage-stats-page.ts`, via `action-dock.ts`) treats this
    *  exactly like an active run, which is what lets `import-progress-section` mount at all in that
    *  refused case — without it the section's own gate (`isRunning() || queue().length > 0`) would
    *  never fire, since a refused call leaves both false, and the notice that is the run's *only*
@@ -313,6 +314,12 @@ export class SevenTvImportService {
    *  no run/queue for a dismiss button to attach to, and a persistent flag would otherwise be able
    *  to sit next to an unrelated *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
+
+  /** Whether the shown run's transfer-run protocol was downloaded at least once — the reminder next
+   *  to the dock's Close button (`import.summary.protocolNotSaved`), since `reset()` leaves the
+   *  downloaded file as the only durable artifact. Reset to `false` by every `startImport()` call
+   *  that actually starts a run and by `reset()`. */
+  readonly protocolSaved = signal(false);
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -358,7 +365,12 @@ export class SevenTvImportService {
     this.skippedDuplicates.set(skippedDuplicates);
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
     this.replaceSkippedDrift.set(replaceSkippedDrift);
-    this.showDuplicateNotice(skippedDuplicates > 0 || !duplicateCheckAvailable);
+    // Also fires for a run held back entirely by drift (every replace row skipped, nothing
+    // queued) — without this, such a run would leave no run/queue behind at all *and* no notice,
+    // which is exactly the silence AK 16's "the protocol appears after every run" exists against.
+    this.showDuplicateNotice(
+      skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift > 0,
+    );
     // The 7TV id is the only identity an imported row has — the emote does not exist in our
     // database yet, so there is no internal `emoteId` to mirror the key from. Unique per run: the
     // preview deduplicates by id, and no action makes two rows of one source id.
@@ -405,6 +417,7 @@ export class SevenTvImportService {
     this.removalReport.set('idle');
     this.resyncTrigger.set('idle');
     this.abortedForPrivileges.set(false);
+    this.protocolSaved.set(false);
   }
 
   cancel(): void {
@@ -424,6 +437,7 @@ export class SevenTvImportService {
     this.replaceSkippedDrift.set(0);
     this.duplicateCheckAvailable.set(true);
     this.showDuplicateNotice(false);
+    this.protocolSaved.set(false);
   }
 
   /** Manual retry for the closing report — the 7TV adds are long done, so this only re-sends the

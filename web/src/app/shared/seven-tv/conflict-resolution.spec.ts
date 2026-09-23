@@ -149,7 +149,12 @@ describe('validateResolution', () => {
           action: 'replace',
           source: importRow('c-1', 'Name1'),
           alias: 'Name1',
-          target: { sevenTvEmoteId: 't-1', aliases: ['Name1'], hasAliaslessEntry: false },
+          target: {
+            sevenTvEmoteId: 't-1',
+            aliases: ['Name1'],
+            hasAliaslessEntry: false,
+            defaultName: null,
+          },
         },
       ]);
     });

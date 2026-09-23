@@ -31,6 +31,15 @@ export function parseImportSource(
   if (partial.kind === 'voting') {
     return { ok: false, errorKey: 'restore.import.errors.votingExport' };
   }
+  // A transfer-run protocol (either stage, #230) is never an import source: its rows are 7TV
+  // mutations already applied or about to be, not an emote list to copy from. Named explicitly
+  // rather than falling into the generic wrongKind below, same reasoning as the voting export
+  // above — the file dispatch tries `parsePurgeRunProtocol` first for `purge-run`, and is meant to
+  // grow a dedicated restore branch for `transfer-run` too; this function only ever sees one of
+  // these two kinds if that dispatch is bypassed, and answers with a reason even then.
+  if (partial.kind === 'transfer-run') {
+    return { ok: false, errorKey: 'restore.import.errors.transferRun' };
+  }
   if (partial.kind !== 'emote-list' && partial.kind !== 'usage') {
     // Anything else — an unknown kind, or a purge-run protocol handed here by mistake (the file
     // dispatch decides which parser to call, so this should not happen, but `kind` is untrusted

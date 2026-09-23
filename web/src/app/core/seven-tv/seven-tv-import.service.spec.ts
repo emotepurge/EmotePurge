@@ -87,7 +87,12 @@ function replaceRow(source: ImportRow, targetId: string): TransferRow {
     action: 'replace',
     source,
     alias: source.name,
-    target: { sevenTvEmoteId: targetId, aliases: [source.name], hasAliaslessEntry: false },
+    target: {
+      sevenTvEmoteId: targetId,
+      aliases: [source.name],
+      hasAliaslessEntry: false,
+      defaultName: null,
+    },
   };
 }
 
@@ -101,6 +106,7 @@ function adoptRow(source: ImportRow, currentAlias: string): TransferRow {
       sevenTvEmoteId: source.sevenTvEmoteId,
       aliases: [currentAlias],
       hasAliaslessEntry: false,
+      defaultName: null,
     },
   };
 }

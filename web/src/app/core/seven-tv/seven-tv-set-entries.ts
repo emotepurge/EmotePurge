@@ -10,14 +10,15 @@ const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 // (`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs`): 500 per page keeps even a
 // subscriber-sized set (capacity can exceed 1000) at a handful of requests, and the 10-page cap is
 // a runaway guard, not an expected limit — nothing in this codebase has ever seen a set anywhere
-// near 5000 entries. Only `alias` and `emote.id` are requested: unlike the backend's preview query
-// (which also needs name/scores for a human-facing list), the readers here only compare ids and the
-// aliases each id sits under.
+// near 5000 entries. `alias`, `emote.id` and `emote.defaultName` are requested: unlike the
+// backend's preview query (which also needs scores for a human-facing list), the readers here only
+// compare ids and the aliases each id sits under — `defaultName` is the one exception, needed by the
+// transfer-run protocol (shared/export/transfer-run-export.ts) to name an aliasless entry.
 const SET_ENTRIES_PER_PAGE = 500;
 const MAX_SET_ENTRY_PAGES = 10;
 
 const GQL_EMOTE_SET_ENTRIES_QUERY =
-  'query($id: Id!, $page: Int!, $perPage: Int!) { emoteSets { emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { totalCount pageCount items { alias emote { id } } } } } }';
+  'query($id: Id!, $page: Int!, $perPage: Int!) { emoteSets { emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { totalCount pageCount items { alias emote { id defaultName } } } } } }';
 
 interface SevenTvGqlEmoteSetEntriesResponse {
   data?: {
@@ -26,7 +27,7 @@ interface SevenTvGqlEmoteSetEntriesResponse {
         emotes?: {
           totalCount: number;
           pageCount: number;
-          items: { alias?: string | null; emote: { id: string } }[];
+          items: { alias?: string | null; emote: { id: string; defaultName?: string | null } }[];
         } | null;
       } | null;
     } | null;
@@ -53,6 +54,13 @@ export interface SevenTvSetEntries {
    *  foreign no differently than a genuinely different alias string would (K5 fix round, spec
    *  §37/§38). */
   aliaslessIds: Set<string>;
+  /** Every 7TV emote id in the set, mapped to its 7TV default name — filled for every id
+   *  regardless of whether it has a named or an aliasless entry (or both). A missing/empty
+   *  `defaultName` in 7TV's own answer is recorded as `''`, the same defensive fallback the backend
+   *  uses (`SevenTvApiClient.cs`, `dto.Emote?.DefaultName ?? string.Empty`) — never guessed from the
+   *  id. Read by the transfer-run protocol (`shared/export/transfer-run-export.ts`) to name an
+   *  aliasless target entry, which otherwise has no name a human would recognise. */
+  defaultNameById: Map<string, string>;
   /** `false` when the read stopped at the runaway guard while 7TV still reported more pages, or
    *  when the last page's cumulative item count did not match the query's own `totalCount` — offset
    *  pagination shifting between page fetches can silently drop or duplicate an entry across the
@@ -101,6 +109,7 @@ export function loadSevenTvSetEntries(
 ): Observable<SevenTvSetEntries> {
   const aliasesById = new Map<string, string[]>();
   const aliaslessIds = new Set<string>();
+  const defaultNameById = new Map<string, string>();
   let collected = 0;
 
   function loadPage(page: number): Observable<SevenTvSetEntries> {
@@ -120,13 +129,19 @@ export function loadSevenTvSetEntries(
             aliaslessIds.add(item.emote.id);
           }
           aliasesById.set(item.emote.id, aliases);
+          defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
         }
         collected += emotes.items.length;
         if (page >= emotes.pageCount) {
-          return of({ aliasesById, aliaslessIds, complete: collected === emotes.totalCount });
+          return of({
+            aliasesById,
+            aliaslessIds,
+            defaultNameById,
+            complete: collected === emotes.totalCount,
+          });
         }
         if (page >= MAX_SET_ENTRY_PAGES) {
-          return of({ aliasesById, aliaslessIds, complete: false });
+          return of({ aliasesById, aliaslessIds, defaultNameById, complete: false });
         }
         return loadPage(page + 1);
       }),

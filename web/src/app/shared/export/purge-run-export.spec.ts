@@ -177,6 +177,18 @@ describe('parsePurgeRunProtocol', () => {
     });
   });
 
+  // #230: this parser runs only for `purge-run` files — a `transfer-run` file reaching it at all
+  // means the dispatch was bypassed, and it is answered the same generic way as any other kind this
+  // parser does not know by name (FOREIGN_KIND_ERROR_KEYS carries no entry for it; the named
+  // rejection lives in `import-source-parser.ts` instead).
+  it('falls back to wrongKind for a transfer-run file rather than naming it', () => {
+    const transferRun = JSON.stringify({ source: 'emotepurge', kind: 'transfer-run' });
+    expect(parsePurgeRunProtocol(transferRun, EXPECTED)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+  });
+
   it('tells the CSV version of an export apart from a corrupt file', () => {
     expect(parsePurgeRunProtocol(purgeRunCsv(protocol()), EXPECTED)).toEqual({
       ok: false,

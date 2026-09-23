@@ -187,6 +187,10 @@ describe('filterAlreadyPresent', () => {
           ['7tv-999', []],
         ]),
         aliaslessIds: new Set(['7tv-1', '7tv-999']),
+        defaultNameById: new Map([
+          ['7tv-1', ''],
+          ['7tv-999', ''],
+        ]),
         complete: true,
       },
     });
@@ -480,7 +484,7 @@ function setEntries(entries: { id: string; alias: string | null }[]): SevenTvSet
     }
     aliasesById.set(entry.id, aliases);
   }
-  return { aliasesById, aliaslessIds, complete: true };
+  return { aliasesById, aliaslessIds, defaultNameById: new Map(), complete: true };
 }
 
 const SOURCE: ImportRow = { sevenTvEmoteId: 'src-1', name: 'Kappa', imageUrl: null };
@@ -492,7 +496,7 @@ function replacePlan(aliases: string[], hasAliaslessEntry = false): TransferPlan
     action: 'replace',
     source: SOURCE,
     alias: 'Kappa',
-    target: { sevenTvEmoteId: 'tgt-1', aliases, hasAliaslessEntry },
+    target: { sevenTvEmoteId: 'tgt-1', aliases, hasAliaslessEntry, defaultName: null },
   };
   return {
     rows: [row, { action: 'add', source: { ...SOURCE, sevenTvEmoteId: 'src-2' }, alias: 'Other' }],

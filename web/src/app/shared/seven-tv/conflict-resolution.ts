@@ -271,6 +271,8 @@ function deriveTransferRows(preview: ImportPreview, decisions: ResolutionDecisio
             sevenTvEmoteId: collision.target.sevenTvEmoteId,
             aliases: collision.targetAliases,
             hasAliaslessEntry: collision.targetHasAliaslessEntry,
+            // Stamped later, from a live read — see TransferRowTarget.defaultName's own doc.
+            defaultName: null,
           },
         });
         break;
@@ -295,6 +297,8 @@ function deriveTransferRows(preview: ImportPreview, decisions: ResolutionDecisio
             sevenTvEmoteId: mismatch.row.sevenTvEmoteId,
             aliases: mismatch.targetAliases,
             hasAliaslessEntry: false,
+            // Stamped later, from a live read — see TransferRowTarget.defaultName's own doc.
+            defaultName: null,
           },
         });
         break;

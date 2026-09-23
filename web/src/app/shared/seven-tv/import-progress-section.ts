@@ -1,9 +1,20 @@
+import { Dialog } from '@angular/cdk/dialog';
 import { Component, computed, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { CSV_MIME } from '../export/csv';
+import { ExportDialogData, FORMAT_EXPORT_OPTIONS, openExportDialog } from '../export/export-dialog';
+import { JSON_MIME } from '../export/export-envelope';
+import { downloadFile } from '../export/file-download';
+import {
+  buildTransferRunProtocol,
+  transferRunCsv,
+  transferRunFilename,
+  transferRunJson,
+} from '../export/transfer-run-export';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 import { copiedNotActiveNotice, resyncNoticeKey } from './dock-outcome-announcer';
@@ -32,7 +43,7 @@ import { RunProgressPanel } from './run-progress-panel';
          0 — a transient notice (design doc §4.5), not a persistent one, so it never sits attached to
          a *later*, unrelated run's details with nothing to clear it. See that signal's doc for why
          it also has to be what keeps the dock (and this section) mounted for a fully-refused
-         (all-duplicates) run, which leaves no run/queue behind of its own.
+         (all-duplicates or all-drift) run, which leaves no run/queue behind of its own.
 
          Every notice in this section is aria-hidden: its announcement comes from the host page's
          permanently mounted DockOutcomeAnnouncer, not from here. This section lives in the dock,
@@ -49,6 +60,17 @@ import { RunProgressPanel } from './run-progress-panel';
     @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{ 'import.duplicateCheckUnavailable' | transloco }}
+      </p>
+    }
+    <!-- A replace row held back because its target drifted since confirmation
+         (SevenTvImportService.replaceSkippedDrift) — shares duplicateNoticePending's window and
+         gate so it also appears for the all-drift case (every replace row held back, nothing
+         queued), which would otherwise leave this whole section unmounted and the run silent.
+         Mirrored (same gate) in DockOutcomeAnnouncer, which is what actually speaks it — this
+         paragraph is aria-hidden like its skippedDuplicates/duplicateCheckAvailable siblings. -->
+    @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
+      <p aria-hidden="true" class="text-sm text-fg-secondary">
+        {{ replaceSkippedDriftKey() | transloco: { count: importService.replaceSkippedDrift() } }}
       </p>
     }
     @if (importService.isRunning() || importService.queue().length > 0) {
@@ -82,7 +104,7 @@ import { RunProgressPanel } from './run-progress-panel';
             }
           </p>
           <app-run-progress-panel
-            [items]="importService.queue()"
+            [items]="importService.items()"
             [isRunning]="importService.isRunning()"
             labelPrefix="import"
             [syncReport]="importService.syncReport()"
@@ -92,10 +114,62 @@ import { RunProgressPanel } from './run-progress-panel';
             (syncRetryRequested)="importService.retrySyncReport()"
           >
             <ng-container run-actions>
+              <!-- The transfer-run protocol (AK 16): offered after *every* run, add-only ones
+                   included — settlement, not isRunning, is the gate, because a run with an
+                   unknown row stays pending after the engine is already done. Built from
+                   run.result.items — the settled, run-bound outcome — never the engine's live
+                   queue (Runde 2, Finding 3), which is exactly why [items] above now binds to
+                   importService.items() instead of importService.queue(). -->
+              @if (run.settlement === 'settled') {
+                <button type="button" appButton="neutral" (click)="openProtocolExport()">
+                  {{ 'import.summary.downloadProtocol' | transloco }}
+                </button>
+              }
               @if (importService.abortedForPrivileges()) {
                 <app-notice-banner variant="warning">
                   {{ 'import.summary.insufficientPrivileges' | transloco }}
                 </app-notice-banner>
+              }
+              @if (run.removedCount > 0) {
+                <span class="text-xs text-fg-muted">
+                  {{ removedCountKey() | transloco: { count: run.removedCount } }}
+                </span>
+              }
+              @if (run.unknownCount > 0) {
+                <span class="text-xs text-fg-muted">
+                  {{ unknownRowsKey() | transloco: { count: run.unknownCount } }}
+                </span>
+              }
+              <!-- The removal report (channel-scoped sync-deleted) — mirrors RunProgressPanel's own
+                   syncReport banner+retry one level up, which only ever speaks for the ADD report
+                   (sync-imported). A replace run needs both, distinguishably, since either can fail
+                   independently of the other. -->
+              @if (
+                importService.removalReport() === 'failed' ||
+                importService.removalReport() === 'partial'
+              ) {
+                <app-notice-banner variant="warning">
+                  <span class="flex flex-col gap-1">
+                    <span class="font-medium">{{
+                      'import.removalSyncFailedTitle' | transloco
+                    }}</span>
+                    <span>{{ 'import.removalSyncFailed' | transloco }}</span>
+                  </span>
+                  <button
+                    notice-action
+                    type="button"
+                    appButton="outline"
+                    (click)="importService.retryRemovalReport()"
+                  >
+                    {{ 'import.removalSyncRetry' | transloco }}
+                  </button>
+                </app-notice-banner>
+              } @else if (
+                importService.removalReport() === 'succeeded' && !importService.isRunning()
+              ) {
+                <span class="text-xs text-fg-muted">
+                  {{ 'import.removalSyncRetrySucceeded' | transloco }}
+                </span>
               }
               <!-- A tracked *non*-active target never gets the resync notice (onRunComplete skips
                    the resync itself, finding 3, Live-Verifikation K2 2026-09-21) — this notice takes
@@ -123,6 +197,15 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ 'import.summary.openTarget' | transloco }}
                 </a>
               }
+              <!-- reset() wipes the run — the downloaded file is the only durable artifact. No
+                   confirmation on Close for it (Abschnitt 2, Entscheidung 6): unlike the delete
+                   run's own protocol, this one is the *second* durable trace — the mandatory
+                   pre-run back-out file, downloaded before the first REMOVE, is the first. -->
+              @if (run.settlement === 'settled' && !importService.protocolSaved()) {
+                <span class="text-xs text-fg-muted">
+                  {{ 'import.summary.protocolNotSaved' | transloco }}
+                </span>
+              }
             </ng-container>
           </app-run-progress-panel>
         </div>
@@ -132,6 +215,7 @@ import { RunProgressPanel } from './run-progress-panel';
 })
 export class ImportProgressSection {
   protected readonly importService = inject(SevenTvImportService);
+  private readonly dialog = inject(Dialog);
 
   /** #149/T5: wording for how many rows the fresh pre-run duplicate check
    *  (`already-present-filter.ts`, run from `import-flow.ts`) dropped — shown independently of the
@@ -140,6 +224,24 @@ export class ImportProgressSection {
    *  > 0`), silently swallowing the one thing the user needs to see in that case. */
   protected readonly skippedDuplicatesKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+
+  /** Wording for how many `replace` rows the fresh pre-send drift check
+   *  (`already-present-filter.ts`'s `verifyReplaceTargets`) held back — same reasoning as
+   *  `skippedDuplicatesKey` above, and the same all-drift-leaves-nothing-queued concern. */
+  protected readonly replaceSkippedDriftKey = computed(() =>
+    pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),
+  );
+
+  /** Wording for the settled run's confirmed REMOVEs (`ImportRunInfo.removedCount`). */
+  protected readonly removedCountKey = computed(() =>
+    pluralKey(this.importService.run()?.removedCount ?? 0, 'import.summary.removed'),
+  );
+
+  /** Wording for the settled run's rows whose outcome 7TV never clarified
+   *  (`ImportRunInfo.unknownCount`) — never read as `failed` by anything downstream. */
+  protected readonly unknownRowsKey = computed(() =>
+    pluralKey(this.importService.run()?.unknownCount ?? 0, 'import.summary.unknownRows'),
   );
 
   /** Same key the page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
@@ -151,4 +253,53 @@ export class ImportProgressSection {
   protected readonly copiedNotActiveNotice = computed(() =>
     copiedNotActiveNotice(this.importService.run()),
   );
+
+  /** The `finished`-stage transfer-run protocol — offered after every settled run, mirroring
+   *  `MassDeletePanel.openProtocolExport()`. Built from `run.result.items`, never from the engine's
+   *  queue (Runde 2, Finding 3), so a superseded run cannot leak its rows into a newer one's file. */
+  protected openProtocolExport(): void {
+    const run = this.importService.run();
+    if (!run || run.settlement !== 'settled' || run.result === null) {
+      return;
+    }
+    const protocol = buildTransferRunProtocol({
+      targetEmoteSetId: run.targetSetId,
+      targetChannelName: run.targetChannelName,
+      targetOwnerDisplayName: run.targetOwnerDisplayName,
+      origin: run.origin,
+      startedAt: run.result.startedAt,
+      finishedAt: run.result.finishedAt,
+      items: run.result.items,
+    });
+    // The filename label (Grenzfälle): the target channel, or the target set id for an untracked
+    // target — never the owner display name, which can be absent.
+    const label = run.targetChannelName ?? run.targetSetId;
+    const data: ExportDialogData = {
+      rowCount: protocol.rows.length,
+      filtered: false,
+      // The protocol is always the whole run — a scope choice would make no sense here.
+      selectionCount: null,
+      noticeKeys: [],
+      optionsLegendKey: 'export.formatLabel',
+      options: FORMAT_EXPORT_OPTIONS,
+    };
+    openExportDialog(this.dialog, data).closed.subscribe((choice) => {
+      if (choice?.optionId === 'csv') {
+        downloadFile(
+          transferRunFilename(label, protocol.meta.finishedAt, 'csv'),
+          transferRunCsv(protocol),
+          CSV_MIME,
+        );
+      } else if (choice?.optionId === 'json') {
+        downloadFile(
+          transferRunFilename(label, protocol.meta.finishedAt, 'json'),
+          transferRunJson(protocol),
+          JSON_MIME,
+        );
+      }
+      if (choice) {
+        this.importService.protocolSaved.set(true);
+      }
+    });
+  }
 }

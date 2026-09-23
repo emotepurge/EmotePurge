@@ -902,6 +902,7 @@
         "csvInsteadOfJson": "Das ist die CSV-Fassung. Der Import braucht dieselbe Datei als JSON — beim Export das Format JSON wählen.",
         "wrongKind": "Die Datei ist kein EmotePurge-Export. Importierbar sind Purge-Protokolle, Emote-Listen und Nutzungs-Exporte im JSON-Format.",
         "votingExport": "Das ist ein Export einer Abstimmung, kein Purge-Protokoll. Ein importierbares Protokoll entsteht erst bei einem Löschlauf und wird direkt danach zum Download angeboten.",
+        "transferRun": "Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
         "wrongVersion": "Die Datei stammt aus einer neueren EmotePurge-Version.",
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "wrongChannel": "Das Protokoll gehört zu einem anderen Channel.",
@@ -1180,12 +1181,18 @@
       "unknownRows": {
         "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
         "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
-      }
+      },
+      "downloadProtocol": "Protokoll herunterladen",
+      "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg."
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV hinzugefügt, aber EmotePurge konnte es nicht vermerken. Der Zielkanal übernimmt sie beim nächsten Abgleich trotzdem.",
     "syncRetry": "Erneut melden",
     "syncRetrySucceeded": "Rückmeldung erfolgreich.",
+    "removalSyncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",
+    "removalSyncFailed": "Die Emotes sind bei 7TV aus dem Zielset entfernt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "removalSyncRetry": "Erneut melden",
+    "removalSyncRetrySucceeded": "Rückmeldung über die Entfernung erfolgreich nachgeholt.",
     "resync": {
       "pending": "Abgleich des Zielkanals wird angestoßen…",
       "succeeded": "Abgleich angestoßen — der Zielkanal zeigt die Emotes gleich.",

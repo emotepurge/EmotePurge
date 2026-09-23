@@ -57,6 +57,11 @@ const DE_TRANSLATIONS = {
     summary: {
       copiedNotActive:
         "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      replaceSkippedDrift: {
+        one: '{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
+        other:
+          '{{ count }} Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
+      },
     },
   },
 };
@@ -70,6 +75,9 @@ interface FakeOutcomeSource {
    *  `copiedNotActiveNotice`) — carried on the shared fake shape anyway since both services are
    *  built from the same factory; the restore fake's copy is simply never read. */
   run: WritableSignal<ImportRunInfo | null>;
+  /** Only `SevenTvImportService` actually has this — a restore run never carries a replace row.
+   *  Same reasoning as `run` above: shared shape, the restore fake's copy is never read. */
+  replaceSkippedDrift: WritableSignal<number>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
@@ -79,6 +87,7 @@ function createFakeSource(): FakeOutcomeSource {
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
     run: signal<ImportRunInfo | null>(null),
+    replaceSkippedDrift: signal(0),
   };
 }
 
@@ -191,6 +200,22 @@ describe('DockOutcomeAnnouncer', () => {
     expect(regions()).toEqual([regionAtRest]);
     expect(spoken()).toEqual([
       '2 Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
+    ]);
+  });
+
+  // A run where every replace row drifted since confirmation queues nothing at all — this notice
+  // is the only feedback such a run ever produces, so it needs the same already-standing region
+  // its skipped-duplicates sibling above relies on.
+  it('fills the region that was already standing when an all-drift import reports its skipped replacements', () => {
+    const regionAtRest = regions()[0];
+
+    importService.replaceSkippedDrift.set(3);
+    importService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+
+    expect(regions()).toEqual([regionAtRest]);
+    expect(spoken()).toEqual([
+      '3 Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
     ]);
   });
 

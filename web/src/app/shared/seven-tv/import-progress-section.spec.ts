@@ -1,4 +1,5 @@
-import { WritableSignal, signal } from '@angular/core';
+import { Dialog } from '@angular/cdk/dialog';
+import { Signal, WritableSignal, computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
@@ -6,9 +7,14 @@ import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
-import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import {
+  ImportRunInfo,
+  ImportRunItem,
+  SevenTvImportService,
+} from '../../core/seven-tv/seven-tv-import.service';
 import { ResyncTriggerState } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportProgressSection } from './import-progress-section';
 
 // Only the keys this component and the `RunProgressPanel` it wraps actually translate — not the
@@ -29,6 +35,10 @@ const DE_TRANSLATIONS = {
     syncFailed: 'Rückmeldung an EmotePurge fehlgeschlagen.',
     syncRetry: 'Erneut melden',
     syncRetrySucceeded: 'Rückmeldung erfolgreich.',
+    removalSyncFailedTitle: 'Entfernungs-Rückmeldung fehlgeschlagen',
+    removalSyncFailed: 'Entfernungs-Rückmeldung an EmotePurge fehlgeschlagen.',
+    removalSyncRetry: 'Entfernung erneut melden',
+    removalSyncRetrySucceeded: 'Entfernungs-Rückmeldung erfolgreich.',
     summary: {
       counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
       target: 'Ziel: {{ channel }}',
@@ -38,6 +48,20 @@ const DE_TRANSLATIONS = {
       copiedNotActive:
         "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       insufficientPrivileges: 'Das 7TV-Token hat im Zielset kein Schreibrecht.',
+      downloadProtocol: 'Protokoll herunterladen',
+      protocolNotSaved: 'Protokoll noch nicht gespeichert.',
+      removed: {
+        one: '{{ count }} Emote aus dem Zielset entfernt.',
+        other: '{{ count }} Emotes aus dem Zielset entfernt.',
+      },
+      replaceSkippedDrift: {
+        one: '{{ count }} Ersetzung übersprungen — Ziel hat sich verändert.',
+        other: '{{ count }} Ersetzungen übersprungen — Ziel hat sich verändert.',
+      },
+      unknownRows: {
+        one: 'Bei {{ count }} Zeile unklar, ob übernommen.',
+        other: 'Bei {{ count }} Zeilen unklar, ob übernommen.',
+      },
     },
     resync: {
       pending: 'Abgleich des Zielkanals wird angestoßen…',
@@ -69,38 +93,74 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
 
 /** The fake stands in for the whole service — every field the template reads is a signal this
  *  spec drives directly, exactly the shape `SevenTvImportService` presents (Regel 12: behaviour,
- *  not the service's own internals, which have their own tests). */
+ *  not the service's own internals, which have their own tests). `items` is a plain mirror of
+ *  `queue` (not the real service's isRunning-gated computed — that distinction is
+ *  `seven-tv-import.service.spec.ts`'s job, e.g. its R15-guard tests) so every existing `queue.set(…)`
+ *  call in this file keeps driving `app-run-progress-panel`'s `[items]` binding unchanged, the
+ *  `queue()` → `items()` rebind included. */
 interface FakeImportService {
   queue: WritableSignal<RunQueueItem[]>;
+  items: Signal<RunQueueItem[]>;
   isRunning: WritableSignal<boolean>;
   rateLimitPauseSeconds: WritableSignal<number | null>;
   run: WritableSignal<ImportRunInfo | null>;
   syncReport: WritableSignal<SyncReportState>;
+  removalReport: WritableSignal<SyncReportState>;
   resyncTrigger: WritableSignal<ResyncTriggerState>;
   abortedForPrivileges: WritableSignal<boolean>;
   skippedDuplicates: WritableSignal<number>;
+  replaceSkippedDrift: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  protocolSaved: WritableSignal<boolean>;
   cancel: ReturnType<typeof vi.fn>;
   reset: ReturnType<typeof vi.fn>;
   retrySyncReport: ReturnType<typeof vi.fn>;
+  retryRemovalReport: ReturnType<typeof vi.fn>;
 }
 
 function createFakeImportService(): FakeImportService {
+  const queue = signal<RunQueueItem[]>([]);
   return {
-    queue: signal<RunQueueItem[]>([]),
+    queue,
+    items: computed(() => queue()),
     isRunning: signal(false),
     rateLimitPauseSeconds: signal<number | null>(null),
     run: signal<ImportRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
+    removalReport: signal<SyncReportState>('idle'),
     resyncTrigger: signal<ResyncTriggerState>('idle'),
     abortedForPrivileges: signal(false),
     skippedDuplicates: signal(0),
+    replaceSkippedDrift: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    protocolSaved: signal(false),
     cancel: vi.fn(),
     reset: vi.fn(),
     retrySyncReport: vi.fn(),
+    retryRemovalReport: vi.fn(),
+  };
+}
+
+const SOURCE_A_TRANSFER: TransferRow = {
+  action: 'add',
+  source: { sevenTvEmoteId: '7tv-a', name: 'A', imageUrl: null },
+  alias: 'A',
+};
+
+/** A settled run item — a `RunQueueItem` is all `app-run-progress-panel` needs, but `run.result`
+ *  is typed `ImportRunItem[]`, so every fixture carries a `transfer` row too. */
+function doneItem(overrides: Partial<ImportRunItem> = {}): ImportRunItem {
+  return {
+    key: 'a',
+    sevenTvEmoteId: '7tv-a',
+    name: 'A',
+    status: 'done',
+    completedSteps: 1,
+    failedStep: null,
+    transfer: SOURCE_A_TRANSFER,
+    ...overrides,
   };
 }
 
@@ -130,7 +190,11 @@ describe('ImportProgressSection', () => {
           translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
         }),
       ],
-      providers: [provideRouter([]), { provide: SevenTvImportService, useValue: importService }],
+      providers: [
+        provideRouter([]),
+        { provide: SevenTvImportService, useValue: importService },
+        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
+      ],
     }).compileComponents();
 
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
@@ -495,5 +559,179 @@ describe('ImportProgressSection', () => {
     const fixture = render();
 
     expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
+  });
+
+  // The transfer-run protocol's dock offering, the removed/unknown-row summary lines, the drift
+  // notice (including the all-drift case) and the removal report's own retry.
+  describe('transfer-run protocol and removal report', () => {
+    function findButton(fixture: ComponentFixture<ImportProgressSection>, text: string) {
+      return Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
+      ).find((button) => button.textContent?.trim() === text);
+    }
+
+    it('shows the download-protocol button once the run has settled', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+
+      const fixture = render();
+
+      expect(findButton(fixture, 'Protokoll herunterladen')).toBeDefined();
+    });
+
+    it('shows no download-protocol button while the run is still pending settlement', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(runInfo({ settlement: 'pending' }));
+
+      const fixture = render();
+
+      expect(findButton(fixture, 'Protokoll herunterladen')).toBeUndefined();
+    });
+
+    it('shows the protocolNotSaved hint until the protocol has been saved, once settled', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.protocolSaved.set(false);
+
+      const notSaved = render();
+      expect(notSaved.nativeElement.textContent).toContain('Protokoll noch nicht gespeichert.');
+
+      importService.protocolSaved.set(true);
+      const saved = render();
+      expect(saved.nativeElement.textContent).not.toContain('Protokoll noch nicht gespeichert.');
+    });
+
+    it('closes without asking, calling reset() directly', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+
+      const fixture = render();
+      findButton(fixture, 'Schließen')?.click();
+
+      expect(importService.reset).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the removed-count row when the settled run confirmed a REMOVE', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', removedCount: 2 }));
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('2 Emotes aus dem Zielset entfernt.');
+    });
+
+    it('shows no removed-count row when nothing was confirmed removed', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', removedCount: 0 }));
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('entfernt.');
+    });
+
+    it('shows the unknown-rows row when the settled run has rows 7TV never clarified', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(runInfo({ settlement: 'settled', unknownCount: 1 }));
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Bei 1 Zeile unklar, ob übernommen.');
+    });
+
+    it('shows the drift notice for a run that still queued something', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.replaceSkippedDrift.set(1);
+      importService.duplicateNoticePending.set(true);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        '1 Ersetzung übersprungen — Ziel hat sich verändert.',
+      );
+    });
+
+    // The case the drift row exists for: every replace row drifted, nothing ran, no run object and
+    // an empty queue — the same "no run at all" shape #149 P2's skipped-duplicates notice already
+    // proves reachable.
+    it('shows the drift notice even when every replace row drifted and nothing ran at all', () => {
+      importService.run.set(null);
+      importService.queue.set([]);
+      importService.replaceSkippedDrift.set(3);
+      importService.duplicateNoticePending.set(true);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        '3 Ersetzungen übersprungen — Ziel hat sich verändert.',
+      );
+    });
+
+    it('shows no drift notice once its pending window has elapsed, even while the count is still set', () => {
+      importService.replaceSkippedDrift.set(2);
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+    });
+
+    it('shows a retry banner on a failed removal report and calls retryRemovalReport on click', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('failed');
+
+      const fixture = render();
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
+
+      findButton(fixture, 'Entfernung erneut melden')?.click();
+
+      expect(importService.retryRemovalReport).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the same retry banner for a partial removal report', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('partial');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
+    });
+
+    it('shows the succeeded note for a settled, successful removal report, not the retry banner', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('succeeded');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung erfolgreich.');
+      expect(fixture.nativeElement.textContent).not.toContain(
+        'Entfernungs-Rückmeldung fehlgeschlagen',
+      );
+    });
+
+    it('shows no removal-report notice at all while its state is idle', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('idle');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('Entfernungs-Rückmeldung');
+    });
   });
 });

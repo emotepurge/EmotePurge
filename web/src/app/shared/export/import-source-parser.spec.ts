@@ -77,6 +77,19 @@ describe('parseImportSource', () => {
     expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.votingExport' });
   });
 
+  // #230: a transfer-run protocol's rows are 7TV mutations already applied or about to be, not an
+  // emote list — both stages are rejected by name, never parsed as a copy source.
+  it.each(['planned', 'finished'] as const)(
+    'names a transfer-run protocol (stage: %s) instead of trying to read it as an emote list',
+    (stage) => {
+      const result = parseImportSource(
+        envelope({ kind: 'transfer-run', meta: { stage } }),
+        'transfer.json',
+      );
+      expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.transferRun' });
+    },
+  );
+
   it('falls back to wrongKind for anything other than emote-list, usage or voting', () => {
     expect(parseImportSource(envelope({ kind: 'purge-run' }), 'x.json')).toEqual({
       ok: false,

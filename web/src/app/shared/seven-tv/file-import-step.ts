@@ -128,6 +128,11 @@ export class FileImportStep {
       return;
     }
 
+    // A `transfer-run` file (either stage, #230) has no branch here yet — it falls through to
+    // parseImportSource below, which rejects it by name (`restore.import.errors.transferRun`)
+    // rather than trying to read it as an emote list. A dedicated restore branch, mirroring the
+    // one above for `purge-run`, is expected to follow; until it lands this dispatch order is a
+    // stepping stone, not the final contract.
     const parsedSource = parseImportSource(read.envelope, file.name);
     if (!parsedSource.ok) {
       this.errorKey.set(parsedSource.errorKey);

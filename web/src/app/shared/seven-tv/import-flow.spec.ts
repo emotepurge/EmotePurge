@@ -834,7 +834,12 @@ describe('recheckTransferPlan', () => {
     action: 'replace',
     source: kappa,
     alias: 'Kappa',
-    target: { sevenTvEmoteId: 'tgt-k', aliases: ['Kappa'], hasAliaslessEntry: false },
+    target: {
+      sevenTvEmoteId: 'tgt-k',
+      aliases: ['Kappa'],
+      hasAliaslessEntry: false,
+      defaultName: null,
+    },
   };
   const addPog: TransferRow = { action: 'add', source: pog, alias: 'Pog' };
 
@@ -847,7 +852,12 @@ describe('recheckTransferPlan', () => {
       action: 'adoptSourceName',
       source: kappa,
       alias: 'Kappa',
-      target: { sevenTvEmoteId: 'src-k', aliases: ['KappaOld'], hasAliaslessEntry: false },
+      target: {
+        sevenTvEmoteId: 'src-k',
+        aliases: ['KappaOld'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
     };
     const http = httpAnswering(of(aliasedSetPage([{ id: 'src-k', alias: 'KappaOld' }])));
 

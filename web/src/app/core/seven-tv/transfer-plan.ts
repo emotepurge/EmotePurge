@@ -13,6 +13,11 @@ export interface TransferRowTarget {
    *  existing entry in place, so nothing about entry count changes). Only a `replace` row can carry
    *  `true`, from `NameCollisionRow.targetHasAliaslessEntry`. */
   hasAliaslessEntry: boolean;
+  /** The target emote's 7TV default name, or `null` while unknown — the transfer-run protocol's
+   *  only way to name an aliasless entry (its display name in a restore preview, and the name 7TV
+   *  falls back to after an ADD without an alias). `buildTransferPlan` always sets this `null`; the
+   *  import confirm dialog stamps it from its own live-verified read once the target is confirmed. */
+  defaultName: string | null;
 }
 
 /** An `add` or `renameSource` row — an ADD mutation against a name nothing in the target holds

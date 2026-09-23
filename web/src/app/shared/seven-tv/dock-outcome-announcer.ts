@@ -141,6 +141,14 @@ export function markedCountNoticeKey(count: number): string {
       @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
         <p>{{ 'import.duplicateCheckUnavailable' | transloco }}</p>
       }
+      @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
+        <p>
+          {{
+            importReplaceSkippedDriftKey()
+              | transloco: { count: importService.replaceSkippedDrift() }
+          }}
+        </p>
+      }
       @if (importCopiedNotActive(); as notActive) {
         <p>{{ 'import.summary.copiedNotActive' | transloco: notActive }}</p>
       } @else if (importResyncKey(); as key) {
@@ -174,6 +182,9 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importSkippedKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+  protected readonly importReplaceSkippedDriftKey = computed(() =>
+    pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),
   );
   protected readonly restoreResyncKey = computed(() =>
     resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),
