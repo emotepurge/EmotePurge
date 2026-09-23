@@ -10,6 +10,96 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Codex Sol review of #247: a dedicated rate-limit budget, resilient footer availability, wrapping footers, audit coverage
+
+**Betrifft:** `src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` ·
+`src/EmotePurge.Api/RateLimiting/RateLimitingOptions.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Api/Endpoints/LegalEndpoints.cs` · `src/EmotePurge.Api/appsettings.json` ·
+`tests/EmotePurge.Api.Tests/RateLimitRejectionTests.cs` ·
+`web/src/app/core/legal/legal.service.ts` (+ spec) · `web/src/app/features/landing/landing-page.html` ·
+`web/src/app/features/shell/app-shell.ts` · `web/src/app/features/login/login-page.ts` ·
+`web/e2e/audit/ui-audit.audit.ts` · `docs/Operations.md`
+
+Three P2 findings from Codex Sol's review of the #247 branch, all accepted.
+
+1. **The two legal endpoints shared `PublicHealth`'s 30/min budget** with `GET /api/health`. The two
+   have unrelated legitimate callers — `PublicHealth`'s are two machines on fixed cadences (the
+   container HEALTHCHECK, the uptime monitor), the legal endpoints' are browser visitors, who can
+   arrive in numbers behind one shared IP (an office or campus NAT) that neither machine caller
+   ever does. Sharing the counter meant ordinary visitor traffic could 429 the health check away,
+   or the reverse. Split into its own `PublicLegal` policy, sized at 60/min: one availability check
+   per SPA load, one document fetch per page view of `/imprint`/`/privacy`, one more per language
+   switch while on one of those pages — a single visitor's session rarely exceeds half a dozen such
+   requests, so 60/min gives headroom for roughly a dozen visitors a minute from one shared IP.
+   `RateLimitRejectionTests.PublicLegalBudget_ExhaustsIndependently_FromPublicHealth` (rule 11)
+   proves the two budgets are now independent in both directions.
+2. **A failed availability request used to hide both footer links for the rest of the SPA session.**
+   `LegalService` fetched `GET /api/legal/availability` exactly once, in its constructor, and
+   `catchError` folded any failure (including a transient 429, before the split above existed) into
+   the same "nothing configured" `{false, false}` state as a genuinely empty deployment — with no
+   way back for the rest of that page load. Fixed by tracking a failed fetch separately from "not
+   configured" and retrying once per completed navigation (`Router`'s `NavigationEnd`) until it
+   succeeds — paced by the visitor's own navigation rather than a timer, so a retry never adds load
+   on its own and a transient failure (the window resetting, a dropped connection) self-heals the
+   next time the visitor moves to another page. Covered in `legal.service.spec.ts`.
+3. **The landing page's existing footer row (`flex gap-5`) doesn't wrap**, and the two new footers
+   added to `AppShell`/`LoginPage` copied that shape — on a narrow phone the added legal links could
+   overflow the row or break mid-word. Zero horizontal overflow is a hard rule
+   (`web/.claude/CLAUDE.md`; `docs/UI-Designsprache.md`, accessibility checklist). Fixed by adding
+   `flex-wrap` to all three footer rows, so extra items drop to a second line instead of pushing the
+   viewport wider.
+
+Additionally: `/imprint` and `/privacy` scenarios added to the UI audit harness
+(`web/e2e/audit/ui-audit.audit.ts`) with mocked document responses, following the existing
+registration pattern for other pages.
+
+### 2026-09-23 — Operator-supplied imprint/privacy pages, read from a mounted directory, never from the repo (#247)
+
+**Betrifft:** `src/EmotePurge.Core/Services/ILegalContentService.cs` ·
+`src/EmotePurge.Infrastructure/Services/LegalContentService.cs` ·
+`src/EmotePurge.Infrastructure/Services/LegalContentOptions.cs` ·
+`src/EmotePurge.Api/Endpoints/LegalEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`docker-compose.yml` · `docker-compose.prod.yml` · `docs/Operations.md` · `.gitignore` ·
+`web/src/app/core/legal/*` · `web/src/app/features/legal/legal-page.ts` ·
+`web/src/app/shared/ui/legal-footer-links.ts` · `web/src/app/app.routes.ts`
+
+The repo is public and self-hostable, so it must never carry the original operator's legal
+identity — an imprint or privacy policy checked in as a file, or hardcoded as a translation key,
+would ship to every fork. Content instead comes from Markdown files the operator supplies on the
+host: `imprint.de.md`, `imprint.en.md`, `privacy.de.md`, `privacy.en.md` under a directory named
+by the new `Legal:ContentPath` config key (`Legal__ContentPath` as an environment variable),
+mounted read-only into the `api` container (`docker-compose.prod.yml`: `/opt/emotepurge/legal`;
+`docker-compose.yml`: a gitignored `./legal-content` for local testing). An unset or empty
+`ContentPath` is a supported "nothing configured yet" state, not a startup error — the fail-fast
+posture `ChannelCapacityOptions`/`RateLimitingOptions` take for genuinely required config does not
+fit here, since a fresh self-hoster has no legal text on day one and the app must still boot and
+run.
+
+**German is authoritative; a document counts as configured only once its German file exists.** An
+English file with no German counterpart is treated the same as no file at all — the alternative
+(letting a translation stand in as the source of truth) contradicts the one authority rule this
+exists to enforce. If English is requested but only German exists, the response carries the
+German text plus an `isGermanFallback` flag the frontend reads to show "only available in
+German" instead of silently mixing languages or 404ing on a document that does exist.
+
+Two new anonymous endpoints, `GET /api/legal/availability` (which documents exist, so the footer
+can hide a link entirely rather than show one that then 404s) and
+`GET /api/legal/{imprint,privacy}/{de,en}`, both behind their own new anonymous, IP-partitioned
+`PublicLegal` rate-limit policy (60/min) — not a share of `PublicHealth`'s, see the Codex Sol
+review entry below for why. Markdown renders to HTML **server-side** via Markdig
+with `DisableHtml()`, so a literal `<script>` (or any other raw HTML) typed into the operator's
+file is escaped on output rather than passed through; the frontend still binds the result through
+Angular's `[innerHTML]` sanitizer on top of that as defence in depth. Rendered HTML is cached per
+file, keyed by the file's own last-write time — an operator edit is picked up on the next
+request, no restart required, without needing a cache-invalidation endpoint or hook.
+
+Frontend: `/imprint` and `/privacy` are top-level routes outside the app shell and every auth
+guard (reachable without login, before the Twitch OAuth redirect — issue #247 requirement 3), and
+a small `LegalFooterLinks` primitive adds the two links, each independently hidden when its
+document is not configured, to the landing page's existing footer and to two new footers (same
+shape, hidden outright rather than shown empty) added to `AppShell` and `LoginPage`, since neither
+carried a footer before this.
+
 ### 2026-09-23 — Codex Sol review of #246: a splice-embedded tag value and a chat-text command word could still leak (amends the same day's "Chat content and chatter identities stay out of Worker logs" entry)
 
 **Betrifft:** `src/EmotePurge.Worker/IrcLineSpliceRule.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` ·

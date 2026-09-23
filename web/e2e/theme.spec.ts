@@ -4,6 +4,7 @@ import {
   AUTH_USER,
   installLiveStub,
   mockAuthMe,
+  mockLegalAvailability,
   mockMyChannels,
   mockWorkerHealth,
 } from './support/mocks';
@@ -18,6 +19,10 @@ test.describe('theme', () => {
   test.beforeEach(async ({ page }) => {
     await mockAuthMe(page, null);
     await mockWorkerHealth(page);
+    // AppShell/LoginPage/LandingPage all fetch this on construction (issue #247's footer links) —
+    // without a mock the dev proxy answers with a 502, which the logo test below (the only one
+    // here that asserts on the console) would otherwise fail on instead of on a theme bug.
+    await mockLegalAvailability(page);
     // The overview opens /api/channels/live-events on mount (live.changed pushes); without the
     // stub the real EventSource hits a route no mock serves, and the logo test below — the only
     // one here that asserts on the console — fails on that request instead of on a theme bug.

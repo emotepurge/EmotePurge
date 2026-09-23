@@ -34,6 +34,41 @@ export async function mockWorkerHealth(
   await page.route('**/api/worker/health', (route) => fulfillJson(route, 200, { status }));
 }
 
+/**
+ * GET /api/legal/availability (issue #247) — drives whether the footer shows the imprint/privacy
+ * links at all. Defaults to "nothing configured", the opposite of `mockWorkerHealth`'s default,
+ * because most specs unrelated to this feature should see the footer stay silent rather than
+ * carry two extra links they never asked for.
+ */
+export async function mockLegalAvailability(
+  page: Page,
+  overrides: { imprintAvailable?: boolean; privacyAvailable?: boolean } = {},
+): Promise<void> {
+  await page.route('**/api/legal/availability', (route) =>
+    fulfillJson(route, 200, {
+      imprintAvailable: overrides.imprintAvailable ?? false,
+      privacyAvailable: overrides.privacyAvailable ?? false,
+    }),
+  );
+}
+
+/** GET /api/legal/{kind}/{language}. Pass `null` to simulate "not configured" (404). */
+export async function mockLegalDocument(
+  page: Page,
+  kind: 'imprint' | 'privacy',
+  language: 'de' | 'en',
+  document: { html: string; isGermanFallback?: boolean } | null,
+): Promise<void> {
+  await page.route(`**/api/legal/${kind}/${language}`, (route) =>
+    document
+      ? fulfillJson(route, 200, {
+          html: document.html,
+          isGermanFallback: document.isGermanFallback ?? false,
+        })
+      : fulfillJson(route, 404, { errorCode: 'legal_document_not_found' }),
+  );
+}
+
 export interface MockAdminHealth {
   snapshotAvailable: boolean;
   status: 'connected' | 'stale' | 'disconnected' | 'unknown';

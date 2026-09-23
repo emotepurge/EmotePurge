@@ -82,4 +82,12 @@ internal static class ApiErrorCodes
     public const string UnexpectedError = "unexpected_error";
     public const string NoHealthData = "no_health_data";
     public const string HealthDataUnreadable = "health_data_unreadable";
+
+    // 404 from GET /api/legal/{kind}/{language} (issue #247): the operator has not configured this
+    // document (no ContentPath, or no German file for it — German is authoritative, see
+    // ILegalContentService), or the route carried a kind/language outside the closed vocabulary
+    // (imprint/privacy, de/en). One code for both, because a caller cannot act on the two any
+    // differently — the availability endpoint is what tells the frontend which links to show at all,
+    // so a caller only ever reaches this by an unconfigured deep link or a route typo.
+    public const string LegalDocumentNotFound = "legal_document_not_found";
 }

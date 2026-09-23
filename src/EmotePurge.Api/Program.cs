@@ -178,6 +178,11 @@ builder.Services.AddRateLimiter(options =>
     // (every 30 s, from localhost) and the external uptime monitor (every 60 s).
     AddFixedWindowPolicy(RateLimitPolicyNames.PublicHealth, rateLimits.PublicHealth);
 
+    // GET /api/legal/availability and GET /api/legal/{kind}/{language} (issue #247): anonymous and
+    // IP-partitioned like PublicHealth above, but its own policy — see RateLimitPolicyNames.PublicLegal
+    // for why the two must not share a counter (Codex Sol review of #247, P2).
+    AddFixedWindowPolicy(RateLimitPolicyNames.PublicLegal, rateLimits.PublicLegal);
+
     // GET /api/seventv/channels/{channelName}/emotes (foreign-channel-import spec, E5a): any
     // logged-in user, any Twitch channel, no role required — see the group's own comment for why that
     // is deliberate. Stricter than InteractiveRead because unlike an ordinary navigation read this
@@ -325,6 +330,7 @@ app.MapWorkerHealthEndpoints();
 app.MapAdminEndpoints();
 app.MapLiveEndpoints();
 app.MapSevenTvEndpoints();
+app.MapLegalEndpoints();
 
 app.MapFallback("/api/{**rest}", () => Results.NotFound());
 // Needs the options passed separately: the SPA fallback serves index.html through its own endpoint,

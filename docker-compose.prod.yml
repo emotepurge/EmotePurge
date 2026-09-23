@@ -72,8 +72,15 @@ services:
       # Without a persisted key ring, every container restart generates a new one and throws out
       # all logged-in users; with two Api replicas, logins would fail sporadically.
       - DataProtection__KeyPath=/keys
+      # Operator-supplied imprint/privacy Markdown (issue #247), read-only — see
+      # docs/Operations.md "Legal pages" for the expected file names (imprint.de.md etc.) and why
+      # German is authoritative. An empty or missing /opt/emotepurge/legal is a supported "nothing
+      # configured yet" state (the endpoints answer 404, the frontend shows no footer link), not a
+      # startup error, so this line is safe to ship before the operator has filled the directory in.
+      - Legal__ContentPath=/legal
     volumes:
       - dataprotection-keys:/keys
+      - /opt/emotepurge/legal:/legal:ro
     networks:
       - emotepurge-network
     depends_on:

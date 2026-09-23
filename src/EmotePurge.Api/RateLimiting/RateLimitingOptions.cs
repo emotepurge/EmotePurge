@@ -47,6 +47,16 @@ internal sealed class RateLimitingOptions
     public FixedWindowPolicy PublicHealth { get; set; } = new() { PermitLimit = 30 };
 
     /// <summary>
+    /// The anonymous legal-pages endpoints (issue #247): one availability check per SPA load, one
+    /// document fetch per page view of <c>/imprint</c>/<c>/privacy</c>, one more per language
+    /// switch while on one of those pages. A single visitor's whole session rarely exceeds half a
+    /// dozen of these. 60/min gives headroom for roughly a dozen such visitors a minute from behind
+    /// one shared IP (an office or campus NAT) without ever touching <see cref="PublicHealth"/>'s
+    /// separate, much smaller machine-only budget.
+    /// </summary>
+    public FixedWindowPolicy PublicLegal { get; set; } = new() { PermitLimit = 60 };
+
+    /// <summary>
     /// Foreign-channel-import preview (spec E5a): per user, between <see cref="ChannelResync"/> (5/min,
     /// the one call that always costs an unconditional 7TV round trip) and <see cref="Bookkeeping"/>
     /// (120/min, writes against our own database only). This call costs 7TV a Helix lookup, a
@@ -76,6 +86,7 @@ internal sealed class RateLimitingOptions
         Bookkeeping.Validate(nameof(Bookkeeping));
         ChannelResync.Validate(nameof(ChannelResync));
         PublicHealth.Validate(nameof(PublicHealth));
+        PublicLegal.Validate(nameof(PublicLegal));
         ForeignEmoteLookup.Validate(nameof(ForeignEmoteLookup));
         SevenTvLeaderboard.Validate(nameof(SevenTvLeaderboard));
     }

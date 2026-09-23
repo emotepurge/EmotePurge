@@ -64,3 +64,8 @@ src/EmotePurge.Api/wwwroot/
 # Bind-mount target of the `harness` compose service (#69): JSONL log and markdown report
 # of an accuracy run. Fetched from the VPS via scp, never committed.
 harness-reports/
+
+# Bind-mount target of the `api` service's Legal:ContentPath (issue #247): operator-supplied
+# imprint/privacy Markdown. The repo is public and self-hostable, so it must never carry the
+# original operator's legal text — see docs/Operations.md "Legal pages".
+legal-content/

@@ -538,6 +538,79 @@
     backdrop-filter: blur(8px);
     animation: app-dock-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
   }
+
+  /* Long-form prose for the two operator-supplied legal documents (LegalPage, issue #247): the
+     server-rendered Markdown carries plain h1/h2/h3/p/ul/ol/a/strong/em tags with no classes of
+     their own, so the typographic-hierarchy table (design doc §3) is applied here as element
+     selectors instead of being repeated as utility classes on every generated tag. The document's
+     own `<h1>` (its title) doubles as the page's page-title heading — LegalPage renders no second
+     one of its own, so there is exactly one, not two saying the same thing. */
+  .app-legal-content h1 {
+    margin-top: calc(var(--spacing) * 2);
+    margin-bottom: calc(var(--spacing) * 4);
+    font-size: var(--text-2xl);
+    line-height: var(--text-2xl--line-height);
+    font-weight: 700;
+    letter-spacing: var(--tracking-tight);
+    color: var(--ep-fg);
+  }
+
+  .app-legal-content h2 {
+    margin-top: calc(var(--spacing) * 8);
+    margin-bottom: calc(var(--spacing) * 3);
+    font-size: var(--text-lg);
+    line-height: var(--text-lg--line-height);
+    font-weight: 600;
+    color: var(--ep-fg);
+  }
+
+  .app-legal-content h3 {
+    margin-top: calc(var(--spacing) * 6);
+    margin-bottom: calc(var(--spacing) * 2);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    font-weight: 600;
+    color: var(--ep-fg);
+  }
+
+  .app-legal-content p,
+  .app-legal-content ul,
+  .app-legal-content ol {
+    margin-top: calc(var(--spacing) * 3);
+    margin-bottom: calc(var(--spacing) * 3);
+    font-size: var(--text-sm);
+    line-height: 1.7;
+    color: var(--ep-fg-muted);
+  }
+
+  .app-legal-content ul {
+    list-style-type: disc;
+    padding-inline-start: calc(var(--spacing) * 5);
+  }
+
+  .app-legal-content ol {
+    list-style-type: decimal;
+    padding-inline-start: calc(var(--spacing) * 5);
+  }
+
+  .app-legal-content li + li {
+    margin-top: calc(var(--spacing) * 1);
+  }
+
+  .app-legal-content strong {
+    font-weight: 600;
+    color: var(--ep-fg);
+  }
+
+  .app-legal-content a {
+    color: var(--ep-accent-fg);
+    text-underline-offset: 4px;
+    text-decoration-line: underline;
+  }
+
+  .app-legal-content a:hover {
+    color: var(--ep-fg);
+  }
 }
 
 @keyframes app-dock-in {

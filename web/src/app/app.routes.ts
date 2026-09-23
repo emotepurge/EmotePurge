@@ -17,6 +17,19 @@ export const routes: Routes = [
   },
   { path: 'login', component: LoginPage },
   {
+    // Operator-supplied imprint/privacy (issue #247): reachable without being logged in, outside
+    // every auth guard, and outside the app shell — same reasoning as 'welcome'/'login' above.
+    // `data.kind` is read by LegalPage from the route snapshot, not bound as a component input.
+    path: 'imprint',
+    data: { kind: 'imprint' },
+    loadComponent: () => import('./features/legal/legal-page').then((m) => m.LegalPage),
+  },
+  {
+    path: 'privacy',
+    data: { kind: 'privacy' },
+    loadComponent: () => import('./features/legal/legal-page').then((m) => m.LegalPage),
+  },
+  {
     path: '',
     loadComponent: () => import('./features/shell/app-shell').then((m) => m.AppShell),
     children: [

@@ -240,6 +240,16 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IVoteSessionQueryService, VoteSessionQueryService>();
         services.AddScoped<IVoteEligibilityService, VoteEligibilityService>();
 
+        // Operator-supplied imprint/privacy Markdown (issue #247). Bound directly rather than
+        // through IOptions like ChatLogArchiveOptions above: there is nothing to validate here, an
+        // unset ContentPath is a supported "nothing configured yet" state, not a startup error.
+        var legalContentOptions = new LegalContentOptions();
+        configuration.GetSection(LegalContentOptions.SectionName).Bind(legalContentOptions);
+        // Singleton: its only state is the per-file render cache, which exists to survive across
+        // requests (see the class comment).
+        services.AddSingleton(legalContentOptions);
+        services.AddSingleton<ILegalContentService, LegalContentService>();
+
         return services;
     }
 

@@ -123,6 +123,23 @@
       "source": "Source"
     }
   },
+  "legal": {
+    "back": "Home",
+    "onlyGerman": "This document is currently only available in German.",
+    "footer": {
+      "imprint": "Imprint",
+      "privacy": "Privacy Policy"
+    },
+    "imprint": {
+      "notConfiguredTitle": "No imprint on file"
+    },
+    "privacy": {
+      "notConfiguredTitle": "No privacy policy on file"
+    },
+    "notConfigured": {
+      "description": "This instance's operator has not added this document yet."
+    }
+  },
   "usageRange": {
     "label": "Usage",
     "menuLabel": "Choose usage range",
@@ -1150,7 +1167,8 @@
       "live_stream_quota_exhausted": "Too many open live connections. Close a few tabs and try again.",
       "unexpected_error": "An unexpected error occurred on the server. Please try again.",
       "no_health_data": "No worker data is available right now.",
-      "health_data_unreadable": "The worker data could not be read."
+      "health_data_unreadable": "The worker data could not be read.",
+      "legal_document_not_found": "This document is not available."
     }
   }
 }

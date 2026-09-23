@@ -20,6 +20,8 @@ import {
   mockChannelPermissions,
   mockChannelStatus,
   mockEmoteList,
+  mockLegalAvailability,
+  mockLegalDocument,
   mockSetWarning,
   failLive,
   mockLiveQuota,
@@ -362,6 +364,12 @@ const SCENARIOS: Scenario[] = [
     path: '/welcome',
     setup: async (page) => {
       await mockAuthMe(page, null);
+      // Both true rather than mockLegalAvailability's own "nothing configured" default: this is
+      // also the scenario that exercises the landing footer's link row with both legal links
+      // actually present (Codex Sol review of #247, P2 — the row used to let an individual link's
+      // label break mid-word here rather than wrapping as whole items; flex-wrap on that row is
+      // what this scenario now guards against regressing).
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
     },
   },
   {
@@ -369,6 +377,47 @@ const SCENARIOS: Scenario[] = [
     path: '/login',
     setup: async (page) => {
       await mockAuthMe(page, null);
+      // Same reasoning as 'welcome' above: both true so this scenario actually renders (and
+      // guards the wrapping of) the footer this page and app-shell.ts share the shape of.
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+  },
+  {
+    // Issue #247: reachable without login, before the Twitch OAuth redirect. Both documents
+    // configured so the scenario also proves the footer's two links render correctly here. The
+    // audit runs each scenario under both the 'de' and 'en' Playwright projects (browser locale,
+    // not a runtime switch — see playwright.audit.config.ts), and LegalPage requests the document
+    // in whichever language the browser starts in, so both languages need a real, non-fallback
+    // mock or the 'en' project's screenshot would show the unrelated "not configured" empty state.
+    slug: 'imprint',
+    path: '/imprint',
+    setup: async (page) => {
+      await mockAuthMe(page, null);
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+      await mockLegalDocument(page, 'imprint', 'de', {
+        html: '<h1>Impressum</h1><p>Max Mustermann, Musterstraße 1, 12345 Musterstadt.</p><p>Kontakt: max@example.invalid</p>',
+      });
+      await mockLegalDocument(page, 'imprint', 'en', {
+        html: '<h1>Imprint</h1><p>Max Mustermann, Musterstraße 1, 12345 Musterstadt.</p><p>Contact: max@example.invalid</p>',
+      });
+    },
+  },
+  {
+    // The German-fallback notice (no privacy.en.md on the operator's side), for the same reason
+    // 'shell-both-warnings' above exists as its own scenario: a state the harness should keep
+    // catching a regression in, not one that only happens to appear. The 'de' project pass shows
+    // the ordinary case (a real German document, no banner); the 'en' pass is where the fallback
+    // and its notice actually show — between the two projects, one scenario slug covers both.
+    slug: 'privacy',
+    path: '/privacy',
+    setup: async (page) => {
+      await mockAuthMe(page, null);
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+      const germanDocument = {
+        html: '<h1>Datenschutzerklärung</h1><p>Wir erheben nur, was für den Betrieb notwendig ist.</p>',
+      };
+      await mockLegalDocument(page, 'privacy', 'de', germanDocument);
+      await mockLegalDocument(page, 'privacy', 'en', { ...germanDocument, isGermanFallback: true });
     },
   },
   {

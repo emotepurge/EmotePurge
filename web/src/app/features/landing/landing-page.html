@@ -191,7 +191,7 @@
       class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-sm text-fg-muted"
     >
       <span>{{ 'landing.footer.copyright' | transloco }}</span>
-      <div class="flex gap-5">
+      <div class="flex flex-wrap gap-5">
         <a
           routerLink="/welcome"
           fragment="does"
@@ -211,6 +211,7 @@
           class="inline-block px-1 py-2 transition hover:text-fg-secondary"
           >{{ 'landing.footer.source' | transloco }}</a
         >
+        <app-legal-footer-links />
       </div>
     </div>
   </footer>
