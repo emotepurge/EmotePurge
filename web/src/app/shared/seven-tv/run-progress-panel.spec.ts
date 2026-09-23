@@ -18,6 +18,8 @@ const DE_TRANSLATIONS = {
     progress: '{{ finished }} / {{ total }} verarbeitet',
     progressBarLabel: 'Löschfortschritt',
     deleteFailedFallback: 'Löschen fehlgeschlagen',
+    unknownOutcome:
+      'Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.',
     syncFailedTitle: 'Rückmeldung an EmotePurge fehlgeschlagen',
     syncFailed:
       'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.',
@@ -32,7 +34,15 @@ const DE_TRANSLATIONS = {
 /** A queue row typed against the real `RunQueueItem` contract, so a wrong field name here is a
  *  compile error rather than a silently-ignored property. */
 function queueItem(key: string, status: RunItemStatus): RunQueueItem {
-  return { key, sevenTvEmoteId: `7tv-${key}`, name: `Emote-${key}`, status };
+  const ended = status === 'failed' || status === 'unknown';
+  return {
+    key,
+    sevenTvEmoteId: `7tv-${key}`,
+    name: `Emote-${key}`,
+    status,
+    completedSteps: status === 'done' ? 1 : 0,
+    failedStep: ended ? 0 : null,
+  };
 }
 
 /** The accname precedence this codebase relies on for an accessible name: `aria-labelledby`
@@ -258,6 +268,26 @@ describe('RunProgressPanel', () => {
 
       expect(region).not.toBeNull();
       expect(region?.getAttribute('aria-atomic')).toBe('false');
+    });
+  });
+
+  describe('failure list', () => {
+    it('counts an unknown row as finished and lists it with its own unknown-outcome wording', () => {
+      const unknown: RunQueueItem = {
+        ...queueItem('b', 'unknown'),
+        errorMessage: 'Keine Verbindung zu 7TV möglich (Netzwerkfehler).',
+      };
+      const dialog = render({
+        items: [queueItem('a', 'done'), unknown, queueItem('c', 'pending')],
+        isRunning: true,
+      });
+
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('2');
+      const entries = Array.from(
+        dialog.fixture.nativeElement.querySelectorAll('[role="alert"] li'),
+        (entry: Element) => entry.textContent?.trim(),
+      );
+      expect(entries).toEqual([`Emote-b: ${DE_TRANSLATIONS.massDelete.unknownOutcome}`]);
     });
   });
 

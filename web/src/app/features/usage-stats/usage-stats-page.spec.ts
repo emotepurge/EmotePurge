@@ -3361,6 +3361,8 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
             name: 'Alpha',
             aliases: ['Alpha', 'AlphaTwo'],
             status: 'done',
+            completedSteps: 1,
+            failedStep: null,
           },
         ],
         startedAt: 0,

@@ -863,6 +863,7 @@
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Restore progress",
     "deleteFailedFallback": "Restore failed",
+    "unknownOutcome": "Unclear whether it was restored — 7TV gave no clear answer. Please check the set.",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "confirmTitle": {
       "one": "Add {{ count }} emote back to the set?",
@@ -947,6 +948,7 @@
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Delete progress",
     "deleteFailedFallback": "Delete failed",
+    "unknownOutcome": "Unclear whether it was deleted — 7TV gave no clear answer. Please check the set.",
     "confirmTitle": {
       "one": "Delete {{ count }} emote from 7TV?",
       "other": "Delete {{ count }} emotes from 7TV?"
@@ -981,6 +983,7 @@
       "tokenInvalid": "Token invalid or expired — please enter a new 7TV token.",
       "rateLimited": "Too many requests to 7TV (rate limit) — try again later.",
       "rateLimitedGaveUp": "7TV rate limit still active after several waits — emote skipped.",
+      "cancelledMidRow": "Cancelled partway — 7TV had already carried out part of it.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }})."
     },
@@ -1151,6 +1154,7 @@
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Copy progress",
     "deleteFailedFallback": "Copy failed",
+    "unknownOutcome": "Unclear whether it was copied — 7TV gave no clear answer. Please check the set.",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",

@@ -67,7 +67,15 @@ function purgeRunText(
     startedAt: Date.parse('2026-09-01T10:00:00Z'),
     finishedAt: Date.parse('2026-09-01T10:05:00Z'),
     items: overrides.items ?? [
-      { key: 'e1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+      {
+        key: 'e1',
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
     ],
   });
   if (overrides.formatVersion !== undefined) {
@@ -200,13 +208,23 @@ describe('FileImportStep', () => {
         file(
           purgeRunText({
             items: [
-              { key: 'e1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+              {
+                key: 'e1',
+                emoteId: 'e1',
+                sevenTvEmoteId: '7tv-1',
+                name: 'PogU',
+                status: 'done',
+                completedSteps: 1,
+                failedStep: null,
+              },
               {
                 key: 'e2',
                 emoteId: 'e2',
                 sevenTvEmoteId: '7tv-2',
                 name: 'KEKW',
                 status: 'failed',
+                completedSteps: 0,
+                failedStep: 0,
                 errorMessage: 'boom',
               },
             ],
@@ -327,6 +345,8 @@ describe('FileImportStep', () => {
                   sevenTvEmoteId: '7tv-1',
                   name: 'PogU',
                   status: 'failed',
+                  completedSteps: 0,
+                  failedStep: 0,
                   errorMessage: 'boom',
                 },
               ],

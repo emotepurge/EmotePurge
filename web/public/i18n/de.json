@@ -863,6 +863,7 @@
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Wiederherstellungsfortschritt",
     "deleteFailedFallback": "Wiederherstellen fehlgeschlagen",
+    "unknownOutcome": "Unklar, ob wiederhergestellt — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "confirmTitle": {
       "one": "{{ count }} Emote wieder zum Set hinzufügen?",
@@ -947,6 +948,7 @@
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Löschfortschritt",
     "deleteFailedFallback": "Löschen fehlgeschlagen",
+    "unknownOutcome": "Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "confirmTitle": {
       "one": "{{ count }} Emote von 7TV löschen?",
       "other": "{{ count }} Emotes von 7TV löschen?"
@@ -981,6 +983,7 @@
       "tokenInvalid": "Token ungültig oder abgelaufen — bitte neues 7TV-Token eintragen.",
       "rateLimited": "Zu viele Anfragen an 7TV (Rate Limit) — später erneut versuchen.",
       "rateLimitedGaveUp": "7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.",
+      "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }})."
     },
@@ -1151,6 +1154,7 @@
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Kopierfortschritt",
     "deleteFailedFallback": "Kopieren fehlgeschlagen",
+    "unknownOutcome": "Unklar, ob kopiert — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",

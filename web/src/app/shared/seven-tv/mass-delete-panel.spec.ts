@@ -251,9 +251,24 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
       result: {
         doneKeys: ['7tv-1', '7tv-live'],
         items: [
-          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
           // A set-view row without a local emote (spec #200, 7.1) — see the no-filter case below.
-          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+          {
+            key: '7tv-live',
+            sevenTvEmoteId: '7tv-live',
+            name: 'LiveOnly',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
         ],
         startedAt: Date.parse('2026-09-01T12:00:00Z'),
         finishedAt: Date.parse('2026-09-01T12:05:00Z'),
@@ -561,7 +576,16 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
             // which RunProgressPanel only projects once the restore run has settled
             // (!isRunning() && total() > 0) — matching how resyncTrigger is only ever written from
             // onRunComplete in the real service.
-            queue: signal([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]),
+            queue: signal([
+              {
+                key: 'a',
+                sevenTvEmoteId: '7tv-a',
+                name: 'A',
+                status: 'done',
+                completedSteps: 1,
+                failedStep: null,
+              },
+            ]),
             syncReport: signal('idle'),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger,
@@ -780,6 +804,8 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
         sevenTvEmoteId: id,
         name: id,
         status: 'done',
+        completedSteps: 1,
+        failedStep: null,
       })),
       startedAt: Date.parse('2026-09-01T12:00:00Z'),
       finishedAt: Date.parse('2026-09-01T12:05:00Z'),
@@ -948,8 +974,23 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
       result: {
         doneKeys: ['7tv-1', '7tv-live'],
         items: [
-          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
-          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-live',
+            sevenTvEmoteId: '7tv-live',
+            name: 'LiveOnly',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
         ],
         startedAt: 0,
         finishedAt: 1,
@@ -1007,7 +1048,15 @@ describe('MassDeletePanel — restore latch (#89)', () => {
   let queue: WritableSignal<RunQueueItem[]>;
 
   function item(key: string): RunQueueItem {
-    return { key, emoteId: key, sevenTvEmoteId: `7tv-${key}`, name: key, status: 'done' };
+    return {
+      key,
+      emoteId: key,
+      sevenTvEmoteId: `7tv-${key}`,
+      name: key,
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    };
   }
 
   beforeEach(async () => {
@@ -2528,6 +2577,8 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
             sevenTvEmoteId: '7tv-1',
             name: 'PogU',
             status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
           },
         ],
         startedAt: Date.parse('2026-09-01T12:00:00Z'),

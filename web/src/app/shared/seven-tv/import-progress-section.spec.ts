@@ -202,7 +202,16 @@ describe('ImportProgressSection', () => {
 
     it('offers no "open target channel" link once the run has settled', () => {
       importService.isRunning.set(false);
-      importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
+      importService.queue.set([
+        {
+          key: 'a',
+          sevenTvEmoteId: '7tv-a',
+          name: 'A',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ]);
       importService.run.set(
         runInfo({
           targetChannelName: 'zielkanal',
@@ -224,7 +233,16 @@ describe('ImportProgressSection', () => {
 
     it('shows the copied-not-active notice instead of a resync notice once the run has settled', () => {
       importService.isRunning.set(false);
-      importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
+      importService.queue.set([
+        {
+          key: 'a',
+          sevenTvEmoteId: '7tv-a',
+          name: 'A',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ]);
       importService.run.set(
         runInfo({
           targetChannelName: 'zielkanal',
@@ -264,7 +282,16 @@ describe('ImportProgressSection', () => {
 
   it('stays visible after the run has settled, as long as the queue is not empty', () => {
     importService.isRunning.set(false);
-    importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
+    importService.queue.set([
+      {
+        key: 'a',
+        sevenTvEmoteId: '7tv-a',
+        name: 'A',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
+    ]);
     importService.run.set(runInfo());
 
     const fixture = render();
@@ -302,7 +329,16 @@ describe('ImportProgressSection', () => {
   // permanently mounted DockOutcomeAnnouncer speaks them (docs/UI-Designsprache.md §4.5).
   it('shows no resync notice once settled while resyncTrigger is idle', () => {
     importService.isRunning.set(false);
-    importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
+    importService.queue.set([
+      {
+        key: 'a',
+        sevenTvEmoteId: '7tv-a',
+        name: 'A',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
+    ]);
     importService.run.set(runInfo());
     importService.resyncTrigger.set('idle');
 
@@ -320,7 +356,16 @@ describe('ImportProgressSection', () => {
     'maps the settled resyncTrigger %s to its own notice text, shown but not announced here',
     (trigger, expectedText) => {
       importService.isRunning.set(false);
-      importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]);
+      importService.queue.set([
+        {
+          key: 'a',
+          sevenTvEmoteId: '7tv-a',
+          name: 'A',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
+      ]);
       importService.run.set(runInfo());
       importService.resyncTrigger.set(trigger);
 
@@ -336,7 +381,16 @@ describe('ImportProgressSection', () => {
 
   it('shows the insufficient-privileges banner only when the run aborted for that reason', () => {
     importService.isRunning.set(false);
-    importService.queue.set([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'failed' }]);
+    importService.queue.set([
+      {
+        key: 'a',
+        sevenTvEmoteId: '7tv-a',
+        name: 'A',
+        status: 'failed',
+        completedSteps: 0,
+        failedStep: 0,
+      },
+    ]);
     importService.run.set(runInfo());
     importService.abortedForPrivileges.set(false);
 

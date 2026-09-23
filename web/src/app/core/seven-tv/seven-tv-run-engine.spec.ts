@@ -1,6 +1,10 @@
 import { HttpClient } from '@angular/common/http';
 import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  TestRequest,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
@@ -24,6 +28,7 @@ const DE_TRANSLATIONS = {
       genericStatus: '7TV-Fehler (Status {{ status }}).',
       rateLimitedGaveUp:
         '7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.',
+      cancelledMidRow: 'Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.',
     },
   },
 };
@@ -38,10 +43,37 @@ const TEST_OPERATION: RunOperation = {
   }),
 };
 
+/** Stands in for the replace row T5 builds: step 0 frees the name, step 1 takes it. The request
+ *  names its step so an assertion can tell which of the two went out. */
+const TWO_STEP_OPERATION: RunOperation = {
+  label: 'two-step run',
+  stepCount: () => 2,
+  buildRequest: (setId, emote, step) => ({
+    query: step === 0 ? 'mutation Remove' : 'mutation Add',
+    variables: { setId, emoteId: emote.sevenTvEmoteId, step },
+  }),
+};
+
+const UNKNOWN_AWARE_OPERATION: RunOperation = {
+  ...TWO_STEP_OPERATION,
+  transportLossIsUnknown: true,
+};
+
+/** 7TV's answer to a name conflict (live-measured on `updateEmoteAlias`): HTTP 200, the rejection
+ *  inside `errors`, the HTTP-like status in `extensions.status`. */
+const NAME_CONFLICT_RESPONSE = {
+  errors: [{ message: 'emote name conflict', extensions: { code: 'BAD_REQUEST', status: 409 } }],
+};
+
 const EMOTES: RunQueueEmote[] = [
   { key: 'internal-1', emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU' },
   { key: 'internal-2', emoteId: 'internal-2', sevenTvEmoteId: '7tv-2', name: 'KEKW' },
 ];
+
+/** Which step of its row a request sent — read off `TWO_STEP_OPERATION`'s own variables. */
+function stepOf(testRequest: TestRequest): number {
+  return testRequest.request.body.variables.step;
+}
 
 function rateLimitResponse(resetSeconds: number) {
   return {
@@ -373,6 +405,7 @@ describe('SevenTvRunEngine', () => {
         message: 'insufficient privileges',
         httpStatus: null,
         errorCode: null,
+        gqlStatus: null,
       });
     });
 
@@ -397,6 +430,7 @@ describe('SevenTvRunEngine', () => {
         message: 'LACKING_PRIVILEGES you are not an editor for this user',
         httpStatus: null,
         errorCode: 'LACKING_PRIVILEGES',
+        gqlStatus: null,
       });
     });
 
@@ -412,6 +446,7 @@ describe('SevenTvRunEngine', () => {
         message: 'Token ungültig oder abgelaufen — bitte neues 7TV-Token eintragen.',
         httpStatus: 403,
         errorCode: null,
+        gqlStatus: null,
       });
     });
 
@@ -426,6 +461,7 @@ describe('SevenTvRunEngine', () => {
         message: 'Keine Verbindung zu 7TV möglich (Netzwerkfehler).',
         httpStatus: 0,
         errorCode: null,
+        gqlStatus: null,
       });
     });
 
@@ -451,6 +487,7 @@ describe('SevenTvRunEngine', () => {
         message: '7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.',
         httpStatus: null,
         errorCode: null,
+        gqlStatus: null,
       });
     });
 
@@ -489,5 +526,311 @@ describe('SevenTvRunEngine', () => {
       expect(console.error).toHaveBeenCalledTimes(1);
       expect(results).toHaveLength(1);
     });
+  });
+
+  describe('multi-step rows', () => {
+    it('sends the steps of one row in order, with the row pacing between them', () => {
+      expect(start([EMOTES[0]], TWO_STEP_OPERATION)).toBe(true);
+
+      const remove = httpMock.expectOne(GQL_ENDPOINT);
+      expect(remove.request.body.query).toBe('mutation Remove');
+      remove.flush({});
+
+      // Still one decision open: the row stays in progress and the bar does not move yet.
+      expect(engine.queue()[0].status).toBe('in-progress');
+      expect(engine.queue()[0].completedSteps).toBe(1);
+      expect(engine.progress()).toEqual({ finished: 0, total: 1 });
+
+      vi.advanceTimersByTime(RUN_DELAY_MS - 1);
+      httpMock.expectNone(GQL_ENDPOINT);
+      vi.advanceTimersByTime(1);
+
+      const add = httpMock.expectOne(GQL_ENDPOINT);
+      expect(add.request.body.query).toBe('mutation Add');
+      add.flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(engine.queue()[0]).toMatchObject({ status: 'done', completedSteps: 2 });
+      expect(engine.queue()[0].failedStep).toBeNull();
+      expect(engine.progress()).toEqual({ finished: 1, total: 1 });
+      expect(results[0].doneKeys).toEqual(['internal-1']);
+      // The closing measurement counts every step: one row, two requests.
+      expect(console.info).toHaveBeenCalledWith(
+        '[EmotePurge] 7TV two-step run finished',
+        expect.objectContaining({ requested: 1, succeeded: 1, requestsSent: 2 }),
+      );
+    });
+
+    it('fails the row on a failed first step and never sends the second', () => {
+      expect(start([EMOTES[0]], TWO_STEP_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      httpMock.expectNone(GQL_ENDPOINT);
+      expect(engine.queue()[0]).toMatchObject({
+        status: 'failed',
+        failedStep: 0,
+        completedSteps: 0,
+        errorMessage: 'boom',
+      });
+      expect(results).toHaveLength(1);
+    });
+
+    it('fails the row at step 1 on a failed second step and carries on with the next row', () => {
+      expect(start(EMOTES, TWO_STEP_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'boom' }] });
+
+      expect(engine.queue()[0]).toMatchObject({
+        status: 'failed',
+        failedStep: 1,
+        completedSteps: 1,
+        errorMessage: 'boom',
+      });
+
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      const nextRow = httpMock.expectOne(GQL_ENDPOINT);
+      expect(nextRow.request.body.variables).toEqual({ setId: 'set-1', emoteId: '7tv-2', step: 0 });
+      nextRow.flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(engine.queue().map((item) => item.status)).toEqual(['failed', 'done']);
+      expect(results[0].doneKeys).toEqual(['internal-2']);
+    });
+
+    it('retries only the second step after a rate limit between the steps', () => {
+      expect(start([EMOTES[0]], TWO_STEP_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      const firstAdd = httpMock.expectOne(GQL_ENDPOINT);
+      expect(stepOf(firstAdd)).toBe(1);
+      firstAdd.flush(rateLimitResponse(30));
+
+      expect(engine.queue()[0].status).toBe('in-progress');
+      expect(engine.rateLimitPauseSeconds()).toBe(31);
+
+      vi.advanceTimersByTime(30_500);
+      const retriedAdd = httpMock.expectOne(GQL_ENDPOINT);
+      expect(stepOf(retriedAdd)).toBe(1);
+      retriedAdd.flush({});
+      vi.advanceTimersByTime(1000);
+
+      expect(engine.queue()[0]).toMatchObject({ status: 'done', completedSteps: 2 });
+    });
+
+    it('cancel() between the steps fails the row at step 1, sends no second step and cancels the rest', () => {
+      expect(start(EMOTES, TWO_STEP_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      engine.cancel();
+
+      expect(engine.isRunning()).toBe(false);
+      expect(engine.queue().map((item) => item.status)).toEqual(['failed', 'cancelled']);
+      expect(engine.queue()[0]).toMatchObject({
+        failedStep: 1,
+        completedSteps: 1,
+        errorMessage: DE_TRANSLATIONS.massDelete.errors.cancelledMidRow,
+      });
+      expect(engine.queue()[1].failedStep).toBeNull();
+      expect(results).toHaveLength(1);
+
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('hands extensions.status to abortOn as gqlStatus and aborts at step 1 when told to', () => {
+      const abortOn = vi.fn().mockReturnValue(true);
+      const operation: RunOperation = { ...TWO_STEP_OPERATION, abortOn };
+      expect(start(EMOTES, operation)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush(NAME_CONFLICT_RESPONSE);
+
+      expect(abortOn).toHaveBeenCalledExactlyOnceWith({
+        message: 'emote name conflict',
+        httpStatus: null,
+        errorCode: 'BAD_REQUEST',
+        gqlStatus: 409,
+      });
+      expect(engine.queue().map((item) => item.status)).toEqual(['failed', 'cancelled']);
+      expect(engine.queue()[0].failedStep).toBe(1);
+      expect(engine.isRunning()).toBe(false);
+
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+  });
+
+  describe('the unknown outcome', () => {
+    it.each([
+      { status: 0, statusText: 'Unknown Error' },
+      { status: 500, statusText: 'Internal Server Error' },
+    ])(
+      'ends the row unknown on HTTP $status for an operation that asks for it — no second step, no abortOn, the run goes on',
+      ({ status, statusText }) => {
+        const abortOn = vi.fn().mockReturnValue(true);
+        const operation: RunOperation = { ...UNKNOWN_AWARE_OPERATION, abortOn };
+        expect(start(EMOTES, operation)).toBe(true);
+
+        httpMock.expectOne(GQL_ENDPOINT).flush(null, { status, statusText });
+
+        expect(engine.queue()[0]).toMatchObject({
+          status: 'unknown',
+          failedStep: 0,
+          completedSteps: 0,
+        });
+        expect(abortOn).not.toHaveBeenCalled();
+        expect(engine.progress()).toEqual({ finished: 1, total: 2 });
+
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        // The next request is the next row's first step — the unknown row's second never goes out.
+        const nextRow = httpMock.expectOne(GQL_ENDPOINT);
+        expect(nextRow.request.body.variables.emoteId).toBe('7tv-2');
+        expect(stepOf(nextRow)).toBe(0);
+        nextRow.flush({});
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        httpMock.expectOne(GQL_ENDPOINT).flush({});
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+
+        expect(engine.queue().map((item) => item.status)).toEqual(['unknown', 'done']);
+        expect(results[0].doneKeys).toEqual(['internal-2']);
+      },
+    );
+
+    it('ends a row unknown when cancel() aborts its request in flight on an operation that asks for it', () => {
+      const abortOn = vi.fn().mockReturnValue(true);
+      const operation: RunOperation = { ...UNKNOWN_AWARE_OPERATION, abortOn };
+      expect(start(EMOTES, operation)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      const add = httpMock.expectOne(GQL_ENDPOINT);
+      expect(stepOf(add)).toBe(1);
+
+      engine.cancel();
+
+      // HttpClient aborts the request on teardown — its answer can never arrive.
+      expect(add.cancelled).toBe(true);
+      expect(engine.queue()[0]).toMatchObject({
+        status: 'unknown',
+        failedStep: 1,
+        completedSteps: 1,
+      });
+      expect(engine.queue()[1]).toMatchObject({ status: 'cancelled', failedStep: null });
+      expect(abortOn).not.toHaveBeenCalled();
+      expect(results).toHaveLength(1);
+
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('keeps a network error failed, as today, on an operation that does not ask for unknown', () => {
+      expect(start([EMOTES[0]], TWO_STEP_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(null, { status: 0, statusText: 'Unknown Error' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      httpMock.expectNone(GQL_ENDPOINT);
+      expect(engine.queue()[0]).toMatchObject({
+        status: 'failed',
+        failedStep: 0,
+        errorMessage: DE_TRANSLATIONS.massDelete.errors.networkError,
+      });
+    });
+
+    it('keeps a 401 failed on an operation that asks for unknown — token cleared, abortOn called', () => {
+      const abortOn = vi.fn().mockReturnValue(false);
+      const operation: RunOperation = { ...UNKNOWN_AWARE_OPERATION, abortOn };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(null, { status: 401, statusText: 'Unauthorized' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      httpMock.expectNone(GQL_ENDPOINT);
+      expect(engine.queue()[0]).toMatchObject({ status: 'failed', failedStep: 0 });
+      expect(tokenService.hasToken()).toBe(false);
+      expect(abortOn).toHaveBeenCalledExactlyOnceWith({
+        message: DE_TRANSLATIONS.massDelete.errors.tokenInvalid,
+        httpStatus: 401,
+        errorCode: null,
+        gqlStatus: null,
+      });
+    });
+
+    it('counts confirmed steps whatever the row ends as: 1 when the second step stayed unknown, 0 when the first did', () => {
+      expect(start(EMOTES, UNKNOWN_AWARE_OPERATION)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush(null, { status: 0, statusText: 'Unknown Error' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush(null, { status: 503, statusText: 'Service Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(results).toHaveLength(1);
+      expect(
+        results[0].items.map(({ status, completedSteps, failedStep }) => ({
+          status,
+          completedSteps,
+          failedStep,
+        })),
+      ).toEqual([
+        { status: 'unknown', completedSteps: 1, failedStep: 1 },
+        { status: 'unknown', completedSteps: 0, failedStep: 0 },
+      ]);
+    });
+  });
+
+  // Wire contract, not template: a single-step operation sends exactly what it sent before rows
+  // could take several steps — same requests, same order, same pacing.
+  it('sends a single-step two-row run exactly as before', () => {
+    const sent: unknown[] = [];
+    const nextRequest = () => {
+      const testRequest = httpMock.expectOne(GQL_ENDPOINT);
+      sent.push({
+        method: testRequest.request.method,
+        url: testRequest.request.url,
+        authorization: testRequest.request.headers.get('Authorization'),
+        body: testRequest.request.body,
+      });
+      return testRequest;
+    };
+    expect(start()).toBe(true);
+
+    nextRequest().flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS - 1);
+    httpMock.expectNone(GQL_ENDPOINT);
+    vi.advanceTimersByTime(1);
+    nextRequest().flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    expect(sent).toEqual([
+      {
+        method: 'POST',
+        url: GQL_ENDPOINT,
+        authorization: 'Bearer write-token',
+        body: { query: 'mutation Test', variables: { setId: 'set-1', emoteId: '7tv-1' } },
+      },
+      {
+        method: 'POST',
+        url: GQL_ENDPOINT,
+        authorization: 'Bearer write-token',
+        body: { query: 'mutation Test', variables: { setId: 'set-1', emoteId: '7tv-2' } },
+      },
+    ]);
+    expect(engine.queue().map((item) => item.status)).toEqual(['done', 'done']);
+    expect(console.info).toHaveBeenCalledWith(
+      '[EmotePurge] 7TV test run finished',
+      expect.objectContaining({ requested: 2, succeeded: 2, requestsSent: 2 }),
+    );
   });
 });
