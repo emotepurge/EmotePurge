@@ -50,8 +50,8 @@ const FILE_ORIGIN: ImportOrigin = {
 const LEADERBOARD_ORIGIN: ImportOrigin = { kind: 'seventv-leaderboard', sortBy: 'TRENDING_DAILY' };
 
 const ROWS: ImportRow[] = [
-  { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-  { sevenTvEmoteId: '7tv-2', name: 'KEKW' },
+  { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+  { sevenTvEmoteId: '7tv-2', name: 'KEKW', imageUrl: null },
 ];
 
 describe('SevenTvImportService', () => {
@@ -123,7 +123,7 @@ describe('SevenTvImportService', () => {
   // stray transliteration.
   it('sends an alias containing an umlaut unmangled in the mutation variables', () => {
     service.startImport(TARGET_B, CHANNEL_ORIGIN, [
-      { sevenTvEmoteId: '7tv-1', name: 'Sitzgemüse' },
+      { sevenTvEmoteId: '7tv-1', name: 'Sitzgemüse', imageUrl: null },
     ]);
 
     const req = httpMock.expectOne(GQL_ENDPOINT);
@@ -299,7 +299,7 @@ describe('SevenTvImportService', () => {
   });
 
   it('aborts the whole run on a 7TV privileges rejection and reports nothing', () => {
-    const threeRows = [...ROWS, { sevenTvEmoteId: '7tv-3', name: 'Sadge' }];
+    const threeRows = [...ROWS, { sevenTvEmoteId: '7tv-3', name: 'Sadge', imageUrl: null }];
     service.startImport(TARGET_B, CHANNEL_ORIGIN, threeRows);
 
     // v4's shape: HTTP 200, the rejection lives in `extensions.code` — there is no transport-level
@@ -552,7 +552,9 @@ describe('SevenTvImportService', () => {
     // Run 2, started while run 1's follow-up is still open — the engine allows it, isRunning is
     // already false.
     expect(service.isRunning()).toBe(false);
-    service.startImport(TARGET_C, FILE_ORIGIN, [{ sevenTvEmoteId: '7tv-9', name: 'Clueless' }]);
+    service.startImport(TARGET_C, FILE_ORIGIN, [
+      { sevenTvEmoteId: '7tv-9', name: 'Clueless', imageUrl: null },
+    ]);
     expect(service.isRunning()).toBe(true);
 
     httpMock.expectOne(GQL_ENDPOINT).flush({});

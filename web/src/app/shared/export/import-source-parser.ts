@@ -52,7 +52,9 @@ export function parseImportSource(
     const id = row?.sevenTvEmoteId;
     const name = row?.[nameField];
     if (typeof id === 'string' && id.length > 0 && typeof name === 'string') {
-      validRows.push({ sevenTvEmoteId: id, name });
+      // A file never carries an image URL (`emote-list-export.ts` writes only id and name) — `null`
+      // here is the honest answer, not a guess derived from the id (spec T1).
+      validRows.push({ sevenTvEmoteId: id, name, imageUrl: null });
     }
   }
 

@@ -25,7 +25,9 @@ import { ImportTargetChoice } from './import-target-dialog';
  * always the confirm dialog).
  */
 
-function source(rows: ImportRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }]): ImportSource {
+function source(
+  rows: ImportRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+): ImportSource {
   return {
     origin: { kind: 'channel', channelName: 'origin-channel' },
     rows,
@@ -314,7 +316,7 @@ describe('startImportFlow', () => {
     const outcome: ImportConfirmOutcome = {
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
     };
     confirmClosed(dialogOpen).next(outcome);
 
@@ -356,7 +358,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
         targetSetName: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
       });
 
       // The fresh check runs right here, at confirm time — against 7TV directly (#149 P1), not
@@ -381,7 +383,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
         targetSetName: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -411,7 +413,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-1',
         targetSetName: 'set-1',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -423,7 +425,7 @@ describe('startImportFlow', () => {
           isActiveSet: true,
         },
         source().origin,
-        [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
         0,
         false,
       );
@@ -444,7 +446,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
     });
 
     // A delete run starts elsewhere while this import's own fresh check is still awaiting 7TV.
@@ -473,7 +475,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
     });
 
     expect(startImport).not.toHaveBeenCalled();
@@ -487,7 +489,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
     });
 
     expect(dialogOpen).toHaveBeenCalledTimes(2);
@@ -506,7 +508,7 @@ describe('startImportFlow', () => {
     confirmClosed(dialogOpen).next({
       targetSetId: 'set-1',
       targetSetName: 'set-1',
-      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+      rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
     });
     tokenPromptClosed(dialogOpen).next(false);
 
@@ -649,7 +651,7 @@ describe('startImportFlow', () => {
       confirmClosed(dialogOpen).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
       });
 
       // setName/isActiveSet (findings 2/3): the picked set is not the account's active one
@@ -664,7 +666,7 @@ describe('startImportFlow', () => {
           isActiveSet: false,
         },
         source().origin,
-        [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
         0,
         true,
       );
@@ -773,7 +775,7 @@ describe('startImportFlow', () => {
         // Mirrors liveTarget()'s default emoteSetName ('Halloween') — the mocked response above
         // only overrides channelName/emoteSetId, not the name.
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
       };
       confirmClosed(dialogOpen).next(outcome);
 

@@ -197,6 +197,7 @@ export function loadImportTarget(
         emotes: loaded.value.emotes.map((row) => ({
           sevenTvEmoteId: row.sevenTvEmoteId,
           name: row.name,
+          imageUrl: row.imageUrl,
         })),
         warning,
       };

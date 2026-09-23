@@ -4,8 +4,8 @@ import { ImportRow } from '../../core/seven-tv/import-source';
 import { buildEmoteListEnvelope, emoteListFilename, emoteListJson } from './emote-list-export';
 
 const ROWS: ImportRow[] = [
-  { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-  { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
+  { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+  { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
 ];
 
 describe('buildEmoteListEnvelope', () => {
@@ -21,7 +21,11 @@ describe('buildEmoteListEnvelope', () => {
     expect(envelope.kind).toBe('emote-list');
     expect(envelope.channelName).toBe('sensitron');
     expect(envelope.meta).toEqual({ sourceEmoteSetId: 'set-1', rowCount: 2, scope: 'selection' });
-    expect(envelope.rows).toEqual(ROWS);
+    // Not `toEqual(ROWS)`: the written file format is unchanged (T1) — it carries only id and
+    // name, never `imageUrl`, even though `ROWS` (an in-memory `ImportRow[]`) now has that field.
+    expect(envelope.rows).toEqual(
+      ROWS.map(({ sevenTvEmoteId, name }) => ({ sevenTvEmoteId, name })),
+    );
   });
 
   it('emits rows with exactly sevenTvEmoteId and name — no emoteId, no usage figures', () => {

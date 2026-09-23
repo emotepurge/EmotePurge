@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { EmoteSetWarning } from '../../core/emotes/emote-admin.service';
 import { ImportTargetLoadState } from '../../core/emotes/import-target-loader';
 import { LanguageService } from '../../core/i18n/language.service';
+import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import {
   ImportConfirmDialog,
@@ -138,7 +139,7 @@ const UNAVAILABLE_WARNING: EmoteSetWarning = {
 type ReadyTarget = Extract<ImportTargetLoadState, { status: 'ready' }>;
 
 function row(sevenTvEmoteId: string, name: string): ImportRow {
-  return { sevenTvEmoteId, name };
+  return { sevenTvEmoteId, name, imageUrl: null };
 }
 
 function channelSource(rows: ImportRow[], overrides: Partial<ImportSource> = {}): ImportSource {
@@ -386,8 +387,16 @@ describe('ImportConfirmDialog', () => {
         source: channelSource([row('existing-1', 'PogU'), row('existing-2', 'Kappa')]),
         target: readyTarget({
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
-            { sevenTvEmoteId: 'existing-2', name: 'Kappa' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Kappa',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       });
@@ -409,8 +418,16 @@ describe('ImportConfirmDialog', () => {
         source: channelSource([row('new-1', 'Collides'), row('new-2', 'AlsoCollides')]),
         target: readyTarget({
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'Collides' },
-            { sevenTvEmoteId: 'existing-2', name: 'AlsoCollides' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'AlsoCollides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       });
@@ -433,8 +450,16 @@ describe('ImportConfirmDialog', () => {
         source: channelSource([row('existing-1', 'PogU'), row('new-1', 'Collides')]),
         target: readyTarget({
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
-            { sevenTvEmoteId: 'existing-2', name: 'Collides' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       });
@@ -453,7 +478,15 @@ describe('ImportConfirmDialog', () => {
       // case — every row present under the same alias still gets the original sentence.
       const dialog = render({
         source: channelSource([row('existing-1', 'PogU')]),
-        target: readyTarget({ emotes: [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }] }),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
       });
 
       const banner = dialog.element('import-confirm-nothing-to-add')?.textContent ?? '';
@@ -510,8 +543,16 @@ describe('ImportConfirmDialog', () => {
         target: readyTarget({
           setId: 'set-42',
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
-            { sevenTvEmoteId: 'existing-9', name: 'Collides' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-9',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       });
@@ -555,8 +596,16 @@ describe('ImportConfirmDialog', () => {
       dialog.target.set(
         readyTarget({
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'PogU' },
-            { sevenTvEmoteId: 'existing-2', name: 'Kappa' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Kappa',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
         }),
       );
@@ -846,7 +895,13 @@ describe('ImportConfirmDialog', () => {
         source: foreignChannelSource([row('new-1', 'Kappa'), row('new-2', 'Collides')]),
         target: readyTarget({
           setId: 'set-42',
-          emotes: [{ sevenTvEmoteId: 'existing-9', name: 'Collides' }],
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-9',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
         }),
       });
 
@@ -887,8 +942,16 @@ describe('ImportConfirmDialog', () => {
           capacity: 1000,
           syncFailureReason: 'seventv_unavailable',
           emotes: [
-            { sevenTvEmoteId: 'existing-1', name: 'AlreadyThere' },
-            { sevenTvEmoteId: 'existing-2', name: 'Collides' },
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'AlreadyThere',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+            {
+              sevenTvEmoteId: 'existing-2',
+              name: 'Collides',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
           ],
           warning: {
             available: true,
@@ -939,7 +1002,15 @@ describe('ImportConfirmDialog', () => {
           { duplicatesCollapsed: 1 },
         ),
         targetChannelName: 'targetchannel',
-        target: readyTarget({ emotes: [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }] }),
+        target: readyTarget({
+          emotes: [
+            {
+              sevenTvEmoteId: 'existing-1',
+              name: 'PogU',
+              imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+            },
+          ],
+        }),
       });
 
       const contract = [
@@ -990,21 +1061,33 @@ describe('ImportConfirmDialog', () => {
       const NAME_COLLISION_COUNT = 192;
       const TO_ADD_COUNT = 232;
 
-      const targetEmotes: { sevenTvEmoteId: string; name: string }[] = [];
+      const targetEmotes: EmoteListItem[] = [];
       const sourceRows: ReturnType<typeof row>[] = [];
 
       for (let index = 0; index < ALREADY_PRESENT_COUNT; index++) {
         const id = `present-${index}`;
-        targetEmotes.push({ sevenTvEmoteId: id, name: `Present${index}` });
+        targetEmotes.push({
+          sevenTvEmoteId: id,
+          name: `Present${index}`,
+          imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+        });
         sourceRows.push(row(id, `Present${index}`));
       }
       for (let index = 0; index < ALIAS_MISMATCH_COUNT; index++) {
         const id = `mismatch-${index}`;
-        targetEmotes.push({ sevenTvEmoteId: id, name: `TargetAlias${index}` });
+        targetEmotes.push({
+          sevenTvEmoteId: id,
+          name: `TargetAlias${index}`,
+          imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+        });
         sourceRows.push(row(id, `SourceAlias${index}`));
       }
       for (let index = 0; index < NAME_COLLISION_COUNT; index++) {
-        targetEmotes.push({ sevenTvEmoteId: `collision-target-${index}`, name: `Collide${index}` });
+        targetEmotes.push({
+          sevenTvEmoteId: `collision-target-${index}`,
+          name: `Collide${index}`,
+          imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+        });
         sourceRows.push(row(`collision-source-${index}`, `Collide${index}`));
       }
       for (let index = 0; index < TO_ADD_COUNT; index++) {

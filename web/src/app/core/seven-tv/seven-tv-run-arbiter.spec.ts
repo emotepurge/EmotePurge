@@ -31,7 +31,7 @@ const EMOTES: DeleteQueueEmote[] = [
 ];
 
 // An import carries no internal id at all — it writes into another channel's set (#72).
-const IMPORT_ROWS: ImportRow[] = [{ sevenTvEmoteId: '7tv-3', name: 'Sadge' }];
+const IMPORT_ROWS: ImportRow[] = [{ sevenTvEmoteId: '7tv-3', name: 'Sadge', imageUrl: null }];
 const IMPORT_ORIGIN: ImportOrigin = { kind: 'channel', channelName: 'sensitron' };
 
 describe('SevenTvRunArbiter', () => {

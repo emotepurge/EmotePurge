@@ -56,7 +56,7 @@ function importSource(overrides: Partial<ImportSource> = {}): ImportSource {
       channelName: null,
       envelopeKind: 'emote-list',
     },
-    rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+    rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
     duplicatesCollapsed: 0,
     discardedRows: 0,
     ...overrides,
@@ -363,7 +363,7 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
       });
 
       // Only now, after the confirmation, does the missing-token case appear.
@@ -382,7 +382,7 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
         0,
         true,
       );
@@ -402,7 +402,7 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
       });
 
       // No third dialog: the flow's own (already-satisfied) token check does not prompt twice.
@@ -458,7 +458,7 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -470,7 +470,7 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         { kind: 'seventv-channel', channelName: 'handofblood' },
-        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
         0,
         true,
       );
@@ -508,7 +508,7 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -520,7 +520,7 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-        [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
         0,
         true,
       );
@@ -595,7 +595,7 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -607,7 +607,7 @@ describe('ImportTrigger', () => {
           isActiveSet: false,
         },
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
         0,
         true,
       );
@@ -653,13 +653,13 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-channel', channelName: 'handofblood' },
-        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
         0,
         true,
       );
@@ -703,13 +703,13 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
       });
 
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-        [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
         0,
         true,
       );
@@ -747,14 +747,14 @@ describe('ImportTrigger', () => {
       closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
       });
 
       // Not the active set: no post-run resync of the channel is implied either.
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
         0,
         true,
       );

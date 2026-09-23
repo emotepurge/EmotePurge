@@ -16,8 +16,16 @@ function source(rows: ImportRow[]): ImportSource {
 describe('buildImportPreview', () => {
   it('separates already-present rows (matched by id) from name collisions and the rest', () => {
     const target: EmoteListItem[] = [
-      { sevenTvEmoteId: 'existing-1', name: 'AlreadyThere' },
-      { sevenTvEmoteId: 'existing-2', name: 'PogU' },
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'AlreadyThere',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+      {
+        sevenTvEmoteId: 'existing-2',
+        name: 'PogU',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
     ];
 
     const result = buildImportPreview(
@@ -25,12 +33,12 @@ describe('buildImportPreview', () => {
         // Same id as an existing target emote, but a different alias — an alias mismatch, not a
         // name collision (identity is by sevenTvEmoteId, never by name) and not alreadyPresent
         // either (the target's only alias for this id does not match the source's).
-        { sevenTvEmoteId: 'existing-1', name: 'RenamedOnSource' },
+        { sevenTvEmoteId: 'existing-1', name: 'RenamedOnSource', imageUrl: null },
         // New id whose name collides with a target emote's name — since spec 2026-09-20 this is
         // pulled *out* of toAdd entirely, not merely reported (revises the 2026-09-06 reading).
-        { sevenTvEmoteId: 'new-1', name: 'PogU' },
+        { sevenTvEmoteId: 'new-1', name: 'PogU', imageUrl: null },
         // Clean addition, no overlap at all.
-        { sevenTvEmoteId: 'new-2', name: 'Kappa' },
+        { sevenTvEmoteId: 'new-2', name: 'Kappa', imageUrl: null },
       ]),
       target,
     );
@@ -41,16 +49,22 @@ describe('buildImportPreview', () => {
     expect(result.aliasMismatches).toEqual([
       { sourceName: 'RenamedOnSource', targetAlias: 'AlreadyThere' },
     ]);
-    expect(result.toAdd).toEqual([{ sevenTvEmoteId: 'new-2', name: 'Kappa' }]);
+    expect(result.toAdd).toEqual([{ sevenTvEmoteId: 'new-2', name: 'Kappa', imageUrl: null }]);
     expect(result.nameCollisions).toEqual(['PogU']);
     expect(result.invalidNames).toEqual([]);
   });
 
   it('excludes a name collision from toAdd entirely (spec 2026-09-20, AK 37)', () => {
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'Collides' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'Collides',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
 
     const result = buildImportPreview(
-      source([{ sevenTvEmoteId: 'new-1', name: 'Collides' }]),
+      source([{ sevenTvEmoteId: 'new-1', name: 'Collides', imageUrl: null }]),
       target,
     );
 
@@ -61,21 +75,41 @@ describe('buildImportPreview', () => {
   });
 
   it('compares names ordinally — a case difference is not a collision', () => {
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'PogU',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
 
-    const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: 'pogu' }]), target);
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: 'pogu', imageUrl: null }]),
+      target,
+    );
 
     expect(result.nameCollisions).toEqual([]);
-    expect(result.toAdd).toEqual([{ sevenTvEmoteId: 'new-1', name: 'pogu' }]);
+    expect(result.toAdd).toEqual([{ sevenTvEmoteId: 'new-1', name: 'pogu', imageUrl: null }]);
   });
 
   it('reports a name colliding with more than one duplicate target name only once', () => {
     const target: EmoteListItem[] = [
-      { sevenTvEmoteId: 'existing-1', name: 'Dupe' },
-      { sevenTvEmoteId: 'existing-2', name: 'Dupe' },
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'Dupe',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+      {
+        sevenTvEmoteId: 'existing-2',
+        name: 'Dupe',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
     ];
 
-    const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: 'Dupe' }]), target);
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: 'Dupe', imageUrl: null }]),
+      target,
+    );
 
     expect(result.nameCollisions).toEqual(['Dupe']);
     expect(result.nameCollisionRowCount).toBe(1);
@@ -85,12 +119,18 @@ describe('buildImportPreview', () => {
     // Codex Sol P2: nameCollisions used to be the only signal for "how many rows were skipped" —
     // but it dedupes by name, so two distinct source ids sharing one colliding alias both leave
     // the run while the name list shows only one entry. The row count must not silently halve.
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'Dupe' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'Dupe',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
 
     const result = buildImportPreview(
       source([
-        { sevenTvEmoteId: 'new-1', name: 'Dupe' },
-        { sevenTvEmoteId: 'new-2', name: 'Dupe' },
+        { sevenTvEmoteId: 'new-1', name: 'Dupe', imageUrl: null },
+        { sevenTvEmoteId: 'new-2', name: 'Dupe', imageUrl: null },
       ]),
       target,
     );
@@ -105,17 +145,29 @@ describe('buildImportPreview', () => {
     // groups (invalidNames is a subset of toAdd, not a fifth group), over a genuinely mixed list —
     // two ids sharing a colliding name, one alias mismatch, one already-present row, two clean adds.
     const target: EmoteListItem[] = [
-      { sevenTvEmoteId: 'present-1', name: 'Present' },
-      { sevenTvEmoteId: 'mismatch-1', name: 'TargetAlias' },
-      { sevenTvEmoteId: 'collision-target', name: 'Dupe' },
+      {
+        sevenTvEmoteId: 'present-1',
+        name: 'Present',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+      {
+        sevenTvEmoteId: 'mismatch-1',
+        name: 'TargetAlias',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+      {
+        sevenTvEmoteId: 'collision-target',
+        name: 'Dupe',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
     ];
     const rows: ImportRow[] = [
-      { sevenTvEmoteId: 'present-1', name: 'Present' },
-      { sevenTvEmoteId: 'mismatch-1', name: 'SourceAlias' },
-      { sevenTvEmoteId: 'collision-source-1', name: 'Dupe' },
-      { sevenTvEmoteId: 'collision-source-2', name: 'Dupe' },
-      { sevenTvEmoteId: 'new-1', name: 'Kappa' },
-      { sevenTvEmoteId: 'new-2', name: 'PogU' },
+      { sevenTvEmoteId: 'present-1', name: 'Present', imageUrl: null },
+      { sevenTvEmoteId: 'mismatch-1', name: 'SourceAlias', imageUrl: null },
+      { sevenTvEmoteId: 'collision-source-1', name: 'Dupe', imageUrl: null },
+      { sevenTvEmoteId: 'collision-source-2', name: 'Dupe', imageUrl: null },
+      { sevenTvEmoteId: 'new-1', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'new-2', name: 'PogU', imageUrl: null },
     ];
 
     const result = buildImportPreview(source(rows), target);
@@ -133,10 +185,16 @@ describe('buildImportPreview', () => {
   });
 
   it('returns an empty toAdd list when every source row is already present', () => {
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'PogU',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
 
     const result = buildImportPreview(
-      source([{ sevenTvEmoteId: 'existing-1', name: 'PogU' }]),
+      source([{ sevenTvEmoteId: 'existing-1', name: 'PogU', imageUrl: null }]),
       target,
     );
 
@@ -152,9 +210,9 @@ describe('buildImportPreview', () => {
 
     const result = buildImportPreview(
       source([
-        { sevenTvEmoteId: 'new-1', name: 'Gänsehosen' },
-        { sevenTvEmoteId: 'new-2', name: 'Привет' },
-        { sevenTvEmoteId: 'new-3', name: 'Kappa' },
+        { sevenTvEmoteId: 'new-1', name: 'Gänsehosen', imageUrl: null },
+        { sevenTvEmoteId: 'new-2', name: 'Привет', imageUrl: null },
+        { sevenTvEmoteId: 'new-3', name: 'Kappa', imageUrl: null },
       ]),
       target,
     );
@@ -168,8 +226,8 @@ describe('buildImportPreview', () => {
 
     const result = buildImportPreview(
       source([
-        { sevenTvEmoteId: 'new-1', name: 'Two Words' },
-        { sevenTvEmoteId: 'new-2', name: 'Kappa' },
+        { sevenTvEmoteId: 'new-1', name: 'Two Words', imageUrl: null },
+        { sevenTvEmoteId: 'new-2', name: 'Kappa', imageUrl: null },
       ]),
       target,
     );
@@ -182,7 +240,10 @@ describe('buildImportPreview', () => {
   it('flags an alias containing a measured-rejected punctuation character', () => {
     const target: EmoteListItem[] = [];
 
-    const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: 'a/b' }]), target);
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: 'a/b', imageUrl: null }]),
+      target,
+    );
 
     expect(result.invalidNames).toEqual(['a/b']);
   });
@@ -191,7 +252,10 @@ describe('buildImportPreview', () => {
     const target: EmoteListItem[] = [];
     const tooLong = 'a'.repeat(101);
 
-    const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: tooLong }]), target);
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: tooLong, imageUrl: null }]),
+      target,
+    );
 
     expect(result.invalidNames).toEqual([tooLong]);
   });
@@ -200,15 +264,27 @@ describe('buildImportPreview', () => {
     const target: EmoteListItem[] = [];
     const atLimit = 'a'.repeat(100);
 
-    const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: atLimit }]), target);
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: atLimit, imageUrl: null }]),
+      target,
+    );
 
     expect(result.invalidNames).toEqual([]);
   });
 
   it('does not flag a name that is only an ASCII name collision', () => {
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'PogU' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'PogU',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
 
-    const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: 'PogU' }]), target);
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: 'PogU', imageUrl: null }]),
+      target,
+    );
 
     expect(result.nameCollisions).toEqual(['PogU']);
     expect(result.invalidNames).toEqual([]);
@@ -219,9 +295,18 @@ describe('buildImportPreview', () => {
     // collision excludes it from toAdd outright, and invalidNames only ever looks at rows that are
     // actually still offered — flagging an excluded row as "invalid too" would be noise about a
     // row nobody is about to submit.
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'a/b' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'a/b',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
 
-    const result = buildImportPreview(source([{ sevenTvEmoteId: 'new-1', name: 'a/b' }]), target);
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: 'a/b', imageUrl: null }]),
+      target,
+    );
 
     expect(result.nameCollisions).toEqual(['a/b']);
     expect(result.invalidNames).toEqual([]);
@@ -229,10 +314,16 @@ describe('buildImportPreview', () => {
   });
 
   it('groups an alias mismatch separately from alreadyPresent, with source and target alias', () => {
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'existing-1', name: 'TargetAlias' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'existing-1',
+        name: 'TargetAlias',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
 
     const result = buildImportPreview(
-      source([{ sevenTvEmoteId: 'existing-1', name: 'SourceAlias' }]),
+      source([{ sevenTvEmoteId: 'existing-1', name: 'SourceAlias', imageUrl: null }]),
       target,
     );
 
@@ -248,12 +339,20 @@ describe('buildImportPreview', () => {
     // different aliases. The source row must count as alreadyPresent the moment *either* of them
     // agrees with it — never as an alias mismatch just because the *other* duplicate differs.
     const target: EmoteListItem[] = [
-      { sevenTvEmoteId: 'dup-1', name: 'AliasA' },
-      { sevenTvEmoteId: 'dup-1', name: 'AliasB' },
+      {
+        sevenTvEmoteId: 'dup-1',
+        name: 'AliasA',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+      {
+        sevenTvEmoteId: 'dup-1',
+        name: 'AliasB',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
     ];
 
     const result = buildImportPreview(
-      source([{ sevenTvEmoteId: 'dup-1', name: 'AliasA' }]),
+      source([{ sevenTvEmoteId: 'dup-1', name: 'AliasA', imageUrl: null }]),
       target,
     );
 
@@ -263,12 +362,20 @@ describe('buildImportPreview', () => {
 
   it('#74 grenzfall: a duplicate target id with neither alias matching is one alias mismatch', () => {
     const target: EmoteListItem[] = [
-      { sevenTvEmoteId: 'dup-1', name: 'AliasA' },
-      { sevenTvEmoteId: 'dup-1', name: 'AliasB' },
+      {
+        sevenTvEmoteId: 'dup-1',
+        name: 'AliasA',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+      {
+        sevenTvEmoteId: 'dup-1',
+        name: 'AliasB',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
     ];
 
     const result = buildImportPreview(
-      source([{ sevenTvEmoteId: 'dup-1', name: 'AliasC' }]),
+      source([{ sevenTvEmoteId: 'dup-1', name: 'AliasC', imageUrl: null }]),
       target,
     );
 
@@ -292,21 +399,37 @@ describe('buildImportPreview', () => {
 
     for (let index = 0; index < ALREADY_PRESENT_COUNT; index++) {
       const id = `present-${index}`;
-      target.push({ sevenTvEmoteId: id, name: `Present${index}` });
-      sourceRows.push({ sevenTvEmoteId: id, name: `Present${index}` });
+      target.push({
+        sevenTvEmoteId: id,
+        name: `Present${index}`,
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      });
+      sourceRows.push({ sevenTvEmoteId: id, name: `Present${index}`, imageUrl: null });
     }
     for (let index = 0; index < ALIAS_MISMATCH_COUNT; index++) {
       const id = `mismatch-${index}`;
-      target.push({ sevenTvEmoteId: id, name: `TargetAlias${index}` });
-      sourceRows.push({ sevenTvEmoteId: id, name: `SourceAlias${index}` });
+      target.push({
+        sevenTvEmoteId: id,
+        name: `TargetAlias${index}`,
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      });
+      sourceRows.push({ sevenTvEmoteId: id, name: `SourceAlias${index}`, imageUrl: null });
     }
     for (let index = 0; index < NAME_COLLISION_COUNT; index++) {
       // Distinct ids, deliberately colliding names.
-      target.push({ sevenTvEmoteId: `collision-target-${index}`, name: `Collide${index}` });
-      sourceRows.push({ sevenTvEmoteId: `collision-source-${index}`, name: `Collide${index}` });
+      target.push({
+        sevenTvEmoteId: `collision-target-${index}`,
+        name: `Collide${index}`,
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      });
+      sourceRows.push({
+        sevenTvEmoteId: `collision-source-${index}`,
+        name: `Collide${index}`,
+        imageUrl: null,
+      });
     }
     for (let index = 0; index < TO_ADD_COUNT; index++) {
-      sourceRows.push({ sevenTvEmoteId: `new-${index}`, name: `New${index}` });
+      sourceRows.push({ sevenTvEmoteId: `new-${index}`, name: `New${index}`, imageUrl: null });
     }
 
     expect(sourceRows.length).toBe(762);

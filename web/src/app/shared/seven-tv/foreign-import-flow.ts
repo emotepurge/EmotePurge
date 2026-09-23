@@ -50,7 +50,7 @@ export function buildForeignImportSource(picked: ForeignChannelImportResult): Im
 }
 
 function toImportRow(row: ForeignEmoteRow): ImportRow {
-  return { sevenTvEmoteId: row.sevenTvEmoteId, name: row.name };
+  return { sevenTvEmoteId: row.sevenTvEmoteId, name: row.name, imageUrl: row.imageUrl };
 }
 
 /**
@@ -97,5 +97,5 @@ export function buildLeaderboardImportSource(picked: LeaderboardImportResult): I
 }
 
 function toLeaderboardImportRow(row: ForeignEmoteRow): ImportRow {
-  return { sevenTvEmoteId: row.sevenTvEmoteId, name: row.defaultName };
+  return { sevenTvEmoteId: row.sevenTvEmoteId, name: row.defaultName, imageUrl: row.imageUrl };
 }

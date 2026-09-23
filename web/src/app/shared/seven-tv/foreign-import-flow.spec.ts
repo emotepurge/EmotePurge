@@ -112,6 +112,18 @@ function closedSubject<T>(dialogOpen: ReturnType<typeof vi.fn>, call: number): S
   return dialogOpen.mock.results[call].value.closed as Subject<T>;
 }
 
+it('carries the imageUrl through both the channel and the leaderboard mapping (T1)', () => {
+  // Both toImportRow()/toLeaderboardImportRow() in foreign-import-flow.ts read row.imageUrl
+  // straight off the ForeignEmoteRow — never derived from sevenTvEmoteId (Issue "Images").
+  const channelSource = buildForeignImportSource(picked([foreignRow('e1', 'HandLuL')]));
+  const leaderboardSource = buildLeaderboardImportSource(
+    pickedFromLeaderboard([foreignRow('e1', 'catJAM', 'catJAMGlobal')]),
+  );
+
+  expect(channelSource.rows[0]?.imageUrl).toBe('https://cdn.7tv.app/emote/e1/2x.webp');
+  expect(leaderboardSource.rows[0]?.imageUrl).toBe('https://cdn.7tv.app/emote/e1/2x.webp');
+});
+
 describe('buildForeignImportSource', () => {
   it('takes over the source alias, not the global default name', () => {
     // The decision from the design doc, and the reason the collision hint matters for this source:
@@ -119,7 +131,9 @@ describe('buildForeignImportSource', () => {
     // global base name would be.
     const source = buildForeignImportSource(picked([foreignRow('e1', 'HandLuL', 'LuL')]));
 
-    expect(source.rows).toEqual([{ sevenTvEmoteId: 'e1', name: 'HandLuL' }]);
+    expect(source.rows).toEqual([
+      { sevenTvEmoteId: 'e1', name: 'HandLuL', imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp' },
+    ]);
   });
 
   it('marks the origin as the foreign 7TV channel it came from', () => {
@@ -136,8 +150,8 @@ describe('buildForeignImportSource', () => {
     );
 
     expect(source.rows).toEqual([
-      { sevenTvEmoteId: 'e1', name: 'Kappa' },
-      { sevenTvEmoteId: 'e2', name: 'PogU' },
+      { sevenTvEmoteId: 'e1', name: 'Kappa', imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp' },
+      { sevenTvEmoteId: 'e2', name: 'PogU', imageUrl: 'https://cdn.7tv.app/emote/e2/2x.webp' },
     ]);
     expect(source.duplicatesCollapsed).toBe(1);
     expect(source.discardedRows).toBe(0);
@@ -245,7 +259,13 @@ describe('buildLeaderboardImportSource', () => {
       pickedFromLeaderboard([foreignRow('e1', 'catJAM', 'catJAMGlobal')]),
     );
 
-    expect(source.rows).toEqual([{ sevenTvEmoteId: 'e1', name: 'catJAMGlobal' }]);
+    expect(source.rows).toEqual([
+      {
+        sevenTvEmoteId: 'e1',
+        name: 'catJAMGlobal',
+        imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp',
+      },
+    ]);
   });
 
   it('marks the origin as the list it was picked off, since there is no source channel', () => {
@@ -267,8 +287,8 @@ describe('buildLeaderboardImportSource', () => {
     );
 
     expect(source.rows).toEqual([
-      { sevenTvEmoteId: 'e1', name: 'Kappa' },
-      { sevenTvEmoteId: 'e2', name: 'PogU' },
+      { sevenTvEmoteId: 'e1', name: 'Kappa', imageUrl: 'https://cdn.7tv.app/emote/e1/2x.webp' },
+      { sevenTvEmoteId: 'e2', name: 'PogU', imageUrl: 'https://cdn.7tv.app/emote/e2/2x.webp' },
     ]);
     expect(source.duplicatesCollapsed).toBe(1);
     expect(source.discardedRows).toBe(0);
@@ -278,7 +298,13 @@ describe('buildLeaderboardImportSource', () => {
     // Regression, not a new feature: the hint lives in `buildImportPreview` and has done since #72.
     // A leaderboard row must reach it the same way the other sources do — and, like them, be
     // reported rather than removed: 7TV decides, not this preview.
-    const target: EmoteListItem[] = [{ sevenTvEmoteId: 'other-id', name: 'Kappa' }];
+    const target: EmoteListItem[] = [
+      {
+        sevenTvEmoteId: 'other-id',
+        name: 'Kappa',
+        imageUrl: 'https://cdn.7tv.app/placeholder/1x.webp',
+      },
+    ];
     const source = buildLeaderboardImportSource(
       pickedFromLeaderboard([foreignRow('e1', 'Kappa', 'Kappa'), foreignRow('e2', 'PogU', 'PogU')]),
     );
@@ -288,7 +314,9 @@ describe('buildLeaderboardImportSource', () => {
     expect(preview.nameCollisions).toEqual(['Kappa']);
     // Since spec 2026-09-20 a name collision is excluded from toAdd rather than merely reported
     // (revises the pre-#72 reading pinned here before this task).
-    expect(preview.toAdd).toEqual([{ sevenTvEmoteId: 'e2', name: 'PogU' }]);
+    expect(preview.toAdd).toEqual([
+      { sevenTvEmoteId: 'e2', name: 'PogU', imageUrl: 'https://cdn.7tv.app/emote/e2/2x.webp' },
+    ]);
   });
 });
 

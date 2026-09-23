@@ -44,7 +44,13 @@ const LIVE_PREVIEW = {
   capacity: 500,
   totalCount: 338,
   truncated: false,
-  emotes: [{ sevenTvEmoteId: '7tv-1', name: 'SpookyU' }],
+  emotes: [
+    {
+      sevenTvEmoteId: '7tv-1',
+      name: 'SpookyU',
+      imageUrl: 'https://cdn.7tv.app/emote/7tv-1/2x.webp',
+    },
+  ],
 };
 
 describe('loadImportTarget', () => {
@@ -276,8 +282,51 @@ describe('loadImportTarget', () => {
         occupiedSlots: 338,
         capacity: 500,
         syncFailureReason: null,
-        emotes: [{ sevenTvEmoteId: '7tv-1', name: 'SpookyU' }],
+        emotes: [
+          {
+            sevenTvEmoteId: '7tv-1',
+            name: 'SpookyU',
+            imageUrl: 'https://cdn.7tv.app/emote/7tv-1/2x.webp',
+          },
+        ],
         warning: READY_WARNING,
+      });
+    });
+
+    it('carries the imageUrl of each live emote through untouched (T1)', () => {
+      // import-target-loader.ts used to build a fresh { sevenTvEmoteId, name } pair here and
+      // discard everything else the live route sent — T1 needs the image too, for T8's
+      // side-by-side source/target preview.
+      let result: ImportTargetLoadState | undefined;
+      loadImportTarget(emoteAdminService, emoteSetService, {
+        kind: 'trackedSet',
+        channelName: 'sensitron',
+        emoteSetId: 'set-halloween',
+      }).subscribe((value) => (result = value));
+
+      httpMock
+        .expectOne((candidate) => candidate.url === LIVE_URL)
+        .flush({
+          ...LIVE_PREVIEW,
+          emotes: [
+            {
+              sevenTvEmoteId: '7tv-9',
+              name: 'PumpkinPog',
+              imageUrl: 'https://cdn.7tv.app/emote/7tv-9/4x.webp',
+            },
+          ],
+        });
+      httpMock.expectOne((candidate) => candidate.url === WARNING_URL).flush(READY_WARNING);
+
+      expect(result).toMatchObject({
+        status: 'ready',
+        emotes: [
+          {
+            sevenTvEmoteId: '7tv-9',
+            name: 'PumpkinPog',
+            imageUrl: 'https://cdn.7tv.app/emote/7tv-9/4x.webp',
+          },
+        ],
       });
     });
 
@@ -350,7 +399,13 @@ describe('loadImportTarget', () => {
         occupiedSlots: 338,
         capacity: 500,
         syncFailureReason: null,
-        emotes: [{ sevenTvEmoteId: '7tv-1', name: 'SpookyU' }],
+        emotes: [
+          {
+            sevenTvEmoteId: '7tv-1',
+            name: 'SpookyU',
+            imageUrl: 'https://cdn.7tv.app/emote/7tv-1/2x.webp',
+          },
+        ],
         warning: UNAVAILABLE_WARNING,
       });
     });

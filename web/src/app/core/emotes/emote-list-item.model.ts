@@ -7,4 +7,7 @@
 export interface EmoteListItem {
   sevenTvEmoteId: string;
   name: string;
+  /** Straight copy of the tracked emote's own image URL — never derived from `sevenTvEmoteId`
+   *  (static vs. animated emotes use different 7TV URL shapes). */
+  imageUrl: string;
 }

@@ -9,6 +9,10 @@ import { LeaderboardSort } from './leaderboard.model';
 export interface ImportRow {
   sevenTvEmoteId: string;
   name: string;
+  /** `null` only when the row came from a file (spec T1): the emote-list export writes just id and
+   *  name, so nothing to read back. Every live source (grid, foreign channel, leaderboard) carries
+   *  its emote's own image URL through unchanged — never derived from `sevenTvEmoteId`. */
+  imageUrl: string | null;
 }
 
 /**

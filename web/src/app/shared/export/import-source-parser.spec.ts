@@ -34,11 +34,21 @@ describe('parseImportSource', () => {
       envelopeKind: 'emote-list',
     });
     expect(result.source.rows).toEqual([
-      { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-      { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
     ]);
     expect(result.source.duplicatesCollapsed).toBe(0);
     expect(result.source.discardedRows).toBe(0);
+  });
+
+  it('sets imageUrl to null for every parsed row — a file never carries one (T1)', () => {
+    // emote-list-export.ts writes only id and name (the file format is unchanged); a row read
+    // back out of a file must say so honestly rather than guess at an image from the id.
+    const result = parseImportSource(envelope({}), 'emotes.json');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.source.rows.every((row) => row.imageUrl === null)).toBe(true);
   });
 
   it("maps a usage export's emoteName onto ImportRow.name", () => {
@@ -56,8 +66,8 @@ describe('parseImportSource', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.source.rows).toEqual([
-      { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-      { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
     ]);
     expect(result.source.origin.kind === 'file' && result.source.origin.envelopeKind).toBe('usage');
   });
@@ -100,8 +110,8 @@ describe('parseImportSource', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.source.rows).toEqual([
-      { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-      { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
     ]);
     expect(result.source.duplicatesCollapsed).toBe(1);
     expect(result.source.discardedRows).toBe(1);

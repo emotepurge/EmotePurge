@@ -56,10 +56,15 @@ export interface UsageExportPurposeScope {
  * the first time `ImportRow` gains a field.
  */
 export const toImportRow = (
-  emote: Pick<EmoteUsageTotal, 'sevenTvEmoteId' | 'emoteName'>,
+  // `imageUrl` is optional here, not `Pick<EmoteUsageTotal, ... | 'imageUrl'>`: the caller in this
+  // file feeds `UsageExportSourceRow`, which does not carry it (the emote-list file this purpose
+  // writes never has — `emote-list-export.ts` writes only id and name); `usage-stats-page.ts`'s push
+  // flow feeds full `EmoteUsageTotal` rows, which do.
+  emote: Pick<EmoteUsageTotal, 'sevenTvEmoteId' | 'emoteName'> & { imageUrl?: string },
 ): ImportRow => ({
   sevenTvEmoteId: emote.sevenTvEmoteId,
   name: emote.emoteName,
+  imageUrl: emote.imageUrl ?? null,
 });
 
 /**

@@ -240,7 +240,9 @@ describe('FileImportStep', () => {
       const result = closed[0];
       expect(result?.kind).toBe('import');
       if (result?.kind === 'import') {
-        expect(result.source.rows).toEqual([{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }]);
+        expect(result.source.rows).toEqual([
+          { sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null },
+        ]);
         expect(result.source.origin).toEqual(
           expect.objectContaining({ kind: 'file', channelName: 'otherchannel' }),
         );
