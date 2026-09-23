@@ -19,6 +19,10 @@ import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 import { StateDot } from '../../shared/ui/state-dot';
+import {
+  TypedConfirmDialogData,
+  openTypedConfirmDialog,
+} from '../../shared/ui/typed-confirm-dialog';
 
 const PAGE_SIZE = 25;
 
@@ -35,10 +39,14 @@ const EMPTY_PAGE: PagedResult<AdminUser> = {
 };
 
 /**
- * Every user who ever logged in, with derived token status and one action: revoking their sessions
- * (a forced logout — the server also drops their stored Twitch tokens). The plain ConfirmDialog is
- * enough here, unlike the purge's typed confirmation: revoking is recoverable (the user just logs
- * in again), so the typed-name barrier would be ceremony without a matching risk.
+ * Every user who ever logged in, with derived token status and three actions: clearing their role
+ * cache, revoking their sessions (a forced logout — the server also drops their stored Twitch
+ * tokens), and deleting their account outright. The plain ConfirmDialog is enough for revoking:
+ * that is recoverable (the user just logs in again), so a typed-name barrier would be ceremony
+ * without a matching risk. Deletion is not recoverable — it removes the user's votes and
+ * pseudonymises the audit-log entries that name them (#243/#244) — so it uses the same
+ * TypedConfirmDialog as the channel list's purge, retyping the Twitch login rather than clicking
+ * a plain "yes".
  */
 @Component({
   selector: 'app-admin-users-page',
@@ -148,6 +156,17 @@ const EMPTY_PAGE: PagedResult<AdminUser> = {
                     >
                       {{ 'admin.users.revoke.button' | transloco }}
                     </button>
+                    <!-- Same danger-quiet tier as revoke above, per §4.2: the repetition rule, not
+                         severity, decides the row-level look — the typed-name dialog below is what
+                         actually gates this irreversible action. -->
+                    <button
+                      type="button"
+                      appButton="danger-quiet"
+                      [disabled]="pendingUserId() === row.twitchUserId"
+                      (click)="confirmDelete(row)"
+                    >
+                      {{ 'admin.users.delete.button' | transloco }}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -207,8 +226,8 @@ export class AdminUsersPage {
   protected readonly isLoading = computed(() => this.usersResource.isLoading());
   protected readonly totalPages = computed(() => this.usersResource.value().totalPages);
 
-  /** Blocks a second click on the row an action is already running against — shared by both
-   *  actions, so revoking and clearing the cache can never run against the same user at once. */
+  /** Blocks a second click on the row an action is already running against — shared by all three
+   *  actions, so none of them can run against the same user at once. */
   protected readonly pendingUserId = signal<string | null>(null);
 
   /** The user whose role cache was just cleared plus how many entries went, or null. */
@@ -308,6 +327,49 @@ export class AdminUsersPage {
         next: () => {
           this.pendingUserId.set(null);
           // Full reload: the row's sessionsValidFromUtc and token badge both changed server-side.
+          this.usersResource.reload();
+        },
+        error: (error: HttpErrorResponse) => {
+          this.pendingUserId.set(null);
+          this.actionError.set(apiErrorTranslationKey(error));
+        },
+      });
+    });
+  }
+
+  /**
+   * Irreversible: unlike revoke, there is no dialog escape hatch to try harder — retyping the
+   * login is the only gate. Self-deletion needs no special handling beyond the dialog's hint text:
+   * the reload below hits GET /api/admin/users with the now-missing user row, which
+   * OnValidatePrincipal answers 401 for (same as a revoked session), and apiAuthInterceptor already
+   * turns that into a redirect to /login for the whole app — nothing page-specific to add here.
+   */
+  protected confirmDelete(user: AdminUser): void {
+    let message = this.translocoService.translate('admin.users.delete.message', {
+      name: user.displayName,
+    });
+    if (user.twitchUserId === this.authService.currentUser()?.twitchUserId) {
+      message += '\n\n' + this.translocoService.translate('admin.users.delete.selfHint');
+    }
+
+    const data: TypedConfirmDialogData = {
+      title: this.translocoService.translate('admin.users.delete.title'),
+      message,
+      requiredText: user.twitchUsername,
+      inputLabel: this.translocoService.translate('admin.users.delete.inputLabel'),
+      confirmLabel: this.translocoService.translate('admin.users.delete.confirm'),
+    };
+
+    openTypedConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      this.actionError.set(null);
+      this.pendingUserId.set(user.twitchUserId);
+      this.adminService.deleteUser(user.twitchUserId).subscribe({
+        next: () => {
+          this.pendingUserId.set(null);
+          // Full reload: the row is gone entirely, same reasoning as the channel list's purge.
           this.usersResource.reload();
         },
         error: (error: HttpErrorResponse) => {

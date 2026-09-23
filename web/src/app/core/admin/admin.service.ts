@@ -84,6 +84,15 @@ export class AdminService {
     );
   }
 
+  /** Deletes one user's account irreversibly: their votes are removed, audit-log entries naming
+   *  them are pseudonymised rather than deleted, and the row itself (with its Twitch tokens) goes.
+   *  The one account-deletion path also used by the retention job — this call always passes
+   *  AccountDeletionReason.AdminRequest server-side, so it works on an active account too, not just
+   *  an inactive one. 404 when the account is already gone (idempotent second call). */
+  deleteUser(twitchUserId: string): Observable<void> {
+    return this.http.delete<void>(`/api/admin/users/${encodeURIComponent(twitchUserId)}`);
+  }
+
   /** Drops every cached role answer (mod/sub/7TV editor) of one user, so the next role check
    *  resolves live against Twitch/7TV. Returns how many Redis entries were removed — the only
    *  visible effect of an action that otherwise changes nothing an admin could see. */
