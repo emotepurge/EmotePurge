@@ -518,8 +518,8 @@ Darum:
 
 ## Entscheidungen des Betreibers (mit Empfehlung)
 
-Die Fristen selbst stehen nicht zur Debatte. Offen ist Folgendes; der Plan ist mit der jeweils
-empfohlenen Antwort geschrieben.
+**Freigegeben am 2026-09-23:** Der Betreiber hat alle neun Punkte mit der jeweiligen Empfehlung
+bestätigt. Die Fristen selbst standen nicht zur Debatte.
 
 1. **„Letzte Nutzung" über `LastSeenAtUtc` (täglich gestempelt), und die Migration setzt ihn für
    alle Bestandsnutzer auf den Migrationszeitpunkt** — wie beim Kanal-Backfill. Empfehlung: ja —
