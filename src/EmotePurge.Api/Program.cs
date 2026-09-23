@@ -93,7 +93,8 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             }
 
             var userService = context.HttpContext.RequestServices.GetRequiredService<IUserService>();
-            var sessionCheck = await userService.CheckSessionAsync(twitchUserId, context.HttpContext.RequestAborted);
+            var sessionCheck = await userService.CheckSessionAsync(
+                twitchUserId, issuedAt.ToUniversalTime(), context.HttpContext.RequestAborted);
             if (sessionCheck is null)
             {
                 // The user row is gone — a deleted account (retention job or admin deletion), never
@@ -105,7 +106,9 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
                 return;
             }
 
-            if (sessionCheck.RevokedBefore is { } revokedBefore && issuedAt.ToUniversalTime() < revokedBefore)
+            // CheckSessionAsync already compared issuedAt against the revocation cutoff — and only
+            // stamped LastSeenAtUtc when it found the session still valid. Nothing left to compare.
+            if (!sessionCheck.IsValid)
             {
                 context.RejectPrincipal();
                 await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);

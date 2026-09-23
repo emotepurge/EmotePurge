@@ -211,21 +211,57 @@ public class UserServiceTests(PostgresFixture fixture, RedisFixture redisFixture
         await using var db = fixture.CreateDbContext();
         var service = new UserService(db, CreateCipher(), CreateRoleCache());
 
-        Assert.Null(await service.CheckSessionAsync("user-checksession-nobody"));
+        Assert.Null(await service.CheckSessionAsync("user-checksession-nobody", DateTime.UtcNow));
     }
 
     [Fact]
-    public async Task CheckSession_ReturnsTheRevocationCutoff_ForAKnownUser()
+    public async Task CheckSession_WithACookieIssuedBeforeRevocation_IsInvalid()
     {
         await using var db = fixture.CreateDbContext();
         var service = new UserService(db, CreateCipher(), CreateRoleCache());
         await service.UpsertLoginAsync("user-checksession-cutoff", "usercutoff", "UserCutoff");
+        var issuedAt = DateTime.UtcNow;
         await service.RevokeSessionsAsync("user-checksession-cutoff", actor: null);
 
-        var result = await service.CheckSessionAsync("user-checksession-cutoff");
+        var result = await service.CheckSessionAsync("user-checksession-cutoff", issuedAt);
 
         Assert.NotNull(result);
-        Assert.NotNull(result.RevokedBefore);
+        Assert.False(result.IsValid);
+    }
+
+    [Fact]
+    public async Task CheckSession_WithACookieIssuedAfterRevocation_IsValid()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        await service.UpsertLoginAsync("user-checksession-postcutoff", "userpostcutoff", "UserPostCutoff");
+        await service.RevokeSessionsAsync("user-checksession-postcutoff", actor: null);
+
+        var result = await service.CheckSessionAsync("user-checksession-postcutoff", DateTime.UtcNow.AddSeconds(1));
+
+        Assert.NotNull(result);
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public async Task CheckSession_WithARevokedCookie_DoesNotStampLastSeenAtUtc()
+    {
+        // The regression this guards: LastSeenAtUtc used to be stamped before the caller
+        // (OnValidatePrincipal) compared the cookie's issue time against the revocation cutoff, so a
+        // client that kept replaying a revoked cookie was rejected on every request yet still moved
+        // the retention clock for an account it no longer had access to.
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        await service.UpsertLoginAsync("user-checksession-revoked-nostamp", "userrevokednostamp", "UserRevokedNoStamp");
+        var issuedAt = DateTime.UtcNow;
+        await service.RevokeSessionsAsync("user-checksession-revoked-nostamp", actor: null);
+
+        var result = await service.CheckSessionAsync("user-checksession-revoked-nostamp", issuedAt);
+
+        Assert.False(result!.IsValid);
+        await using var verifyDb = fixture.CreateDbContext();
+        var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-revoked-nostamp");
+        Assert.Null(row.LastSeenAtUtc);
     }
 
     [Fact]
@@ -238,8 +274,9 @@ public class UserServiceTests(PostgresFixture fixture, RedisFixture redisFixture
         await service.UpsertLoginAsync("user-checksession-first", "userfirst", "UserFirst");
 
         var before = DateTime.UtcNow;
-        await service.CheckSessionAsync("user-checksession-first");
+        var result = await service.CheckSessionAsync("user-checksession-first", before);
 
+        Assert.True(result!.IsValid);
         await using var verifyDb = fixture.CreateDbContext();
         var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-first");
         Assert.NotNull(row.LastSeenAtUtc);
@@ -256,7 +293,7 @@ public class UserServiceTests(PostgresFixture fixture, RedisFixture redisFixture
         await db.Users.Where(u => u.Id == "user-checksession-fresh")
             .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAtUtc, recentStamp));
 
-        await service.CheckSessionAsync("user-checksession-fresh");
+        await service.CheckSessionAsync("user-checksession-fresh", DateTime.UtcNow);
 
         await using var verifyDb = fixture.CreateDbContext();
         var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-fresh");
@@ -274,7 +311,7 @@ public class UserServiceTests(PostgresFixture fixture, RedisFixture redisFixture
             .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAtUtc, staleStamp));
 
         var before = DateTime.UtcNow;
-        await service.CheckSessionAsync("user-checksession-stale");
+        await service.CheckSessionAsync("user-checksession-stale", before);
 
         await using var verifyDb = fixture.CreateDbContext();
         var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-stale");

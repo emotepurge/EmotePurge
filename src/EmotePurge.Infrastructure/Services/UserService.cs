@@ -30,7 +30,7 @@ public class UserService(AppDbContext db, ITokenCipher tokenCipher, IModRoleCach
         return user;
     }
 
-    public async Task<SessionCheckResult?> CheckSessionAsync(string twitchUserId, CancellationToken cancellationToken = default)
+    public async Task<SessionCheckResult?> CheckSessionAsync(string twitchUserId, DateTime issuedAtUtc, CancellationToken cancellationToken = default)
     {
         // Runs on every authenticated request (see OnValidatePrincipal): a single primary-key
         // lookup, projected to both columns this needs so it stays an index-only read and nothing
@@ -46,6 +46,15 @@ public class UserService(AppDbContext db, ITokenCipher tokenCipher, IModRoleCach
             // No row to stamp or read a cutoff from — the caller must reject the principal instead
             // of reading this as "never revoked" (see the interface comment).
             return null;
+        }
+
+        if (row.SessionsValidFromUtc is { } revokedBefore && issuedAtUtc < revokedBefore)
+        {
+            // The cookie predates the last revocation: reject without touching LastSeenAtUtc. A
+            // client that keeps sending this cookie after being logged out elsewhere must not keep
+            // moving the retention clock for an account it no longer has valid access to — that is
+            // the whole reason this check runs before the throttle below, not after.
+            return new SessionCheckResult(IsValid: false);
         }
 
         var now = DateTime.UtcNow;
@@ -65,7 +74,7 @@ public class UserService(AppDbContext db, ITokenCipher tokenCipher, IModRoleCach
                 .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.LastSeenAtUtc, now), cancellationToken);
         }
 
-        return new SessionCheckResult(row.SessionsValidFromUtc);
+        return new SessionCheckResult(IsValid: true);
     }
 
     public async Task<bool> RevokeSessionsAsync(string twitchUserId, AuditActor? actor, CancellationToken cancellationToken = default)

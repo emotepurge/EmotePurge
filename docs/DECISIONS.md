@@ -298,14 +298,26 @@ Second step of the data-retention plan
   signs the cookie out when the row is gone, the same as it already does for a cookie predating
   session tracking — without this, a deleted account's cookie would keep authenticating until it
   expired on its own, up to 14 days later.
-- **The same call stamps `LastSeenAtUtc` to now, throttled to once per 24 hours per user.** The read
-  already runs on every authenticated request; the throttle check rides the same projection
-  (`SessionsValidFromUtc` and `LastSeenAtUtc` in one query), so the common case — a stamp already
-  fresh — costs no extra roundtrip. The write itself is one conditional `UPDATE` (`WHERE ... AND
-  (LastSeenAtUtc IS NULL OR LastSeenAtUtc < now - 24h)`) rather than a load-modify-save, which makes
-  it safe under several concurrent requests for the same user: whichever commits first moves the
-  stamp inside the throttle window, so every other concurrent `UPDATE`'s `WHERE` clause then matches
-  zero rows instead of re-writing the same value or losing an update.
+- **`CheckSessionAsync` now takes the cookie's own issue time (`issuedAtUtc`) and decides revocation
+  itself**, returning `SessionCheckResult(bool IsValid)` instead of handing a raw `RevokedBefore`
+  cutoff back for `Program.cs` to compare. Fixed here in reaction to a Codex Sol review finding
+  (P2): the original split — stamp first in `CheckSessionAsync`, compare against the cutoff
+  afterwards in `OnValidatePrincipal` — stamped `LastSeenAtUtc` before the caller had any chance to
+  reject the session, so a client that kept replaying an already-revoked cookie was rejected on
+  every request yet still moved its own account's 30-day-token/365-day-account retention cutoffs on
+  every one of those rejected requests. `CheckSessionAsync` now compares `issuedAtUtc` against
+  `SessionsValidFromUtc` before the stamp, and only reaches the throttle/stamp step on a valid
+  session; `OnValidatePrincipal` just reads `sessionCheck.IsValid` and rejects on `false`, the same
+  as it already does when the row is missing.
+- **The stamp is still throttled to once per 24 hours per user, and still a single conditional
+  `UPDATE`.** The read already runs on every authenticated request; the throttle check rides the
+  same projection (`SessionsValidFromUtc` and `LastSeenAtUtc` in one query), so the common case — a
+  stamp already fresh, or a session about to be rejected — costs no extra roundtrip. The write
+  itself is one conditional `UPDATE` (`WHERE ... AND (LastSeenAtUtc IS NULL OR LastSeenAtUtc < now -
+  24h)`) rather than a load-modify-save, which makes it safe under several concurrent requests for
+  the same user: whichever commits first moves the stamp inside the throttle window, so every other
+  concurrent `UPDATE`'s `WHERE` clause then matches zero rows instead of re-writing the same value
+  or losing an update.
 - **`AdminUserDto` gains `LastSeenAtUtc`.** The admin user list keeps sorting by `LastLogin`;
   rendering the new field in the UI is out of scope for this task.
 
