@@ -12,9 +12,10 @@ public class ChannelService(
     AppDbContext db,
     IRedisPublisher redisPublisher,
     IChannelIdentityService channelIdentityService,
+    ChannelCapacityOptions channelCapacityOptions,
     ILogger<ChannelService> logger) : IChannelService
 {
-    public async Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)
+    public async Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
 
@@ -23,7 +24,7 @@ public class ChannelService(
         var lookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
         if (lookup.Status == TwitchUserLookupStatus.NotFound)
         {
-            return await HandleUnknownTwitchLoginAsync(normalized, actor, cancellationToken);
+            return await HandleUnknownTwitchLoginAsync(normalized, actor, isGlobalAdmin, cancellationToken);
         }
 
         // Null for Unavailable, and that is the whole contract of that status: without an identity
@@ -40,7 +41,7 @@ public class ChannelService(
 
         var (channel, isNewRow, renamedFrom) = await ResolveJoinTargetAsync(identity, targetName, actor, cancellationToken);
 
-        return await CompleteJoinAsync(channel, actor, isNewRow, renamedFrom, cancellationToken);
+        return await CompleteJoinAsync(channel, actor, isNewRow, renamedFrom, isGlobalAdmin, cancellationToken);
     }
 
     public async Task<bool> LeaveAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)
@@ -169,7 +170,7 @@ public class ChannelService(
     /// id to look up by.
     /// </para>
     /// </summary>
-    private async Task<ChannelJoinResult> HandleUnknownTwitchLoginAsync(string normalized, AuditActor actor, CancellationToken cancellationToken)
+    private async Task<ChannelJoinResult> HandleUnknownTwitchLoginAsync(string normalized, AuditActor actor, bool isGlobalAdmin, CancellationToken cancellationToken)
     {
         var knownChannel = await db.LoadChannelAsync(normalized, cancellationToken);
         if (knownChannel is null)
@@ -187,7 +188,7 @@ public class ChannelService(
         logger.LogInformation(
             "Twitch kennt den Login {ChannelName} gerade nicht (gesperrt oder gelöscht) — Join läuft auf die bestehende Zeile weiter, die gespeicherte Twitch-ID bleibt unverändert.",
             normalized);
-        return await CompleteJoinAsync(knownChannel, actor, isNewRow: false, renamedFrom: null, cancellationToken);
+        return await CompleteJoinAsync(knownChannel, actor, isNewRow: false, renamedFrom: null, isGlobalAdmin, cancellationToken);
     }
 
     /// <summary>
@@ -307,14 +308,40 @@ public class ChannelService(
     }
 
     /// <summary>
-    /// The half of a join every path shares once the row to join has been decided: reactivate,
-    /// audit, commit, publish. A method rather than a fall-through, so the branch that joins a
-    /// channel Twitch has stopped knowing can reach it without being merged into the identity logic
-    /// it deliberately has none of.
+    /// The half of a join every path shares once the row to join has been decided: cap check,
+    /// reactivate, audit, commit, publish. A method rather than a fall-through, so the branch that
+    /// joins a channel Twitch has stopped knowing can reach it without being merged into the identity
+    /// logic it deliberately has none of.
     /// </summary>
     private async Task<ChannelJoinResult> CompleteJoinAsync(
-        Channel channel, AuditActor actor, bool isNewRow, string? renamedFrom, CancellationToken cancellationToken)
+        Channel channel, AuditActor actor, bool isNewRow, string? renamedFrom, bool isGlobalAdmin, CancellationToken cancellationToken)
     {
+        // A join only ever *activates* a channel on a new row (constructed with IsBotActive = true
+        // and not yet saved) or on an existing row that is currently inactive — never on one that is
+        // already active, which is the idempotency this cap must not break: a moderator clicking
+        // "join" twice, or two open tabs doing the same thing, must never turn into a 409 just
+        // because the cap happens to be full.
+        var activatesChannel = isNewRow || !channel.IsBotActive;
+        if (activatesChannel && !isGlobalAdmin)
+        {
+            // No row exclusion needed either way: a brand-new row has not been saved yet and cannot
+            // appear in this count, and an inactive row is filtered out by IsBotActive itself.
+            //
+            // Deliberately unlocked — two joins racing this check can both read a count below the
+            // cap and both proceed, overshooting it by (at most) the number of concurrent joins. The
+            // operator accepted that: a hard lock around every join is not worth it for a cap whose
+            // whole purpose is staying comfortably clear of Twitch's real 100-chatroom ceiling, not
+            // hitting it to the channel (docs/DECISIONS.md, this entry).
+            var activeChannelCount = await db.Channels.CountAsync(c => c.IsBotActive, cancellationToken);
+            if (activeChannelCount >= channelCapacityOptions.MaxActiveChannels)
+            {
+                logger.LogWarning(
+                    "Join for {ChannelName} rejected: the active-channel cap of {MaxActiveChannels} is reached ({ActiveChannelCount} channels active).",
+                    channel.ChannelName, channelCapacityOptions.MaxActiveChannels, activeChannelCount);
+                return ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached);
+            }
+        }
+
         if (!isNewRow)
         {
             // Only a join that actually reactivates the channel restarts the tracking clock. A join

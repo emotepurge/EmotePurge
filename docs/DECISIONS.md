@@ -10,6 +10,88 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — A hard cap on simultaneously active channels: 80 by default, admins exempt, overshoot accepted (supersedes the "display only" half of the 2026-08-01 roster entry)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/{ChannelService,ChannelCapacityOptions}.cs` (latter neu) ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Api/appsettings.json` ·
+`web/src/app/core/i18n/api-error.ts` · `web/public/i18n/{de,en}.json` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` ·
+`tests/EmotePurge.Infrastructure.Tests/{Unit/ChannelCapacityOptionsTests,Integration/{ChannelServiceTests,ChannelServiceCapacityTests}}.cs` ·
+`CLAUDE.md` (JOIN-limit bullet under "Bekannte offene Grenzen")
+
+**The gap this closes.** Twitch allows one account at most 100 simultaneously joined chatrooms
+(CLAUDE.md, "Bekannte offene Grenzen"). Nothing enforced that: any logged-in Twitch account could add
+their own channel and every channel they moderate through `POST /api/channels/{channelName}/join`.
+The 2026-08-01 roster entry gave the admin monitoring page two honestly labeled ceilings
+(`WorkerCapacity.TwitchConcurrentChannelLimit` = 100, `TwitchJoinBudgetChannels` = 20) but deliberately
+left them display-only — a dashboard number, not a gate. With a group of subscribers about to be
+invited to a community vote and some of them likely to click "Hinzufügen" on their own channel, a
+silent crossing of Twitch's real limit became a plausible near-term event, not a theoretical one:
+past it, a TwitchLib reconnect/rejoin would silently lose channels with no error anywhere a caller
+could see. This entry adds the enforcement the 2026-08-01 entry chose not to build yet; the two
+display numbers on the monitoring page are untouched.
+
+**The cap is configuration, not a repeat of the two existing constants.** `Channels:MaxActiveChannels`
+(env override `Channels__MaxActiveChannels`), default 80 — comfortably under Twitch's 100 to leave
+headroom for the linear-time rejoin after a reconnect (#68/#114) and to stay clear of the ceiling
+itself even under the accepted race described below. Bound and validated fail-fast at startup
+(`ChannelCapacityOptions.Validate()`, called from `AddEmotePurgeInfrastructure` — both hosts, since
+`ChannelService` is shared infrastructure), the same pattern as `RateLimitingOptions`: a
+misconfigured value stops the container with a readable message instead of silently handing every
+join a capacity of zero.
+
+**What the cap gates, precisely.** `ChannelService.JoinAsync` now checks the cap against
+`COUNT(*) WHERE IsBotActive` for every transition *into* the active state — a brand-new channel and
+reactivating a previously left one alike, on every one of the join path's branches (identity found,
+identity not found but the row is known, Twitch unreachable). A join on a channel that is **already**
+active stays unconditionally idempotent: the check runs only when the join would actually flip
+`IsBotActive` from false (or not-yet-existing) to true, so clicking "join" twice, or two open tabs
+doing the same thing, can never turn into a rejection just because the cap happens to be full at that
+moment.
+
+**Global admins (`Auth:AdminTwitchLogins`) are exempt from the cap but still count toward it.** The
+endpoint resolves `IChannelAccessService.IsGlobalAdmin` from the request's claims and passes the
+result into `JoinAsync(channelName, actor, isGlobalAdmin, ct)` — the service itself has no
+`ClaimsPrincipal` to derive it from. An admin can always add a channel Twitch itself would still fit
+(the operator remains free to catch up on genuinely over-limit situations by hand); their join still
+increments the count the next non-admin's join is checked against.
+
+**Rejected as 409 Conflict, `channel_capacity_reached` (Regel 7).** The same status
+`TriggerResyncAsync`'s `NotActive` case already uses for "well-formed request, but the state you're
+asking for conflicts with the one we're in" — chosen over inventing a capacity-specific status
+because nothing here is really "not found" (404) or an authorization failure (403), and 409 already
+has exactly this meaning elsewhere in this file. The frontend maps it generically through the
+existing `errorCode → errors.api.<code>` mechanism (`apiErrorTranslationKey`); the only code change
+needed on top of the new translation entries was `channel-workspace-layout.ts`'s `rejoin()`, which
+used to swallow every non-403 error into one hardcoded "could not reactivate" message instead of
+going through that mechanism the way `resync()` right below it already does — the minimal fix makes
+it do the same.
+
+**The concurrency race is accepted, not closed.** Two joins racing the count-then-activate check can
+both read a count under the cap and both proceed, overshooting it by at most the number of concurrent
+joins. No lock was added: the cap's purpose is staying comfortably clear of Twitch's real ceiling for
+ordinary traffic, not being airtight against a handful of clicks landing in the same millisecond, and
+a lock around every join was judged not worth its cost for that. Documented in a code comment at the
+check itself so the next reader does not have to rediscover this by testing it.
+
+**Test isolation forced a change orthogonal to the feature.** `tests/.../Integration/ChannelServiceTests.cs`
+and the new `ChannelServiceCapacityTests.cs` both run under the `[Collection("Postgres")]` fixture,
+which is one real Postgres container — and one database — shared across every test in the assembly,
+never truncated between tests. A cap check that counts every active row in that database is
+therefore not something the existing tests could absorb at the production default of 80: by the time
+enough of the collection had run, the shared database already held over a hundred active rows left
+behind by unrelated tests, and `ChannelServiceTests`' unmodified assertions started failing on
+`CapacityReached` depending on run order alone. Fix: `ChannelServiceTests` now builds its `ChannelService`
+with an effectively uncapped `MaxActiveChannels = int.MaxValue` (it is not testing the cap), and the
+new `ChannelServiceCapacityTests` creates its own fresh, freshly migrated database per test
+(`CREATE DATABASE` on the same container, same technique `PendingMigrationGuardTests` already used)
+so its counting assertions are deterministic regardless of what the rest of the collection has done.
+
+---
+
 ### 2026-09-19 — The selection survives search and filter changes; the safety moves to the point of action (supersedes S2-16)
 
 **Betrifft:** `web/src/app/shared/selection/list-selection.ts` ·

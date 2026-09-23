@@ -136,6 +136,7 @@ public static class ChannelEndpoints
             string channelName,
             HttpContext httpContext,
             IChannelService channelService,
+            IChannelAccessService channelAccessService,
             CancellationToken ct) =>
         {
             var actor = httpContext.User.TryBuildAuditActor();
@@ -144,7 +145,14 @@ public static class ChannelEndpoints
                 return Results.Unauthorized();
             }
 
-            var result = await channelService.JoinAsync(channelName, actor, ct);
+            // Built again rather than reused from the authorization filter above: that filter only
+            // proves the caller may manage *this* channel, it never hands its principal on to the
+            // handler. IsGlobalAdmin is a pure claims check (Auth:AdminTwitchLogins), so the extra
+            // build costs nothing external — no second Helix/7TV round trip.
+            var principal = httpContext.User.TryBuildTwitchPrincipal();
+            var isGlobalAdmin = principal is not null && channelAccessService.IsGlobalAdmin(principal);
+
+            var result = await channelService.JoinAsync(channelName, actor, isGlobalAdmin, ct);
             // A switch over every status rather than an `is null` check on Channel: a future third
             // status (e.g. "channel suspended") would otherwise silently fall through the old
             // two-way check and be reported as ChannelNotOnTwitch. This way the compiler flags a
@@ -162,6 +170,14 @@ public static class ChannelEndpoints
                 // and the caller cannot fix it by spelling it differently.
                 ChannelJoinStatus.ChannelNotOnTwitch =>
                     Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotOnTwitch }),
+
+                // 409, the same status TriggerResyncAsync's NotActive case uses for "the state you
+                // asked for conflicts with the state we're in": the request is well-formed and the
+                // channel exists, but the configured cap (Channels:MaxActiveChannels) has no room for
+                // one more active channel right now. Never reached for a channel that is already
+                // active or for a global admin — see ChannelService.JoinAsync.
+                ChannelJoinStatus.CapacityReached =>
+                    Results.Conflict(new { errorCode = ApiErrorCodes.ChannelCapacityReached }),
 
                 // The stored login, which is always the one that was asked for: LookupByLoginAsync
                 // only reports Found on a normalized name match, so even in the rename case the

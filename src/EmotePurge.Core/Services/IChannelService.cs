@@ -18,6 +18,12 @@ public enum ChannelJoinStatus
     // typo'd login quietly becoming a permanent, never-syncing row — is what this status exists to
     // prevent, and an outage is not evidence of a typo.
     ChannelNotOnTwitch,
+
+    // The join would activate a channel (a brand-new row, or reactivating one that was left) while
+    // the configured cap on simultaneously active channels (Channels:MaxActiveChannels) is already
+    // reached, and the caller is not a global admin. Never returned for a channel that is already
+    // active — see ChannelService.JoinAsync's idempotency comment.
+    CapacityReached,
 }
 
 /// <summary>
@@ -90,7 +96,13 @@ public interface IChannelService
     // the immutable Twitch id is what a channel *is*, and asking for it at the one moment a human is
     // waiting for an answer is what lets a join reject a login Twitch does not know, follow a rename
     // onto the existing row, and stamp the id onto a row that is being created anyway.
-    Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default);
+    //
+    // isGlobalAdmin exempts the caller from the active-channel cap (Channels:MaxActiveChannels,
+    // ChannelJoinStatus.CapacityReached) — passed in rather than re-derived here because the caller
+    // already resolved it from the request's claims (IChannelAccessService.IsGlobalAdmin), and this
+    // service has no ClaimsPrincipal to work from. Defaults to false so every existing caller keeps
+    // being subject to the cap unless it explicitly says otherwise.
+    Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default);
 
     // Deactivates the bot for this channel and keeps the row and all its history. Reversible via
     // JoinAsync. See PurgeAsync for the irreversible variant.

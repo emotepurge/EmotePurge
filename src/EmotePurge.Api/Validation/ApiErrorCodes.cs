@@ -34,6 +34,10 @@ internal static class ApiErrorCodes
     // track this channel", this one means Twitch itself knows no account under that login. Only a
     // definite Helix answer produces it — an unreachable Helix lets the join through unchanged.
     public const string ChannelNotOnTwitch = "channel_not_on_twitch";
+    // 409 from the join endpoint: the configured active-channel cap (Channels:MaxActiveChannels) is
+    // reached and the caller is not a global admin. Never returned for a join that would not itself
+    // activate a channel — an already-active channel stays idempotent regardless of the cap.
+    public const string ChannelCapacityReached = "channel_capacity_reached";
     // Four codes for GET /api/seventv/channels/{channelName}/emotes (foreign-channel-import spec,
     // section 5) — ChannelNotOnTwitch above covers the fifth state that row shares with the join
     // endpoint. All four carry a 503/404 body with no further detail: the caller cannot act on more
