@@ -37,6 +37,23 @@ Nothing here forces a re-login; an already-authenticated user keeps the wider gr
 re-authenticate or the refresh token expires. Whether that is worth calling out in a privacy policy
 is left to the separate, still-open legal-pages issue.
 
+### 2026-09-23 — Api's outgoing HTTP client requests log at Warning, matching the Worker (#246)
+
+**Betrifft:** `src/EmotePurge.Api/appsettings.json`
+
+`SevenTvApiClient.GetEditorGrantsAsync` calls `GET users/twitch/{twitchUserId}` — a Twitch user id
+embedded in the URL — and that path is reached from ordinary, unauthenticated-looking Api traffic
+(`ChannelAccessService.CanViewUsageStatsAsync`, `MyChannelsService`), not just an admin tool.
+ASP.NET Core's default `HttpClientFactory` logging handlers log the outgoing request URI at
+`Information` unless told otherwise. The Worker's `appsettings.json` already carried
+`"System.Net.Http.HttpClient": "Warning"` for exactly this reason; the Api's did not, so its own
+outgoing calls — including this one — were logged at the default level with the Twitch user id
+still in the URL. Added the same override to the Api's base `appsettings.json`. Neither
+`docker-compose.yml` nor `docker-compose.prod.yml` sets `ASPNETCORE_ENVIRONMENT` for either
+service, so `appsettings.Development.json` is never loaded in a container and the base file is what
+actually governs there — the fix had to land in `appsettings.json`, not the `Development` overlay,
+for it to take effect in dev-docker and prod alike.
+
 ### 2026-09-23 — Chat content and chatter identities stay out of Worker logs at the default level (#246)
 
 **Betrifft:** `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Worker/IrcLineSpliceRule.cs` ·
