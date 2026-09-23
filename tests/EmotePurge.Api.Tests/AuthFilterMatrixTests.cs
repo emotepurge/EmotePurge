@@ -135,6 +135,46 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Join_Answers409_WithChannelCapacityReached_WhenTheServiceReportsCapacityReached()
+    {
+        // The handler's own status contract (not the filter's): a caller who is allowed to manage the
+        // channel can still be turned away because the configured cap on active channels
+        // (Channels:MaxActiveChannels) has no room left. This is the one new-code branch in the join
+        // handler that a filter test alone cannot reach.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelCapacityReached, await ReadErrorCodeAsync(response));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Join_PassesIsGlobalAdminFromTheAccessService_ToJoinAsync(bool isGlobalAdmin)
+    {
+        // The handler rebuilds the principal and asks IsGlobalAdmin itself rather than reusing the
+        // filter's decision (see the comment in ChannelEndpoints), so this is a distinct call to pin:
+        // a global admin must never be turned away by the capacity cap, and JoinAsync is what decides
+        // that — it can only do so if this argument carries what the access service actually answered.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(isGlobalAdmin);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        await _factory.Channels.Received(1)
+            .JoinAsync(Channel, Arg.Any<AuditActor>(), isGlobalAdmin, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task GlobalAdminFilter_Answers403_ForANonAdmin_EvenOnTheirOwnChannel()
     {
         // Purge sits behind the admin filter rather than the management filter: a broadcaster may
