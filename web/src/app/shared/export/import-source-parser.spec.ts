@@ -41,14 +41,52 @@ describe('parseImportSource', () => {
     expect(result.source.discardedRows).toBe(0);
   });
 
-  it('sets imageUrl to null for every parsed row — a file never carries one', () => {
-    // emote-list-export.ts writes only id and name (the file format is unchanged); a row read
-    // back out of a file must say so honestly rather than guess at an image from the id.
+  it('sets imageUrl to null for every parsed row when the file omits it', () => {
+    // The fixture rows above have no `imageUrl` field at all (an older, pre-#230 file) — a row read
+    // back out of one must say so honestly rather than guess at an image from the id.
     const result = parseImportSource(envelope({}), 'emotes.json');
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.source.rows.every((row) => row.imageUrl === null)).toBe(true);
+  });
+
+  it('reads a non-empty imageUrl through when the file carries one (#230)', () => {
+    const result = parseImportSource(
+      envelope({
+        rows: [
+          {
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            imageUrl: 'https://cdn.7tv.app/emote/7tv-1/2x.webp',
+          },
+          { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: '' },
+        ],
+      }),
+      'emotes.json',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.source.rows).toEqual([
+      {
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        imageUrl: 'https://cdn.7tv.app/emote/7tv-1/2x.webp',
+      },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
+    ]);
+  });
+
+  it('maps a non-string imageUrl to null rather than passing it through', () => {
+    const result = parseImportSource(
+      envelope({ rows: [{ sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: 42 }] }),
+      'emotes.json',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.source.rows[0].imageUrl).toBeNull();
   });
 
   it("maps a usage export's emoteName onto ImportRow.name", () => {

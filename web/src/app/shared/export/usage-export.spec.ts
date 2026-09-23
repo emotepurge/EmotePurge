@@ -33,6 +33,7 @@ function usageSourceRow(overrides: Partial<UsageExportSourceRow> = {}): UsageExp
   return {
     emoteName: 'PogU',
     sevenTvEmoteId: '01ABC',
+    imageUrl: 'https://cdn.7tv.app/x',
     totalUseCount: 42,
     previousWindowUseCount: 12,
     lastUsedDate: '2026-08-01',
@@ -123,6 +124,7 @@ describe('usageJson', () => {
     expect(parsed.rows[0]).toEqual({
       emoteName: 'PogU',
       sevenTvEmoteId: '01ABC',
+      imageUrl: 'https://cdn.7tv.app/x',
       totalUseCount: 42,
       previousWindowUseCount: 12,
       lastUsedDate: '2026-08-01',
@@ -154,6 +156,7 @@ describe('usageJson', () => {
     expect(parsed.rows[0]).toEqual({
       emoteName: 'PogU',
       sevenTvEmoteId: '01ABC',
+      imageUrl: 'https://cdn.7tv.app/x',
       totalUseCount: null,
       previousWindowUseCount: null,
       lastUsedDate: '2026-08-01',

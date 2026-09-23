@@ -12,11 +12,12 @@ import { sanitizeFilenamePart } from './file-download';
  * mutation needs.
  */
 
-// Deliberately not `= ImportRow`: `ImportRow` also carries `imageUrl` (for the target comparison
-// in memory), but this file's wire format is unchanged — a written emote-list export still names
-// only id and name, so the row shape written to disk stays narrower than the in-memory
-// `ImportRow`.
-export type EmoteListRow = Pick<ImportRow, 'sevenTvEmoteId' | 'name'>;
+// Same three fields as `ImportRow`: since #230 the written file carries the emote's image URL
+// alongside id and name, taken from the same source the rows came from (`EmoteListItem.imageUrl`
+// for the channel grid, `EmoteUsageTotal.imageUrl` for the usage-export purpose that builds this
+// envelope too) — never derived from `sevenTvEmoteId`. `null` only for a row whose source itself
+// had none.
+export type EmoteListRow = Pick<ImportRow, 'sevenTvEmoteId' | 'name' | 'imageUrl'>;
 
 export interface EmoteListMeta {
   sourceEmoteSetId: string;
@@ -41,7 +42,11 @@ export function buildEmoteListEnvelope(input: {
       rowCount: input.rows.length,
       scope: input.scope,
     },
-    rows: input.rows.map((row) => ({ sevenTvEmoteId: row.sevenTvEmoteId, name: row.name })),
+    rows: input.rows.map((row) => ({
+      sevenTvEmoteId: row.sevenTvEmoteId,
+      name: row.name,
+      imageUrl: row.imageUrl,
+    })),
   });
 }
 

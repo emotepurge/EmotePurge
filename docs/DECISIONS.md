@@ -19,6 +19,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/core/seven-tv/seven-tv-delete.service.ts` · `web/src/app/core/emotes/emote-list-item.model.ts` ·
 `web/src/app/shared/export/transfer-run-export.ts` · `web/src/app/shared/export/export-envelope.ts` ·
 `web/src/app/shared/export/import-source-parser.ts` · `web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/emote-list-export.ts` · `web/src/app/shared/export/usage-export.ts` ·
+`web/src/app/shared/export/usage-export-purposes.ts` ·
 `web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` ·
 `web/src/app/shared/seven-tv/import-preview.ts` · `web/src/app/shared/seven-tv/slot-projection.ts` ·
 `web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
@@ -127,8 +129,19 @@ active, closing the tab asks first (`beforeunload`); an add-only run never does.
 (`EmoteListItemDto.ImageUrl`, additive; `EmoteListQueryService`), carried through unchanged as
 `EmoteListItem.imageUrl` on the frontend. `ImportRow.imageUrl` mirrors it for every live source
 (channel grid, foreign channel, leaderboard) — never derived from `sevenTvEmoteId`, since a static
-and an animated emote use different 7TV URL shapes. A file-sourced row has no image to offer and
-stays `null`: `emote-list-export.ts`'s wire format only ever wrote id and name, and still does.
+and an animated emote use different 7TV URL shapes. A file-sourced row used to have no image to
+offer, because the wire format wrote only id and name.
+
+**Export files now carry each row's image URL too**, closing that last gap. `emote-list-export.ts`
+and `usage-export.ts`'s JSON writers add an `imageUrl` field, taken from the same in-app rows the
+rest of each row already comes from (`EmoteListItem.imageUrl`, `EmoteUsageTotal.imageUrl`) — still
+never derived from the id. The field is additive and optional: `formatVersion` stays `1`, and
+`import-source-parser.ts` reads it only when it is a non-empty string, mapping anything else
+(missing, empty, non-string) to `null`. A file exported before this change therefore keeps parsing
+unchanged, with `imageUrl: null` on every row — operator decision is to re-export rather than teach
+the parser to guess. The CSV usage export stays untouched: it is not an import source (the ingest
+dialog's file control only ever accepts `application/json`, `file-import-step.ts`), so there was
+never a contract to extend there.
 
 ---
 

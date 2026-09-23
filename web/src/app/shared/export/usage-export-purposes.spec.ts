@@ -112,6 +112,7 @@ describe('buildUsageExportPurposeDownload — usage-json', () => {
     expect(parsed.rows[0]).toMatchObject({
       emoteName: 'PogU',
       sevenTvEmoteId: '01ABC',
+      imageUrl: 'https://cdn.7tv.app/x',
       trend: 'rising',
     });
   });
@@ -140,8 +141,8 @@ describe('buildUsageExportPurposeDownload — emote-list', () => {
       scope: 'selection',
     });
     expect(parsed.rows).toEqual([
-      { sevenTvEmoteId: '01ABC', name: 'PogU' },
-      { sevenTvEmoteId: '01DEF', name: 'Kappa' },
+      { sevenTvEmoteId: '01ABC', name: 'PogU', imageUrl: 'https://cdn.7tv.app/x' },
+      { sevenTvEmoteId: '01DEF', name: 'Kappa', imageUrl: 'https://cdn.7tv.app/x' },
     ]);
   });
 

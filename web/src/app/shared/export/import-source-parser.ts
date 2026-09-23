@@ -20,6 +20,7 @@ interface RawImportRow {
   sevenTvEmoteId?: unknown;
   name?: unknown;
   emoteName?: unknown;
+  imageUrl?: unknown;
 }
 
 export function parseImportSource(
@@ -61,9 +62,11 @@ export function parseImportSource(
     const id = row?.sevenTvEmoteId;
     const name = row?.[nameField];
     if (typeof id === 'string' && id.length > 0 && typeof name === 'string') {
-      // A file never carries an image URL (`emote-list-export.ts` writes only id and name) — `null`
-      // here is the honest answer, not a guess derived from the id.
-      validRows.push({ sevenTvEmoteId: id, name, imageUrl: null });
+      // `imageUrl` is additive (#230): a file written since carries it, an older file or a broken
+      // field reads back as `null` — the honest answer, never a guess derived from the id.
+      const imageUrl =
+        typeof row?.imageUrl === 'string' && row.imageUrl.length > 0 ? row.imageUrl : null;
+      validRows.push({ sevenTvEmoteId: id, name, imageUrl });
     }
   }
 
