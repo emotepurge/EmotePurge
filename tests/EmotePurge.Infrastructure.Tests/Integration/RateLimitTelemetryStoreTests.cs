@@ -306,6 +306,34 @@ public class RateLimitTelemetryStoreTests(RedisFixture fixture)
         Assert.Empty(snapshot.Caches);
         Assert.Empty(snapshot.Providers);
         Assert.Null(snapshot.LastLocalRejection);
+
+        // The one call that must say whether it reached the store: the account deletion retries on false.
+        Assert.False(await store.ForgetPartitionAsync("1"));
+    }
+
+    [Fact]
+    public async Task ForgetPartitionAsync_ClearsTheSlotOfThatPartitionOrItsSubPartitions_AndNoOtherSlot()
+    {
+        var clock = NewClock();
+        var store = NewStore(clock);
+        var policy = NewName("policy");
+
+        // A voting rejection partitions by "{userId}:{sessionId}" — still that user's.
+        await store.RecordPolicyDecisionAsync(new RateLimitPolicyDecision(policy, false, "POST", "/api/x", "4242:7", 1));
+        Assert.True(await store.ForgetPartitionAsync("4242"));
+        Assert.Null((await store.ReadAsync()).LastLocalRejection);
+
+        // Nothing stored at all is success too — there is nothing of this partition left.
+        Assert.True(await store.ForgetPartitionAsync("4242"));
+
+        // A different user whose id merely starts with the same digits keeps their slot.
+        await store.RecordPolicyDecisionAsync(new RateLimitPolicyDecision(policy, false, "POST", "/api/x", "42420", 1));
+        Assert.True(await store.ForgetPartitionAsync("4242"));
+        Assert.Equal("42420", (await store.ReadAsync()).LastLocalRejection?.Partition);
+
+        // Counters are keyed by policy, never by partition, and stay as they were.
+        var counters = Assert.Single((await store.ReadAsync()).Policies, p => p.PolicyName == policy);
+        Assert.Equal(2, counters.RejectedLast24Hours);
     }
 
     private static RateLimitPolicyDecision Accepted(string policy) =>
