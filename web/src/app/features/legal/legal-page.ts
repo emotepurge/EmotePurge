@@ -1,7 +1,7 @@
 import { NgOptimizedImage } from '@angular/common';
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, input } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { catchError, of } from 'rxjs';
 
@@ -16,9 +16,11 @@ import { NoticeBanner } from '../../shared/ui/notice-banner';
 
 /**
  * Renders `/imprint` and `/privacy` (issue #247) — the same component for both, distinguished by
- * the `kind` route data set in `app.routes.ts`. Deliberately outside the app shell and every auth
- * guard: requirement 3 is reachability without being logged in, before the Twitch OAuth redirect
- * even happens, so this brings its own minimal frame the way `LoginPage` does.
+ * the `kind` route data set in `app.routes.ts` and bound to the `kind` input below via the app's
+ * `withComponentInputBinding()` (`app.config.ts`) — the same mechanism `channelName` and friends
+ * use for path params, applied here to static `data` instead. Deliberately outside the app shell
+ * and every auth guard: requirement 3 is reachability without being logged in, before the Twitch
+ * OAuth redirect even happens, so this brings its own minimal frame the way `LoginPage` does.
  *
  * No page-chrome `<h1>` of its own — the rendered Markdown's own top heading (the operator's
  * document title) is that heading; adding a second one above it would print the same title twice.
@@ -77,7 +79,7 @@ import { NoticeBanner } from '../../shared/ui/notice-banner';
         } @else {
           <app-empty-state
             class="mt-6 block"
-            [title]="notConfiguredTitleKey | transloco"
+            [title]="notConfiguredTitleKey() | transloco"
             [description]="'legal.notConfigured.description' | transloco"
           />
         }
@@ -86,27 +88,23 @@ import { NoticeBanner } from '../../shared/ui/notice-banner';
   `,
 })
 export class LegalPage {
-  private readonly route = inject(ActivatedRoute);
+  readonly kind = input.required<LegalDocumentKind>();
+
   private readonly languageService = inject(LanguageService);
   private readonly legalService = inject(LegalService);
 
   protected readonly logoSrc = LOGO_SRC;
 
-  // Route data, not a component input: the two routes ('/imprint', '/privacy') are distinct path
-  // segments, so a fresh instance of this component is created per navigation between them and the
-  // snapshot value never needs to change under an existing instance.
-  private readonly kind: LegalDocumentKind =
-    (this.route.snapshot.data['kind'] as LegalDocumentKind | undefined) ?? 'imprint';
-
-  protected readonly notConfiguredTitleKey =
-    this.kind === 'imprint'
+  protected readonly notConfiguredTitleKey = computed(() =>
+    this.kind() === 'imprint'
       ? 'legal.imprint.notConfiguredTitle'
-      : 'legal.privacy.notConfiguredTitle';
+      : 'legal.privacy.notConfiguredTitle',
+  );
 
   protected readonly documentResource = rxResource({
-    params: () => this.languageService.lang(),
+    params: () => ({ kind: this.kind(), language: this.languageService.lang() }),
     stream: ({ params }) =>
-      this.legalService.getDocument(this.kind, params).pipe(catchError(() => of(null))),
+      this.legalService.getDocument(params.kind, params.language).pipe(catchError(() => of(null))),
   });
 
   // value() throws once a resource is in its error state (project convention — see
