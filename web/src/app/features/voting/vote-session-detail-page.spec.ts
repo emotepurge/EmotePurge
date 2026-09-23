@@ -427,3 +427,178 @@ describe('VoteSessionDetailPage — the selection is scoped to channel:session (
     expect(component['selection'].selectedKeys()).toEqual(['a']);
   });
 });
+
+/**
+ * The export button and the low-participation notice are mod-team-only (`canViewUsageStats`, a
+ * superset of `canManage` that also admits 7TV editors — see DECISIONS). Unlike the other blocks
+ * in this file, the real template is kept (no `TestBed.overrideComponent`) — same pattern as
+ * `usage-stats-page.spec.ts`'s "selection-pruned notice accessibility" block — because presence in
+ * the DOM, not a signal's value, is what these two lock decisions are actually about. Mounted with
+ * an empty ballot throughout: `hasUsageData()`/`canSelectForDelete()` then stay false, so neither
+ * the mass-delete panel nor the sprite grid renders, and the only thing left to assert on is the
+ * header button and the notice banner.
+ */
+describe('VoteSessionDetailPage — export button and low-participation notice are mod-team-only', () => {
+  let fixture: ComponentFixture<VoteSessionDetailPage>;
+  let httpMock: HttpTestingController;
+
+  const CHANNEL = 'sensitron';
+  const SESSION_ID = '7';
+  // TranslocoTestingModule below is configured with an empty `de` catalog, so every `| transloco`
+  // renders its raw key rather than real copy (same pattern as usage-stats-page.spec.ts asserting
+  // `hiddenSelectedFilterKey()` against a key, not a sentence) — matches Rule 12: identifying which
+  // notice/button appeared, not pinning a translation's wording.
+  const EXPORT_ARIA_LABEL = 'export.buttonAriaLabel';
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(VoteSessionDetailPage);
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', CHANNEL);
+    fixture.componentRef.setInput('sessionId', SESSION_ID);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Voter count under LOW_PARTICIPATION_THRESHOLD on an active, non-secret session, so
+   * `showLowParticipation()` is true independently of the permission this block is about — every
+   * case here isolates `canViewUsageStats` as the only varying input.
+   *
+   * `withWithheldTallies` additionally sets `hideResultsUntilEnd` and gives the one emote a
+   * null tally, which — independently of `canViewUsageStats` — makes `talliesWithheld()` true and
+   * renders the `resultsHiddenNotice` banner alongside whatever the low-participation assertion is
+   * checking. Codex review [P3]: without a second real notice on screen, a test asserting "no
+   * `app-notice-banner` at all" cannot tell a correctly-gated low-participation notice apart from a
+   * mount that renders no banner for an unrelated reason.
+   *
+   * `permissionsResource` (`rxResource`) settles its `value()`/`status()` signals through a
+   * microtask rather than inside `TestRequest.flush()` itself — unlike the plain `HttpClient`
+   * calls this page also makes, flushing it and calling `detectChanges()` right after is not
+   * enough for the DOM to reflect it yet. The other describe blocks in this file never hit this,
+   * because none of them assert on anything downstream of `canManage()`/`canViewUsageStats()`.
+   * A zero-delay `setTimeout` round-trip drains that microtask before the final `detectChanges()`.
+   */
+  async function mount(
+    canViewUsageStats: boolean,
+    { withWithheldTallies = false }: { withWithheldTallies?: boolean } = {},
+  ): Promise<void> {
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`, {
+      sessionId: Number(SESSION_ID),
+      title: 'Test session',
+      allowedVoterRoles: 1,
+      isActive: true,
+      startedAt: '2026-01-01T00:00:00Z',
+      endedAt: null,
+      voterCount: 2,
+      hideResultsUntilEnd: withWithheldTallies,
+      emotes: withWithheldTallies
+        ? [
+            {
+              emoteId: 'e1',
+              emoteName: 'Emote1',
+              sevenTvEmoteId: '7tv-e1',
+              // Not '' — this describe block keeps the real template (unlike the rest of this
+              // file), so the sprite actually mounts and NgOptimizedImage rejects an empty ngSrc
+              // (NG02952).
+              imageUrl: 'https://cdn.7tv.app/emote/1/1x.webp',
+              totalUseCount: null,
+              keepVotes: null,
+              deleteVotes: null,
+              score: null,
+              isArchived: false,
+              myVote: null,
+            },
+          ]
+        : [],
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/permissions`, {
+      canManage: false,
+      canViewUsageStats,
+      isGlobalAdmin: false,
+      isTracked: true,
+      isBotActive: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  /**
+   * Finds a `role="status"` element by its rendered content rather than by tag — `app-notice-banner`
+   * is not the only thing that carries the role (the emote-count paragraph and
+   * `DockOutcomeAnnouncer`'s permanent sr-only region do too), and more than one *notice banner* can
+   * be on screen at once (Codex review [P3]; see `withWithheldTallies` above). Matching on the
+   * rendered key, not a tag, is what actually identifies which notice this is — the tag alone
+   * cannot.
+   */
+  function noticeWithText(text: string): Element | null {
+    const candidates: Element[] = Array.from(
+      fixture.nativeElement.querySelectorAll('[role="status"]'),
+    );
+    return candidates.find((element) => element.textContent?.includes(text)) ?? null;
+  }
+
+  it('shows the export button to a mod-team viewer', async () => {
+    await mount(true);
+
+    const button: HTMLButtonElement | null = fixture.nativeElement.querySelector(
+      `button[aria-label="${EXPORT_ARIA_LABEL}"]`,
+    );
+    expect(button).not.toBeNull();
+  });
+
+  it('hides the export button from a plain voter', async () => {
+    await mount(false);
+
+    const button: HTMLButtonElement | null = fixture.nativeElement.querySelector(
+      `button[aria-label="${EXPORT_ARIA_LABEL}"]`,
+    );
+    expect(button).toBeNull();
+  });
+
+  it('shows the low-participation notice to a mod-team viewer', async () => {
+    await mount(true);
+
+    // voterCount: 2 selects the plural form via pluralKey() — see the key's own definition.
+    expect(noticeWithText('voting.detail.lowParticipation.other')).not.toBeNull();
+  });
+
+  it('hides the low-participation notice from a plain voter, even though the count is under the threshold and another notice is showing', async () => {
+    await mount(false, { withWithheldTallies: true });
+
+    // Sanity check: a real, different notice really is on screen — proves the assertion below is
+    // about this specific notice, not merely "no banner rendered at all" (Codex review [P3]).
+    expect(noticeWithText('voting.detail.resultsHiddenNotice')).not.toBeNull();
+    expect(noticeWithText('voting.detail.lowParticipation')).toBeNull();
+  });
+});

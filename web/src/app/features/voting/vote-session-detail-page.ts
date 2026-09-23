@@ -25,6 +25,7 @@ import { pluralKey } from '../../core/i18n/plural';
 import { LIVE_EVENT_TYPES, LiveEvent, channelLiveUrl } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { VoteStripIconMode, voteStripIconMode } from '../../core/voting/vote-strip-icon';
 import {
   VoteSessionResult,
   VoteSessionResults,
@@ -167,8 +168,6 @@ export class VoteSessionDetailPage {
   protected readonly stripPx = computed(() =>
     this.cellPx() === CELL_NARROW_PX ? STRIP_NARROW_PX : STRIP_WIDE_PX,
   );
-  /** Enough room for the thumb icon beside the tally; below it the number carries the button. */
-  protected readonly showVoteIcons = computed(() => this.stripPx() >= STRIP_NARROW_PX);
   protected readonly rowHeight = computed(
     () => this.cellPx() + this.stripPx() + RATIO_BAR_PX + ATLAS_GAP_PX,
   );
@@ -202,6 +201,17 @@ export class VoteSessionDetailPage {
 
   protected readonly canManage = computed(
     () => this.permissionsResource.value()?.canManage ?? false,
+  );
+
+  // The mod-team boundary for the two elements below (operator decision, see DECISIONS): a
+  // superset of canManage, so it also admits the channel's 7TV editors, who see the usage figures
+  // on the cells but may not manage the channel. Defaults to false while the permissions probe is
+  // still in flight — same pattern canManage above already uses for the "end session" button — so
+  // neither element is ever shown to someone the server has not yet confirmed as mod-team; the
+  // trade-off, same as canManage's, is that a mod can see them appear a beat after the header
+  // above does, if /permissions happens to resolve after /results.
+  protected readonly canViewUsageStats = computed(
+    () => this.permissionsResource.value()?.canViewUsageStats ?? false,
   );
 
   // The server reports TotalUseCount as null to everyone CanManageChannelAsync rejects, so data
@@ -463,6 +473,12 @@ export class VoteSessionDetailPage {
 
   protected inspect(emote: VoteSessionResult): void {
     this.inspectedId.set(emote.emoteId);
+  }
+
+  /** Thin wrapper over the pure `voteStripIconMode` (`core/voting/vote-strip-icon.ts`) — it needs
+   *  the current strip context, which lives here, not there. */
+  protected stripIconMode(tally: number | null): VoteStripIconMode {
+    return voteStripIconMode(this.stripPx() === STRIP_NARROW_PX, tally);
   }
 
   /** Share of the keep votes in the ratio bar under the strip; null while a tally is withheld. */
