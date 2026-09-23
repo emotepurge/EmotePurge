@@ -9,6 +9,12 @@ import { LeaderboardSort } from './leaderboard.model';
 export interface ImportRow {
   sevenTvEmoteId: string;
   name: string;
+  /** `null` for a file row whose file either predates the export writers carrying an image URL
+   *  (#230) or whose `imageUrl` field failed to parse as a non-empty string
+   *  (`import-source-parser.ts`) — an honest "don't know", never a guess derived from the id. Every
+   *  live source (grid, foreign channel, leaderboard) and a file written since #230 carries its
+   *  emote's own image URL through unchanged. */
+  imageUrl: string | null;
 }
 
 /**

@@ -77,8 +77,9 @@ export function markedCountNoticeKey(count: number): string {
  *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
- * just below), then restore (the marking half) before import, and within each the skipped count,
- * the check-unavailable notice, then the resync acknowledgement. `role="status"` is implicitly
+ * just below), then restore (the marking half) before import, and within each the skipped count
+ * (for restore followed by its name-taken count), the check-unavailable notice, then the resync
+ * acknowledgement. `role="status"` is implicitly
  * `aria-atomic="true"` (WAI-ARIA 1.2, §status), and Blink/WebKit apply that default — so without an
  * explicit override, a new or changed paragraph would make the whole region, standing ones
  * included, be read again. This multi-message region therefore sets `aria-atomic="false"` on its
@@ -126,6 +127,11 @@ export function markedCountNoticeKey(count: number): string {
         {{ restoreSkippedKey() | transloco: { count: restoreService.skippedDuplicates() } }}
       </p>
     }
+    @if (restoreService.duplicateNoticePending() && restoreService.skippedNameTaken() > 0) {
+      <p>
+        {{ restoreNameTakenKey() | transloco: { count: restoreService.skippedNameTaken() } }}
+      </p>
+    }
     @if (restoreService.duplicateNoticePending() && !restoreService.duplicateCheckAvailable()) {
       <p>{{ 'restore.duplicateCheckUnavailable' | transloco }}</p>
     }
@@ -140,6 +146,14 @@ export function markedCountNoticeKey(count: number): string {
       }
       @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
         <p>{{ 'import.duplicateCheckUnavailable' | transloco }}</p>
+      }
+      @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
+        <p>
+          {{
+            importReplaceSkippedDriftKey()
+              | transloco: { count: importService.replaceSkippedDrift() }
+          }}
+        </p>
       }
       @if (importCopiedNotActive(); as notActive) {
         <p>{{ 'import.summary.copiedNotActive' | transloco: notActive }}</p>
@@ -172,8 +186,14 @@ export class DockOutcomeAnnouncer {
   protected readonly restoreSkippedKey = computed(() =>
     pluralKey(this.restoreService.skippedDuplicates(), 'restore.skippedDuplicates'),
   );
+  protected readonly restoreNameTakenKey = computed(() =>
+    pluralKey(this.restoreService.skippedNameTaken(), 'restore.skippedNameTaken'),
+  );
   protected readonly importSkippedKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+  protected readonly importReplaceSkippedDriftKey = computed(() =>
+    pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),
   );
   protected readonly restoreResyncKey = computed(() =>
     resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),

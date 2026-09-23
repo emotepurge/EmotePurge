@@ -8,12 +8,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
-import { ImportSource } from '../../core/seven-tv/import-source';
+import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { TransferPlan } from '../../core/seven-tv/transfer-plan';
 import { PurgeRunRow } from '../export/purge-run-export';
 import { FileImportResult } from './file-import-step';
 import { ImportSourceDialogResult } from './import-source-dialog';
@@ -56,7 +57,7 @@ function importSource(overrides: Partial<ImportSource> = {}): ImportSource {
       channelName: null,
       envelopeKind: 'emote-list',
     },
-    rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+    rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
     duplicatesCollapsed: 0,
     discardedRows: 0,
     ...overrides,
@@ -101,6 +102,11 @@ interface Harness {
   detect(): void;
   triggerDisabled(): boolean;
   click(): void;
+}
+
+/** The plan a confirmation that resolved nothing hands to the run: one `add` row per row. */
+function addPlan(rows: ImportRow[]): TransferPlan {
+  return { rows: rows.map((row) => ({ action: 'add', source: row, alias: row.name })) };
 }
 
 describe('ImportTrigger', () => {
@@ -262,13 +268,14 @@ describe('ImportTrigger', () => {
 
       // Fourth argument is the #149/T5 duplicate-check skip count — 0 because the fresh 7TV read
       // (`httpPost`) defaults to an empty target set. Fifth is whether that check actually ran
-      // (#149).
+      // (#149), sixth its name-taken count.
       expect(startRestore).toHaveBeenCalledWith(
         'set-a',
         'channel-a',
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
   });
@@ -301,6 +308,7 @@ describe('ImportTrigger', () => {
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
 
@@ -360,10 +368,10 @@ describe('ImportTrigger', () => {
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
       expect(startImport).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // Only now, after the confirmation, does the missing-token case appear.
@@ -382,9 +390,10 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -399,10 +408,10 @@ describe('ImportTrigger', () => {
       });
       expect(dialogOpen).toHaveBeenCalledTimes(2);
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // No third dialog: the flow's own (already-satisfied) token check does not prompt twice.
@@ -455,10 +464,10 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -470,9 +479,10 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         { kind: 'seventv-channel', channelName: 'handofblood' },
-        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });
@@ -505,10 +515,10 @@ describe('ImportTrigger', () => {
       expect(dialogOpen).toHaveBeenCalledTimes(2);
       expect(getSetStatus).toHaveBeenCalledWith(CURRENT_CHANNEL);
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: CURRENT_SET,
         targetSetName: CURRENT_SET,
-        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -520,9 +530,10 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-        [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });
@@ -562,6 +573,7 @@ describe('ImportTrigger', () => {
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
 
@@ -592,10 +604,10 @@ describe('ImportTrigger', () => {
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
       expect(getSetStatus).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
@@ -607,9 +619,10 @@ describe('ImportTrigger', () => {
           isActiveSet: false,
         },
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -650,18 +663,19 @@ describe('ImportTrigger', () => {
 
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-channel', channelName: 'handofblood' },
-        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL' }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -700,18 +714,19 @@ describe('ImportTrigger', () => {
 
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
       });
 
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-        [{ sevenTvEmoteId: '7tv-2', name: 'Dance' }],
+        addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });
@@ -744,19 +759,20 @@ describe('ImportTrigger', () => {
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
       expect(getSetStatus).not.toHaveBeenCalled();
 
-      closedAt<{ targetSetId: string; targetSetName: string; rows: unknown[] }>(1).next({
+      closedAt<{ targetSetId: string; targetSetName: string; plan: TransferPlan }>(1).next({
         targetSetId: 'set-halloween',
         targetSetName: 'Halloween',
-        rows: [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        plan: addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
       });
 
       // Not the active set: no post-run resync of the channel is implied either.
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa' }],
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });

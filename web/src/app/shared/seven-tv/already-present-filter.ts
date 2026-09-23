@@ -1,7 +1,8 @@
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of } from 'rxjs';
 
-import { loadSevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import { ReplaceOrAdoptTransferRow, TransferPlan } from '../../core/seven-tv/transfer-plan';
 
 export interface AlreadyPresentFilterResult<T> {
   /** `rows` minus every entry already present in the target set. What the run should actually send —
@@ -16,6 +17,14 @@ export interface AlreadyPresentFilterResult<T> {
    *  `UNAVAILABLE_WARNING` fallback in `import-target-loader.ts` — a failed check reads as "not
    *  verified", never as a false all-clear. */
   available: boolean;
+}
+
+/** `filterAlreadyPresent`'s result: the filter's own outcome plus the read it was computed from, so
+ *  a caller that needs a second comparison against the same state of the set (the import flow's
+ *  `verifyReplaceTargets`) does not have to read the set a second time. `null` when the read
+ *  failed — the same case as `available: false`. */
+export interface ImportAlreadyPresentFilterResult<T> extends AlreadyPresentFilterResult<T> {
+  entries: SevenTvSetEntries | null;
 }
 
 /**
@@ -70,22 +79,33 @@ export function filterAlreadyPresent<T extends { sevenTvEmoteId: string }>(
   httpClient: HttpClient,
   targetSetId: string,
   rows: readonly T[],
-): Observable<AlreadyPresentFilterResult<T>> {
+): Observable<ImportAlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
-    map(({ aliasesById }) => {
-      const filtered = rows.filter((row) => !aliasesById.has(row.sevenTvEmoteId));
-      return { rows: filtered, skipped: rows.length - filtered.length, available: true };
+    map((entries) => {
+      const filtered = rows.filter((row) => !entries.aliasesById.has(row.sevenTvEmoteId));
+      return { rows: filtered, skipped: rows.length - filtered.length, available: true, entries };
     }),
-    catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
+    catchError(() => of({ rows: [...rows], skipped: 0, available: false, entries: null })),
   );
 }
 
-/** A restore row: one purge-protocol row, re-added once per alias (spec #200, 7.2). `aliases`
- *  missing or empty means `[name]`, the same fallback the restore queue applies. */
+/** A restore row: one purge-protocol row or one removed transfer target, re-added once per alias
+ *  (spec #200, 7.2). `aliases` missing or empty means `[name]`, the same fallback the restore queue
+ *  applies. A `null` alias is an entry without an alias (only a transfer-run file records one). */
 export interface RestoreFilterRow {
   sevenTvEmoteId: string;
   name: string;
-  aliases?: readonly string[];
+  aliases?: readonly (string | null)[];
+}
+
+/** `filterAlreadyPresentForRestore`'s result: the shared filter outcome plus the aliases dropped
+ *  because another emote now holds their name (rule 4). Every alias of the input is accounted for
+ *  exactly once — sent (`rows`), `skipped` or `skippedNameTaken`. */
+export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilterResult<T> {
+  /** How many aliases were dropped because a *different* id holds that name in the target set.
+   *  Kept apart from `skipped` ("already present"): the entry is not back, it cannot come back under
+   *  that name. Always `0` when `available` is `false`. */
+  skippedNameTaken: number;
 }
 
 /**
@@ -93,74 +113,236 @@ export interface RestoreFilterRow {
  * ("middle rule", operator decision 2026-09-22, refining spec #200 7.2's literal
  * `(sevenTvEmoteId, alias)` comparison). Per row, against the target set's live entries:
  *
- * 1. **The id is not in the set** — the row goes through unchanged.
+ * 1. **The id is not in the set** — every alias of the row is missing (rule 4 still applies).
  * 2. **The id sits in the set under an alias the row does not name** — the whole row is dropped,
  *    exactly as the id-only check always did. Re-adding any of its aliases would put the same emote
  *    into the set a second time under another name: the #149 hole this filter exists for (7TV's
- *    `addEmote` only rejects a colliding alias string, never a second entry of the same id).
+ *    `addEmote` only rejects a colliding alias string, never a second entry of the same id). A live
+ *    entry *without* an alias counts as such an unnamed alias — unless the row itself names one
+ *    (`null`), in which case it is that entry of the row, not a foreign one.
  * 3. **The id sits in the set only under aliases the row names** — those aliases are dropped from
- *    the row, the rest are re-added. This is the partial retry of a #74 duplicate cell: a restore
+ *    the row, the rest are missing. This is the partial retry of a #74 duplicate cell: a restore
  *    in which `A` came back and `B` failed is re-run from the same protocol, and `B` is the only
  *    thing still missing. The id-only check dropped the whole row there, and `B` was then
- *    unrecoverable from the protocol (spec 7.2, "Vorprüfung des Restore"). A row all of whose
- *    aliases are already present drops out entirely.
+ *    unrecoverable from the protocol (spec 7.2, "Vorprüfung des Restore"). A row's `null` alias is
+ *    present when the id has a live entry without an alias (`aliaslessIds`), missing otherwise.
+ * 4. **A missing alias that a different id now holds in the set** is dropped from the row too, and
+ *    counted in `skippedNameTaken`, not in `skipped`. Its `ADD` could only ever end in 7TV's name
+ *    conflict (a burnt ticket and a red row): the name went to another emote since the file was
+ *    written — after a successful "replace target" transfer the source emote holds it by design,
+ *    after a purge someone may have reused it. Nothing is removed to make room; a restore only
+ *    closes gaps. The held names come from the same read (`aliasesById`), no second request, and
+ *    only named aliases are compared — a `null` alias names nothing yet.
  *
- * `skipped` counts **aliases**, i.e. `ADD`s not sent, not rows: the restore confirmation already
- * speaks in `ADD`s (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per
- * `ADD` (`${sevenTvEmoteId}#${alias}`), so what the run shows plus what this skipped adds up to the
- * number the dialog named. For every single-alias row — nearly all of them — the two counts are the
- * same thing. Fails open exactly like `filterAlreadyPresent` (see there).
+ * A row none of whose aliases is left drops out entirely. Every row, whichever source it came from
+ * (purge-run protocol, transfer-run file, finished delete run), goes through all four rules.
+ *
+ * `skipped` and `skippedNameTaken` count **aliases**, i.e. `ADD`s not sent, not rows (a `null`
+ * alias is one): the restore confirmation already speaks in `ADD`s
+ * (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per `ADD`
+ * (`${sevenTvEmoteId}#${alias}`), so what the run shows plus both counts adds up to the number the
+ * dialog named. For every single-alias row — nearly all of them — the two units are the same thing.
+ * Fails open exactly like `filterAlreadyPresent` (see there).
  *
  * `complete: false` from the read (the 10-page runaway guard, or a `totalCount` mismatch — K5 fix
  * round, see `seven-tv-set-entries.ts`) is deliberately **not** treated as a reason to fail open
  * here, unlike the delete run's own live alias read (`mass-delete-panel.ts`, spec 8.3's "a list
  * that only knows half must not delete"): failing open would return every row completely
  * unfiltered, while the per-alias comparison below, even against a partial read, still catches
- * every duplicate genuinely inside the pages it did see and drops exactly its already-present
- * aliases — strictly fewer wrong re-adds than discarding that signal outright would produce. This
- * only widens the existing, already-accepted gap (a window remains, always has, between any read —
- * complete or not — and each individual `addEmote` call); it does not create a new one. Restore
- * only ever fails open (available: false, nothing filtered) on an actual fetch/GraphQL error, same
- * as before this round.
+ * every duplicate and every taken name genuinely inside the pages it did see — strictly fewer wrong
+ * re-adds than discarding that signal outright would produce. This only widens the existing,
+ * already-accepted gap (a window remains, always has, between any read — complete or not — and each
+ * individual `addEmote` call); it does not create a new one. Restore only ever fails open
+ * (available: false, nothing filtered) on an actual fetch/GraphQL error.
  */
 export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   httpClient: HttpClient,
   targetSetId: string,
   rows: readonly T[],
-): Observable<AlreadyPresentFilterResult<T>> {
+): Observable<RestoreAlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
     map(({ aliasesById, aliaslessIds }) => {
+      const heldNames = new Set([...aliasesById.values()].flat());
       const kept: T[] = [];
       let skipped = 0;
+      let skippedNameTaken = 0;
       for (const row of rows) {
-        const rowAliases = row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
-        const present = aliasesById.get(row.sevenTvEmoteId);
-        if (present === undefined) {
-          // Never encountered at all — not in the set, not even under an aliasless entry (every
-          // entry this reader sees, aliased or not, gets a map entry; see `loadSevenTvSetEntries`).
-          kept.push(row);
-          continue;
-        }
-        // An entry 7TV lists without an alias occupies the set under a name the row cannot vouch
-        // for, so it takes rule 2 like any foreign alias would — even when the same id also has an
-        // aliased entry the row does name (K5 fix round, spec §37/§38: an aliasless entry must not
-        // be silently absorbed by a sibling aliased entry of the same id).
-        const foreignEntry =
-          aliaslessIds.has(row.sevenTvEmoteId) ||
-          present.length === 0 ||
-          present.some((alias) => !rowAliases.includes(alias));
-        if (foreignEntry) {
-          skipped += rowAliases.length;
-          continue;
-        }
-        const missing = rowAliases.filter((alias) => !present.includes(alias));
+        const rowAliases: readonly (string | null)[] =
+          row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
+        const missing = missingAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds);
         skipped += rowAliases.length - missing.length;
-        if (missing.length > 0) {
-          kept.push({ ...row, aliases: missing });
+        // A missing alias is never held by the row's own id (that would make it present), so any
+        // holder is another emote.
+        const free = missing.filter((alias) => alias === null || !heldNames.has(alias));
+        skippedNameTaken += missing.length - free.length;
+        if (free.length === rowAliases.length) {
+          kept.push(row);
+        } else if (free.length > 0) {
+          kept.push({ ...row, aliases: free });
         }
       }
-      return { rows: kept, skipped, available: true };
+      return { rows: kept, skipped, skippedNameTaken, available: true };
     }),
-    catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
+    catchError(() => of({ rows: [...rows], skipped: 0, skippedNameTaken: 0, available: false })),
   );
+}
+
+/** Rules 1–3 of `filterAlreadyPresentForRestore` for one row: the aliases of `rowAliases` the set
+ *  does not hold under `id` yet — all of them when the id is absent, none when the id sits under
+ *  an entry the row does not name (rule 2). */
+function missingAliases(
+  id: string,
+  rowAliases: readonly (string | null)[],
+  aliasesById: ReadonlyMap<string, readonly string[]>,
+  aliaslessIds: ReadonlySet<string>,
+): (string | null)[] {
+  const present = aliasesById.get(id);
+  if (present === undefined) {
+    // Never encountered at all — not in the set, not even under an aliasless entry (every entry
+    // this reader sees, aliased or not, gets a map entry; see `loadSevenTvSetEntries`).
+    return [...rowAliases];
+  }
+  // An entry 7TV lists without an alias occupies the set under a name the row cannot vouch for, so
+  // it takes rule 2 like any foreign alias would — even when the same id also has an aliased entry
+  // the row does name (K5 fix round, spec §37/§38: an aliasless entry must not be silently absorbed
+  // by a sibling aliased entry of the same id). A row that names an aliasless entry itself (`null`)
+  // does vouch for it: reading it as foreign would drop every such row without a trace.
+  const hasAliaslessLive = aliaslessIds.has(id);
+  const foreignEntry =
+    (hasAliaslessLive && !rowAliases.includes(null)) ||
+    present.some((alias) => !rowAliases.includes(alias));
+  if (foreignEntry) {
+    return [];
+  }
+  return rowAliases.filter((alias) =>
+    alias === null ? !hasAliaslessLive : !present.includes(alias),
+  );
+}
+
+/** Why a replace row's target no longer matches what the user confirmed. */
+export type ReplaceTargetDriftReason =
+  /** The target id is not in the set any more. */
+  | 'targetGone'
+  /** The colliding name now belongs to a different emote id. */
+  | 'nameHeldElsewhere'
+  /** The target id sits under a different set of named aliases. */
+  | 'aliasesChanged'
+  /** The target id gained or lost an entry without an alias. */
+  | 'aliaslessEntryChanged';
+
+/** One replace row whose target drifted, with what the set holds for that target id right now. */
+export interface ReplaceTargetDrift {
+  /** The row's key: its source `sevenTvEmoteId`, the same key the decisions map and the run queue
+   *  use. */
+  key: string;
+  reason: ReplaceTargetDriftReason;
+  /** The target id's live entries, taken from the same read — in the shape of
+   *  `TransferRowTarget`, minus the id, so a caller can overlay the row's confirmed target with it
+   *  and let the user confirm again. `null` when the target id is gone from the set. */
+  live: { aliases: string[]; hasAliaslessEntry: boolean } | null;
+}
+
+/**
+ * `verifyReplaceTargets`' result. `available: false` means the read cannot vouch for any target
+ * (it stopped short of the whole set, `complete: false`): **no** replace row passes, unlike the
+ * duplicate filter, which fails open — deleting on an unchecked basis is the worse outcome (spec
+ * #200, 8.3: a list that only knows half must not delete). A caller whose read failed outright
+ * applies the same rule without calling this function.
+ */
+export type ReplaceTargetVerification =
+  { available: true; drifted: ReplaceTargetDrift[] } | { available: false };
+
+/**
+ * Compares every `replace` row of `plan` with the target set as `entries` read it, at entry level:
+ * the target id is still in the set, the name the row replaces is still held by that id, the id's
+ * named aliases equal `target.aliases` as a set, and whether the id has an aliasless entry equals
+ * `target.hasAliaslessEntry`. A single `removeEmote` takes every entry of the id, so an entry the
+ * confirmed state did not know about — a new alias or a new aliasless entry — would be deleted
+ * without the user having seen it.
+ *
+ * Pure, over an already completed read, so the confirm dialog (before the recovery file is written)
+ * and the import flow (right before the run starts) compute the same comparison. Rows of any other
+ * action are ignored. The window between this read and each individual `removeEmote` stays open —
+ * the same residual race `filterAlreadyPresent` documents.
+ */
+export function verifyReplaceTargets(
+  entries: SevenTvSetEntries,
+  plan: TransferPlan,
+): ReplaceTargetVerification {
+  if (!entries.complete) {
+    return { available: false };
+  }
+  const drifted: ReplaceTargetDrift[] = [];
+  for (const row of plan.rows) {
+    if (row.action !== 'replace') {
+      continue;
+    }
+    const reason = replaceTargetDriftReason(entries, row);
+    if (reason === null) {
+      continue;
+    }
+    const targetId = row.target.sevenTvEmoteId;
+    const liveAliases = entries.aliasesById.get(targetId);
+    drifted.push({
+      key: row.source.sevenTvEmoteId,
+      reason,
+      live:
+        liveAliases === undefined
+          ? null
+          : { aliases: [...liveAliases], hasAliaslessEntry: entries.aliaslessIds.has(targetId) },
+    });
+  }
+  return { available: true, drifted };
+}
+
+/** `plan` with every replace target as `entries` read it: its aliases (in the read's order), its
+ *  aliasless entry and its 7TV default name. Meant for a read {@link verifyReplaceTargets} has just
+ *  passed, so the aliases only change in order — the second check right before the run
+ *  (`recheckTransferPlan` in `import-flow.ts`) compares against exactly these, and the finished run
+ *  protocol names an aliasless entry by the default name. Rows of any other action are returned
+ *  unchanged. */
+export function stampReplaceTargets(plan: TransferPlan, entries: SevenTvSetEntries): TransferPlan {
+  return {
+    rows: plan.rows.map((row) => {
+      if (row.action !== 'replace') {
+        return row;
+      }
+      const id = row.target.sevenTvEmoteId;
+      return {
+        ...row,
+        target: {
+          ...row.target,
+          aliases: [...(entries.aliasesById.get(id) ?? row.target.aliases)],
+          hasAliaslessEntry: entries.aliaslessIds.has(id),
+          defaultName: entries.defaultNameById.get(id) ?? null,
+        },
+      };
+    }),
+  };
+}
+
+function replaceTargetDriftReason(
+  entries: SevenTvSetEntries,
+  row: ReplaceOrAdoptTransferRow,
+): ReplaceTargetDriftReason | null {
+  const targetId = row.target.sevenTvEmoteId;
+  const liveAliases = entries.aliasesById.get(targetId);
+  if (liveAliases === undefined) {
+    return 'targetGone';
+  }
+  if (!liveAliases.includes(row.alias)) {
+    const heldElsewhere = [...entries.aliasesById].some(
+      ([id, aliases]) => id !== targetId && aliases.includes(row.alias),
+    );
+    return heldElsewhere ? 'nameHeldElsewhere' : 'aliasesChanged';
+  }
+  const confirmed = new Set(row.target.aliases);
+  const live = new Set(liveAliases);
+  if (confirmed.size !== live.size || [...confirmed].some((alias) => !live.has(alias))) {
+    return 'aliasesChanged';
+  }
+  if (entries.aliaslessIds.has(targetId) !== row.target.hasAliaslessEntry) {
+    return 'aliaslessEntryChanged';
+  }
+  return null;
 }

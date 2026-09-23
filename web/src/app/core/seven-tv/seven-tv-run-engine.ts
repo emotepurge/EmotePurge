@@ -46,7 +46,7 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 const RATE_LIMIT_PACING_MARGIN = 1.1;
 
 export interface RunQueueEmote {
-  /** Identity of this row within one run's queue — what `setStatus` matches on and what
+  /** Identity of this row within one run's queue — what `updateRow` matches on and what
    *  `RunResult.doneKeys` reports. Set by the calling service (spec #200, 7.2): a delete run keys
    *  by `sevenTvEmoteId` (one row per set-view cell, a #74 duplicate included — one `REMOVE` takes
    *  every entry), a restore run by `${sevenTvEmoteId}#${alias}` (one `ADD` per alias), an import
@@ -66,31 +66,79 @@ export interface RunQueueEmote {
   aliases?: readonly string[];
 }
 
-export type RunItemStatus = 'pending' | 'in-progress' | 'done' | 'failed' | 'cancelled';
+/** `unknown` is the outcome of a step whose answer never came out of 7TV's GraphQL layer — no
+ *  answer at all, an HTTP 5xx, or a `cancel()` that aborted the step's request — on an operation
+ *  that asks for it (`transportLossIsUnknown`).
+ *  7TV may or may not have applied that step; nothing in the run can tell. */
+export type RunItemStatus = 'pending' | 'in-progress' | 'done' | 'failed' | 'cancelled' | 'unknown';
 
 export interface RunQueueItem extends RunQueueEmote {
   status: RunItemStatus;
   errorMessage?: string;
+  /** How many of this row's steps 7TV confirmed with a success answer, whatever the row's final
+   *  status — a two-step row that ends `failed` or `unknown` with `completedSteps >= 1` had its first
+   *  mutation applied. `0` until the first answer. */
+  completedSteps: number;
+  /** Index of the step the row ended on when it ended `failed` or `unknown` — `0` for a
+   *  single-step row, never missing on those two statuses. For a row cancelled after a confirmed
+   *  step it is the first step 7TV never confirmed; for a row cancelled while a request was in
+   *  flight, the step of that request. `null` on every other status. */
+  failedStep: number | null;
+}
+
+/** What `abortOn` gets for a failed step — see the hook's own documentation for each field. */
+export interface RunFailure {
+  message: string;
+  httpStatus: number | null;
+  errorCode: string | null;
+  gqlStatus: number | null;
 }
 
 /** What a run does per emote. The engine owns pacing, retries, token handling and the queue; the
- *  operation owns only the mutation — REMOVE for the delete, ADD for the restore. */
+ *  operation owns only the mutations — REMOVE for the delete, ADD for the restore and the import.
+ *
+ *  A row can take more than one mutation (`stepCount`). The engine runs a row's steps strictly in
+ *  order and treats each one like a whole row of a single-step run: the same pacing delay before
+ *  the next step as before the next row, its own rate-limit backoff (a retry repeats only the step
+ *  that was rejected), its own entry in the closing request count. A step that fails ends the row —
+ *  no later step of that row is sent. `progress` keeps counting rows, not steps. */
 export interface RunOperation {
   /** Goes into the closing console measurement: `[EmotePurge] 7TV <label> finished`. */
   readonly label: string;
+  /** How many mutations this row takes. Omitted means one — the delete, the restore and the plain
+   *  import. A value below one is treated as one. */
+  stepCount?(emote: RunQueueEmote): number;
+  /** The request for one step of one row; `step` counts from `0` and a single-step operation can
+   *  ignore it. Called again for every rate-limit retry of that step. */
   buildRequest(
     setId: string,
     emote: RunQueueEmote,
+    step: number,
   ): {
     query: string;
     variables: Record<string, unknown>;
   };
   /**
-   * Called once per row that ends up `failed` — after its status is set on the queue, before the
-   * run paces itself for the next row. Returning `true` aborts the run synchronously: no further
-   * request is sent, every remaining `pending`/`in-progress` row becomes `cancelled`, and
-   * `onComplete` fires exactly once, immediately — no `RUN_DELAY_MS` wait, not even when the failed
-   * row was the run's last one.
+   * `true` makes a step whose answer never came out of 7TV's GraphQL layer end its row `unknown`
+   * instead of `failed`: no response at all (`httpStatus 0` — network loss, timeout) and every HTTP
+   * `5xx`, `500` included, since such an answer says that something failed but not whether before
+   * or after the write. Anything 7TV answered unambiguously keeps today's outcome: a GraphQL answer
+   * (HTTP 200, with or without `errors`) is a success, a rate-limit backoff or `failed`, and any
+   * HTTP `4xx` rejects the request before it is processed (`401`/`403` still clear the token, `429`
+   * still backs off). An `unknown` row sends no further step, is not passed to `abortOn` (there is
+   * no reason to weigh) and does not stop the run; `progress` counts it as finished, and it is not
+   * among the done keys of the `RunResult`. A `cancel()` that aborts a step's request in flight
+   * ends that row `unknown` too, for the same reason. Omitted means `false` — every existing run
+   * keeps `failed`, and a cancelled request keeps today's `cancelled`.
+   */
+  readonly transportLossIsUnknown?: boolean;
+  /**
+   * Called once per step that ends its row `failed` — after the row's status is set on the queue,
+   * before the run paces itself for the next row. The hook does not learn which step it was: whether
+   * to abort depends on the reason, not on the position. Returning `true` aborts the run
+   * synchronously: no further request is sent, every remaining `pending`/`in-progress` row becomes
+   * `cancelled`, and `onComplete` fires exactly once, immediately — no `RUN_DELAY_MS` wait, not even
+   * when the failed row was the run's last one.
    *
    * `message` is the raw 7TV GQL error text when 7TV rejected the mutation itself (untranslated —
    * matching on it is the caller's job), the already-translated text for an HTTP-layer failure
@@ -106,19 +154,20 @@ export interface RunOperation {
    * without an `extensions.code`, or the rate-limit give-up (synthesised locally after the retry
    * budget is spent, not read off a specific server error).
    *
-   * Not called for a successful row, for a rate-limited attempt that is still being retried (only
-   * the retry's final outcome reaches this hook), or for a row that is `cancelled`. A hook that
-   * throws is treated as `false` (the run continues) and the exception is reported via
-   * `console.error` — a broken hook is a reason to log, not to leave the queue half-finished.
+   * `gqlStatus` is the HTTP-like `extensions.status` 7TV puts on a GraphQL rejection — `409` for a
+   * name conflict on `updateEmoteAlias`, for one — and `null` for a transport failure, for the
+   * rate-limit give-up and for a GraphQL error without a status. Match on it, never on the text.
+   *
+   * Not called for a successful step, for a rate-limited attempt that is still being retried (only
+   * the retry's final outcome reaches this hook), for a row that is `cancelled`, or for a row that
+   * ends `unknown`. A hook that throws is treated as `false` (the run continues) and the exception
+   * is reported via `console.error` — a broken hook is a reason to log, not to leave the queue
+   * half-finished.
    *
    * Delete and restore leave this unset, which reproduces today's behaviour exactly: every failure
    * is recorded and the run keeps going.
    */
-  abortOn?(failure: {
-    message: string;
-    httpStatus: number | null;
-    errorCode: string | null;
-  }): boolean;
+  abortOn?(failure: RunFailure): boolean;
 }
 
 export interface RunResult {
@@ -132,9 +181,15 @@ export interface RunResult {
   finishedAt: number;
 }
 
-type RunOneResult =
-  | { success: true }
-  | { success: false; errorMessage: string; httpStatus: number | null; errorCode: string | null };
+interface RunStepFailure {
+  errorMessage: string;
+  httpStatus: number | null;
+  errorCode: string | null;
+  gqlStatus: number | null;
+}
+
+/** The outcome of one step, after any rate-limit retries. */
+type RunOneResult = { outcome: 'done' } | ({ outcome: 'failed' | 'unknown' } & RunStepFailure);
 
 /** The rate-limit numbers 7TV mirrors into a rejected mutation's `extensions.headers`. All values
  *  arrive as strings; `reset` is in seconds. Any of them can be missing. */
@@ -203,6 +258,9 @@ export class SevenTvRunEngine {
   private runSubscription: Subscription | null = null;
   private countdownSubscription: Subscription | null = null;
   private operation: RunOperation | null = null;
+  /** The row and step whose request is out and unanswered right now, `null` otherwise. Only
+   *  `cancel()` reads it: unsubscribing aborts that request, so its answer never arrives. */
+  private inFlight: { key: string; step: number } | null = null;
   private onComplete: ((result: RunResult) => void) | null = null;
 
   /** Pacing state for the running job. `currentDelayMs` is the only one the queue reads; the rest
@@ -229,7 +287,7 @@ export class SevenTvRunEngine {
   readonly progress: Signal<{ finished: number; total: number }> = computed(() => {
     const items = this.queue();
     const finished = items.filter(
-      (item) => item.status === 'done' || item.status === 'failed',
+      (item) => item.status === 'done' || item.status === 'failed' || item.status === 'unknown',
     ).length;
     return { finished, total: items.length };
   });
@@ -259,27 +317,23 @@ export class SevenTvRunEngine {
 
     this.operation = operation;
     this.onComplete = onComplete;
-    this.queue.set(emotes.map((emote) => ({ ...emote, status: 'pending' as RunItemStatus })));
+    this.queue.set(
+      emotes.map((emote) => ({
+        ...emote,
+        status: 'pending' as RunItemStatus,
+        completedSteps: 0,
+        failedStep: null,
+      })),
+    );
     this.isRunning.set(true);
     this.resetPacing();
 
     this.runSubscription = from(emotes)
       .pipe(
         concatMap((emote) => {
-          this.setStatus(emote.key, 'in-progress');
-          return this.runWithBackoff(setId, emote, operation, token).pipe(
-            tap((result) => {
-              this.setStatus(
-                emote.key,
-                result.success ? 'done' : 'failed',
-                result.success ? undefined : result.errorMessage,
-              );
-              if (!result.success) {
-                // Throws when the hook asks to stop — caught right below, never by the plain
-                // `error:` callback further down.
-                this.evaluateAbort(operation, result);
-              }
-            }),
+          this.updateRow(emote.key, { status: 'in-progress' });
+          const stepCount = operation.stepCount?.(emote) ?? 1;
+          return this.runRowFrom(0, stepCount, setId, emote, operation, token).pipe(
             // delayWhen, not delay: the pace is re-derived mid-run once 7TV tells us its real quota,
             // and a plain delay() would have captured the starting value forever. An abort throws
             // before this runs, so the aborting row never waits out the pacing delay either.
@@ -307,7 +361,9 @@ export class SevenTvRunEngine {
   }
 
   /** Cancel = unsubscribing the RxJS chain — idiomatic and simpler than hand-rolled cooperative
-   *  cancellation. Items already 'done'/'failed' keep their outcome; the rest become 'cancelled'. */
+   *  cancellation. It does not wait for a request in flight: Angular's HttpClient aborts it on
+   *  teardown, so its answer never arrives. Terminal rows keep their outcome; what happens to the
+   *  others is `cancelRemainingRows`' rule. */
   cancel(): void {
     if (!this.isRunning()) {
       return;
@@ -325,16 +381,60 @@ export class SevenTvRunEngine {
     this.queue.set([]);
   }
 
-  /** One emote, including waiting out any rate limit 7TV imposes. A rate-limited attempt is *not* a
-   *  failure: the emote is retried after the server-stated reset, so a large run finishes instead of
-   *  burning through its queue against a closed window. */
-  private runWithBackoff(
+  /** Runs one row's steps from `step` on, strictly in order, and settles the row on the queue. Emits
+   *  once when the row is terminal; throws `AbortRequested` (caught in `start`) when `abortOn` says
+   *  to stop. Between two steps of the same row it waits the same pacing delay as between rows. */
+  private runRowFrom(
+    step: number,
+    stepCount: number,
     setId: string,
     emote: RunQueueEmote,
     operation: RunOperation,
     token: string,
+  ): Observable<void> {
+    return this.runWithBackoff(setId, emote, step, operation, token).pipe(
+      concatMap((result) => {
+        if (result.outcome === 'done') {
+          const completedSteps = step + 1;
+          if (completedSteps >= stepCount) {
+            this.updateRow(emote.key, { status: 'done', errorMessage: undefined, completedSteps });
+            return of(undefined);
+          }
+          this.updateRow(emote.key, { completedSteps });
+          return timer(this.currentDelayMs).pipe(
+            concatMap(() =>
+              this.runRowFrom(completedSteps, stepCount, setId, emote, operation, token),
+            ),
+          );
+        }
+        // A step that fails or stays unknown ends the row: a later step would build on a state 7TV
+        // did not confirm (an ADD onto a name the REMOVE may not have freed is a 409 waiting).
+        this.updateRow(emote.key, {
+          status: result.outcome,
+          errorMessage: result.errorMessage,
+          failedStep: step,
+        });
+        if (result.outcome === 'failed') {
+          // Throws when the hook asks to stop — caught in `start`, never by the plain `error:`
+          // callback there. An `unknown` row has no reason to weigh, so the hook never sees it.
+          this.evaluateAbort(operation, result);
+        }
+        return of(undefined);
+      }),
+    );
+  }
+
+  /** One step of one row, including waiting out any rate limit 7TV imposes. A rate-limited attempt
+   *  is *not* a failure: the step is retried after the server-stated reset, so a large run finishes
+   *  instead of burning through its queue against a closed window. */
+  private runWithBackoff(
+    setId: string,
+    emote: RunQueueEmote,
+    step: number,
+    operation: RunOperation,
+    token: string,
   ): Observable<RunOneResult> {
-    return this.runOne(setId, emote, operation, token).pipe(
+    return this.runOne(setId, emote, step, operation, token).pipe(
       retry({
         count: MAX_RATE_LIMIT_RETRIES,
         delay: (error) => {
@@ -347,13 +447,15 @@ export class SevenTvRunEngine {
       }),
       catchError(() =>
         // Only a RateLimitHit can get here — runOne turns everything else into a result value.
-        // httpStatus and errorCode are both null: this is a give-up after retries, synthesised
-        // locally, not a single server response to read either off.
-        of({
-          success: false as const,
+        // httpStatus, errorCode and gqlStatus are all null: this is a give-up after retries,
+        // synthesised locally, not a single server response to read any of them off. 7TV did
+        // answer every attempt, so it is `failed`, never `unknown`.
+        of<RunOneResult>({
+          outcome: 'failed',
           errorMessage: this.translocoService.translate('massDelete.errors.rateLimitedGaveUp'),
           httpStatus: null,
           errorCode: null,
+          gqlStatus: null,
         }),
       ),
     );
@@ -362,6 +464,7 @@ export class SevenTvRunEngine {
   private runOne(
     setId: string,
     emote: RunQueueEmote,
+    step: number,
     operation: RunOperation,
     token: string,
   ): Observable<RunOneResult> {
@@ -370,19 +473,26 @@ export class SevenTvRunEngine {
       const startedAt = Date.now();
       this.requestsInWindow += 1;
       this.requestTimestamps.push(startedAt);
+      this.inFlight = { key: emote.key, step };
 
       return this.http
         .post<{ errors?: SevenTvGqlError[] }>(
           SEVEN_TV_GQL_ENDPOINT,
-          operation.buildRequest(setId, emote),
+          operation.buildRequest(setId, emote, step),
           { headers: { Authorization: `Bearer ${token}` } },
         )
         .pipe(
+          // Cleared on any answer, success or error — but not on teardown, which is exactly the
+          // case `cancel()` needs to recognise.
+          tap({
+            next: () => (this.inFlight = null),
+            error: () => (this.inFlight = null),
+          }),
           tap(() => this.recordRoundTrip(startedAt)),
           map((response): RunOneResult => {
             const gqlError = response?.errors?.[0];
             if (!gqlError) {
-              return { success: true };
+              return { outcome: 'done' };
             }
             // 7TV answers a rate-limited mutation with HTTP 200 and the rejection inside `errors`
             // (async-graphql never touches the status code), so this is the only place it surfaces.
@@ -392,12 +502,14 @@ export class SevenTvRunEngine {
             // httpStatus is null: 7TV rejected the mutation itself over HTTP 200, there is no
             // transport status to report. errorCode carries extensions.code verbatim — v4's
             // structured rejection reason (e.g. LACKING_PRIVILEGES) — or null when the error has
-            // none.
+            // none; gqlStatus likewise extensions.status (e.g. 409 for a name conflict). A GraphQL
+            // answer is never `unknown`: 7TV processed the request and said how it went.
             return {
-              success: false,
+              outcome: 'failed',
               errorMessage: gqlError.message ?? '',
               httpStatus: null,
               errorCode: gqlError.extensions?.code ?? null,
+              gqlStatus: gqlError.extensions?.status ?? null,
             };
           }),
           catchError((error) => {
@@ -414,13 +526,22 @@ export class SevenTvRunEngine {
             }
             // httpStatus carries Angular's real status here, including 0 for a network error —
             // describeHttpError has already consumed it for the message, this just passes it along.
-            // errorCode is null: a transport failure never reaches 7TV's GraphQL layer, so there is
-            // no extensions.code to read.
+            // errorCode and gqlStatus are null: a transport failure never reaches 7TV's GraphQL
+            // layer, so there is no extensions to read.
+            //
+            // A 4xx is an HTTP-layer rejection before the mutation ran — unambiguous, `failed`.
+            // Everything else (no answer at all, any 5xx, a body that is no GraphQL answer) leaves
+            // open whether the mutation was applied; an operation that asks for it gets `unknown`.
+            const rejectedBeforeProcessing = httpError.status >= 400 && httpError.status < 500;
             return of<RunOneResult>({
-              success: false,
+              outcome:
+                operation.transportLossIsUnknown && !rejectedBeforeProcessing
+                  ? 'unknown'
+                  : 'failed',
               errorMessage: this.describeHttpError(httpError),
               httpStatus: httpError.status,
               errorCode: null,
+              gqlStatus: null,
             });
           }),
         );
@@ -494,6 +615,7 @@ export class SevenTvRunEngine {
     this.pacingAdapted = false;
     this.rateLimitHits = 0;
     this.requestTimestamps = [];
+    this.inFlight = null;
     this.endPause();
   }
 
@@ -522,6 +644,7 @@ export class SevenTvRunEngine {
       requested: statuses.length,
       succeeded: statuses.filter((status) => status === 'done').length,
       failed: statuses.filter((status) => status === 'failed').length,
+      unknown: statuses.filter((status) => status === 'unknown').length,
       cancelled: statuses.filter((status) => status === 'cancelled').length,
       requestsSent: this.requestTimestamps.length,
       durationMs: Date.now() - this.runStartedAt,
@@ -571,24 +694,16 @@ export class SevenTvRunEngine {
     });
   }
 
-  private setStatus(key: string, status: RunItemStatus, errorMessage?: string): void {
+  private updateRow(key: string, patch: Partial<RunQueueItem>): void {
     this.queue.update((items) =>
-      items.map((item) => (item.key === key ? { ...item, status, errorMessage } : item)),
+      items.map((item) => (item.key === key ? { ...item, ...patch } : item)),
     );
   }
 
   /** Runs the operation's `abortOn` hook, if any, for a row that just became `failed`, and throws
-   *  `AbortRequested` when it says to stop — caught one operator up (see `start`). A throwing hook
-   *  is logged and treated as `false`: a broken hook must not corrupt the run, only be visible. */
-  private evaluateAbort(
-    operation: RunOperation,
-    result: {
-      success: false;
-      errorMessage: string;
-      httpStatus: number | null;
-      errorCode: string | null;
-    },
-  ): void {
+   *  `AbortRequested` when it says to stop — caught in `start`. A throwing hook is logged and
+   *  treated as `false`: a broken hook must not corrupt the run, only be visible. */
+  private evaluateAbort(operation: RunOperation, result: RunStepFailure): void {
     if (!operation.abortOn) {
       return;
     }
@@ -598,6 +713,7 @@ export class SevenTvRunEngine {
         message: result.errorMessage,
         httpStatus: result.httpStatus,
         errorCode: result.errorCode,
+        gqlStatus: result.gqlStatus,
       });
     } catch (error) {
       console.error('[EmotePurge] 7TV run abortOn hook threw — continuing the run', error);
@@ -608,15 +724,38 @@ export class SevenTvRunEngine {
     }
   }
 
-  /** Shared by `cancel()` and the `abortOn` detour in `start()`: every row still `pending` or
-   *  `in-progress` becomes `cancelled`, terminal rows keep their outcome. */
+  /** Shared by `cancel()` and the `abortOn` detour in `start()`. Terminal rows keep their outcome;
+   *  every row still `pending` or `in-progress` becomes `cancelled`, with two exceptions:
+   *  - a row whose request was in flight, on an operation with `transportLossIsUnknown`, becomes
+   *    `unknown` at that step — the request is aborted, its answer never arrives, and 7TV may have
+   *    applied it all the same. No `abortOn`, and the step does not count as completed. Without the
+   *    flag such a row falls through to the rules below, as it always did.
+   *  - a row stopped after 7TV confirmed at least one of its steps becomes `failed` at the first
+   *    unconfirmed step: 7TV already changed, and `cancelled` says in the protocol that nothing
+   *    happened.
+   *  On the abort path neither exception can arise: the aborting row is already `failed`, and its
+   *  answer has cleared `inFlight`. */
   private cancelRemainingRows(): void {
+    const inFlight = this.operation?.transportLossIsUnknown ? this.inFlight : null;
+    this.inFlight = null;
     this.queue.update((items) =>
-      items.map((item) =>
-        item.status === 'pending' || item.status === 'in-progress'
-          ? { ...item, status: 'cancelled' }
-          : item,
-      ),
+      items.map((item) => {
+        if (item.status !== 'pending' && item.status !== 'in-progress') {
+          return item;
+        }
+        if (inFlight !== null && item.key === inFlight.key) {
+          return { ...item, status: 'unknown', failedStep: inFlight.step };
+        }
+        if (item.completedSteps > 0) {
+          return {
+            ...item,
+            status: 'failed',
+            failedStep: item.completedSteps,
+            errorMessage: this.translocoService.translate('massDelete.errors.cancelledMidRow'),
+          };
+        }
+        return { ...item, status: 'cancelled' };
+      }),
     );
   }
 

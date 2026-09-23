@@ -11,16 +11,34 @@ import {
 } from './purge-run-export';
 
 const ITEMS: RunQueueItem[] = [
-  { key: 'i1', emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+  {
+    key: 'i1',
+    emoteId: 'i1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'PogU',
+    status: 'done',
+    completedSteps: 1,
+    failedStep: null,
+  },
   {
     key: 'i2',
     emoteId: 'i2',
     sevenTvEmoteId: '7tv-2',
     name: 'KEKW',
     status: 'failed',
+    completedSteps: 0,
+    failedStep: 0,
     errorMessage: 'boom',
   },
-  { key: 'i3', emoteId: 'i3', sevenTvEmoteId: '7tv-3', name: 'catJAM', status: 'cancelled' },
+  {
+    key: 'i3',
+    emoteId: 'i3',
+    sevenTvEmoteId: '7tv-3',
+    name: 'catJAM',
+    status: 'cancelled',
+    completedSteps: 0,
+    failedStep: null,
+  },
 ];
 
 function protocol() {
@@ -67,7 +85,14 @@ describe('buildPurgeRunProtocol', () => {
       finishedAt: 1,
       items: [
         ITEMS[0],
-        { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+        {
+          key: '7tv-live',
+          sevenTvEmoteId: '7tv-live',
+          name: 'LiveOnly',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
       ],
     });
     expect(proto.rows.map((row) => row.emoteId)).toEqual(['i1', null]);
@@ -82,7 +107,14 @@ describe('buildPurgeRunProtocol', () => {
       finishedAt: 1,
       items: [
         { ...ITEMS[0], aliases: ['PogU', 'PogU2'] },
-        { key: '7tv-4', sevenTvEmoteId: '7tv-4', name: 'Solo', status: 'done' },
+        {
+          key: '7tv-4',
+          sevenTvEmoteId: '7tv-4',
+          name: 'Solo',
+          status: 'done',
+          completedSteps: 1,
+          failedStep: null,
+        },
       ],
     });
     expect(proto.rows.map((row) => row.aliases)).toEqual([['PogU', 'PogU2'], ['Solo']]);
@@ -140,6 +172,18 @@ describe('parsePurgeRunProtocol', () => {
       errorKey: 'restore.import.errors.wrongKind',
     });
     expect(parsePurgeRunProtocol(JSON.stringify({ hello: 'world' }), EXPECTED)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+  });
+
+  // #230: this parser runs only for `purge-run` files — a `transfer-run` file reaching it at all
+  // means the dispatch was bypassed, and it is answered the same generic way as any other kind this
+  // parser does not know by name (FOREIGN_KIND_ERROR_KEYS carries no entry for it; the named
+  // rejection lives in `import-source-parser.ts` instead).
+  it('falls back to wrongKind for a transfer-run file rather than naming it', () => {
+    const transferRun = JSON.stringify({ source: 'emotepurge', kind: 'transfer-run' });
+    expect(parsePurgeRunProtocol(transferRun, EXPECTED)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
@@ -224,6 +268,8 @@ describe('parsePurgeRunProtocol', () => {
           name: 'LiveOnly',
           aliases: ['LiveOnly', 'LiveTwo'],
           status: 'done',
+          completedSteps: 1,
+          failedStep: null,
         },
       ],
     });

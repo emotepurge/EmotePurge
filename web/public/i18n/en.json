@@ -863,6 +863,7 @@
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Restore progress",
     "deleteFailedFallback": "Restore failed",
+    "unknownOutcome": "Unclear whether it was restored — 7TV gave no clear answer. Please check the set.",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "confirmTitle": {
       "one": "Add {{ count }} emote back to the set?",
@@ -892,6 +893,7 @@
       "title": "Import file",
       "sorts": {
         "purgeRun": "Purge protocol (restore) as JSON",
+        "transferRun": "Transfer protocol — recovery file or result protocol (restore) as JSON",
         "emoteList": "Emote list (copy) as JSON",
         "usageExport": "Usage export (copy) as JSON"
       },
@@ -899,18 +901,24 @@
       "errors": {
         "notJson": "The file is not valid JSON.",
         "csvInsteadOfJson": "That is the CSV version. The import needs the same file as JSON — pick the JSON format when exporting.",
-        "wrongKind": "The file is not an EmotePurge export. Importable are purge protocols, emote lists and usage exports in JSON format.",
+        "wrongKind": "The file is not an EmotePurge export. Importable are purge protocols, transfer protocols, emote lists and usage exports in JSON format.",
         "votingExport": "That is a vote export, not a purge protocol. An importable protocol is only created by a delete run and offered for download right afterwards.",
+        "transferRun": "That is a transfer run's protocol (recovery file or result protocol), not an emote list to copy from — such files only serve to restore removed emotes.",
         "wrongVersion": "The file comes from a newer EmotePurge version.",
         "noRows": "The file contains no importable emotes.",
         "wrongChannel": "The protocol belongs to a different channel.",
         "wrongSet": "The protocol belongs to a different emote set — the channel switched its active set.",
-        "noRestorableRows": "The protocol contains no successfully deleted emotes to restore."
+        "noRestorableRows": "The protocol contains no successfully deleted emotes to restore.",
+        "transferRunNoRows": "This transfer file contains no removed emotes."
       }
     },
     "skippedDuplicates": {
       "one": "{{ count }} entry was already in the target set and was skipped.",
       "other": "{{ count }} entries were already in the target set and were skipped."
+    },
+    "skippedNameTaken": {
+      "one": "{{ count }} alias skipped — another emote holds that name now.",
+      "other": "{{ count }} aliases skipped — other emotes hold those names now."
     },
     "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
   },
@@ -947,6 +955,7 @@
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Delete progress",
     "deleteFailedFallback": "Delete failed",
+    "unknownOutcome": "Unclear whether it was deleted — 7TV gave no clear answer. Please check the set.",
     "confirmTitle": {
       "one": "Delete {{ count }} emote from 7TV?",
       "other": "Delete {{ count }} emotes from 7TV?"
@@ -981,6 +990,7 @@
       "tokenInvalid": "Token invalid or expired — please enter a new 7TV token.",
       "rateLimited": "Too many requests to 7TV (rate limit) — try again later.",
       "rateLimitedGaveUp": "7TV rate limit still active after several waits — emote skipped.",
+      "cancelledMidRow": "Cancelled partway — 7TV had already carried out part of it.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }})."
     },
@@ -1096,6 +1106,10 @@
         "one": "Copy {{ count }} emote into the set ‚{{ setName }}'?",
         "other": "Copy {{ count }} emotes into the set ‚{{ setName }}'?"
       },
+      "titleAlign": {
+        "one": "Align {{ count }} name in the target set?",
+        "other": "Align {{ count }} names in the target set?"
+      },
       "originChannel": "From channel {{ channel }}",
       "originFile": "From file {{ fileName }}",
       "originFileDetails": "Exported from {{ channel }}, {{ date }}",
@@ -1146,11 +1160,86 @@
       },
       "sameChannelFile": "This list comes from this channel.",
       "runNotice": "Adding then runs automatically, one emote at a time, with a short delay between each.",
-      "execute": "Copy"
+      "execute": "Copy",
+      "removals": {
+        "one": "{{ count }} emote will be removed from the target set and replaced by the source emote.",
+        "other": "{{ count }} emotes will be removed from the target set and replaced by the source emotes."
+      },
+      "renames": {
+        "one": "{{ count }} entry in the target set will be renamed.",
+        "other": "{{ count }} entries in the target set will be renamed."
+      },
+      "saveRecovery": "Save recovery file",
+      "start": "Start",
+      "verifying": "Checking the target set live…",
+      "targetDrifted": "The target set has changed since the preview: {{ rows }}. These rows are back on “Skip” and now show the current counterpart — please review and confirm again.",
+      "targetReadFailed": "The target set could not be read completely just now. Nothing is removed without a complete read — please try again.",
+      "saveRecoveryFailed": "The browser refused to download the recovery file. No run that removes anything starts without it.",
+      "reloadTarget": "Reload target",
+      "decisionsDropped": "After the reload these rows’ decisions no longer fit and are back on “Skip”: {{ rows }}."
+    },
+    "resolve": {
+      "open": "Resolve",
+      "openCollisions": "Resolve name collisions",
+      "openMismatches": "Resolve differing names",
+      "resolvedCount": "Resolved: {{ count }}",
+      "titleCollisions": {
+        "one": "Resolve {{ count }} name collision",
+        "other": "Resolve {{ count }} name collisions"
+      },
+      "titleMismatches": {
+        "one": "Resolve {{ count }} differing name",
+        "other": "Resolve {{ count }} differing names"
+      },
+      "hintCollisions": "The name is already taken in the target set. Rename adds the emote under a new name; “Replace target” removes the emote in the target and adds this one in its place.",
+      "hintMismatches": "The emote is already in the target set, but under a different name. “Adopt name” renames it in the target and adds nothing.",
+      "listLabelCollisions": "Name collisions",
+      "listLabelMismatches": "Differing names",
+      "rowLabel": "{{ source }}, in the target: {{ target }}",
+      "targetGone": "no longer in the target set",
+      "aliaslessEntry": "+ one entry without a name",
+      "actionGroupLabel": "Action for {{ sourceName }}",
+      "action": {
+        "skip": "Skip",
+        "renameSource": "Rename",
+        "replaceTarget": "Replace target",
+        "adoptSourceName": "Adopt name"
+      },
+      "replaceNeedsTracked": "Only restorable for tracked channels",
+      "reloadTargetFirst": "Target has changed — reload first",
+      "adoptBlocked": {
+        "nameTaken": "name taken in the target set",
+        "duplicateTarget": "listed twice in the target",
+        "aliaslessTarget": "held without a name in the target"
+      },
+      "renameLabel": "New name",
+      "fieldError": {
+        "invalid": "7TV does not accept this name.",
+        "taken": "This name is already taken in the target set.",
+        "duplicate": "Another row produces this name too."
+      },
+      "violation": {
+        "duplicateGeneratedAlias": "Several rows produce the same name: {{ rows }}.",
+        "aliasHeldByTarget": "Name already taken in the target set: {{ rows }}.",
+        "invalidTypedAlias": "Name 7TV does not accept: {{ rows }}.",
+        "duplicateReplaceTarget": "The same target is replaced more than once: {{ rows }}.",
+        "targetTouchedByReplaceAndAdopt": "The same target is replaced and renamed: {{ rows }}.",
+        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}.",
+        "replaceNeedsTrackedTarget": "Replacing a target only works for tracked channels: {{ rows }}."
+      },
+      "back": "Back",
+      "apply": "Apply"
     },
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Copy progress",
+    "settling": "Finishing…",
     "deleteFailedFallback": "Copy failed",
+    "unknownOutcome": "Unclear whether it was copied — 7TV gave no clear answer. Please check the set.",
+    "errors": {
+      "nameTakenNow": "The name has been taken in the target set in the meantime — this row was not applied.",
+      "removedButNotAdded": "The target emote was removed, but the new one was not added — the target set is now missing this name. The recovery file restores the target emote.",
+      "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied."
+    },
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",
@@ -1159,12 +1248,30 @@
       "targetSet": "Target: set {{ setName }} of {{ owner }}",
       "openTarget": "Open target channel",
       "copiedNotActive": "Copied into the set ‚{{ setName }}' — it isn't {{ channel }}'s active set, so the channel page won't show it.",
-      "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row."
+      "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row.",
+      "removed": {
+        "one": "{{ count }} emote was removed from the target set.",
+        "other": "{{ count }} emotes were removed from the target set."
+      },
+      "replaceSkippedDrift": {
+        "one": "{{ count }} replacement was not carried out — the target had changed since you confirmed.",
+        "other": "{{ count }} replacements were not carried out — the target had changed since you confirmed."
+      },
+      "unknownRows": {
+        "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
+        "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
+      },
+      "downloadProtocol": "Download protocol",
+      "protocolNotSaved": "Protocol not saved yet — it is gone once you close this."
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were added on 7TV, but EmotePurge could not record it. The target channel still picks them up on its next sync.",
     "syncRetry": "Report again",
     "syncRetrySucceeded": "Reported back successfully.",
+    "removalSyncFailedTitle": "Reporting the removal back to EmotePurge failed",
+    "removalSyncFailed": "The emotes were removed from the target set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
+    "removalSyncRetry": "Report again",
+    "removalSyncSucceeded": "Removal reported back successfully.",
     "resync": {
       "pending": "Triggering the target channel's sync…",
       "succeeded": "Sync triggered — the target channel shows the emotes in a moment.",

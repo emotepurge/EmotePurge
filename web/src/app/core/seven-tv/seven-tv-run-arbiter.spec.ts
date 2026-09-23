@@ -11,6 +11,7 @@ import { SevenTvImportService } from './seven-tv-import.service';
 import { SevenTvRestoreService } from './seven-tv-restore.service';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import { TransferPlan } from './transfer-plan';
 
 // Only the keys the two services actually translate.
 const DE_TRANSLATIONS = {
@@ -31,7 +32,10 @@ const EMOTES: DeleteQueueEmote[] = [
 ];
 
 // An import carries no internal id at all — it writes into another channel's set (#72).
-const IMPORT_ROWS: ImportRow[] = [{ sevenTvEmoteId: '7tv-3', name: 'Sadge' }];
+const IMPORT_ROW: ImportRow = { sevenTvEmoteId: '7tv-3', name: 'Sadge', imageUrl: null };
+const IMPORT_PLAN: TransferPlan = {
+  rows: [{ action: 'add', source: IMPORT_ROW, alias: IMPORT_ROW.name }],
+};
 const IMPORT_ORIGIN: ImportOrigin = { kind: 'channel', channelName: 'sensitron' };
 
 describe('SevenTvRunArbiter', () => {
@@ -105,7 +109,7 @@ describe('SevenTvRunArbiter', () => {
     importService.startImport(
       { setId: 'set-2', channelName: 'kanal_b' },
       IMPORT_ORIGIN,
-      IMPORT_ROWS,
+      IMPORT_PLAN,
     );
 
     expect(arbiter.activeRun()).toBe('import');
@@ -135,7 +139,7 @@ describe('SevenTvRunArbiter', () => {
     importService.startImport(
       { setId: 'set-2', channelName: 'kanal_b' },
       IMPORT_ORIGIN,
-      IMPORT_ROWS,
+      IMPORT_PLAN,
     );
 
     expect(arbiter.activeRun()).toBe('delete');

@@ -26,10 +26,12 @@ import { NoticeBanner } from '../ui/notice-banner';
           <button type="button" appButton="danger-quiet" (click)="cancelled.emit()">
             {{ 'common.cancel' | transloco }}
           </button>
-        } @else {
+        } @else if (dismissible()) {
           <button type="button" appButton="neutral" (click)="dismissed.emit()">
             {{ 'common.close' | transloco }}
           </button>
+        } @else {
+          <span class="text-fg-muted">{{ labelPrefix() + '.settling' | transloco }}</span>
         }
       </div>
       <!-- The track is one step further from the surface than the panel it sits in, so it stays
@@ -55,7 +57,7 @@ import { NoticeBanner } from '../ui/notice-banner';
       @if (failedItems().length > 0) {
         <ul class="mt-3 space-y-1 text-sm text-danger-fg" role="alert">
           @for (item of failedItems(); track item.key) {
-            <li>{{ item.name }}: {{ item.errorMessage ?? failedFallback() }}</li>
+            <li>{{ item.name }}: {{ failureText(item) }}</li>
           }
         </ul>
       }
@@ -120,6 +122,12 @@ export class RunProgressPanel {
   readonly syncReport = input<SyncReportState>('idle');
   /** Seconds left on a 7TV rate-limit pause, null while running normally. */
   readonly rateLimitPauseSeconds = input<number | null>(null);
+  /** Whether Close is offered once the run stops running. A host binds this to its own settlement
+   *  signal (import: `run.settlement === 'settled'`) so Close cannot end a run whose protocol and
+   *  unload cover have not been produced yet — see `import-progress-section.ts` for why that window
+   *  matters. Defaults to `true`: delete and restore never pass it, so they keep the panel's
+   *  original behaviour of offering Close the moment the run stops. */
+  readonly dismissible = input(true);
   readonly cancelled = output<void>();
   readonly dismissed = output<void>();
   readonly syncRetryRequested = output<void>();
@@ -127,8 +135,12 @@ export class RunProgressPanel {
   private readonly translocoService = inject(TranslocoService);
 
   protected readonly total = computed(() => this.items().length);
+  // An `unknown` row is finished too: the run is done with it, 7TV's answer is what is missing.
   protected readonly finished = computed(
-    () => this.items().filter((item) => item.status === 'done' || item.status === 'failed').length,
+    () =>
+      this.items().filter(
+        (item) => item.status === 'done' || item.status === 'failed' || item.status === 'unknown',
+      ).length,
   );
   protected readonly progressPercent = computed(() =>
     this.total() === 0 ? 0 : (this.finished() / this.total()) * 100,
@@ -138,7 +150,7 @@ export class RunProgressPanel {
   // keeps min <= max for an empty queue; hosts never render the bar for one.
   protected readonly progressValueMax = computed(() => Math.max(1, this.total()));
   protected readonly failedItems = computed(() =>
-    this.items().filter((item) => item.status === 'failed'),
+    this.items().filter((item) => item.status === 'failed' || item.status === 'unknown'),
   );
 
   protected readonly summaryCounts = computed(() => {
@@ -156,7 +168,15 @@ export class RunProgressPanel {
     () => this.syncReport() === 'failed' || this.syncReport() === 'partial',
   );
 
-  protected failedFallback(): string {
-    return this.translocoService.translate(`${this.labelPrefix()}.deleteFailedFallback`);
+  /** An `unknown` row gets its own wording family rather than its transport error: the point for
+   *  the user is not *why* 7TV's answer is missing but that the row's outcome has to be checked. */
+  protected failureText(item: RunQueueItem): string {
+    if (item.status === 'unknown') {
+      return this.translocoService.translate(`${this.labelPrefix()}.unknownOutcome`);
+    }
+    return (
+      item.errorMessage ??
+      this.translocoService.translate(`${this.labelPrefix()}.deleteFailedFallback`)
+    );
   }
 }

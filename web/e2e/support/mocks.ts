@@ -1314,6 +1314,37 @@ export interface SevenTvGqlErrorFixture {
 }
 
 /**
+ * What kind of `https://7tv.io/v4/gql` request one call is, told apart by the mutation/query name
+ * inside its `query` text (the same string every caller of `mockSevenTvGql` already receives as
+ * `request.query` — matching on the operation's own field name, not on request order, since a read
+ * and a mutation share this one endpoint and a caller cannot otherwise tell an `addEmote` from the
+ * live set read `loadSevenTvSetEntries` issues before/after a run that touches a `replace` row
+ * (#230: the confirm dialog's own pre-removal read, the pre-send duplicate/drift recheck, and the
+ * post-run settle read for a lost answer all go through the identical endpoint). `'unknown'` is
+ * reached only if 7TV's GQL surface grows a fifth request shape this helper does not know yet.
+ */
+export type SevenTvGqlRequestKind =
+  'addEmote' | 'removeEmote' | 'updateEmoteAlias' | 'setRead' | 'unknown';
+
+/** See {@link SevenTvGqlRequestKind}. */
+export function sevenTvGqlRequestKind(request: SevenTvGqlRequest): SevenTvGqlRequestKind {
+  const query = request.query;
+  if (query.includes('removeEmote(')) {
+    return 'removeEmote';
+  }
+  if (query.includes('updateEmoteAlias(')) {
+    return 'updateEmoteAlias';
+  }
+  if (query.includes('addEmote(')) {
+    return 'addEmote';
+  }
+  if (query.includes('emotes(page:')) {
+    return 'setRead';
+  }
+  return 'unknown';
+}
+
+/**
  * Routes `https://7tv.io/v4/gql` — the run engine's one write endpoint (ADD/REMOVE mutations for
  * import, delete and restore alike). The handler sees each call's parsed body plus a zero-based
  * call index (the run engine issues one request per queued row, in order), and returns the GQL

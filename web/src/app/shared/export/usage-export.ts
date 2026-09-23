@@ -16,6 +16,7 @@ export type UsageExportSourceRow = Pick<
   EmoteUsageTotal,
   | 'emoteName'
   | 'sevenTvEmoteId'
+  | 'imageUrl'
   | 'totalUseCount'
   | 'previousWindowUseCount'
   | 'lastUsedDate'
@@ -55,6 +56,10 @@ export interface UsageExportInput {
 export interface UsageExportRow {
   emoteName: string;
   sevenTvEmoteId: string;
+  /** Carried through from the source row (#230) so a usage export can also serve as an
+   *  `import-source-parser.ts` copy source with an image on the preview's source side — never in
+   *  the CSV, which is not an import source and stays as it was. */
+  imageUrl: string;
   totalUseCount: number | null;
   previousWindowUseCount: number | null;
   lastUsedDate: string | null;
@@ -113,6 +118,7 @@ export function usageJson(input: UsageExportInput): string {
     rows: input.rows.map((row) => ({
       emoteName: row.emoteName,
       sevenTvEmoteId: row.sevenTvEmoteId,
+      imageUrl: row.imageUrl,
       totalUseCount: row.totalUseCount,
       previousWindowUseCount: row.previousWindowUseCount,
       lastUsedDate: row.lastUsedDate,

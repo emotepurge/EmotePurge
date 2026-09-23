@@ -111,7 +111,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **The sidecar is the magnifier from `lg` up** (`<aside>`, sticky, 16 rem; the grid only becomes two-column once something is actually being inspected). Below that a compact meta row (`lg:hidden`) carries the same numbers. **The drilldown dialog stays** — it is the only way on the ballot, below `lg`, by touch and by keyboard, and it additionally carries the range, first and last use and the voting block. Y axis, peak rate and the live-days row appear in both.
 - **The sidecar never loads per cell.** Its day series comes from **one** call per (channel, range) — `GET /usage-stats/series`. A surface that hangs off the mouse pointer must not generate requests; sweeping through a band would otherwise be a load profile.
 - **Animation is earned by dwelling, and only ever for one emote at a time.** Cells draw every emote as its still. `EmoteSpriteAnimated` (sidecar, inspector row, drilldown dialog, ballot, and the hovered cell of the import grid, §7.3) keeps the still and lays the `2x.webp` animation on top only after the pointer or focus has rested for 200 ms; a still emote never gets a second request. **Under `prefers-reduced-motion: reduce` no animation is fetched or played at all** — the still stays, and switching the preference on while an animation shows withdraws it. This is decided inside `EmoteSpriteAnimated` (via `ReducedMotionService`, `core/motion/`), not at the call sites, so no surface can forget it.
-- **`.app-dock` appears only as long as there is something to do or to read:** a selection, or a 7TV run (delete, restore, import) that is running or has just finished — whose summary carries the protocol for download and must survive the last delete. A permanently parked action bar is a control the first visit has to read past. The dock carries, as the only surface of the app, a line in the accent colour — it marks the boundary of a living, reversible state. Which commands may stand in it and which belong in the page header is governed by §8.7.
+- **`.app-dock` appears only as long as there is something to do or to read:** a selection, or a 7TV run (delete, restore, import) that is running or has just finished — whose summary carries the protocol for download and must survive the last delete. Close itself waits on that survival: `RunProgressPanel` only offers Close once the run has settled (its `dismissible` input, #230) — a run whose engine is done but whose settlement is still pending (an `unknown` row's live re-read, up to 20 s) shows neither Cancel nor Close, so the summary and its protocol cannot be dismissed before either exists. A permanently parked action bar is a control the first visit has to read past. The dock carries, as the only surface of the app, a line in the accent colour — it marks the boundary of a living, reversible state. Which commands may stand in it and which belong in the page header is governed by §8.7.
 - **The active emote set gates only the marking half of the dock, not the dock itself.** The count row, the mass-delete panel and the ballot button are about the set of *this* channel and need one; the import section shows a run into a **foreign** set (§7.2) and is therefore mounted outside this gate. Otherwise a writing run together with its cancel button would disappear on a usage page without an active set while it is still running.
 - **Selection, dock and the 20 px history trigger are additionally gated behind `PointerModeService.isCoarse` — no 7TV write access without a mouse.** The 7TV write token can only be copied out of the devtools on 7tv.app, which a phone does not have; the gate is therefore the pointer type, not the width (`(pointer: coarse)`, not `any-pointer` — a desktop with an attached touchscreen keeps everything, because devtools remain). On `coarse` a click on the cell no longer marks anything but opens the drilldown dialog directly (§7.1), the mass-delete panel does not render at all, and in the page header of the usage page the same gate removes the entire `@if` block of the 7TV write paths — the Transfer button **and** the file-ingest trigger (§7.3).
 - **What falls away on `coarse` is not explained — what points into the void on `coarse` is.** The dock, the mass-delete panel and the two 7TV write paths of the page header disappear without comment: visually nothing is missing, so there is nothing to say. A *pointer* to one of these capabilities is the other case — it stays visibly in place and promises something whose target cannot deliver there. The example: the voting list's page header carries a permanent link to the usage-stats atlas, because that is where a ballot is now assembled (2026-09-19) — on coarse it gives way to a sentence (`voting.list.createEntryDesktopOnly`), since the atlas's own marking and dock are themselves `!isCoarse()`-gated and a mod on a phone would have nowhere to land. The manager how-to beneath it (`voting.list.createEntryHint`) no longer names that destination itself — the button already does — and says only what the button cannot: that a ballot is made of emotes the manager marks. It stands inside the page header itself, as its own row beneath the heading/button row — not merely placed after the header in the page's own `gap-8` flex column (that left it visually equidistant from the header above and the list below, and wrong the moment an error banner sat between them, 2026-09-19 correction) and not inside the empty state either — an empty-state-only placement disappeared the moment a session existed, exactly when a returning manager would look for it again (2026-09-19 correction, docs/DECISIONS.md) — and it is hidden the same way, for the same reason: it must not repeat to a coarse reader what the header already said they cannot do here. Purely visual switching of this kind belongs in the variant pair `pointer-coarse:hidden` / `hidden pointer-coarse:inline`, not in `PointerModeService` — the service is for decisions the code makes.
@@ -349,19 +349,65 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   been in the export dialog (§7.4) since #141 and inherits its scope default `visible` — the target dialog
   stays with its `selection` default, because the two are now separate commands with separate
   risks, no longer two exits of the same dialog.
-- **Confirmation dialog, row order:** title (count + target channel) → origin row (channel,
+- **Confirmation dialog, row order:** title (count + target channel — or, for a plan with no ADD at
+  all and at least one adopted rename, "Align N names in the target set?" instead, since "0 emotes …
+  copy?" would misdescribe a run that only renames) → origin row (channel,
   or file with export date/channel) → target row "Target: channel · set …" as soon as the target data
   are there → exactly **one** of three loading states (hand-rolled skeleton per the §6.1 pattern /
   `no-set` banner / `failed` banner with retry) → shared-set warning (error) or "check not
-  possible" (warning) → slot projection (overflow as a warning banner, otherwise quiet text) →
+  possible" (warning) → **removal line** (warning banner "N emotes will be removed from the target
+  set", only while the plan replaces a target — #230) → **rename line** (quiet text, not a banner —
+  nothing is lost, an existing entry is only renamed — "N entries in the target set will be
+  renamed", only while the plan holds at least one adopted rename) → **target-check banner**
+  (error, only after a live read did not release the run: the drifted rows by name, or the failed read, or a refused
+  download; notice action "Reload target" for the drifted and failed-read cases, absent for a
+  refused download — and, in the same banner, the committed decisions a
+  reload of the target no longer fits, by name) → slot projection (overflow as a warning banner,
+  otherwise quiet text; net change of the plan, so a replace counts its removed entries) →
   stale notice if the last sync of the target failed → "already in the target set" row →
-  name-collisions row + `NamePreviewList` → invalid-names row + `NamePreviewList`
+  name-collisions row with its **"Resolve" trigger** (`outline`, visible text "Resolve", accessible
+  name naming the group, locked while a live read runs) + "resolved: N" (only once a row
+  of the group carries a decision) + `NamePreviewList` → alias-mismatch row with its own
+  "Resolve" trigger + "resolved: N" + `NamePreviewList` → invalid-names row + `NamePreviewList`
   (non-ASCII characters in the emote name — both rows say "7TV will reject this" and therefore
   stand next to each other) → **discarded rows before collapsed
   duplicates** (real data loss weighs more than mere consolidation — the reason is stated at
   `discardedRows`/`duplicatesCollapsed`) → "nothing to add" banner → "This list comes from
   this channel" → the quiet notice about the automatic run → (only in the loading state: the
-  loading hint next to the action buttons) → Cancel / Copy.
+  loading hint next to the action buttons; only while the live read runs: the verifying hint in the
+  same place) → Cancel / the executor. Without a conflict none of the #230 rows exists and the
+  dialog reads exactly as before.
+- **The executor has three states, one button — but only when the plan removes something**
+  (#230, docs/plans/Plan-230-Namenskonflikte.md section 2). Without a replace it is "Copy", as
+  always: no read, no download. With one it reads "Save recovery file" (`primary`, `lg`); the
+  click reads the target set live and checks every replace target at entry level (button locked,
+  the verifying hint beside it via `aria-describedby`), then downloads the recovery file and the
+  button turns into "Start", which closes the dialog with the plan. "Start" is not reachable before
+  the download, and only the newest read may answer — a new read cancels the one before it. A
+  drifted target sends the button back to "Save recovery file", sets that row back
+  to skip and shows its live counterpart in the resolution step; a failed or incomplete read
+  releases nothing and keeps the decisions. Any change to the decisions after the file was saved
+  makes the button ask for a new file — the one on disk describes a plan that no longer is.
+  `runBlocked` locks all three states silently, like "Copy".
+- **The resolution step is the second step of the same dialog, not an overlay of its own.**
+  One conflict group per opening; the pane widens to `app-dialog-panel-wide` for exactly this step
+  and narrows again on the way back. Row order: a quiet explanation of the actions → the
+  virtualized table (source sprite and name, target sprite and name(s) — both aliases for a #74
+  duplicate —, then a radio group per row named "Action for {source}") → "Back" / "Apply" in the
+  action row, the lock reason beside "Apply" naming the rows by source name. Actions that do not
+  apply to a row stay listed, disabled, with their reason in brackets (the target picker's idiom
+  above) — replace for an untracked target or for a drifted row whose live counterpart no
+  longer holds the name ("reload target first"), adopt where the target name is taken or
+  duplicated. A
+  rename opens a text field prefilled with the source name, with the §5.3 field error. "Apply"
+  commits the group's decisions; "Back" keeps the committed ones as they were and keeps the edits
+  for the next opening. The rows carry a roving tabindex (arrow up/down, Home/End, scrolled into
+  the viewport first), because a virtualized row outside the buffer is not in the DOM and Tab alone
+  never reaches it. The roving tabindex covers the row containers only: the controls inside the
+  rows keep their natural tab stops, so Tab walks through the radio group and rename field of each
+  rendered row in turn and on into the next one, up to the end of the buffer. The viewport is the only scroll container (`dvh`
+  sizing as in the foreign emote grid), and there is no sheet variant: the 7TV write paths are
+  hidden on a coarse pointer.
 - **The target-data loader (`core/emotes/import-target-loader.ts`, `loadImportTarget`) emits exactly
   once and never throws** — the three inner requests (`getSetStatus`, `listEmotes`,
   `getSetWarning`) catch their own error and deliver a tagged value instead of letting the `forkJoin`
@@ -382,6 +428,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   later. **This difference is intentional, not a straggler** — when unifying,
   read up here first, do not "correct" the import.
 - **Reference:** `web/src/app/shared/seven-tv/import-target-dialog.ts`, `import-confirm-dialog.ts`,
+  `import-conflict-resolution-step.ts`, `conflict-resolution.ts`,
   `import-target-options.ts`, `import-preview.ts`, `slot-projection.ts`,
   `web/src/app/core/emotes/import-target-loader.ts`; caller `web/src/app/shared/seven-tv/import-flow.ts`.
 
@@ -433,9 +480,10 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   the file — nothing more. Until #147 it was a dialog of its own (`FileImportDialog`); what changed is
   only its housing, not its behaviour.
 - **Row order in the file branch (contract):**
-  1. The **list of the three permissible kinds of file**, each its own list entry with the addition
-     "as JSON": purge protocol (restore) · emote list (copy) · usage export
-     (copy). It stands **above** the control it explains, and is a list and not a
+  1. The **list of the four permissible kinds of file**, each its own list entry with the addition
+     "as JSON": purge protocol (restore) · transfer protocol, recovery file or result protocol
+     (restore) · emote list (copy) · usage export (copy). The two restore sorts come first, in that
+     order. It stands **above** the control it explains, and is a list and not a
      sentence with commas — the German versions would otherwise break at an arbitrary point at 360 px
      (§12).
   2. The **file control**: visibly labelled button plus hidden

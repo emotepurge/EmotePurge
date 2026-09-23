@@ -10,6 +10,230 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — The import dialog becomes a deleting operation: name conflicts resolved per row, recovery file before the first removal (#230)
+
+**Betrifft:** `docs/UI-Designsprache.md` (§7.2) · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` · `web/src/app/core/seven-tv/transfer-plan.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` · `web/src/app/core/seven-tv/import-source.ts` ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` · `web/src/app/core/emotes/emote-list-item.model.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` · `web/src/app/shared/export/export-envelope.ts` ·
+`web/src/app/shared/export/import-source-parser.ts` · `web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/emote-list-export.ts` · `web/src/app/shared/export/usage-export.ts` ·
+`web/src/app/shared/export/usage-export-purposes.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` ·
+`web/src/app/shared/seven-tv/import-preview.ts` · `web/src/app/shared/seven-tv/slot-projection.ts` ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` ·
+`web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`src/EmotePurge.Core/Services/IEmoteListQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteListQueryService.cs`
+
+Until now a transfer into a 7TV set only ever added: a source row whose name the target already
+held, or whose emote the target held under another alias, was counted and left out. Since this
+change the confirm dialog resolves those rows one by one — and one of the resolutions deletes. The
+plan (docs/plans/Plan-230-Namenskonflikte.md) carries the full reasoning; this entry records the
+contracts that changed.
+
+**What the user can decide, per row.** Both conflict groups open a second step of the *same*
+dialog (no page, no second overlay): a name collision offers skip, rename (the source is added under
+a typed alias) and **replace** (the target entry is removed, then the source is added under the
+freed name); an alias mismatch offers skip and adopt (the target entry is renamed to the source
+alias, nothing is added). Skip is the default, so an untouched dialog closes with exactly the plan
+it always had — `toAdd`, one `add` row each (`ImportConfirmOutcome` now carries `plan: TransferPlan`
+instead of `rows`). The rules a set of decisions must satisfy are one pure function,
+`validateResolution` (seven rules, independent of row order); the dialog blocks "Apply" with the
+violating rows named beside it and never builds a plan that fails them. Replace is **only offered
+for a tracked target** — deleting from an untracked set would have no way back — and is shown
+disabled with that reason instead of hidden. Decisions live in the dialog until it closes: "Apply"
+commits a group's edits, "Back" keeps the committed ones and the edits for the next opening.
+**An adopt also gets a quiet line of its own** ("N entries in the target set will be renamed",
+right after the removal line, whenever the plan holds at least one), and where a plan has no
+ADD at all, the title switches from "0 emotes … copy?" to "Align N names in the target set?", both
+counted from the same `summarizeTransferPlan` (its new `adoptCount` field).
+
+**One run row can now be two mutations.** A replace row is REMOVE, then ADD, in one row of one run
+(the run engine's sequence of steps per row). A REMOVE that fails ends the row without its ADD; an
+ADD that fails after a successful REMOVE leaves the gap — deliberately no automatic rollback — and
+says so in the row's own reason. The plan runs every replace first, then adopts, then plain adds,
+then renames, so a replace can only lower the set's peak occupancy. The slot projection uses the
+net change (`addCount − removedEntryCount`): a replace on a #74 duplicate or on an id with an
+aliasless sibling removes more entries than it adds back.
+
+**A lost answer is `unknown`, not `failed`, for a run that deletes.** `RunItemStatus` gains
+`'unknown'`. `SevenTvImportService.createOperation` sets the engine's `transportLossIsUnknown` flag
+whenever the plan holds at least one replace row — for *every* row of that run, not only the replace
+ones. With the flag set, a step's HTTP failure is `unknown` exactly when the response cannot say
+whether 7TV applied the mutation: no answer at all, any 5xx, or a body that is not a GraphQL answer.
+A 4xx is unambiguous (7TV rejected the request before it ran) and always stays `failed`, and a
+GraphQL-level rejection (a real answer, just a negative one) is never `unknown` either. A plan
+without any replace row keeps today's plain `failed` for every transport loss, exactly as before.
+
+**The run settles before anything is reported.** `ImportRunInfo.settlement` (`'pending'`/`'settled'`)
+tracks this. A run without any `unknown` row settles the moment the engine completes. One with at
+least one reads the target set live, once more, and clears each `unknown` row against that read
+(`settleUnknownRow`); a read that fails, times out (`SETTLE_READ_TIMEOUT_MS`) or comes back
+incomplete leaves those rows `unknown` regardless — the run still settles, it never waits forever.
+Nothing reaches the Api before `settlement` turns `'settled'`: `sync-imported`, the removal report
+and the channel resync all wait for it, even though the dock already shows the engine's live
+snapshot while the re-read is in flight. A `reset()` or a second `startImport` started during that
+re-read takes the outcome off the dock, but the pending run's reports are still sent — they record
+7TV changes that already happened, independent of what is currently on screen. Close itself no
+longer reaches `reset()` during that window: `RunProgressPanel` gained a `dismissible` input
+(default `true`, so delete/restore are unaffected), and the import section binds it to
+`run.settlement === 'settled'` — a run that has stopped running but not yet settled shows neither
+Cancel nor Close, only a muted "settling" line, so a user cannot end the run before its protocol and
+the unload cover over the pending re-read exist. A second `startImport` during that window still
+takes the outcome off the dock the way it always could — closing that gap needs a change to the
+arbiter that decides whether a run may start, not to the dock, and stays open.
+
+**The safeguard is a file, not a typed confirmation.** A plan with at least one replace turns the
+executor into a three-state button: "Save recovery file" reads the target set live, checks every
+replace target at entry level (same id, same set of aliases, same aliasless entry, the name still
+held by that id, a complete read — `verifyReplaceTargets`), downloads the recovery file (the
+`transfer-run` envelope, stage `planned`, built from that read), and only then offers "Start".
+Nothing else is asked; the removal count stands in the dialog as a warning line. A drifted target
+releases nothing: its row goes back to skip, the resolution step shows the live counterpart instead
+of the stale one, and the user confirms again (operator decision). A failed or incomplete read
+releases nothing either, but keeps the decisions — it cannot say which target changed, if any. Only
+the newest read may answer (a new read cancels the one before it, and the resolve triggers are
+locked while one runs), and a reload that no longer fits a committed decision drops it and names it
+in the same banner. Any change to the decisions after the download asks for a new file. The replace targets of the plan the
+dialog closes with carry the read's aliases and 7TV default names, so the run protocol can name an
+aliasless entry and the flow's own second check compares against the read, not the preview.
+
+**A second check right before the run, and what remains open.** Between the download and the start
+can lie the token prompt, so `import-flow.ts` reads the set once more: a replace row whose target
+drifted by then is dropped and counted in the dock (`replaceSkippedDrift`) rather than reopening
+the dialog, and a failed or incomplete read lets no replace row through. A window between that read
+and each individual REMOVE remains — it cannot be closed without an atomic operation on 7TV's side,
+the same residual race the duplicate filter already documents.
+
+**After the run.** A settled run now reports through the channel-scoped `sync-deleted`, next to the
+`sync-imported` an add already sent — the same call the delete flow uses (`reportRemoved`). It names
+every replace row whose REMOVE 7TV confirmed (`completedSteps >= 1`), independent of the row's own
+final status: a replace whose ADD then failed or came back `unknown` still reports its REMOVE,
+because that target entry really is gone. An adopt row reports nothing, since nothing disappears.
+The result protocol (stage `finished`) is offered in the dock after every
+transfer run; both stages load back through the existing "Restore" entry, which re-adds only the
+removed target entries and only where the gap is still open. While a run with replace rows is
+active, closing the tab asks first (`beforeunload`); an add-only run never does. No
+`localStorage` copy of either file.
+
+**The confirm dialog's side-by-side preview needs an image on both sides.**
+`GET /api/channels/{channel}/emotes` now also serves each active emote's own image URL
+(`EmoteListItemDto.ImageUrl`, additive; `EmoteListQueryService`), carried through unchanged as
+`EmoteListItem.imageUrl` on the frontend. `ImportRow.imageUrl` mirrors it for every live source
+(channel grid, foreign channel, leaderboard) — never derived from `sevenTvEmoteId`, since a static
+and an animated emote use different 7TV URL shapes. A file-sourced row used to have no image to
+offer, because the wire format wrote only id and name.
+
+**Export files now carry each row's image URL too**, closing that last gap. `emote-list-export.ts`
+and `usage-export.ts`'s JSON writers add an `imageUrl` field, taken from the same in-app rows the
+rest of each row already comes from (`EmoteListItem.imageUrl`, `EmoteUsageTotal.imageUrl`) — still
+never derived from the id. The field is additive and optional: `formatVersion` stays `1`, and
+`import-source-parser.ts` reads it only when it is a non-empty string, mapping anything else
+(missing, empty, non-string) to `null`. A file exported before this change therefore keeps parsing
+unchanged, with `imageUrl: null` on every row — operator decision is to re-export rather than teach
+the parser to guess. The CSV usage export stays untouched: it is not an import source (the ingest
+dialog's file control only ever accepts `application/json`, `file-import-step.ts`), so there was
+never a contract to extend there.
+
+---
+
+### 2026-09-23 — Restore leaves out an alias another emote now holds, for every restore source (#230)
+
+**Betrifft:** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts`
+
+`filterAlreadyPresentForRestore` gains a fourth rule: an alias that is missing for the row's id but
+held by a **different** id in the live set is dropped from the row before the run, and a row with
+nothing left drops out. Its `ADD` could only end in 7TV's name conflict — a burnt
+`emote_set_change` ticket and a red row. Until now the filter only ever asked what the row's *own* id
+holds (`aliasesById.get(id)`), never who else holds a name. The held names come from the same read,
+no second request; only named aliases are compared. That leaves two cases open: a restored alias equal
+to the default name of another emote's *aliasless* entry, and a restored `null` entry whose default
+name another emote holds as an alias, can both still end in a 409 — no live probe has shown whether
+7TV counts a default name as occupying a name, so the rule does not guess (a visible failure, as
+before, never a silent drop).
+
+**Why for every source, not only transfer-run files.** The case that forced it is a successful
+"replace target" transfer: the source emote holds the target's old name by design, and restoring the
+target from the transfer file must close gaps only, not collide with — or remove — what the transfer
+put there (operator decision 2026-09-23). But a purge-run protocol meets the same situation whenever
+someone reused a name since the purge, and the 409 was just as certain there. One filter with a rule
+that applied to one source only would be two truths about the same question. **This changes
+behaviour for existing purge-run restores**: such a row is now left out before the run instead of
+failing in it. Reading purge-run files is untouched.
+
+**Counted apart, never silent.** The dropped aliases are counted in `skippedNameTaken`, not in
+`skipped` ("already present"): every alias of the input is either sent, `skipped` or
+`skippedNameTaken`. `SevenTvRestoreService.startRestore` takes the count as a sixth argument; it
+opens the same transient notice window as `skippedDuplicates` (a run left with nothing to queue still
+shows it) and gets its own dock line (`restore.skippedNameTaken`), shown in `MassDeletePanel` and
+spoken by `DockOutcomeAnnouncer` right after the "already present" count, so "skipped" is never read
+as "was already there". Nothing is removed to make room, and there is no automatic undo of a replace
+(follow-up issue).
+
+---
+
+### 2026-09-23 — Restore reads transfer-run files: removed target entries only, an aliasless entry comes back without an alias (#230)
+
+**Betrifft:** `docs/UI-Designsprache.md` (§7.3) ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts`
+
+A "replace target" transfer deletes target entries, and its two files are the way back (operator
+decision 2026-09-23, revising AK 18's restore half): the recovery file (`stage: 'planned'`, written
+before the first REMOVE) and the result protocol (`stage: 'finished'`). Both are now read through the
+door a purge-run protocol already uses — the file branch of the import dialog (`FileImportStep`),
+where they are the fourth file sort (§7.3) — and start the same restore flow. A transfer-run file
+stays refused as an *import* source.
+
+**What is restored.** `parseTransferRunForRestore` validates the file like `parsePurgeRunProtocol`
+(kind, its own `formatVersion`, channel, set — same error keys) and returns one restore row per
+`replace` row's removed target, nothing for any source row. The channel is matched against
+`meta.targetChannelName`, which is `null` for an untracked target and therefore equals no page's
+channel — an untracked target's file is refused with `wrongChannel`. The envelope's `channelName` is
+deliberately not read: it holds `''` for an untracked target, a stand-in rather than the honest
+`null`. There is no restore into an untracked set, because nothing there can report it
+(`sync-restored` is channel-bound); a follow-up issue. `planned` offers every
+removed target (what was never removed is still in the set and falls out through the restore filter);
+`finished` offers only targets with `removedTarget.confirmed === true`, whatever the row's final
+status. A file without such a target is refused with `transferRunNoRows`.
+
+**The in-memory row widens, the purge-run file does not.** The restore flow's input is `RestoreRow`
+(`aliases: (string | null)[]`), not `PurgeRunRow`. `null` is an entry without an alias — only a
+transfer-run file records one (`removedTarget.entries`). `parsePurgeRunProtocol` and `readProtocolRow`
+are unchanged; a purge-run row is a `RestoreRow` by assignment. A row's display name is its first
+named alias, else the target's `defaultName`, else its 7TV id — `defaultName` may be `null` in a real
+file, and the entry is restored all the same.
+
+**An aliasless entry is restored, never filtered away.** The restore queue keys a `null` alias as
+`${sevenTvEmoteId}#` (7TV holds at most one aliasless entry per id) and sends its ADD with
+`alias: null` — 7TV's documented default-name fallback. `filterAlreadyPresentForRestore` counts a
+row's `null` as present when the id has a live aliasless entry (`aliaslessIds`), missing otherwise, and
+reads the K5 rule 2 ("the id sits under an entry the row does not name ⇒ drop the whole row") so that
+a live aliasless entry is foreign only to a row that does **not** name one. Without that reading K5
+would drop every row carrying an aliasless entry without a trace. A purge-run row never names one, so
+K5 is unchanged for it; `skipped` still counts per alias, `null` as one.
+
+---
+
 ### 2026-09-22 — Vote-page deletes read the session's set live, both K6 known limitations closed (#227)
 
 **Betrifft:** `docs/DECISIONS.md` (K6 entry above) · `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§37) ·

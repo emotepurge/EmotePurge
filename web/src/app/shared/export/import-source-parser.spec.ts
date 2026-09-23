@@ -34,11 +34,59 @@ describe('parseImportSource', () => {
       envelopeKind: 'emote-list',
     });
     expect(result.source.rows).toEqual([
-      { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-      { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
     ]);
     expect(result.source.duplicatesCollapsed).toBe(0);
     expect(result.source.discardedRows).toBe(0);
+  });
+
+  it('sets imageUrl to null for every parsed row when the file omits it', () => {
+    // The fixture rows above have no `imageUrl` field at all (an older, pre-#230 file) — a row read
+    // back out of one must say so honestly rather than guess at an image from the id.
+    const result = parseImportSource(envelope({}), 'emotes.json');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.source.rows.every((row) => row.imageUrl === null)).toBe(true);
+  });
+
+  it('reads a non-empty imageUrl through when the file carries one (#230)', () => {
+    const result = parseImportSource(
+      envelope({
+        rows: [
+          {
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            imageUrl: 'https://cdn.7tv.app/emote/7tv-1/2x.webp',
+          },
+          { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: '' },
+        ],
+      }),
+      'emotes.json',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.source.rows).toEqual([
+      {
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        imageUrl: 'https://cdn.7tv.app/emote/7tv-1/2x.webp',
+      },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
+    ]);
+  });
+
+  it('maps a non-string imageUrl to null rather than passing it through', () => {
+    const result = parseImportSource(
+      envelope({ rows: [{ sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: 42 }] }),
+      'emotes.json',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.source.rows[0].imageUrl).toBeNull();
   });
 
   it("maps a usage export's emoteName onto ImportRow.name", () => {
@@ -56,8 +104,8 @@ describe('parseImportSource', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.source.rows).toEqual([
-      { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-      { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
     ]);
     expect(result.source.origin.kind === 'file' && result.source.origin.envelopeKind).toBe('usage');
   });
@@ -66,6 +114,19 @@ describe('parseImportSource', () => {
     const result = parseImportSource(envelope({ kind: 'voting' }), 'vote.json');
     expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.votingExport' });
   });
+
+  // #230: a transfer-run protocol's rows are 7TV mutations already applied or about to be, not an
+  // emote list — both stages are rejected by name, never parsed as a copy source.
+  it.each(['planned', 'finished'] as const)(
+    'names a transfer-run protocol (stage: %s) instead of trying to read it as an emote list',
+    (stage) => {
+      const result = parseImportSource(
+        envelope({ kind: 'transfer-run', meta: { stage } }),
+        'transfer.json',
+      );
+      expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.transferRun' });
+    },
+  );
 
   it('falls back to wrongKind for anything other than emote-list, usage or voting', () => {
     expect(parseImportSource(envelope({ kind: 'purge-run' }), 'x.json')).toEqual({
@@ -100,8 +161,8 @@ describe('parseImportSource', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.source.rows).toEqual([
-      { sevenTvEmoteId: '7tv-1', name: 'PogU' },
-      { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', imageUrl: null },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', imageUrl: null },
     ]);
     expect(result.source.duplicatesCollapsed).toBe(1);
     expect(result.source.discardedRows).toBe(1);

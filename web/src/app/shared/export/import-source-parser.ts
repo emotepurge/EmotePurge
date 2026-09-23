@@ -20,6 +20,7 @@ interface RawImportRow {
   sevenTvEmoteId?: unknown;
   name?: unknown;
   emoteName?: unknown;
+  imageUrl?: unknown;
 }
 
 export function parseImportSource(
@@ -30,6 +31,15 @@ export function parseImportSource(
 
   if (partial.kind === 'voting') {
     return { ok: false, errorKey: 'restore.import.errors.votingExport' };
+  }
+  // A transfer-run protocol (either stage, #230) is never an import source: its rows are 7TV
+  // mutations already applied or about to be, not an emote list to copy from. Named explicitly
+  // rather than falling into the generic wrongKind below, same reasoning as the voting export
+  // above — the file dispatch (`file-import-step.ts`) already routes both `purge-run` and
+  // `transfer-run` to their own restore branches before ever calling this function; this branch
+  // only answers when that dispatch is bypassed.
+  if (partial.kind === 'transfer-run') {
+    return { ok: false, errorKey: 'restore.import.errors.transferRun' };
   }
   if (partial.kind !== 'emote-list' && partial.kind !== 'usage') {
     // Anything else — an unknown kind, or a purge-run protocol handed here by mistake (the file
@@ -52,7 +62,11 @@ export function parseImportSource(
     const id = row?.sevenTvEmoteId;
     const name = row?.[nameField];
     if (typeof id === 'string' && id.length > 0 && typeof name === 'string') {
-      validRows.push({ sevenTvEmoteId: id, name });
+      // `imageUrl` is additive (#230): a file written since carries it, an older file or a broken
+      // field reads back as `null` — the honest answer, never a guess derived from the id.
+      const imageUrl =
+        typeof row?.imageUrl === 'string' && row.imageUrl.length > 0 ? row.imageUrl : null;
+      validRows.push({ sevenTvEmoteId: id, name, imageUrl });
     }
   }
 

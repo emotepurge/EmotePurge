@@ -11,7 +11,7 @@ import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.s
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
-import { PurgeRunRow } from '../export/purge-run-export';
+import { PurgeRunRow, RestoreRow } from '../export/purge-run-export';
 import { RestoreConfirmDialogData } from './restore-confirm-dialog';
 import { RestoreFlowDeps, startRestoreFlow } from './restore-flow';
 
@@ -229,13 +229,15 @@ describe('startRestoreFlow', () => {
 
     // Fourth argument is the duplicate check's skip count (#149/T5) — 0 here because the harness's
     // default 7TV read (`httpPost`) reports an empty target set, so nothing gets filtered. Fifth is
-    // whether that check actually ran — true, since the fetch succeeded (#149).
+    // whether that check actually ran — true, since the fetch succeeded (#149). Sixth is how many
+    // aliases it left out because another emote holds the name — 0, nothing is held.
     expect(startRestore).toHaveBeenCalledWith(
       SET_ID,
       CHANNEL,
       [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       0,
       true,
+      0,
     );
   });
 
@@ -265,7 +267,7 @@ describe('startRestoreFlow', () => {
       startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 1, true);
+      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 1, true, 0);
     });
 
     // A second restore over the exact same protocol rows — e.g. the user runs restore, then runs
@@ -279,7 +281,7 @@ describe('startRestoreFlow', () => {
       startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, theRows);
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], theRows.length, true);
+      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], theRows.length, true, 0);
     });
 
     // #149 P1 (independent review): the first version of this check asked our own database
@@ -305,6 +307,7 @@ describe('startRestoreFlow', () => {
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
 
@@ -324,6 +327,7 @@ describe('startRestoreFlow', () => {
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
         1,
         true,
+        0,
       );
     });
 
@@ -336,7 +340,27 @@ describe('startRestoreFlow', () => {
       startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 2, true);
+      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 2, true, 0);
+    });
+
+    // A purge-run row whose name another emote took since the purge: left out before the run
+    // instead of burning a ticket on a certain name conflict, and counted apart from "already
+    // present" all the way into the run's notice.
+    it('leaves out an alias another emote now holds and forwards that count to the run', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-other', alias: 'PogU' }])));
+
+      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        SET_ID,
+        CHANNEL,
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
+        0,
+        true,
+        1,
+      );
     });
 
     // #149: a failed check must fail open (every row still goes through, the run still starts) but
@@ -356,6 +380,7 @@ describe('startRestoreFlow', () => {
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         false,
+        0,
       );
     });
   });
@@ -502,6 +527,24 @@ describe('startRestoreFlow', () => {
     startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateRow]);
 
     expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+    expect(confirmData(dialogOpen).addCount).toBe(2);
+  });
+
+  // A removed transfer target without a named alias: listed under its default name, and its one
+  // entry without an alias is an ADD like any other.
+  it('counts an entry without an alias as an ADD and lists its row under the default name', () => {
+    const { deps, dialogOpen } = setup();
+    const transferRow: RestoreRow = {
+      emoteId: null,
+      sevenTvEmoteId: 'tgt-1',
+      name: 'KappaDefault',
+      aliases: [null],
+      defaultName: 'KappaDefault',
+    };
+
+    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [transferRow, ...rows()]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['KappaDefault', 'PogU']);
     expect(confirmData(dialogOpen).addCount).toBe(2);
   });
 });

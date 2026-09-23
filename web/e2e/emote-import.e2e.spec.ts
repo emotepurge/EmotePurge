@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+
 import { Locator, Page, expect, test } from '@playwright/test';
 
 import {
   AUTH_USER,
   MockEmoteUsage,
   MockLeaderboardEmote,
+  SevenTvGqlRequestKind,
   emitLive,
   installLiveStub,
   mockActiveEmoteSet,
@@ -21,9 +24,11 @@ import {
   mockSevenTvGql,
   mockSevenTvLeaderboard,
   mockSyncImported,
+  mockSyncImportedToSet,
   mockUsageTotals,
   mockVoteSessionList,
   mockWorkerHealth,
+  sevenTvGqlRequestKind,
 } from './support/mocks';
 
 /**
@@ -2736,5 +2741,940 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
     await expect(confirm.getByText('Wiederherstellen geht vorerst nur im aktiven Set')).toHaveCount(
       0,
     );
+  });
+});
+
+/**
+ * #230: per-row conflict resolution inside the import confirm dialog — replace, rename and adopt
+ * as three separate decisions on the same run; the "Rückweg sichern" recovery file a removal
+ * requires before it may start; a live target that drifted since the dialog's own preview; a lost
+ * transport answer settling from a re-read of the target; the untouched-dialog path (AK 5); an
+ * untracked target's disabled replace option (R5); and a restore built from a finished run's own
+ * result protocol.
+ */
+test.describe('push flow: resolving name conflicts (#230)', () => {
+  /** One target entry as 7TV's live set read (`loadSevenTvSetEntries`) would report it — an entry
+   *  in `aliases` is `null` for the one aliasless entry an id can carry alongside named ones. */
+  interface LiveSetEntry {
+    id: string;
+    aliases: (string | null)[];
+    defaultName?: string;
+  }
+
+  /** The GQL_EMOTE_SET_ENTRIES_QUERY response shape `loadSevenTvSetEntries` reads — used for every
+   *  'setRead' call a test's `mockSevenTvGql` handler answers. */
+  function sevenTvSetReadPayload(entries: readonly LiveSetEntry[]): {
+    data: {
+      emoteSets: {
+        emoteSet: {
+          emotes: {
+            totalCount: number;
+            pageCount: number;
+            items: { alias: string | null; emote: { id: string; defaultName: string } }[];
+          };
+        };
+      };
+    };
+  } {
+    const items = entries.flatMap((entry) =>
+      entry.aliases.map((alias) => ({
+        alias,
+        emote: { id: entry.id, defaultName: entry.defaultName ?? entry.id },
+      })),
+    );
+    return {
+      data: {
+        emoteSets: { emoteSet: { emotes: { totalCount: items.length, pageCount: 1, items } } },
+      },
+    };
+  }
+
+  /** One 7TV GQL call, classified and with its variables — what the order/argument assertions
+   *  below read off a `mockSevenTvGql` handler's own recording. */
+  interface GqlCall {
+    kind: SevenTvGqlRequestKind;
+    variables: Record<string, unknown>;
+  }
+
+  test('resolving one collision by replace, one by rename and one mismatch by adopt runs replace, then adopt, then add, then rename, and reports both the add and the removal', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    // CatJAM and KEKW each collide with a DIFFERENT target id under their own name; Pog's id is
+    // already in the target set, just under a different alias — an alias mismatch, not a
+    // collision.
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: 'target-catjam', name: 'CatJAM' },
+      { sevenTvEmoteId: 'target-kekw', name: 'KEKW' },
+      { sevenTvEmoteId: '7tv-3', name: 'PogOld' },
+    ]);
+
+    let syncImportedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, async (route) => {
+      syncImportedBody = route.request().postDataJSON();
+      await route.fulfill({ status: 204 });
+    });
+    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
+      syncDeletedBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          archivedCount: 1,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: true,
+        }),
+      });
+    });
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    const liveTarget: LiveSetEntry[] = [
+      { id: 'target-catjam', aliases: ['CatJAM'] },
+      { id: 'target-kekw', aliases: ['KEKW'] },
+      { id: '7tv-3', aliases: ['PogOld'] },
+    ];
+    const calls: GqlCall[] = [];
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      calls.push({ kind, variables: request.variables });
+      switch (kind) {
+        case 'setRead':
+          return sevenTvSetReadPayload(liveTarget);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        case 'addEmote':
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        case 'updateEmoteAlias':
+          return {
+            data: {
+              emoteSets: { emoteSet: { updateEmoteAlias: { alias: request.variables['alias'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await cell(page, 'Pog').click({ modifiers: ['Shift'] });
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await expect(
+      confirm.getByText(
+        '2 Emotes tragen einen Namen, der im Zielset schon vergeben ist — werden nicht übertragen:',
+      ),
+    ).toBeVisible();
+    await expect(
+      confirm.getByText('1 ist im Zielset bereits vorhanden, heißt dort aber anders:'),
+    ).toBeVisible();
+
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für KEKW' })
+      .getByRole('radio', { name: 'Umbenennen' })
+      .check();
+    await confirm.getByLabel('Neuer Name').fill('KEKWv2');
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    await confirm.getByRole('button', { name: 'Abweichende Namen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für Pog' })
+      .getByRole('radio', { name: 'Namen übernehmen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    // The removal banner and — from the operator decision behind adjustment G row 7 — the neutral
+    // rename line, here caused by the ADOPT decision on Pog, not by the RENAME decision on KEKW
+    // (deriveTransferRows never turns a renameSource decision into an `adoptSourceName` row).
+    await expect(
+      confirm.getByText('1 Emote wird aus dem Zielset entfernt und durch das Quell-Emote ersetzt.'),
+    ).toBeVisible();
+    await expect(confirm.getByText('1 Eintrag im Zielset wird umbenannt.')).toBeVisible();
+
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    const download = await downloadPromise;
+    const plannedPath = await download.path();
+    const planned = JSON.parse(readFileSync(plannedPath!, 'utf-8')) as {
+      meta: { stage: string };
+      rows: { action: string; removedTarget: { aliases: string[]; confirmed: boolean } | null }[];
+    };
+    expect(planned.meta.stage).toBe('planned');
+    const plannedReplaceRow = planned.rows.find((row) => row.action === 'replace');
+    expect(plannedReplaceRow?.removedTarget).toMatchObject({
+      aliases: ['CatJAM'],
+      confirmed: false,
+    });
+
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(5000);
+    await expect(page.getByText('3 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    // buildTransferPlan groups rows replace-then-adopt-then-add-then-rename (never source order,
+    // `transfer-plan.ts`'s own doc) — with no untouched `add` row here the mutations run REMOVE,
+    // ADD (the replace's own re-add), updateEmoteAlias (the adopt), ADD (the rename, under the
+    // typed alias), in that order.
+    const mutations = calls.filter((call) => call.kind !== 'setRead');
+    expect(mutations.map((call) => call.kind)).toEqual([
+      'removeEmote',
+      'addEmote',
+      'updateEmoteAlias',
+      'addEmote',
+    ]);
+    expect(mutations[0].variables).toMatchObject({ emoteId: 'target-catjam' });
+    expect(mutations[1].variables).toMatchObject({ emoteId: '7tv-1', alias: 'CatJAM' });
+    expect(mutations[2].variables).toMatchObject({
+      emoteId: '7tv-3',
+      currentAlias: 'PogOld',
+      alias: 'Pog',
+    });
+    expect(mutations[3].variables).toMatchObject({ emoteId: '7tv-2', alias: 'KEKWv2' });
+
+    // sync-imported names every row that added an emote (CatJAM's replace, KEKW's rename) — never
+    // the adopt, which renames an existing entry rather than adding one.
+    expect(syncImportedBody?.sevenTvEmoteIds?.slice().sort()).toEqual(['7tv-1', '7tv-2']);
+    // sync-deleted (the channel-scoped removal report `SevenTvImportService.removalReport` sends,
+    // not a set-centred endpoint — the plan's #230 text describing one does not exist, see
+    // adjustment G) names only the replaced target.
+    expect(syncDeletedBody?.sevenTvEmoteIds).toEqual(['target-catjam']);
+  });
+
+  test('a replace whose ADD 409s ends the row failed with the gap reason, still reports the removal, and the finished protocol records failedStep 1', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: 'target-catjam', name: 'CatJAM' },
+    ]);
+
+    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
+      syncDeletedBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          archivedCount: 1,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: true,
+        }),
+      });
+    });
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    const liveTarget: LiveSetEntry[] = [{ id: 'target-catjam', aliases: ['CatJAM'] }];
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      switch (kind) {
+        case 'setRead':
+          return sevenTvSetReadPayload(liveTarget);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        case 'addEmote':
+          // A live 409 on the ADD half of a replace — the mutation itself, not a transport loss,
+          // so the engine ends the row `failed`, never `unknown`.
+          return {
+            errors: [
+              {
+                message: 'emote alias already in use',
+                extensions: { code: 'MUTATION_ERROR', status: 409 },
+              },
+            ],
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    await downloadPromise;
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3000);
+    await expect(page.getByText('0 kopiert · 1 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    // The gap reason (import.errors.removedButNotAdded) — a replace's own REMOVE-succeeded-but-ADD-
+    // failed wording, chosen over the generic "name taken" text even though 7TV answered 409
+    // (withFailureReason's own priority, seven-tv-import.service.ts).
+    await expect(
+      page.getByText(
+        'Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt — im Zielset fehlt jetzt dieser Name. Die Rückweg-Datei stellt das Ziel-Emote wieder her.',
+      ),
+    ).toBeVisible();
+
+    // The removal report still names the target: 7TV confirmed the REMOVE regardless of the row's
+    // own final status.
+    expect(syncDeletedBody?.sevenTvEmoteIds).toEqual(['target-catjam']);
+
+    const protocolDownloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Protokoll herunterladen' }).click();
+    const exportDialog = page.getByRole('dialog');
+    await exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' }).check();
+    await exportDialog.getByRole('button', { name: 'Exportieren' }).click();
+    const protocolDownload = await protocolDownloadPromise;
+    const protocolPath = await protocolDownload.path();
+    const protocol = JSON.parse(readFileSync(protocolPath!, 'utf-8')) as {
+      meta: { stage: string };
+      rows: {
+        action: string;
+        failedStep: number | null;
+        removedTarget: { confirmed: boolean } | null;
+      }[];
+    };
+    expect(protocol.meta.stage).toBe('finished');
+    const replaceRow = protocol.rows.find((row) => row.action === 'replace');
+    expect(replaceRow?.failedStep).toBe(1);
+    expect(replaceRow?.removedTarget?.confirmed).toBe(true);
+  });
+
+  test('leaving both conflicts untouched and clicking Kopieren sends only the plain add, exactly the toAdd count, with no removal line and no download', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: 'target-catjam', name: 'CatJAM' },
+      { sevenTvEmoteId: '7tv-2', name: 'KekwOld' },
+    ]);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    const liveTarget: LiveSetEntry[] = [
+      { id: 'target-catjam', aliases: ['CatJAM'] },
+      { id: '7tv-2', aliases: ['KekwOld'] },
+    ];
+    const calls: GqlCall[] = [];
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      calls.push({ kind, variables: request.variables });
+      switch (kind) {
+        case 'setRead':
+          return sevenTvSetReadPayload(liveTarget);
+        case 'addEmote':
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    let downloadFired = false;
+    page.on('download', () => {
+      downloadFired = true;
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await cell(page, 'Pog').click({ modifiers: ['Shift'] });
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await expect(
+      confirm.getByText(
+        '1 Emote trägt einen Namen, der im Zielset schon vergeben ist — wird nicht übertragen:',
+      ),
+    ).toBeVisible();
+    await expect(
+      confirm.getByText('1 ist im Zielset bereits vorhanden, heißt dort aber anders:'),
+    ).toBeVisible();
+    await expect(confirm.getByRole('button', { name: 'Kopieren' })).toBeEnabled();
+
+    // Nothing opened either resolve step and no decision was made — the dialog itself never reads
+    // the target set live merely for having unresolved conflicts on screen (AK 5).
+    expect(calls).toEqual([]);
+
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(2000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect(page.getByText(/Emote wird aus dem Zielset entfernt/)).toHaveCount(0);
+    await expect(page.getByText(/Eintrag im Zielset wird umbenannt/)).toHaveCount(0);
+
+    // The unconditional pre-send duplicate re-check (#149/T5) still reads the target once through
+    // 7TV's own GQL endpoint even for a plan with nothing to remove — a constant of every import
+    // run, not something #230 changes, and not what "no set read" above is about (that assertion
+    // pins the ABSENCE of a read before the click, i.e. that the dialog itself never triggers one).
+    const setReads = calls.filter((call) => call.kind === 'setRead');
+    const mutations = calls.filter((call) => call.kind !== 'setRead');
+    expect(setReads).toHaveLength(1);
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]).toMatchObject({
+      kind: 'addEmote',
+      variables: { emoteId: '7tv-3', alias: 'Pog' },
+    });
+    expect(downloadFired).toBe(false);
+  });
+
+  test('a live target that gained a third alias since the preview blocks the run, names the row in the banner and overlays the live counterpart without a reload', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: 'target-catjam', name: 'CatJAM' },
+    ]);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    // The REST preview (mockEmoteList above) and the live 7TV read disagree from the start — the
+    // live set already carries a third alias the dialog's own preview never saw, exactly what
+    // "drifted since the preview" means for a read taken only once, at dialog-open time.
+    const driftedTarget: LiveSetEntry[] = [
+      { id: 'target-catjam', aliases: ['CatJAM', 'CatJAMOld', 'CatJAMExtra'] },
+    ];
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      switch (kind) {
+        case 'setRead':
+          return sevenTvSetReadPayload(driftedTarget);
+        case 'addEmote':
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    let downloadFired = false;
+    page.on('download', () => {
+      downloadFired = true;
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'Pog').click({ modifiers: ['Shift'] });
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+
+    await expect(
+      confirm.getByText(
+        'Das Zielset hat sich seit der Vorschau geändert: CatJAM. Diese Zeilen stehen wieder auf „Überspringen“ und zeigen jetzt das aktuelle Gegenstück — bitte prüfen und erneut bestätigen.',
+      ),
+    ).toBeVisible();
+    // "Ziel neu laden" is the banner's own action and stays offered — the point of this case is
+    // that the resolution step already shows the live counterpart without it being clicked
+    // (adjustment D), not that the button is gone.
+    await expect(confirm.getByRole('button', { name: 'Ziel neu laden' })).toBeVisible();
+    await expect(confirm.getByRole('button', { name: 'Starten' })).toHaveCount(0);
+    // Pog alone still fills the plan (a plain add), so the execute button reads "Kopieren" rather
+    // than vanishing or reading "nothing to add" — CatJAM's decision fell back to skip.
+    await expect(confirm.getByRole('button', { name: 'Kopieren' })).toBeEnabled();
+    expect(downloadFired).toBe(false);
+
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await expect(
+      confirm
+        .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+        .getByRole('radio', { name: 'Überspringen' }),
+    ).toBeChecked();
+    await expect(confirm.getByText('CatJAM · CatJAMOld · CatJAMExtra')).toBeVisible();
+  });
+
+  test('a lost ADD answer settles green when the re-read shows the source under its alias, and red with the gap reason when it does not', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: 'target-a', name: 'CatJAM' },
+      { sevenTvEmoteId: 'target-b', name: 'KEKW' },
+    ]);
+
+    let syncImportedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, async (route) => {
+      syncImportedBody = route.request().postDataJSON();
+      await route.fulfill({ status: 204 });
+    });
+    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
+      syncDeletedBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          archivedCount: 2,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: true,
+        }),
+      });
+    });
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    const confirmedTarget: LiveSetEntry[] = [
+      { id: 'target-a', aliases: ['CatJAM'] },
+      { id: 'target-b', aliases: ['KEKW'] },
+    ];
+    // What the post-run re-read finds: CatJAM's replace really did land (the SOURCE id now holds
+    // the freed name), KEKW's REMOVE went through but its ADD never landed anywhere and nothing
+    // else took the freed name either — the honest state of a lost answer that genuinely failed.
+    // One run covers both outcomes of a lost transport answer at once, rather than two runs under
+    // two separately mocked re-reads.
+    const settledTarget: LiveSetEntry[] = [{ id: '7tv-1', aliases: ['CatJAM'] }];
+    let setReadCount = 0;
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      switch (kind) {
+        case 'setRead':
+          setReadCount++;
+          // Calls 1 and 2 are the dialog's own verify and the pre-send recheck, both against the
+          // still-confirmed state; call 3 onward is the post-run settle read.
+          return sevenTvSetReadPayload(setReadCount <= 2 ? confirmedTarget : settledTarget);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        case 'addEmote':
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    // Aborts the ADD half of both replace rows — a transport loss, not a GQL rejection, so the run
+    // engine marks both rows `unknown` (transportLossIsUnknown) instead of `failed` and re-reads
+    // the target before either can settle. Registered after mockSevenTvGql so it runs first
+    // (Playwright matches route handlers in reverse registration order) and falls back to it for
+    // every other call.
+    await page.route('https://7tv.io/v4/gql', async (route) => {
+      const body = route.request().postDataJSON() as {
+        query: string;
+        variables: Record<string, unknown>;
+      };
+      const kind = sevenTvGqlRequestKind(body);
+      if (
+        kind === 'addEmote' &&
+        (body.variables['emoteId'] === '7tv-1' || body.variables['emoteId'] === '7tv-2')
+      ) {
+        await route.abort();
+        return;
+      }
+      await route.fallback();
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für KEKW' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    await downloadPromise;
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(6000);
+    await expect(page.getByText('1 kopiert · 1 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect(
+      page.getByText(/Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt/),
+    ).toBeVisible();
+
+    expect(syncImportedBody?.sevenTvEmoteIds).toEqual(['7tv-1']);
+    expect(syncDeletedBody?.sevenTvEmoteIds?.slice().sort()).toEqual(['target-a', 'target-b']);
+  });
+
+  test('restoring from the finished protocol of a two-replace run skips the row a successful replace now owns and re-adds only the gap, exactly once', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockWorkspace(page, TARGET_CHANNEL, [], 'target-set');
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: 'target-a', name: 'CatJAM' },
+      { sevenTvEmoteId: 'target-b', name: 'KEKW' },
+    ]);
+
+    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
+      syncDeletedBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          archivedCount: 2,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: true,
+        }),
+      });
+    });
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-restored`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          restoredCount: 1,
+          notFoundIds: [],
+          targetIsActiveSetOfChannel: true,
+        }),
+      }),
+    );
+
+    const confirmedTarget: LiveSetEntry[] = [
+      { id: 'target-a', aliases: ['CatJAM'] },
+      { id: 'target-b', aliases: ['KEKW'] },
+    ];
+    // CatJAM's replace succeeds — 7tv-1 now holds the name — and KEKW's ADD 409s: its old target
+    // is gone and nothing took the freed name, the gap the restore below is meant to close.
+    const postRunTarget: LiveSetEntry[] = [{ id: '7tv-1', aliases: ['CatJAM'] }];
+    let setReadCount = 0;
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      switch (kind) {
+        case 'setRead':
+          setReadCount++;
+          return sevenTvSetReadPayload(setReadCount <= 2 ? confirmedTarget : postRunTarget);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        case 'addEmote':
+          if (request.variables['emoteId'] === '7tv-2') {
+            return {
+              errors: [
+                {
+                  message: 'emote alias already in use',
+                  extensions: { code: 'MUTATION_ERROR', status: 409 },
+                },
+              ],
+            };
+          }
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für KEKW' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    const plannedDownloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    await plannedDownloadPromise;
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(4000);
+    await expect(page.getByText('1 kopiert · 1 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    expect(syncDeletedBody?.sevenTvEmoteIds?.slice().sort()).toEqual(['target-a', 'target-b']);
+
+    const protocolDownloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Protokoll herunterladen' }).click();
+    const exportDialog = page.getByRole('dialog');
+    await exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' }).check();
+    await exportDialog.getByRole('button', { name: 'Exportieren' }).click();
+    const finishedDownload = await protocolDownloadPromise;
+    const finishedPath = await finishedDownload.path();
+    const finishedProtocolText = readFileSync(finishedPath!, 'utf-8');
+
+    await page.goto(`/channels/${TARGET_CHANNEL}/usage-stats`);
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+
+    const restoreCalls: { kind: SevenTvGqlRequestKind; variables: Record<string, unknown> }[] = [];
+    // Same endpoint the transfer run above used; page.route survives the navigation, so this
+    // second handler only has to add its own recording on top, in front of the still-registered
+    // mockSevenTvGql handler (reverse registration order).
+    await page.route('https://7tv.io/v4/gql', async (route) => {
+      const body = route.request().postDataJSON() as {
+        query: string;
+        variables: Record<string, unknown>;
+      };
+      restoreCalls.push({ kind: sevenTvGqlRequestKind(body), variables: body.variables });
+      await route.fallback();
+    });
+
+    const fileInput = await openFileImportDialog(page);
+    await fileInput.setInputFiles({
+      name: 'emotepurge_aatrociity_transfer_202609231200.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(finishedProtocolText, 'utf-8'),
+    });
+
+    const restoreConfirm = page.getByRole('dialog');
+    await expect(restoreConfirm.locator('#app-dialog-title')).toHaveText(
+      '2 Emotes wieder zum Set hinzufügen?',
+    );
+    await expect(restoreConfirm.locator('app-name-preview-list')).toContainText('CatJAM');
+    await expect(restoreConfirm.locator('app-name-preview-list')).toContainText('KEKW');
+    await restoreConfirm.getByRole('button', { name: 'Wiederherstellen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3000);
+
+    const restoreMutations = restoreCalls.filter((call) => call.kind !== 'setRead');
+    expect(restoreMutations.map((call) => call.kind)).toEqual(['addEmote']);
+    expect(restoreMutations[0].variables).toMatchObject({ emoteId: 'target-b', alias: 'KEKW' });
+    expect(restoreCalls.some((call) => call.kind === 'removeEmote')).toBe(false);
+    // The dock's own "name taken" notice for the row the restore itself could not bring back
+    // (target-a, since 7tv-1 already holds 'CatJAM') — lives in the mass-delete panel + its
+    // announcer, not import-progress-section (adjustment G row 5). Two elements carry this text by
+    // design (§4.5, same pattern as usage-stats-page's own pruned-selection notice): the panel's
+    // own aria-hidden paragraph for sighted users, and DockOutcomeAnnouncer's spoken twin — this
+    // targets the aria-hidden one specifically.
+    await expect(
+      page.locator('[aria-hidden="true"]').filter({
+        hasText: '1 Alias übersprungen — der Name gehört inzwischen einem anderen Emote.',
+      }),
+    ).toBeVisible();
+  });
+
+  test('an untracked target disables replace with its reason, still allows a rename, and copying leaves no removal line and no download (R5)', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+      {
+        twitchChannelId: 'untracked-1',
+        twitchLogin: 'stranger',
+        sets: [{ id: 'set-untracked', name: 'Wegwerf-Set', ownerDisplayName: 'Stranger' }],
+      },
+    ]);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockForeignEmoteSetPreview(page, 'stranger', {
+      channelName: 'stranger',
+      sevenTvUserId: null,
+      emoteSetId: 'set-untracked',
+      emoteSetName: 'Wegwerf-Set',
+      capacity: 250,
+      totalCount: 1,
+      emotes: [{ sevenTvEmoteId: 'target-catjam', name: 'CatJAM' }],
+    });
+    await mockSyncImportedToSet(page, 'set-untracked');
+
+    const liveTarget: LiveSetEntry[] = [{ id: 'target-catjam', aliases: ['CatJAM'] }];
+    const calls: GqlCall[] = [];
+    await mockSevenTvGql(page, (request) => {
+      const kind = sevenTvGqlRequestKind(request);
+      calls.push({ kind, variables: request.variables });
+      switch (kind) {
+        case 'setRead':
+          return sevenTvSetReadPayload(liveTarget);
+        case 'addEmote':
+          return {
+            data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    let downloadFired = false;
+    page.on('download', () => {
+      downloadFired = true;
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Wegwerf-Set' }).check();
+    await picker.getByRole('button', { name: 'Ja, dieses Set' }).click();
+
+    // No title assertion here: the row is a collision, so the title's own `addCount` settles at 0
+    // the moment the target set loads (a transient "1" — the honest upper bound before the target
+    // answers — would make this racy). The title is worth reading again once the rename below
+    // gives the plan something to add.
+    const confirm = page.getByRole('dialog');
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+
+    // Replace stays listed but disabled — the reason names why (rule 7, "restore has no way back
+    // for an untracked target yet"), never a silently missing option.
+    const replaceRadio = confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: /^Ziel ersetzen/ });
+    await expect(replaceRadio).toBeDisabled();
+    await expect(confirm.getByText('Nur für getrackte Kanäle wiederherstellbar')).toBeVisible();
+
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Umbenennen' })
+      .check();
+    await confirm.getByLabel('Neuer Name').fill('CatJAM2');
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      "1 Emote in Set ‚Wegwerf-Set' kopieren?",
+    );
+    await expect(confirm.getByText(/Emote wird aus dem Zielset entfernt/)).toHaveCount(0);
+    await expect(confirm.getByRole('button', { name: 'Rückweg sichern' })).toHaveCount(0);
+    const executeButton = confirm.getByRole('button', { name: 'Kopieren' });
+    await expect(executeButton).toBeEnabled();
+    await executeButton.click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(2000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    const mutations = calls.filter((call) => call.kind !== 'setRead');
+    expect(mutations.map((call) => call.kind)).toEqual(['addEmote']);
+    expect(mutations[0].variables).toMatchObject({ emoteId: '7tv-1', alias: 'CatJAM2' });
+    expect(calls.some((call) => call.kind === 'removeEmote')).toBe(false);
+    expect(downloadFired).toBe(false);
   });
 });

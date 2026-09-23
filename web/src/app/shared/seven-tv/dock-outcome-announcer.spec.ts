@@ -35,6 +35,10 @@ const DE_TRANSLATIONS = {
       one: '{{ count }} Emote ist bereits im Zielset und wurde übersprungen.',
       other: '{{ count }} Emotes sind bereits im Zielset und wurden übersprungen.',
     },
+    skippedNameTaken: {
+      one: '{{ count }} Alias übersprungen — der Name gehört inzwischen einem anderen Emote.',
+      other: '{{ count }} Aliase übersprungen — die Namen gehören inzwischen anderen Emotes.',
+    },
     resync: {
       pending: 'Synchronisierung wird angestoßen…',
       succeeded: 'Synchronisierung angestoßen.',
@@ -57,6 +61,11 @@ const DE_TRANSLATIONS = {
     summary: {
       copiedNotActive:
         "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      replaceSkippedDrift: {
+        one: '{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
+        other:
+          '{{ count }} Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
+      },
     },
   },
 };
@@ -64,21 +73,29 @@ const DE_TRANSLATIONS = {
 interface FakeOutcomeSource {
   resyncTrigger: WritableSignal<ResyncTriggerState>;
   skippedDuplicates: WritableSignal<number>;
+  /** Only `SevenTvRestoreService` actually has this — shared shape, the import fake's copy is
+   *  never read. */
+  skippedNameTaken: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
   /** Only `SevenTvImportService` actually has this (finding 3, Live-Verifikation K2 2026-09-21,
    *  `copiedNotActiveNotice`) — carried on the shared fake shape anyway since both services are
    *  built from the same factory; the restore fake's copy is simply never read. */
   run: WritableSignal<ImportRunInfo | null>;
+  /** Only `SevenTvImportService` actually has this — a restore run never carries a replace row.
+   *  Same reasoning as `run` above: shared shape, the restore fake's copy is never read. */
+  replaceSkippedDrift: WritableSignal<number>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
   return {
     resyncTrigger: signal<ResyncTriggerState>('idle'),
     skippedDuplicates: signal(0),
+    skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
     run: signal<ImportRunInfo | null>(null),
+    replaceSkippedDrift: signal(0),
   };
 }
 
@@ -194,6 +211,22 @@ describe('DockOutcomeAnnouncer', () => {
     ]);
   });
 
+  // A run where every replace row drifted since confirmation queues nothing at all — this notice
+  // is the only feedback such a run ever produces, so it needs the same already-standing region
+  // its skipped-duplicates sibling above relies on.
+  it('fills the region that was already standing when an all-drift import reports its skipped replacements', () => {
+    const regionAtRest = regions()[0];
+
+    importService.replaceSkippedDrift.set(3);
+    importService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+
+    expect(regions()).toEqual([regionAtRest]);
+    expect(spoken()).toEqual([
+      '3 Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
+    ]);
+  });
+
   it('speaks each duplicate notice only while its pending window is open', () => {
     restoreService.skippedDuplicates.set(1);
     restoreService.duplicateCheckAvailable.set(false);
@@ -202,6 +235,23 @@ describe('DockOutcomeAnnouncer', () => {
     expect(spoken()).toEqual([
       '1 Emote ist bereits im Zielset und wurde übersprungen.',
       'Restore-Prüfung nicht möglich.',
+    ]);
+
+    restoreService.duplicateNoticePending.set(false);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+  });
+
+  // A restore's aliases left out because another emote holds the name: spoken on their own line,
+  // right after the "already present" count, within the same pending window.
+  it('speaks the name-taken count after the restore skip count, only while the window is open', () => {
+    restoreService.skippedDuplicates.set(1);
+    restoreService.skippedNameTaken.set(2);
+    restoreService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([
+      '1 Emote ist bereits im Zielset und wurde übersprungen.',
+      '2 Aliase übersprungen — die Namen gehören inzwischen anderen Emotes.',
     ]);
 
     restoreService.duplicateNoticePending.set(false);
@@ -239,6 +289,10 @@ describe('DockOutcomeAnnouncer', () => {
       targetSetName: 'wegwerf',
       targetIsActiveSet: false,
       origin: { kind: 'channel', channelName: 'quellkanal' },
+      plan: { rows: [] },
+      settlement: 'settled',
+      removedCount: 0,
+      unknownCount: 0,
       result: { doneKeys: ['7tv-1'], items: [], startedAt: 0, finishedAt: 1 },
     });
     importService.resyncTrigger.set('idle');

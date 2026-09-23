@@ -34,8 +34,9 @@ export const ABORTED_DELETE_NOTICE_MS = 8000;
 
 /** v4 dropped the `action` enum in favour of one field per operation; the emote travels inside the
  *  `EmoteSetEmoteId` input object rather than as a sibling argument, and variable types are `Id!`
- *  instead of `ObjectID!`. Removal has no alias, unlike `addEmote` in the import/restore services. */
-const REMOVE_EMOTE_MUTATION = `
+ *  instead of `ObjectID!`. Removal has no alias, unlike `addEmote` in the import/restore services.
+ *  One `removeEmote` takes every entry of the id. Shared with the import run's replace rows. */
+export const REMOVE_EMOTE_MUTATION = `
   mutation RemoveEmote($setId: Id!, $emoteId: Id!) {
     emoteSets {
       emoteSet(id: $setId) {

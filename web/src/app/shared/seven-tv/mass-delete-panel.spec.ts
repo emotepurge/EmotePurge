@@ -155,6 +155,7 @@ describe('MassDeletePanel row composition', () => {
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
+            skippedNameTaken: signal(0),
             duplicateCheckAvailable: signal(true),
             duplicateNoticePending: signal(false),
           } as unknown as SevenTvRestoreService,
@@ -251,9 +252,24 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
       result: {
         doneKeys: ['7tv-1', '7tv-live'],
         items: [
-          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
           // A set-view row without a local emote (spec #200, 7.1) — see the no-filter case below.
-          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+          {
+            key: '7tv-live',
+            sevenTvEmoteId: '7tv-live',
+            name: 'LiveOnly',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
         ],
         startedAt: Date.parse('2026-09-01T12:00:00Z'),
         finishedAt: Date.parse('2026-09-01T12:05:00Z'),
@@ -290,6 +306,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
+            skippedNameTaken: signal(0),
             duplicateCheckAvailable: signal(true),
             duplicateNoticePending: signal(false),
           } as unknown as SevenTvRestoreService,
@@ -389,16 +406,22 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
     restore: {
       duplicateCheckUnavailable:
         'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+      skippedNameTaken: {
+        one: '{{ count }} Alias übersprungen — der Name gehört inzwischen einem anderen Emote.',
+        other: '{{ count }} Aliase übersprungen — die Namen gehören inzwischen anderen Emotes.',
+      },
     },
   };
 
   let fixture: ComponentFixture<MassDeletePanel>;
   let duplicateCheckAvailable: WritableSignal<boolean>;
   let duplicateNoticePending: WritableSignal<boolean>;
+  let skippedNameTaken: WritableSignal<number>;
 
   beforeEach(async () => {
     duplicateCheckAvailable = signal(true);
     duplicateNoticePending = signal(true);
+    skippedNameTaken = signal(0);
 
     await TestBed.configureTestingModule({
       imports: [
@@ -430,6 +453,7 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
+            skippedNameTaken,
             duplicateCheckAvailable,
             duplicateNoticePending,
           } as unknown as SevenTvRestoreService,
@@ -483,6 +507,25 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
+  });
+
+  // The one visible outcome of a restore whose every alias another emote now holds (the queue stays
+  // empty): shown while the notice window is open and the count is above 0, gone once either stops
+  // holding. The wording only identifies which line appeared.
+  it('shows the name-taken line only while its window is open and aliases were left out', () => {
+    const shown = (): boolean =>
+      (fixture.nativeElement.textContent as string).includes('Aliase übersprungen');
+
+    fixture.detectChanges();
+    expect(shown()).toBe(false);
+
+    skippedNameTaken.set(2);
+    fixture.detectChanges();
+    expect(shown()).toBe(true);
+
+    duplicateNoticePending.set(false);
+    fixture.detectChanges();
+    expect(shown()).toBe(false);
   });
 });
 
@@ -561,11 +604,21 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
             // which RunProgressPanel only projects once the restore run has settled
             // (!isRunning() && total() > 0) — matching how resyncTrigger is only ever written from
             // onRunComplete in the real service.
-            queue: signal([{ key: 'a', sevenTvEmoteId: '7tv-a', name: 'A', status: 'done' }]),
+            queue: signal([
+              {
+                key: 'a',
+                sevenTvEmoteId: '7tv-a',
+                name: 'A',
+                status: 'done',
+                completedSteps: 1,
+                failedStep: null,
+              },
+            ]),
             syncReport: signal('idle'),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger,
             skippedDuplicates: signal(0),
+            skippedNameTaken: signal(0),
             duplicateCheckAvailable,
             duplicateNoticePending,
           } as unknown as SevenTvRestoreService,
@@ -671,6 +724,7 @@ type RestoreServiceFake = Pick<
   | 'rateLimitPauseSeconds'
   | 'resyncTrigger'
   | 'skippedDuplicates'
+  | 'skippedNameTaken'
   | 'duplicateCheckAvailable'
   | 'duplicateNoticePending'
 >;
@@ -683,6 +737,7 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
     rateLimitPauseSeconds: signal<number | null>(null),
     resyncTrigger: signal('idle'),
     skippedDuplicates: signal(0),
+    skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
     ...overrides,
@@ -780,6 +835,8 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
         sevenTvEmoteId: id,
         name: id,
         status: 'done',
+        completedSteps: 1,
+        failedStep: null,
       })),
       startedAt: Date.parse('2026-09-01T12:00:00Z'),
       finishedAt: Date.parse('2026-09-01T12:05:00Z'),
@@ -948,8 +1005,23 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
       result: {
         doneKeys: ['7tv-1', '7tv-live'],
         items: [
-          { key: '7tv-1', emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', status: 'done' },
-          { key: '7tv-live', sevenTvEmoteId: '7tv-live', name: 'LiveOnly', status: 'done' },
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-live',
+            sevenTvEmoteId: '7tv-live',
+            name: 'LiveOnly',
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
         ],
         startedAt: 0,
         finishedAt: 1,
@@ -1007,7 +1079,15 @@ describe('MassDeletePanel — restore latch (#89)', () => {
   let queue: WritableSignal<RunQueueItem[]>;
 
   function item(key: string): RunQueueItem {
-    return { key, emoteId: key, sevenTvEmoteId: `7tv-${key}`, name: key, status: 'done' };
+    return {
+      key,
+      emoteId: key,
+      sevenTvEmoteId: `7tv-${key}`,
+      name: key,
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    };
   }
 
   beforeEach(async () => {
@@ -2528,6 +2608,8 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
             sevenTvEmoteId: '7tv-1',
             name: 'PogU',
             status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
           },
         ],
         startedAt: Date.parse('2026-09-01T12:00:00Z'),
@@ -2606,6 +2688,6 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
       },
     });
 
-    expect(startRestore).toHaveBeenCalledWith('set-1', RUN_CHANNEL, [], 1, true);
+    expect(startRestore).toHaveBeenCalledWith('set-1', RUN_CHANNEL, [], 1, true, 0);
   });
 });

@@ -16,7 +16,7 @@ public class EmoteListQueryService(AppDbContext db) : IEmoteListQueryService
 
         var activeEmotes = await db.Emotes
             .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
-            .Select(e => new { e.SevenTvEmoteId, e.Name })
+            .Select(e => new { e.SevenTvEmoteId, e.Name, e.ImageUrl })
             .ToListAsync(cancellationToken);
 
         // Sorted in memory: Postgres orders by the column's collation, not ordinally, and EF Core
@@ -25,7 +25,7 @@ public class EmoteListQueryService(AppDbContext db) : IEmoteListQueryService
         // so the sort here has to match it.
         return activeEmotes
             .OrderBy(e => e.Name, StringComparer.Ordinal)
-            .Select(e => new EmoteListItemDto(e.SevenTvEmoteId, e.Name))
+            .Select(e => new EmoteListItemDto(e.SevenTvEmoteId, e.Name, e.ImageUrl))
             .ToList();
     }
 }

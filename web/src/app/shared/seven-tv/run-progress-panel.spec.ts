@@ -17,7 +17,10 @@ const DE_TRANSLATIONS = {
   massDelete: {
     progress: '{{ finished }} / {{ total }} verarbeitet',
     progressBarLabel: 'Löschfortschritt',
+    settling: 'Wird abgeschlossen…',
     deleteFailedFallback: 'Löschen fehlgeschlagen',
+    unknownOutcome:
+      'Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.',
     syncFailedTitle: 'Rückmeldung an EmotePurge fehlgeschlagen',
     syncFailed:
       'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.',
@@ -32,7 +35,15 @@ const DE_TRANSLATIONS = {
 /** A queue row typed against the real `RunQueueItem` contract, so a wrong field name here is a
  *  compile error rather than a silently-ignored property. */
 function queueItem(key: string, status: RunItemStatus): RunQueueItem {
-  return { key, sevenTvEmoteId: `7tv-${key}`, name: `Emote-${key}`, status };
+  const ended = status === 'failed' || status === 'unknown';
+  return {
+    key,
+    sevenTvEmoteId: `7tv-${key}`,
+    name: `Emote-${key}`,
+    status,
+    completedSteps: status === 'done' ? 1 : 0,
+    failedStep: ended ? 0 : null,
+  };
 }
 
 /** The accname precedence this codebase relies on for an accessible name: `aria-labelledby`
@@ -70,6 +81,7 @@ function accessibleName(el: Element): string {
       [labelPrefix]="labelPrefix"
       [syncReport]="syncReport"
       [rateLimitPauseSeconds]="rateLimitPauseSeconds"
+      [dismissible]="dismissible"
       (cancelled)="cancelledCount = cancelledCount + 1"
       (dismissed)="dismissedCount = dismissedCount + 1"
       (syncRetryRequested)="syncRetryRequestedCount = syncRetryRequestedCount + 1"
@@ -88,6 +100,7 @@ class HostComponent {
   labelPrefix: 'massDelete' | 'restore' | 'import' = 'massDelete';
   syncReport: SyncReportState = 'idle';
   rateLimitPauseSeconds: number | null = null;
+  dismissible = true;
   projectRunActions = false;
   cancelledCount = 0;
   dismissedCount = 0;
@@ -261,6 +274,26 @@ describe('RunProgressPanel', () => {
     });
   });
 
+  describe('failure list', () => {
+    it('counts an unknown row as finished and lists it with its own unknown-outcome wording', () => {
+      const unknown: RunQueueItem = {
+        ...queueItem('b', 'unknown'),
+        errorMessage: 'Keine Verbindung zu 7TV möglich (Netzwerkfehler).',
+      };
+      const dialog = render({
+        items: [queueItem('a', 'done'), unknown, queueItem('c', 'pending')],
+        isRunning: true,
+      });
+
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('2');
+      const entries = Array.from(
+        dialog.fixture.nativeElement.querySelectorAll('[role="alert"] li'),
+        (entry: Element) => entry.textContent?.trim(),
+      );
+      expect(entries).toEqual([`Emote-b: ${DE_TRANSLATIONS.massDelete.unknownOutcome}`]);
+    });
+  });
+
   describe('sync-report hint mapping', () => {
     it.each(['failed', 'partial'] as const)(
       "shows the sync-failed notice (title, body, retry) for syncReport '%s'",
@@ -351,6 +384,35 @@ describe('RunProgressPanel', () => {
 
       expect(dialog.fixture.nativeElement.querySelector('[run-actions]')).not.toBeNull();
       expect(dialog.text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+    });
+  });
+
+  // Finding 2: a host (import) gates Close on its own settlement signal, not merely on `isRunning`,
+  // so the run stays in the dock — with its protocol and unload cover intact — until that signal
+  // says the pending re-read is done. Delete/restore never pass `dismissible`, so it defaults to
+  // `true` and their panels behave exactly as before.
+  describe('dismissible', () => {
+    it('shows neither Cancel nor Close while not running and not dismissible, and explains why', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        dismissible: false,
+      });
+
+      expect(dialog.button('Abbrechen')).toBeNull();
+      expect(dialog.button('Schließen')).toBeNull();
+      expect(dialog.text()).toContain(DE_TRANSLATIONS.massDelete.settling);
+    });
+
+    it('shows Close once the run is no longer running and dismissible again', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        dismissible: true,
+      });
+
+      expect(dialog.button('Schließen')).not.toBeNull();
+      expect(dialog.text()).not.toContain(DE_TRANSLATIONS.massDelete.settling);
     });
   });
 
