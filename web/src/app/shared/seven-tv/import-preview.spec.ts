@@ -4,6 +4,8 @@ import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import { buildImportPreview } from './import-preview';
 
+const TARGET_IMAGE_URL = 'https://cdn.7tv.app/placeholder/1x.webp';
+
 function source(rows: ImportRow[]): ImportSource {
   return {
     origin: { kind: 'channel', channelName: 'sensitron' },
@@ -383,6 +385,113 @@ describe('buildImportPreview', () => {
     expect(result.aliasMismatches).toEqual([{ sourceName: 'AliasC', targetAlias: 'AliasA' }]);
   });
 
+  it('pairs a name-collision row with the target entry holding that name, plus every named alias of a #74 duplicate', () => {
+    // #74 grenzfall for nameCollisionRows: the target id the source name collides with has two
+    // live entries under different aliases (7TV's own set-merge defect). A REMOVE resolution takes
+    // both, so the counterpart must expose the full alias list, not just the one that collided.
+    const target: EmoteListItem[] = [
+      { sevenTvEmoteId: 'dup-1', name: 'PogU', imageUrl: TARGET_IMAGE_URL },
+      { sevenTvEmoteId: 'dup-1', name: 'PogU2', imageUrl: TARGET_IMAGE_URL },
+    ];
+
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: 'PogU', imageUrl: null }]),
+      target,
+    );
+
+    expect(result.nameCollisionRows).toEqual([
+      {
+        row: { sevenTvEmoteId: 'new-1', name: 'PogU', imageUrl: null },
+        target: { sevenTvEmoteId: 'dup-1', name: 'PogU', imageUrl: TARGET_IMAGE_URL },
+        targetAliases: ['PogU', 'PogU2'],
+        targetHasAliaslessEntry: false,
+      },
+    ]);
+  });
+
+  it('flags targetHasAliaslessEntry when the colliding id also carries a falsy-name entry', () => {
+    // The aliasless half of the #74 grenzfall (K5): the same target id holds one named entry (the
+    // one the source name collides with) and one entry with no alias at all — the aliasless signal
+    // this preview reads as a falsy `name` (see the long comment on `nameCollisionRows`). T3 builds
+    // its slot projection on `targetHasAliaslessEntry`, so a REMOVE must be seen to take both.
+    const target: EmoteListItem[] = [
+      { sevenTvEmoteId: 'dup-1', name: 'PogU', imageUrl: TARGET_IMAGE_URL },
+      { sevenTvEmoteId: 'dup-1', name: '', imageUrl: TARGET_IMAGE_URL },
+    ];
+
+    const result = buildImportPreview(
+      source([{ sevenTvEmoteId: 'new-1', name: 'PogU', imageUrl: null }]),
+      target,
+    );
+
+    expect(result.nameCollisionRows).toEqual([
+      {
+        row: { sevenTvEmoteId: 'new-1', name: 'PogU', imageUrl: null },
+        target: { sevenTvEmoteId: 'dup-1', name: 'PogU', imageUrl: TARGET_IMAGE_URL },
+        targetAliases: ['PogU'],
+        targetHasAliaslessEntry: true,
+      },
+    ]);
+  });
+
+  it('points two colliding source rows at the same target counterpart', () => {
+    const target: EmoteListItem[] = [
+      { sevenTvEmoteId: 'collision-target', name: 'Dupe', imageUrl: TARGET_IMAGE_URL },
+    ];
+
+    const result = buildImportPreview(
+      source([
+        { sevenTvEmoteId: 'new-1', name: 'Dupe', imageUrl: null },
+        { sevenTvEmoteId: 'new-2', name: 'Dupe', imageUrl: null },
+      ]),
+      target,
+    );
+
+    expect(result.nameCollisionRows).toHaveLength(2);
+    expect(result.nameCollisionRows[0].target).toEqual(result.nameCollisionRows[1].target);
+    expect(result.nameCollisionRows.map((row) => row.row.sevenTvEmoteId)).toEqual([
+      'new-1',
+      'new-2',
+    ]);
+  });
+
+  it.each([
+    {
+      description: 'adopting a free alias is not blocked',
+      target: [{ sevenTvEmoteId: 'existing-1', name: 'TargetAlias', imageUrl: TARGET_IMAGE_URL }],
+      row: { sevenTvEmoteId: 'existing-1', name: 'SourceAlias', imageUrl: null },
+      expectedAdoptBlocked: null,
+    },
+    {
+      description: 'a source alias already owned by a different target id blocks with nameTaken',
+      target: [
+        { sevenTvEmoteId: 'existing-1', name: 'TargetAlias', imageUrl: TARGET_IMAGE_URL },
+        { sevenTvEmoteId: 'other-1', name: 'SourceAlias', imageUrl: TARGET_IMAGE_URL },
+      ],
+      row: { sevenTvEmoteId: 'existing-1', name: 'SourceAlias', imageUrl: null },
+      expectedAdoptBlocked: 'nameTaken',
+    },
+    {
+      description: 'a #74 duplicate target id blocks with duplicateTarget',
+      target: [
+        { sevenTvEmoteId: 'dup-1', name: 'AliasA', imageUrl: TARGET_IMAGE_URL },
+        { sevenTvEmoteId: 'dup-1', name: 'AliasB', imageUrl: TARGET_IMAGE_URL },
+      ],
+      row: { sevenTvEmoteId: 'dup-1', name: 'AliasC', imageUrl: null },
+      expectedAdoptBlocked: 'duplicateTarget',
+    },
+  ] satisfies {
+    description: string;
+    target: EmoteListItem[];
+    row: ImportRow;
+    expectedAdoptBlocked: 'nameTaken' | 'duplicateTarget' | null;
+  }[])('adoptBlocked: $description', ({ target, row, expectedAdoptBlocked }) => {
+    const result = buildImportPreview(source([row]), target);
+
+    expect(result.aliasMismatchRows).toHaveLength(1);
+    expect(result.aliasMismatchRows[0].adoptBlocked).toBe(expectedAdoptBlocked);
+  });
+
   // AK 38: the exact proportions measured for HandOfBlood's Halloween-set import — 762 source
   // rows split 338 already-in-the-target (of which ~10 as an alias mismatch) / 192 name
   // collisions / 232 genuinely new, so the target's occupancy (687) plus toAdd (232) projects to
@@ -444,6 +553,10 @@ describe('buildImportPreview', () => {
     // separately above.
     expect(result.nameCollisionRowCount).toBe(NAME_COLLISION_COUNT);
     expect(result.toAdd.length).toBe(TO_ADD_COUNT);
+    // The row-accurate counterpart lists must track the counting fields exactly, at this larger
+    // scale too, not just in the small hand-written cases above.
+    expect(result.nameCollisionRows.length).toBe(result.nameCollisionRowCount);
+    expect(result.aliasMismatchRows.length).toBe(result.aliasMismatches.length);
     expect(
       result.toAdd.length +
         result.alreadyPresent +
