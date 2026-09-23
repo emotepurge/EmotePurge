@@ -11,15 +11,14 @@ import { Button } from '../../shared/ui/button';
 /**
  * Exactly what `TwitchOAuthDefaults.RequestedScopes` sends to id.twitch.tv/oauth2/authorize
  * (`src/EmotePurge.Core/Twitch/TwitchModels.cs`). Listed here rather than summarised, because the
- * visitor is one click away from Twitch's own consent screen and will read the same three lines
+ * visitor is one click away from Twitch's own consent screen and will read the same two lines
  * there — a page that says "we only need a little" and is then contradicted by the real dialog has
  * spent its credibility at the worst possible moment.
  *
- * All three are read scopes. If a write scope is ever added, this list has to grow with it; the
+ * Both are read scopes. If a write scope is ever added, this list has to grow with it; the
  * identifiers stay out of the translation files because they are literals, not language.
  */
 const SCOPES = [
-  { id: 'user:read:email', key: 'email' },
   { id: 'user:read:moderated_channels', key: 'moderatedChannels' },
   { id: 'user:read:subscriptions', key: 'subscriptions' },
 ];

@@ -37,10 +37,9 @@
     "loginButton": "Mit Twitch einloggen",
     "scopes": {
       "title": "Was Twitch dabei freigibt",
-      "email": "Deine bei Twitch hinterlegte E-Mail-Adresse.",
       "moderatedChannels": "Die Kanäle, in denen du Moderator bist — daran hängt, welche Channels du hier verwalten darfst.",
       "subscriptions": "Deine Abos — damit abo-beschränkte Abstimmungen wissen, ob du teilnehmen darfst.",
-      "note": "Alle drei sind Leserechte. EmotePurge kann in deinem Namen nichts schreiben, posten oder ändern."
+      "note": "Beide sind Leserechte. EmotePurge kann in deinem Namen nichts schreiben, posten oder ändern."
     }
   },
   "landing": {
@@ -106,7 +105,7 @@
       "trust": {
         "twitch": {
           "term": "Twitch-Login",
-          "body": "EmotePurge fragt bei Twitch ausschließlich Leserechte an: deine E-Mail-Adresse, die Kanäle, in denen du Moderator bist, und deine Abos. In deinem Namen wird nichts geschrieben."
+          "body": "EmotePurge fragt bei Twitch ausschließlich Leserechte an: die Kanäle, in denen du Moderator bist, und deine Abos. In deinem Namen wird nichts geschrieben."
         },
         "token": {
           "term": "7TV-Token",

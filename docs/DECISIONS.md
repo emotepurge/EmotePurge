@@ -10,6 +10,33 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Drop the unused `user:read:email` OAuth scope (#242)
+
+**Betrifft:** `src/EmotePurge.Core/Twitch/TwitchModels.cs` · `web/src/app/features/login/login-page.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `docs/Architectur.md`
+
+`TwitchOAuthDefaults.RequestedScopes` asked for `user:read:email`, but nothing in the codebase ever
+read or stored an e-mail address — `TwitchUserInfo` only carries `Id`, `Login`, `DisplayName`,
+`ProfileImageUrl`, and no `Email`/`email` field exists anywhere in `Core`, `Infrastructure` or
+`Api`. A scope requested and never used both violates data minimisation (GDPR Art. 5(1)(c) — no
+legal basis to ask for data that is never processed) and needlessly tells the visitor, twice (this
+app's own login page and Twitch's real consent screen), that their e-mail will be shared. Dropped
+from `RequestedScopes`, which now reads `user:read:moderated_channels user:read:subscriptions`. The
+login page's scope list (`login-page.ts`) and both locales' copy (`login.scopes.email`,
+`login.scopes.note` — "all three" became "both" — and the `landing.close.trust.twitch.body` line
+that named the e-mail address explicitly) lost the e-mail line to match; `docs/Architectur.md`'s
+stale one-line summary of the scope set was updated too. `landing.e2e.spec.ts`'s scope-list
+assertion and `TwitchUserTokenServiceTests.ScopeDrift_ReportsReauthRequired_WithoutBurningARefresh`'s
+seeded scope (previously `user:read:email`, which no longer overlaps any currently-requested scope
+at all) were both updated to stay meaningful against the new two-scope list.
+
+**Left open, deliberately:** a session created before this change has a stored `TwitchTokenScopes`
+that still contains `user:read:email` — `ScopesDrifted` only flags a stored grant *missing* a
+currently-requested scope, so a superset (today's already-issued tokens) does not trigger it.
+Nothing here forces a re-login; an already-authenticated user keeps the wider grant until they
+re-authenticate or the refresh token expires. Whether that is worth calling out in a privacy policy
+is left to the separate, still-open legal-pages issue.
+
 ### 2026-09-23 — The export button and the low-participation notice are mod-team-only (`canViewUsageStats`)
 
 **Betrifft:** `web/src/app/features/voting/vote-session-detail-page.{ts,html,spec.ts}`
