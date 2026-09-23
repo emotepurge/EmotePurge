@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
@@ -270,6 +270,30 @@ export class AdminUsersPage {
         : null,
     }));
   });
+
+  constructor() {
+    // Corrects a page the URL still points at once it no longer exists — most visibly after
+    // deleting the only user on a page beyond the first, but the same fix applies whenever the
+    // total shrinks below the requested page for any reason. Without it, the page renders the empty
+    // state with no pager to get back, even though earlier pages still have users on them
+    // (`listQueryState`'s own contract comment says this clamp needs `totalPages`, which only
+    // exists once a response has actually come back — so this runs from the resource, not from the
+    // URL alone). Gated on `status() === 'resolved'` rather than reading the resource's value
+    // directly: during the very first load and during every reload, `value()` is either the
+    // placeholder `EMPTY_PAGE` (`totalPages: 0`) or the previous page's still-valid result, and
+    // either one read here would misfire — the former on a deep link straight to a high page number
+    // that is in fact valid, the latter while a genuine reload is still in flight.
+    effect(() => {
+      if (this.usersResource.status() !== 'resolved') {
+        return;
+      }
+      const currentPage = this.page();
+      const lastValidPage = Math.max(1, this.totalPages());
+      if (currentPage > 1 && lastValidPage < currentPage) {
+        this.query.goToPage(lastValidPage);
+      }
+    });
+  }
 
   protected reload(): void {
     this.usersResource.reload();
