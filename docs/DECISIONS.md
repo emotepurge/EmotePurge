@@ -10,6 +10,55 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Restore reads transfer-run files: removed target entries only, an aliasless entry comes back without an alias (#230)
+
+**Betrifft:** `docs/UI-Designsprache.md` (§7.3) ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts`
+
+A "replace target" transfer deletes target entries, and its two files are the way back (operator
+decision 2026-09-23, revising AK 18's restore half): the recovery file (`stage: 'planned'`, written
+before the first REMOVE) and the result protocol (`stage: 'finished'`). Both are now read through the
+door a purge-run protocol already uses — the file branch of the import dialog (`FileImportStep`),
+where they are the fourth file sort (§7.3) — and start the same restore flow. A transfer-run file
+stays refused as an *import* source.
+
+**What is restored.** `parseTransferRunForRestore` validates the file like `parsePurgeRunProtocol`
+(kind, its own `formatVersion`, channel, set — same error keys) and returns one restore row per
+`replace` row's removed target, nothing for any source row. The channel is matched against
+`meta.targetChannelName`, which is `null` for an untracked target and therefore equals no page's
+channel — an untracked target's file is refused with `wrongChannel`. The envelope's `channelName` is
+deliberately not read: it holds `''` for an untracked target, a stand-in rather than the honest
+`null`. There is no restore into an untracked set, because nothing there can report it
+(`sync-restored` is channel-bound); a follow-up issue. `planned` offers every
+removed target (what was never removed is still in the set and falls out through the restore filter);
+`finished` offers only targets with `removedTarget.confirmed === true`, whatever the row's final
+status. A file without such a target is refused with `transferRunNoRows`.
+
+**The in-memory row widens, the purge-run file does not.** The restore flow's input is `RestoreRow`
+(`aliases: (string | null)[]`), not `PurgeRunRow`. `null` is an entry without an alias — only a
+transfer-run file records one (`removedTarget.entries`). `parsePurgeRunProtocol` and `readProtocolRow`
+are unchanged; a purge-run row is a `RestoreRow` by assignment. A row's display name is its first
+named alias, else the target's `defaultName`, else its 7TV id — `defaultName` may be `null` in a real
+file, and the entry is restored all the same.
+
+**An aliasless entry is restored, never filtered away.** The restore queue keys a `null` alias as
+`${sevenTvEmoteId}#` (7TV holds at most one aliasless entry per id) and sends its ADD with
+`alias: null` — 7TV's documented default-name fallback. `filterAlreadyPresentForRestore` counts a
+row's `null` as present when the id has a live aliasless entry (`aliaslessIds`), missing otherwise, and
+reads the K5 rule 2 ("the id sits under an entry the row does not name ⇒ drop the whole row") so that
+a live aliasless entry is foreign only to a row that does **not** name one. Without that reading K5
+would drop every row carrying an aliasless entry without a trace. A purge-run row never names one, so
+K5 is unchanged for it; `skipped` still counts per alias, `null` as one.
+
+---
+
 ### 2026-09-22 — Vote-page deletes read the session's set live, both K6 known limitations closed (#227)
 
 **Betrifft:** `docs/DECISIONS.md` (K6 entry above) · `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md` (§37) ·

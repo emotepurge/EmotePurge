@@ -12,14 +12,16 @@ import { projectSlots } from './slot-projection';
 
 export interface RestoreConfirmDialogData {
   /** Names of the emotes about to be re-added — the preview list, capped like the delete's. One
-   *  entry per row of the source (protocol or finished delete run), not one per `ADD`: a #74
-   *  duplicate cell is one row here even though it restores under two aliases (see `addCount`). */
+   *  entry per row of the source (protocol, transfer-run file or finished delete run), not one per
+   *  `ADD`: a #74 duplicate cell is one row here even though it restores under two aliases (see
+   *  `addCount`). A row whose only entry has no alias is listed under the emote's default name
+   *  (`RestoreRow.name`). */
   names: readonly string[];
   /** How many `ADD` mutations the run will actually send — spec #200, 7.2: a #74 duplicate cell
    *  restores under both of its aliases, so it counts as two here even though `names` lists it
-   *  once. This, not `names.length`, is what the capacity projection below is computed against;
-   *  using the row count instead would understate the projection by one slot per duplicate and
-   *  could silently miss the overflow warning. */
+   *  once; an entry without an alias is one `ADD` too. This, not `names.length`, is what the
+   *  capacity projection below is computed against; using the row count instead would understate
+   *  the projection by one slot per duplicate and could silently miss the overflow warning. */
   addCount: number;
   /** Live view of the set status, so the capacity line pops in once the check answers.
    *  null = unknown (no capacity reported) — then no projection line is shown at all. */

@@ -3,12 +3,14 @@ import { HttpClient } from '@angular/common/http';
 import { signal } from '@angular/core';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { DeleteQueueEmote } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
-import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import {
+  RestoreQueueEmote,
+  SevenTvRestoreService,
+} from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
-import { PurgeRunRow } from '../export/purge-run-export';
+import { RestoreRow } from '../export/purge-run-export';
 import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
@@ -41,7 +43,7 @@ export interface RestoreFlowDeps {
  *
  * **The token prompt comes before the confirmation**, unlike the import flow, which asks only
  * after the confirmation (see the note on that in `startImportFlow`). Unchanged from the panel
- * this was extracted from: restoring an already-validated purge-run protocol has no read-only
+ * this was extracted from: restoring an already-validated restore file has no read-only
  * preview step worth protecting the token prompt's ordering against — do not "align" this with
  * the import flow.
  *
@@ -57,7 +59,7 @@ export function startRestoreFlow(
   setId: string,
   setName: string | null,
   isActiveSet: boolean,
-  rows: PurgeRunRow[],
+  rows: readonly RestoreRow[],
 ): void {
   const openConfirm = (): void => {
     // Live slot view, same pattern as the delete confirm's shared-set warning. The signal is born
@@ -89,7 +91,8 @@ export function startRestoreFlow(
     }
 
     // spec #200, 7.2: the projection is against ADDs, not rows — a #74 duplicate cell's row
-    // carries every alias it sat under and restores once per alias.
+    // carries every alias it sat under and restores once per alias. An entry without an alias
+    // (`null`, from a transfer-run file) is an ADD like any other.
     const addCount = rows.reduce((sum, row) => sum + row.aliases.length, 0);
 
     const data: RestoreConfirmDialogData = {
@@ -111,12 +114,14 @@ export function startRestoreFlow(
       }
       // `emoteId` is `null` for a row that never had a local emote (spec #200, 7.2) — the restore
       // does not need it. `aliases` goes through whole: the restore service sends one `ADD` per
-      // alias, so a #74 duplicate comes back under both of its names.
-      const emotes: DeleteQueueEmote[] = rows.map((row) => ({
+      // alias, so a #74 duplicate comes back under both of its names, and a `null` alias as an
+      // `ADD` without one. `defaultName` names that aliasless queue row.
+      const emotes: RestoreQueueEmote[] = rows.map((row) => ({
         emoteId: row.emoteId ?? undefined,
         sevenTvEmoteId: row.sevenTvEmoteId,
         name: row.name,
         aliases: row.aliases,
+        defaultName: row.defaultName,
       }));
       // #149/T5: a restore never had any duplicate protection at all — filter it fresh, right here,
       // against the target set's current contents, read from 7TV itself rather than our database

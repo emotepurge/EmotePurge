@@ -893,6 +893,7 @@
       "title": "Import file",
       "sorts": {
         "purgeRun": "Purge protocol (restore) as JSON",
+        "transferRun": "Transfer protocol — recovery file or result protocol (restore) as JSON",
         "emoteList": "Emote list (copy) as JSON",
         "usageExport": "Usage export (copy) as JSON"
       },
@@ -900,14 +901,15 @@
       "errors": {
         "notJson": "The file is not valid JSON.",
         "csvInsteadOfJson": "That is the CSV version. The import needs the same file as JSON — pick the JSON format when exporting.",
-        "wrongKind": "The file is not an EmotePurge export. Importable are purge protocols, emote lists and usage exports in JSON format.",
+        "wrongKind": "The file is not an EmotePurge export. Importable are purge protocols, transfer protocols, emote lists and usage exports in JSON format.",
         "votingExport": "That is a vote export, not a purge protocol. An importable protocol is only created by a delete run and offered for download right afterwards.",
-        "transferRun": "That is a transfer run's protocol (back-out file or result), not an emote list to copy from — such files only serve to restore removed emotes.",
+        "transferRun": "That is a transfer run's protocol (recovery file or result protocol), not an emote list to copy from — such files only serve to restore removed emotes.",
         "wrongVersion": "The file comes from a newer EmotePurge version.",
         "noRows": "The file contains no importable emotes.",
         "wrongChannel": "The protocol belongs to a different channel.",
         "wrongSet": "The protocol belongs to a different emote set — the channel switched its active set.",
-        "noRestorableRows": "The protocol contains no successfully deleted emotes to restore."
+        "noRestorableRows": "The protocol contains no successfully deleted emotes to restore.",
+        "transferRunNoRows": "This transfer file contains no removed emotes."
       }
     },
     "skippedDuplicates": {

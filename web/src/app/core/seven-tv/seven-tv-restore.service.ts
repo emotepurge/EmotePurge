@@ -16,7 +16,8 @@ import { SevenTvTokenService } from './seven-tv-token.service';
 
 /** Same shape as the delete's REMOVE, with `addEmote` and the alias to restore under. `alias`
  *  restores the chat alias the emote had at delete time — without it 7TV falls back to the emote's
- *  default name, which for renamed emotes would not be the one the chat knows. It travels *inside*
+ *  default name, which for renamed emotes would not be the one the chat knows. `null` is that
+ *  fallback on purpose: it is how an entry that had no alias comes back as one. It travels *inside*
  *  the `EmoteSetEmoteId` input object, not as a sibling argument — v4's `addEmote` field replaces
  *  v3's single `emotes(action: ADD, name:)` mutation with one field per operation (see
  *  docs/DECISIONS.md, #149). */
@@ -32,13 +33,30 @@ const ADD_EMOTE_MUTATION = `
   }
 `;
 
-const ADD_OPERATION: RunOperation = {
-  label: 'restore',
-  buildRequest: (setId, emote) => ({
-    query: ADD_EMOTE_MUTATION,
-    variables: { setId, emoteId: emote.sevenTvEmoteId, alias: emote.name },
-  }),
-};
+/** The `ADD` of one restore run. The alias each queue row sends is looked up by its key in
+ *  `aliasByKey` (built together with the queue by `toRestoreQueue`, so every key is in it) rather
+ *  than read from the row's `name`, which for an entry without an alias is only its display name. */
+function addOperation(aliasByKey: ReadonlyMap<string, string | null>): RunOperation {
+  return {
+    label: 'restore',
+    buildRequest: (setId, emote) => ({
+      query: ADD_EMOTE_MUTATION,
+      variables: {
+        setId,
+        emoteId: emote.sevenTvEmoteId,
+        alias: aliasByKey.get(emote.key),
+      },
+    }),
+  };
+}
+
+/** One row a restore run re-adds: a `DeleteQueueEmote` whose aliases may include `null` — an entry
+ *  without an alias, which only a transfer-run file records (`RestoreRow` in `purge-run-export.ts`).
+ *  `defaultName` is what the queue shows for that entry; without it, the 7TV id. */
+export interface RestoreQueueEmote extends Omit<DeleteQueueEmote, 'aliases'> {
+  aliases?: readonly (string | null)[];
+  defaultName?: string | null;
+}
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startRestore`
 // call that had something to report. Same 4000 ms convention as every other transient status in
@@ -145,7 +163,7 @@ export class SevenTvRestoreService {
   startRestore(
     setId: string,
     channelName: string,
-    emotes: DeleteQueueEmote[],
+    emotes: readonly RestoreQueueEmote[],
     skippedDuplicates = 0,
     duplicateCheckAvailable = true,
   ): void {
@@ -153,11 +171,9 @@ export class SevenTvRestoreService {
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
     this.showDuplicateNotice(skippedDuplicates > 0 || !duplicateCheckAvailable);
     const started: RestoreRunInfo = { channelName, setId, result: null };
-    const engineStarted = this.engine.start(
-      setId,
-      toRestoreQueue(emotes),
-      ADD_OPERATION,
-      (result) => this.onRunComplete(started, result),
+    const { queue, aliasByKey } = toRestoreQueue(emotes);
+    const engineStarted = this.engine.start(setId, queue, addOperation(aliasByKey), (result) =>
+      this.onRunComplete(started, result),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — leave every signal as it was, except
@@ -302,24 +318,34 @@ export class SevenTvRestoreService {
  *  the one run keyed `${sevenTvEmoteId}#${alias}`. `name` carries the alias the `ADD` sends. A row
  *  without `aliases` (an old protocol, a vote-page run) restores under its `name`. A key seen
  *  twice is dropped: the engine updates status per key, and a second identical `ADD` could only
- *  collide with the first. */
-function toRestoreQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
+ *  collide with the first.
+ *
+ *  A `null` alias — an entry without one — is keyed `${sevenTvEmoteId}#` (empty suffix): still
+ *  unique, because 7TV holds at most one aliasless entry per id and no named alias is empty. Its
+ *  `ADD` sends `alias: null` (`aliasByKey`), and its queue row shows the emote's default name, or
+ *  its 7TV id while that is unknown. */
+function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
+  queue: RunQueueEmote[];
+  aliasByKey: Map<string, string | null>;
+} {
   const rows = new Map<string, RunQueueEmote>();
+  const aliasByKey = new Map<string, string | null>();
   for (const emote of emotes) {
     const aliases = emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
     for (const alias of aliases) {
-      const key = `${emote.sevenTvEmoteId}#${alias}`;
+      const key = `${emote.sevenTvEmoteId}#${alias ?? ''}`;
       if (!rows.has(key)) {
         rows.set(key, {
           key,
           emoteId: emote.emoteId,
           sevenTvEmoteId: emote.sevenTvEmoteId,
-          name: alias,
+          name: alias ?? (emote.defaultName || emote.sevenTvEmoteId),
         });
+        aliasByKey.set(key, alias);
       }
     }
   }
-  return [...rows.values()];
+  return { queue: [...rows.values()], aliasByKey };
 }
 
 /** The 7TV ids a restore run finished, read off its `doneKeys` — once each, even when two aliases

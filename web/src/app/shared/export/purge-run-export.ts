@@ -41,6 +41,27 @@ export interface PurgeRunRow {
   errorMessage: string | null;
 }
 
+/**
+ * One row a restore run re-adds, whatever file it came from — the restore flow's input
+ * (`startRestoreFlow`). A `PurgeRunRow` is one as it stands (every alias a non-empty string); a
+ * transfer-run file's removed target (`parseTransferRunForRestore` in `transfer-run-export.ts`) is
+ * the only source of a `null` alias, which stands for an entry without an alias: its `ADD` sends no
+ * alias and 7TV names the entry by the emote's default name. The purge-run file itself never holds
+ * a `null` — this type widens only the in-memory row.
+ */
+export interface RestoreRow {
+  emoteId: string | null;
+  sevenTvEmoteId: string;
+  /** What the confirmation lists this row under: its first named alias, else its default name,
+   *  else its 7TV id. */
+  name: string;
+  /** One `ADD` per entry — a string restores under that alias, `null` restores without one. */
+  aliases: readonly (string | null)[];
+  /** The emote's 7TV default name when the source file knows it (only a transfer-run file does),
+   *  shown for the queue row of an entry without an alias. */
+  defaultName?: string | null;
+}
+
 export interface PurgeRunMeta {
   emoteSetId: string;
   /** ISO timestamps of the run itself. */

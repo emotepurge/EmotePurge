@@ -893,6 +893,7 @@
       "title": "Datei importieren",
       "sorts": {
         "purgeRun": "Purge-Protokoll (Wiederherstellen) als JSON",
+        "transferRun": "Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
         "emoteList": "Emote-Liste (Kopieren) als JSON",
         "usageExport": "Nutzungs-Export (Kopieren) als JSON"
       },
@@ -900,14 +901,15 @@
       "errors": {
         "notJson": "Die Datei ist kein gültiges JSON.",
         "csvInsteadOfJson": "Das ist die CSV-Fassung. Der Import braucht dieselbe Datei als JSON — beim Export das Format JSON wählen.",
-        "wrongKind": "Die Datei ist kein EmotePurge-Export. Importierbar sind Purge-Protokolle, Emote-Listen und Nutzungs-Exporte im JSON-Format.",
+        "wrongKind": "Die Datei ist kein EmotePurge-Export. Importierbar sind Purge-Protokolle, Übertragungsprotokolle, Emote-Listen und Nutzungs-Exporte im JSON-Format.",
         "votingExport": "Das ist ein Export einer Abstimmung, kein Purge-Protokoll. Ein importierbares Protokoll entsteht erst bei einem Löschlauf und wird direkt danach zum Download angeboten.",
         "transferRun": "Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
         "wrongVersion": "Die Datei stammt aus einer neueren EmotePurge-Version.",
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "wrongChannel": "Das Protokoll gehört zu einem anderen Channel.",
         "wrongSet": "Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.",
-        "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen."
+        "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
+        "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes."
       }
     },
     "skippedDuplicates": {

@@ -6,6 +6,8 @@ import { TransferPlan, TransferRow, TransferRowTarget } from '../../core/seven-t
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
+import { RestoreRow } from './purge-run-export';
+import { readEnvelope } from './read-envelope';
 
 /**
  * The transfer-run protocol (#230): the paper trail of an import run that carries a `replace`
@@ -20,7 +22,8 @@ import { sanitizeFilenamePart } from './file-download';
  *
  * Explicitly **not** an import source (`import-source-parser.ts` rejects `kind === 'transfer-run'`
  * by name) — its rows are 7TV mutations already applied or about to be, not an emote list to copy
- * from. Loading either stage back through the restore path is not wired up yet.
+ * from. Both stages *are* restore sources: `parseTransferRunForRestore` below turns the removed
+ * target entries back into restore rows, read through the same file step as a purge-run protocol.
  */
 export const TRANSFER_RUN_FORMAT_VERSION = 1;
 
@@ -334,4 +337,139 @@ export function transferRunFilename(
 ): string {
   const stamp = finishedAt.slice(0, 16).replace('T', '-').replace(':', '');
   return `emotepurge_${sanitizeFilenamePart(channelOrSetLabel)}_transfer_${stamp}.${ext}`;
+}
+
+export type TransferRunRestoreParseResult =
+  | { ok: true; rows: RestoreRow[]; stage: TransferRunMeta['stage'] }
+  /** `errorKey` is a Transloco key (restore.import.errors.*), never finished prose. */
+  | { ok: false; errorKey: string };
+
+/**
+ * Reads either stage of a transfer-run file back as restore rows — the removed **target** entries
+ * of its `replace` rows and nothing else (a source row's ADD is not something a restore undoes).
+ *
+ * Validated like a purge-run protocol (`parsePurgeRunProtocol`), with the same error keys: the kind,
+ * this kind's own `formatVersion`, the channel and the set the caller is restoring into. The channel
+ * is matched against `meta.targetChannelName`, not the envelope's `channelName` — the envelope holds
+ * `''` for an untracked target, whose file therefore never matches a channel page (there is no
+ * restore into an untracked set; `wrongChannel` is the honest answer).
+ *
+ * Which removed targets become rows depends on the stage: `planned` (the back-out file, written
+ * before any REMOVE) offers **every** target the run was about to remove — whatever was never
+ * removed is still in the set and falls out through the restore filter; `finished` (the result
+ * protocol) offers only targets whose REMOVE 7TV confirmed (`confirmed === true`), whatever the
+ * row's own final status. One row per target, one alias per entry (`null` for the entry without an
+ * alias). A file that yields no row is refused with `transferRunNoRows`.
+ */
+export function parseTransferRunForRestore(
+  text: string,
+  expected: { channelName: string; emoteSetId: string },
+): TransferRunRestoreParseResult {
+  const read = readEnvelope(text);
+  if (!read.ok) {
+    return read;
+  }
+  // Untrusted JSON from a file — every field below is checked by hand, see the same cast in
+  // `parsePurgeRunProtocol`.
+  const envelope = read.envelope as unknown as Partial<TransferPlanRecord | TransferRunProtocol>;
+  if (envelope.kind !== 'transfer-run') {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
+  }
+  if (envelope.formatVersion !== TRANSFER_RUN_FORMAT_VERSION) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongVersion' };
+  }
+  const meta = envelope.meta as Partial<TransferRunMeta> | undefined;
+  if (!meta || typeof meta !== 'object') {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
+  }
+  if (meta.targetChannelName !== expected.channelName) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongChannel' };
+  }
+  if (meta.targetEmoteSetId !== expected.emoteSetId) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongSet' };
+  }
+  const stage = meta.stage;
+  if ((stage !== 'planned' && stage !== 'finished') || !Array.isArray(envelope.rows)) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
+  }
+
+  const rows = (envelope.rows as unknown[]).flatMap((row) => {
+    const restoreRow = readRemovedTarget(row, stage);
+    return restoreRow ? [restoreRow] : [];
+  });
+  if (rows.length === 0) {
+    return { ok: false, errorKey: 'restore.import.errors.transferRunNoRows' };
+  }
+  return { ok: true, rows, stage };
+}
+
+/** The restore row for one untrusted file row, or `null` when it names no target to restore: not a
+ *  `replace` row, no readable `removedTarget`, or — in the `finished` stage — a REMOVE 7TV never
+ *  confirmed. */
+function readRemovedTarget(value: unknown, stage: TransferRunMeta['stage']): RestoreRow | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  if (row['action'] !== 'replace') {
+    return null;
+  }
+  const target = row['removedTarget'];
+  if (typeof target !== 'object' || target === null) {
+    return null;
+  }
+  const { sevenTvEmoteId, entries, aliases, defaultName, confirmed } = target as Record<
+    string,
+    unknown
+  >;
+  if (typeof sevenTvEmoteId !== 'string' || sevenTvEmoteId.length === 0) {
+    return null;
+  }
+  if (stage === 'finished' && confirmed !== true) {
+    return null;
+  }
+  const restoreAliases = readEntryAliases(entries, aliases);
+  if (restoreAliases.length === 0) {
+    return null;
+  }
+  const knownDefaultName =
+    typeof defaultName === 'string' && defaultName.length > 0 ? defaultName : null;
+  const firstNamed = restoreAliases.find((alias): alias is string => alias !== null);
+  return {
+    emoteId: null,
+    sevenTvEmoteId,
+    name: firstNamed ?? knownDefaultName ?? sevenTvEmoteId,
+    aliases: restoreAliases,
+    defaultName: knownDefaultName,
+  };
+}
+
+/** Every entry of a removed target as an alias to restore under — a non-empty string, or `null`
+ *  for the one entry without an alias — each at most once. `entries` is the authority; the named
+ *  `aliases` list (the CSV-facing subset) is only read when `entries` yields nothing, so a target
+ *  is restored under the names the file does carry rather than dropped. */
+function readEntryAliases(entries: unknown, aliases: unknown): (string | null)[] {
+  const read: (string | null)[] = [];
+  const add = (value: unknown): void => {
+    const alias =
+      value === null || (typeof value === 'string' && value.length > 0) ? value : undefined;
+    if (alias !== undefined && !read.includes(alias)) {
+      read.push(alias);
+    }
+  };
+  if (Array.isArray(entries)) {
+    for (const entry of entries as unknown[]) {
+      if (typeof entry === 'object' && entry !== null && 'alias' in entry) {
+        add((entry as { alias: unknown }).alias);
+      }
+    }
+  }
+  if (read.length === 0 && Array.isArray(aliases)) {
+    for (const alias of aliases as unknown[]) {
+      if (alias !== null) {
+        add(alias);
+      }
+    }
+  }
+  return read;
 }

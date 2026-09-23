@@ -4,8 +4,14 @@ import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ExportEnvelope } from '../export/export-envelope';
 import { buildPurgeRunProtocol, purgeRunJson } from '../export/purge-run-export';
+import {
+  buildTransferPlanRecord,
+  buildTransferRunProtocol,
+  transferRunJson,
+} from '../export/transfer-run-export';
 import { FileImportResult, FileImportStep } from './file-import-step';
 
 /**
@@ -18,6 +24,8 @@ const DE_TRANSLATIONS = {
     import: {
       sorts: {
         purgeRun: 'Purge-Protokoll (Wiederherstellen) als JSON',
+        transferRun:
+          'Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON',
         emoteList: 'Emote-Liste (Kopieren) als JSON',
         usageExport: 'Nutzungs-Export (Kopieren) als JSON',
       },
@@ -37,8 +45,7 @@ const DE_TRANSLATIONS = {
           'Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.',
         noRestorableRows:
           'Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.',
-        transferRun:
-          'Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.',
+        transferRunNoRows: 'Diese Übertragungsdatei enthält keine entfernten Emotes.',
       },
     },
   },
@@ -114,20 +121,76 @@ function votingText(): string {
   });
 }
 
-/** #230: neither stage has a restore branch here yet — it falls through to `parseImportSource`,
- *  which names it rather than trying to read it as an emote list. */
-function transferRunText(stage: 'planned' | 'finished' = 'finished'): string {
-  return JSON.stringify({
-    source: 'emotepurge',
-    kind: 'transfer-run',
-    formatVersion: 1,
-    exportedAt: '2026-09-23T10:00:00Z',
-    channelName: 'otherchannel',
-    withheld: [],
-    meta: { stage },
-    rows: [],
-  });
+/** A replace row of `Kappa` against target `tgt-1`, which sat in the set as `KappaOld`. */
+const REPLACE_ROW: TransferRow = {
+  action: 'replace',
+  source: { sevenTvEmoteId: 'src-1', name: 'Kappa', imageUrl: null },
+  alias: 'Kappa',
+  target: {
+    sevenTvEmoteId: 'tgt-1',
+    aliases: ['KappaOld'],
+    hasAliaslessEntry: false,
+    defaultName: 'KappaDefault',
+  },
+};
+
+/** Either stage of a transfer-run file with that one replace row, into `channelName`'s `set`. The
+ *  `finished` stage's REMOVE is confirmed unless `removeConfirmed` is false. */
+function transferRunText(
+  stage: 'planned' | 'finished',
+  options: { channelName?: string; removeConfirmed?: boolean } = {},
+): string {
+  const target = {
+    targetEmoteSetId: CURRENT_SET,
+    targetChannelName: options.channelName ?? CURRENT_CHANNEL,
+    targetOwnerDisplayName: null,
+    origin: { kind: 'channel' as const, channelName: 'quellkanal' },
+  };
+  if (stage === 'planned') {
+    return transferRunJson(
+      buildTransferPlanRecord({
+        ...target,
+        verifiedAt: 0,
+        plan: { rows: [REPLACE_ROW] },
+        entries: {
+          aliasesById: new Map([['tgt-1', ['KappaOld']]]),
+          aliaslessIds: new Set(),
+          defaultNameById: new Map([['tgt-1', 'KappaDefault']]),
+          complete: true,
+        },
+        defaultNameById: new Map([['tgt-1', 'KappaDefault']]),
+      }),
+    );
+  }
+  const confirmed = options.removeConfirmed ?? true;
+  return transferRunJson(
+    buildTransferRunProtocol({
+      ...target,
+      startedAt: 0,
+      finishedAt: 1,
+      items: [
+        {
+          key: 'src-1',
+          sevenTvEmoteId: 'src-1',
+          name: 'Kappa',
+          transfer: REPLACE_ROW,
+          status: 'failed',
+          completedSteps: confirmed ? 1 : 0,
+          failedStep: confirmed ? 1 : 0,
+        },
+      ],
+    }),
+  );
 }
+
+/** What either stage of `transferRunText` restores: the removed target, under its old alias. */
+const TRANSFER_RESTORE_ROW = {
+  emoteId: null,
+  sevenTvEmoteId: 'tgt-1',
+  name: 'KappaOld',
+  aliases: ['KappaOld'],
+  defaultName: 'KappaDefault',
+};
 
 function wrongKindText(): string {
   return JSON.stringify({
@@ -266,6 +329,27 @@ describe('FileImportStep', () => {
       ]);
     });
 
+    it.each(['planned', 'finished'] as const)(
+      'reports a restore result carrying the removed target of a matching %s transfer-run file',
+      async (stage) => {
+        const dialog = render();
+
+        await dialog.selectFile(file(transferRunText(stage)));
+
+        expect(closed).toEqual([{ kind: 'restore', rows: [TRANSFER_RESTORE_ROW] }]);
+        expect(dialog.alertText()).toBeNull();
+      },
+    );
+
+    it("rejects a transfer-run file of another channel's set with the wrongChannel banner", async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('finished', { channelName: 'otherchannel' })));
+
+      expect(closed).toEqual([]);
+      expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors.wrongChannel);
+    });
+
     it("reports an import result for an emote-list file — the target stays the caller's decision", async () => {
       const dialog = render();
 
@@ -346,9 +430,7 @@ describe('FileImportStep', () => {
       ['wrongChannel', () => file(purgeRunText({ channelName: 'otherchannel' }))],
       ['wrongSet', () => file(purgeRunText({ emoteSetId: 'set-old' }))],
       ['votingExport', () => file(votingText())],
-      // #230: neither stage has a restore branch here yet — the file falls through to
-      // parseImportSource, which names it rather than treating it as a wrongKind file.
-      ['transferRun', () => file(transferRunText('planned'))],
+      ['transferRunNoRows', () => file(transferRunText('finished', { removeConfirmed: false }))],
       // 2 is PURGE_RUN_FORMAT_VERSION itself (spec #200, K5 finding C) — 99 is unambiguously beyond
       // every version this parser knows.
       ['wrongVersion', () => file(purgeRunText({ formatVersion: 99 }))],

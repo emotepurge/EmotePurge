@@ -433,9 +433,10 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   the file — nothing more. Until #147 it was a dialog of its own (`FileImportDialog`); what changed is
   only its housing, not its behaviour.
 - **Row order in the file branch (contract):**
-  1. The **list of the three permissible kinds of file**, each its own list entry with the addition
-     "as JSON": purge protocol (restore) · emote list (copy) · usage export
-     (copy). It stands **above** the control it explains, and is a list and not a
+  1. The **list of the four permissible kinds of file**, each its own list entry with the addition
+     "as JSON": purge protocol (restore) · transfer protocol, recovery file or result protocol
+     (restore) · emote list (copy) · usage export (copy). The two restore sorts come first, in that
+     order. It stands **above** the control it explains, and is a list and not a
      sentence with commas — the German versions would otherwise break at an arbitrary point at 360 px
      (§12).
   2. The **file control**: visibly labelled button plus hidden

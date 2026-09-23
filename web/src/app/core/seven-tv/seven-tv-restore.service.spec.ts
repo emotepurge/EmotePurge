@@ -115,6 +115,37 @@ describe('SevenTvRestoreService', () => {
     httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
   });
 
+  // An entry without an alias (a removed transfer target's `null`) comes back through the ADD with
+  // `alias: null` — 7TV's own default-name fallback — keyed with an empty suffix and shown under the
+  // emote's default name.
+  it('restores a null alias as an ADD without an alias, keyed id# and shown by its default name', () => {
+    service.startRestore('set-1', 'sensitron', [
+      {
+        sevenTvEmoteId: '7tv-1',
+        name: 'PogU',
+        aliases: ['PogU', null],
+        defaultName: 'PogDefault',
+      },
+    ]);
+
+    expect(service.queue().map((item) => [item.key, item.name])).toEqual([
+      ['7tv-1#PogU', 'PogU'],
+      ['7tv-1#', 'PogDefault'],
+    ]);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    const aliasless = httpMock.expectOne(GQL_ENDPOINT);
+    expect(aliasless.request.body.variables).toEqual({
+      setId: 'set-1',
+      emoteId: '7tv-1',
+      alias: null,
+    });
+    aliasless.flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush({ restoredCount: 1, notFoundIds: [] });
+    httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+  });
+
   it('reports the finished run to sync-restored with the set and the restored 7TV ids', () => {
     service.startRestore('set-1', 'sensitron', EMOTES);
 

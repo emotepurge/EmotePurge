@@ -11,7 +11,7 @@ import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.s
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
-import { PurgeRunRow } from '../export/purge-run-export';
+import { PurgeRunRow, RestoreRow } from '../export/purge-run-export';
 import { RestoreConfirmDialogData } from './restore-confirm-dialog';
 import { RestoreFlowDeps, startRestoreFlow } from './restore-flow';
 
@@ -502,6 +502,24 @@ describe('startRestoreFlow', () => {
     startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateRow]);
 
     expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+    expect(confirmData(dialogOpen).addCount).toBe(2);
+  });
+
+  // A removed transfer target without a named alias: listed under its default name, and its one
+  // entry without an alias is an ADD like any other.
+  it('counts an entry without an alias as an ADD and lists its row under the default name', () => {
+    const { deps, dialogOpen } = setup();
+    const transferRow: RestoreRow = {
+      emoteId: null,
+      sevenTvEmoteId: 'tgt-1',
+      name: 'KappaDefault',
+      aliases: [null],
+      defaultName: 'KappaDefault',
+    };
+
+    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [transferRow, ...rows()]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['KappaDefault', 'PogU']);
     expect(confirmData(dialogOpen).addCount).toBe(2);
   });
 });

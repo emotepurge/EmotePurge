@@ -89,12 +89,13 @@ export function filterAlreadyPresent<T extends { sevenTvEmoteId: string }>(
   );
 }
 
-/** A restore row: one purge-protocol row, re-added once per alias (spec #200, 7.2). `aliases`
- *  missing or empty means `[name]`, the same fallback the restore queue applies. */
+/** A restore row: one purge-protocol row or one removed transfer target, re-added once per alias
+ *  (spec #200, 7.2). `aliases` missing or empty means `[name]`, the same fallback the restore queue
+ *  applies. A `null` alias is an entry without an alias (only a transfer-run file records one). */
 export interface RestoreFilterRow {
   sevenTvEmoteId: string;
   name: string;
-  aliases?: readonly string[];
+  aliases?: readonly (string | null)[];
 }
 
 /**
@@ -106,15 +107,18 @@ export interface RestoreFilterRow {
  * 2. **The id sits in the set under an alias the row does not name** — the whole row is dropped,
  *    exactly as the id-only check always did. Re-adding any of its aliases would put the same emote
  *    into the set a second time under another name: the #149 hole this filter exists for (7TV's
- *    `addEmote` only rejects a colliding alias string, never a second entry of the same id).
+ *    `addEmote` only rejects a colliding alias string, never a second entry of the same id). A live
+ *    entry *without* an alias counts as such an unnamed alias — unless the row itself names one
+ *    (`null`), in which case it is that entry of the row, not a foreign one.
  * 3. **The id sits in the set only under aliases the row names** — those aliases are dropped from
  *    the row, the rest are re-added. This is the partial retry of a #74 duplicate cell: a restore
  *    in which `A` came back and `B` failed is re-run from the same protocol, and `B` is the only
  *    thing still missing. The id-only check dropped the whole row there, and `B` was then
  *    unrecoverable from the protocol (spec 7.2, "Vorprüfung des Restore"). A row all of whose
- *    aliases are already present drops out entirely.
+ *    aliases are already present drops out entirely. A row's `null` alias is present when the id
+ *    has a live entry without an alias (`aliaslessIds`), missing otherwise.
  *
- * `skipped` counts **aliases**, i.e. `ADD`s not sent, not rows: the restore confirmation already
+ * `skipped` counts **aliases**, i.e. `ADD`s not sent, not rows (a `null` alias is one): the restore confirmation already
  * speaks in `ADD`s (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per
  * `ADD` (`${sevenTvEmoteId}#${alias}`), so what the run shows plus what this skipped adds up to the
  * number the dialog named. For every single-alias row — nearly all of them — the two counts are the
@@ -142,7 +146,8 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
       const kept: T[] = [];
       let skipped = 0;
       for (const row of rows) {
-        const rowAliases = row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
+        const rowAliases: readonly (string | null)[] =
+          row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
         const present = aliasesById.get(row.sevenTvEmoteId);
         if (present === undefined) {
           // Never encountered at all — not in the set, not even under an aliasless entry (every
@@ -153,16 +158,20 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
         // An entry 7TV lists without an alias occupies the set under a name the row cannot vouch
         // for, so it takes rule 2 like any foreign alias would — even when the same id also has an
         // aliased entry the row does name (K5 fix round, spec §37/§38: an aliasless entry must not
-        // be silently absorbed by a sibling aliased entry of the same id).
+        // be silently absorbed by a sibling aliased entry of the same id). A row that names an
+        // aliasless entry itself (`null`) does vouch for it: reading it as foreign would drop every
+        // such row without a trace.
+        const hasAliaslessLive = aliaslessIds.has(row.sevenTvEmoteId);
         const foreignEntry =
-          aliaslessIds.has(row.sevenTvEmoteId) ||
-          present.length === 0 ||
+          (hasAliaslessLive && !rowAliases.includes(null)) ||
           present.some((alias) => !rowAliases.includes(alias));
         if (foreignEntry) {
           skipped += rowAliases.length;
           continue;
         }
-        const missing = rowAliases.filter((alias) => !present.includes(alias));
+        const missing = rowAliases.filter((alias) =>
+          alias === null ? !hasAliaslessLive : !present.includes(alias),
+        );
         skipped += rowAliases.length - missing.length;
         if (missing.length > 0) {
           kept.push({ ...row, aliases: missing });

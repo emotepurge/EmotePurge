@@ -280,7 +280,7 @@ function entriesPage(entries: { id: string; alias?: string }[]) {
 interface RestoreRow {
   sevenTvEmoteId: string;
   name: string;
-  aliases?: string[];
+  aliases?: (string | null)[];
 }
 
 // Operator decision 2026-09-22 ("middle rule"), refining spec #200 7.2's (sevenTvEmoteId, alias)
@@ -428,6 +428,44 @@ describe('filterAlreadyPresentForRestore', () => {
     const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] };
 
     expect(await run([row], [{ id: '7tv-1' }])).toEqual({ rows: [], skipped: 1, available: true });
+  });
+
+  // A removed transfer target restores its aliasless entry as `null`: present when the id has a
+  // live aliasless entry, missing otherwise — never read as a foreign entry of its own row.
+  it('skips a null alias whose aliasless entry is back, and keeps it while the entry is missing', async () => {
+    const back: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogDefault', aliases: [null] };
+    const gone: RestoreRow = { sevenTvEmoteId: '7tv-2', name: 'KappaDefault', aliases: [null] };
+    const halfBack: RestoreRow = { sevenTvEmoteId: '7tv-3', name: 'LUL', aliases: ['LUL', null] };
+
+    expect(
+      await run([back, gone, halfBack], [{ id: '7tv-1' }, { id: '7tv-3', alias: 'LUL' }]),
+    ).toEqual({
+      rows: [gone, { ...halfBack, aliases: [null] }],
+      skipped: 2,
+      available: true,
+    });
+  });
+
+  // K5 stays for every row that does not name an aliasless entry itself — a purge-run row never
+  // does, so the live aliasless entry is one the row cannot vouch for.
+  it('still treats a live aliasless entry as foreign for a row without a null alias', async () => {
+    const purgeRow: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] };
+    const transferRow: RestoreRow = {
+      sevenTvEmoteId: '7tv-1',
+      name: 'PogU',
+      aliases: ['PogU', null],
+    };
+
+    expect(await run([purgeRow], [{ id: '7tv-1' }])).toEqual({
+      rows: [],
+      skipped: 1,
+      available: true,
+    });
+    expect(await run([transferRow], [{ id: '7tv-1' }])).toEqual({
+      rows: [{ ...transferRow, aliases: ['PogU'] }],
+      skipped: 1,
+      available: true,
+    });
   });
 
   // K5 fix round: `complete: false` (a truncated read) is deliberately not a reason to fail open
