@@ -10,6 +10,52 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Data retention runs as a tenth hosted service, dry run warns every tick, `RETENTION_ENFORCE` is the switch (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Worker/DataRetentionWorker.cs` ·
+`src/EmotePurge.Worker/RetentionRunSummaryFormatter.cs` ·
+`src/EmotePurge.Worker/WorkerServiceRegistration.cs` ·
+`src/EmotePurge.Worker/appsettings.json` ·
+`docker-compose.prod.yml` · `docker-compose.yml` · `.env.example`
+
+Seventh step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T7): wiring T6's
+`IDataRetentionService` into the worker as its tenth hosted service.
+
+- **`DataRetentionWorker` follows the house pattern of `TwitchIdentityReconcileWorker`/
+  `SevenTvPeriodicResyncWorker`:** waits for `BootRecoveryGate.Completed` (the channel purge inside
+  `RunAsync` touches rows boot recovery reads and writes), then `Retention:StartupDelayMinutes`
+  (default 10) so a restart loop does not begin every start with a pass, then one scope and one
+  `RunAsync(options.Enforce)` call immediately and again every `Retention:IntervalHours` (default 24)
+  on a `PeriodicTimer`. A catch around the whole tick keeps a Postgres hiccup to one tick, never the
+  host — but logs only the exception type and, if a Postgres error is in the chain, its SQLSTATE,
+  never the exception message: `RunAsync`'s own remark warns that a message can quote a key value.
+- **One summary line per tick, even at all zero — the only proof the job is alive.** A dry run
+  (`Retention:Enforce = false`, the default) logs it as a **Warning** stating that nothing was deleted
+  and `Retention:Enforce` is false, on purpose (plan decision 4): the daily reminder against a forever-
+  forgotten `false`. An enforced run logs Information. Both carry the full `RetentionRunSummary` —
+  every parent and cascade field, `CapReached`, and the `StillActive`/`NotFound`/`Failed` counts — and
+  nothing else: only counts, never a login, a user id or a channel name. The rendering is
+  `RetentionRunSummaryFormatter.Format`, a pure function tested in `Worker.Tests` (rule 11) rather than
+  inlined, since the summary carries around twenty fields across three nested records.
+- **Configuration:** `Retention` section with the T6 defaults added to the worker's
+  `appsettings.json`. `docker-compose.prod.yml` and `docker-compose.yml` (dev) pass
+  `Retention__Enforce=${RETENTION_ENFORCE:-false}` on the worker service, mirroring the existing
+  `SevenTv__EventApi__Enabled` pattern; `.env.example` documents `RETENTION_ENFORCE=false`. Flipping
+  it in production is an env edit plus a stack update, not an image rebuild (plan decision 4). The
+  periods themselves stay code constants (`RetentionPolicy`, previous entry) — this switch only
+  toggles whether the already-fixed periods are enforced.
+- **Nine hosted services become ten:** `WorkerServiceRegistrationTests` and the "nine" doc comments in
+  `WorkerServiceRegistration`/`HarnessCommandLine` now read ten; the worker's stop-order comment in
+  both compose files ("N other services stop before `UsageFlushWorker`", registered second, hosted
+  services stop in reverse registration order) moves from seven to eight.
+- **Not covered here, and deliberately not written as a unit test:** the tick loop itself
+  (boot-gate wait, startup delay, timer cadence) stays as thin as its siblings' and is live-verified
+  per rule 16 instead, the same way `TwitchLivePollWorker`'s and `TwitchIdentityReconcileWorker`'s are
+  — only `RetentionRunSummaryFormatter` and the hosted-service count are unit-tested.
+
+---
+
 ### 2026-09-23 — Retention periods as code constants, one predicate per category for count and delete, cascade counts in the dry run, and the dry-run default (#243/#244)
 
 **Betrifft:** `src/EmotePurge.Core/Services/RetentionPolicy.cs` ·
