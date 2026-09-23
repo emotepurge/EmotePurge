@@ -1012,14 +1012,14 @@ public class TwitchChatManager(
 
             // No message text here on purpose (data minimisation) — the tag block alone is enough
             // to diagnose the splice. That holds for *foreign* text too: TagBlockForLog redacts the
-            // value of reply-parent-msg-body, which on a reply carries the parent message verbatim.
+            // value of every free-text tag (e.g. reply-parent-msg-body, which on a reply carries the
+            // parent message verbatim) and, since #246, the value of every identifying tag —
+            // display-name, login, user-id, badges — as well, so this line carries the chatter's
+            // presence but not their identity.
             logger.LogWarning(
                 "Gespleißte IRC-Zeile erkannt (#114) in Channel {Channel}, RoomId {RoomId}: {TagBlock}",
                 e.ChatMessage.Channel, e.ChatMessage.RoomId, tagBlock);
         }
-
-        logger.LogDebug("[{Channel}] {Username}: {Message}",
-            e.ChatMessage.Channel, e.ChatMessage.Username, e.ChatMessage.Message);
 
         var channelEmotes = emoteMatchCache.GetChannelEmotes(e.ChatMessage.Channel);
         if (channelEmotes.Count == 0)
@@ -1067,21 +1067,31 @@ public class TwitchChatManager(
 
     private void SetConnected(bool value) => Interlocked.Exchange(ref _connected, value ? 1 : 0);
 
-    private static TwitchClient CreateClient(ILoggerFactory loggerFactory) => new(
-        client: new WebSocketClient(
-            // NoReconnectionPolicy does not mean "never reconnect", it means "exactly one connect
-            // attempt per object": verified against TwitchLib.Communication 2.0.1, it is
-            // ReconnectionPolicy(reconnectInterval: 0, maxAttempts: 1), and OpenPrivateAsync's
-            // Reset(isReconnect: true) returns early *without* clearing _attemptsMade. After the
-            // one successful connect the budget is spent, so ReconnectAsync() on such a client can
-            // never succeed — its retry loop runs zero times and it raises "Fatal network error."
-            // instead. That is deliberate here: every rebuild is a new object (see
-            // ReconnectOnceAsync), so the attempt budget is fresh every time and the 2026-07-26
-            // trap — a client whose lifetime budget of ten attempts was silently exhausted, leaving
-            // the worker offline for >45min — is structurally impossible rather than merely fixed.
-            new ClientOptions(new NoReconnectionPolicy()),
-            loggerFactory.CreateLogger<WebSocketClient>()),
-        loggerFactory: loggerFactory);
+    private static TwitchClient CreateClient(ILoggerFactory loggerFactory)
+    {
+        // TwitchClient hands this factory to its own internal ILogger<TwitchClient> (category
+        // TwitchLib.Client.TwitchClient) and logs a parse failure with the raw, unredacted IRC line
+        // at Error — see RedactingTwitchClientLoggerFactory for the decompiled evidence (#246).
+        // Wrapping here, not swapping the factory in DI, keeps every other logger in the process
+        // (including this class's own) unaffected.
+        var redactingLoggerFactory = new RedactingTwitchClientLoggerFactory(loggerFactory);
+        return new TwitchClient(
+            client: new WebSocketClient(
+                // NoReconnectionPolicy does not mean "never reconnect", it means "exactly one
+                // connect attempt per object": verified against TwitchLib.Communication 2.0.1, it
+                // is ReconnectionPolicy(reconnectInterval: 0, maxAttempts: 1), and
+                // OpenPrivateAsync's Reset(isReconnect: true) returns early *without* clearing
+                // _attemptsMade. After the one successful connect the budget is spent, so
+                // ReconnectAsync() on such a client can never succeed — its retry loop runs zero
+                // times and it raises "Fatal network error." instead. That is deliberate here:
+                // every rebuild is a new object (see ReconnectOnceAsync), so the attempt budget is
+                // fresh every time and the 2026-07-26 trap — a client whose lifetime budget of ten
+                // attempts was silently exhausted, leaving the worker offline for >45min — is
+                // structurally impossible rather than merely fixed.
+                new ClientOptions(new NoReconnectionPolicy()),
+                redactingLoggerFactory.CreateLogger<WebSocketClient>()),
+            loggerFactory: redactingLoggerFactory);
+    }
 
     /// <summary>
     /// Wraps a handler that takes only the event arguments into the delegate TwitchLib's events

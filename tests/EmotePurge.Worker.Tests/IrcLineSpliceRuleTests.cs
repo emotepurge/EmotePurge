@@ -101,7 +101,9 @@ public class IrcLineSpliceRuleTests
     {
         var line = "@badge-info=;id=aaaa1111-1111-1111-1111-111111111111 :testuser1!testuser1@testuser1.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
 
-        Assert.Equal("@badge-info=;id=aaaa1111-1111-1111-1111-111111111111", IrcLineSpliceRule.TagBlockForLog(line));
+        // badge-info is an identifying tag (#246) and is redacted even though its value happens to
+        // be empty here; id is not and survives untouched.
+        Assert.Equal("@badge-info=<entfernt>;id=aaaa1111-1111-1111-1111-111111111111", IrcLineSpliceRule.TagBlockForLog(line));
     }
 
     [Fact]
@@ -109,7 +111,7 @@ public class IrcLineSpliceRuleTests
     {
         var line = "@badge-info=;id=aaaa1111-1111-1111-1111-111111111111";
 
-        Assert.Equal(line, IrcLineSpliceRule.TagBlockForLog(line));
+        Assert.Equal("@badge-info=<entfernt>;id=aaaa1111-1111-1111-1111-111111111111", IrcLineSpliceRule.TagBlockForLog(line));
     }
 
     [Fact]
@@ -189,15 +191,31 @@ public class IrcLineSpliceRuleTests
     {
         var line = ReplyLine(@"@TestUser0\shallo\sdu");
 
-        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+        // Every "<entfernt>" replaces what used to be a short or empty value, so redacting this many
+        // tags pushes the block past the default 512-char cap before the tags this test checks even
+        // appear — raise it here to verify the redaction itself, independent of the truncation
+        // covered by the dedicated TagBlockForLog_TagBlockLongerThanMaxLength_* tests.
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line, maxLength: 2000);
 
         // The promise the sentinel's log comment makes: no message text, not this line's and not a
-        // stranger's. Everything else about the tag block survives unchanged.
+        // stranger's — and, since #246, no identity either, sender's or parent-message-author's.
         Assert.Contains("reply-parent-msg-body=<entfernt>;", tagBlock, StringComparison.Ordinal);
         Assert.DoesNotContain("TestUser0\\shallo", tagBlock, StringComparison.Ordinal);
-        Assert.Contains("reply-parent-display-name=TestUser0;", tagBlock, StringComparison.Ordinal);
-        Assert.Contains("reply-parent-user-login=testuser0;", tagBlock, StringComparison.Ordinal);
-        Assert.StartsWith("@badge-info=;badges=;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains("reply-parent-display-name=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains("reply-parent-user-login=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains("reply-parent-user-id=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains("reply-thread-parent-display-name=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains("reply-thread-parent-user-login=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains(";display-name=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains(";user-id=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("TestUser0;", tagBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("testuser0;", tagBlock, StringComparison.Ordinal);
+        // Not a blanket "555555555" check — that digit run also occurs, legitimately, inside the
+        // untouched reply-parent-msg-id GUID a few tags later.
+        Assert.DoesNotContain("user-id=555555555", tagBlock, StringComparison.Ordinal);
+        Assert.StartsWith("@badge-info=<entfernt>;badges=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        // Non-identifying tags in the same block still survive untouched.
+        Assert.Contains(";room-id=111111111;", tagBlock, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -211,19 +229,60 @@ public class IrcLineSpliceRuleTests
 
         var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
 
+        // badge-info is now also redacted (#246, identifying tag), on top of the two free-text
+        // msg-body tags this test originally covered.
         Assert.Equal(
-            "@badge-info=;reply-parent-msg-body=<entfernt>;reply-thread-parent-msg-body=<entfernt>;room-id=111111111;user-type=",
+            "@badge-info=<entfernt>;reply-parent-msg-body=<entfernt>;reply-thread-parent-msg-body=<entfernt>;room-id=111111111;user-type=",
             tagBlock);
     }
 
     [Fact]
-    public void TagBlockForLog_SplicedLineWithoutFreeTextTag_IsLoggedVerbatim()
+    public void TagBlockForLog_IdentifyingTags_ValuesAreRedactedButKeysSurvive()
+    {
+        // A representative tag block with every category #246 asks for: the sender's own identity,
+        // badges, and a Shared Chat (#73) source-* badge pair — plus a couple of non-identifying
+        // tags (room-id, subscriber) that must stay exactly as they are so the diagnostic shape of
+        // the block is still readable.
+        var line = "@badge-info=subscriber/12;badges=subscriber/12,moderator/1;display-name=TestUser1;"
+            + "login=testuser1;user-id=333333333;source-badges=vip/1;source-badge-info=;room-id=111111111;"
+            + "subscriber=1 :testuser1!testuser1@testuser1.tmi.twitch.tv PRIVMSG #targetchannel_test :hi";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal(
+            "@badge-info=<entfernt>;badges=<entfernt>;display-name=<entfernt>;login=<entfernt>;"
+            + "user-id=<entfernt>;source-badges=<entfernt>;source-badge-info=<entfernt>;room-id=111111111;subscriber=1",
+            tagBlock);
+    }
+
+    [Fact]
+    public void TagBlockForLog_SourceStyleUserIdAndLoginTags_AreRedactedByPattern()
+    {
+        // Twitch does not send these two today (#73's SharedChatRule only reads source-room-id,
+        // source-id, source-badges, source-badge-info) — this pins the forward-looking pattern
+        // match from the issue itself ("source-user-id/source-login-style shared-chat tags").
+        var line = "@source-room-id=222222222;source-user-id=444444444;source-login=sourceuser "
+            + ":testuser1!testuser1@testuser1.tmi.twitch.tv PRIVMSG #targetchannel_test :hi";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal(
+            "@source-room-id=222222222;source-user-id=<entfernt>;source-login=<entfernt>",
+            tagBlock);
+    }
+
+    [Fact]
+    public void TagBlockForLog_SplicedLineWithoutFreeTextTag_NonIdentifyingTagsSurviveVerbatim()
     {
         var line = "@badge-info=;room-id=111111111;subscriber=0@badge-info=;room-id=222222222;user-type= "
             + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
 
+        // The leading badge-info tag is redacted as an identifying tag (#246); the spliced-in second
+        // "@badge-info=" is embedded inside the *value* of "subscriber" (a non-identifying tag) and
+        // is not recognised as its own tag by this line-based redaction, same as before #246 — it is
+        // the splice defect itself that made it invisible to the tag parser (E6), not a gap here.
         Assert.Equal(
-            "@badge-info=;room-id=111111111;subscriber=0@badge-info=;room-id=222222222;user-type=",
+            "@badge-info=<entfernt>;room-id=111111111;subscriber=0@badge-info=;room-id=222222222;user-type=",
             IrcLineSpliceRule.TagBlockForLog(line));
     }
 

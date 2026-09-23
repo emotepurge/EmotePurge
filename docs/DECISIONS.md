@@ -37,6 +37,51 @@ Nothing here forces a re-login; an already-authenticated user keeps the wider gr
 re-authenticate or the refresh token expires. Whether that is worth calling out in a privacy policy
 is left to the separate, still-open legal-pages issue.
 
+### 2026-09-23 — Chat content and chatter identities stay out of Worker logs at the default level (#246)
+
+**Betrifft:** `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Worker/IrcLineSpliceRule.cs` ·
+`src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` (new) ·
+`src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` (new) · `tests/EmotePurge.Worker.Tests/*`
+
+Three separate leaks, fixed together as one privacy pass before launch:
+
+1. **TwitchLib.Client's own logging carried the raw IRC line.** `TwitchChatManager.CreateClient`
+   hands TwitchLib the same `ILoggerFactory` this app uses everywhere else, so its internal
+   `ILogger<TwitchClient>` (category `TwitchLib.Client.TwitchClient`) writes through our sinks like
+   any of our own log lines. Decompiling the installed TwitchLib.Client 4.0.1
+   (`TwitchLib.Client.Extensions.LogExtensions`) shows two Roslyn-`LoggerMessage`-generated calls
+   that log the *entire* line — chat text and tags included, unredacted — whenever TwitchLib itself
+   fails to make sense of it: `LogParsingError` (Error, on a parse exception) and `LogUnaccountedFor`
+   (Warning, on an IRC command it does not recognise). Both are at or above the Worker's configured
+   minimum for this category (`Information`), so both reached the sink. Raising that category's
+   minimum level was rejected — it also logs connection-relevant events at the same or higher
+   levels (e.g. `LogReconnecting`) that must keep surfacing. Instead, `TwitchChatManager.CreateClient`
+   now wraps the factory in the new `RedactingTwitchClientLoggerFactory`: it matches exactly those
+   two calls by `EventId.Name` (pinned against the decompiled source, not invented), replaces their
+   raw-line argument with `TwitchLibRawLineRedaction.Redact`'s output — the IRC command word and the
+   tag block's *keys*, never a value, with a guard so a corrupted line's stray value fragment cannot
+   be mistaken for the command word and logged as one — and passes every other call, on this
+   category and any other, through unchanged.
+2. **The #114 splice sentinel logged identifying tags.** `IrcLineSpliceRule.TagBlockForLog` already
+   redacted the *value* of free-text tags (`reply-parent-msg-body` and its thread-parent sibling) but
+   left `display-name`, `login`, `user-id` and the badge tags (`badges`, `badge-info`, and the Shared
+   Chat #73 `source-badges`/`source-badge-info` pair) in the clear, plus the same fields on the
+   reply's parent message (`reply-parent-user-id`/`user-login`/`display-name`,
+   `reply-thread-parent-user-login`/`display-name`). All of those now redact the same way — key
+   survives, value does not — so the block stays diagnosable without naming anyone.
+3. **A Debug line logged every chat message verbatim.**
+   `logger.LogDebug("[{Channel}] {Username}: {Message}", ...)` in `TwitchChatManager.OnMessageReceived`
+   ran unconditionally once Debug logging was enabled for this category, with no redaction at all.
+   Removed outright — nothing in this codebase needs per-message chat content at the log level, and
+   its only past use was casual local debugging that a breakpoint serves just as well.
+
+All three pieces of new logic (`RedactingTwitchClientLoggerFactory`, `TwitchLibRawLineRedaction`, the
+extended `IrcLineSpliceRule` redaction) are pure and container-free, tested in
+`tests/EmotePurge.Worker.Tests` per rule 11 — the `RedactingTwitchClientLoggerFactory` tests drive it
+through the real `Microsoft.Extensions.Logging.LoggerMessage.Define` API (the same mechanism
+TwitchLib's generated code uses) rather than a hand-built fake state object, so the test is honest
+about the actual shape .NET's logging infrastructure hands to `ILogger.Log`.
+
 ### 2026-09-23 — The export button and the low-participation notice are mod-team-only (`canViewUsageStats`)
 
 **Betrifft:** `web/src/app/features/voting/vote-session-detail-page.{ts,html,spec.ts}`

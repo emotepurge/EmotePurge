@@ -106,6 +106,15 @@ public class IrcLineSpliceRuleTwitchLibTests
 
         Assert.DoesNotContain("hallo", tagBlock, StringComparison.Ordinal);
         Assert.Contains("reply-parent-msg-body=<entfernt>;", tagBlock, StringComparison.Ordinal);
+
+        // #246: the same call also redacts the chatter's and the parent message author's identity
+        // — verified through the real TwitchLib parser, not a hand-built line, same as the rest of
+        // this file.
+        Assert.DoesNotContain("TestUser1", tagBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("testuser0", tagBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("333333333", tagBlock, StringComparison.Ordinal);
+        Assert.Contains("display-name=<entfernt>;", tagBlock, StringComparison.Ordinal);
+        Assert.Contains("reply-parent-user-login=<entfernt>;", tagBlock, StringComparison.Ordinal);
     }
 
     /// <summary>
