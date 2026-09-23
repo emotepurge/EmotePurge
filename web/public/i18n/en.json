@@ -1136,6 +1136,7 @@
       "invalid_source_kind": "Invalid import source.",
       "channel_not_found": "Channel not found.",
       "channel_not_on_twitch": "This channel doesn't exist on Twitch (anymore). Please check the spelling.",
+      "channel_capacity_reached": "No free channel slots right now. Please contact the operator.",
       "foreign_channel_twitch_unavailable": "Twitch is not reachable right now. Please try again shortly.",
       "foreign_channel_no_seventv_account": "This channel has no 7TV account.",
       "foreign_channel_no_active_emote_set": "This channel currently has no active 7TV emote set.",
