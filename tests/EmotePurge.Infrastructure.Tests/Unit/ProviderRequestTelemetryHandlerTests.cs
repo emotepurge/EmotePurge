@@ -195,6 +195,9 @@ public class ProviderRequestTelemetryHandlerTests
 
         public Task RecordCacheLookupAsync(string cacheName, bool hit, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
+
+        public Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
     }
 
     /// <summary>Throws before it ever returns a task — the case an <c>await</c> cannot protect against.</summary>
@@ -208,6 +211,9 @@ public class ProviderRequestTelemetryHandlerTests
 
         public Task RecordCacheLookupAsync(string cacheName, bool hit, CancellationToken cancellationToken = default)
             => throw new InvalidOperationException("Telemetrie ist kaputt.");
+
+        public Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException("Telemetry is broken.");
     }
 
     /// <summary>Returns a task that faults — the case an unobserved fire-and-forget would leak.</summary>
@@ -221,6 +227,12 @@ public class ProviderRequestTelemetryHandlerTests
 
         public Task RecordCacheLookupAsync(string cacheName, bool hit, CancellationToken cancellationToken = default)
             => Faulted();
+
+        public async Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default)
+        {
+            await Faulted();
+            return true;
+        }
 
         private static async Task Faulted()
         {

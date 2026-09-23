@@ -204,6 +204,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITokenCipher, AesGcmTokenCipher>();
         services.AddSingleton<TwitchTokenRefreshGate>();
         services.AddScoped<IUserService, UserService>();
+        // The one account deletion path, shared by the admin endpoint and the retention job.
+        services.AddScoped<IAccountDeletionService, AccountDeletionService>();
         services.AddScoped<ITwitchUserTokenService, TwitchUserTokenService>();
         services.AddScoped<IModeratedChannelsProvider, ModeratedChannelsProvider>();
         services.AddScoped<IModeratorCheckService, ModeratorCheckService>();

@@ -25,9 +25,10 @@ namespace EmotePurge.Infrastructure.Redis;
 /// in the 24-hour count; the two can never contradict each other.
 /// </para>
 /// <para>
-/// <b>Every key carries a TTL.</b> Nothing else ever deletes them: there is no cleanup job, and the key
-/// space is time-indexed, so a bucket without an expiry would stay in Redis forever. The day buckets
-/// outlive their own window by an hour so a read at the very edge is never short of data.
+/// <b>Every key carries a TTL.</b> Nothing else ever deletes them (the one exception: an account deletion
+/// forgetting the last-rejection slot, <see cref="ForgetPartitionAsync"/>) — there is no cleanup job, and
+/// the key space is time-indexed, so a bucket without an expiry would stay in Redis forever. The day
+/// buckets outlive their own window by an hour so a read at the very edge is never short of data.
 /// </para>
 /// <para>
 /// <b>Fail-open.</b> Every write swallows its exception after a structured German log line, and the read
@@ -52,6 +53,9 @@ public class RateLimitTelemetryStore(
     private const string CoarseBucketPrefix = KeyPrefix + ":m:";
 
     private const string LastRejectionKey = KeyPrefix + ":last-rejection";
+
+    private const string CompareAndDeleteScript =
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
 
     // The three field-name prefixes. Spelled out rather than composed from DimensionSeparator so they
     // stay compile-time constants — they end in that same separator.
@@ -161,6 +165,33 @@ public class RateLimitTelemetryStore(
         catch (Exception ex)
         {
             LogWriteFailure(ex, "Cache-Zugriff", cacheName);
+        }
+    }
+
+    public async Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var db = connectionMultiplexer.GetDatabase();
+            var stored = await db.StringGetAsync(LastRejectionKey);
+            var rejection = Deserialize<RateLimitLastRejection>(stored);
+            if (rejection is null || !BelongsToPartition(rejection.Partition, partition))
+            {
+                return true;
+            }
+
+            // Compare-and-delete: the slot is overwritten by the next rejected request of *any*
+            // caller, so a plain delete after the read could remove a stranger's rejection that landed
+            // in between. The script deletes only the exact value just read, atomically on the server;
+            // if it changed, the new value is someone else's and the deleted user's is already gone.
+            // A script rather than DELEX/ValueCondition, which needs Redis 8.4 — production runs 7.2.
+            await db.ScriptEvaluateAsync(CompareAndDeleteScript, [LastRejectionKey], [stored]);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Rate-limit telemetry: the last-rejection slot could not be checked or cleared for a deleted account.");
+            return false;
         }
     }
 
@@ -367,6 +398,14 @@ public class RateLimitTelemetryStore(
 
         return cleaned;
     }
+
+    /// <summary>
+    /// The partition itself or a sub-partition of it: the voting policy partitions by
+    /// <c>{userId}:{sessionId}</c>, which still names the same user.
+    /// </summary>
+    private static bool BelongsToPartition(string storedPartition, string partition) =>
+        storedPartition == partition
+        || storedPartition.StartsWith(partition + ":", StringComparison.Ordinal);
 
     private static string Serialize<T>(T value) => JsonSerializer.Serialize(value, JsonSerializerOptions.Web);
 

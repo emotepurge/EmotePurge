@@ -559,6 +559,9 @@ public class RateLimitRejectionTests : IClassFixture<ApiFactory>
         public Task RecordCacheLookupAsync(string cacheName, bool hit, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
 
+        public Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
+
         /// <summary>
         /// Waits until the expected number of decisions has arrived and hands them back. Then waits a
         /// short moment more and fails if another one turned up: "exactly this many" is half of what

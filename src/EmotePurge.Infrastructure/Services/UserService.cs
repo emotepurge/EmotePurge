@@ -96,14 +96,21 @@ public class UserService(AppDbContext db, ITokenCipher tokenCipher, IModRoleCach
 
     public async Task<int?> InvalidateRoleCacheAsync(string twitchUserId, AuditActor actor, CancellationToken cancellationToken = default)
     {
-        var user = await db.Users
-            .AsNoTracking()
-            .SingleOrDefaultAsync(u => u.Id == twitchUserId, cancellationToken);
+        // The audit entry below names this user (TargetId and the login detail) without changing the
+        // user row in the same SaveChanges — nothing in the database would stop it from landing after
+        // an account deletion had already pseudonymised every entry naming them. The FOR SHARE lock
+        // held until the commit is that stop: an account deletion takes FOR UPDATE on the same row,
+        // so either it waits for this entry and pseudonymises it along with the rest, or it commits
+        // first and this lookup then finds no row and writes nothing (see IAccountDeletionService).
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        var user = await db.LockUserAsync(twitchUserId, UserRowLock.ForShare, cancellationToken);
         if (user is null)
         {
             // Unknown user means nothing could have been cached under this id (entries only exist
             // for users who logged in and triggered a role check) — and it keeps arbitrary route
-            // input away from the Redis SCAN pattern.
+            // input away from the Redis SCAN pattern. Also the answer when a deletion won the lock:
+            // its own post-commit cleanup clears the same keys.
             return null;
         }
 
@@ -119,6 +126,7 @@ public class UserService(AppDbContext db, ITokenCipher tokenCipher, IModRoleCach
             targetId: twitchUserId,
             details: new { login = user.TwitchUsername, removedEntries });
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return removedEntries;
     }

@@ -10,6 +10,67 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Account deletion: row lock and recheck, votes go, audit entries are pseudonymised, the deletion entry carries no identity, late audit writers lock the row, Redis cleanup is retried once and otherwise bounded by TTL (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/UserQueries.cs` ·
+`src/EmotePurge.Infrastructure/Services/UserService.cs` · `src/EmotePurge.Core/Services/AuditActor.cs` ·
+`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Services/IRateLimitTelemetry.cs` ·
+`src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`
+
+Third step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T3): the one path that
+deletes a user account, shared by the admin endpoint (T4, on request) and the retention job (T6,
+after twelve months without activity). `IAccountDeletionService.DeleteAsync(id, actor, reason,
+onlyIfInactiveBeforeUtc)` returns `Deleted | NotFound | StillActive` plus counts.
+
+- **One transaction under `SELECT … FOR UPDATE` on the user row**, taken first
+  (`UserQueries.LockUserAsync`, which refuses to run outside a transaction — a lock there would be
+  released by autocommit and guard nothing). Missing row → `NotFound`, nothing written, no audit entry,
+  Redis untouched (the id is unverified input then). A second or concurrent call finds no row.
+- **Inactivity is rechecked under the lock** (`max(LastLogin, LastSeenAtUtc) < cutoff`, else
+  `StillActive`). The cutoff is mandatory for `Inactivity` and forbidden for `AdminRequest`
+  (`ArgumentException`). A login or `LastSeenAtUtc` stamp that is in flight when the deletion arrives
+  holds a row lock; the deletion waits and then reads the new version, so the user's activity wins.
+- **Votes are deleted explicitly first** (`Vote → User` stays `Restrict`), in every session including
+  open ones — the scores of running votings drop by that user's votes. A vote racing the deletion does
+  not break it: its FK check takes a key-share lock on the user row, which conflicts with
+  `FOR UPDATE`, so the vote waits and then fails its FK check against the deleted row (the plan
+  expected the deletion to fail at the FK instead; it cannot while it holds the lock).
+- **Audit entries are pseudonymised, not deleted.** Entries with the user as actor get
+  `AuditActor.DeletedUser` (`deleted-user`/`deleted-user` — a hyphen is not valid in a Twitch login,
+  and the string is no Twitch id) as actor; entries with `TargetType = "user"` and the user's id get
+  the marker as `TargetId` and in their `login` detail, every other column and detail key unchanged.
+  Deliberately not "every string equal to the login": a broadcaster's login is also their channel's
+  name and their id is the channel's Twitch id, and channel history is channel data.
+- **The `user.delete` entry carries no identity**: `TargetId` is the marker, details are
+  `{ reason, votesDeleted, auditEntriesPseudonymised }`. When the actor is the deleted user
+  themself (an admin deleting their own account), the actor is the marker too — otherwise this one
+  entry would restore what the same transaction removed everywhere else.
+- **Late audit writers lock the row.** `UserService.InvalidateRoleCacheAsync` wrote an entry naming the
+  user without touching the user row, so nothing stopped it from landing after a deletion. It now runs
+  in a transaction that takes `FOR SHARE` before its Redis call and audit insert: holding it, the
+  deletion waits and pseudonymises the new entry; losing it, the writer finds no row and writes
+  nothing (returns `null`). `RevokeSessionsAsync` needed nothing — its user `UPDATE` is in the same
+  save as its entry and fails against a deleted row. Residual gap, accepted (plan decision 9): an entry
+  with the deleted user as *actor*, written by an in-flight request of that very user after an admin
+  deletion committed. The inactivity path is free of it through the recheck.
+- **Redis cleanup after the commit**: the role-cache keys through `IModRoleCache.InvalidateUserAsync`,
+  and the rate-limit telemetry's last-rejection slot through the new
+  `IRateLimitTelemetry.ForgetPartitionAsync`. Each is idempotent, needs no row, and gets one retry;
+  if that fails too, one warning with the number of failed steps (never the id), and the TTLs bound
+  the leftovers: 10 min for role keys, 25 h for the slot (which the next rejection of anyone
+  overwrites). `ForgetPartitionAsync` stays fail-open (never throws) but returns `false` when Redis was
+  unreachable, so the caller can retry; it deletes the slot only when its partition is the given one or
+  a sub-partition (`{id}:{sessionId}`, the voting policy), atomically by a compare-and-delete script
+  (Redis 7.2 — `DELEX` would need 8.4). **The partition is the bare Twitch user id, not `user:{id}`**
+  as the plan assumed; the doc comment on `RateLimitPolicyDecision.Partition` had the wrong example
+  and is corrected.
+- `AuditLogEntry` no longer claims unbounded retention: twelve months, and pseudonymisation on account
+  deletion.
+
 ### 2026-09-23 — A session whose user row is gone is rejected, and `LastSeenAtUtc` is written at most daily from the principal check (#243/#244)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IUserService.cs` ·
