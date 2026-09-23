@@ -56,6 +56,14 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRedisSubscriber>(),
             sp.GetRequiredService<ILogger<RedisLiveEventStream>>()));
 
+        // Bound and validated eagerly (fail-fast, same reasoning as RateLimitingOptions.Validate() in
+        // the Api's Program.cs) rather than behind IOptions: ChannelService reads it on every join,
+        // and there is no reload hook that would ever make a live snapshot indirection pay for itself.
+        var channelCapacityOptions = new ChannelCapacityOptions();
+        configuration.GetSection(ChannelCapacityOptions.SectionName).Bind(channelCapacityOptions);
+        channelCapacityOptions.Validate();
+        services.AddSingleton(channelCapacityOptions);
+
         services.AddScoped<IChannelService, ChannelService>();
         // Scoped like every other AppDbContext consumer, with its warning deduplication parked in a
         // singleton beside it: the worker opens a fresh scope per reconcile tick, so a set living on

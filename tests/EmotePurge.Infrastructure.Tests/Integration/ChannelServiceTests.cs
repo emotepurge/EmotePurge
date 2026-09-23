@@ -652,12 +652,19 @@ public class ChannelServiceTests(PostgresFixture fixture)
         AppDbContext db,
         IRedisPublisher? redisPublisher = null,
         IChannelIdentityService? identityService = null,
-        ILogger<ChannelService>? logger = null)
+        ILogger<ChannelService>? logger = null,
+        ChannelCapacityOptions? capacityOptions = null)
     {
         return new ChannelService(
             db,
             redisPublisher ?? Substitute.For<IRedisPublisher>(),
             identityService ?? IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable)),
+            // Effectively uncapped: this class is not about the cap (that is
+            // ChannelServiceCapacityTests, on its own isolated database), and the "Postgres"
+            // collection's single shared database accumulates active channels across every test
+            // that runs before these — the production default of 80 would make these tests fail
+            // depending on run order, not on anything this class actually does.
+            capacityOptions ?? new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
             logger ?? NullLogger<ChannelService>.Instance);
     }
 
