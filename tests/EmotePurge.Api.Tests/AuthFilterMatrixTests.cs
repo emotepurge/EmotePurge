@@ -41,6 +41,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.Channels.ClearReceivedCalls();
         factory.ResyncCooldown.ClearReceivedCalls();
         factory.Emotes.ClearReceivedCalls();
+        factory.AccountDeletion.ClearReceivedCalls();
 
         // Default to "the slot was free", so the cooldown never masks the status code a test is
         // actually asserting. The one case that cares sets it explicitly.
@@ -68,6 +69,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/vote-sessions/mine")]
     [InlineData("GET", "/api/admin/channels")]
     [InlineData("GET", "/api/admin/rate-limits")]
+    [InlineData("DELETE", "/api/admin/users/12345")]
     [InlineData("GET", "/api/auth/me")]
     [InlineData("GET", "/api/channels/live-events")]
     [InlineData("GET", "/api/admin/live")]
@@ -196,6 +198,46 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         var response = await SendAsync("GET", "/api/admin/channels", NewUserId());
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteUser_Answers403_ForANonAdmin()
+    {
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(false);
+
+        var response = await SendAsync("DELETE", "/api/admin/users/12345", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteUser_Answers204_AndCallsTheServiceWithAdminRequestAndNoInactivityCutoff_WhenAnAdminDeletes()
+    {
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
+        _factory.AccountDeletion.DeleteAsync(
+                "12345", Arg.Any<AuditActor>(), AccountDeletionReason.AdminRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+
+        var response = await SendAsync("DELETE", "/api/admin/users/12345", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            "12345", Arg.Any<AuditActor>(), AccountDeletionReason.AdminRequest, null, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteUser_Answers404_WhenTheServiceReportsNotFound()
+    {
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
+        _factory.AccountDeletion.DeleteAsync(
+                "12345", Arg.Any<AuditActor>(), AccountDeletionReason.AdminRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.NotFound));
+
+        var response = await SendAsync("DELETE", "/api/admin/users/12345", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Fact]
