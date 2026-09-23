@@ -29,6 +29,7 @@ const DE_TRANSLATIONS = {
       other: '{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
     },
     progress: '{{ finished }} / {{ total }} kopiert',
+    settling: 'Wird abgeschlossen…',
     deleteFailedFallback: 'Kopieren fehlgeschlagen',
     rateLimitPaused: '7TV-Rate-Limit erreicht.',
     syncFailedTitle: 'Rückmeldung fehlgeschlagen',
@@ -588,6 +589,10 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(findButton(fixture, 'Protokoll herunterladen')).toBeUndefined();
+      // Finding 2: Close shares the same settlement gate — a run that has stopped running but not
+      // yet settled must not be closable, since Close (reset()) would drop the run's unload cover
+      // and its protocol before either one exists.
+      expect(findButton(fixture, 'Schließen')).toBeUndefined();
     });
 
     it('shows the protocolNotSaved hint until the protocol has been saved, once settled', () => {

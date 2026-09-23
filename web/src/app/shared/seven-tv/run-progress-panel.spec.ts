@@ -17,6 +17,7 @@ const DE_TRANSLATIONS = {
   massDelete: {
     progress: '{{ finished }} / {{ total }} verarbeitet',
     progressBarLabel: 'Löschfortschritt',
+    settling: 'Wird abgeschlossen…',
     deleteFailedFallback: 'Löschen fehlgeschlagen',
     unknownOutcome:
       'Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.',
@@ -80,6 +81,7 @@ function accessibleName(el: Element): string {
       [labelPrefix]="labelPrefix"
       [syncReport]="syncReport"
       [rateLimitPauseSeconds]="rateLimitPauseSeconds"
+      [dismissible]="dismissible"
       (cancelled)="cancelledCount = cancelledCount + 1"
       (dismissed)="dismissedCount = dismissedCount + 1"
       (syncRetryRequested)="syncRetryRequestedCount = syncRetryRequestedCount + 1"
@@ -98,6 +100,7 @@ class HostComponent {
   labelPrefix: 'massDelete' | 'restore' | 'import' = 'massDelete';
   syncReport: SyncReportState = 'idle';
   rateLimitPauseSeconds: number | null = null;
+  dismissible = true;
   projectRunActions = false;
   cancelledCount = 0;
   dismissedCount = 0;
@@ -381,6 +384,35 @@ describe('RunProgressPanel', () => {
 
       expect(dialog.fixture.nativeElement.querySelector('[run-actions]')).not.toBeNull();
       expect(dialog.text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+    });
+  });
+
+  // Finding 2: a host (import) gates Close on its own settlement signal, not merely on `isRunning`,
+  // so the run stays in the dock — with its protocol and unload cover intact — until that signal
+  // says the pending re-read is done. Delete/restore never pass `dismissible`, so it defaults to
+  // `true` and their panels behave exactly as before.
+  describe('dismissible', () => {
+    it('shows neither Cancel nor Close while not running and not dismissible, and explains why', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        dismissible: false,
+      });
+
+      expect(dialog.button('Abbrechen')).toBeNull();
+      expect(dialog.button('Schließen')).toBeNull();
+      expect(dialog.text()).toContain(DE_TRANSLATIONS.massDelete.settling);
+    });
+
+    it('shows Close once the run is no longer running and dismissible again', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        dismissible: true,
+      });
+
+      expect(dialog.button('Schließen')).not.toBeNull();
+      expect(dialog.text()).not.toContain(DE_TRANSLATIONS.massDelete.settling);
     });
   });
 

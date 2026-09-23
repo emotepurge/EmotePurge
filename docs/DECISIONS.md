@@ -80,7 +80,14 @@ Nothing reaches the Api before `settlement` turns `'settled'`: `sync-imported`, 
 and the channel resync all wait for it, even though the dock already shows the engine's live
 snapshot while the re-read is in flight. A `reset()` or a second `startImport` started during that
 re-read takes the outcome off the dock, but the pending run's reports are still sent — they record
-7TV changes that already happened, independent of what is currently on screen.
+7TV changes that already happened, independent of what is currently on screen. Close itself no
+longer reaches `reset()` during that window: `RunProgressPanel` gained a `dismissible` input
+(default `true`, so delete/restore are unaffected), and the import section binds it to
+`run.settlement === 'settled'` — a run that has stopped running but not yet settled shows neither
+Cancel nor Close, only a muted "settling" line, so a user cannot end the run before its protocol and
+the unload cover over the pending re-read exist. A second `startImport` during that window still
+takes the outcome off the dock the way it always could — closing that gap needs a change to the
+arbiter that decides whether a run may start, not to the dock, and stays open.
 
 **The safeguard is a file, not a typed confirmation.** A plan with at least one replace turns the
 executor into a three-state button: "Save recovery file" reads the target set live, checks every

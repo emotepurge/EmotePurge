@@ -1232,6 +1232,7 @@
     },
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Kopierfortschritt",
+    "settling": "Wird abgeschlossen…",
     "deleteFailedFallback": "Kopieren fehlgeschlagen",
     "unknownOutcome": "Unklar, ob kopiert — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "errors": {

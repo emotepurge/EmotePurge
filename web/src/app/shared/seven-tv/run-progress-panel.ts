@@ -26,10 +26,12 @@ import { NoticeBanner } from '../ui/notice-banner';
           <button type="button" appButton="danger-quiet" (click)="cancelled.emit()">
             {{ 'common.cancel' | transloco }}
           </button>
-        } @else {
+        } @else if (dismissible()) {
           <button type="button" appButton="neutral" (click)="dismissed.emit()">
             {{ 'common.close' | transloco }}
           </button>
+        } @else {
+          <span class="text-fg-muted">{{ labelPrefix() + '.settling' | transloco }}</span>
         }
       </div>
       <!-- The track is one step further from the surface than the panel it sits in, so it stays
@@ -120,6 +122,12 @@ export class RunProgressPanel {
   readonly syncReport = input<SyncReportState>('idle');
   /** Seconds left on a 7TV rate-limit pause, null while running normally. */
   readonly rateLimitPauseSeconds = input<number | null>(null);
+  /** Whether Close is offered once the run stops running. A host binds this to its own settlement
+   *  signal (import: `run.settlement === 'settled'`) so Close cannot end a run whose protocol and
+   *  unload cover have not been produced yet — see `import-progress-section.ts` for why that window
+   *  matters. Defaults to `true`: delete and restore never pass it, so they keep the panel's
+   *  original behaviour of offering Close the moment the run stops. */
+  readonly dismissible = input(true);
   readonly cancelled = output<void>();
   readonly dismissed = output<void>();
   readonly syncRetryRequested = output<void>();
