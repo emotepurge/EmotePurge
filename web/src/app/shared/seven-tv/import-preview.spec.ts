@@ -340,7 +340,7 @@ describe('buildImportPreview', () => {
     expect(result.toAdd).toEqual([]);
   });
 
-  it('#74 grenzfall: a duplicate target id with one matching alias is alreadyPresent, not a mismatch', () => {
+  it('#74 edge case: a duplicate target id with one matching alias is alreadyPresent, not a mismatch', () => {
     // 7TV's own set-merge defect (#74) can leave a target set with two rows under the same id but
     // different aliases. The source row must count as alreadyPresent the moment *either* of them
     // agrees with it — never as an alias mismatch just because the *other* duplicate differs.
@@ -366,7 +366,7 @@ describe('buildImportPreview', () => {
     expect(result.aliasMismatches).toEqual([]);
   });
 
-  it('#74 grenzfall: a duplicate target id with neither alias matching is one alias mismatch', () => {
+  it('#74 edge case: a duplicate target id with neither alias matching is one alias mismatch', () => {
     const target: EmoteListItem[] = [
       {
         sevenTvEmoteId: 'dup-1',
@@ -390,7 +390,7 @@ describe('buildImportPreview', () => {
   });
 
   it('pairs a name-collision row with the target entry holding that name, plus every named alias of a #74 duplicate', () => {
-    // #74 grenzfall for nameCollisionRows: the target id the source name collides with has two
+    // #74 edge case for nameCollisionRows: the target id the source name collides with has two
     // live entries under different aliases (7TV's own set-merge defect). A REMOVE resolution takes
     // both, so the counterpart must expose the full alias list, not just the one that collided.
     const target: EmoteListItem[] = [
@@ -414,7 +414,7 @@ describe('buildImportPreview', () => {
   });
 
   it('flags targetHasAliaslessEntry when the colliding id also carries a falsy-name entry', () => {
-    // The aliasless half of the #74 grenzfall (K5): the same target id holds one named entry (the
+    // The aliasless half of the #74 edge case (K5): the same target id holds one named entry (the
     // one the source name collides with) and one entry with no alias at all — the aliasless signal
     // this preview reads as a falsy `name` (see the long comment on `nameCollisionRows`). The slot
     // projection is built on `targetHasAliaslessEntry`, so a REMOVE must be seen to take both.

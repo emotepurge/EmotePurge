@@ -21,7 +21,7 @@ describe('buildEmoteListEnvelope', () => {
     expect(envelope.kind).toBe('emote-list');
     expect(envelope.channelName).toBe('sensitron');
     expect(envelope.meta).toEqual({ sourceEmoteSetId: 'set-1', rowCount: 2, scope: 'selection' });
-    // Not `toEqual(ROWS)`: the written file format is unchanged (T1) — it carries only id and
+    // Not `toEqual(ROWS)`: the written file format is unchanged — it carries only id and
     // name, never `imageUrl`, even though `ROWS` (an in-memory `ImportRow[]`) now has that field.
     expect(envelope.rows).toEqual(
       ROWS.map(({ sevenTvEmoteId, name }) => ({ sevenTvEmoteId, name })),

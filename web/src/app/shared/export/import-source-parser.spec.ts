@@ -41,7 +41,7 @@ describe('parseImportSource', () => {
     expect(result.source.discardedRows).toBe(0);
   });
 
-  it('sets imageUrl to null for every parsed row — a file never carries one (T1)', () => {
+  it('sets imageUrl to null for every parsed row — a file never carries one', () => {
     // emote-list-export.ts writes only id and name (the file format is unchanged); a row read
     // back out of a file must say so honestly rather than guess at an image from the id.
     const result = parseImportSource(envelope({}), 'emotes.json');

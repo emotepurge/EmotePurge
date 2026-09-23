@@ -994,7 +994,7 @@ const SCENARIOS: Scenario[] = [
       // mocked target actually collides, which Emote3PogU/target-99 above always does) is what
       // actually proves the confirm dialog has filled in rather than still showing its skeleton —
       // unlike a wait on the raw set id text, the header now shows the set's resolved NAME ("Main")
-      // once a picker choice carries one (Codex P2, third round), so the id itself never appears.
+      // once a picker choice carries one, so the id itself never appears.
       await page.locator('#import-confirm-resolve-nameCollision').waitFor();
     },
   },

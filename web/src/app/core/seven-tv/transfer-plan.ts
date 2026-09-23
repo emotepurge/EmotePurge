@@ -5,8 +5,11 @@ import { ImportRow } from './import-source';
  *  at the type level by {@link TransferRow}'s discriminated union. */
 export interface TransferRowTarget {
   sevenTvEmoteId: string;
-  /** Every *named* alias the target entry held when the preview was built — `NameCollisionRow`'s
-   *  `targetAliases` for a `replace` row, `AliasMismatchRow`'s for an `adoptSourceName` row. */
+  /** Every *named* alias the target entry holds — `NameCollisionRow`'s `targetAliases` for a
+   *  `replace` row, `AliasMismatchRow`'s for an `adoptSourceName` row when the preview is first
+   *  built, but overwritten with the live read the moment a drift overlay (`overlayPreview`) or the
+   *  pre-run stamp (`stampReplaceTargets`) runs — from then on this is what the target actually
+   *  holds, not a snapshot from when the preview was built. */
   aliases: string[];
   /** Whether the target id also carries an *aliasless* entry — always `false` for an
    *  `adoptSourceName` row (`AliasMismatchRow` carries no such marker, and adopting renames an

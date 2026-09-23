@@ -43,8 +43,8 @@ const TEST_OPERATION: RunOperation = {
   }),
 };
 
-/** Stands in for the replace row T5 builds: step 0 frees the name, step 1 takes it. The request
- *  names its step so an assertion can tell which of the two went out. */
+/** Stands in for a replace row's two-step operation: step 0 frees the name, step 1 takes it. The
+ *  request names its step so an assertion can tell which of the two went out. */
 const TWO_STEP_OPERATION: RunOperation = {
   label: 'two-step run',
   stepCount: () => 2,

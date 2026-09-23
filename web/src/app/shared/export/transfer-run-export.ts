@@ -73,8 +73,8 @@ export interface TransferRunRow {
 
 interface TransferRunMetaBase {
   targetEmoteSetId: string;
-  /** `null` for an untracked target (spec 8.6, T2.6) — the envelope's own `channelName` carries
-   *  `''` in that case (Frage 6, entschieden), this field keeps the honest `null`. */
+  /** `null` for an untracked target (spec 8.6) — the envelope's own `channelName` carries `''` in
+   *  that case, but this field keeps the honest `null`. */
   targetChannelName: string | null;
   targetOwnerDisplayName: string | null;
   origin: ImportOrigin;
@@ -121,8 +121,8 @@ export type TransferPlanRecord = ExportEnvelope<TransferRunRow, TransferRunMetaP
 export type TransferRunProtocol = ExportEnvelope<TransferRunRow, TransferRunMetaFinished>;
 
 /** A `TransferRowTarget`-shaped view of one target id as the live read (`SevenTvSetEntries`) sees
- *  it right now — the `planned` stage's own source of truth (Codex-Finding 1: from the *read*, not
- *  from the preview the row was decided against). */
+ *  it right now — the `planned` stage's own source of truth: from the *read*, not from the preview
+ *  the row was decided against. */
 function liveRowTarget(
   targetId: string,
   entries: SevenTvSetEntries,
@@ -198,7 +198,7 @@ function transferRunRowFromRunItem(item: ImportRunItem): TransferRunRow {
 
 /**
  * The `planned` stage: every row of `plan`, each `replace` row's target read fresh from `entries`
- * (the live set read, not the preview the row was decided against — Codex-Finding 1) and named by
+ * (the live set read, not the preview the row was decided against) and named by
  * `defaultNameById` (`seven-tv-set-entries.ts`'s own field). Every row `status: 'pending'`,
  * `failedStep: null`, `errorMessage: null` — nothing has run yet.
  */
@@ -239,8 +239,8 @@ export function buildTransferPlanRecord(input: {
  * `unknown` rows included, same rule the purge-run protocol follows). A `replace` row's
  * `removedTarget` comes from its own plan row's frozen target (`item.transfer.target`), not a fresh
  * read — there is none at this point — and `confirmed` is `completedSteps >= 1`, independent of the
- * row's own final status (Runde 2, Finding 1: an `unknown` ADD whose REMOVE went through still
- * counts as a confirmed removal).
+ * row's own final status: an `unknown` ADD whose REMOVE went through still counts as a confirmed
+ * removal.
  */
 export function buildTransferRunProtocol(input: {
   targetEmoteSetId: string;
@@ -322,8 +322,8 @@ export function transferRunCsv(protocol: TransferRunProtocol): string {
 /** The `planned` stage's filename — always JSON, and its own `-transfer-plan-` suffix so it never
  *  overwrites the `finished` stage's file of the same run when both sit in the same download
  *  folder. `channelOrSetLabel` is the target channel name, or the target set id for an untracked
- *  target (Grenzfall: an untracked target without an owner display name still names the file by its
- *  set id). */
+ *  target (an untracked target without an owner display name still names the file by its set id).
+ */
 export function transferPlanFilename(channelOrSetLabel: string, verifiedAt: string): string {
   const stamp = verifiedAt.slice(0, 16).replace('T', '-').replace(':', '');
   return `emotepurge_${sanitizeFilenamePart(channelOrSetLabel)}_transfer-plan_${stamp}.json`;

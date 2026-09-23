@@ -293,10 +293,10 @@ describe('loadImportTarget', () => {
       });
     });
 
-    it('carries the imageUrl of each live emote through untouched (T1)', () => {
+    it('carries the imageUrl of each live emote through untouched', () => {
       // import-target-loader.ts used to build a fresh { sevenTvEmoteId, name } pair here and
-      // discard everything else the live route sent — T1 needs the image too, for T8's
-      // side-by-side source/target preview.
+      // discard everything else the live route sent — the confirm dialog's side-by-side
+      // source/target preview needs the image too.
       let result: ImportTargetLoadState | undefined;
       loadImportTarget(emoteAdminService, emoteSetService, {
         kind: 'trackedSet',

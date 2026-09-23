@@ -25,10 +25,10 @@ describe('projectSlots', () => {
   });
 
   // The three net-delta shapes `conflict-resolution.ts`'s `summarizeTransferPlan` can hand this
-  // function once a run carries name-conflict resolutions (Codex-Finding 5, AK 21) — each asserted
-  // here directly against `projectSlots`, independent of how `summarizeTransferPlan` arrives at the
-  // number (that arithmetic is `conflict-resolution.spec.ts`'s job).
-  describe('net delta from a run with name-conflict resolutions (Codex-Finding 5)', () => {
+  // function once a run carries name-conflict resolutions (AK 21) — each asserted here directly
+  // against `projectSlots`, independent of how `summarizeTransferPlan` arrives at the number (that
+  // arithmetic is `conflict-resolution.spec.ts`'s job).
+  describe('net delta from a run with name-conflict resolutions', () => {
     it('projects +1 for a single rename (an ADD with no matching REMOVE)', () => {
       expect(projectSlots(50, 100, 1)).toEqual({ projected: 51, capacity: 100, overflow: false });
     });

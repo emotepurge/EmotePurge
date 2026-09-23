@@ -2750,7 +2750,7 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
  * requires before it may start; a live target that drifted since the dialog's own preview; a lost
  * transport answer settling from a re-read of the target; the untouched-dialog path (AK 5); an
  * untracked target's disabled replace option (R5); and a restore built from a finished run's own
- * result protocol (T7b).
+ * result protocol.
  */
 test.describe('push flow: resolving name conflicts (#230)', () => {
   /** One target entry as 7TV's live set read (`loadSevenTvSetEntries`) would report it — an entry

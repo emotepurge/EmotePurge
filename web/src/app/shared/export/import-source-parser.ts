@@ -34,9 +34,9 @@ export function parseImportSource(
   // A transfer-run protocol (either stage, #230) is never an import source: its rows are 7TV
   // mutations already applied or about to be, not an emote list to copy from. Named explicitly
   // rather than falling into the generic wrongKind below, same reasoning as the voting export
-  // above — the file dispatch tries `parsePurgeRunProtocol` first for `purge-run`, and is meant to
-  // grow a dedicated restore branch for `transfer-run` too; this function only ever sees one of
-  // these two kinds if that dispatch is bypassed, and answers with a reason even then.
+  // above — the file dispatch (`file-import-step.ts`) already routes both `purge-run` and
+  // `transfer-run` to their own restore branches before ever calling this function; this branch
+  // only answers when that dispatch is bypassed.
   if (partial.kind === 'transfer-run') {
     return { ok: false, errorKey: 'restore.import.errors.transferRun' };
   }
@@ -62,7 +62,7 @@ export function parseImportSource(
     const name = row?.[nameField];
     if (typeof id === 'string' && id.length > 0 && typeof name === 'string') {
       // A file never carries an image URL (`emote-list-export.ts` writes only id and name) — `null`
-      // here is the honest answer, not a guess derived from the id (spec T1).
+      // here is the honest answer, not a guess derived from the id.
       validRows.push({ sevenTvEmoteId: id, name, imageUrl: null });
     }
   }

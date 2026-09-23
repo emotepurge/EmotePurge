@@ -98,8 +98,8 @@ describe('buildTransferPlanRecord', () => {
     });
   });
 
-  // Runde 2, Finding 2: an aliasless entry is its own `{ alias: null }` entry, alongside the named
-  // one — `aliases` (the CSV-facing field) stays the named subset only.
+  // An aliasless entry is its own `{ alias: null }` entry, alongside the named one — `aliases`
+  // (the CSV-facing field) stays the named subset only.
   it('names an aliasless entry alongside a named one, keeping aliases to the named subset', () => {
     const plan: TransferPlan = {
       rows: [
@@ -350,8 +350,8 @@ describe('buildTransferRunProtocol', () => {
     expect(protocol.meta.counts.removed).toBe(1);
   });
 
-  // Runde 2, Finding 1: a lost ADD answer after a confirmed REMOVE still confirms the removal —
-  // the row counts in *both* counts.removed and counts.unknown, never just one.
+  // A lost ADD answer after a confirmed REMOVE still confirms the removal — the row counts in
+  // *both* counts.removed and counts.unknown, never just one.
   it('counts an unknown row whose REMOVE was confirmed (completedSteps >= 1) as both removed and unknown', () => {
     const replaceRow: TransferRow = {
       action: 'replace',

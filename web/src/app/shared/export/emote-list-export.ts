@@ -12,10 +12,10 @@ import { sanitizeFilenamePart } from './file-download';
  * mutation needs.
  */
 
-// Deliberately not `= ImportRow`: since T1, `ImportRow` also carries `imageUrl` (for the target
-// comparison in memory), but this file's wire format is unchanged (spec T1, Frage 6) — a written
-// emote-list export still names only id and name, so the row shape written to disk stays narrower
-// than the in-memory `ImportRow`.
+// Deliberately not `= ImportRow`: `ImportRow` also carries `imageUrl` (for the target comparison
+// in memory), but this file's wire format is unchanged — a written emote-list export still names
+// only id and name, so the row shape written to disk stays narrower than the in-memory
+// `ImportRow`.
 export type EmoteListRow = Pick<ImportRow, 'sevenTvEmoteId' | 'name'>;
 
 export interface EmoteListMeta {

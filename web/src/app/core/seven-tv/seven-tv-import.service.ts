@@ -328,7 +328,7 @@ export class SevenTvImportService {
   private readonly transferRowsByKey = computed(() => indexPlanRows(this.run()?.plan ?? null));
 
   constructor() {
-    // The `beforeunload` guard (Abschnitt 2): registered exactly while `destructiveRunActive` is
+    // The `beforeunload` guard: registered exactly while `destructiveRunActive` is
     // `true`, removed the moment it flips back — never after the run (settlement clears it), never
     // for a plan without a replace row. `preventUnload` is a module-level function, not a closure
     // created here, so `removeEventListener` always targets the exact reference `addEventListener`
@@ -348,10 +348,10 @@ export class SevenTvImportService {
    *  this method does no filtering of its own. `target.channelName` is `null` for an untracked
    *  target (T2.6, spec 8.6) — see `ImportRunInfo.targetChannelName` for what that changes
    *  downstream. `target.setName` and `target.isActiveSet` default to the id and to `true`
-   *  respectively (finding 2/3, Live-Verifikation K2 2026-09-21) — every caller written before those
-   *  findings omits both and keeps reading exactly as it did (an active-set target, named by its id
-   *  until a real name is known), since every one of them only ever targeted the channel's active
-   *  set. `skippedDuplicates` is the caller's own count from the *fresh* re-check it ran just before
+   *  respectively — every caller written before these two params existed omits both and keeps
+   *  reading exactly as it did (an active-set target, named by its id until a real name is known),
+   *  since every one of them only ever targeted the channel's active set. `skippedDuplicates` is
+   *  the caller's own count from the *fresh* re-check it ran just before
    *  this call (see `already-present-filter.ts`) — defaults to 0. `duplicateCheckAvailable` mirrors
    *  the same call's `available` and defaults to `true` for the same reason. `replaceSkippedDrift`
    *  is the same re-check's count of held-back `replace` rows, default 0.

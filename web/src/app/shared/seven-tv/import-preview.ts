@@ -51,7 +51,7 @@ export interface AliasMismatchRow {
    *  `row.name`) cannot run, or `null` when it can (AK 8):
    *  - `'nameTaken'` — `row.name` already belongs to a *different* target id. Checked first: this
    *    is 7TV's ordinary alias-uniqueness rule, and applies to any target, defect-free or not.
-   *  - `'duplicateTarget'` — `targetAliases.length > 1` (the #74 grenzfall): with two live entries
+   *  - `'duplicateTarget'` — `targetAliases.length > 1` (the #74 case): with two live entries
    *    under one id, adopting cannot say which of them to rename, so this resolution steers clear
    *    of #74 entirely rather than guess (#74 itself stays open).
    *  Both conditions are independent and untested in combination — order matters only for that
@@ -93,7 +93,7 @@ export interface ImportPreview {
    * since they only ever carried names. A resolution step reads this, not the two counting fields,
    * to act on a specific target entry.
    *
-   * **Aliasless finding (K5 grenzfall, task instruction):** an id can carry a target entry with no
+   * **Aliasless entries (K5):** an id can carry a target entry with no
    * alias at all — `aliaslessIds` in `seven-tv-set-entries.ts` exists precisely because 7TV's `v4`
    * GQL `emoteSet.emotes` query (`items { alias emote { id } }`) can answer `alias: null` for one,
    * confirmed live (`seven-tv-set-entries.ts:112-120`, DECISIONS.md K5 entries 2026-09-22) —
@@ -205,7 +205,7 @@ export type TargetOverlay = { aliases: string[]; hasAliaslessEntry: boolean } | 
  * itself carry a #74 duplicate — two rows sharing one `sevenTvEmoteId` under different aliases,
  * 7TV's own set-merge defect. A source row matching that id is `alreadyPresent` the moment *any*
  * of the target's aliases for it agrees with the source's; only when *none* of them do is it an
- * alias mismatch (spec 8.6, AK 37 — the #74 grenzfall).
+ * alias mismatch (spec 8.6, AK 37 — the #74 case).
  */
 export function buildImportPreview(
   source: ImportSource,

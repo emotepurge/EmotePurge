@@ -118,8 +118,9 @@ import { RunProgressPanel } from './run-progress-panel';
                    included — settlement, not isRunning, is the gate, because a run with an
                    unknown row stays pending after the engine is already done. Built from
                    run.result.items — the settled, run-bound outcome — never the engine's live
-                   queue (Runde 2, Finding 3), which is exactly why [items] above now binds to
-                   importService.items() instead of importService.queue(). -->
+                   queue, whose rows a later run can already have overwritten: that is exactly
+                   why [items] above now binds to importService.items() instead of
+                   importService.queue(). -->
               @if (run.settlement === 'settled') {
                 <button type="button" appButton="neutral" (click)="openProtocolExport()">
                   {{ 'import.summary.downloadProtocol' | transloco }}
@@ -198,9 +199,9 @@ import { RunProgressPanel } from './run-progress-panel';
                 </a>
               }
               <!-- reset() wipes the run — the downloaded file is the only durable artifact. No
-                   confirmation on Close for it (Abschnitt 2, Entscheidung 6): unlike the delete
-                   run's own protocol, this one is the *second* durable trace — the mandatory
-                   pre-run back-out file, downloaded before the first REMOVE, is the first. -->
+                   confirmation on Close for it: unlike the delete run's own protocol, this one is
+                   the *second* durable trace — the mandatory pre-run back-out file, downloaded
+                   before the first REMOVE, is the first. -->
               @if (run.settlement === 'settled' && !importService.protocolSaved()) {
                 <span class="text-xs text-fg-muted">
                   {{ 'import.summary.protocolNotSaved' | transloco }}
@@ -256,7 +257,7 @@ export class ImportProgressSection {
 
   /** The `finished`-stage transfer-run protocol — offered after every settled run, mirroring
    *  `MassDeletePanel.openProtocolExport()`. Built from `run.result.items`, never from the engine's
-   *  queue (Runde 2, Finding 3), so a superseded run cannot leak its rows into a newer one's file. */
+   *  queue, so a superseded run cannot leak its rows into a newer one's file. */
   protected openProtocolExport(): void {
     const run = this.importService.run();
     if (!run || run.settlement !== 'settled' || run.result === null) {
@@ -271,8 +272,8 @@ export class ImportProgressSection {
       finishedAt: run.result.finishedAt,
       items: run.result.items,
     });
-    // The filename label (Grenzfälle): the target channel, or the target set id for an untracked
-    // target — never the owner display name, which can be absent.
+    // The filename label: the target channel, or the target set id for an untracked target —
+    // never the owner display name, which can be absent.
     const label = run.targetChannelName ?? run.targetSetId;
     const data: ExportDialogData = {
       rowCount: protocol.rows.length,

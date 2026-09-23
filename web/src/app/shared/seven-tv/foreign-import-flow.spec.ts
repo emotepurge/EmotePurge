@@ -112,7 +112,7 @@ function closedSubject<T>(dialogOpen: ReturnType<typeof vi.fn>, call: number): S
   return dialogOpen.mock.results[call].value.closed as Subject<T>;
 }
 
-it('carries the imageUrl through both the channel and the leaderboard mapping (T1)', () => {
+it('carries the imageUrl through both the channel and the leaderboard mapping', () => {
   // Both toImportRow()/toLeaderboardImportRow() in foreign-import-flow.ts read row.imageUrl
   // straight off the ForeignEmoteRow — never derived from sevenTvEmoteId (Issue "Images").
   const channelSource = buildForeignImportSource(picked([foreignRow('e1', 'HandLuL')]));

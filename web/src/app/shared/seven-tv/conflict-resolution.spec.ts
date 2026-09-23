@@ -188,7 +188,7 @@ describe('validateResolution', () => {
       expectViolation(backward, 'aliasHeldByTarget', ['c-rename', 'c-free']);
     });
 
-    it('flags a rename onto a name an adopt row would take over (adopt never frees it, Frage 7)', () => {
+    it('flags a rename onto a name an adopt row would take over (an adopt renames in place, it never frees the name)', () => {
       const p = preview({
         nameCollisionRows: [
           collisionRow(importRow('c-1', 'Unrelated'), emoteListItem('t-1', 'Unrelated'), [
@@ -415,7 +415,7 @@ describe('buildTransferPlan', () => {
     });
   });
 
-  it('keeps an invalidNames toAdd row in the plan when there are no decisions (Runde 2, Finding 5)', () => {
+  it('keeps an invalidNames toAdd row in the plan when there are no decisions to remove it', () => {
     const invalidRow = importRow('add-1', 'has space');
     const p = preview({ toAdd: [invalidRow], invalidNames: ['has space'] });
 

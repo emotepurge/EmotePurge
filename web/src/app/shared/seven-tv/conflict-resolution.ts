@@ -82,9 +82,9 @@ export type ResolutionValidation = { ok: true } | { ok: false; violations: Viola
 /** The summary numbers a confirm dialog and a run protocol both need — see the field docs for what
  *  each counts and why `addCount` and `removeCount` are not simply "rows with this action". */
 export interface TransferPlanSummary {
-  /** Every ADD mutation the plan performs — `add`, `renameSource` *and* `replace` rows (Codex-Finding
-   *  5): a `replace` row's REMOVE is followed by an ADD under the freed name, so it counts here too,
-   *  once, alongside its own contribution to `removeCount`/`removedEntryCount` below.
+  /** Every ADD mutation the plan performs — `add`, `renameSource` *and* `replace` rows: a `replace`
+   *  row's REMOVE is followed by an ADD under the freed name, so it counts here too, once, alongside
+   *  its own contribution to `removeCount`/`removedEntryCount` below.
    *  `adoptSourceName` never counts: it is a `7TV` UPDATE on an existing entry, not an ADD. */
   addCount: number;
   /** The count of `replace` *rows* — the deletion count a confirm dialog shows the user (AK 20).
@@ -105,7 +105,7 @@ export interface TransferPlanSummary {
  * Validates a set of per-row decisions against the whole run, independent of the order its rows or
  * its decisions happen to be given in (every check below groups by alias or by target id rather than
  * walking decisions sequentially, so permuting `preview`'s row arrays or `decisions`' insertion order
- * never changes the result — Codex-Finding 4: a rule that only holds in one row order is not a rule).
+ * never changes the result — a rule that only held for one row order would not be a rule at all).
  * `ok: true` is the precondition `buildTransferPlan` needs; `buildTransferPlan` runs this function
  * itself, so a caller cannot reach a `replaceTarget` decision past rule 7 by skipping straight to
  * `buildTransferPlan`.
@@ -129,14 +129,14 @@ export interface TransferPlanSummary {
  *    REMOVE frees exactly that name, the ADD immediately reclaims
  *    it). No other row gets this pass, even onto the very same target: a `renameSource` row that
  *    types in a name a *different* row's `replaceTarget` decision would free is still a violation
- *    (Codex-Finding 4, consistent with Frage 7 — even though `TransferPlan.rows` is now reordered so
- *    every `replace` runs before every `add`/`renameSource` — see that type's own doc — this rule
- *    stays deliberately independent of any row order: two separate runs solve a legitimate
- *    "reuse a freed name" case cleanly, an ordering-aware exception inside one run would not be
- *    worth its complexity). An `adoptSourceName` row never needs this exception (its alias, by
- *    construction, never equals one of its own target's held aliases — that disagreement is what
- *    makes it an alias mismatch in the first place), and per Frage 7 an adopt never frees its
- *    target's *old* alias for reuse by another row either.
+ *    (even though `TransferPlan.rows` is now reordered so every `replace` runs before every
+ *    `add`/`renameSource` — see that type's own doc — this rule stays deliberately independent of
+ *    any row order: two separate runs solve a legitimate "reuse a freed name" case cleanly, an
+ *    ordering-aware exception inside one run would not be worth its complexity). An
+ *    `adoptSourceName` row never needs this exception (its alias, by construction, never equals one
+ *    of its own target's held aliases — that disagreement is what makes it an alias mismatch in the
+ *    first place), and an adopt never frees its target's *old* alias for reuse by another row either
+ *    — adopting renames the entry in place, it does not remove and re-add it.
  * 3. **`invalidTypedAlias`** — every `renameSource.alias` must pass {@link isNameRejectedBySevenTv}.
  *    This is the one alias in the whole run a user actually types, so it is the only one checked:
  *    an unchanged `toAdd` row's name reaches 7TV unfiltered today (`import-preview.ts`'s own doc on
@@ -157,9 +157,8 @@ export interface TransferPlanSummary {
  * 6. **`adoptBlocked`** — an `adoptSourceName` decision is only valid where `adoptBlocked === null`;
  *    this module does not trust the UI to have withheld the option.
  * 7. **`replaceNeedsTrackedTarget`** — a `replaceTarget` decision is only valid when
- *    `context.targetIsTracked`. Operator decision 2026-09-23 (Fassung 5, "keine Löschung ohne
- *    Restore-Weg"): only a tracked channel's own resync can currently restore a deleted entry, so
- *    replacing into an untracked target has no way back yet. `skip`, `renameSource` and
+ *    `context.targetIsTracked`. Only a tracked channel's own resync can currently restore a deleted
+ *    entry, so replacing into an untracked target has no way back yet. `skip`, `renameSource` and
  *    `adoptSourceName` are unaffected — none of them delete anything. The restriction is expected to
  *    lift with a future "restore per set" feature.
  */

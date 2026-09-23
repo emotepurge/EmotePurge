@@ -334,16 +334,16 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
               </span>
             </app-notice-banner>
           } @else if (ownershipCheckUnavailable()) {
-            <!-- Two different reasons share ownershipCheckUnavailable(), and finding 5
-                 (Live-Verifikation K2 2026-09-21) is that they used to share the delete flow's alarm
-                 text too — wrong on both counts for an untracked target: loadImportTarget never even
-                 attempts a check there (spec 8.6, there is no channel of ours to run
-                 EmoteSetOwnershipService against), so "we couldn't check" misdescribes a check that was
-                 never applicable, and the picker's own confirmation step (AK 35) already named this
-                 exact owner. A short, neutral hint instead — not a warning banner, and never the
-                 delete-flow's wording (massDelete.* stays delete-only, import.confirm.* keeps its own
-                 copy). A *tracked* target whose check genuinely failed keeps the amber warning, worded
-                 for a copy rather than a deletion. -->
+            <!-- Two different reasons share ownershipCheckUnavailable(), and they used to share the
+                 delete flow's alarm text too — wrong on both counts for an untracked target:
+                 loadImportTarget never even attempts a check there (spec 8.6, there is no channel
+                 of ours to run EmoteSetOwnershipService against), so "we couldn't check"
+                 misdescribes a check that was never applicable, and the picker's own confirmation
+                 step (AK 35) already named this exact owner. A short, neutral hint instead — not a
+                 warning banner, and never the delete-flow's wording (massDelete.* stays
+                 delete-only, import.confirm.* keeps its own copy). A *tracked* target whose check
+                 genuinely failed keeps the amber warning, worded for a copy rather than a
+                 deletion. -->
             @if (data.targetChannelName === null) {
               <app-notice-banner variant="info">
                 {{ 'import.confirm.untrackedTarget' | transloco }}
