@@ -59,6 +59,53 @@ usually answers differently — nginx `limit_req` returns `503` — so the statu
 which layer rejected a throttled client. No raw WebSocket endpoint exists; SSE needs no
 `Upgrade` handling.
 
+## Legal pages (imprint, privacy policy)
+
+The repository is public and self-hostable, so it ships no imprint or privacy policy text of its
+own (issue #247) — a fork must not carry the original operator's legal identity. Content comes
+from Markdown files the operator supplies on the host, mounted read-only into the container and
+never baked into an image.
+
+1. Create a directory on the host, e.g. `/opt/emotepurge/legal`, and put up to four files in it:
+
+   | File | Required | Content |
+   |---|---|---|
+   | `imprint.de.md` | for the imprint to appear at all | German imprint |
+   | `imprint.en.md` | optional | English imprint |
+   | `privacy.de.md` | for the privacy policy to appear at all | German privacy policy |
+   | `privacy.en.md` | optional | English privacy policy |
+
+   **German is authoritative.** A document is considered configured only once its German file
+   exists — an English file with no German counterpart next to it is treated the same as no file
+   at all (`ILegalContentService`/`LegalContentService` in `EmotePurge.Infrastructure/Services/`).
+   If the English file is missing, an English request answers with the German text plus a flag
+   the frontend reads to show "only available in German" instead of silently mixing languages.
+   The frontend pages live at `/imprint` and `/privacy`; they read from the API's
+   `GET /api/legal/availability` and `GET /api/legal/{imprint,privacy}/{de,en}`.
+2. `docker-compose.prod.yml`'s `api` service already carries the mount and the variable, pointed
+   at `/opt/emotepurge/legal:/legal:ro` — create that directory on the VPS and put the files from
+   step 1 there. `docker-compose.yml` (local dev) mounts `./legal-content` the same way, so the
+   feature is testable locally by creating that (gitignored, empty-by-default) directory next to
+   the repo — neither line needs editing, only the host directory needs to exist and be filled.
+3. Redeploy (`docker compose up -d --build` locally, or pull + recreate in Portainer for prod —
+   this needs no database migration and no code change, only the mount and the environment
+   variable). The two endpoints and the footer links appear as soon as the container restarts
+   with the new configuration; nothing needs to be rebuilt.
+
+An edit to an existing file is picked up on the **next request**, not only on a restart —
+`LegalContentService` caches each file's rendered HTML keyed by its own last-write time and
+re-renders only when that changes, so there is no cache to flush by hand. Markdown is rendered
+to HTML **server-side** with raw HTML disabled (Markdig `DisableHtml()`), so a literal
+`<script>` typed into the source file cannot execute — it is escaped like any other text. Both
+`/api/legal/availability` (tells the frontend which links to show) and the document endpoints sit
+behind the same anonymous, IP-partitioned rate-limit policy as `GET /api/health`
+(`RateLimitPolicyNames.PublicHealth`), since both are unauthenticated by design (reachable before
+the Twitch OAuth redirect, per issue #247's requirement 3).
+
+`.env.example`-style template: none is checked in, because every line would either be empty or a
+placeholder path with nothing to demonstrate — `Legal:ContentPath` is documented here instead,
+the way `BACKUP_DIR`/`RETENTION_DAYS` above are.
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates

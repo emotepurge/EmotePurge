@@ -10,6 +10,53 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Operator-supplied imprint/privacy pages, read from a mounted directory, never from the repo (#247)
+
+**Betrifft:** `src/EmotePurge.Core/Services/ILegalContentService.cs` ·
+`src/EmotePurge.Infrastructure/Services/LegalContentService.cs` ·
+`src/EmotePurge.Infrastructure/Services/LegalContentOptions.cs` ·
+`src/EmotePurge.Api/Endpoints/LegalEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`docker-compose.yml` · `docker-compose.prod.yml` · `docs/Operations.md` · `.gitignore` ·
+`web/src/app/core/legal/*` · `web/src/app/features/legal/legal-page.ts` ·
+`web/src/app/shared/ui/legal-footer-links.ts` · `web/src/app/app.routes.ts`
+
+The repo is public and self-hostable, so it must never carry the original operator's legal
+identity — an imprint or privacy policy checked in as a file, or hardcoded as a translation key,
+would ship to every fork. Content instead comes from Markdown files the operator supplies on the
+host: `imprint.de.md`, `imprint.en.md`, `privacy.de.md`, `privacy.en.md` under a directory named
+by the new `Legal:ContentPath` config key (`Legal__ContentPath` as an environment variable),
+mounted read-only into the `api` container (`docker-compose.prod.yml`: `/opt/emotepurge/legal`;
+`docker-compose.yml`: a gitignored `./legal-content` for local testing). An unset or empty
+`ContentPath` is a supported "nothing configured yet" state, not a startup error — the fail-fast
+posture `ChannelCapacityOptions`/`RateLimitingOptions` take for genuinely required config does not
+fit here, since a fresh self-hoster has no legal text on day one and the app must still boot and
+run.
+
+**German is authoritative; a document counts as configured only once its German file exists.** An
+English file with no German counterpart is treated the same as no file at all — the alternative
+(letting a translation stand in as the source of truth) contradicts the one authority rule this
+exists to enforce. If English is requested but only German exists, the response carries the
+German text plus an `isGermanFallback` flag the frontend reads to show "only available in
+German" instead of silently mixing languages or 404ing on a document that does exist.
+
+Two new anonymous endpoints, `GET /api/legal/availability` (which documents exist, so the footer
+can hide a link entirely rather than show one that then 404s) and
+`GET /api/legal/{imprint,privacy}/{de,en}`, both behind the existing `PublicHealth` rate-limit
+policy — the only anonymous, IP-partitioned policy this API already had, and its budget
+comfortably covers a footer link's traffic. Markdown renders to HTML **server-side** via Markdig
+with `DisableHtml()`, so a literal `<script>` (or any other raw HTML) typed into the operator's
+file is escaped on output rather than passed through; the frontend still binds the result through
+Angular's `[innerHTML]` sanitizer on top of that as defence in depth. Rendered HTML is cached per
+file, keyed by the file's own last-write time — an operator edit is picked up on the next
+request, no restart required, without needing a cache-invalidation endpoint or hook.
+
+Frontend: `/imprint` and `/privacy` are top-level routes outside the app shell and every auth
+guard (reachable without login, before the Twitch OAuth redirect — issue #247 requirement 3), and
+a small `LegalFooterLinks` primitive adds the two links, each independently hidden when its
+document is not configured, to the landing page's existing footer and to two new footers (same
+shape, hidden outright rather than shown empty) added to `AppShell` and `LoginPage`, since neither
+carried a footer before this.
+
 ### 2026-09-23 — Codex Sol review of #246: a splice-embedded tag value and a chat-text command word could still leak (amends the same day's "Chat content and chatter identities stay out of Worker logs" entry)
 
 **Betrifft:** `src/EmotePurge.Worker/IrcLineSpliceRule.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` ·

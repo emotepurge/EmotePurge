@@ -70,8 +70,13 @@ services:
       - Auth__AdminTwitchLogins=${ADMIN_TWITCH_LOGINS}
       # Parity with docker-compose.prod.yml, so this path is testable locally at all.
       - DataProtection__KeyPath=/keys
+      # Operator-supplied imprint/privacy Markdown (issue #247, docs/Operations.md "Legal pages").
+      # ./legal-content is gitignored and empty by default — an empty/missing ContentPath is a
+      # supported "nothing configured" state, not an error, so this line is safe to leave active.
+      - Legal__ContentPath=/legal
     volumes:
       - dataprotection-keys:/keys
+      - ./legal-content:/legal:ro
     networks:
       - emotepurge-network
     depends_on:

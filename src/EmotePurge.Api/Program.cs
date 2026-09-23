@@ -325,6 +325,7 @@ app.MapWorkerHealthEndpoints();
 app.MapAdminEndpoints();
 app.MapLiveEndpoints();
 app.MapSevenTvEndpoints();
+app.MapLegalEndpoints();
 
 app.MapFallback("/api/{**rest}", () => Results.NotFound());
 // Needs the options passed separately: the SPA fallback serves index.html through its own endpoint,
