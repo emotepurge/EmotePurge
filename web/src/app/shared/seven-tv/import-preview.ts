@@ -13,8 +13,8 @@ export interface AliasMismatch {
 
 /**
  * One `nameCollisionRow`: a source row `buildImportPreview` excludes from `toAdd` because its name
- * already belongs to a *different* target id, paired with everything a resolution step (T3/T8)
- * needs to act on that target entry — `target` cannot be derived from `row` the way it can for
+ * already belongs to a *different* target id, paired with everything a resolution step needs to act
+ * on that target entry — `target` cannot be derived from `row` the way it can for
  * {@link AliasMismatchRow}, because the two ids genuinely differ here (that is what makes it a
  * collision, not a match).
  */
@@ -25,8 +25,8 @@ export interface NameCollisionRow {
   target: EmoteListItem;
   /** Every *named* alias `target.sevenTvEmoteId` holds in the target set, `target.name` included —
    *  length 1 normally, 2 for a #74 duplicate id (7TV's own set-merge defect: the same id entered
-   *  twice under two different aliases). A REMOVE resolution takes all of them at once (T5.3/Sonde
-   *  5, Zweig A), so a slot-delta computation must size off this length, never off `target` alone. */
+   *  twice under two different aliases). A REMOVE resolution takes all of them at once, so a
+   *  slot-delta computation must size off this length, never off `target` alone. */
   targetAliases: string[];
   /** Whether `target.sevenTvEmoteId` also carries at least one *aliasless* entry in the target set —
    *  see the long comment on {@link buildImportPreview}'s `nameCollisionRows` return value below for
@@ -90,8 +90,8 @@ export interface ImportPreview {
   /**
    * One {@link NameCollisionRow} per row counted in `nameCollisionRowCount` (same length, same
    * order) — the row-accurate list `nameCollisions`/`nameCollisionRowCount` cannot themselves be,
-   * since they only ever carried names. A resolution step (T3/T8) reads this, not the two counting
-   * fields, to act on a specific target entry.
+   * since they only ever carried names. A resolution step reads this, not the two counting fields,
+   * to act on a specific target entry.
    *
    * **Aliasless finding (K5 grenzfall, task instruction):** an id can carry a target entry with no
    * alias at all — `aliaslessIds` in `seven-tv-set-entries.ts` exists precisely because 7TV's `v4`
@@ -114,8 +114,8 @@ export interface ImportPreview {
    *   falsy name) and was not traced with the same confidence as the live path below: `Emote.Name`
    *   is filled by the worker's REST-compat sync (`SevenTvSyncService.cs:595`, `emote.Name =
    *   live.Name`), a *different* 7TV endpoint (`SevenTvEmoteJsonDto.Name`, `SevenTvApiDtos.cs:173`,
-   *   "the v4 compat layer") whose behavior for an aliasless set entry this task did not verify
-   *   live — and `Emote.Name` is a `NOT NULL` Postgres column (`Emote.cs`), so if that endpoint ever
+   *   "the v4 compat layer") whose behavior for an aliasless set entry is not verified live —
+   *   and `Emote.Name` is a `NOT NULL` Postgres column (`Emote.cs`), so if that endpoint ever
    *   did hand the sync a genuine `null` it would fail loudly (a migration/insert error), not
    *   silently, which is itself weak evidence that it does not (untested, not proven).
    * - **The live-GQL path — `trackedSet` and `untrackedSet` alike**, both routed through the same
@@ -145,7 +145,7 @@ export interface ImportPreview {
    * The same falsy-name heuristic is applied uniformly to both paths below regardless — cheap, and
    * harmless even where it never fires. **This preview's `targetHasAliaslessEntry` is therefore a
    * best-effort reading from whatever this preview's target list already holds, not a verified
-   * fact:** the verified view belongs to the live read in T5/T8 (`loadSevenTvSetEntries`'s
+   * fact:** the verified view belongs to the live read before a transfer run (`loadSevenTvSetEntries`'s
    * `aliaslessIds`), and `removedEntryCount` (AK 21) is built from *that* read, not this preview — a
    * disagreement between the two is a live-data drift (spec section 2, point 3), not a bug here.
    */
@@ -164,6 +164,14 @@ export interface ImportPreview {
    *  because nothing about the *target's contents* is what dooms it, so removing it here would
    *  not even be correct once the alias is fixed upstream — the row stays, 7TV decides. */
   invalidNames: string[];
+  /** Every *non-falsy* name across every target entry, regardless of whether any source row
+   *  touches it — the full universe a resolution step's "no generated alias may equal a name the
+   *  target already holds" rule (`conflict-resolution.ts`'s rule 2) checks against. Narrower
+   *  fields like `NameCollisionRow.targetAliases`/`AliasMismatchRow.targetAliases` only cover the
+   *  target entries a source row actually collides or mismatches with; this field is the
+   *  unfiltered set behind the same name comparison this function already uses for its own
+   *  `toAdd`/`nameCollisionRows` split above (`targetNames.has(row.name)`), not a second one. */
+  targetNames: ReadonlySet<string>;
 }
 
 /**
@@ -182,8 +190,8 @@ export interface ImportPreview {
  * `nameCollisionRows`/`aliasMismatchRows` are the row-accurate, resolvable counterparts to
  * `nameCollisions`/`aliasMismatches` — `nameCollisionRows.length === nameCollisionRowCount` and
  * `aliasMismatchRows.length === aliasMismatches.length` always hold, same order as the fields they
- * pair with. A resolution step (T3/T8) reads these, never the counting-only fields above, to act on
- * a specific target entry.
+ * pair with. A resolution step reads these, never the counting-only fields above, to act on a
+ * specific target entry.
  *
  * The identity comparison is ordinal (`sevenTvEmoteId`, exact string equality — these are 7TV
  * object ids, not display text); every name comparison is exact (`===`, case-sensitive) string
@@ -208,7 +216,17 @@ export function buildImportPreview(
       targetById.set(emote.sevenTvEmoteId, [emote]);
     }
   }
-  const targetNames = new Set(targetEmotes.map((emote) => emote.name));
+  // Every *non-falsy* target name, across every entry regardless of whether any source row
+  // touches it — the authoritative "does the target hold this name" check, both for this
+  // function's own name-collision split below and for `ImportPreview.targetNames`'s own doc.
+  // Filtered the same way `nameCollisionRows`' aliasless signal is (a falsy name is that signal,
+  // never something a real source row's name could equal — see that field's own doc).
+  const targetNames = new Set<string>();
+  for (const emote of targetEmotes) {
+    if (emote.name) {
+      targetNames.add(emote.name);
+    }
+  }
   // First-wins by name, and only ever populated from a truthy name: two ids sharing one alias
   // cannot coexist in a real target set (7TV's own alias-uniqueness check, DECISIONS.md
   // 2026-08-04), and a falsy name here is the aliasless signal `nameCollisionRows`' own doc traces
@@ -276,6 +294,7 @@ export function buildImportPreview(
     aliasMismatches,
     aliasMismatchRows,
     invalidNames: [...invalidNames],
+    targetNames,
   };
 }
 
@@ -315,7 +334,7 @@ function adoptBlockedFor(
 
 /**
  * True for an alias 7TV is known to reject when adding an emote to the target set. This tests
- * `row.name` in its role as the `alias` an `addEmote` mutation sends (#149/T2) — not 7TV's
+ * `row.name` in its role as the `alias` an `addEmote` mutation sends (#149) — not 7TV's
  * separate, stricter validator for the canonical emote name, which this preview does not touch.
  *
  * This used to claim non-ASCII aliases were doomed ("the alias is not affected — 7TV does allow
@@ -329,7 +348,7 @@ function adoptBlockedFor(
  *
  * The `v4` rule below is evidenced from two independent directions that agree on all 25 data
  * points measured live against `7tv.io` on 2026-09-10 (docs/plans/Plan-149-7TV-v4-Schreibflaeche.md,
- * section 0/T0): 7TV's own `EmoteAliasValidator` regex, read from `SevenTV/SevenTV` at
+ * section 0): 7TV's own `EmoteAliasValidator` regex, read from `SevenTV/SevenTV` at
  * `apps/api/src/http/validators.rs` —
  *
  *     ^[\w\-():!+|.'?><&\p{Emoji_Presentation}*$#]{1,100}$

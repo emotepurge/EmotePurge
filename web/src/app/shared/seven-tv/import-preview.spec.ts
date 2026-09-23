@@ -54,6 +54,10 @@ describe('buildImportPreview', () => {
     expect(result.toAdd).toEqual([{ sevenTvEmoteId: 'new-2', name: 'Kappa', imageUrl: null }]);
     expect(result.nameCollisions).toEqual(['PogU']);
     expect(result.invalidNames).toEqual([]);
+    // Every non-falsy target name, regardless of whether a source row touches it — the full
+    // universe conflict-resolution.ts's rule 2 checks against, not just the names surfaced
+    // through nameCollisionRows/aliasMismatchRows.
+    expect(result.targetNames).toEqual(new Set(['AlreadyThere', 'PogU']));
   });
 
   it('excludes a name collision from toAdd entirely (spec 2026-09-20, AK 37)', () => {
@@ -412,8 +416,8 @@ describe('buildImportPreview', () => {
   it('flags targetHasAliaslessEntry when the colliding id also carries a falsy-name entry', () => {
     // The aliasless half of the #74 grenzfall (K5): the same target id holds one named entry (the
     // one the source name collides with) and one entry with no alias at all — the aliasless signal
-    // this preview reads as a falsy `name` (see the long comment on `nameCollisionRows`). T3 builds
-    // its slot projection on `targetHasAliaslessEntry`, so a REMOVE must be seen to take both.
+    // this preview reads as a falsy `name` (see the long comment on `nameCollisionRows`). The slot
+    // projection is built on `targetHasAliaslessEntry`, so a REMOVE must be seen to take both.
     const target: EmoteListItem[] = [
       { sevenTvEmoteId: 'dup-1', name: 'PogU', imageUrl: TARGET_IMAGE_URL },
       { sevenTvEmoteId: 'dup-1', name: '', imageUrl: TARGET_IMAGE_URL },
