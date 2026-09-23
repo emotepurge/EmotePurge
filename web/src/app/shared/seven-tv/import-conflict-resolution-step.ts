@@ -51,16 +51,24 @@ export interface ViolationMessage {
   rows: string;
 }
 
-/** Row heights in px: the wide layout puts source, target and actions side by side, the narrow one
- *  stacks them (source over target over actions). Both reserve room for the rename field and its
- *  error line, because a virtualized list needs one fixed height per row. */
-const ROW_WIDE_PX = 160;
-const ROW_NARROW_PX = 272;
+/** Row heights in px: the wide layout puts source, target and actions side by side (content maxes
+ *  out at 86px there — the three radio options plus a checked "Umbenennen" row and its error line,
+ *  each single-line at the width {@link NARROW_BELOW_PX} guarantees), the narrow one stacks them
+ *  (source over target over actions, content maxes out at 198px, measured at the 360px floor AK 22
+ *  pins). Both add ~16-30px over that measured worst case on top of the row's own 16px vertical
+ *  padding (`py-2`), for cross-browser font-metric slack — measured in a real browser (Chromium,
+ *  `[data-resolve-index] > div` bounding box) rather than derived from the CSS, because a
+ *  virtualized list needs one fixed height per row and every row, however short its own content,
+ *  pays for the tallest one any row can reach. */
+const ROW_WIDE_PX = 120;
+const ROW_NARROW_PX = 232;
 /** Content width below which the step switches to the stacked layout. Chosen so that, above it,
- *  the actions column still fits the widest row — rename field, its error line and a disabled
- *  option with its bracketed reason — inside {@link ROW_WIDE_PX} (measured in a real browser: a
- *  narrower threshold let that row overflow its fixed height). */
-const NARROW_BELOW_PX = 720;
+ *  the actions column still fits the widest row — three radio options, a bracketed disabled
+ *  reason, the rename field and its error line — on one line each, comfortably inside
+ *  {@link ROW_WIDE_PX}. Measured in a real browser: below 748px content width the three radio
+ *  options wrap onto a second line and the row's content grows from 86px to 110px; 720px (the
+ *  previous threshold) sat inside that gap and let exactly this row overflow its fixed height. */
+const NARROW_BELOW_PX = 760;
 const SPRITE_PX = 40;
 
 const OPTION_LABEL_KEYS: Record<RowDecision['kind'], string> = {
@@ -231,7 +239,7 @@ export function violationMessages(
       >
         <div
           *cdkVirtualFor="let row of rows(); let index = index; trackBy: trackRow"
-          class="overflow-hidden border-b border-border px-1 py-2"
+          class="flex items-center overflow-hidden border-b border-border px-1 py-2"
           role="group"
           [attr.aria-label]="
             'import.resolve.rowLabel'
@@ -251,9 +259,10 @@ export function violationMessages(
         >
           <div
             [class]="
-              narrow()
+              'w-full ' +
+              (narrow()
                 ? 'flex flex-col gap-1'
-                : 'grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)] items-start gap-3'
+                : 'grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)] items-center gap-3')
             "
           >
             <div class="flex min-w-0 items-center gap-2">
