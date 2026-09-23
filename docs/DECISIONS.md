@@ -133,6 +133,45 @@ losing exactly the history a rejoin within the period is supposed to keep.
 - The dry run's cascade counts are not part of this step; they belong to the retention service (T6),
   which selects the candidates and counts their dependent rows.
 
+### 2026-09-23 — Admin account deletion: `DELETE /api/admin/users/{id}`, a self-deletion escape hatch, no new error code (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` · `web/src/app/core/admin/admin.service.ts` ·
+`web/src/app/features/admin/admin-users-page.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/shared/audit/audit-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+Fourth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T4): the admin-facing side
+of the account-deletion path T3 built.
+
+- **`DELETE /api/admin/users/{twitchUserId}`**, in the `/api/admin` group (inherits
+  `GlobalAdminAuthorizationFilter`), same shape as the pre-existing `revoke-sessions`/
+  `invalidate-role-cache` routes. Calls `IAccountDeletionService.DeleteAsync` with
+  `AccountDeletionReason.AdminRequest` and `onlyIfInactiveBeforeUtc: null` — an admin may delete an
+  active account, not just an inactive one. `Deleted` → 204, `NotFound` → 404, both without a new
+  `ApiErrorCode` (the plan's decision: nothing here needs a translated message, the row is either
+  gone or it is not). `StillActive` cannot occur for `AdminRequest` and is guarded as unreachable.
+- **An admin may delete their own account from the admin list** (operator decision 6): no special
+  case blocks it, same precedent as self-revocation. The confirmation dialog names the consequence
+  (`admin.users.delete.selfHint`) rather than the endpoint refusing it — a refusal would need a new
+  error code for a case that is not actually harmful.
+- **Frontend uses the same `TypedConfirmDialog` as the channel list's purge**, not the plain
+  `ConfirmDialog` revoke uses: deletion is not recoverable (votes gone, audit entries
+  pseudonymised), so retyping the Twitch login is the gate, same reasoning as purge retyping the
+  channel name. The row-level trigger button stays `danger-quiet` per §4.2 of the design language —
+  severity does not override the repetition rule, only the confirmation dialog behind it does the
+  actual gating.
+- **No bespoke handling for the self-deletion aftermath.** The reload after a successful delete hits
+  `GET /api/admin/users` with the now-missing row; `OnValidatePrincipal` (T2) answers 401 for that,
+  and the existing `apiAuthInterceptor` already turns any unexpected 401 into
+  `AuthService.handleSessionExpired()` — a redirect to `/login`, the same mechanism self-revocation
+  already relied on before this task existed.
+- **`user.delete` joins the audit vocabulary client-side**: `ACTION_KEYS`, `CHANNELLESS_ACTIONS`,
+  and the `AuditAction` union all learn it; `audit.actions.userDelete` is translated in both
+  locales. The deleted-user actor marker (`deleted-user`) needed no new code — `actorLogin` is
+  always rendered as plain interpolated text, the same path `system` already uses, so it reads as
+  "by deleted-user" without a lookup table entry (`audit.actors.deletedUser` stays unused, per the
+  plan's "optional, not required").
+
 ### 2026-09-23 — Account deletion: row lock and recheck, votes go, audit entries are pseudonymised, the deletion entry carries no identity, late audit writers lock the row, Redis cleanup is retried once and otherwise bounded by TTL (#243/#244)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·

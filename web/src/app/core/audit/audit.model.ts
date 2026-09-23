@@ -26,7 +26,8 @@ export type AuditAction =
   | 'emotes.syncRestored'
   | 'emotes.syncImported'
   | 'user.revokeSessions'
-  | 'user.invalidateRoleCache';
+  | 'user.invalidateRoleCache'
+  | 'user.delete';
 
 /** The recognized `AuditLogDetail.kind` values, mirroring `AuditLogDetail.Kinds` on the server. */
 export type AuditDetailKind =
