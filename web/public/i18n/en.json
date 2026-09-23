@@ -1155,6 +1155,11 @@
     "progressBarLabel": "Copy progress",
     "deleteFailedFallback": "Copy failed",
     "unknownOutcome": "Unclear whether it was copied — 7TV gave no clear answer. Please check the set.",
+    "errors": {
+      "nameTakenNow": "The name has been taken in the target set in the meantime — this row was not applied.",
+      "removedButNotAdded": "The target emote was removed, but the new one was not added — the target set is now missing this name. The recovery file restores the target emote.",
+      "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied."
+    },
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",
@@ -1163,7 +1168,19 @@
       "targetSet": "Target: set {{ setName }} of {{ owner }}",
       "openTarget": "Open target channel",
       "copiedNotActive": "Copied into the set ‚{{ setName }}' — it isn't {{ channel }}'s active set, so the channel page won't show it.",
-      "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row."
+      "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row.",
+      "removed": {
+        "one": "{{ count }} emote was removed from the target set.",
+        "other": "{{ count }} emotes were removed from the target set."
+      },
+      "replaceSkippedDrift": {
+        "one": "{{ count }} replacement was not carried out — the target had changed since you confirmed.",
+        "other": "{{ count }} replacements were not carried out — the target had changed since you confirmed."
+      },
+      "unknownRows": {
+        "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
+        "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
+      }
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were added on 7TV, but EmotePurge could not record it. The target channel still picks them up on its next sync.",

@@ -1,7 +1,7 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { signal, WritableSignal } from '@angular/core';
-import { of, Subject, throwError } from 'rxjs';
+import { firstValueFrom, Observable, of, Subject, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -13,8 +13,9 @@ import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.s
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportConfirmDialogData, ImportConfirmOutcome } from './import-confirm-dialog';
-import { ImportFlowDeps, startImportFlow } from './import-flow';
+import { ImportFlowDeps, recheckTransferPlan, startImportFlow } from './import-flow';
 import { ImportTargetChoice } from './import-target-dialog';
 
 /**
@@ -87,6 +88,28 @@ function emoteSetPage(ids: string[] = []) {
       },
     },
   };
+}
+
+/** Like `emoteSetPage`, but with each entry's alias — `null` for an entry without one. */
+function aliasedSetPage(entries: { id: string; alias: string | null }[]) {
+  return {
+    data: {
+      emoteSets: {
+        emoteSet: {
+          emotes: {
+            totalCount: entries.length,
+            pageCount: 1,
+            items: entries.map((entry) => ({ alias: entry.alias, emote: { id: entry.id } })),
+          },
+        },
+      },
+    },
+  };
+}
+
+/** The plan a confirmation that resolved nothing hands to the run: one `add` row per row. */
+function addPlan(rows: ImportRow[]): TransferPlan {
+  return { rows: rows.map((row) => ({ action: 'add', source: row, alias: row.name })) };
 }
 
 function readyStatus(overrides: Partial<EmoteSetStatus> = {}): EmoteSetStatus {
@@ -334,9 +357,10 @@ describe('startImportFlow', () => {
         isActiveSet: true,
       },
       src.origin,
-      outcome.rows,
+      addPlan(outcome.rows),
       0,
       true,
+      0,
     );
     // No second dialog — the token prompt is only for a missing token.
     expect(dialogOpen).toHaveBeenCalledTimes(1);
@@ -395,9 +419,10 @@ describe('startImportFlow', () => {
           isActiveSet: true,
         },
         source().origin,
-        [],
+        addPlan([]),
         1,
         true,
+        0,
       );
     });
 
@@ -425,9 +450,10 @@ describe('startImportFlow', () => {
           isActiveSet: true,
         },
         source().origin,
-        [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
         0,
         false,
+        0,
       );
     });
   });
@@ -666,9 +692,10 @@ describe('startImportFlow', () => {
           isActiveSet: false,
         },
         source().origin,
-        [{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -791,10 +818,131 @@ describe('startImportFlow', () => {
           isActiveSet: false,
         },
         src.origin,
-        outcome.rows,
+        addPlan(outcome.rows),
         0,
         true,
+        0,
       );
+    });
+  });
+});
+
+describe('recheckTransferPlan', () => {
+  const kappa: ImportRow = { sevenTvEmoteId: 'src-k', name: 'Kappa', imageUrl: null };
+  const pog: ImportRow = { sevenTvEmoteId: 'src-p', name: 'Pog', imageUrl: null };
+  const replaceKappa: TransferRow = {
+    action: 'replace',
+    source: kappa,
+    alias: 'Kappa',
+    target: { sevenTvEmoteId: 'tgt-k', aliases: ['Kappa'], hasAliaslessEntry: false },
+  };
+  const addPog: TransferRow = { action: 'add', source: pog, alias: 'Pog' };
+
+  function httpAnswering(response: Observable<unknown>): HttpClient {
+    return { post: vi.fn(() => response) } as unknown as HttpClient;
+  }
+
+  it('keeps an adopt row even though its source id is in the target set by definition', async () => {
+    const adoptKappa: TransferRow = {
+      action: 'adoptSourceName',
+      source: kappa,
+      alias: 'Kappa',
+      target: { sevenTvEmoteId: 'src-k', aliases: ['KappaOld'], hasAliaslessEntry: false },
+    };
+    const http = httpAnswering(of(aliasedSetPage([{ id: 'src-k', alias: 'KappaOld' }])));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [adoptKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [adoptKappa, addPog] },
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
+    });
+  });
+
+  it('drops a replace row whole when its source id is already in the target set', async () => {
+    const http = httpAnswering(
+      of(
+        aliasedSetPage([
+          { id: 'tgt-k', alias: 'Kappa' },
+          { id: 'src-k', alias: 'KappaCopy' },
+        ]),
+      ),
+    );
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 1,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
+    });
+  });
+
+  it('drops and counts a replace row whose target drifted, and keeps the rest', async () => {
+    const http = httpAnswering(
+      of(
+        aliasedSetPage([
+          { id: 'tgt-k', alias: 'Kappa' },
+          { id: 'tgt-k', alias: null },
+        ]),
+      ),
+    );
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 1,
+    });
+  });
+
+  it('holds back every replace row on an incomplete read, which still filters duplicates', async () => {
+    // Matches the confirmed target exactly — but the read vouches for only part of the set. What
+    // it did see still counts for duplicates: the Sadge row's source id is already there.
+    const sadge: ImportRow = { sevenTvEmoteId: 'src-s', name: 'Sadge', imageUrl: null };
+    const addSadge: TransferRow = { action: 'add', source: sadge, alias: 'Sadge' };
+    const partial = aliasedSetPage([
+      { id: 'tgt-k', alias: 'Kappa' },
+      { id: 'src-s', alias: 'SadgeOld' },
+    ]);
+    partial.data.emoteSets.emoteSet.emotes.totalCount = 700;
+    const http = httpAnswering(of(partial));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog, addSadge] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 1,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 1,
+    });
+  });
+
+  it('holds back every replace row on a failed read while the duplicate check fails open', async () => {
+    const http = httpAnswering(throwError(() => new Error('network error')));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [replaceKappa, addPog] }),
+    );
+
+    expect(result).toEqual({
+      plan: { rows: [addPog] },
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: false,
+      replaceSkippedDrift: 1,
     });
   });
 });

@@ -8,12 +8,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
-import { ImportSource } from '../../core/seven-tv/import-source';
+import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { TransferPlan } from '../../core/seven-tv/transfer-plan';
 import { PurgeRunRow } from '../export/purge-run-export';
 import { FileImportResult } from './file-import-step';
 import { ImportSourceDialogResult } from './import-source-dialog';
@@ -101,6 +102,11 @@ interface Harness {
   detect(): void;
   triggerDisabled(): boolean;
   click(): void;
+}
+
+/** The plan a confirmation that resolved nothing hands to the run: one `add` row per row. */
+function addPlan(rows: ImportRow[]): TransferPlan {
+  return { rows: rows.map((row) => ({ action: 'add', source: row, alias: row.name })) };
 }
 
 describe('ImportTrigger', () => {
@@ -382,9 +388,10 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -470,9 +477,10 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         { kind: 'seventv-channel', channelName: 'handofblood' },
-        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });
@@ -520,9 +528,10 @@ describe('ImportTrigger', () => {
           isActiveSet: true,
         },
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-        [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });
@@ -607,9 +616,10 @@ describe('ImportTrigger', () => {
           isActiveSet: false,
         },
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -659,9 +669,10 @@ describe('ImportTrigger', () => {
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-channel', channelName: 'handofblood' },
-        [{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'HandLuL', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
 
@@ -709,9 +720,10 @@ describe('ImportTrigger', () => {
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-        [{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });
@@ -754,9 +766,10 @@ describe('ImportTrigger', () => {
       expect(startImport).toHaveBeenCalledWith(
         expect.objectContaining({ setId: 'set-halloween', isActiveSet: false }),
         expect.objectContaining({ kind: 'file' }),
-        [{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }],
+        addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
       );
     });
   });

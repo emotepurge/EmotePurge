@@ -58,6 +58,10 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     // findings 2/3 tests below override this explicitly.
     targetIsActiveSet: true,
     origin: { kind: 'channel', channelName: 'quellkanal' },
+    plan: { rows: [] },
+    settlement: 'pending',
+    removedCount: 0,
+    unknownCount: 0,
     result: null,
     ...overrides,
   };

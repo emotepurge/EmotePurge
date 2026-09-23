@@ -41,7 +41,7 @@ import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confi
 import { resyncNoticeKey } from './dock-outcome-announcer';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { RunProgressPanel } from './run-progress-panel';
-import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
 /** Per-instance suffix for the lock reason's element id — the panel renders on two pages, and an

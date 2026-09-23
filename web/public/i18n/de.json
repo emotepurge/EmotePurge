@@ -1155,6 +1155,11 @@
     "progressBarLabel": "Kopierfortschritt",
     "deleteFailedFallback": "Kopieren fehlgeschlagen",
     "unknownOutcome": "Unklar, ob kopiert — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
+    "errors": {
+      "nameTakenNow": "Der Name ist inzwischen im Zielset vergeben — diese Zeile wurde nicht übernommen.",
+      "removedButNotAdded": "Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt — im Zielset fehlt jetzt dieser Name. Die Rückweg-Datei stellt das Ziel-Emote wieder her.",
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen."
+    },
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
@@ -1163,7 +1168,19 @@
       "targetSet": "Ziel: Set {{ setName }} von {{ owner }}",
       "openTarget": "Zielkanal öffnen",
       "copiedNotActive": "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
-      "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde nach der ersten Zeile abgebrochen."
+      "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde nach der ersten Zeile abgebrochen.",
+      "removed": {
+        "one": "{{ count }} Emote wurde aus dem Zielset entfernt.",
+        "other": "{{ count }} Emotes wurden aus dem Zielset entfernt."
+      },
+      "replaceSkippedDrift": {
+        "one": "{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.",
+        "other": "{{ count }} Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert."
+      },
+      "unknownRows": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
+      }
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV hinzugefügt, aber EmotePurge konnte es nicht vermerken. Der Zielkanal übernimmt sie beim nächsten Abgleich trotzdem.",

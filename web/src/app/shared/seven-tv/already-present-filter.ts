@@ -1,7 +1,8 @@
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of } from 'rxjs';
 
-import { loadSevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import { ReplaceOrAdoptTransferRow, TransferPlan } from '../../core/seven-tv/transfer-plan';
 
 export interface AlreadyPresentFilterResult<T> {
   /** `rows` minus every entry already present in the target set. What the run should actually send —
@@ -16,6 +17,14 @@ export interface AlreadyPresentFilterResult<T> {
    *  `UNAVAILABLE_WARNING` fallback in `import-target-loader.ts` — a failed check reads as "not
    *  verified", never as a false all-clear. */
   available: boolean;
+}
+
+/** `filterAlreadyPresent`'s result: the filter's own outcome plus the read it was computed from, so
+ *  a caller that needs a second comparison against the same state of the set (the import flow's
+ *  `verifyReplaceTargets`) does not have to read the set a second time. `null` when the read
+ *  failed — the same case as `available: false`. */
+export interface ImportAlreadyPresentFilterResult<T> extends AlreadyPresentFilterResult<T> {
+  entries: SevenTvSetEntries | null;
 }
 
 /**
@@ -70,13 +79,13 @@ export function filterAlreadyPresent<T extends { sevenTvEmoteId: string }>(
   httpClient: HttpClient,
   targetSetId: string,
   rows: readonly T[],
-): Observable<AlreadyPresentFilterResult<T>> {
+): Observable<ImportAlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
-    map(({ aliasesById }) => {
-      const filtered = rows.filter((row) => !aliasesById.has(row.sevenTvEmoteId));
-      return { rows: filtered, skipped: rows.length - filtered.length, available: true };
+    map((entries) => {
+      const filtered = rows.filter((row) => !entries.aliasesById.has(row.sevenTvEmoteId));
+      return { rows: filtered, skipped: rows.length - filtered.length, available: true, entries };
     }),
-    catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
+    catchError(() => of({ rows: [...rows], skipped: 0, available: false, entries: null })),
   );
 }
 
@@ -163,4 +172,106 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
     }),
     catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
   );
+}
+
+/** Why a replace row's target no longer matches what the user confirmed. */
+export type ReplaceTargetDriftReason =
+  /** The target id is not in the set any more. */
+  | 'targetGone'
+  /** The colliding name now belongs to a different emote id. */
+  | 'nameHeldElsewhere'
+  /** The target id sits under a different set of named aliases. */
+  | 'aliasesChanged'
+  /** The target id gained or lost an entry without an alias. */
+  | 'aliaslessEntryChanged';
+
+/** One replace row whose target drifted, with what the set holds for that target id right now. */
+export interface ReplaceTargetDrift {
+  /** The row's key: its source `sevenTvEmoteId`, the same key the decisions map and the run queue
+   *  use. */
+  key: string;
+  reason: ReplaceTargetDriftReason;
+  /** The target id's live entries, taken from the same read — in the shape of
+   *  `TransferRowTarget`, minus the id, so a caller can overlay the row's confirmed target with it
+   *  and let the user confirm again. `null` when the target id is gone from the set. */
+  live: { aliases: string[]; hasAliaslessEntry: boolean } | null;
+}
+
+/**
+ * `verifyReplaceTargets`' result. `available: false` means the read cannot vouch for any target
+ * (it stopped short of the whole set, `complete: false`): **no** replace row passes, unlike the
+ * duplicate filter, which fails open — deleting on an unchecked basis is the worse outcome (spec
+ * #200, 8.3: a list that only knows half must not delete). A caller whose read failed outright
+ * applies the same rule without calling this function.
+ */
+export type ReplaceTargetVerification =
+  { available: true; drifted: ReplaceTargetDrift[] } | { available: false };
+
+/**
+ * Compares every `replace` row of `plan` with the target set as `entries` read it, at entry level:
+ * the target id is still in the set, the name the row replaces is still held by that id, the id's
+ * named aliases equal `target.aliases` as a set, and whether the id has an aliasless entry equals
+ * `target.hasAliaslessEntry`. A single `removeEmote` takes every entry of the id, so an entry the
+ * confirmed state did not know about — a new alias or a new aliasless entry — would be deleted
+ * without the user having seen it.
+ *
+ * Pure, over an already completed read, so the confirm dialog (before the recovery file is written)
+ * and the import flow (right before the run starts) compute the same comparison. Rows of any other
+ * action are ignored. The window between this read and each individual `removeEmote` stays open —
+ * the same residual race `filterAlreadyPresent` documents.
+ */
+export function verifyReplaceTargets(
+  entries: SevenTvSetEntries,
+  plan: TransferPlan,
+): ReplaceTargetVerification {
+  if (!entries.complete) {
+    return { available: false };
+  }
+  const drifted: ReplaceTargetDrift[] = [];
+  for (const row of plan.rows) {
+    if (row.action !== 'replace') {
+      continue;
+    }
+    const reason = replaceTargetDriftReason(entries, row);
+    if (reason === null) {
+      continue;
+    }
+    const targetId = row.target.sevenTvEmoteId;
+    const liveAliases = entries.aliasesById.get(targetId);
+    drifted.push({
+      key: row.source.sevenTvEmoteId,
+      reason,
+      live:
+        liveAliases === undefined
+          ? null
+          : { aliases: [...liveAliases], hasAliaslessEntry: entries.aliaslessIds.has(targetId) },
+    });
+  }
+  return { available: true, drifted };
+}
+
+function replaceTargetDriftReason(
+  entries: SevenTvSetEntries,
+  row: ReplaceOrAdoptTransferRow,
+): ReplaceTargetDriftReason | null {
+  const targetId = row.target.sevenTvEmoteId;
+  const liveAliases = entries.aliasesById.get(targetId);
+  if (liveAliases === undefined) {
+    return 'targetGone';
+  }
+  if (!liveAliases.includes(row.alias)) {
+    const heldElsewhere = [...entries.aliasesById].some(
+      ([id, aliases]) => id !== targetId && aliases.includes(row.alias),
+    );
+    return heldElsewhere ? 'nameHeldElsewhere' : 'aliasesChanged';
+  }
+  const confirmed = new Set(row.target.aliases);
+  const live = new Set(liveAliases);
+  if (confirmed.size !== live.size || [...confirmed].some((alias) => !live.has(alias))) {
+    return 'aliasesChanged';
+  }
+  if (entries.aliaslessIds.has(targetId) !== row.target.hasAliaslessEntry) {
+    return 'aliaslessEntryChanged';
+  }
+  return null;
 }

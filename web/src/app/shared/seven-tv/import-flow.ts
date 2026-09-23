@@ -1,6 +1,7 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
 import { computed, signal } from '@angular/core';
+import { Observable, map } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import {
@@ -8,12 +9,13 @@ import {
   ImportTargetSelection,
   loadImportTarget,
 } from '../../core/emotes/import-target-loader';
-import { ImportSource } from '../../core/seven-tv/import-source';
+import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
-import { filterAlreadyPresent } from './already-present-filter';
+import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
+import { filterAlreadyPresent, verifyReplaceTargets } from './already-present-filter';
 import { ImportConfirmOutcome, openImportConfirmDialog } from './import-confirm-dialog';
 import { ImportTargetChoice } from './import-target-dialog';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
@@ -160,6 +162,81 @@ function toTargetChannelName(target: ImportFlowTarget): string | null {
   return target.kind === 'activeSet' ? target.channelName : target.choice.channelName;
 }
 
+/** What `recheckTransferPlan` hands to `startImport`. */
+export interface TransferPlanRecheck {
+  /** The plan minus every row the fresh read dropped, in the plan's own order. */
+  plan: TransferPlan;
+  /** Rows dropped because their source id is already in the target set. */
+  skippedDuplicates: number;
+  /** Whether the read succeeded — `false` means the duplicate check could not run. */
+  duplicateCheckAvailable: boolean;
+  /** `replace` rows held back because their target drifted from the confirmed state, or because
+   *  the read could not vouch for it (failed or incomplete). */
+  replaceSkippedDrift: number;
+}
+
+/**
+ * The last check before a run starts, from **one** fresh read of the target set (#149/T5 for the
+ * duplicate half, docs/plans/Plan-230-Namenskonflikte.md section 2 point 5 for the replace half):
+ *
+ * - `add`, `renameSource` and `replace` rows whose *source* id is already in the set drop out —
+ *   the duplicate filter, failing open on a failed read like it always did. A `replace` row drops
+ *   out whole: no REMOVE without its ADD.
+ * - `adoptSourceName` rows never go through the duplicate filter: the source id is in the set by
+ *   definition, that is the entry the row renames.
+ * - `replace` rows are verified a second time against the confirmed target (`verifyReplaceTargets`);
+ *   one that drifted drops out and is counted. A failed or incomplete read lets **no** `replace` row
+ *   through — deleting on an unchecked basis is worse than not deleting.
+ *
+ * Exported on its own so it can be tested apart from the dialogs around it.
+ */
+export function recheckTransferPlan(
+  httpClient: HttpClient,
+  targetSetId: string,
+  plan: TransferPlan,
+): Observable<TransferPlanRecheck> {
+  const checked = plan.rows
+    .filter((row) => row.action !== 'adoptSourceName')
+    .map((row) => ({ sevenTvEmoteId: row.source.sevenTvEmoteId, row }));
+  return filterAlreadyPresent(httpClient, targetSetId, checked).pipe(
+    map(({ rows, skipped, available, entries }) => {
+      const notPresent = new Set<TransferRow>(rows.map(({ row }) => row));
+      const verification = entries === null ? null : verifyReplaceTargets(entries, plan);
+      const drifted = new Set(
+        verification?.available ? verification.drifted.map((drift) => drift.key) : [],
+      );
+      let replaceSkippedDrift = 0;
+      const kept = plan.rows.filter((row) => {
+        if (row.action === 'adoptSourceName') {
+          return true;
+        }
+        if (!notPresent.has(row)) {
+          return false;
+        }
+        if (row.action !== 'replace') {
+          return true;
+        }
+        const passes = verification?.available === true && !drifted.has(row.source.sevenTvEmoteId);
+        if (!passes) {
+          replaceSkippedDrift++;
+        }
+        return passes;
+      });
+      return {
+        plan: { rows: kept },
+        skippedDuplicates: skipped,
+        duplicateCheckAvailable: available,
+        replaceSkippedDrift,
+      };
+    }),
+  );
+}
+
+/** The plan of a confirmation that resolved nothing: one `add` row per row, under its own name. */
+function addOnlyPlan(rows: readonly ImportRow[]): TransferPlan {
+  return { rows: rows.map((row) => ({ action: 'add', source: row, alias: row.name })) };
+}
+
 /**
  * Confirms and starts one copy run: target data → confirmation → 7TV token → run.
  *
@@ -237,9 +314,10 @@ export function startImportFlow(
     // user actually confirms (another editor, another tab, a long-open dialog). Re-check fresh,
     // right here, immediately before anything is sent, against 7TV itself rather than our database
     // (see `filterAlreadyPresent`'s doc for why that distinction matters and for the residual race
-    // this does not close).
-    filterAlreadyPresent(deps.httpClient, outcome.targetSetId, outcome.rows).subscribe(
-      ({ rows, skipped, available }) => {
+    // this does not close). The same read verifies every replace target a second time
+    // (`recheckTransferPlan`).
+    recheckTransferPlan(deps.httpClient, outcome.targetSetId, addOnlyPlan(outcome.rows)).subscribe(
+      ({ plan, skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift }) => {
         // #149 P2 review fix: the arbiter check above ran *before* this fetch, which the mutual
         // exclusion contract (design doc §4.3, the SevenTvRunArbiter paragraph) does not actually
         // cover — a delete or restore can start in that window and this would otherwise start a
@@ -275,9 +353,10 @@ export function startImportFlow(
             isActiveSet,
           },
           source.origin,
-          rows,
-          skipped,
-          available,
+          plan,
+          skippedDuplicates,
+          duplicateCheckAvailable,
+          replaceSkippedDrift,
         );
       },
     );

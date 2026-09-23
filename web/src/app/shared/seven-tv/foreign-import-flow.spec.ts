@@ -197,9 +197,12 @@ describe('startForeignChannelImportFlow', () => {
         isActiveSet: true,
       },
       { kind: 'seventv-channel', channelName: 'handofblood' },
-      [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
       0,
       true,
+      0,
     );
   });
 
@@ -355,9 +358,12 @@ describe('startLeaderboardImportFlow', () => {
         isActiveSet: true,
       },
       { kind: 'seventv-leaderboard', sortBy: 'TOP_ALL_TIME' },
-      [{ sevenTvEmoteId: 'e1', name: 'Kappa' }],
+      {
+        rows: [{ action: 'add', source: { sevenTvEmoteId: 'e1', name: 'Kappa' }, alias: 'Kappa' }],
+      },
       0,
       true,
+      0,
     );
   });
 });

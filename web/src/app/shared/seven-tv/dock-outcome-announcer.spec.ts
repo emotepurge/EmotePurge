@@ -239,6 +239,10 @@ describe('DockOutcomeAnnouncer', () => {
       targetSetName: 'wegwerf',
       targetIsActiveSet: false,
       origin: { kind: 'channel', channelName: 'quellkanal' },
+      plan: { rows: [] },
+      settlement: 'settled',
+      removedCount: 0,
+      unknownCount: 0,
       result: { doneKeys: ['7tv-1'], items: [], startedAt: 0, finishedAt: 1 },
     });
     importService.resyncTrigger.set('idle');
