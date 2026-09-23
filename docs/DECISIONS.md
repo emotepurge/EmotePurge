@@ -15,7 +15,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 **Betrifft:** `docs/UI-Designsprache.md` (§7.2) · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
 `web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
 `web/src/app/core/seven-tv/seven-tv-set-entries.ts` · `web/src/app/core/seven-tv/transfer-plan.ts` ·
-`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` · `web/src/app/core/seven-tv/import-source.ts` ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` · `web/src/app/core/emotes/emote-list-item.model.ts` ·
 `web/src/app/shared/export/transfer-run-export.ts` · `web/src/app/shared/export/export-envelope.ts` ·
 `web/src/app/shared/export/import-source-parser.ts` · `web/src/app/shared/export/purge-run-export.ts` ·
 `web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` ·
@@ -23,9 +24,12 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `web/src/app/shared/seven-tv/import-confirm-dialog.ts` ·
 `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` ·
 `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` ·
 `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/src/app/shared/seven-tv/file-import-step.ts` ·
 `web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
-`web/src/app/shared/seven-tv/restore-flow.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+`web/src/app/shared/seven-tv/restore-flow.ts` · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` ·
+`src/EmotePurge.Core/Services/IEmoteListQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteListQueryService.cs`
 
 Until now a transfer into a 7TV set only ever added: a source row whose name the target already
 held, or whose emote the target held under another alias, was counted and left out. Since this
@@ -58,6 +62,26 @@ then renames, so a replace can only lower the set's peak occupancy. The slot pro
 net change (`addCount − removedEntryCount`): a replace on a #74 duplicate or on an id with an
 aliasless sibling removes more entries than it adds back.
 
+**A lost answer is `unknown`, not `failed`, for a run that deletes.** `RunItemStatus` gains
+`'unknown'`. `SevenTvImportService.createOperation` sets the engine's `transportLossIsUnknown` flag
+whenever the plan holds at least one replace row — for *every* row of that run, not only the replace
+ones. With the flag set, a step's HTTP failure is `unknown` exactly when the response cannot say
+whether 7TV applied the mutation: no answer at all, any 5xx, or a body that is not a GraphQL answer.
+A 4xx is unambiguous (7TV rejected the request before it ran) and always stays `failed`, and a
+GraphQL-level rejection (a real answer, just a negative one) is never `unknown` either. A plan
+without any replace row keeps today's plain `failed` for every transport loss, exactly as before.
+
+**The run settles before anything is reported.** `ImportRunInfo.settlement` (`'pending'`/`'settled'`)
+tracks this. A run without any `unknown` row settles the moment the engine completes. One with at
+least one reads the target set live, once more, and clears each `unknown` row against that read
+(`settleUnknownRow`); a read that fails, times out (`SETTLE_READ_TIMEOUT_MS`) or comes back
+incomplete leaves those rows `unknown` regardless — the run still settles, it never waits forever.
+Nothing reaches the Api before `settlement` turns `'settled'`: `sync-imported`, the removal report
+and the channel resync all wait for it, even though the dock already shows the engine's live
+snapshot while the re-read is in flight. A `reset()` or a second `startImport` started during that
+re-read takes the outcome off the dock, but the pending run's reports are still sent — they record
+7TV changes that already happened, independent of what is currently on screen.
+
 **The safeguard is a file, not a typed confirmation.** A plan with at least one replace turns the
 executor into a three-state button: "Save recovery file" reads the target set live, checks every
 replace target at entry level (same id, same set of aliases, same aliasless entry, the name still
@@ -80,11 +104,24 @@ the dialog, and a failed or incomplete read lets no replace row through. A windo
 and each individual REMOVE remains — it cannot be closed without an atomic operation on 7TV's side,
 the same residual race the duplicate filter already documents.
 
-**After the run.** The result protocol (stage `finished`) is offered in the dock after every
+**After the run.** A settled run now reports through the channel-scoped `sync-deleted`, next to the
+`sync-imported` an add already sent — the same call the delete flow uses (`reportRemoved`). It names
+every replace row whose REMOVE 7TV confirmed (`completedSteps >= 1`), independent of the row's own
+final status: a replace whose ADD then failed or came back `unknown` still reports its REMOVE,
+because that target entry really is gone. An adopt row reports nothing, since nothing disappears.
+The result protocol (stage `finished`) is offered in the dock after every
 transfer run; both stages load back through the existing "Restore" entry, which re-adds only the
 removed target entries and only where the gap is still open. While a run with replace rows is
 active, closing the tab asks first (`beforeunload`); an add-only run never does. No
 `localStorage` copy of either file.
+
+**The confirm dialog's side-by-side preview needs an image on both sides.**
+`GET /api/channels/{channel}/emotes` now also serves each active emote's own image URL
+(`EmoteListItemDto.ImageUrl`, additive; `EmoteListQueryService`), carried through unchanged as
+`EmoteListItem.imageUrl` on the frontend. `ImportRow.imageUrl` mirrors it for every live source
+(channel grid, foreign channel, leaderboard) — never derived from `sevenTvEmoteId`, since a static
+and an animated emote use different 7TV URL shapes. A file-sourced row has no image to offer and
+stays `null`: `emote-list-export.ts`'s wire format only ever wrote id and name, and still does.
 
 ---
 

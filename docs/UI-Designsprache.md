@@ -360,7 +360,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   nothing is lost, an existing entry is only renamed — "N entries in the target set will be
   renamed", only while the plan holds at least one adopted rename) → **target-check banner**
   (error, only after a live read did not release the run: the drifted rows by name, or the failed read, or a refused
-  download; notice action "Reload target" — and, in the same banner, the committed decisions a
+  download; notice action "Reload target" for the drifted and failed-read cases, absent for a
+  refused download — and, in the same banner, the committed decisions a
   reload of the target no longer fits, by name) → slot projection (overflow as a warning banner,
   otherwise quiet text; net change of the plan, so a replace counts its removed entries) →
   stale notice if the last sync of the target failed → "already in the target set" row →
@@ -395,7 +396,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   duplicate —, then a radio group per row named "Action for {source}") → "Back" / "Apply" in the
   action row, the lock reason beside "Apply" naming the rows by source name. Actions that do not
   apply to a row stay listed, disabled, with their reason in brackets (the target picker's idiom
-  above) — replace for an untracked target, adopt where the target name is taken or duplicated. A
+  above) — replace for an untracked target or for a drifted row whose live counterpart no
+  longer holds the name ("reload target first"), adopt where the target name is taken or
+  duplicated. A
   rename opens a text field prefilled with the source name, with the §5.3 field error. "Apply"
   commits the group's decisions; "Back" keeps the committed ones as they were and keeps the edits
   for the next opening. The rows carry a roving tabindex (arrow up/down, Home/End, scrolled into
