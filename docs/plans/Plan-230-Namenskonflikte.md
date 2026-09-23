@@ -29,6 +29,21 @@ geprüft und abgebildet, das Nachlesen läuft auf einem lauf-gebundenen Ergebnis
 Engine-Queue, HTTP 500 ist `unknown`, und die Zeichensatzprüfung gilt nur für getippte Aliase.
 Betroffen sind T2, T3, T4, T5, T7, T8 sowie die Abschnitte 1, 2, 4, 7, 8, 9.
 
+**Fassung 4 (2026-09-23).** Betreiber-Entscheidung gegen „der Mensch stellt per ADD von Hand
+wieder her": beide `transfer-run`-Stufen sind über den bestehenden Weg „Wiederherstellen" ladbar
+und stellen nur die entfernten Ziel-Einträge wieder her, aliaslose per ADD ohne Alias, und nur wo
+der Name frei ist („nur Lücken schließen"). Neuer Task **T7b**; T7 verliert die Restore-Abweisung;
+T9 und T10 je einen Fall; Abschnitte 1, 2, 4 (AK 18 revidiert, R1–R4), 5, 7, 8 angepasst. Ein
+Befund am Restore-Code grenzt die Vorgabe auf getrackte Ziele ein (T7b, Abschnitt 7).
+
+**Fassung 5 (2026-09-23).** Betreiber-Entscheidung zu diesem Befund: **keine Löschung ohne
+Restore-Weg** — „Ziel ersetzen" ist für ein ungetracktes Ziel-Set gesperrt, in Validierung (T3,
+Regel 7, erkannt an `targetChannelName !== null`) und Oberfläche (T8, ausgegraut mit Grund);
+Skip, Rename, Adopt bleiben. Damit **entfällt T6** (der set-zentrierte `sync-deleted` hatte keinen
+anderen Grund); Frage 1 ist überholt, Frage 6 eingeengt, AK 19 in der ungetrackten Hälfte
+gegenstandslos, R5 neu; T10 verlegt Replace und Restore auf ein getracktes Set und belegt an olafs
+Set die Sperre. Folge-Issue „Restore pro Set", mit dem die Sperre fällt.
+
 ---
 
 ## 0. Ausgangslage
@@ -76,7 +91,7 @@ Betroffen sind T2, T3, T4, T5, T7, T8 sowie die Abschnitte 1, 2, 4, 7, 8, 9.
 | **Ein virtuell gescrolltes Raster in einem `DialogShell` gibt es schon**, und es ist der sanktionierte Ausnahmefall der „kein zweiter Scrollbereich"-Regel aus #226: `foreign-emote-grid.ts:105-135` macht den Viewport zum **einzigen** Scrollcontainer, misst seine Höhe gegen `dvh` und bekommt vom Dialog die Breitklasse `app-dialog-panel-wide` nur, während das Raster sichtbar ist (`import-source-dialog.ts:57, 96`, `styles.css:622-650`). | s. links; DECISIONS 2026-09-22 (#226) | T8 baut den Auflösungsschritt nach genau diesem Muster (Abschnitt 6, Frage 5) |
 | **`filterAlreadyPresent` würde jede „Adopt"-Zeile aus dem Lauf werfen.** Der Frischcheck in `import-flow.ts:236-282` vergleicht nur die 7TV-Id; ein Alias-Abweichungs-Emote **ist** per Id im Ziel. Ohne Ausnahme startet ein Lauf, der die Umbenennung still weglässt und `skippedDuplicates` hochzählt. | `already-present-filter.ts:87-99`, `import-flow.ts:236` | T5 |
 | **Die Engine kennt keinen `extensions.status`.** `RunOneResult` trägt `httpStatus` und `errorCode`; die 409-Kollision zur Laufzeit ist damit von einem beliebigen `BAD_REQUEST` nicht zu unterscheiden — und das Issue verlangt, sie **am Status** zu erkennen. | `seven-tv-run-engine.ts:105-130, 371-382` | T4 ergänzt `gqlStatus` |
-| **Der Audit-Leseweg kennt den Besitzer-Login schon** für eine `emoteCount`-Zeile mit `emoteSetId`: `ReadTargetEmoteSet(root, "emoteSetId")` liest `targetOwnerTwitchLogin` mit, `renderTargetSet` zeigt dann die „von {owner}"-Form. Der neue set-zentrierte `sync-deleted` braucht also **keine** Änderung an Projektion oder `audit-row.ts`, wenn sein Details-JSON `emoteSetId` **und** `targetOwnerTwitchLogin` trägt. | `AuditLogQueryService.cs:155-162, 250-263`, `audit-row.ts:128-146` | T6 legt das Details-Shape fest |
+| **Der Audit-Leseweg kennt den Besitzer-Login schon** für eine `emoteCount`-Zeile mit `emoteSetId`: `ReadTargetEmoteSet(root, "emoteSetId")` liest `targetOwnerTwitchLogin` mit, `renderTargetSet` zeigt dann die „von {owner}"-Form. Ein set-zentrierter `sync-deleted` bräuchte also **keine** Änderung an Projektion oder `audit-row.ts`. | `AuditLogQueryService.cs:155-162, 250-263`, `audit-row.ts:128-146` | Seit Fassung 5 ohne Task: T6 ist entfallen; der Befund gehört ins Folge-Issue „Restore pro Set" |
 | **`EmoteUsageTotal` trägt `imageUrl`, `ForeignEmoteRow` ebenso, die Datei nicht.** Drei `toImportRow`-Stellen: `usage-export-purposes.ts:58`, `foreign-import-flow.ts:52, 99`; der Parser `import-source-parser.ts:52` kennt kein Bild. | s. links | T1: drei Produzenten liefern die URL, der vierte `null` |
 | **Der `ImportOrigin`-Union-Mechanismus** (zwei erschöpfende Helfer, `assertUnreachableOrigin`) zeigt, wie hier Vokabeln gesichert werden. Das neue Aktions-Union der Auflösung bekommt dasselbe Muster: jede Auseinandernahme erschöpfend, ein fünfter Wert ein Compile-Fehler. | `import-source.ts:88-135` | T3, T5, T7 |
 | **Ein Transportfehler ist heute ein Fehlschlag.** `runOne` fängt jede `HttpErrorResponse` außer 429 und macht daraus `success: false` mit `httpStatus = error.status` — für einen Netzwerkabbruch Angulars `0`, übersetzt als `networkError`. Ob die Mutation bei 7TV angekommen ist, weiß niemand; für einen REMOVE oder ADD ohne Antwort heißt `failed` also „unbekannt", und die Meldung ließe eine womöglich hinzugefügte Id aus (Codex-Finding 3). | `seven-tv-run-engine.ts:406-424, 566-568` | T4 führt den Ausgang `unknown` ein, T5 klärt ihn per Live-Nachlesen |
@@ -86,9 +101,10 @@ Betroffen sind T2, T3, T4, T5, T7, T8 sowie die Abschnitte 1, 2, 4, 7, 8, 9.
 ### 0.3 Modelle je Task
 
 `sonnet` für klar spezifizierte Implementierung und Tests; `opus` an drei Stellen mit Begründung
-(T4 Engine, T5 Service, T8 UI-Schritt); `haiku` nirgends — kein Task ist rein mechanisch. T0 und
-T10 haben kein Modell im Sinn einer Implementierung: T0 ist erledigt, T10 ist ein Handgriff des
-Betreibers mit einem Subagent als Protokollant.
+(T4 Engine, T5 Service, T8 UI-Schritt) plus T7b (Restore-Filter, derselbe Grund wie T5.1 in
+Plan-200); `haiku` nirgends — kein Task ist rein mechanisch. T0 und T10 haben kein Modell im Sinn
+einer Implementierung: T0 ist erledigt, T10 ist ein Handgriff des Betreibers mit einem Subagent als
+Protokollant. T6 ist entfallen (Fassung 5).
 
 ### 0.4 Branch und Commits
 
@@ -99,7 +115,7 @@ Betreibers mit einem Subagent als Protokollant.
   (Memory: „Keine Ticketnummern in Git-Metadaten"). Vorschläge stehen je Task.
 - **Regel 3:** Der DECISIONS-Eintrag („der Import-Dialog wird eine löschende Operation") liegt im
   Commit von **T8**, weil erst dort der REMOVE-Pfad für einen Nutzer erreichbar wird. Er nennt in
-  seiner `Betrifft:`-Zeile auch die Dateien aus T4, T6 und T7 — ein Eintrag, nicht vier.
+  seiner `Betrifft:`-Zeile auch die Dateien aus T4, T7 und T7b — ein Eintrag, nicht vier.
 
 ---
 
@@ -116,11 +132,12 @@ und was der Plan **zusätzlich** zum Issue festlegt (mit Grund in Abschnitt 7).
 | **Verlorene Antwort ist kein Fehlschlag** | Codex-Finding 3 (Runde 1), 4 (Runde 2) | T4, T5, T7 | Ausgang `unknown` für einen Schritt, dessen Antwort **kein auswertbarer GraphQL-Fehler und keine Ablehnung vor der Verarbeitung** ist: keine Antwort (Status 0) oder jede 5xx-Antwort — 500 eingeschlossen. Eine 4xx-Antwort aus 7TVs HTTP-Schicht (401/403 Token, 429 Limit, sonstige) heißt „abgelehnt, bevor verarbeitet" und bleibt `failed`/Backoff/Abbruch wie heute. Nach dem Lauf **ein** Live-Nachlesen klärt jede `unknown`-Zeile auf einem **lauf-gebundenen** Ergebnis; bleibt sie unklärbar, erscheint ihre Quell-Id in **keiner** Import-Meldung — **ein bestätigter REMOVE geht aber immer in die Löschmeldung ein**, unabhängig vom Endstatus der Zeile (Runde 2, Finding 1) |
 | Laufzeitkollision (Name inzwischen belegt) | T0-Kommentar | T4, T5 | Erkennung an `extensions.status === 409`, eigener Grund `import.errors.nameTakenNow`, **kein** Laufabbruch |
 | **Live-Verifikation der Replace-Ziele vor dem Lauf** | Codex-Finding 1 (Runde 1), 2 (Runde 2) | T5, T8 | vor dem Download liest der Dialog das Ziel-Set live (`loadSevenTvSetEntries`); weicht ein Replace-Ziel vom bestätigten Stand ab (andere Aliase, **aliasloser Eintrag hinzugekommen oder weggefallen** — `aliaslessIds` wird an **beiden** Prüfstellen gelesen —, Eintrag weg, Name anderer Id), gibt es keinen Download und keine Startfreigabe, sondern Neuladen und Neu-Bestätigen; die Rückweg-Datei entsteht aus den **live gelesenen Einträgen**, aliaslose eingeschlossen; der Frischcheck in `import-flow.ts` prüft dieselben Ziele ein zweites Mal als letztes Tor. Restfenster: zwischen letztem Lesen und jedem einzelnen REMOVE, nicht zu schließen (`already-present-filter.ts:55-57`) |
-| **Aliaslose Zieleinträge** | Codex Runde 2, Finding 2 | T2, T5, T7, T8 | Ein Replace-Ziel darf aliaslose Einträge haben; die Rückweg-Datei bildet sie ab (`removedTarget.entries`, je Eintrag `alias: string \| null`), sie zählen in `removedEntryCount`, und ein Mensch stellt sie per ADD **ohne** Alias wieder her (7TV fällt dann auf den Standardnamen zurück — dieselbe Regel, die `ADD_EMOTE_MUTATION`s Kommentar in `seven-tv-import.service.ts:34-40` nennt). Kein Sperren (Grund in Abschnitt 7) |
-| `transfer-run`-Protokoll in **zwei Stufen**, Rückwegverbot | Issue „The transfer protocol", Frage 4 (entschieden) | T7, T8 | eine Envelope-Art, `meta.stage: 'planned' \| 'finished'`; eigene `TRANSFER_RUN_FORMAT_VERSION = 1`; Envelope-`channelName` = Zielkanal oder `''` bei ungetracktem Ziel, `meta` trägt Set, Besitzer, Herkunft |
+| **Aliaslose Zieleinträge** | Codex Runde 2, Finding 2; Betreiber 2026-09-23 | T2, T5, T7, T7b, T8 | Ein Replace-Ziel darf aliaslose Einträge haben; die Rückweg-Datei bildet sie ab (`removedTarget.entries`, je Eintrag `alias: string \| null`, dazu `defaultName` aus dem Live-Read), sie zählen in `removedEntryCount`, und **der Restore-Weg stellt sie per ADD ohne Alias wieder her** (7TV fällt auf den Standardnamen zurück — dieselbe Regel, die `ADD_EMOTE_MUTATION`s Kommentar in `seven-tv-import.service.ts:34-40` nennt). Kein Sperren, kein Handgriff von Hand (Grund in Abschnitt 7) |
+| `transfer-run`-Protokoll in **zwei Stufen**; **ladbar für den Restore**, nicht als Import-Quelle | Issue „The transfer protocol", Frage 4 (entschieden), Betreiber 2026-09-23 | T7, T7b, T8 | eine Envelope-Art, `meta.stage: 'planned' \| 'finished'`; eigene `TRANSFER_RUN_FORMAT_VERSION = 1`; Envelope-`channelName` = Zielkanal oder `''` bei ungetracktem Ziel, `meta` trägt Set, Besitzer, Herkunft. **Beide Stufen gehen über den bestehenden Einstieg „Wiederherstellen"** (`file-import-step.ts` → Parser → `filterAlreadyPresentForRestore` → `SevenTvRestoreService`): `planned` ⇒ alle geplanten Ziel-Einträge, `finished` ⇒ die mit `removedTarget.confirmed`; nur Ziel-Einträge, nie Quell-ADDs, Renames oder Adopts. **Nur Lücken schließen:** ein Alias, den inzwischen eine andere Id hält, wird vor dem Lauf mit Grund aussortiert. Das Verbot bleibt **nur** für das Einlesen als Import-Quelle (`parseImportSource`). AK 18 ist damit in seiner Restore-Hälfte durch den Betreiber revidiert (Abschnitt 4, 7) |
 | **Pflicht-Download vor dem ersten REMOVE** | Frage 4 (entschieden) | T7, T8 | im Dialog, nach der Zusammenfassung, vor „Starten"; nur bei `removeCount > 0`; Abschnitt 2 |
 | Löschzahl in der Zusammenfassung, keine getippte Bestätigung | Issue „Guard", Entscheidung 6 | T3, T8 | Zahl wird aus **denselben** Entscheidungen abgeleitet, aus denen der Lauf gebaut wird — eine Quelle |
-| Meldungen: `sync-imported` + Löschmeldung, getrackt/ungetrackt | Issue „Backend bookkeeping" | T5, T6 | Details-Shape des set-zentrierten `sync-deleted` (T6); **Adopt meldet nichts** (Frage 2, entschieden) |
+| Meldungen: `sync-imported` + Löschmeldung | Issue „Backend bookkeeping" | T5 | Löschmeldung **nur** über das kanalgebundene `sync-deleted`, weil ein Replace nur für getrackte Ziele wählbar ist (Fassung 5); der set-zentrierte `sync-deleted` (T6) ist **entfallen**; **Adopt meldet nichts** (Frage 2, entschieden) |
+| **Keine Löschung ohne Restore-Weg** | Betreiber 2026-09-23 (Fassung 5) | T3, T8 | „Ziel ersetzen" ist für ein ungetracktes Ziel-Set gesperrt — in der Validierung (Regel 7, `targetIsTracked` aus `targetChannelName !== null`) **und** in der Oberfläche (ausgegraut, Grund „Nur für getrackte Kanäle wiederherstellbar"); Skip, Rename, Adopt bleiben. Die Sperre fällt mit dem Folge-Issue „Restore pro Set" (set-zentrierter `sync-deleted` + `sync-restored`, Restore-Einstieg ohne Kanalseite) |
 | Bilder: `imageUrl` in beiden Modellen, Platzhalter statt abgeleiteter URL | Issue „Images" | T1, T8 | — |
 | Entscheidungs-Validierung über den ganzen Lauf | Issue „Decision validation" | T3 | fünfte Regel: kein Zieleintrag wird von zwei Zeilen berührt; Adopt gibt den alten Alias **nicht** frei (Frage 7, entschieden); **ein Replace gibt seine Aliase nur für seine eigene Zeile frei**, nicht für eine fremde (Codex-Finding 4); **Namensdoppel innerhalb der unveränderten `toAdd`-Zeilen sind keine Verletzung** (Codex-Finding 6); **die Zeichensatzprüfung gilt nur für Aliase, die der Nutzer selbst tippt (Rename)** — `toAdd`-Zeilen mit `invalidNames` laufen wie heute (Runde 2, Finding 5) |
 | Layout: Schritt statt Gruppenbox, virtuelles Scrollen, gestapelt bei 360 px, roving tabindex | Issue „Layout" | T8 | Muster `foreign-emote-grid` (einziger Scrollcontainer, `dvh`-Höhe, Breitklasse während des Schritts — Frage 5, entschieden) |
@@ -189,6 +206,18 @@ zu dem Zeitpunkt schon nicht mehr gegeben hätte, wenn der Tab mitten im Lauf st
   `protocolNotSaved` wie beim Löschen. Es ist ein Dokument **zweiten Rangs**: die Rückweg-Datei
   sagt, was weg sein kann; das Ergebnisprotokoll sagt, was davon wirklich passiert ist und welche
   ADDs fehlschlugen. Das Dock zeigt dieselben Ausgänge, das Audit-Log die Zählwerte.
+- **Beide Dateien sind der Rückweg, nicht nur die Aufzeichnung (Betreiber-Entscheidung
+  2026-09-23, T7b).** Der bestehende Einstieg „Wiederherstellen" liest sie ein — die Rückweg-Datei
+  für den Fall „Tab mitten im Lauf gestorben" (jeder geplante Ziel-Eintrag wird angeboten; was nie
+  entfernt wurde, liegt noch im Set und fällt über den Duplikatfilter heraus), das Ergebnisprotokoll
+  für den Fall „ADD nach REMOVE gescheitert" (nur bestätigte REMOVEs). Wiederhergestellt werden
+  **nur die entfernten Ziel-Einträge**, unter genau den Aliasen, die sie hatten, aliaslose per ADD
+  ohne Alias. **Nur Lücken schließen:** hält nach einem geglückten Replace das Quell-Emote den
+  Namen, wird der alte Ziel-Eintrag **nicht** wiederhergestellt und nichts entfernt — die Zeile
+  erscheint vor dem Lauf mit Grund „Name belegt", statt ein Ticket für einen sicheren 409 zu
+  verbrennen. Ein vollständiges Rückgängigmachen eines Replace (Quelle wieder raus, Ziel wieder
+  rein) ist **nicht** Teil von #230 — Folge-Issue (Abschnitt 7). Der Restore bleibt vom Nutzer
+  ausgelöst; Entscheidung 4 (kein Auto-Rollback) steht.
 - **Entfallen:** das `warning`-Banner nach dem Lauf, die Rückfrage beim Schließen und der
   Leave-Guard für ein **fertiges** ungespeichertes Protokoll. Alle drei schützten das
   Ergebnisprotokoll, weil es die einzige Datei war; jetzt ist es die zweite. Ein Guard für ein
@@ -313,7 +342,7 @@ Kein Angular, kein DOM.
   `skip` (Default) · `renameSource { alias }` · `replaceTarget` · `adoptSourceName`.
   Erschöpfende Auseinandernahme nach dem `ImportOrigin`-Muster (0.2).
 - `validateResolution(preview, decisions) → { ok: true } | { ok: false; violations: Violation[] }`,
-  jede Violation mit Regelname und den Schlüsseln der beteiligten Zeilen. **Sechs Regeln**, alle
+  jede Violation mit Regelname und den Schlüsseln der beteiligten Zeilen. **Sieben Regeln**, alle
   unabhängig von der Zeilenreihenfolge (Codex-Finding 4 — eine Regel, die nur in einer Reihenfolge
   gilt, ist keine):
   1. **Kein erzeugter Alias doppelt** — „erzeugt" sind die Aliase aller Add-, Rename-, Replace- und
@@ -341,6 +370,20 @@ Kein Angular, kein DOM.
   5. **Kein Zieleintrag wird von zwei Zeilen berührt** — Replace und Adopt derselben Ziel-Id
      schließen sich aus (Abschnitt 1, fünfte Regel der ersten Fassung).
   6. **Adopt nur bei `adoptBlocked === null`** — das Modul verlässt sich nicht auf die UI.
+  7. **Replace nur bei getracktem Ziel** (Betreiber-Entscheidung 2026-09-23, Fassung 5: **keine
+     Löschung ohne Restore-Weg**). `validateResolution` bekommt dafür einen dritten Parameter
+     `context: { targetIsTracked: boolean }`; eine `replaceTarget`-Entscheidung bei
+     `targetIsTracked === false` ist eine Verletzung mit Regelname `replaceNeedsTrackedTarget`, die
+     UI (T8) bietet die Aktion in diesem Fall ausgegraut mit Grund an, aber die Regel steht hier,
+     damit kein Aufrufer sie umgehen kann. Skip, Rename und Adopt bleiben erlaubt. **Woran der
+     Dialog „getrackt" erkennt:** an `ImportConfirmDialogData.targetChannelName !== null` — der
+     Vertrag steht seit K2 (`import-confirm-dialog.ts:32-36`, Spec 8.6, AK 39): `null` genau für
+     ein ungetracktes Ziel, gefüllt aus `toTargetChannelName` in `import-flow.ts`, das für einen
+     `'chosen'`-Pick `choice.channelName` liest — und `ImportTargetChoice.channelName` ist per
+     Picker-Vertrag genau dann gesetzt, wenn `isTracked` (`import-target-dialog.ts:75`,
+     `import-flow.ts:155-162` wirft sonst). Kein zweites Flag, keine neue Ableitung: dasselbe
+     Feld, das schon Kopfzeile, Meldungsweg und Resync-Entscheidung steuert. Die Sperre fällt mit
+     dem Folge-Issue „Restore pro Set" (Abschnitt 7).
   Adopt gibt den alten Zielalias **nicht** frei (Frage 7, entschieden).
 - `buildTransferPlan(preview, decisions) → TransferPlan` mit `rows: TransferRow[]` in Quellreihenfolge:
   jede Zeile `{ action: 'add' | 'renameSource' | 'replace' | 'adoptSourceName', source: ImportRow,
@@ -368,9 +411,11 @@ Zeichen / leer · leere Entscheidungen ⇒ Plan enthält **exakt** `preview.toAd
 `ok: true`, Zeile im Plan (Runde 2, Finding 5)** · Rename auf einen Alias mit Leerzeichen ⇒
 Verletzung (Regel 3 greift, weil getippt) · Projektion: einzelner Rename +1, gewöhnlicher Replace 0,
 Replace auf doppelt belegtes Ziel −1, gemischt (Add + Rename + Replace auf Duplikat = 3 − 2 = +1),
-**Replace auf ein Ziel mit einem benannten und einem aliaslosen Eintrag −1**.
+**Replace auf ein Ziel mit einem benannten und einem aliaslosen Eintrag −1** · **Replace bei
+`targetIsTracked: false` ⇒ Verletzung `replaceNeedsTrackedTarget` mit der Zeile; dieselbe
+Entscheidungsmenge bei `true` ⇒ `ok`; Rename und Adopt bei `false` ⇒ `ok`** (Regel 7).
 
-**Tests:** `conflict-resolution.spec.ts` **+17** (Liste oben), `slot-projection.spec.ts` **+3**
+**Tests:** `conflict-resolution.spec.ts` **+19** (Liste oben), `slot-projection.spec.ts` **+3**
 (die drei Fälle aus Codex-Finding 5 einzeln).
 
 **Abnahme:** Modul pur, ohne TestBed testbar; jede Verletzung nennt Zeilen. **AK 5, 10, 11
@@ -477,7 +522,7 @@ aus dem Restore, wie jeder andere Nicht-`done`-Status. **AK 13 (Reihenfolge, Nac
 (Engine-Hälfte).**
 
 **Commit:** `feat(seventv): let one run row issue a sequence of mutations`.
-**Abhängigkeiten:** keine (parallel zu T1, T6). **Modell:** `opus` — die Engine trägt drei Läufe,
+**Abhängigkeiten:** keine (parallel zu T1). **Modell:** `opus` — die Engine trägt drei Läufe,
 ein Fehler in Pacing oder Statusführung ist in allen dreien und nur live sichtbar.
 
 ### T5 — Import-Service: der Lauf aus dem Plan, drei Mutationen, zwei Meldungen, Filterausnahme, Ziel-Verifikation, Nachlesen
@@ -492,7 +537,6 @@ weg und verifiziert die Replace-Ziele ein zweites Mal.
 `web/src/app/shared/seven-tv/already-present-filter.ts` (eine dritte Funktion
 `verifyReplaceTargets(entries, plan)` neben den zwei Filtern — pur, über einem schon gelesenen
 `SevenTvSetEntries`, damit Dialog (T8) und Flow denselben Vergleich rechnen) + `.spec.ts`;
-`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts:167` (Aufrufer von T6s Methode);
 `web/public/i18n/{de,en}.json` (`import.errors.nameTakenNow`, `import.errors.removedButNotAdded`,
 `import.errors.unknownOutcome`, `import.summary.removed`, `import.summary.replaceSkippedDrift`,
 `import.summary.unknownRows`).
@@ -556,10 +600,12 @@ weg und verifiziert die Replace-Ziele ein zweites Mal.
   für jede `done`-Zeile mit Aktion `add`, `renameSource`, `replace` (die hinzugefügten Ids, wie
   heute); zusätzlich eine **Löschmeldung** für jede Replace-Zeile mit **bestätigtem REMOVE**
   (`completedSteps >= 1`, direkt oder per Nachlesen) — **unabhängig vom Endstatus**: `done`,
-  `failed` mit `failedStep 1`, oder `unknown` mit bestätigtem Schritt 1. Getracktes Ziel ⇒
+  `failed` mit `failedStep 1`, oder `unknown` mit bestätigtem Schritt 1. Immer über
   `emoteAdminService.syncDeleted(channel, { emoteSetId, sevenTvEmoteIds })` (der bestehende Weg,
-  Papierfall bei nicht-aktivem Set); ungetracktes Ziel ⇒ `emoteSetService.reportDeletedFromSet`
-  (T6). `adoptSourceName` meldet **nichts** (Frage 2, entschieden). Beide Meldungen haben eigene
+  Papierfall bei nicht-aktivem Set) — ein Replace gibt es nur für ein **getracktes** Ziel (Regel 7
+  in T3, Fassung 5), also hat jede Löschmeldung einen Kanal; ein Plan mit Replace-Zeile und
+  `targetChannelName === null` ist ein Programmierfehler und wirft in `startImport`, statt still
+  ohne Meldung zu laufen. `adoptSourceName` meldet **nichts** (Frage 2, entschieden). Beide Meldungen haben eigene
   `SyncReportState`-Signale (`syncReport` bleibt für den Import, `removalReport` neu), eigenen
   Retry, und beide hängen am `ImportRunInfo`-Objekt (R15-Muster).
 - `ImportRunInfo` wächst um `plan`, `settlement`, `removedCount` (bestätigte REMOVEs, für Dock und
@@ -594,8 +640,9 @@ Alias im Set, und genau das meldet `syncImported`.
 Quellnamen; Replace sendet REMOVE dann ADD, dieselbe `setId`, benachbart; Adopt sendet
 `updateEmoteAlias` mit altem Alias im `id` und neuem als Argument, **kein** `addEmote`; 409 ⇒
 `nameTakenNow`, Lauf läuft weiter; `failedStep = 1` ⇒ `removedButNotAdded` **und** Id in der
-Löschmeldung; Löschmeldung getrackt (`syncDeleted` mit `emoteSetId`) / ungetrackt
-(`reportDeletedFromSet`); Lauf ohne REMOVE ⇒ keine Löschmeldung; Retry der Löschmeldung nutzt
+Löschmeldung; Löschmeldung über `syncDeleted` mit `emoteSetId` des Ziel-Sets; **Plan mit
+Replace-Zeile und `targetChannelName === null` ⇒ `startImport` wirft, nichts wird gesendet**
+(Fassung 5, zweite Sicherung hinter T3 Regel 7); Lauf ohne REMOVE ⇒ keine Löschmeldung; Retry der Löschmeldung nutzt
 denselben Laufdatensatz; **Add-only-Plan setzt `transportLossIsUnknown` nicht, Replace-Plan schon;
 unbekannter ADD wird per Nachlesen zu `done` geklärt und gemeldet; unbekannter REMOVE mit
 verschwundenem Ziel wird zu `failed`/Lücke, `completedSteps 1`, und landet in der Löschmeldung;
@@ -618,58 +665,30 @@ Meldungen (Wire-Snapshot wie in T4). **AK 7 (Mutation), 12, 13, 15 (Grund), 17 (
 Ziel-Aliase), 19 (Client-Hälfte).**
 
 **Commit:** `feat(import): run a transfer plan with rename, replace and adopt rows`.
-**Abhängigkeiten:** T3 (Plan-Typ), T4 (Schritte, `gqlStatus`), T6 (`reportDeletedFromSet`).
+**Abhängigkeiten:** T3 (Plan-Typ), T4 (Schritte, `gqlStatus`). T6 ist entfallen (Fassung 5).
 **Modell:** `opus` — hier entsteht der einzige löschende Pfad des Import-Dialogs, und die
 Meldungslogik entscheidet, ob das Audit-Log eine Lücke sieht.
 
-### T6 — Backend: set-zentriertes `sync-deleted` und seine Client-Methode
+### T6 — Entfallen (Fassung 5, 2026-09-23)
 
-**Ziel:** Der Spiegel von `POST /api/seventv/emote-sets/{emoteSetId}/sync-imported` für Löschungen
-in ein ungetracktes Set — gleiche Leiter, gleiche Besitzerprüfung, gleiches Audit-Shape.
+Der set-zentrierte `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted` samt
+`MarkDeletedFromSetAsync` und `reportDeletedFromSet` hatte genau **eine** Begründung: die
+Löschmeldung für ein Replace in ein **ungetracktes** Set. Mit der Sperre aus Fassung 5 („Ziel
+ersetzen" ist für ungetracktes Ziel nicht wählbar — T3 Regel 7, T8) entsteht dort keine Löschung
+mehr; Adopt ändert nur einen Alias und meldet nichts (Frage 2), Rename und Add fügen hinzu und
+melden über den bestehenden set-zentrierten `sync-imported`. Es gibt keinen zweiten Grund für den
+Endpunkt: der Befund aus 0.2 (die `emoteCount`-Leiter läse den Besitzer-Login mit) war eine
+Erleichterung für ihn, kein Bedarf; #224 bleibt getrennt (Frage 1). Damit **entfällt auch die
+Backend-Berührung dieses Plans bis auf T1** (`EmoteListItemDto.ImageUrl`); `dotnet test` bleibt
+Gate für T1.
 
-**Dateien:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs:203-260` (zweite Route in der
-bestehenden `emoteSetGroup`), `src/EmotePurge.Core/Services/IEmoteService.cs:85` (neue Methode
-`MarkDeletedFromSetAsync(emoteSetId, ownerSevenTvUserId, ownerTwitchLogin, sevenTvEmoteIds, actor)`),
-`src/EmotePurge.Infrastructure/Services/EmoteService.cs:299-331` (Implementierung neben
-`MarkImportedToSetAsync`), `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts:167`
-(`reportDeletedFromSet(emoteSetId, { sevenTvEmoteIds })`), `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md:230`
-(F7-Querverweis 6.6 → 6.7, Issue „Backend bookkeeping").
+**Was aus T6 wandert:** der Spec-Querverweis F7 (6.6 → 6.7, Issue „Backend bookkeeping") als
+`docs: point F7 at the set-centric endpoint in 6.7` nach **T9** — das Issue verlangt die Korrektur,
+sie ist reine Doku und hängt an keinem Endpunkt. Das Backend bleibt für einen späteren
+set-zentrierten `sync-deleted`/`sync-restored` offen — beides zusammen ist das Folge-Issue
+„Restore pro Set", mit dem die Sperre fällt (Abschnitt 7).
 
-**Vertrag:**
-
-- Body `{ sevenTvEmoteIds: string[] }`, Leiter wie 6.7: 401 → `EmoteSetIdValidationFilter` 400 →
-  leere Liste 400 `emote_ids_empty` → Besitzerprüfung `IImportTargetOwnershipService.CheckAsync`
-  (404 `emote_set_not_found` / 403 bare / 503 `foreign_channel_seventv_unavailable`, kein Eintrag)
-  → Service → 204. Policy `Bookkeeping`. **Kein neuer `ApiErrorCode`** — alle vier existieren
-  (Regel 7 unberührt).
-- Audit-Eintrag `emotes.syncDeleted`, `ChannelName = null`, `TargetType = "emoteSet"`,
-  `TargetId = emoteSetId`, Details `{ emoteCount, emoteSetId, targetOwnerSevenTvUserId,
-  targetOwnerTwitchLogin }`. **`emoteSetId`**, nicht `targetEmoteSetId`: die bestehende
-  `emoteCount`-Leiter liest den Zielsatz unter diesem Namen (0.2) und zeigt dann „von {owner}" —
-  ohne Änderung an `AuditLogQueryService` oder `audit-row.ts`. Keine Emote-Zeile wird berührt; der
-  Eintrag **ist** die Leistung.
-- **Kein `channel.synced`**-Event, kein Redis — es gibt keinen Kanal.
-
-**Grenzfälle:** Doppelte Ids in der Liste ⇒ `emoteCount` dedupliziert (wie `MarkImportedToSetAsync`).
-Ein Set, das dem Akteur per Editor-Grant gehört ⇒ `targetOwnerTwitchLogin` = Login des Grants.
-
-**Tests:** `tests/EmotePurge.Api.Tests/SevenTvEmoteSetSyncDeletedEndpointTests.cs` (neu, Spiegel
-der Imported-Tests) **+4**: 401; leere Liste 400 vor der Besitzerprüfung; Fremdset 403 bare, Service
-nicht gerufen; Besitzer 204 mit Service-Aufruf und `ChannelName = null`. `AuthFilterMatrixTests.cs:70`
-und `EmoteRoutePolicyTests.cs:48` je **+1 InlineData** (Regel 11: neue Route in einer gefilterten
-Gruppe). `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs` **+1**
-(Audit-Zeile, Details-Shape, keine Emote-Zeile berührt). `tests/EmotePurge.Infrastructure.Tests`
-**+1** an `AuditLogQueryServiceTests`: eine `syncDeleted`-Zeile mit diesem Shape projiziert
-`TargetEmoteSet.ownerLogin` (bestätigt den Befund aus 0.2 per Test statt per Lesen).
-`seven-tv-emote-set.service.spec.ts` **+1** (URL und Body).
-
-**Abnahme:** `dotnet test` grün; Route in beiden Matrizen. **AK 19 (Server-Hälfte).**
-
-**Commit:** `feat(api): report removals from an untracked emote set`. Der Spec-Querverweis kommt
-als `docs: point F7 at the set-centric endpoint in 6.7` im selben PR, eigener Commit.
-**Abhängigkeiten:** keine (parallel zu T1, T4). **Modell:** `sonnet`.
-
-### T7 — Das Transfer-Protokoll in zwei Stufen: Rückweg-Datei vor dem Lauf, Ergebnis danach, Abweisung beim Einlesen, Schutz des laufenden Laufs
+### T7 — Das Transfer-Protokoll in zwei Stufen: Rückweg-Datei vor dem Lauf, Ergebnis danach, Import-Abweisung, Schutz des laufenden Laufs
 
 **Ziel:** Vor der ersten Löschung liegt eine Datei auf der Platte, die je Replace-Zeile die live
 verifizierte Ziel-Id und **alle** ihre Aliase nennt; nach jedem Übertragungslauf eine zweite, die
@@ -689,8 +708,8 @@ Den Download-Knopf **im Dialog** baut T8 — T7 liefert Datei, Dateiname und den
 `web/src/app/core/seven-tv/seven-tv-import.service.ts` (`protocolSaved`; `beforeunload` an
 `destructiveRunActive` — Ort: der Import-Service, der ohnehin Root ist, mit `DestroyRef`),
 `web/public/i18n/{de,en}.json` (`import.summary.downloadProtocol`, `import.summary.protocolNotSaved`,
-`restore.import.errors.transferRun`; `restore.import.sorts.*` **unverändert** — die Datei ist keine
-Einlesesorte).
+`restore.import.errors.transferRun` — der Import-Grund; die Restore-Seite, die Einlesesorte
+`restore.import.sorts.transferRun` und die Parser-Fehler liegen in **T7b**).
 
 **Vertrag:**
 
@@ -723,10 +742,22 @@ Einlesesorte).
   `failed_step`, `error_message`, `removed_seven_tv_emote_id`, `removed_aliases` (durch `|`
   getrennt), `removed_aliasless_entry` (`true`/`false`), `removed_confirmed`. Die Rückweg-Datei ist
   **nur JSON** — ein Klick, eine Datei.
-- **Rückweg-Verbot:** `parseImportSource` antwortet auf `kind === 'transfer-run'` — **beide
-  Stufen** — mit dem eigenen Key **vor** der `emote-list`/`usage`-Prüfung; `parsePurgeRunProtocol`
-  ebenso über `FOREIGN_KIND_ERROR_KEYS`. Ein unbekannter `kind` bleibt `wrongKind` (schon heute
-  „mit Grund" — AK 18 zweiter Satz, kein neuer Code). Es gibt **keinen** Parser für `transfer-run`.
+- **Import-Verbot, Restore erlaubt (Betreiber 2026-09-23):** `parseImportSource` antwortet auf
+  `kind === 'transfer-run'` — **beide Stufen** — mit dem eigenen Key **vor** der
+  `emote-list`/`usage`-Prüfung: die Datei ist keine Emote-Liste, und ihre Quell-Zeilen sind nichts,
+  was man noch einmal kopiert. Geprüft, wo das Verbot greift: `file-import-step.ts:117-127`
+  verzweigt **vor** `parseImportSource` auf `kind` — heute nur `purge-run` → Restore, alles andere
+  → Import. T7b hängt dort den zweiten Restore-Zweig für `transfer-run` ein; `parseImportSource`
+  erreicht die Datei dann nur noch, wenn jemand den Dispatch umgeht — und antwortet trotzdem mit
+  Grund. `parsePurgeRunProtocol`s `FOREIGN_KIND_ERROR_KEYS` bekommt **keinen** Eintrag: dieser
+  Parser wird nur noch für `purge-run` gerufen. Ein unbekannter `kind` bleibt `wrongKind` (schon
+  heute „mit Grund" — AK 18 zweiter Satz, kein neuer Code). Der Restore-Parser für `transfer-run`
+  ist T7b.
+- **`removedTarget.defaultName`** in beiden Stufen: der Standardname des Ziel-Emotes aus dem
+  Live-Read (`seven-tv-set-entries.ts` fragt dafür ein Feld mehr ab, `emote { id defaultName }`) —
+  der Anzeigename eines aliaslosen Eintrags in der Restore-Vorschau, und der Name, unter dem 7TV ihn
+  nach einem ADD ohne Alias zeigt. Ohne ihn hätte eine Restore-Zeile für einen rein aliaslosen
+  Eintrag keinen Namen, den ein Mensch wiedererkennt.
 - **Ergebnisprotokoll im Dock** nach jedem Lauf (AK 16): `ExportDialog` mit `FORMAT_EXPORT_OPTIONS`,
   `selectionCount: null` (wie das Purge-Protokoll), stiller Hinweis `protocolNotSaved`, kein Banner,
   keine Rückfrage beim Schließen (Abschnitt 2). `protocolSaved` wird beim Start eines neuen Laufs
@@ -762,14 +793,143 @@ stiller Hinweis bis `protocolSaved`; Schließen ruft `reset()` ohne Rückfrage.
 `seven-tv-import.service.spec.ts` **+2** (`beforeunload` registriert genau während
 `destructiveRunActive`, danach entfernt; Add-only-Lauf registriert nichts).
 
-**Abnahme:** Kein Weg führt aus einer `transfer-run`-Datei (beide Stufen) in `startImportFlow` oder
-`startRestoreFlow`; `beforeunload` feuert genau während eines laufenden Replace-Laufs. **AK 16, 17
-(Dateiform), 18.**
+**Abnahme:** Kein Weg führt aus einer `transfer-run`-Datei (beide Stufen) in `startImportFlow`;
+der Weg in `startRestoreFlow` ist T7b und in diesem Task noch **nicht** verdrahtet (die Datei wird
+bis T7b als `wrongKind` abgewiesen — ein Zwischenstand, kein Vertrag); `beforeunload` feuert genau
+während eines laufenden Replace-Laufs. **AK 16, 17 (Dateiform), 18 (Import-Hälfte).**
 
 **Commit:** `feat(import): record a transfer run before and after it runs` (Envelope, beide
 Builder, Abweisung, Dock) und `feat(import): warn before unloading a running destructive transfer`
 (`beforeunload`) — zwei Commits, weil der zweite Fensterverhalten ändert. **Abhängigkeiten:** T5
 (Planzeilen und `destructiveRunActive` am Laufdatensatz). **Modell:** `sonnet`.
+
+### T7b — Restore aus Übertragungsdateien: beide Stufen einlesen, nur Lücken schließen, aliaslose Einträge (neu, Betreiber-Entscheidung 2026-09-23)
+
+**Ziel:** Nach einem „Ziel ersetzen" führt der bestehende Weg „Wiederherstellen" zurück: die
+Rückweg-Datei (`planned`) und das Ergebnisprotokoll (`finished`) werden über denselben Einstieg wie
+ein Purge-Protokoll eingelesen und stellen **nur die entfernten Ziel-Einträge** wieder her — unter
+ihren alten Aliasen, aliaslose per ADD ohne Alias, und nur dort, wo der Name nicht inzwischen einem
+anderen Emote gehört. „Der Mensch stellt von Hand wieder her" ist abgelehnt.
+
+**Befund am Restore-Code, der die Vorgabe eingrenzt:** Der Restore-Weg ist **kanalgebunden**, von
+vorn bis hinten. `FileImportStep` friert `channelName` und `setId` der **Seite** ein
+(`file-import-step.ts:73-86`), `parsePurgeRunProtocol` verlangt `envelope.channelName === Seite`
+und `meta.emoteSetId === gewähltes Set` (`purge-run-export.ts:144-153`), `startRestoreFlow`
+nimmt `channelName` als Pflichtparameter, und `SevenTvRestoreService` meldet an das kanalgebundene
+`sync-restored` (`seven-tv-restore.service.ts:236-240`); einen set-zentrierten `sync-restored` gibt
+es nicht (`SevenTvEndpoints.cs` kennt nur `sync-imported`; der set-zentrierte `sync-deleted` aus
+T6 ist in Fassung 5 entfallen). Ein Replace in
+ein **ungetracktes** Set hat keine Kanalseite, auf der man seine Datei einlesen könnte, und keinen
+Endpunkt, der die Wiederherstellung buchte. Das ist keine Lücke, die dieser Task aufreißt — für ein
+ungetracktes Set gibt es heute überhaupt keinen Restore, weil es auch keinen Delete gibt —, aber
+sie begrenzt die Vorgabe: **der Restore aus Übertragungsdateien gilt für getrackte Ziele** (der
+Nutzer öffnet die Nutzungsseite des Zielkanals, wählt im K4-Dropdown das Zielset, aktiv oder nicht,
+und liest die Datei ein). Der ungetrackte Fall wird als **Folge-Issue** vermerkt (Abschnitt 7),
+zusammen mit dem set-zentrierten `sync-restored`, den er bräuchte.
+
+**Dateien:** `web/src/app/shared/export/transfer-run-export.ts` (Restore-Parser
+`parseTransferRunForRestore(text, expected)` neben den Buildern), `web/src/app/shared/seven-tv/file-import-step.ts:117-127`
+(zweiter Restore-Zweig auf `kind === 'transfer-run'`; vierte Einlesesorte in der Liste),
+`web/src/app/shared/seven-tv/restore-flow.ts` (Eingabetyp), `web/src/app/shared/export/purge-run-export.ts`
+(nur Typ-Export; **keine** Änderung an `readProtocolRow` oder am `purge-run`-Lesen),
+`web/src/app/shared/seven-tv/already-present-filter.ts:87-150` (`filterAlreadyPresentForRestore`:
+Regel 4 „Name belegt", aliaslose Zeilen), `web/src/app/shared/seven-tv/seven-tv-set-entries.ts`
+(`defaultName` im Read — geteilt mit T7), `web/src/app/core/seven-tv/seven-tv-restore.service.ts:300-320`
+(`toRestoreQueue`: ADD ohne Alias), `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+(Namen aliasloser Einträge), `web/src/app/shared/seven-tv/mass-delete-panel.ts` und
+`import-progress-section.ts` (Dock-Zeile „N Aliase übersprungen — Name inzwischen belegt"),
+`web/public/i18n/{de,en}.json` (`restore.import.sorts.transferRun`, `restore.import.errors.transferRunNoRows`,
+`restore.skippedNameTaken`), `docs/UI-Designsprache.md` §7.3 (vierte Einlesesorte — der Abschnitt
+ist Vertrag), `docs/DECISIONS.md` (Eintrag im selben Commit, Regel 3: der Restore liest
+`transfer-run`, und Regel 4 „Name belegt" gilt für **alle** Restore-Quellen — auch eine bestehende
+`purge-run`-Datei sortiert eine belegte Zeile jetzt vor dem Lauf aus, statt einen 409 zu kassieren).
+
+**Vertrag:**
+
+- **Der Eingabetyp des Restore-Flows wird `RestoreRow`** — `{ emoteId: string | null, sevenTvEmoteId,
+  name, aliases: (string | null)[] }` — statt `PurgeRunRow`. `null` ist ein aliasloser Eintrag.
+  `parsePurgeRunProtocol` liefert weiter `PurgeRunRow[]` (alle Aliase Strings, nichts am Lesen
+  bestehender Dateien ändert sich, `readProtocolRow` bleibt wie es ist) und wird am Aufrufer auf
+  `RestoreRow` abgebildet — eine Zuweisung, kein Umbau. **Die `purge-run`-Datei schreibt und liest
+  weiter nur nicht-leere Alias-Strings**; der aliaslose Eintrag existiert nur im `transfer-run`-Shape
+  (`removedTarget.entries`) und in der In-Memory-Zeile.
+- **`parseTransferRunForRestore(text, { channelName, emoteSetId })`**: dieselbe Leiter wie
+  `parsePurgeRunProtocol` — Envelope, `kind === 'transfer-run'`, `formatVersion ===
+  TRANSFER_RUN_FORMAT_VERSION`, `meta.targetChannelName === channelName` (nicht der Envelope-
+  `channelName`, der bei ungetracktem Ziel `''` ist — beides zusammen ergibt hier ohnehin
+  `wrongChannel`, s. Befund), `meta.targetEmoteSetId === emoteSetId`, sonst `wrongVersion` /
+  `wrongChannel` / `wrongSet` mit den **bestehenden** Keys. Zeilen: nur `action === 'replace'`;
+  Stufe `planned` ⇒ **jeder** `removedTarget`; Stufe `finished` ⇒ nur `removedTarget.confirmed ===
+  true`. Je Ziel-Eintrag eine `RestoreRow`: `sevenTvEmoteId` = Ziel-Id, `aliases` = die `entries`
+  (Strings und `null`), `name` = erster benannter Alias, sonst `defaultName`, `emoteId: null`.
+  Zwei Replace-Zeilen auf dieselbe Ziel-Id gibt es nicht (T3, Regel 4). Keine Zeile ⇒
+  `transferRunNoRows` („Diese Übertragungsdatei enthält keine entfernten Emotes").
+- **`filterAlreadyPresentForRestore` bekommt eine vierte Regel und lernt `null`:**
+  4. **Ein Alias, den im Live-Set eine andere Id hält, wird aus der Zeile gestrichen** — gezählt in
+     einem eigenen `skippedNameTaken`, nicht in `skipped` (das sind „schon vorhanden"). Eine Zeile,
+     deren Aliase alle belegt sind, fällt ganz weg. Das ist der Fall „Replace geglückt, Quell-Emote
+     hält den Namen": heute prüft der Filter nur die **eigene** Id (`aliasesById.get(row.id)`),
+     nie, wer einen Alias sonst hält — die Zeile ginge durch und holte sich einen sicheren 409
+     (Ticket verbrannt, rote Zeile). Der Vergleich braucht die Namensinhaber: `loadSevenTvSetEntries`
+     liefert `aliasesById`; die Umkehrung (Alias → Id) baut der Filter selbst aus derselben Antwort,
+     kein zweiter Read. Die Regel gilt **für jede Restore-Quelle**, auch Purge-Protokolle — dort war
+     der 409 bisher genauso sicher, nur seltener (jemand hat den Namen seit dem Purge neu vergeben);
+     eine Regel, die nur für eine Quelle gilt, wäre die zweite Wahrheit im selben Filter (Abschnitt 7).
+  - **`null` in `aliases`:** ein aliasloser Eintrag der Zeile gilt als **vorhanden**, wenn
+     `aliaslessIds.has(id)`, sonst als fehlend. Die K5-Regel 2 („die Id sitzt unter einem Alias, den
+     die Zeile nicht nennt ⇒ ganze Zeile weg") wird so gelesen, dass **ein aliasloser Live-Eintrag
+     von einer Zeile, die `null` nennt, als benannt gilt** — `aliaslessIds.has(id)` macht die Zeile
+     nur dann zur „fremden", wenn sie **kein** `null` trägt. Ohne diese Lesart filterte die K5-Regel
+     jede Zeile mit aliaslosem Eintrag still weg (Vorgabe des Betreibers: genau das darf nicht
+     passieren). Die Zählung von `skipped` bleibt je Alias, `null` zählt als einer.
+- **`toRestoreQueue`:** ein Alias `null` ⇒ Queue-Key `${sevenTvEmoteId}#` (leerer Suffix — bleibt
+  eindeutig, weil 7TV je Id höchstens einen aliaslosen Eintrag zulässt und Regel 3 aus T3 zwei
+  gleiche Keys schon in der Datei ausschließt), ADD mit `alias: null` in den Variablen — die
+  Mutation `ADD_EMOTE_MUTATION` erlaubt das heute (`$alias: String`, nullbar), es ist der
+  dokumentierte Weg zum Standardnamen. Anzeige der Queue-Zeile: `defaultName`.
+- **`startRestoreFlow`** unverändert in Signatur und Reihenfolge (Token vor Bestätigung — nicht
+  „angleichen"); `RestoreConfirmDialogData.names` zeigt aliaslose Einträge unter `defaultName`;
+  `addCount` zählt `null` mit.
+- **Dock nach dem Lauf:** `skippedNameTaken > 0` ⇒ eigene Zeile mit Grund (`restore.skippedNameTaken`,
+  transiente Mechanik wie `skippedDuplicates`), damit „übersprungen" nicht als „war schon da"
+  gelesen wird.
+- **Nicht Teil dieses Tasks:** ein Rückgängigmachen des Replace (Quell-Emote entfernen, Ziel
+  wiederherstellen) — Folge-Issue; der Restore in ein ungetracktes Set — Folge-Issue (s. Befund);
+  ein Laden der Datei als **Auswahl** (#201).
+
+**Grenzfälle:** Rückweg-Datei eines Laufs, der nie gestartet wurde ⇒ jede Zeile fällt über Regel 3
+(alles vorhanden) heraus, Dock zeigt „N übersprungen (schon vorhanden)", kein Lauf ·
+Ergebnisprotokoll mit `unknown`-Zeile, `confirmed: true` ⇒ Restore-Zeile; das Live-Set entscheidet,
+ob sie nötig ist · Ziel mit einem benannten und einem aliaslosen Eintrag, Replace geglückt ⇒ der
+benannte Alias ist belegt (Regel 4), der aliaslose fehlt und wird wiederhergestellt — die Zeile
+läuft mit **einem** ADD ohne Alias · dieselbe Datei zweimal eingelesen ⇒ zweiter Lauf leer (alles
+vorhanden) · Datei auf der Seite eines anderen Kanals ⇒ `wrongChannel`; anderes Set gewählt ⇒
+`wrongSet` · `finished`-Datei ohne einen bestätigten REMOVE ⇒ `transferRunNoRows` · Purge-Protokoll,
+dessen Alias inzwischen ein anderes Emote hält ⇒ Regel 4 greift auch dort (neu, gewollt).
+
+**Tests (Regel 12):** `transfer-run-export.spec.ts` **+7** (Parser: `planned` liefert alle
+Ziel-Einträge; `finished` nur `confirmed`; Zeile mit `null`-Alias und `defaultName`; `wrongChannel`
+gegen `meta.targetChannelName`; `wrongSet`; `wrongVersion`; keine Zeile ⇒ `transferRunNoRows`).
+`already-present-filter.spec.ts` (bestehend) **+5**: Alias von anderer Id gehalten ⇒ gestrichen,
+`skippedNameTaken 1`; alle Aliase belegt ⇒ Zeile weg; `null`-Alias vorhanden (`aliaslessIds`) ⇒
+übersprungen, fehlend ⇒ bleibt; **gemischte Zeile (benannt belegt, aliaslos fehlend) ⇒ ein ADD**;
+Zeile ohne `null` bei aliaslosem Live-Eintrag ⇒ weiterhin „fremd" (K5 bleibt für Purge-Zeilen).
+`seven-tv-restore.service.spec.ts` **+2** (`null`-Alias ⇒ ADD mit `alias: null`, Key `${id}#`;
+`skippedNameTaken` durchgereicht). `file-import-step.spec.ts` **+3** (`transfer-run` beider Stufen
+⇒ `picked` mit `kind: 'restore'`; falscher Kanal ⇒ Banner, kein `picked`). `restore-flow.spec.ts`
+**+1** (aliasloser Eintrag zählt in `addCount`, Name ist `defaultName`). `purge-run-export.spec.ts`
+**0 neue** — die bestehenden Fälle beweisen, dass das Lesen unverändert ist (Regressionsschutz).
+E2E in T9 (Fall 6).
+
+**Abnahme:** Replace-Lauf mit gescheitertem ADD → Ergebnisprotokoll einlesen → Lücke geschlossen;
+geglückter Replace in derselben Datei → Zeile „Name belegt", kein Request; Purge-Protokolle lesen
+und restaurieren wie vor diesem Task, plus Regel 4. **Plan-eigene Kriterien R1–R4 (Abschnitt 4).**
+
+**Commit:** `feat(restore): restore removed target entries from a transfer record` und
+`feat(restore): skip aliases another emote now holds instead of burning a 409` — zwei Commits, der
+zweite ändert das Verhalten bestehender Purge-Restores. **Abhängigkeiten:** T7 (Dateiform,
+`defaultName`). **Modell:** `opus` — derselbe Grund wie T5.1 in Plan-200: der Restore ist der
+einzige Rückweg einer Löschung, und ein Fehler im Filter (stilles Wegfiltern) sähe niemand.
 
 ### T8 — Der Auflösungsschritt im Bestätigungsdialog; Zusammenfassung; Pflicht-Download; DECISIONS-Eintrag
 
@@ -811,7 +971,13 @@ ergänzen — der Abschnitt ist Vertrag).
   Radiogroup je Zeile (Skip · Rename · Replace bzw. Skip · Adopt), `aria-label` „Aktion für
   {sourceName}" (AK 23); bei Rename erscheint ein Textfeld mit dem Quellnamen als Vorbelegung und
   dem Feldfehler-Muster aus §5.3. Ein Adopt mit `adoptBlocked !== null` wird **angezeigt, aber
-  deaktiviert und beschriftet** (AK 8, Idiom aus 8.6 für nicht wählbare Sets).
+  deaktiviert und beschriftet** (AK 8, Idiom aus 8.6 für nicht wählbare Sets). **Dasselbe Idiom für
+  Replace bei ungetracktem Ziel** (`data.targetChannelName === null`, Fassung 5): die Option steht
+  in jeder Kollisionszeile, ist deaktiviert und trägt den Grund `import.resolve.replaceNeedsTracked`
+  („Nur für getrackte Kanäle wiederherstellbar") — sichtbar, nicht ausgeblendet, damit der Nutzer
+  weiß, dass es die Aktion gibt und warum sie hier fehlt. Die Oberfläche ist dabei nur die zweite
+  Sicherung: die Regel selbst steht in T3 (Regel 7), und die Zusammenfassung zeigt für ein
+  ungetracktes Ziel nie eine Entfernungszeile, weil kein Plan mit Replace entstehen kann.
 - **Layout:** `cdk-virtual-scroll-viewport` mit fester Zeilenhöhe, Höhe gegen `dvh` nach dem Muster
   `foreign-emote-grid.ts:115-135` (der Viewport ist der einzige Scrollcontainer; `reservedRem` für
   den Kopf des Schritts), Breitklasse `app-dialog-panel-wide` nur während Schritt 2. Unter `sm`
@@ -866,7 +1032,8 @@ kein Lauf, die Datei auf der Platte beschreibt einen Plan, der nie lief (unschä
 Name je Aktionsgruppe nennt die Zeile; Pfeiltaste ruft `scrollToIndex` und verschiebt den Fokus;
 Platzhalter ohne `<img>` bei `null`. `import-confirm-dialog.spec.ts` (43) **+12**: kein
 Einstiegs-Control ohne Konflikte, Reihenfolge nach §7.2 unverändert (AK 2); Control je Gruppe
-(AK 3); Entfernungszeile nur bei Replace (AK 20); Projektion mit gemischten Entscheidungen (AK 21,
+(AK 3); **ungetracktes Ziel ⇒ Replace-Option je Zeile deaktiviert mit Grund, Rename und Adopt
+wählbar, keine Entfernungszeile möglich** (R5); Entfernungszeile nur bei Replace (AK 20); Projektion mit gemischten Entscheidungen (AK 21,
 die drei Fälle aus Codex-Finding 5); Outcome ist der Plan, unberührt = `toAdd` (AK 5); Breitklasse
 nur in Schritt 2; **ohne Replace kein Read und „Kopieren"; mit Replace „Rückweg sichern", Read
 gegen das gemockte Set, Download ausgelöst, dann „Starten"; „Starten" vor dem Download nicht
@@ -897,7 +1064,7 @@ aufzeichnen), `web/e2e/audit/ui-audit.audit.ts` (Szenario `usage-stats-import-re
 `docs/Feature-Ideen-2026-08-01.md` (nur prüfen, ob eine Idee betroffen ist — #230 ist keine
 Backlog-Idee; ohne Treffer keine Änderung), `CLAUDE.md` (keine Änderung erwartet).
 
-**E2E (+5):** (1) Kollision + Alias-Abweichung im Mock; eine Zeile je Aktion (Rename, Replace,
+**E2E (+6, Zählung am Ende):** (1) Kollision + Alias-Abweichung im Mock; eine Zeile je Aktion (Rename, Replace,
 Adopt); „Rückweg sichern" ⇒ der gemockte Set-Read antwortet, ein Download feuert (Playwrights
 `waitForEvent('download')`, Inhalt: `stage: 'planned'`, `removedTarget` mit allen Aliasen) ⇒
 „Starten"; Assertion auf die **Reihenfolge und Argumente** der GQL-Requests (REMOVE vor ADD, Alias
@@ -912,7 +1079,20 @@ Konflikten öffnen, nichts anfassen, Kopieren ⇒ **kein** Set-Read, **kein** Do
 Banner nennt die Zeile, „Starten" nicht vorhanden; nach „Ziel neu laden" zeigt die Vorschau die neue
 Alias-Menge. (5) **Verlorene Antwort:** der gemockte ADD eines Replace bricht die Verbindung ab
 (`route.abort()`), der Nachlese-Read zeigt die Quell-Id unter dem Alias ⇒ Zeile grün, Id in
-`sync-imported`; Variante: der Read zeigt sie nicht ⇒ Zeile rot mit Lückengrund.
+`sync-imported`; Variante: der Read zeigt sie nicht ⇒ Zeile rot mit Lückengrund. (6) **Restore aus
+dem Ergebnisprotokoll (T7b):** Lauf mit zwei Replaces — einer glückt, beim anderen scheitert der
+ADD mit 409 —, Ergebnisprotokoll herunterladen (`waitForEvent('download')`), im Import-Dialog
+„Aus einer Datei" einlesen ⇒ Restore-Bestätigung nennt beide Ziel-Einträge; der gemockte Live-Read
+zeigt den Namen des geglückten Replace bei der Quell-Id ⇒ genau **ein** `addEmote` mit der Ziel-Id
+und dem alten Alias der Lücke, das Dock zeigt „1 Alias übersprungen — Name inzwischen belegt", kein
+`removeEmote`.
+
+(7) **Ungetracktes Ziel (R5):** Pick eines ungetrackten Sets im Picker (Mock
+`/me/emote-set-targets` wie in `usage-stats-import-target-dialog`), Kollision im Mock ⇒ Schritt 2
+zeigt die Replace-Option deaktiviert mit dem Grund, Rename ist wählbar, Kopieren ohne
+Entfernungszeile und ohne „Rückweg sichern" ⇒ nur `addEmote`, kein `removeEmote`, kein Download.
+
+**E2E-Zählung:** damit **+7**.
 
 **Gates:** alle drei Suiten; `node scripts/coverage-local.mjs` (Näherung — Sonar zählt Zweige mit,
 lokal pessimistisch; bei < 80 % nachsehen, ob es die neue `import-conflict-resolution-step.ts`
@@ -924,20 +1104,24 @@ gehen an Fable (global). **AK 24.**
 `docs: point the concept's resolution-table outlook at its own issue`. **Abhängigkeiten:** T1–T8.
 **Modell:** `sonnet`.
 
-### T10 — Live-Verifikation gegen olafs Testset (Betreiber-Handgriff, Regel 16)
+### T10 — Live-Verifikation an zwei Sets: getrackter Testkanal und olafs ungetracktes Set (Betreiber-Handgriff, Regel 16)
 
-**Konto** `olaf_olaf_son`, **Set `test`** `01M320AYTGYMPJZD3RGPJGHH1S` (Ziel), **aktives Set
-`tttt`**; sensitron ist dort 7TV-Editor, also ist das Ziel aus sensitrons Sicht ein **ungetracktes**
-Set (Set-zentrierte Meldungen, T6). Haupt-Checkout, Api per `dotnet run`, `npm start`, danach
-`dotnet run` beenden, bevor E2E läuft (`:5151`-Falle).
+**Zwei Ziele, zwei Rollen (Fassung 5).** Replace und Restore gibt es nur für getrackte Ziele; die
+destruktiven Belegpunkte laufen deshalb **gegen ein Set eines getrackten Testkanals** (Zweitkonto
+mit Wegwerf-Set, wie in Plan-200 T2.7 — ein Set, das im K4-Dropdown dieses Kanals wählbar ist,
+aktiv oder nicht). **Olafs Set `test`** (`01M320AYTGYMPJZD3RGPJGHH1S`, Konto `olaf_olaf_son`,
+aktives Set `tttt`; sensitron ist dort 7TV-Editor, das Ziel ist aus sensitrons Sicht **ungetrackt**)
+belegt die **Sperre** und die drei nicht-destruktiven Aktionen. Haupt-Checkout, Api per `dotnet
+run`, `npm start`, danach `dotnet run` beenden, bevor E2E läuft (`:5151`-Falle).
 
-**Vorbereitung (Betreiber, einmalig):** im Set `test` einen Eintrag anlegen, dessen Alias mit einem
-Emote der Quelle kollidiert, aber eine andere Id trägt; einen zweiten, dessen Id in der Quelle
-steht, dort aber anders heißt; einen dritten als #74-Duplikat (dieselbe Id zweimal, zwei Aliase),
-dessen einer Alias mit einer Quellzeile kollidiert. Quelle: eine Auswahl aus sensitrons Set oder
-eine Emote-Liste-Datei (dann `imageUrl: null` links — auch das ist ein Prüfpunkt).
+**Vorbereitung (Betreiber, einmalig), in beiden Sets gleich:** einen Eintrag anlegen, dessen Alias
+mit einem Emote der Quelle kollidiert, aber eine andere Id trägt; einen zweiten, dessen Id in der
+Quelle steht, dort aber anders heißt; einen dritten als #74-Duplikat (dieselbe Id zweimal, zwei
+Aliase), dessen einer Alias mit einer Quellzeile kollidiert; im getrackten Set zusätzlich ein Ziel
+mit einem aliaslosen Eintrag (Punkt 10). Quelle: eine Auswahl aus sensitrons Set oder eine
+Emote-Liste-Datei (dann `imageUrl: null` links — auch das ist ein Prüfpunkt).
 
-**Zu belegen, im PR-Text mit Zahlen:**
+**Zu belegen, im PR-Text mit Zahlen — Punkte 1–10 am getrackten Set, Punkt 11 an olafs Set:**
 
 1. Schritt 2 zeigt drei Zeilen mit Bildern; die Datei-Quelle zeigt links die Platte ohne Request
    (Netzwerktab: kein `cdn.7tv.app`-Aufruf mit der Quell-Id).
@@ -948,8 +1132,9 @@ eine Emote-Liste-Datei (dann `imageUrl: null` links — auch das ist ein Prüfpu
    Netzwerktab REMOVE → ADD benachbart; das Set danach per tokenlosem Read-back (Probe D aus dem
    T0-Kommentar) exakt wie erwartet — Duplikat mit **beiden** Aliassen weg, Quell-Emote unter
    Quellname drin, Adopt-Eintrag unter Quellname, Eintragszahl um genau eins gesunken.
-4. Audit-Log (globale Admin-Ansicht): ein `syncImported`- und ein `syncDeleted`-Eintrag mit
-   `ChannelName = null`, „von olaf_olaf_son", Zählwerte 2 und 1.
+4. Audit-Log des Testkanals: ein `syncImported`- und ein `syncDeleted`-Eintrag, beide mit der
+   Set-Id und `targetIsActiveSetOfChannel` passend zum gewählten Set, Zählwerte 2 und 1; ist das
+   Set nicht das aktive, ist der `syncDeleted` der Papierfall (`archivedCount 0`, Spec 6.6).
 5. Ergebnisprotokoll heruntergeladen: `stage: 'finished'`, `removedTarget.confirmed: true`,
    `counts.removed = 1`; **beide** Dateien danach im Import-Dialog einlesen ⇒ je Abweisung mit dem
    Transfer-Grund, kein Dialog geöffnet.
@@ -961,10 +1146,26 @@ eine Emote-Liste-Datei (dann `imageUrl: null` links — auch das ist ein Prüfpu
 8. Tab schließen **während** eines Replace-Laufs ⇒ Browser-Rückfrage; nach dem Lauf keine.
 9. Rate-Limit-Beobachtung aus der Konsolen-Abschlussmessung (`requestsSent` = Zeilen + Replaces;
    die zwei Set-Reads zählen nicht mit — sie laufen nicht durch die Engine).
+10. **Restore aus der Übertragungsdatei (T7b):** zweiter Replace-Lauf, dessen zweiter ADD
+    absichtlich scheitert (Zielname vorher im 7TV-Web belegen ⇒ 409), Ergebnisprotokoll
+    herunterladen, auf der Nutzungsseite des Kanals mit dem Zielset im Dropdown einlesen ⇒
+    Bestätigung nennt beide Ziel-Einträge, Lauf sendet genau einen ADD (die Lücke), die Zeile des
+    geglückten Replace steht im Dock als „Name belegt"; Read-back zeigt die Lücke geschlossen und
+    das Quell-Emote unangetastet. Dazu einmal die **Rückweg-Datei** desselben Laufs einlesen ⇒ alles
+    „schon vorhanden" bzw. „Name belegt", kein Request. Und einmal das Ziel mit aliaslosem Eintrag
+    ⇒ ein ADD ohne Alias, das Emote erscheint unter seinem Standardnamen.
+11. **Die Sperre an olafs Set `test` (R5):** Picker ⇒ ungetracktes Set bestätigen ⇒ Dialog ⇒
+    Schritt 2 zeigt in jeder Kollisionszeile „Ziel ersetzen" ausgegraut mit dem Grund „Nur für
+    getrackte Kanäle wiederherstellbar"; Rename und Adopt lassen sich wählen; Schritt 1 zeigt keine
+    Entfernungszeile und „Kopieren" statt „Rückweg sichern"; der Lauf sendet nur `addEmote` und
+    `updateEmoteAlias`, kein `removeEmote`; Audit (globale Admin-Ansicht) zeigt genau einen
+    `syncImported` mit `ChannelName = null`, „von olaf_olaf_son", und **keinen** `syncDeleted`.
+    Read-back: Eintragszahl um die Rename-Zeilen gewachsen, der Adopt-Eintrag unter dem Quellnamen,
+    nichts entfernt.
 
 Der Betreiber führt die Handgriffe aus; ein Subagent (`sonnet`) bereitet die Read-back-Abfrage und
 die Erwartungswerte vor und schreibt die Befunde in den PR-Text. **Kein Commit**, außer ein Fund
-verlangt einen `fix(import): …`. **AK 7 (live), 19 (live), 24.**
+verlangt einen `fix(import): …`. **AK 7 (live), 19 (live), 24; R1–R3, R5 (live).**
 
 ---
 
@@ -989,8 +1190,13 @@ verlangt einen `fix(import): …`. **AK 7 (live), 19 (live), 24.**
 | 15 | ADD scheitert nach REMOVE ⇒ eigener Grund, Lauf geht weiter — **eine verlorene oder 5xx-Antwort ist kein Scheitern** (`unknown`, Nachlesen auf lauf-gebundenem Ergebnis) | T4, T5, T9 (E2E 2, 5) |
 | 16 | Protokoll nach jedem Lauf (Ergebnisprotokoll, aus dem geklärten Ergebnis); **zusätzlich Rückweg-Datei vor jedem Lauf mit Replace** | T7, T8 |
 | 17 | Replace-Zeile trägt Ziel-Id und **alle Einträge** — benannte Aliase **und** einen aliaslosen — **live gelesen** vor dem Download, nicht aus der Vorschau; Ergebnis mit `confirmed`, das am bestätigten REMOVE hängt, nicht am Zeilenstatus | T2, T5, T7, T8, T9 (E2E 1, 4), T10 (Punkte 2, 7) |
-| 18 | `transfer-run` wird namentlich abgewiesen (beide Stufen); unbekannter `kind` mit Grund | T7 |
-| 19 | Löschmeldung getrackt / ungetrackt, Audit zeigt beides — **jede bestätigte** REMOVE (`completedSteps >= 1`), auch bei einer `unknown`-Zeile | T4, T5, T6, T10 |
+| 18 | `transfer-run` wird als **Import-Quelle** namentlich abgewiesen (beide Stufen); unbekannter `kind` mit Grund. **Die Restore-Hälfte des AK ist durch den Betreiber am 2026-09-23 revidiert:** beide Stufen sind über „Wiederherstellen" ladbar (T7b) | T7 (Import), T7b (Restore) |
+| R1 *(Plan)* | Rückweg-Datei und Ergebnisprotokoll sind über den bestehenden Restore-Einstieg ladbar; `planned` ⇒ alle geplanten Ziel-Einträge, `finished` ⇒ nur bestätigte REMOVEs; nur Ziel-Einträge | T7b, T9 (E2E 6), T10 (Punkt 10) |
+| R2 *(Plan)* | Nur Lücken schließen: ein Alias, den eine andere Id hält, wird vor dem Lauf mit Grund aussortiert, nichts wird entfernt | T7b, T9 (E2E 6), T10 |
+| R3 *(Plan)* | Ein aliasloser Ziel-Eintrag wird per ADD ohne Alias wiederhergestellt und von keinem Filter still verworfen | T7, T7b, T10 |
+| R4 *(Plan)* | Bestehende `purge-run`-Dateien werden byte-identisch gelesen wie vor #230 | T7b |
+| 19 | Löschmeldung, Audit zeigt Hinzugefügtes und Entferntes — **jede bestätigte** REMOVE (`completedSteps >= 1`), auch bei einer `unknown`-Zeile. **Die ungetrackte Hälfte des AK (neuer set-zentrierter `sync-deleted`) ist durch den Betreiber am 2026-09-23 gegenstandslos:** Replace ist für ungetrackte Ziele gesperrt, die Löschmeldung läuft immer kanalgebunden | T4, T5, T10 |
+| R5 *(Plan)* | Keine Löschung ohne Restore-Weg: „Ziel ersetzen" ist für ein ungetracktes Ziel in Validierung und Oberfläche gesperrt, mit Grund; Skip, Rename, Adopt bleiben | T3, T8, T9 (E2E 7), T10 (Punkt 11) |
 | 20 | Entfernungszeile genau bei Replace | T3, T8 |
 | 21 | Projektion: `addCount − removedEntryCount` — Rename +1, Replace 0, Replace auf Duplikat −1 | T3, T8 |
 | 22 | 200 Zeilen, 360 px, kein horizontaler Scroll, kein Bildsturm | T8 |
@@ -1003,26 +1209,30 @@ verlangt einen `fix(import): …`. **AK 7 (live), 19 (live), 24.**
 
 ```
 T0 (erledigt)
-T1 ─┐            T4 ─┐        T6 ─┐
-    ▼                │            │
-    T2               │            │
-    ▼                ▼            ▼
-    T3 ─────────────► T5 ◄────────┘
+T1 ─┐            T4 ─┐        (T6 entfallen)
+    ▼                │
+    T2               │
+    ▼                ▼
+    T3 ─────────────► T5
     │                 │
     │                 ▼
-    │                 T7
-    ▼                 ▼
-    T8 ◄──────────────┘
+    │                 T7 ──► T7b
+    ▼                 ▼        │
+    T8 ◄──────────────┘        │
+    ▼                          │
+    T9 ◄───────────────────────┘
     ▼
-    T9 ──► T10
+    T10
 ```
 
-- **Welle 1 (parallel, drei Worktrees oder sequenziell in einem):** T1, T4, T6.
+- **Welle 1 (parallel, zwei Worktrees oder sequenziell in einem):** T1, T4.
 - **Welle 2:** T2 (nach T1), dann T3.
-- **Welle 3:** T5 (nach T3, T4, T6).
+- **Welle 3:** T5 (nach T3, T4).
 - **Welle 4:** T7 (nach T5).
 - **Welle 5:** T8 (nach T3, T5, T7 — der Pflicht-Download im Dialog braucht T7s Builder; in der
   ersten Fassung liefen T7 und T8 parallel).
+- **Welle 5, parallel dazu:** T7b (nach T7; unabhängig von T8 — der Restore-Weg fasst den
+  Import-Dialog nur an der Einlesesorte an).
 - **Welle 6:** T9, dann T10.
 
 Zwischen T4 und T5 ist der Build grün (Signaturanpassung in T4 schließt die drei Dienste ein);
@@ -1038,8 +1248,10 @@ angenommen, einer (Frage 4) ist **gegen** den Vorschlag entschieden. Nichts hier
 neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
 
 1. **Ungetracktes Zielset.** Die #200-Spec kennt keinen set-zentrierten `sync-deleted` (6.6 setzt
-   einen Kanal voraus); der Plan baut den Endpunkt wie im Issue vorgeschlagen (T6), mit dem
-   Details-Shape aus 0.2. — **Entschieden: so bauen; #224 bleibt getrennt** und unangetastet.
+   einen Kanal voraus); der Plan baute den Endpunkt wie im Issue vorgeschlagen (T6). —
+   **Entschieden: so bauen; #224 bleibt getrennt.** — **Überholt in Fassung 5 (2026-09-23):** mit
+   der Sperre „kein Replace für ungetracktes Ziel" entsteht dort keine Löschung mehr, T6 ist
+   **entfallen**; der Endpunkt wandert ins Folge-Issue „Restore pro Set". #224 bleibt getrennt.
 2. **Adopt hat keine Buchführung.** Weder `sync-imported` noch `sync-deleted` passen; ein
    Alias-Wechsel hat keinen Audit-Vertrag. — **Entschieden: Adopt meldet nichts**; die Zeile steht
    im Ergebnisprotokoll, ein dritter Report ist nicht Teil von #230.
@@ -1057,7 +1269,11 @@ neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
    = einziger Scrollcontainer). — **Entschieden: mit der Breitklasse `app-dialog-panel-wide`**
    während Schritt 2 (T8).
 6. **Dateiformate.** — **Entschieden: `emote-list`-Export weiterhin ohne `imageUrl`;
-   Envelope-`channelName` des `transfer-run` ist `''` bei ungetracktem Ziel** (T1, T7).
+   Envelope-`channelName` des `transfer-run` ist `''` bei ungetracktem Ziel** (T1, T7). —
+   **Eingeengt in Fassung 5:** der Fall `''` betrifft nur noch das **Ergebnisprotokoll** eines
+   Add/Rename/Adopt-Laufs in ein ungetracktes Set; eine **Rückweg-Datei** (Stufe `planned`) hat
+   immer einen Kanal, weil sie nur bei Replace entsteht und Replace nur getrackt ist. Die
+   Entscheidung bleibt, ihr Gewicht ist kleiner: eine solche Datei hat keine Restore-Zeilen.
 7. **Adopt gibt den alten Zielalias nicht frei** (T3, konservativ). — **Entschieden: so lassen.**
    Codex-Finding 4 zieht daraus die konsistente Folge für fremde Replace-Freigaben (T3, Regel 2).
 8. **`targetGroup[0].name` vs. `target.aliases[0]`** — nur zur Kenntnis, deckungsgleich mit AK 8;
@@ -1076,7 +1292,10 @@ neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
 | `gqlStatus` in der Engine | nicht erwähnt | neues Feld in `RunOneResult`/`abortOn` | Das Issue verlangt „detect it by `status`, not by text"; die Engine trägt den Status heute nicht durch |
 | **Rückweg-Datei vor dem Lauf** | „Offered after every transfer run" (nur danach) | zusätzlich Pflicht-Download **vor** dem ersten REMOVE, `stage: 'planned'`, aus live gelesenen Aliasen | Betreiber-Entscheidung Frage 4 und Codex-Findings 1/2: eine Datei, die erst nach dem Lauf entsteht, gibt es nicht, wenn der Tab mitten im Lauf stirbt; eine Datei aus der Vorschau kann Aliase nicht kennen, die seither dazukamen |
 | **Ausgang `unknown`** | „if the ADD fails, the row ends `failed`" | ein Schritt ohne GraphQL-Antwort und ohne HTTP-Ablehnung vor der Verarbeitung (Status 0, jede 5xx) endet `unknown`; ein Nachlesen auf einem lauf-gebundenen Ergebnis klärt ihn; unklärbar heißt: Quell-Id in keiner Import-Meldung — der bestätigte REMOVE derselben Zeile aber in der Löschmeldung | Codex Runde 1 Finding 3, Runde 2 Findings 1, 3, 4: eine verlorene Antwort ist kein Beweis, dass nichts passiert ist; eine 500 sagt nicht, ob vor oder nach dem Schreiben; eine Engine-Queue gehört dem nächsten Lauf; und die Bestätigung eines REMOVE ist eine Tatsache aus dem Lauf, die kein späterer Zustand der Zeile zurücknehmen kann |
-| **Aliaslose Zieleinträge** | nicht behandelt (Alias-Liste) | `removedTarget.entries` mit `alias: string \| null`; Drift-Vergleich auf Eintragsebene an beiden Prüfstellen; Replace **erlaubt** | Codex Runde 2, Finding 2. Gewählt: **abbilden statt sperren**. Am Code geprüft: der Purge-Restore kann einen aliaslosen Eintrag nicht ausdrücken (`PurgeRunRow.aliases` verlangt nicht-leere Strings, `readProtocolRow` fällt auf `[name]` zurück) — aber die `transfer-run`-Datei ist ohnehin nie ladbar, ihr Rückweg ist ein Mensch, und der stellt den Eintrag mit einem ADD **ohne** Alias wieder her (7TV fällt auf den Standardnamen zurück, wie `ADD_EMOTE_MUTATION`s Kommentar sagt). Sperren hätte eine ganze Zielklasse aus Replace genommen, weil eine Datei ein Feld nicht hatte; die K5-Regel „aliaslos ist fremd" schützte vor einem **Re-ADD** auf einen unbekannten Eintrag — hier nimmt der REMOVE ihn so oder so, und die ehrliche Antwort darauf ist, ihn aufzuschreiben |
+| **Aliaslose Zieleinträge** | nicht behandelt (Alias-Liste) | `removedTarget.entries` mit `alias: string \| null` und `defaultName`; Drift-Vergleich auf Eintragsebene an beiden Prüfstellen; Replace **erlaubt**; **der Restore-Weg stellt den Eintrag per ADD ohne Alias wieder her** | Codex Runde 2, Finding 2, und Betreiber 2026-09-23 („von Hand" abgelehnt). Gewählt: **abbilden statt sperren, und wiederherstellbar machen**. Am Code geprüft: der Purge-Restore kann einen aliaslosen Eintrag nicht ausdrücken (`PurgeRunRow.aliases` verlangt nicht-leere Strings, `readProtocolRow` fällt auf `[name]` zurück) — das bleibt so für `purge-run`-Dateien; der Restore-Flow bekommt eine In-Memory-Zeile mit `null`-Alias, die `toRestoreQueue` als ADD ohne Alias sendet (die Mutation erlaubt es heute, `$alias: String`). Sperren hätte eine ganze Zielklasse aus Replace genommen, weil eine Datei ein Feld nicht hatte; die K5-Regel „aliaslos ist fremd" schützte vor einem **Re-ADD** auf einen unbekannten Eintrag — eine Zeile, die den Eintrag selbst als `null` nennt, kennt ihn, und für sie gilt die Regel nicht |
+| **`transfer-run` ladbar für den Restore** | AK 18: „never parsed as an import source or a restore, in whole or in part"; Out of Scope: „Loading a `transfer-run` protocol back in … Also #201's subject" | beide Stufen über den bestehenden Restore-Einstieg ladbar; nur Ziel-Einträge; Import-Abweisung bleibt | **Betreiber-Entscheidung 2026-09-23**, gegen das Issue: ein Rückweg, den nur ein Mensch von Hand gehen kann, ist keiner. Das Issue hat die Frage „welche Zeile wird geladen — `removedTarget` oder die hinzugefügte" als Grund für den Ausschluss genannt; der Plan beantwortet sie eng: **nur** `removedTarget`, nie Quell-ADDs, Renames oder Adopts. #201 (Protokoll als **Auswahl** laden) bleibt unberührt |
+| **Regel 4 im Restore-Filter gilt für alle Quellen** | — | „Alias von anderer Id gehalten ⇒ aussortiert mit Grund" auch für Purge-Protokolle | Ein Filter mit zwei Wahrheiten je Quelle ist der Fehler, den `import-source.ts`' erschöpfende Helfer für `ImportOrigin` vermeiden; der 409 war beim Purge-Restore genauso sicher, nur seltener. Verhaltensänderung für Bestandsrestores: ein roter 409 wird ein grauer „übersprungen — Name belegt" ohne verbranntes Ticket |
+| **Untracked-Restore, Replace-Undo** | Rückweg für jedes Ziel implizit | Restore aus Übertragungsdateien nur für **getrackte** Ziele — und seit Fassung 5 gibt es Replace auch nur dort; das **Folge-Issue „Restore pro Set"** bündelt set-zentrierten `sync-deleted` (Ex-T6), set-zentrierten `sync-restored`, einen Restore-Einstieg ohne Kanalseite und das Fallen der Sperre; vollständiges Rückgängigmachen eines Replace ist ein zweites Folge-Issue | Befund T7b: der Restore-Weg ist kanalgebunden (Seite, Parser, `sync-restored`), ein set-zentrierter `sync-restored` existiert nicht; ein ungetracktes Set hat heute für nichts einen Restore. Das Undo bräuchte ein REMOVE der Quelle plus ADD des Ziels — eine neue destruktive Aktion, die Entscheidung 4 und 6 neu stellen würde |
 | **Zeichensatzprüfung nur für getippte Aliase** | „Every produced alias must pass `isNameRejectedBySevenTv`" | nur der Alias einer Rename-Zeile; `toAdd`-, Replace- und Adopt-Aliase (Quellnamen) laufen wie heute | Codex Runde 2, Finding 5: `buildImportPreview` lässt `invalidNames` bewusst in `toAdd` („7TV entscheidet"); eine Prüfung aller erzeugten Aliase blockierte einen unveränderten Dialog gegen AK 2/5 |
 | **Fremde Freigabe im selben Lauf** | „a replace frees its target's name for use in the same run, and that has to be allowed" | frei nur für die **eigene** Replace-Zeile; ein Rename auf einen Namen, den ein **anderes** Replace freigibt, ist eine Verletzung | Codex-Finding 4: die Engine läuft in Quellreihenfolge, der Rename kann vor dem Replace kommen und 409 bekommen; die Alternative — Abhängigkeiten im Lauf ordnen — kostet eine Topologie samt Zyklusfall für etwas, das in zwei Läufen sauber geht. Der eigene Fall (REMOVE gibt frei, der ADD derselben Zeile nimmt) bleibt erlaubt und ist, was das Issue mit „the whole point of the action" meint |
 | **Bestandsdoppel in `toAdd`** | „No two produced aliases may be equal" | Doppel zwischen zwei **unveränderten** `toAdd`-Zeilen sind keine Verletzung | Codex-Finding 6, am Code belegt: `dedupeImportRows` faltet nur nach Id, der Fall existiert heute, 7TV lehnt die zweite Zeile ab; die Regel wörtlich genommen blockierte einen unveränderten Dialog gegen AK 2/5 |
@@ -1084,7 +1303,9 @@ neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
 | `sourceName` in der Protokollzeile | nur `alias` | beides | Ein Rename ist sonst nicht rekonstruierbar |
 | `removedTarget.confirmed` | nicht spezifiziert | im Ergebnisprotokoll je Replace | Mit `unknown` gibt es Zeilen, deren REMOVE weder bestätigt noch widerlegt ist; ein Leser muss das ohne Statusvergleich sehen |
 | `transfer-run`-CSV | nicht spezifiziert | Spaltenliste in T7 | Der Export-Dialog bietet immer CSV neben JSON (§7.4); ohne Spaltenvertrag entstünde er ad hoc |
-| Spec-Querverweis F7 | „correct … while this issue is being built" | eigener `docs:`-Commit in T6 | Regel 2: logisch getrennter Commit |
+| Spec-Querverweis F7 | „correct … while this issue is being built" | eigener `docs:`-Commit in T9 (bis Fassung 4 in T6) | Regel 2: logisch getrennter Commit; reine Doku ohne Endpunkt |
+| **T6 entfallen** | „This issue adds `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted`" | kein neuer Endpunkt, keine Client-Methode | Betreiber-Entscheidung Fassung 5: der Endpunkt hatte als einzigen Grund die Löschmeldung eines Replace in ein ungetracktes Set; Replace ist dort gesperrt, Adopt meldet nichts, Add/Rename melden über den bestehenden set-zentrierten `sync-imported`. Ein Endpunkt ohne Aufrufer ist ein Endpunkt ohne Test seiner Wahrheit. Er kehrt mit dem Folge-Issue „Restore pro Set" zurück — dann zusammen mit `sync-restored` pro Set, als Paar |
+| **Replace für ungetracktes Ziel gesperrt** | Aktionstabelle ohne Unterscheidung | Regel 7 in T3, ausgegraut mit Grund in T8 | Betreiber-Entscheidung Fassung 5: **keine Löschung ohne Restore-Weg** — der Restore ist kanalgebunden (Befund T7b), ein ungetracktes Set hat keinen; eine Aktion, deren Rückweg „im 7TV-Web von Hand" heißt, ist genau die, die der Betreiber abgelehnt hat |
 | Konzept-Ausblick auf #201 | „point the outlook at this issue" | T9 | reine Doku, ans Ende |
 | i18n als eigener Task | eigene Aufwandszeile | in jedem Task, der Text erzeugt | Hausregel: Schlüssel landen mit dem Feature in beiden Locales, nicht als Sammelschritt |
 | Effort-Schätzung | 41 h | nicht neu geschätzt | Fassung 2 ändert den Umfang um den Pflicht-Download mit Live-Verifikation (grob +4 h), den Ausgang `unknown` samt Nachlesen (+4 h) und die zwei Validierungskorrekturen (+1 h); Abschnitt 2 der ersten Fassung (+3 h) entfällt größtenteils |
@@ -1094,8 +1315,8 @@ neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
 ## 8. Rückweg
 
 Frontend-Änderungen sind per Revert des PR rückgängig; die eine additive DTO-Eigenschaft
-(`EmoteListItemDto.ImageUrl`) und der neue Endpunkt sind unabhängig davon harmlos, wenn sie bleiben
-(kein Aufrufer, kein Schema). Keine Migration. Bereits heruntergeladene `transfer-run`-Dateien —
+(`EmoteListItemDto.ImageUrl`) ist unabhängig davon harmlos, wenn sie bleibt (kein Schema). Einen
+neuen Endpunkt gibt es seit Fassung 5 nicht mehr (T6 entfallen). Keine Migration. Bereits heruntergeladene `transfer-run`-Dateien —
 Rückweg-Datei wie Ergebnisprotokoll — bleiben in einem revertierten Build **mit Grund** unlesbar
 (`wrongKind`) — das ist die vorgesehene Antwort, kein Bruch; als JSON bleiben sie für einen
 Menschen lesbar, und nur darauf kommt es beim Rückweg an. Ein bereits gelaufener Replace ist
@@ -1103,8 +1324,13 @@ Menschen lesbar, und nur darauf kommt es beim Rückweg an. Ein bereits gelaufene
 lag, ist der einzige Weg zurück — deshalb der Pflicht-Download, deshalb die Live-Verifikation davor.
 Eine `unknown`-Zeile im Ergebnisprotokoll ist nach einem Revert genauso unbekannt wie davor: der
 Nutzer prüft das Set bei 7TV, wie das Dock es ihm gesagt hat — ihr bestätigter REMOVE steht
-unabhängig davon im Audit-Log und in der Rückweg-Datei, und ein aliasloser Eintrag darin kommt
-per ADD ohne Alias zurück, mit oder ohne diesen Build.
+unabhängig davon im Audit-Log und in der Rückweg-Datei. **Nach einem Revert ist der Restore aus
+einer Übertragungsdatei nicht mehr möglich** (der Build kennt die Einlesesorte nicht mehr und weist
+sie mit `wrongKind` ab); die Datei bleibt als JSON lesbar, und die Ziel-Einträge lassen sich dann
+nur noch im 7TV-Web zurücksetzen — genau der Handgriff, den der Betreiber als Regelweg abgelehnt
+hat. Wer revertiert, revertiert deshalb **nicht** zwischen einem Replace-Lauf und seinem Restore;
+T7b und T7 gehen zusammen zurück oder gar nicht. Die Regel-4-Änderung am Restore-Filter ist
+unabhängig davon rückgängig und harmlos: ohne sie kommt der 409 zur Laufzeit zurück, mehr nicht.
 
 ---
 
@@ -1132,7 +1358,7 @@ Keiner der sechs Befunde ist zurückgewiesen. Die Planentscheidung zu 3 („Stat
 | # | Schwere | Befund | Lösung | Folge |
 |---|---|---|---|---|
 | 1 | high | Eine bestätigte REMOVE fällt aus dem Audit, wenn die ADD-Antwort verloren geht und das Nachlesen scheitert: die Zeile bleibt `unknown` und stand in keiner Meldung | **Übernommen.** Die Bestätigung eines Schritts ist eine eigene Größe: `RunQueueItem.completedSteps` zählt die von 7TV bestätigten Schritte, unabhängig vom Endstatus der Zeile. Die Löschmeldung nimmt jede Replace-Zeile mit `completedSteps >= 1` — `done`, `failed` oder `unknown` —, `removedTarget.confirmed` hängt daran; nur die Quell-Id bleibt bei `unknown` aus `syncImported`. Das Nachlesen kann `completedSteps` auf 1 heben (Ziel weg), nie senken | T4, T5, T7; AK 17, 19 |
-| 2 | high | Einträge ohne Alias umgehen beide Prüfungen: `aliaslessIds` wurde nicht verglichen, der REMOVE nimmt den Eintrag trotzdem, die Rückweg-Datei kannte ihn nicht | **Übernommen, Variante „abbilden".** Beide Prüfstellen (Dialog-Read vor dem Download, Flow-Read vor dem Start) vergleichen auf Eintragsebene, `aliaslessIds` eingeschlossen; die Rückweg-Datei trägt `removedTarget.entries` mit `alias: string \| null`; `removedEntryCount` zählt den aliaslosen Eintrag; T2 prüft, wie ein solcher Eintrag heute in der Vorschau erscheint. Sperren verworfen: der Restore-Code kann den Eintrag zwar nicht ausdrücken (`aliases` verlangt nicht-leere Strings), aber diese Datei wird nie geladen — ihr Rückweg ist ein Mensch mit einem ADD ohne Alias, und den kann die Datei anleiten. Test für den gemischten Fall an beiden Prüfstellen und im Builder | Abschnitt 2, T2, T5, T7, T8; Abschnitt 7 |
+| 2 | high | Einträge ohne Alias umgehen beide Prüfungen: `aliaslessIds` wurde nicht verglichen, der REMOVE nimmt den Eintrag trotzdem, die Rückweg-Datei kannte ihn nicht | **Übernommen, Variante „abbilden".** Beide Prüfstellen (Dialog-Read vor dem Download, Flow-Read vor dem Start) vergleichen auf Eintragsebene, `aliaslessIds` eingeschlossen; die Rückweg-Datei trägt `removedTarget.entries` mit `alias: string \| null`; `removedEntryCount` zählt den aliaslosen Eintrag; T2 prüft, wie ein solcher Eintrag heute in der Vorschau erscheint. Sperren verworfen: der Restore-Code kann den Eintrag zwar nicht ausdrücken (`aliases` verlangt nicht-leere Strings), aber diese Datei wird nie geladen — ihr Rückweg ist ein Mensch mit einem ADD ohne Alias, und den kann die Datei anleiten. Test für den gemischten Fall an beiden Prüfstellen und im Builder. **Stand der Runde; am selben Tag vom Betreiber überholt:** die Datei ist seit Fassung 4 über den Restore-Weg ladbar, und der aliaslose Eintrag kommt per ADD ohne Alias aus dem Lauf zurück, nicht von Hand (T7b) | Abschnitt 2, T2, T5, T7, **T7b**, T8; Abschnitt 7 |
 | 3 | high | Das asynchrone `settle` hing nicht am abgeschlossenen Lauf: `isRunning` fällt vor `onComplete`, ein neuer Import kann starten, `settle(key)` träfe eine fremde Queue; `RunResult.items` war ohnehin ein Snapshot | **Übernommen, Variante „lauf-gebundenes Ergebnis".** `engine.settle` entfällt; die Engine bleibt lauf-agnostisch. Der Service klärt auf einer Kopie des Snapshots, veröffentlicht Kopie und `settlement: 'settled'` atomar über `run.set` unter `applyIfCurrent`, und die Anzeige liest `importService.items` (Engine-Queue nur während `isRunning`, danach das eigene Ergebnis). Späte Rückrufe gegen einen neueren Lauf oder nach `reset()` fallen weg wie jede andere R15-Antwort. „Start gesperrt bis fertig" verworfen: es bräuchte einen vierten Arbiter-Zustand, blockierte Delete/Restore mit und ersetzte den Guard gegen späte Antworten trotzdem nicht (`reset()` und Kanalwechsel erzeugen dieselbe Lage). Tests: Neustart während des Lesens, `reset()` während des Lesens | T4, T5, T7; AK 15, 16 |
 | 4 | high | HTTP 500 als `failed` war eine falsche Sicherheit | **Übernommen**, Betreiber hat zugestimmt. Regel statt Liste: eine GraphQL-Antwort ist eindeutig (Erfolg/Backoff/`failed`); eine `4xx` aus 7TVs HTTP-Schicht ist „abgelehnt, bevor verarbeitet" und bleibt `failed`/Backoff/Abbruch — darunter der 401 mit dem Body außerhalb des Schemas, den `abortsForMissingPrivileges` am `httpStatus` erkennt und der weiter Token löscht und abbricht; alles andere (Status 0, jede 5xx inkl. 500) ist `unknown`. Test: 500 ⇒ `unknown`, 401 ⇒ `failed` + Abbruch, beide auf einer Operation mit dem Flag | T4; Abschnitt 1, 7 |
 | 5 | medium | Die Regel „jeder erzeugte Alias gültig" blockierte einen unveränderten Dialog mit `invalidNames`-Zeilen | **Übernommen.** Regel 3 gilt nur für den getippten Alias einer Rename-Zeile; Quellnamen (`toAdd`, Replace-ADD, Adopt) laufen wie heute, 7TV entscheidet. Test: keine Entscheidungen, eine `invalidNames`-Zeile ⇒ `ok: true` | T3; Abschnitt 7 |
@@ -1140,3 +1366,13 @@ Keiner der sechs Befunde ist zurückgewiesen. Die Planentscheidung zu 3 („Stat
 Keiner der fünf Befunde ist zurückgewiesen. Neue offene Fragen ergeben sich nicht; die beiden
 Variantenwahlen (2 „abbilden", 3 „lauf-gebunden") sind mit Grund im Plan und kippbar, ohne dass
 ein Task vor Beginn davon abhängt.
+
+### Nachtrag: zwei Betreiber-Entscheidungen nach Runde 2 (2026-09-23, Fassungen 4 und 5)
+
+Keine Codex-Runde, aber zwei Entscheidungen, die den Plan nach Runde 2 noch einmal verschoben
+haben und hier festgehalten sind, damit die nächste Runde sie nicht als Drift liest:
+
+| Fassung | Entscheidung | Folge |
+|---|---|---|
+| 4 | **Die Übertragungsdateien sind über den bestehenden Restore-Weg ladbar**; „von Hand wiederherstellen" ist abgelehnt. Nur entfernte Ziel-Einträge, nur Lücken schließen, aliaslose per ADD ohne Alias | Neuer Task T7b; T7 verliert die Restore-Abweisung; AK 18 in der Restore-Hälfte revidiert; R1–R4 |
+| 5 | **Keine Löschung ohne Restore-Weg:** weil der Restore kanalgebunden ist (Befund T7b), ist „Ziel ersetzen" für ein ungetracktes Ziel gesperrt — in der Validierung (T3, Regel 7) und in der Oberfläche (T8, ausgegraut mit Grund). Skip, Rename, Adopt bleiben | **T6 entfällt** (kein Replace ohne Kanal ⇒ keine Löschmeldung ohne Kanal); Frage 1 überholt, Frage 6 eingeengt; AK 19 in der ungetrackten Hälfte gegenstandslos; R5; T10 läuft Replace/Restore gegen ein getracktes Set und belegt an olafs Set nur die Sperre. Folge-Issue „Restore pro Set" (set-zentrierter `sync-deleted` + `sync-restored`, Restore ohne Kanalseite), mit dem die Sperre fällt |
