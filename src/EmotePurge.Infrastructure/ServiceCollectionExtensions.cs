@@ -13,6 +13,7 @@ using EmotePurge.Infrastructure.Twitch;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 
@@ -206,6 +207,17 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUserService, UserService>();
         // The one account deletion path, shared by the admin endpoint and the retention job.
         services.AddScoped<IAccountDeletionService, AccountDeletionService>();
+
+        // The retention pass the worker's job runs once a day. Options bound and validated eagerly like
+        // ChannelCapacityOptions above; only switch and pacing are configurable, the periods are
+        // RetentionPolicy constants. The clock is a TimeProvider from DI (TryAdd, so a host or a test that
+        // registered its own keeps it), which is what lets tests pin the cutoffs.
+        var retentionOptions = new RetentionOptions();
+        configuration.GetSection(RetentionOptions.SectionName).Bind(retentionOptions);
+        retentionOptions.Validate();
+        services.AddSingleton(retentionOptions);
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<IDataRetentionService, DataRetentionService>();
         services.AddScoped<ITwitchUserTokenService, TwitchUserTokenService>();
         services.AddScoped<IModeratedChannelsProvider, ModeratedChannelsProvider>();
         services.AddScoped<IModeratorCheckService, ModeratorCheckService>();

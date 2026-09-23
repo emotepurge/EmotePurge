@@ -10,6 +10,67 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Retention periods as code constants, one predicate per category for count and delete, cascade counts in the dry run, and the dry-run default (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/RetentionPolicy.cs` ·
+`src/EmotePurge.Core/Services/IDataRetentionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/DataRetentionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/RetentionOptions.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AccountRetentionQueries.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`
+
+Sixth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T6): the service the worker's
+retention job (T7) calls once per tick. `IDataRetentionService.RunAsync(enforce)` runs one pass and
+returns a `RetentionRunSummary` of counts only.
+
+- **The periods are constants in `RetentionPolicy` (Core)** — tokens 30 days, accounts, ended vote
+  sessions and audit entries 365 days ("twelve months" is a fixed 365 days), deactivated channels 180
+  days, all measured exclusively (a row exactly one period old is not due). Not configuration: the
+  privacy policy (#247) states them, and an environment variable that changed one would make that text
+  wrong. Configurable are only switch and pacing, `RetentionOptions` (section `Retention`): `Enforce`
+  (default `false`), `IntervalHours` (24), `StartupDelayMinutes` (10), `MaxAccountsPerRun` (100), bound
+  and validated at startup in `AddEmotePurgeInfrastructure` like `ChannelCapacityOptions`.
+- **Fixed order, own transactions:** tokens (one conditional `UPDATE` of all four token columns for
+  users last active before the cutoff that hold any of them) → accounts (at most `MaxAccountsPerRun`
+  candidates, longest-absent first, each through `IAccountDeletionService` with `AuditActor.System`,
+  `Inactivity` and the cutoff, its own transaction and recheck; `StillActive`, `NotFound` and failures
+  are counted and do not stop the others) → ended vote sessions (`IsActive = false AND
+  COALESCE(EndedAt, StartedAt) < cutoff`, keyset batches of 500, votes and ballot rows by cascade, no
+  audit entry) → audit log (`OccurredAtUtc < cutoff`, keyset batches of 5,000 deleted by primary key —
+  Postgres has no `DELETE … LIMIT`) → channels (first stamp inactive rows without `DeactivatedAtUtc`
+  with the pass's reference time, in the dry run too; then each channel deactivated before the cutoff
+  through `IChannelService.PurgeIfInactiveSinceAsync`). Cutoffs come from one `TimeProvider` reading
+  per pass; `TimeProvider.System` is registered with `TryAddSingleton`.
+- **One predicate per category, used by both modes.** The dry run walks the same selection (same
+  expression, same batches, same account cap) and stops before the write. The account deletion's own
+  predicates — last activity, votes of the user, audit entries as actor and as `"user"` target — moved
+  into `AccountRetentionQueries`, set-shaped, so `AccountDeletionService` deletes with exactly the
+  expressions the dry run counts with.
+- **Cascade counts in the summary, in both modes, from the selected parents:** per account votes (and
+  the part in open sessions) and pseudonymised audit entries; per session votes and ballot rows; per
+  channel emotes, usage rows, live days, sessions and votes. **Overlap is subtracted, not double
+  counted:** an enforced pass deletes a user's votes before the session category counts, and ended
+  sessions before a channel purge cascades, so every later cascade count leaves out the votes of the
+  accounts this pass removed (dry: would remove) and the sessions the session category covers — a no-op
+  when enforcing, the exact correction in the dry run. Without concurrent writers both modes report the
+  same numbers (tested on an overlapping data set, together with the check that the enforced counts
+  equal the rows that actually went). The per-account audit count sums "distinct entries" per account,
+  as the deletion reports it: an entry where one deleted account acts on another counts for both.
+- **The scope's `AppDbContext` is shared** with the account deletion and the channel purge, so the
+  service clears the change tracker after every account and channel. Otherwise a deletion that threw
+  would leave its tracked removal pending, and the next item's `SaveChanges` would replay it outside
+  the lock and recheck that guarded it (or fail every remaining item on the same error).
+- **Log lines carry counts and error kinds only** (exception type, Postgres SQLSTATE) — never an
+  exception message, which can quote a key value, and never a login, id or channel name. A category
+  whose bulk statement fails aborts the pass (the job retries on the next tick); per-item failures in
+  accounts and channels are counted instead.
+- **Dry run by default:** the irreversible mistake would hit the whole existing database on the first
+  enforced pass, the opposite mistake (a forgotten `Enforce`) costs nothing and shows as the job's daily
+  warning line (T7). The stamps are the only write of a dry run: not destructive, and without them the
+  channel period would never start.
+
 ### 2026-09-23 — Join and retention purge serialise on the channel row (#243/#244)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IChannelService.cs` ·
