@@ -45,6 +45,10 @@ violating rows named beside it and never builds a plan that fails them. Replace 
 for a tracked target** — deleting from an untracked set would have no way back — and is shown
 disabled with that reason instead of hidden. Decisions live in the dialog until it closes: "Apply"
 commits a group's edits, "Back" keeps the committed ones and the edits for the next opening.
+**An adopt also gets a quiet line of its own** ("N entries in the target set will be renamed",
+right after the removal line, whenever the plan holds at least one), and where a plan has no
+ADD at all, the title switches from "0 emotes … copy?" to "Align N names in the target set?", both
+counted from the same `summarizeTransferPlan` (its new `adoptCount` field).
 
 **One run row can now be two mutations.** A replace row is REMOVE, then ADD, in one row of one run
 (the run engine's sequence of steps per row). A REMOVE that fails ends the row without its ADD; an

@@ -95,6 +95,10 @@ export interface TransferPlanSummary {
    *  in a single REMOVE (`TransferRowTarget`'s own doc). This, not `removeCount`, is what a slot
    *  projection must subtract (`projectSlots`' `delta` doc, `slot-projection.ts`). */
   removedEntryCount: number;
+  /** The count of `adoptSourceName` rows — a 7TV UPDATE on an existing target entry, neither an ADD
+   *  nor a REMOVE, so it lives in none of the three fields above. The confirm dialog's own source for
+   *  its rename line and, when the plan has no ADDs at all, for its title. */
+  adoptCount: number;
 }
 
 /**
@@ -239,6 +243,7 @@ export function summarizeTransferPlan(plan: TransferPlan): TransferPlanSummary {
   let addCount = 0;
   let removeCount = 0;
   let removedEntryCount = 0;
+  let adoptCount = 0;
 
   for (const row of plan.rows) {
     switch (row.action) {
@@ -252,13 +257,14 @@ export function summarizeTransferPlan(plan: TransferPlan): TransferPlanSummary {
         removedEntryCount += removedEntryCountOf(row.target);
         break;
       case 'adoptSourceName':
+        adoptCount++;
         break;
       default:
         assertUnreachableAction(row);
     }
   }
 
-  return { addCount, removeCount, removedEntryCount };
+  return { addCount, removeCount, removedEntryCount, adoptCount };
 }
 
 /** {@link TransferPlanSummary.removedEntryCount}'s per-target contribution: the target's named

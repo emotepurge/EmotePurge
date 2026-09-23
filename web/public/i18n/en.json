@@ -1106,6 +1106,10 @@
         "one": "Copy {{ count }} emote into the set ‚{{ setName }}'?",
         "other": "Copy {{ count }} emotes into the set ‚{{ setName }}'?"
       },
+      "titleAlign": {
+        "one": "Align {{ count }} name in the target set?",
+        "other": "Align {{ count }} names in the target set?"
+      },
       "originChannel": "From channel {{ channel }}",
       "originFile": "From file {{ fileName }}",
       "originFileDetails": "Exported from {{ channel }}, {{ date }}",
@@ -1160,6 +1164,10 @@
       "removals": {
         "one": "{{ count }} emote will be removed from the target set and replaced by the source emote.",
         "other": "{{ count }} emotes will be removed from the target set and replaced by the source emotes."
+      },
+      "renames": {
+        "one": "{{ count }} entry in the target set will be renamed.",
+        "other": "{{ count }} entries in the target set will be renamed."
       },
       "saveRecovery": "Save recovery file",
       "start": "Start",

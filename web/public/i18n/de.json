@@ -1106,6 +1106,10 @@
         "one": "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
         "other": "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?"
       },
+      "titleAlign": {
+        "one": "{{ count }} Namen im Zielset angleichen?",
+        "other": "{{ count }} Namen im Zielset angleichen?"
+      },
       "originChannel": "Aus Kanal {{ channel }}",
       "originFile": "Aus Datei {{ fileName }}",
       "originFileDetails": "Export aus {{ channel }}, {{ date }}",
@@ -1160,6 +1164,10 @@
       "removals": {
         "one": "{{ count }} Emote wird aus dem Zielset entfernt und durch das Quell-Emote ersetzt.",
         "other": "{{ count }} Emotes werden aus dem Zielset entfernt und durch die Quell-Emotes ersetzt."
+      },
+      "renames": {
+        "one": "{{ count }} Eintrag im Zielset wird umbenannt.",
+        "other": "{{ count }} Einträge im Zielset werden umbenannt."
       },
       "saveRecovery": "Rückweg sichern",
       "start": "Starten",

@@ -60,6 +60,10 @@ const DE_TRANSLATIONS = {
         one: "{{ count }} Emote in Set ‚{{ setName }}' kopieren?",
         other: "{{ count }} Emotes in Set ‚{{ setName }}' kopieren?",
       },
+      titleAlign: {
+        one: '{{ count }} Namen im Zielset angleichen?',
+        other: '{{ count }} Namen im Zielset angleichen?',
+      },
       untrackedTarget:
         'EmotePurge trackt diesen Account nicht — 7TV lässt das Kopieren nur zu, wenn du dort Editor bist.',
       ownershipCheckUnavailable:
@@ -117,6 +121,10 @@ const DE_TRANSLATIONS = {
       removals: {
         one: '{{ count }} Emote wird aus dem Zielset entfernt.',
         other: '{{ count }} Emotes werden aus dem Zielset entfernt.',
+      },
+      renames: {
+        one: '{{ count }} Eintrag im Zielset wird umbenannt.',
+        other: '{{ count }} Einträge im Zielset werden umbenannt.',
       },
       saveRecovery: 'Rückweg sichern',
       start: 'Starten',
@@ -1586,6 +1594,44 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.button('Rückweg sichern').disabled).toBe(false);
       // Replacing still adds: the title counts every ADD of the plan.
       expect(dialog.title()).toBe('2 Emotes nach targetchannel kopieren?');
+    });
+
+    describe('target renames', () => {
+      it('titles a rename-only plan "align names" and shows the rename line, with no add at all', async () => {
+        const dialog = render({
+          source: channelSource([row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.title()).toBe('1 Namen im Zielset angleichen?');
+        expect(dialog.text()).toContain('1 Eintrag im Zielset wird umbenannt.');
+        // Neutral hint, not a warning: nothing here is lost.
+        expect(dialog.element('import-confirm-removals')).toBeNull();
+      });
+
+      it('keeps the add-counting title when the plan also adds, but still shows the rename line', async () => {
+        const dialog = render({
+          source: channelSource([row('new-1', 'Kappa'), row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+        expect(dialog.text()).toContain('1 Eintrag im Zielset wird umbenannt.');
+      });
+
+      it('shows no rename line and the ordinary title while the mismatch row is left on skip', () => {
+        const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+        expect(dialog.title()).toBe('1 Emote nach targetchannel kopieren?');
+        expect(dialog.text()).not.toContain('wird umbenannt');
+        expect(dialog.text()).not.toContain('werden umbenannt');
+      });
     });
 
     it('projects the slots from the net change: rename +1, replace 0, replace on a duplicate −1 (AK 21)', async () => {

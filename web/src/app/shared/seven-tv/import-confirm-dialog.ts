@@ -209,7 +209,7 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
           ? (titleKey()
             | transloco
               : {
-                  count: titleCount(),
+                  count: titleParamCount(),
                   channel: titleTargetLabel(),
                   setName: data.titleSetName ?? '',
                 })
@@ -361,6 +361,14 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
             <app-notice-banner id="import-confirm-removals" variant="warning">
               {{ removalsKey() | transloco: { count: removeCount() } }}
             </app-notice-banner>
+          }
+
+          <!-- A neutral hint, not a warning: nothing is lost, an existing entry is only renamed
+               (docs/UI-Designsprache.md §7.2). -->
+          @if (adoptCount() > 0) {
+            <p class="text-sm text-fg-secondary">
+              {{ renamesKey() | transloco: { count: adoptCount() } }}
+            </p>
           }
 
           <!-- One banner for everything that took a decision or a release away since the user last
@@ -763,6 +771,14 @@ export class ImportConfirmDialog {
     pluralKey(this.removeCount(), 'import.confirm.removals'),
   );
 
+  /** The count of `adoptSourceName` rows in the one plan the summary counts — same source as
+   *  `removeCount` and the title (docs/UI-Designsprache.md §7.2). */
+  protected readonly adoptCount = computed(() => this.summary()?.adoptCount ?? 0);
+
+  protected readonly renamesKey = computed(() =>
+    pluralKey(this.adoptCount(), 'import.confirm.renames'),
+  );
+
   /** Rows of each group that carry a decision other than skip. */
   protected readonly resolvedCount = computed<Record<ConflictGroup, number>>(() => {
     const preview = this.preview();
@@ -786,16 +802,36 @@ export class ImportConfirmDialog {
     () => this.summary()?.addCount ?? this.data.source.rows.length,
   );
 
+  // A plan that only adopts has no ADD at all — a title still counting `addCount` would read "0
+  // emotes … copy?" while the run renames entries the chat sees immediately. Reads the summary
+  // directly rather than `titleCount()`, which falls back to the source row count while the target is
+  // still loading and would otherwise fire before there is a plan to judge.
+  protected readonly titleIsRenameOnly = computed(() => {
+    const summary = this.summary();
+    return summary !== null && summary.addCount === 0 && summary.adoptCount > 0;
+  });
+
   // Two base keys, chosen by `targetIsActiveSet` (finding 1, Live-Verifikation K2 2026-09-21) —
   // "nach {channel}" for the active-set target (today's one-click path, unchanged), "in Set
   // '{setName}'" for a non-active tracked target or any untracked one, both of which write into a
   // set the channel page's active-set resync does not show (finding 3 is the same fact one layer
-  // down, in the dock).
-  protected readonly titleKey = computed(() =>
-    pluralKey(
+  // down, in the dock). `titleIsRenameOnly` overrides both with a third key that names no channel or
+  // set at all, because a rename-only run has no ADD destination to name.
+  protected readonly titleKey = computed(() => {
+    if (this.titleIsRenameOnly()) {
+      return pluralKey(this.adoptCount(), 'import.confirm.titleAlign');
+    }
+    return pluralKey(
       this.titleCount(),
       this.data.targetIsActiveSet ? 'import.confirm.title' : 'import.confirm.titleSet',
-    ),
+    );
+  });
+
+  // The `count` param the title's own translation reads — `adoptCount` for the rename-only title,
+  // `titleCount` (the ADD count) otherwise. A computed of its own rather than folded into
+  // `titleCount`, which keeps meaning "the ADD count" for any future reader of that name.
+  protected readonly titleParamCount = computed(() =>
+    this.titleIsRenameOnly() ? this.adoptCount() : this.titleCount(),
   );
 
   // Falls back to the owner's display name for an untracked target (spec 8.6, AK 39/35) — the

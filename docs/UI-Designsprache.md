@@ -349,13 +349,17 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   been in the export dialog (§7.4) since #141 and inherits its scope default `visible` — the target dialog
   stays with its `selection` default, because the two are now separate commands with separate
   risks, no longer two exits of the same dialog.
-- **Confirmation dialog, row order:** title (count + target channel) → origin row (channel,
+- **Confirmation dialog, row order:** title (count + target channel — or, for a plan with no ADD at
+  all and at least one adopted rename, "Align N names in the target set?" instead, since "0 emotes …
+  copy?" would misdescribe a run that only renames) → origin row (channel,
   or file with export date/channel) → target row "Target: channel · set …" as soon as the target data
   are there → exactly **one** of three loading states (hand-rolled skeleton per the §6.1 pattern /
   `no-set` banner / `failed` banner with retry) → shared-set warning (error) or "check not
   possible" (warning) → **removal line** (warning banner "N emotes will be removed from the target
-  set", only while the plan replaces a target — #230) → **target-check banner** (error, only after
-  a live read did not release the run: the drifted rows by name, or the failed read, or a refused
+  set", only while the plan replaces a target — #230) → **rename line** (quiet text, not a banner —
+  nothing is lost, an existing entry is only renamed — "N entries in the target set will be
+  renamed", only while the plan holds at least one adopted rename) → **target-check banner**
+  (error, only after a live read did not release the run: the drifted rows by name, or the failed read, or a refused
   download; notice action "Reload target" — and, in the same banner, the committed decisions a
   reload of the target no longer fits, by name) → slot projection (overflow as a warning banner,
   otherwise quiet text; net change of the plan, so a replace counts its removed entries) →

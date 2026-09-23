@@ -411,6 +411,7 @@ describe('buildTransferPlan', () => {
       addCount: 2,
       removeCount: 0,
       removedEntryCount: 0,
+      adoptCount: 0,
     });
   });
 
@@ -490,7 +491,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
 
-    expect(summary).toEqual({ addCount: 1, removeCount: 0, removedEntryCount: 0 });
+    expect(summary).toEqual({ addCount: 1, removeCount: 0, removedEntryCount: 0, adoptCount: 0 });
   });
 
   it('derives {addCount: 1, removeCount: 1, removedEntryCount: 1} for a plain replace', () => {
@@ -502,7 +503,18 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
 
-    expect(summary).toEqual({ addCount: 1, removeCount: 1, removedEntryCount: 1 });
+    expect(summary).toEqual({ addCount: 1, removeCount: 1, removedEntryCount: 1, adoptCount: 0 });
+  });
+
+  it('derives {addCount: 0, removeCount: 0, removedEntryCount: 0, adoptCount: 1} for a single adopt — an UPDATE, neither ADD nor REMOVE', () => {
+    const p = preview({
+      aliasMismatchRows: [mismatchRow(importRow('m-1', 'NewAlias'), ['OldAlias'])],
+    });
+    const d = decisions([['m-1', { kind: 'adoptSourceName' }]]);
+
+    const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
+
+    expect(summary).toEqual({ addCount: 0, removeCount: 0, removedEntryCount: 0, adoptCount: 1 });
   });
 
   it('nets +1 for a mixed add + rename + replace-on-duplicate plan (3 ADDs − 2 removed entries)', () => {
@@ -521,7 +533,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
 
-    expect(summary).toEqual({ addCount: 3, removeCount: 1, removedEntryCount: 2 });
+    expect(summary).toEqual({ addCount: 3, removeCount: 1, removedEntryCount: 2, adoptCount: 0 });
     expect(projectSlots(0, 10, summary.addCount - summary.removedEntryCount)).toEqual({
       projected: 1,
       capacity: 10,
@@ -538,7 +550,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
 
-    expect(summary).toEqual({ addCount: 1, removeCount: 1, removedEntryCount: 2 });
+    expect(summary).toEqual({ addCount: 1, removeCount: 1, removedEntryCount: 2, adoptCount: 0 });
     expect(projectSlots(10, 100, summary.addCount - summary.removedEntryCount)).toEqual({
       projected: 9,
       capacity: 100,
