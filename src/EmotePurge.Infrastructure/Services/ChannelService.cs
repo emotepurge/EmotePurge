@@ -63,6 +63,10 @@ public class ChannelService(
         // SevenTvPeriodicResyncWorker and Worker's boot recovery both filter on IsBotActive, and
         // JoinAsync reactivates the row, so nothing else needs to change.
         channel.IsBotActive = false;
+        // Measuring point for the 180-day retention purge (RetentionPolicy) — nulled again by
+        // whatever reactivates the row (CompleteJoinAsync's reactivation branch, the identity
+        // merge).
+        channel.DeactivatedAtUtc = DateTime.UtcNow;
         // Only reached for a channel that exists — the unknown-channel branch above returns without
         // touching anything and therefore without an entry.
         db.AddAuditEntry(actor, AuditActions.ChannelLeave, channelName: normalized);
@@ -351,6 +355,9 @@ public class ChannelService(
             if (!channel.IsBotActive)
             {
                 channel.TrackingResumedAt = DateTime.UtcNow;
+                // The retention clock (DeactivatedAtUtc) stops here too — the channel is no longer
+                // deactivated, so it must not become a purge candidate while active again.
+                channel.DeactivatedAtUtc = null;
             }
 
             channel.IsBotActive = true;

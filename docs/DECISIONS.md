@@ -10,6 +10,38 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Two retention timestamps, both backfilled to migration time: `LastSeenAtUtc` and `DeactivatedAtUtc` (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/User.cs` · `src/EmotePurge.Core/Entities/Channel.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20260923194321_AddRetentionTimestamps.cs`
+
+First step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T1). Two nullable
+`DateTime` columns give the retention job (later tasks) something to measure its cutoffs from:
+
+- **`User.LastSeenAtUtc`**: "last login" alone cannot answer "still around" — the session cookie
+  is 14 days sliding, so a user who visits weekly never logs in again, and a 12-month-since-login
+  purge would delete active users. The retention job will read `max(LastLogin, LastSeenAtUtc)`;
+  this task only adds the column (stamped from `OnValidatePrincipal` in a later task).
+- **`Channel.DeactivatedAtUtc`**: `LeaveAsync` now stamps it when it sets `IsBotActive = false`;
+  whatever reactivates an inactive row nulls it again — `CompleteJoinAsync`'s reactivation branch
+  (mirroring what it already does for `TrackingResumedAt`) and the `ChannelIdentityService` merge,
+  when folding an active loser into an inactive survivor makes the survivor active.
+
+Both columns are **backfilled to the migration instant** for existing rows (`AddRetentionTimestamps`,
+`UPDATE ... SET ... = now()`), not left `NULL`. Without it, an existing user who is active weekly
+but logged in months ago would be indistinguishable from a genuine 12-month dropout on the first
+enforcement run — the dry run could not tell them apart, and the sharp run would delete the active
+one; the same reasoning applies to already-inactive channels and the 180-day purge, since the audit
+log that could recover their true leave date only exists since 2026-07-31. The columns say "since
+we started measuring" rather than a true historical instant no existing row can prove. Price: real
+dropouts among the existing rows get up to a few months of extra grace before they become due — the
+operator approved this trade-off on 2026-09-23 (plan, "Entscheidungen des Betreibers", point 1) over
+the alternative of a separate "no retention before deploy + N days" constant, which would encode the
+same fact twice.
+
 ### 2026-09-23 — Codex Sol review of #247: a dedicated rate-limit budget, resilient footer availability, wrapping footers, audit coverage
 
 **Betrifft:** `src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` ·

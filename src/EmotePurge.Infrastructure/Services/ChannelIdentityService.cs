@@ -445,7 +445,18 @@ public class ChannelIdentityService(
             session.ChannelId = survivor.Id;
         }
 
+        // Captured before the flip: DeactivatedAtUtc must only be nulled when the merge is what
+        // makes the survivor active, not when it already was (in which case the column is already
+        // null and nulling it again is a no-op, but the read makes the condition mean what it says).
+        var survivorWasActive = survivor.IsBotActive;
         survivor.IsBotActive |= loser.IsBotActive;
+        if (!survivorWasActive && survivor.IsBotActive)
+        {
+            // The retention clock stops here too, same as CompleteJoinAsync's reactivation branch —
+            // an inactive survivor absorbing an active loser must not stay a purge candidate.
+            survivor.DeactivatedAtUtc = null;
+        }
+
         survivor.ChannelName = newLogin;
         survivor.TrackingResumedAt = DateTime.UtcNow;
         db.AddAuditEntry(
