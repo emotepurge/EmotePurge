@@ -1827,6 +1827,29 @@ describe('ImportConfirmDialog', () => {
       expect(downloads).toEqual([]);
     });
 
+    it('discards a failed read that lands after the target already reloaded past it', async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      const pending = TestBed.inject(HttpTestingController).expectOne(GQL);
+
+      // The target reloads while this read is still in flight — a new plan, without cancelling
+      // the subscription (only a fresh click does that).
+      dialog.target.set(conflictTarget());
+      dialog.detect();
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+
+      pending.error(new ProgressEvent('network'));
+      dialog.detect();
+
+      // The error answers a plan that is gone: it names nothing for the plan that replaced it.
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+    });
+
     it('starts one read per click, locks the resolve triggers while it runs, and lets only the newest read answer', async () => {
       const downloads = captureDownloads();
       const http = TestBed.inject(HttpTestingController);

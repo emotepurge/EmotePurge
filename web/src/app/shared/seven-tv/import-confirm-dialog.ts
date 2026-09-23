@@ -1211,8 +1211,13 @@ export class ImportConfirmDialog {
         // A failed read vouches for nothing, so it releases nothing. The decisions stay as they
         // are: which target changed, if any, is exactly what the read could not tell.
         error: () => {
-          if (isCurrent()) {
-            this.rawActionState.set(IDLE);
+          if (!isCurrent()) {
+            return;
+          }
+          this.rawActionState.set(IDLE);
+          // Mirrors onTargetRead's guard: the plan can have moved on (a target reload) while this
+          // read was still in flight. An error about a plan that is gone names nothing.
+          if (this.plan() === plan) {
             this.targetCheckNotice.set({ kind: 'readFailed' });
           }
         },
