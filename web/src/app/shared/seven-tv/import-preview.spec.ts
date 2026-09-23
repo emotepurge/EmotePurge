@@ -484,11 +484,26 @@ describe('buildImportPreview', () => {
       row: { sevenTvEmoteId: 'dup-1', name: 'AliasC', imageUrl: null },
       expectedAdoptBlocked: 'duplicateTarget',
     },
+    {
+      description: 'an aliasless-only target id blocks with aliaslessTarget',
+      target: [{ sevenTvEmoteId: 'existing-1', name: '', imageUrl: TARGET_IMAGE_URL }],
+      row: { sevenTvEmoteId: 'existing-1', name: 'SourceAlias', imageUrl: null },
+      expectedAdoptBlocked: 'aliaslessTarget',
+    },
+    {
+      description: 'a mixed named+aliasless target id stays adoptable',
+      target: [
+        { sevenTvEmoteId: 'existing-1', name: 'TargetAlias', imageUrl: TARGET_IMAGE_URL },
+        { sevenTvEmoteId: 'existing-1', name: '', imageUrl: TARGET_IMAGE_URL },
+      ],
+      row: { sevenTvEmoteId: 'existing-1', name: 'SourceAlias', imageUrl: null },
+      expectedAdoptBlocked: null,
+    },
   ] satisfies {
     description: string;
     target: EmoteListItem[];
     row: ImportRow;
-    expectedAdoptBlocked: 'nameTaken' | 'duplicateTarget' | null;
+    expectedAdoptBlocked: 'nameTaken' | 'duplicateTarget' | 'aliaslessTarget' | null;
   }[])('adoptBlocked: $description', ({ target, row, expectedAdoptBlocked }) => {
     const result = buildImportPreview(source([row]), target);
 

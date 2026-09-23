@@ -54,9 +54,13 @@ export interface AliasMismatchRow {
    *  - `'duplicateTarget'` — `targetAliases.length > 1` (the #74 case): with two live entries
    *    under one id, adopting cannot say which of them to rename, so this resolution steers clear
    *    of #74 entirely rather than guess (#74 itself stays open).
-   *  Both conditions are independent and untested in combination — order matters only for that
-   *  untested overlap. */
-  adoptBlocked: 'nameTaken' | 'duplicateTarget' | null;
+   *  - `'aliaslessTarget'` — `targetAliases.length === 0`: every entry under this id is aliasless,
+   *    so there is no named alias left for the UPDATE to rename. A mixed group (one named entry
+   *    plus one aliasless entry under the same id) is unaffected and stays adoptable — the UPDATE
+   *    renames the named entry and leaves the aliasless sibling untouched.
+   *  These conditions are independent and untested in combination beyond the `nameTaken` check
+   *  running first; order matters only for that untested overlap. */
+  adoptBlocked: 'nameTaken' | 'duplicateTarget' | 'aliaslessTarget' | null;
 }
 
 export interface ImportPreview {
@@ -325,13 +329,17 @@ function adoptBlockedFor(
   sourceId: string,
   targetGroup: readonly EmoteListItem[],
   targetByName: ReadonlyMap<string, EmoteListItem>,
-): 'nameTaken' | 'duplicateTarget' | null {
+): 'nameTaken' | 'duplicateTarget' | 'aliaslessTarget' | null {
   const nameOwner = targetByName.get(sourceName);
   if (nameOwner && nameOwner.sevenTvEmoteId !== sourceId) {
     return 'nameTaken';
   }
-  if (namedAliasesOf(targetGroup).length > 1) {
+  const named = namedAliasesOf(targetGroup);
+  if (named.length > 1) {
     return 'duplicateTarget';
+  }
+  if (named.length === 0) {
+    return 'aliaslessTarget';
   }
   return null;
 }

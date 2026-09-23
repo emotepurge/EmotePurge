@@ -1209,7 +1209,8 @@
       "reloadTargetFirst": "Target has changed — reload first",
       "adoptBlocked": {
         "nameTaken": "name taken in the target set",
-        "duplicateTarget": "listed twice in the target"
+        "duplicateTarget": "listed twice in the target",
+        "aliaslessTarget": "held without a name in the target"
       },
       "renameLabel": "New name",
       "fieldError": {

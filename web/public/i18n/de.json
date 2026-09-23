@@ -1209,7 +1209,8 @@
       "reloadTargetFirst": "Ziel hat sich geändert — erst neu laden",
       "adoptBlocked": {
         "nameTaken": "Name im Zielset vergeben",
-        "duplicateTarget": "im Ziel doppelt vorhanden"
+        "duplicateTarget": "im Ziel doppelt vorhanden",
+        "aliaslessTarget": "im Ziel ohne Namen eingetragen"
       },
       "renameLabel": "Neuer Name",
       "fieldError": {

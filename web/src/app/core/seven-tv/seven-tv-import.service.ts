@@ -803,7 +803,9 @@ function buildTransferRequest(
           }
         : addRequest(setId, row.source.sevenTvEmoteId, row.alias);
     case 'adoptSourceName':
-      // `adoptBlocked === null` guarantees the target has exactly one named alias.
+      // `adoptBlocked === null` guarantees the target has at most one named alias
+      // (`'duplicateTarget'` rules out two) and at least one (`'aliaslessTarget'` rules out zero) —
+      // so exactly one, which is why this reads `row.target.aliases[0]` unconditionally.
       return {
         query: UPDATE_EMOTE_ALIAS_MUTATION,
         variables: {
