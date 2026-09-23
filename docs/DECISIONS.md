@@ -10,6 +10,68 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Join and retention purge serialise on the channel row (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs`
+
+Fifth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T5, finding 9). `JoinAsync`
+loaded an inactive row unlocked and saved its reactivation later, outside any transaction. A retention
+purge committing in between still saw the old, inactive, due row, cascaded its emotes, usage stats,
+live days, vote sessions and votes away, and the join then failed with a concurrency exception (500) —
+losing exactly the history a rejoin within the period is supposed to keep.
+
+- **New `IChannelService.PurgeIfInactiveSinceAsync(channelName, deactivatedBeforeUtc, actor)`** →
+  `ChannelRetentionPurgeResult` `Purged | NotFound | StillActive`. Own transaction, row locked
+  `SELECT … FOR UPDATE`, and the condition — `IsBotActive = false AND DeactivatedAtUtc < cutoff` —
+  checked **after** the lock; a null stamp is never due, and `StillActive` covers "active again" and
+  "not due yet" alike. Then the same cascade and the same `channel.purge` action as the admin purge,
+  with details `{ reason: "retention" }` (the admin purge keeps writing no details and is unchanged,
+  LEAVE-before-write included). No LEAVE publish: the worker is not in an inactive channel. `NotFound`
+  and `StillActive` write nothing. The cutoff must be `DateTimeKind.Utc` (`ArgumentException`
+  otherwise): it is compared in memory, where `DateTime` ignores the kind.
+- **`JoinAsync` runs in one explicit transaction**, opened after the Helix lookup (no row lock across
+  an HTTP call) and committed before the Redis publishes (the worker resolves the committed row by
+  name). Every existing row it may activate is loaded through the lock helper — by name, by Twitch id,
+  and the rename path's occupant. Outcome: purge first → the join waits, finds no row and creates the
+  channel afresh (`TrackingResumedAt` null, `CreatedAt` honest); join first → the purge waits and
+  answers `StillActive`. Neither side gets an exception. Rejections (cap, unknown login) roll back.
+- **The identity merge locks both rows** in one transaction: survivor (by Twitch id) first, then the
+  loser (by name), and decides on the rows as re-read under the lock — the caller's snapshot reads are
+  now untracked (`LoadChannelReadOnlyAsync`, new `LoadChannelByTwitchIdReadOnlyAsync`). The survivor
+  can be an inactive, due row (case 4). Purge first → the merge finds no survivor and skips (logged at
+  Information; the next pass backfills the id onto the remaining row); merge first → the purge sees the
+  row active and renamed away (`NotFound`). The merge now also skips, instead of fusing, if the loser
+  acquired a Twitch id or the pair collapsed into one row in between.
+- **Lock helpers: `ChannelQueries.LoadChannelForUpdateAsync` (name) and
+  `LoadChannelByTwitchIdForUpdateAsync`.** Like `UserQueries.LockUserAsync` they refuse to run outside
+  a transaction. Unlike it they also guard EF's identity map: a tracking query returns an instance the
+  context already tracks *without* refreshing it, so a row read before the lock would come back with the
+  very stale state the lock is for. Such an instance is reloaded under the lock; one with pending
+  changes is refused (`InvalidOperationException`), since a reload would silently discard them.
+- **Lock order and why it cannot cycle.** Where two channel rows are locked, the Twitch-id row always
+  comes before the name row (join rename path, merge); every other path locks one row. The account
+  deletion locks user rows, never channel rows, and no channel path locks a user row. The plain channel
+  writers (leave, 7TV sync, reconciliation rename and backfill) never lock a second channel row; the 7TV
+  sync, the only one that also touches emote rows, runs for active channels only, which the purge
+  never deletes. One overlap remains at the vote level: an account deletion
+  (`DELETE … WHERE UserId`) and a channel purge (cascading over the same channel's votes) can lock
+  the same vote rows in different orders. Postgres detects that cycle and aborts one side with a
+  deadlock error after about a second — a clean rollback, not a hang. It needs an admin action
+  racing the job, since the job runs accounts and channels one after the other; accepted.
+- **Accepted residual windows**: `LeaveAsync`, `PurgeAsync` and vote-session creation still load
+  unlocked. Racing a retention purge on the same inactive, due channel they fail with a 500 in a
+  window of milliseconds once a day — the deletion itself is correct either way, and none of them can
+  make the purge delete a channel that is being reactivated, which is the case the lock is for. A join
+  holding the lock also makes FK inserts that reference the channel (new emotes, live days, sessions)
+  wait for its commit, because `FOR UPDATE` conflicts with the key-share lock an FK check takes; the
+  join transaction is a count and one save, so the wait is milliseconds.
+- The dry run's cascade counts are not part of this step; they belong to the retention service (T6),
+  which selects the candidates and counts their dependent rows.
+
 ### 2026-09-23 — Account deletion: row lock and recheck, votes go, audit entries are pseudonymised, the deletion entry carries no identity, late audit writers lock the row, Redis cleanup is retried once and otherwise bounded by TTL (#243/#244)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·

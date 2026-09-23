@@ -115,7 +115,10 @@ public class ChannelServiceTests(PostgresFixture fixture)
         await JoinChannelAsync(service, "channelservicetracking2");
         await service.LeaveAsync("channelservicetracking2", Actor);
         var rejoined = await JoinChannelAsync(service, "channelservicetracking2");
-        var resumedAt = rejoined.TrackingResumedAt;
+        // Read back as stored rather than taken from the in-memory entity: the next join locks the row
+        // and re-reads it (ChannelQueries.LoadChannelForUpdateAsync), which brings the value back at
+        // Postgres' microsecond precision instead of the tick precision it was written with.
+        var resumedAt = (await db.Channels.AsNoTracking().SingleAsync(c => c.Id == rejoined.Id)).TrackingResumedAt;
 
         var joinedAgain = await JoinChannelAsync(service, "channelservicetracking2");
 

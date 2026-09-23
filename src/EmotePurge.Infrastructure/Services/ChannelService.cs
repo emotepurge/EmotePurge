@@ -4,6 +4,7 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.Twitch;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace EmotePurge.Infrastructure.Services;
@@ -15,6 +16,10 @@ public class ChannelService(
     ChannelCapacityOptions channelCapacityOptions,
     ILogger<ChannelService> logger) : IChannelService
 {
+    // The reason detail of a channel.purge entry written by the retention job, which is what tells it
+    // apart from an admin's purge (that one carries no details).
+    private const string RetentionPurgeReason = "retention";
+
     public async Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
@@ -22,9 +27,18 @@ public class ChannelService(
         // Asked before anything is written, and the only place in the join path that talks to
         // Twitch. The three answers are three different jobs: reject, follow the id, or carry on.
         var lookup = await channelIdentityService.LookupByLoginAsync(normalized, cancellationToken);
+
+        // Opened only after the Helix call, so no row lock is ever held across an HTTP round trip.
+        // Everything from here to the commit runs under SELECT ... FOR UPDATE on each existing row the
+        // join may activate: without it, a retention purge committing between this join's read of an
+        // inactive row and its save cascaded the channel's whole history away and then failed the join
+        // with a concurrency exception (data-retention plan, finding 9). With it the two serialise —
+        // see PurgeIfInactiveSinceAsync. Disposing without a commit (every rejection below) rolls back.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         if (lookup.Status == TwitchUserLookupStatus.NotFound)
         {
-            return await HandleUnknownTwitchLoginAsync(normalized, actor, isGlobalAdmin, cancellationToken);
+            return await HandleUnknownTwitchLoginAsync(normalized, actor, isGlobalAdmin, transaction, cancellationToken);
         }
 
         // Null for Unavailable, and that is the whole contract of that status: without an identity
@@ -41,7 +55,7 @@ public class ChannelService(
 
         var (channel, isNewRow, renamedFrom) = await ResolveJoinTargetAsync(identity, targetName, actor, cancellationToken);
 
-        return await CompleteJoinAsync(channel, actor, isNewRow, renamedFrom, isGlobalAdmin, cancellationToken);
+        return await CompleteJoinAsync(channel, actor, isNewRow, renamedFrom, isGlobalAdmin, transaction, cancellationToken);
     }
 
     public async Task<bool> LeaveAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)
@@ -113,6 +127,49 @@ public class ChannelService(
         return true;
     }
 
+    public async Task<ChannelRetentionPurgeResult> PurgeIfInactiveSinceAsync(
+        string channelName, DateTime deactivatedBeforeUtc, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+        if (deactivatedBeforeUtc.Kind != DateTimeKind.Utc)
+        {
+            // Compared in memory against a timestamptz Npgsql reads back as UTC; DateTime comparison
+            // ignores Kind, so a local cutoff would silently shift the retention period by the offset.
+            throw new ArgumentException("The cutoff must be a UTC timestamp.", nameof(deactivatedBeforeUtc));
+        }
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        var channel = await db.LoadChannelForUpdateAsync(channelName, cancellationToken);
+        if (channel is null)
+        {
+            // Nothing written, not even an audit entry: a no-op is not an event.
+            return ChannelRetentionPurgeResult.NotFound;
+        }
+
+        // Checked here, under the lock, rather than trusted from the caller's candidate selection: a
+        // join that committed in between has made the row active (and nulled DeactivatedAtUtc), and one
+        // still in flight holds this lock until it has. A null stamp never compares as due.
+        if (channel.IsBotActive || !(channel.DeactivatedAtUtc < deactivatedBeforeUtc))
+        {
+            return ChannelRetentionPurgeResult.StillActive;
+        }
+
+        // Same cascade and same audit action as the admin purge, told apart by the reason detail. No
+        // LEAVE publish, unlike PurgeAsync: the worker is not in an inactive channel, and publishing
+        // under the row lock would only hold the lock across a Redis round trip.
+        db.AddAuditEntry(
+            actor,
+            AuditActions.ChannelPurge,
+            channelName: channel.ChannelName,
+            details: new { reason = RetentionPurgeReason });
+        db.Channels.Remove(channel);
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return ChannelRetentionPurgeResult.Purged;
+    }
+
     public async Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default)
     {
         return await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
@@ -174,9 +231,10 @@ public class ChannelService(
     /// id to look up by.
     /// </para>
     /// </summary>
-    private async Task<ChannelJoinResult> HandleUnknownTwitchLoginAsync(string normalized, AuditActor actor, bool isGlobalAdmin, CancellationToken cancellationToken)
+    private async Task<ChannelJoinResult> HandleUnknownTwitchLoginAsync(
+        string normalized, AuditActor actor, bool isGlobalAdmin, IDbContextTransaction transaction, CancellationToken cancellationToken)
     {
-        var knownChannel = await db.LoadChannelAsync(normalized, cancellationToken);
+        var knownChannel = await db.LoadChannelForUpdateAsync(normalized, cancellationToken);
         if (knownChannel is null)
         {
             // Nothing is written — not even an audit entry, because nothing happened.
@@ -192,13 +250,14 @@ public class ChannelService(
         logger.LogInformation(
             "Twitch kennt den Login {ChannelName} gerade nicht (gesperrt oder gelöscht) — Join läuft auf die bestehende Zeile weiter, die gespeicherte Twitch-ID bleibt unverändert.",
             normalized);
-        return await CompleteJoinAsync(knownChannel, actor, isNewRow: false, renamedFrom: null, isGlobalAdmin, cancellationToken);
+        return await CompleteJoinAsync(knownChannel, actor, isNewRow: false, renamedFrom: null, isGlobalAdmin, transaction, cancellationToken);
     }
 
     /// <summary>
     /// Decides which row a join with a resolved identity (or none, for Unavailable) lands on: the row
     /// already holding the Twitch id if there is one, otherwise the row already holding the target
-    /// name, otherwise a freshly created row.
+    /// name, otherwise a freshly created row. Every existing row it returns is locked; when it looks at
+    /// two, the id row is locked before the name row (the order the identity merge uses too).
     /// </summary>
     private async Task<(Channel Channel, bool IsNewRow, string? RenamedFrom)> ResolveJoinTargetAsync(
         TwitchUserIdentity? identity, string targetName, AuditActor actor, CancellationToken cancellationToken)
@@ -228,7 +287,7 @@ public class ChannelService(
         TwitchUserIdentity identity, string targetName, AuditActor actor, CancellationToken cancellationToken)
     {
         // Twitch ids are opaque digit strings — never normalized, always compared ordinally.
-        var rowWithId = await db.LoadChannelByTwitchIdAsync(identity.Id, cancellationToken);
+        var rowWithId = await db.LoadChannelByTwitchIdForUpdateAsync(identity.Id, cancellationToken);
         if (rowWithId is null)
         {
             return (null, null);
@@ -239,7 +298,7 @@ public class ChannelService(
             return (rowWithId, null);
         }
 
-        var occupant = await db.LoadChannelAsync(targetName, cancellationToken);
+        var occupant = await db.LoadChannelForUpdateAsync(targetName, cancellationToken);
         if (occupant is null)
         {
             // The channel was renamed on Twitch since we last looked, and this join is the moment we
@@ -276,7 +335,10 @@ public class ChannelService(
     private async Task<(Channel Channel, bool IsNewRow)> ResolveOrCreateChannelByNameAsync(
         TwitchUserIdentity? identity, string targetName, CancellationToken cancellationToken)
     {
-        var channel = await db.LoadChannelAsync(targetName, cancellationToken);
+        // Locked like the id path's rows. Null also when a purge held this row and committed while we
+        // waited — then this join simply creates the channel afresh, the outcome the purge's contract
+        // promises instead of a 500.
+        var channel = await db.LoadChannelForUpdateAsync(targetName, cancellationToken);
         if (channel is null)
         {
             // A new row gets the id straight away, so this channel's first rename is already
@@ -313,12 +375,18 @@ public class ChannelService(
 
     /// <summary>
     /// The half of a join every path shares once the row to join has been decided: cap check,
-    /// reactivate, audit, commit, publish. A method rather than a fall-through, so the branch that
+    /// reactivate, audit, commit (of the transaction <see cref="JoinAsync"/> opened), publish. A method rather than a fall-through, so the branch that
     /// joins a channel Twitch has stopped knowing can reach it without being merged into the identity
     /// logic it deliberately has none of.
     /// </summary>
     private async Task<ChannelJoinResult> CompleteJoinAsync(
-        Channel channel, AuditActor actor, bool isNewRow, string? renamedFrom, bool isGlobalAdmin, CancellationToken cancellationToken)
+        Channel channel,
+        AuditActor actor,
+        bool isNewRow,
+        string? renamedFrom,
+        bool isGlobalAdmin,
+        IDbContextTransaction transaction,
+        CancellationToken cancellationToken)
     {
         // A join only ever *activates* a channel on a new row (constructed with IsBotActive = true
         // and not yet saved) or on an existing row that is currently inactive — never on one that is
@@ -369,6 +437,9 @@ public class ChannelService(
         db.AddAuditEntry(actor, AuditActions.ChannelJoin, channelName: channel.ChannelName);
 
         await db.SaveChangesAsync(cancellationToken);
+        // Releases the row locks. The publishes below stay after it, as before: the worker resolves the
+        // row by name when it handles the JOIN, so it must already see the committed state.
+        await transaction.CommitAsync(cancellationToken);
 
         if (renamedFrom is not null)
         {
