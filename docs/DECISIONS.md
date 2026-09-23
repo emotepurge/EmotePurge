@@ -10,6 +10,33 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — The export button and the low-participation notice are mod-team-only (`canViewUsageStats`)
+
+**Betrifft:** `web/src/app/features/voting/vote-session-detail-page.{ts,html,spec.ts}`
+
+Both were shown to every viewer of a vote session, including plain voters (subs/everyone
+audiences) who can neither act on a low-participation caveat — they cannot end the session or run
+the mass-delete it feeds — nor get anything out of an export beyond a file they cannot do anything
+with. Gated on `canViewUsageStats` from `GET /api/channels/{name}/permissions`, deliberately not
+`canManage`: it is a superset that also admits the channel's 7TV editors, which is the operator's
+stated boundary for "mod team" here — editors are often the ones who carry out the deletion in 7TV.
+This is a different line from the one the results endpoint draws: usage figures and, on a hidden
+active ballot, the tallies are withheld from everyone `CanManageChannelAsync` rejects, 7TV editors
+included, so an editor's export carries neither column. That is intended, not a gap. The export itself was never a leak (`openExport()`'s own
+comment: client-side serialization of what the results already carry, so a withheld tally/usage
+column drops out on its own) — this is purely about not offering a button and a caveat that do
+nothing useful for the person looking at them.
+
+**Known trade-off, not fixed here:** `canViewUsageStats()` defaults to `false` while
+`permissionsResource` is still in flight — the same pattern `canManage()` already uses for this
+page's "end session" button — so a mod can see the export button/notice appear a beat after the
+header above them has already rendered, if `/permissions` happens to resolve after `/results`.
+Both requests fire from the constructor at the same time, and `/permissions` is small and
+30-second cached per channel (2026-08-06 entry, "`/permissions` wird pro Channel 30 s
+zwischengespeichert"), so in practice the two settle close together; fixing the residual case
+would mean delaying the whole results-dependent header for every voter until permissions resolve
+too, which was judged the worse trade for a case that is rare and purely cosmetic.
+
 ### 2026-09-23 — The dense ballot strip's thumb icon is not optional any more; a fit measurement decides when the number wins (amends 2026-08-06 "Zug 3, erste Fläche")
 
 **Betrifft:** `web/src/app/core/voting/vote-strip-icon.ts` (neu) ·

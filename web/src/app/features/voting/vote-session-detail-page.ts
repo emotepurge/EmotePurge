@@ -203,6 +203,17 @@ export class VoteSessionDetailPage {
     () => this.permissionsResource.value()?.canManage ?? false,
   );
 
+  // The mod-team boundary for the two elements below (operator decision, see DECISIONS): a
+  // superset of canManage, so it also admits the channel's 7TV editors, who see the usage figures
+  // on the cells but may not manage the channel. Defaults to false while the permissions probe is
+  // still in flight — same pattern canManage above already uses for the "end session" button — so
+  // neither element is ever shown to someone the server has not yet confirmed as mod-team; the
+  // trade-off, same as canManage's, is that a mod can see them appear a beat after the header
+  // above does, if /permissions happens to resolve after /results.
+  protected readonly canViewUsageStats = computed(
+    () => this.permissionsResource.value()?.canViewUsageStats ?? false,
+  );
+
   // The server reports TotalUseCount as null to everyone CanManageChannelAsync rejects, so data
   // presence *is* the permission verdict — no separate GET /permissions round-trip needed. (An
   // all-archived subset ballot also yields null-only rows; hiding the usage UI is right there too,
