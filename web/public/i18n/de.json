@@ -123,6 +123,23 @@
       "source": "Quelltext"
     }
   },
+  "legal": {
+    "back": "Startseite",
+    "onlyGerman": "Dieser Text liegt aktuell nur auf Deutsch vor.",
+    "footer": {
+      "imprint": "Impressum",
+      "privacy": "Datenschutz"
+    },
+    "imprint": {
+      "notConfiguredTitle": "Kein Impressum hinterlegt"
+    },
+    "privacy": {
+      "notConfiguredTitle": "Keine Datenschutzerklärung hinterlegt"
+    },
+    "notConfigured": {
+      "description": "Der Betreiber dieser Instanz hat diesen Text noch nicht hinterlegt."
+    }
+  },
   "usageRange": {
     "label": "Nutzung",
     "menuLabel": "Nutzungsbereich wählen",
@@ -1150,7 +1167,8 @@
       "live_stream_quota_exhausted": "Zu viele offene Live-Verbindungen. Schließe ein paar Tabs und versuch es erneut.",
       "unexpected_error": "Auf dem Server ist ein unerwarteter Fehler aufgetreten. Bitte versuch es erneut.",
       "no_health_data": "Es liegen aktuell keine Worker-Daten vor.",
-      "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden."
+      "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden.",
+      "legal_document_not_found": "Dieses Dokument ist nicht verfügbar."
     }
   }
 }

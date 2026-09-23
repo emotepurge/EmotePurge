@@ -5,11 +5,13 @@ import { TranslocoPipe } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
 import { WorkerHealthService } from '../../core/health/worker-health.service';
+import { LegalService } from '../../core/legal/legal.service';
 import { LiveQuotaService } from '../../core/live/live-quota.service';
 import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
 import { HealthMarker } from '../../shared/ui/health-marker';
+import { LegalFooterLinks } from '../../shared/ui/legal-footer-links';
 import { Popover } from '../../shared/ui/popover';
 
 @Component({
@@ -18,6 +20,7 @@ import { Popover } from '../../shared/ui/popover';
     AccountMenu,
     Button,
     HealthMarker,
+    LegalFooterLinks,
     NgOptimizedImage,
     Popover,
     RouterLink,
@@ -193,18 +196,31 @@ import { Popover } from '../../shared/ui/popover';
       <main class="mx-auto max-w-7xl px-4 py-8">
         <router-outlet />
       </main>
+
+      <!-- Present on every route this shell serves, never per-route (§8.4a's "the frame must not
+           jump per route" applies here too) — hidden outright rather than shown empty when the
+           operator has configured neither document (issue #247, requirement 4). -->
+      @if (hasLegalLinks()) {
+        <footer class="border-t border-border px-4 py-4">
+          <div class="mx-auto flex max-w-7xl gap-5 text-sm text-fg-muted">
+            <app-legal-footer-links />
+          </div>
+        </footer>
+      }
     </div>
   `,
 })
 export class AppShell {
   private readonly authService = inject(AuthService);
   private readonly healthService = inject(WorkerHealthService);
+  private readonly legalService = inject(LegalService);
   private readonly liveQuotaService = inject(LiveQuotaService);
   private readonly router = inject(Router);
 
   protected readonly currentUser = this.authService.currentUser;
   protected readonly authResolved = this.authService.isResolved;
   protected readonly workerStale = computed(() => this.healthService.status() === 'stale');
+  protected readonly hasLegalLinks = this.legalService.hasAnyDocument;
   protected readonly liveQuotaExhausted = this.liveQuotaService.perSubscriberLimitReached;
   protected readonly liveQuota = this.liveQuotaService.quota;
   protected readonly liveHintOpen = signal(false);

@@ -4,9 +4,11 @@ import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
+import { LegalService } from '../../core/legal/legal.service';
 import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
+import { LegalFooterLinks } from '../../shared/ui/legal-footer-links';
 
 /**
  * Exactly what `TwitchOAuthDefaults.RequestedScopes` sends to id.twitch.tv/oauth2/authorize
@@ -85,15 +87,28 @@ const SCOPES = [
           </div>
         </div>
       </main>
+
+      <!-- Same footer shape as app-shell.ts — reachable from here too, since this page renders
+           outside the shell and is exactly where a visitor stands right before the Twitch OAuth
+           redirect (issue #247, requirement 3). -->
+      @if (hasLegalLinks()) {
+        <footer class="border-t border-border px-4 py-4">
+          <div class="mx-auto flex max-w-7xl gap-5 text-sm text-fg-muted">
+            <app-legal-footer-links />
+          </div>
+        </footer>
+      }
     </div>
   `,
-  imports: [AccountMenu, Button, NgOptimizedImage, RouterLink, TranslocoPipe],
+  imports: [AccountMenu, Button, LegalFooterLinks, NgOptimizedImage, RouterLink, TranslocoPipe],
 })
 export class LoginPage {
   private readonly authService = inject(AuthService);
+  private readonly legalService = inject(LegalService);
 
   protected readonly scopes = SCOPES;
   protected readonly logoSrc = LOGO_SRC;
+  protected readonly hasLegalLinks = this.legalService.hasAnyDocument;
 
   protected login(): void {
     this.authService.login();

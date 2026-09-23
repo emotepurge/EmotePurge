@@ -44,6 +44,7 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'unexpected_error',
   'no_health_data',
   'health_data_unreadable',
+  'legal_document_not_found',
 ]);
 
 /**
