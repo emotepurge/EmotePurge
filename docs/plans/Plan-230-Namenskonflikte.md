@@ -22,6 +22,13 @@ Rückfrage danach) —, und die sechs Befunde des adversarialen Codex-Reviews (g
 übernommen oder mit Grund zurückgewiesen (Abschnitt 9). Betroffen sind T3, T4, T5, T7, T8, T9,
 T10 sowie die Abschnitte 1, 2, 4, 5, 7 und 8.
 
+**Fassung 3 (2026-09-23).** Die zweite Fassung (`4ef773c`) ist um die fünf Befunde der zweiten
+Codex-Runde ergänzt, alle vom Betreiber angenommen (Abschnitt 9, Runde 2): bestätigte REMOVEs
+gehen unabhängig vom Zeilenstatus ins Audit (`completedSteps`), aliaslose Zieleinträge werden
+geprüft und abgebildet, das Nachlesen läuft auf einem lauf-gebundenen Ergebnis statt auf der
+Engine-Queue, HTTP 500 ist `unknown`, und die Zeichensatzprüfung gilt nur für getippte Aliase.
+Betroffen sind T2, T3, T4, T5, T7, T8 sowie die Abschnitte 1, 2, 4, 7, 8, 9.
+
 ---
 
 ## 0. Ausgangslage
@@ -106,15 +113,16 @@ und was der Plan **zusätzlich** zum Issue festlegt (mit Grund in Abschnitt 7).
 | Aktionen je Zeile, Ausschlüsse, Defaults | Issue „Actions per row" | T3, T8 | — |
 | Laufform: eine Queue-Zeile je Entscheidung, zwei Mutationen je Replace, Pacing/Backoff zwischen REMOVE und ADD | Issue „Run shape" | T4, T5 | Zeile trägt `failedStep`; Abbruch (`cancel`) zwischen REMOVE und ADD endet **`failed`** mit Lückengrund, nicht `cancelled` (Frage 3, entschieden) |
 | Teilfehlschlag ohne Rollback | Issue „Partial failure", Entscheidung 4 | T4, T5, T7 | Lückengrund ist übersetzter Text **und** Feld `failedStep` im Protokoll |
-| **Verlorene Antwort ist kein Fehlschlag** | Codex-Finding 3 | T4, T5, T7 | Ausgang `unknown` für einen Schritt ohne Antwort aus 7TVs GraphQL-Schicht (Status 0, 502, 503, 504); nach dem Lauf **ein** Live-Nachlesen klärt jede `unknown`-Zeile zu `done`/`failed`; bleibt es unklärbar, meldet der Lauf **keine** Lücke und die Id erscheint in **keiner** Meldung (Abschnitt 7) |
+| **Verlorene Antwort ist kein Fehlschlag** | Codex-Finding 3 (Runde 1), 4 (Runde 2) | T4, T5, T7 | Ausgang `unknown` für einen Schritt, dessen Antwort **kein auswertbarer GraphQL-Fehler und keine Ablehnung vor der Verarbeitung** ist: keine Antwort (Status 0) oder jede 5xx-Antwort — 500 eingeschlossen. Eine 4xx-Antwort aus 7TVs HTTP-Schicht (401/403 Token, 429 Limit, sonstige) heißt „abgelehnt, bevor verarbeitet" und bleibt `failed`/Backoff/Abbruch wie heute. Nach dem Lauf **ein** Live-Nachlesen klärt jede `unknown`-Zeile auf einem **lauf-gebundenen** Ergebnis; bleibt sie unklärbar, erscheint ihre Quell-Id in **keiner** Import-Meldung — **ein bestätigter REMOVE geht aber immer in die Löschmeldung ein**, unabhängig vom Endstatus der Zeile (Runde 2, Finding 1) |
 | Laufzeitkollision (Name inzwischen belegt) | T0-Kommentar | T4, T5 | Erkennung an `extensions.status === 409`, eigener Grund `import.errors.nameTakenNow`, **kein** Laufabbruch |
-| **Live-Verifikation der Replace-Ziele vor dem Lauf** | Codex-Finding 1 | T5, T8 | vor dem Download liest der Dialog das Ziel-Set live (`loadSevenTvSetEntries`); weicht ein Replace-Ziel vom bestätigten Stand ab (andere Aliase, Eintrag weg, Name anderer Id), gibt es keinen Download und keine Startfreigabe, sondern Neuladen und Neu-Bestätigen; die Rückweg-Datei entsteht aus den **live gelesenen** Aliasen; der Frischcheck in `import-flow.ts` prüft dieselben Ziele ein zweites Mal als letztes Tor. Restfenster: zwischen letztem Lesen und jedem einzelnen REMOVE, nicht zu schließen (`already-present-filter.ts:55-57`) |
+| **Live-Verifikation der Replace-Ziele vor dem Lauf** | Codex-Finding 1 (Runde 1), 2 (Runde 2) | T5, T8 | vor dem Download liest der Dialog das Ziel-Set live (`loadSevenTvSetEntries`); weicht ein Replace-Ziel vom bestätigten Stand ab (andere Aliase, **aliasloser Eintrag hinzugekommen oder weggefallen** — `aliaslessIds` wird an **beiden** Prüfstellen gelesen —, Eintrag weg, Name anderer Id), gibt es keinen Download und keine Startfreigabe, sondern Neuladen und Neu-Bestätigen; die Rückweg-Datei entsteht aus den **live gelesenen Einträgen**, aliaslose eingeschlossen; der Frischcheck in `import-flow.ts` prüft dieselben Ziele ein zweites Mal als letztes Tor. Restfenster: zwischen letztem Lesen und jedem einzelnen REMOVE, nicht zu schließen (`already-present-filter.ts:55-57`) |
+| **Aliaslose Zieleinträge** | Codex Runde 2, Finding 2 | T2, T5, T7, T8 | Ein Replace-Ziel darf aliaslose Einträge haben; die Rückweg-Datei bildet sie ab (`removedTarget.entries`, je Eintrag `alias: string \| null`), sie zählen in `removedEntryCount`, und ein Mensch stellt sie per ADD **ohne** Alias wieder her (7TV fällt dann auf den Standardnamen zurück — dieselbe Regel, die `ADD_EMOTE_MUTATION`s Kommentar in `seven-tv-import.service.ts:34-40` nennt). Kein Sperren (Grund in Abschnitt 7) |
 | `transfer-run`-Protokoll in **zwei Stufen**, Rückwegverbot | Issue „The transfer protocol", Frage 4 (entschieden) | T7, T8 | eine Envelope-Art, `meta.stage: 'planned' \| 'finished'`; eigene `TRANSFER_RUN_FORMAT_VERSION = 1`; Envelope-`channelName` = Zielkanal oder `''` bei ungetracktem Ziel, `meta` trägt Set, Besitzer, Herkunft |
 | **Pflicht-Download vor dem ersten REMOVE** | Frage 4 (entschieden) | T7, T8 | im Dialog, nach der Zusammenfassung, vor „Starten"; nur bei `removeCount > 0`; Abschnitt 2 |
 | Löschzahl in der Zusammenfassung, keine getippte Bestätigung | Issue „Guard", Entscheidung 6 | T3, T8 | Zahl wird aus **denselben** Entscheidungen abgeleitet, aus denen der Lauf gebaut wird — eine Quelle |
 | Meldungen: `sync-imported` + Löschmeldung, getrackt/ungetrackt | Issue „Backend bookkeeping" | T5, T6 | Details-Shape des set-zentrierten `sync-deleted` (T6); **Adopt meldet nichts** (Frage 2, entschieden) |
 | Bilder: `imageUrl` in beiden Modellen, Platzhalter statt abgeleiteter URL | Issue „Images" | T1, T8 | — |
-| Entscheidungs-Validierung über den ganzen Lauf | Issue „Decision validation" | T3 | fünfte Regel: kein Zieleintrag wird von zwei Zeilen berührt; Adopt gibt den alten Alias **nicht** frei (Frage 7, entschieden); **ein Replace gibt seine Aliase nur für seine eigene Zeile frei**, nicht für eine fremde (Codex-Finding 4); **Namensdoppel innerhalb der unveränderten `toAdd`-Zeilen sind keine Verletzung** (Codex-Finding 6) |
+| Entscheidungs-Validierung über den ganzen Lauf | Issue „Decision validation" | T3 | fünfte Regel: kein Zieleintrag wird von zwei Zeilen berührt; Adopt gibt den alten Alias **nicht** frei (Frage 7, entschieden); **ein Replace gibt seine Aliase nur für seine eigene Zeile frei**, nicht für eine fremde (Codex-Finding 4); **Namensdoppel innerhalb der unveränderten `toAdd`-Zeilen sind keine Verletzung** (Codex-Finding 6); **die Zeichensatzprüfung gilt nur für Aliase, die der Nutzer selbst tippt (Rename)** — `toAdd`-Zeilen mit `invalidNames` laufen wie heute (Runde 2, Finding 5) |
 | Layout: Schritt statt Gruppenbox, virtuelles Scrollen, gestapelt bei 360 px, roving tabindex | Issue „Layout" | T8 | Muster `foreign-emote-grid` (einziger Scrollcontainer, `dvh`-Höhe, Breitklasse während des Schritts — Frage 5, entschieden) |
 | Slot-Projektion | AK 21, Codex-Finding 5 | T3 | `delta = addCount − removedEntryCount`, wobei `addCount` **jede ADD-Mutation** zählt (Add-, Rename- und Replace-Zeilen) — nicht Add plus Rename plus Replace obendrauf |
 
@@ -143,9 +151,12 @@ zu dem Zeitpunkt schon nicht mehr gegeben hätte, wenn der Tab mitten im Lauf st
    kein Download, kein Lesen (AK 2, 5).
 2. **Der Klick liest das Ziel-Set live** — tokenlos, `loadSevenTvSetEntries`, ein Request aus dem
    globalen Bucket, derselbe Leser wie `filterAlreadyPresent` — und vergleicht jedes Replace-Ziel
-   mit dem bestätigten Stand: dieselbe Id, **dieselbe Alias-Menge**, der kollidierende Name gehört
-   noch dieser Id, `complete === true`. Solange der Read läuft, ist der Knopf gesperrt und der
-   Grund steht daneben (`aria-describedby`, wie `loadingHint`).
+   auf **Eintragsebene** mit dem bestätigten Stand: dieselbe Id, dieselbe Alias-Menge
+   (`aliasesById`), **derselbe Bestand an aliaslosen Einträgen (`aliaslessIds`)**, der kollidierende
+   Name gehört noch dieser Id, `complete === true`. Ein aliasloser Eintrag ist ein Eintrag, den der
+   REMOVE ebenso nimmt (Sonde 5: **ein** REMOVE nimmt jeden Eintrag der Id) — eine Prüfung, die nur
+   Aliase vergleicht, sähe ihn nicht (Codex Runde 2, Finding 2). Solange der Read läuft, ist der
+   Knopf gesperrt und der Grund steht daneben (`aria-describedby`, wie `loadingHint`).
 3. **Weicht ein Ziel ab**, gibt es **keinen** Download und **keine** Startfreigabe: ein Banner
    nennt die betroffenen Zeilen, der Knopf „Ziel neu laden" ruft `data.retry()`, die Vorschau wird
    neu gebaut, die Entscheidungen der abgewichenen Zeilen fallen auf Skip zurück (die übrigen
@@ -266,9 +277,14 @@ Zähler, die Summen-Invariante — alle 22 Bestandstests bleiben grün) und wäc
 **Grenzfälle:** Zwei Quellzeilen kollidieren mit **demselben** Zieleintrag — beide Zeilen zeigen
 dasselbe Gegenstück (T3 verbietet dann, dass beide ersetzen). Der Zieleintrag, der den Namen hält,
 hat eine Id, die **auch** als Quellzeile vorkommt (Alias-Abweichung) — beide Listen nennen ihn;
-T3 muss das sehen (fünfte Regel). Ein Zielname, der von 7TV ohne Alias gelistet wird (K5-Fixrunde,
-`aliaslessIds`), existiert in der Ziel-Liste des Dialogs nicht (die Liste ist `name`-basiert) —
-festhalten als Kommentar, nicht als Sonderfall.
+T3 muss das sehen (fünfte Regel). **Aliaslose Einträge (K5-Fixrunde, `aliaslessIds`):** die
+Ziel-Liste des Dialogs ist `name`-basiert und kennt den Unterschied nicht — **Prüfaufgabe des
+Tasks**, wie ein Eintrag mit `alias: null` heute durch `ForeignEmoteSetService.cs:141` und
+`import-target-loader.ts:197` in `EmoteListItem.name` landet (Standardname, leer oder gar nicht).
+Das Ergebnis steht als Kommentar an `nameCollisionRows`; die verbindliche Sicht auf aliaslose
+Einträge hat erst der Live-Read in T8/T5, und die Rückweg-Datei entsteht aus ihm, nicht aus dieser
+Vorschau. Für die Zählung (`removedEntryCount`, AK 21) gilt die Vorschau; weicht der Live-Read ab,
+ist das eine Abweichung (Abschnitt 2, Punkt 3) und die Vorschau wird neu geladen.
 
 **Tests:** `import-preview.spec.ts` **+4**: Gegenstück je Kollisionszeile mit allen Zielaliasen
 eines #74-Duplikats; zwei Quellzeilen ⇒ dasselbe Gegenstück; Alias-Abweichung mit
@@ -313,8 +329,14 @@ Kein Angular, kein DOM.
      mit Frage 7): die Engine läuft in Quellreihenfolge, der Rename könnte vor dem Replace kommen und
      bekäme 409; eine Abhängigkeitsordnung im Lauf wäre Komplexität für einen Fall, der sich in
      zwei Läufen sauber lösen lässt. Abschnitt 7 hält das als Abweichung vom Issue fest.
-  3. **Jeder erzeugte Alias passiert `isNameRejectedBySevenTv`**; leer oder nur Leerraum ist eine
-     Verletzung, keine Ausnahme.
+  3. **Jeder vom Nutzer getippte Alias passiert `isNameRejectedBySevenTv`** — das ist genau der
+     Alias einer **Rename**-Zeile; leer oder nur Leerraum ist eine Verletzung, keine Ausnahme.
+     **Nicht** geprüft werden Aliase, die aus der Quelle stammen: unveränderte `toAdd`-Zeilen
+     (die Vorschau lässt `invalidNames` bewusst im Lauf — „7TV entscheidet", `import-preview.ts:47-52`;
+     ein unveränderter Dialog darf nicht blockieren, AK 2/5 — Codex Runde 2, Finding 5), der ADD
+     einer Replace-Zeile und der neue Alias eines Adopt (beide tragen den Quellnamen, den der Nutzer
+     nicht getippt hat; eine Ablehnung dort ist 7TVs Sache und endet als `failed`-Zeile mit 7TVs
+     Grund, wie heute bei `invalidNames`).
   4. **Keine zwei Zeilen ersetzen denselben Zieleintrag.**
   5. **Kein Zieleintrag wird von zwei Zeilen berührt** — Replace und Adopt derselben Ziel-Id
      schließen sich aus (Abschnitt 1, fünfte Regel der ersten Fassung).
@@ -342,10 +364,13 @@ Adopt frei machen würde (Verletzung) · Rename auf einen der beiden Aliase eine
 das ein **anderes** Replace nimmt (Verletzung) · zwei Replaces auf dieselbe Ziel-Id · Replace und
 Adopt auf dieselbe Ziel-Id · Adopt mit `adoptBlocked !== null` · Alias mit Leerzeichen / 101
 Zeichen / leer · leere Entscheidungen ⇒ Plan enthält **exakt** `preview.toAdd` als `add`-Zeilen,
-`removeCount === 0` (AK 5) · Projektion: einzelner Rename +1, gewöhnlicher Replace 0, Replace auf
-doppelt belegtes Ziel −1, gemischt (Add + Rename + Replace auf Duplikat = 3 − 2 = +1).
+`removeCount === 0` (AK 5) · **keine Entscheidungen, eine `invalidNames`-Zeile in `toAdd` ⇒
+`ok: true`, Zeile im Plan (Runde 2, Finding 5)** · Rename auf einen Alias mit Leerzeichen ⇒
+Verletzung (Regel 3 greift, weil getippt) · Projektion: einzelner Rename +1, gewöhnlicher Replace 0,
+Replace auf doppelt belegtes Ziel −1, gemischt (Add + Rename + Replace auf Duplikat = 3 − 2 = +1),
+**Replace auf ein Ziel mit einem benannten und einem aliaslosen Eintrag −1**.
 
-**Tests:** `conflict-resolution.spec.ts` **+15** (Liste oben), `slot-projection.spec.ts` **+3**
+**Tests:** `conflict-resolution.spec.ts` **+17** (Liste oben), `slot-projection.spec.ts` **+3**
 (die drei Fälle aus Codex-Finding 5 einzeln).
 
 **Abnahme:** Modul pur, ohne TestBed testbar; jede Verletzung nennt Zeilen. **AK 5, 10, 11
@@ -387,22 +412,40 @@ Operationen, die das verlangen. Delete, Restore und der heutige Import verhalten
   gemeinsamer Namensraum wie die anderen Engine-Texte), nicht `cancelled`. Grund: 7TV hat sich
   geändert, und `cancelled` heißt im Protokoll „nichts passiert" (Abschnitt 7, Frage 3).
 - `progress` zählt weiter Zeilen, nicht Schritte — die Fortschrittsleiste zeigt Entscheidungen.
-- **Der Ausgang `unknown` (Codex-Finding 3).** `RunItemStatus` bekommt den Wert `'unknown'`. Ein
-  Schritt endet so, wenn **keine Antwort aus 7TVs GraphQL-Schicht** vorliegt: `httpStatus` `0`
-  (Netzwerkabbruch, Timeout — heute `describeHttpError`s `networkError`-Zweig, `:566`) oder `502`,
-  `503`, `504` (ein Proxy antwortete, nicht 7TV; die Mutation kann angewendet sein oder nicht).
-  `500` bleibt `failed` — dort hat 7TV geantwortet, und der Vertrag „Fehler heißt nicht angewendet"
-  ist so gut wie er bei jeder anderen Ablehnung ist. Eine GQL-Ablehnung über HTTP 200 ist **nie**
-  `unknown`. Nur eine Operation, die es verlangt (`RunOperation.transportLossIsUnknown: true`),
-  bekommt den Ausgang; die Voreinstellung `false` reproduziert heute: Delete, Restore und der
-  Import-Lauf ohne Replace bleiben bei `failed`. Eine `unknown`-Zeile: kein weiterer Schritt (ein
-  ADD auf ein womöglich noch besetztes Ziel ist ein Ticket für einen 409), `failedStep` = der
-  Schritt ohne Antwort, `abortOn` wird **nicht** gerufen (es gibt keinen Grund zu bewerten), der
-  Lauf geht weiter, `progress` zählt sie als erledigt, `doneKeys` enthält sie **nicht**.
-- **`settle(key, status: 'done' | 'failed', errorMessage?)`**, nur außerhalb eines Laufs aufrufbar
-  und nur für `unknown`-Zeilen: der Weg, auf dem T5s Nachlesen die Zeile klärt, bevor Dock und
-  Protokoll sie zeigen. Eine geklärte `done`-Zeile wird in `doneKeys` **nicht** nachgetragen — das
-  `RunResult` ist geschrieben; der Import-Service liest für seine Meldungen ohnehin die `items`.
+- **Der Ausgang `unknown` (Codex-Finding 3, verschärft durch Runde 2, Finding 4).**
+  `RunItemStatus` bekommt den Wert `'unknown'`. Die Regel ist **keine Statusliste**, sondern eine
+  Dreiteilung dessen, was `runOne` heute schon unterscheidet (`:371-424`):
+  - **Eine GraphQL-Antwort** (HTTP 200 mit oder ohne `errors`) ist eindeutig: Erfolg, 429-Backoff,
+    oder `failed` mit `errorCode`/`gqlStatus` — wie heute, nie `unknown`.
+  - **Eine HTTP-Ablehnung vor der Verarbeitung** — jede `4xx`-Antwort aus 7TVs HTTP-Schicht — ist
+    ebenso eindeutig: die Mutation ist nicht gelaufen. `401`/`403` bleiben `failed` mit
+    `tokenInvalid`, `describeHttpError` löscht das Token, und `abortsForMissingPrivileges` bricht ab
+    (der Body liegt außerhalb des Schemas, `seven-tv-import.service.ts:60-62` — genau deshalb wird
+    hier nach `httpStatus` entschieden, nicht nach einem GQL-Fehler); `429` bleibt Backoff; eine
+    sonstige `4xx` bleibt `failed` mit `genericStatus`.
+  - **Alles andere ist `unknown`**: keine Antwort (`httpStatus 0` — Netzwerkabbruch, Timeout, heute
+    der `networkError`-Zweig `:566`) und **jede `5xx`**, `500` eingeschlossen. Runde 2 hat die
+    Planentscheidung der ersten Fassung („500 bleibt `failed`, dort hat 7TV geantwortet") gekippt,
+    der Betreiber hat zugestimmt: eine 500 sagt, dass etwas fehlschlug, nicht **wo** — vor, während
+    oder nach dem Schreiben —, und der Vertrag muss die Unsicherheit tragen, nicht wegdefinieren.
+  Nur eine Operation, die es verlangt (`RunOperation.transportLossIsUnknown: true`), bekommt den
+  Ausgang; die Voreinstellung `false` reproduziert heute: Delete, Restore und der Import-Lauf ohne
+  Replace bleiben bei `failed`. Eine `unknown`-Zeile: kein weiterer Schritt (ein ADD auf ein
+  womöglich noch besetztes Ziel ist ein Ticket für einen 409), `failedStep` = der Schritt ohne
+  Antwort, `abortOn` wird **nicht** gerufen (es gibt keinen Grund zu bewerten), der Lauf geht
+  weiter, `progress` zählt sie als erledigt, `doneKeys` enthält sie **nicht**.
+- **`completedSteps` je Zeile (Runde 2, Finding 1).** `RunQueueItem` zählt die Schritte, die 7TV
+  **bestätigt** hat (Erfolgsantwort), unabhängig vom Endstatus der Zeile: eine Replace-Zeile mit
+  `completedSteps >= 1` hat einen bestätigten REMOVE — ob sie `done`, `failed` oder `unknown`
+  endet. Das ist die eine Größe, aus der T5 die Löschmeldung und T7 `removedTarget.confirmed`
+  ableiten; ein Leser, der es aus `status` und `failedStep` rekonstruieren müsste, verlöre genau
+  den Fall „REMOVE bestätigt, ADD ohne Antwort, Nachlesen gescheitert".
+- **Kein `settle` auf der Engine (Runde 2, Finding 3).** Die erste Fassung ließ T5 die Zeilen der
+  Engine-Queue nachträglich klären. Die Queue gehört aber dem **nächsten** Lauf, sobald einer
+  startet — `isRunning` fällt in `finish()`, **bevor** `onComplete` feuert, und der Arbiter gibt
+  den nächsten Start genau daran frei (`seven-tv-import.service.ts:83-92`). Die Engine bleibt
+  lauf-agnostisch: sie liefert das `RunResult` als Snapshot (wie heute) und bietet **keinen**
+  Rückkanal. Geklärt wird auf einem lauf-gebundenen Ergebnis im Service (T5).
 
 **Grenzfälle:** Rate-Limit-Pause **zwischen** REMOVE und ADD — die Zeile steht `in-progress`, die
 Anzeige zeigt den Countdown wie heute; nach der Pause läuft der ADD, nicht der REMOVE noch einmal
@@ -411,16 +454,18 @@ Anzeige zeigt den Countdown wie heute; nach der Pause läuft der ADD, nicht der 
 Ein 429 bleibt Backoff, nie `unknown` — 7TV hat geantwortet. Ein `unknown` in Schritt 1 einer
 Replace-Zeile ⇒ Schritt 2 wird nicht gesendet.
 
-**Tests:** `seven-tv-run-engine.spec.ts` (24) **+10**: zwei Schritte in Reihenfolge mit Pacing
+**Tests:** `seven-tv-run-engine.spec.ts` (24) **+12**: zwei Schritte in Reihenfolge mit Pacing
 dazwischen; Schritt-1-Fehler unterdrückt Schritt 2; Schritt-2-Fehler ⇒ `failedStep = 1`, Lauf geht
 weiter; Rate-Limit zwischen den Schritten wiederholt nur Schritt 2; **`cancel()` zwischen den
 Schritten ⇒ `failed` + `failedStep = 1`, kein ADD gesendet, Rest `cancelled`** (Codex-Finding 2);
-`gqlStatus` erreicht `abortOn` (409-Fixture aus dem T0-Kommentar); **Status 0 auf einer Operation
-mit `transportLossIsUnknown` ⇒ `unknown`, kein Schritt 2, `abortOn` nicht gerufen**; **derselbe
-Status 0 auf einer Operation ohne das Flag ⇒ `failed` wie heute**; **`settle` klärt eine
-`unknown`-Zeile und verweigert sich einer `failed`-Zeile und einem laufenden Lauf**; Einschritt-
-Operation unverändert (Snapshot der gesendeten Requests eines Zwei-Zeilen-Laufs gegen den heutigen
-Stand — erlaubt, weil Wire-Vertrag, nicht Vorlage). `run-progress-panel.spec.ts` **+1**
+`gqlStatus` erreicht `abortOn` (409-Fixture aus dem T0-Kommentar); **Status 0 und Status 500 auf
+einer Operation mit `transportLossIsUnknown` ⇒ `unknown`, kein Schritt 2, `abortOn` nicht
+gerufen**; **derselbe Status 0 auf einer Operation ohne das Flag ⇒ `failed` wie heute**; **401 auf
+einer Operation mit dem Flag ⇒ `failed`, Token gelöscht, `abortOn` mit `httpStatus 401` gerufen —
+nie `unknown`**; **`completedSteps` ist 1 für eine Replace-Zeile, deren ADD `unknown` blieb, und 0
+für eine, deren REMOVE `unknown` blieb**; Einschritt-Operation unverändert (Snapshot der gesendeten
+Requests eines Zwei-Zeilen-Laufs gegen den heutigen Stand — erlaubt, weil Wire-Vertrag, nicht
+Vorlage). `run-progress-panel.spec.ts` **+1**
 (`unknown` zählt in `finished`, erscheint in der Fehlerliste mit eigener Wortfamilie
 `<prefix>.unknownOutcome`). `seven-tv-delete.service.spec.ts` / `seven-tv-restore.service.spec.ts` /
 `seven-tv-import.service.spec.ts`: nur Signatur-Fixtures, **0 neue Fälle**, alle bestehenden grün.
@@ -473,41 +518,63 @@ weg und verifiziert die Replace-Ziele ein zweites Mal.
   hat.** Ein Add-only-Lauf bleibt damit byte-identisch zu heute (Regel 24); ein Lauf, der löscht,
   bekommt den ehrlicheren Ausgang für **alle** seine Zeilen — auch Rename und Adopt, denn dort
   gilt dasselbe: eine verlorene Antwort heißt nicht „nicht angewendet" (Codex-Finding 3).
-- **Nachlesen nach dem Lauf, vor jeder Meldung.** Hat das `RunResult` mindestens eine
-  `unknown`-Zeile, liest der Service das Ziel-Set **einmal** live (`loadSevenTvSetEntries`,
-  tokenlos, globaler Bucket) und klärt jede Zeile per `engine.settle`:
+- **Nachlesen nach dem Lauf, auf einem lauf-gebundenen Ergebnis, vor jeder Meldung (Runde 2,
+  Finding 3).** `onRunComplete` erhält das `RunResult` als Snapshot und schreibt es **nicht**
+  sofort als Endstand: `ImportRunInfo` bekommt `settlement: 'pending' | 'settled'`. Hat der Snapshot
+  mindestens eine `unknown`-Zeile, liest der Service das Ziel-Set **einmal** live
+  (`loadSevenTvSetEntries`, tokenlos, globaler Bucket) und klärt jede Zeile in einer **Kopie** der
+  `items`; danach veröffentlicht er Kopie und Meldungen **atomar** in einem `run.set({ …finished,
+  result: settled, settlement: 'settled' })` — geschützt durch `applyIfCurrent`: gehört die Antwort
+  zu einem Lauf, der nicht mehr `run()` ist (ein zweiter Import hat gestartet, `reset()` lief), wird
+  sie fallen gelassen, wie jede andere späte Antwort im R15-Muster. Ohne `unknown`-Zeile ist der
+  Snapshot sofort `settled`. **Die Anzeige liest nicht mehr die Engine-Queue:** der Service bietet
+  `items` = Engine-Queue, solange `isRunning()`, sonst `run()?.result.items` — damit zeigt das Dock
+  nach dem Lauf das geklärte Ergebnis des **eigenen** Laufs, auch wenn die Engine längst die Queue
+  des nächsten hält. Klärungsregeln:
   - ADD-Schritt unbekannt (Add, Rename, Replace-Schritt 2): Quell-Id unter dem Plan-Alias im Set ⇒
     `done`; nicht im Set ⇒ `failed` — bei Replace mit `removedButNotAdded`, sonst mit dem generischen
     `unknownOutcome`-Grund plus 7TVs letztem Text.
   - REMOVE-Schritt unbekannt (Replace-Schritt 1): Ziel-Id noch im Set ⇒ `failed`, `failedStep 0`,
     nichts ist passiert; Ziel-Id weg ⇒ `failed` mit `removedButNotAdded` — der REMOVE ist passiert,
-    der ADD wurde nie gesendet; die Id gehört in die Löschmeldung.
+    der ADD wurde nie gesendet; `completedSteps` wird auf 1 gesetzt (die Bestätigung kam per
+    Nachlesen), die Id gehört in die Löschmeldung.
   - Adopt unbekannt: Ziel-Id unter dem Quellnamen ⇒ `done`; unter dem alten Alias ⇒ `failed`.
-  - **Das Nachlesen scheitert oder ist `complete: false`:** die Zeilen bleiben `unknown`. Sie
-    erscheinen in **keiner** Meldung — nicht als hinzugefügt, nicht als entfernt —, das
-    Ergebnisprotokoll schreibt `unknown`, und das Dock sagt es (`import.summary.unknownRows`, mit
-    der Aufforderung, das Set bei 7TV zu prüfen). Eine unbekannte Zeile als Lücke zu melden wäre
-    dieselbe falsche Sicherheit wie sie als Erfolg zu melden.
-- **Meldungen nach dem Lauf (nach dem Nachlesen):** `syncImported` für jede `done`-Zeile mit Aktion
-  `add`, `renameSource`, `replace` (die hinzugefügten Ids, wie heute); zusätzlich eine
-  **Löschmeldung** für jede Zeile, deren REMOVE **bestätigt** ist — `done`-Replaces, `failed`-Replaces
-  mit `failedStep === 1`, und per Nachlesen geklärte Replaces, deren Ziel weg ist. Getracktes Ziel
-  ⇒ `emoteAdminService.syncDeleted(channel, { emoteSetId, sevenTvEmoteIds })` (der bestehende Weg,
+  - **Das Nachlesen scheitert oder ist `complete: false`:** die Zeilen bleiben `unknown`, das
+    Ergebnis wird trotzdem `settled` veröffentlicht. Eine `unknown`-Zeile erscheint in **keiner**
+    Import-Meldung — nicht als hinzugefügt —, das Ergebnisprotokoll schreibt `unknown`, und das Dock
+    sagt es (`import.summary.unknownRows`, mit der Aufforderung, das Set bei 7TV zu prüfen). **Aber:
+    ein REMOVE, den 7TV bestätigt hat (`completedSteps >= 1`), geht immer in die Löschmeldung ein**,
+    auch wenn die Zeile `unknown` bleibt (Runde 2, Finding 1) — die Bestätigung ist eine Tatsache
+    aus dem Lauf, nicht aus dem Nachlesen, und sie hängt nicht am Endstatus der Zeile.
+  **Warum kein „Start gesperrt, bis das Nachlesen fertig ist":** der Arbiter leitet „ein Lauf ist
+  aktiv" aus `isRunning` der drei Dienste ab (§4.3); eine Sperre bräuchte einen vierten Zustand im
+  Arbiter, einen Sperrtext an allen 7TV-Startknöpfen und würde Delete und Restore mit blockieren —
+  und den Guard gegen späte Antworten bräuchte es **trotzdem**, weil `reset()` und der
+  Kanalwechsel dieselbe Wettlauflage erzeugen wie ein Neustart. Das R15-Muster existiert für genau
+  diese Lage bereits an drei Stellen; es um eine vierte zu erweitern ist der kleinere Vertrag.
+- **Meldungen nach dem Lauf (nach der Veröffentlichung des geklärten Ergebnisses):** `syncImported`
+  für jede `done`-Zeile mit Aktion `add`, `renameSource`, `replace` (die hinzugefügten Ids, wie
+  heute); zusätzlich eine **Löschmeldung** für jede Replace-Zeile mit **bestätigtem REMOVE**
+  (`completedSteps >= 1`, direkt oder per Nachlesen) — **unabhängig vom Endstatus**: `done`,
+  `failed` mit `failedStep 1`, oder `unknown` mit bestätigtem Schritt 1. Getracktes Ziel ⇒
+  `emoteAdminService.syncDeleted(channel, { emoteSetId, sevenTvEmoteIds })` (der bestehende Weg,
   Papierfall bei nicht-aktivem Set); ungetracktes Ziel ⇒ `emoteSetService.reportDeletedFromSet`
   (T6). `adoptSourceName` meldet **nichts** (Frage 2, entschieden). Beide Meldungen haben eigene
   `SyncReportState`-Signale (`syncReport` bleibt für den Import, `removalReport` neu), eigenen
   Retry, und beide hängen am `ImportRunInfo`-Objekt (R15-Muster).
-- `ImportRunInfo` wächst um `plan`, `removedCount` (bestätigte REMOVEs, für Dock und Protokoll) und
-  `unknownCount`; der Service trägt das Signal **`destructiveRunActive`** = `isRunning() &&
-  plan.rows.some(replace)` für den `beforeunload` aus Abschnitt 2 (T7 hängt ihn an).
+- `ImportRunInfo` wächst um `plan`, `settlement`, `removedCount` (bestätigte REMOVEs, für Dock und
+  Protokoll) und `unknownCount`; der Service trägt das Signal **`destructiveRunActive`** =
+  `isRunning() && plan.rows.some(replace)` für den `beforeunload` aus Abschnitt 2 (T7 hängt ihn an).
 - **`filterAlreadyPresent` in `import-flow.ts`** läuft nur über die Planzeilen mit Aktion `add`,
   `renameSource`, `replace` — eine `adoptSourceName`-Zeile ist per Definition im Ziel und darf nicht
   herausfallen. Eine `replace`-Zeile, deren **Quell**-Id inzwischen im Ziel steht, fällt ganz heraus
   (kein REMOVE ohne ADD — konservativ, richtig).
 - **`verifyReplaceTargets(entries, plan)` — das zweite Tor (Codex-Finding 1, Abschnitt 2 Punkt 5).**
-  Aus **demselben** Read, den `filterAlreadyPresent` ohnehin macht, wird jede Replace-Zeile geprüft:
-  Ziel-Id im Set, Alias-Menge gleich der Planzeile (`target.aliases`, die T8 aus der ersten
-  Live-Verifikation geschrieben hat), kollidierender Name gehört dieser Id. Eine abgewichene Zeile
+  Aus **demselben** Read, den `filterAlreadyPresent` ohnehin macht, wird jede Replace-Zeile auf
+  **Eintragsebene** geprüft: Ziel-Id im Set, benannte Aliase gleich der Planzeile
+  (`aliasesById` gegen `target.entries`, die T8 aus der ersten Live-Verifikation geschrieben hat),
+  **aliasloser Bestand gleich (`aliaslessIds.has(id)` gegen den `alias: null`-Eintrag der
+  Planzeile — Runde 2, Finding 2)**, kollidierender Name gehört dieser Id. Eine abgewichene Zeile
   fällt aus dem Lauf, gezählt in `replaceSkippedDrift` und im Dock genannt; der Rest läuft. Ein
   fehlgeschlagener oder unvollständiger Read lässt **keine** Replace-Zeile durch (anders als der
   Duplikatfilter, der offen ausfällt — eine Löschung auf ungeprüfter Grundlage ist der schlechtere
@@ -523,7 +590,7 @@ in dem ein Dritter inzwischen dieselbe Quell-Id hinzugefügt hat ⇒ die unbekan
 `done` geklärt, obwohl vielleicht der Dritte es war — hinnehmbar, denn das Emote **ist** unter dem
 Alias im Set, und genau das meldet `syncImported`.
 
-**Tests:** `seven-tv-import.service.spec.ts` (29) **+13**: Rename sendet den Alias, nicht den
+**Tests:** `seven-tv-import.service.spec.ts` (29) **+17**: Rename sendet den Alias, nicht den
 Quellnamen; Replace sendet REMOVE dann ADD, dieselbe `setId`, benachbart; Adopt sendet
 `updateEmoteAlias` mit altem Alias im `id` und neuem als Argument, **kein** `addEmote`; 409 ⇒
 `nameTakenNow`, Lauf läuft weiter; `failedStep = 1` ⇒ `removedButNotAdded` **und** Id in der
@@ -531,10 +598,18 @@ Löschmeldung; Löschmeldung getrackt (`syncDeleted` mit `emoteSetId`) / ungetra
 (`reportDeletedFromSet`); Lauf ohne REMOVE ⇒ keine Löschmeldung; Retry der Löschmeldung nutzt
 denselben Laufdatensatz; **Add-only-Plan setzt `transportLossIsUnknown` nicht, Replace-Plan schon;
 unbekannter ADD wird per Nachlesen zu `done` geklärt und gemeldet; unbekannter REMOVE mit
-verschwundenem Ziel wird zu `failed`/Lücke und landet in der Löschmeldung; gescheitertes Nachlesen
-lässt `unknown` stehen und hält die Id aus beiden Meldungen; Meldungen warten auf das Nachlesen**.
-`already-present-filter.spec.ts` **+3** (`verifyReplaceTargets`: gleich, abgewichen durch neuen
-Alias, abgewichen durch fremden Namensinhaber). `import-flow.spec.ts` **+4**: Adopt-Zeile überlebt
+verschwundenem Ziel wird zu `failed`/Lücke, `completedSteps 1`, und landet in der Löschmeldung;
+gescheitertes Nachlesen lässt `unknown` stehen und hält die Quell-Id aus `syncImported` — **die
+bestätigte REMOVE derselben Zeile steht trotzdem in der Löschmeldung** (Runde 2, Finding 1);
+Meldungen warten auf die Veröffentlichung des geklärten Ergebnisses; **ein zweiter `startImport`
+während des Nachlesens: das Nachlesen klärt und meldet den alten Lauf, `items` zeigt die neue
+Queue, und der alte Lauf wird nie als `run()` veröffentlicht** (Runde 2, Finding 3); **`reset()`
+während des Nachlesens ⇒ Antwort fallen gelassen, keine Meldung**; `items` wechselt von der
+Engine-Queue auf `run().result.items`, sobald `isRunning` fällt**.
+`already-present-filter.spec.ts` **+5** (`verifyReplaceTargets`: gleich, abgewichen durch neuen
+Alias, abgewichen durch fremden Namensinhaber, **gemischt: ein benannter und ein aliasloser Eintrag
+— gleich, wenn die Planzeile beide kennt, abgewichen, wenn der aliaslose neu ist oder fehlt** —
+Runde 2, Finding 2). `import-flow.spec.ts` **+4**: Adopt-Zeile überlebt
 den Frischcheck; Replace mit inzwischen vorhandener Quell-Id fällt ganz weg; **abgewichenes
 Replace-Ziel fällt weg und wird gezählt; fehlgeschlagener Read hält jede Replace-Zeile zurück**.
 
@@ -621,12 +696,18 @@ Einlesesorte).
 
 - **Eine Envelope-Art, zwei Stufen.** `meta.stage: 'planned' | 'finished'`. Die Rückweg-Datei
   (`planned`) entsteht in T8 aus dem **live gelesenen** Ziel-Set: je Replace-Zeile `removedTarget`
-  mit Ziel-Id und **allen** Aliasen aus dem Read, nicht aus der Vorschau (Codex-Finding 1); alle
+  mit Ziel-Id und **allen Einträgen** aus dem Read, nicht aus der Vorschau (Codex-Finding 1) —
+  `entries: { alias: string | null }[]`, ein Eintrag je benanntem Alias aus `aliasesById` **plus
+  einer mit `alias: null`, wenn die Id in `aliaslessIds` steht** (Runde 2, Finding 2; der Leser
+  weiß dann: dieser Eintrag stand unter dem Standardnamen des Emotes und kommt per ADD **ohne**
+  Alias zurück). `aliases: string[]` bleibt daneben als die benannten, für den CSV-Leser. Alle
   Zeilen `status: 'pending'`, `failedStep: null`, `errorMessage: null`; `counts` mit `planned`,
   `removals`. Das Ergebnisprotokoll (`finished`) trägt dieselben Zeilen mit Ausgang: `status` (auch
   `unknown`), `failedStep: number | null`, `errorMessage` (7TVs Rohtext), und bei Replace zusätzlich
-  `removedTarget.confirmed: boolean` (REMOVE bestätigt, direkt oder per Nachlesen). Zeilen
-  **ungefiltert** (F3: auch `failed`, `cancelled`, `unknown`).
+  `removedTarget.confirmed: boolean` = `completedSteps >= 1` (REMOVE bestätigt — direkt durch 7TVs
+  Antwort oder per Nachlesen —, **unabhängig vom Endstatus der Zeile**, also auch `true` bei einer
+  `unknown`-Zeile, deren ADD ohne Antwort blieb; Runde 2, Finding 1). Zeilen **ungefiltert** (F3:
+  auch `failed`, `cancelled`, `unknown`).
 - Zeilenform aus dem Issue, plus `failedStep`, `sourceName` (der Quellname, auch wenn `alias`
   davon abweicht — sonst ist ein Rename nicht rekonstruierbar) und `removedTarget.confirmed`.
 - `meta`: `stage`, `targetEmoteSetId`, `targetChannelName: string | null`, `targetOwnerDisplayName:
@@ -640,7 +721,8 @@ Einlesesorte).
 - `TRANSFER_RUN_FORMAT_VERSION = 1`, **kein** Bump von `EXPORT_FORMAT_VERSION` (Issue). CSV nur für
   die Stufe `finished`: `action`, `source_name`, `alias`, `seven_tv_emote_id`, `status`,
   `failed_step`, `error_message`, `removed_seven_tv_emote_id`, `removed_aliases` (durch `|`
-  getrennt), `removed_confirmed`. Die Rückweg-Datei ist **nur JSON** — ein Klick, eine Datei.
+  getrennt), `removed_aliasless_entry` (`true`/`false`), `removed_confirmed`. Die Rückweg-Datei ist
+  **nur JSON** — ein Klick, eine Datei.
 - **Rückweg-Verbot:** `parseImportSource` antwortet auf `kind === 'transfer-run'` — **beide
   Stufen** — mit dem eigenen Key **vor** der `emote-list`/`usage`-Prüfung; `parsePurgeRunProtocol`
   ebenso über `FOREIGN_KIND_ERROR_KEYS`. Ein unbekannter `kind` bleibt `wrongKind` (schon heute
@@ -648,7 +730,10 @@ Einlesesorte).
 - **Ergebnisprotokoll im Dock** nach jedem Lauf (AK 16): `ExportDialog` mit `FORMAT_EXPORT_OPTIONS`,
   `selectionCount: null` (wie das Purge-Protokoll), stiller Hinweis `protocolNotSaved`, kein Banner,
   keine Rückfrage beim Schließen (Abschnitt 2). `protocolSaved` wird beim Start eines neuen Laufs
-  zurückgesetzt.
+  zurückgesetzt. Der Download-Knopf erscheint erst bei `settlement === 'settled'` und baut aus
+  `run().result.items` — dem geklärten, lauf-gebundenen Ergebnis —, nie aus der Engine-Queue
+  (Runde 2, Finding 3); `import-progress-section.ts` bindet `[items]` an `importService.items`
+  statt an `importService.queue`.
 - **`beforeunload`** hängt an `destructiveRunActive` (T5): registriert, solange das Signal `true`
   ist, entfernt danach; der Browser zeigt seinen eigenen Dialog. Der Leave-Guard bleibt, wie er ist
   (er fragt schon bei jedem laufenden Import). **Kein** Guard nach dem Lauf.
@@ -661,11 +746,15 @@ gibt es für ihn **nicht** (kein Replace). Ein untracked Ziel ohne Anzeigenamen 
 solange kein Replace im Plan ist, und **nie** nach dem Lauf. Ein `unknown`, das das Nachlesen nicht
 klären konnte, steht als `unknown` im Ergebnisprotokoll — kein Leser darf es als `failed` lesen.
 
-**Tests:** `transfer-run-export.spec.ts` **+8**: Rückweg-Datei aus Plan + Live-Read (Replace mit
+**Tests:** `transfer-run-export.spec.ts` **+10**: Rückweg-Datei aus Plan + Live-Read (Replace mit
 #74-Duplikat ⇒ zwei Aliase in `removedTarget`, `status: 'pending'`, `stage: 'planned'`);
-Ergebnisprotokoll aus einem gemischten Lauf (jede Aktion einmal); `failed` mit `failedStep = 1` und
-`removedTarget.confirmed: true`; `unknown`-Zeile bleibt `unknown`, zählt in `counts.unknown`, nicht
-in `removed`; CSV-Spalten; beide Dateinamen; Envelope-Felder für getrackt/ungetrackt.
+**Rückweg-Datei für ein Ziel mit einem benannten und einem aliaslosen Eintrag ⇒ `entries` mit zwei
+Einträgen, einer davon `alias: null`, `aliases` mit einem** (Runde 2, Finding 2); Ergebnisprotokoll
+aus einem gemischten Lauf (jede Aktion einmal); `failed` mit `failedStep = 1` und
+`removedTarget.confirmed: true`; **`unknown`-Zeile mit `completedSteps 1` ⇒ `confirmed: true`,
+zählt in `counts.removed` **und** `counts.unknown`** (Runde 2, Finding 1); `unknown`-Zeile mit
+`completedSteps 0` ⇒ `confirmed: false`, nicht in `removed`; CSV-Spalten inkl.
+`removed_aliasless_entry`; beide Dateinamen; Envelope-Felder für getrackt/ungetrackt.
 `import-source-parser.spec.ts` **+2** (beide Stufen abgewiesen), `purge-run-export.spec.ts` **+1**,
 `file-import-step.spec.ts` **+1** (die Datei landet bei keinem `picked`, Banner nennt den
 Transfer-Grund). `import-progress-section.spec.ts` (18) **+3**: Download-Knopf nach jedem Lauf;
@@ -743,7 +832,8 @@ ergänzen — der Abschnitt ist Vertrag).
   `blockReason`/`runBlocked`; der Klick geht nach `verifying` (Knopf gesperrt, Grund
   `import.confirm.verifying` daneben, `aria-describedby`), der Read läuft über
   `loadSevenTvSetEntries` mit dem `HttpClient` aus den Flow-Deps, der Vergleich über
-  `verifyReplaceTargets` (T5). **Abweichung** ⇒ zurück nach `idle`, Banner `targetDrifted` nennt die
+  `verifyReplaceTargets` (T5) — auf Eintragsebene, `aliaslessIds` eingeschlossen (Runde 2,
+  Finding 2). **Abweichung** ⇒ zurück nach `idle`, Banner `targetDrifted` nennt die
   Zeilen (`error`, mit `notice-action` „Ziel neu laden" → `data.retry()`; die abgewichenen Zeilen
   fallen auf Skip zurück, die übrigen Entscheidungen werden neu validiert). **Gleichstand** ⇒
   Rückweg-Datei bauen (`buildTransferPlanRecord`, T7, aus den **gelesenen** Aliasen), `downloadFile`
@@ -896,11 +986,11 @@ verlangt einen `fix(import): …`. **AK 7 (live), 19 (live), 24.**
 | 12 | Rename sendet den Alias | T5 |
 | 13 | Replace: REMOVE dann ADD, dieselbe `setId`, benachbart | T4, T5, T9 (E2E 1) |
 | 14 | REMOVE scheitert ⇒ kein ADD, `failed` | T4 |
-| 15 | ADD scheitert nach REMOVE ⇒ eigener Grund, Lauf geht weiter — **eine verlorene Antwort ist kein Scheitern** (`unknown`, Nachlesen) | T4, T5, T9 (E2E 2, 5) |
-| 16 | Protokoll nach jedem Lauf (Ergebnisprotokoll); **zusätzlich Rückweg-Datei vor jedem Lauf mit Replace** | T7, T8 |
-| 17 | Replace-Zeile trägt Ziel-Id und **alle** Aliase — **live gelesen** vor dem Download, nicht aus der Vorschau; Ergebnis mit `confirmed` | T2, T5, T7, T8, T9 (E2E 1, 4), T10 (Punkte 2, 7) |
+| 15 | ADD scheitert nach REMOVE ⇒ eigener Grund, Lauf geht weiter — **eine verlorene oder 5xx-Antwort ist kein Scheitern** (`unknown`, Nachlesen auf lauf-gebundenem Ergebnis) | T4, T5, T9 (E2E 2, 5) |
+| 16 | Protokoll nach jedem Lauf (Ergebnisprotokoll, aus dem geklärten Ergebnis); **zusätzlich Rückweg-Datei vor jedem Lauf mit Replace** | T7, T8 |
+| 17 | Replace-Zeile trägt Ziel-Id und **alle Einträge** — benannte Aliase **und** einen aliaslosen — **live gelesen** vor dem Download, nicht aus der Vorschau; Ergebnis mit `confirmed`, das am bestätigten REMOVE hängt, nicht am Zeilenstatus | T2, T5, T7, T8, T9 (E2E 1, 4), T10 (Punkte 2, 7) |
 | 18 | `transfer-run` wird namentlich abgewiesen (beide Stufen); unbekannter `kind` mit Grund | T7 |
-| 19 | Löschmeldung getrackt / ungetrackt, Audit zeigt beides — nur **bestätigte** REMOVEs | T5, T6, T10 |
+| 19 | Löschmeldung getrackt / ungetrackt, Audit zeigt beides — **jede bestätigte** REMOVE (`completedSteps >= 1`), auch bei einer `unknown`-Zeile | T4, T5, T6, T10 |
 | 20 | Entfernungszeile genau bei Replace | T3, T8 |
 | 21 | Projektion: `addCount − removedEntryCount` — Rename +1, Replace 0, Replace auf Duplikat −1 | T3, T8 |
 | 22 | 200 Zeilen, 360 px, kein horizontaler Scroll, kein Bildsturm | T8 |
@@ -985,7 +1075,9 @@ neue Fragen aus der Codex-Runde gibt es keine (Abschnitt 9).
 | `cancel()` mitten in der Zeile | nicht behandelt | `failed` + Lückengrund | Frage 3, entschieden |
 | `gqlStatus` in der Engine | nicht erwähnt | neues Feld in `RunOneResult`/`abortOn` | Das Issue verlangt „detect it by `status`, not by text"; die Engine trägt den Status heute nicht durch |
 | **Rückweg-Datei vor dem Lauf** | „Offered after every transfer run" (nur danach) | zusätzlich Pflicht-Download **vor** dem ersten REMOVE, `stage: 'planned'`, aus live gelesenen Aliasen | Betreiber-Entscheidung Frage 4 und Codex-Findings 1/2: eine Datei, die erst nach dem Lauf entsteht, gibt es nicht, wenn der Tab mitten im Lauf stirbt; eine Datei aus der Vorschau kann Aliase nicht kennen, die seither dazukamen |
-| **Ausgang `unknown`** | „if the ADD fails, the row ends `failed`" | ein Schritt ohne Antwort aus 7TVs GraphQL-Schicht endet `unknown`; ein Nachlesen klärt ihn; unklärbar heißt: in keiner Meldung | Codex-Finding 3: eine verlorene Antwort ist kein Beweis, dass nichts passiert ist; `failed` würde eine womöglich hinzugefügte Id aus `sync-imported` halten und eine Lücke behaupten, die es nicht gibt |
+| **Ausgang `unknown`** | „if the ADD fails, the row ends `failed`" | ein Schritt ohne GraphQL-Antwort und ohne HTTP-Ablehnung vor der Verarbeitung (Status 0, jede 5xx) endet `unknown`; ein Nachlesen auf einem lauf-gebundenen Ergebnis klärt ihn; unklärbar heißt: Quell-Id in keiner Import-Meldung — der bestätigte REMOVE derselben Zeile aber in der Löschmeldung | Codex Runde 1 Finding 3, Runde 2 Findings 1, 3, 4: eine verlorene Antwort ist kein Beweis, dass nichts passiert ist; eine 500 sagt nicht, ob vor oder nach dem Schreiben; eine Engine-Queue gehört dem nächsten Lauf; und die Bestätigung eines REMOVE ist eine Tatsache aus dem Lauf, die kein späterer Zustand der Zeile zurücknehmen kann |
+| **Aliaslose Zieleinträge** | nicht behandelt (Alias-Liste) | `removedTarget.entries` mit `alias: string \| null`; Drift-Vergleich auf Eintragsebene an beiden Prüfstellen; Replace **erlaubt** | Codex Runde 2, Finding 2. Gewählt: **abbilden statt sperren**. Am Code geprüft: der Purge-Restore kann einen aliaslosen Eintrag nicht ausdrücken (`PurgeRunRow.aliases` verlangt nicht-leere Strings, `readProtocolRow` fällt auf `[name]` zurück) — aber die `transfer-run`-Datei ist ohnehin nie ladbar, ihr Rückweg ist ein Mensch, und der stellt den Eintrag mit einem ADD **ohne** Alias wieder her (7TV fällt auf den Standardnamen zurück, wie `ADD_EMOTE_MUTATION`s Kommentar sagt). Sperren hätte eine ganze Zielklasse aus Replace genommen, weil eine Datei ein Feld nicht hatte; die K5-Regel „aliaslos ist fremd" schützte vor einem **Re-ADD** auf einen unbekannten Eintrag — hier nimmt der REMOVE ihn so oder so, und die ehrliche Antwort darauf ist, ihn aufzuschreiben |
+| **Zeichensatzprüfung nur für getippte Aliase** | „Every produced alias must pass `isNameRejectedBySevenTv`" | nur der Alias einer Rename-Zeile; `toAdd`-, Replace- und Adopt-Aliase (Quellnamen) laufen wie heute | Codex Runde 2, Finding 5: `buildImportPreview` lässt `invalidNames` bewusst in `toAdd` („7TV entscheidet"); eine Prüfung aller erzeugten Aliase blockierte einen unveränderten Dialog gegen AK 2/5 |
 | **Fremde Freigabe im selben Lauf** | „a replace frees its target's name for use in the same run, and that has to be allowed" | frei nur für die **eigene** Replace-Zeile; ein Rename auf einen Namen, den ein **anderes** Replace freigibt, ist eine Verletzung | Codex-Finding 4: die Engine läuft in Quellreihenfolge, der Rename kann vor dem Replace kommen und 409 bekommen; die Alternative — Abhängigkeiten im Lauf ordnen — kostet eine Topologie samt Zyklusfall für etwas, das in zwei Läufen sauber geht. Der eigene Fall (REMOVE gibt frei, der ADD derselben Zeile nimmt) bleibt erlaubt und ist, was das Issue mit „the whole point of the action" meint |
 | **Bestandsdoppel in `toAdd`** | „No two produced aliases may be equal" | Doppel zwischen zwei **unveränderten** `toAdd`-Zeilen sind keine Verletzung | Codex-Finding 6, am Code belegt: `dedupeImportRows` faltet nur nach Id, der Fall existiert heute, 7TV lehnt die zweite Zeile ab; die Regel wörtlich genommen blockierte einen unveränderten Dialog gegen AK 2/5 |
 | **Slot-Formel** | „renames as +1 and a replace as +1 minus the number of target entries" | `delta = addCount − removedEntryCount`, `addCount` = alle ADD-Mutationen | Codex-Finding 5: keine Abweichung vom Issue, sondern die Korrektur einer Doppelzählung in der ersten Fassung dieses Plans |
@@ -1010,14 +1102,18 @@ Menschen lesbar, und nur darauf kommt es beim Rückweg an. Ein bereits gelaufene
 **nicht** durch Revert rückgängig; die Rückweg-Datei, die vor seinem ersten REMOVE auf der Platte
 lag, ist der einzige Weg zurück — deshalb der Pflicht-Download, deshalb die Live-Verifikation davor.
 Eine `unknown`-Zeile im Ergebnisprotokoll ist nach einem Revert genauso unbekannt wie davor: der
-Nutzer prüft das Set bei 7TV, wie das Dock es ihm gesagt hat.
+Nutzer prüft das Set bei 7TV, wie das Dock es ihm gesagt hat — ihr bestätigter REMOVE steht
+unabhängig davon im Audit-Log und in der Rückweg-Datei, und ein aliasloser Eintrag darin kommt
+per ADD ohne Alias zurück, mit oder ohne diesen Build.
 
 ---
 
-## 9. Nachtrag: Codex-Review vom 2026-09-23 (gpt-6-sol, adversarial)
+## 9. Nachtrag: Codex-Reviews vom 2026-09-23 (gpt-6-sol, adversarial)
 
-Sechs Befunde über die erste Fassung. Je übernommen oder mit Grund zurückgewiesen; die Folgen
-stehen in den Tasks und den Abschnitten 1, 2, 4, 7.
+### Runde 1 — über die erste Fassung (`83e6ce8`), von Codex als geschlossen bestätigt
+
+Sechs Befunde. Je übernommen oder mit Grund zurückgewiesen; die Folgen stehen in den Tasks und den
+Abschnitten 1, 2, 4, 7.
 
 | # | Schwere | Befund | Entscheidung | Folge |
 |---|---|---|---|---|
@@ -1028,7 +1124,19 @@ stehen in den Tasks und den Abschnitten 1, 2, 4, 7.
 | 5 | medium | Slot-Formel zählt Rename und Replace doppelt | **Übernommen** — der Befund traf zu: die erste Fassung addierte `renameCount` und `replaceCount` auf ein `addCount`, das sie schon enthielt. Jetzt `delta = addCount − removedEntryCount`, `addCount` = alle ADD-Mutationen; drei Einzeltests (Rename, Replace, Replace auf Duplikat) in T3 und T8 | T3, T8, AK 21 |
 | 6 | medium | Die Laufvalidierung kann einen unveränderten Import blockieren | **Übernommen** — am Code belegt: `dedupeImportRows` faltet nur nach `sevenTvEmoteId`, `buildImportPreview` prüft Namen nur gegen das Ziel; zwei Quellzeilen gleichen Namens landen heute beide in `toAdd`, 7TV lehnt die zweite ab. Regel 1 in T3 nimmt Doppel zwischen zwei **unveränderten** `toAdd`-Zeilen aus; sobald eine Entscheidung beteiligt ist, gilt sie voll. Test: zwei `toAdd`-Ids mit gleichem Alias, kein Zielkonflikt ⇒ `ok: true`, Plan wie heute | T3 |
 
-Keiner der sechs Befunde ist zurückgewiesen. Offene Fragen an den Betreiber ergeben sich aus der
-Runde nicht: die Entscheidungen zu 4 (ablehnen statt ordnen) und 3 (Statusliste 0/502/503/504,
-500 bleibt `failed`) sind Planentscheidungen mit Grund, die der Betreiber beim Lesen kippen kann,
-ohne dass ein Task davon abhängt, bevor er beginnt.
+Keiner der sechs Befunde ist zurückgewiesen. Die Planentscheidung zu 3 („Statusliste 0/502/503/504,
+500 bleibt `failed`") hat Runde 2 gekippt (s. u., Finding 4).
+
+### Runde 2 — über die zweite Fassung (`4ef773c`), alle fünf Befunde vom Betreiber angenommen
+
+| # | Schwere | Befund | Lösung | Folge |
+|---|---|---|---|---|
+| 1 | high | Eine bestätigte REMOVE fällt aus dem Audit, wenn die ADD-Antwort verloren geht und das Nachlesen scheitert: die Zeile bleibt `unknown` und stand in keiner Meldung | **Übernommen.** Die Bestätigung eines Schritts ist eine eigene Größe: `RunQueueItem.completedSteps` zählt die von 7TV bestätigten Schritte, unabhängig vom Endstatus der Zeile. Die Löschmeldung nimmt jede Replace-Zeile mit `completedSteps >= 1` — `done`, `failed` oder `unknown` —, `removedTarget.confirmed` hängt daran; nur die Quell-Id bleibt bei `unknown` aus `syncImported`. Das Nachlesen kann `completedSteps` auf 1 heben (Ziel weg), nie senken | T4, T5, T7; AK 17, 19 |
+| 2 | high | Einträge ohne Alias umgehen beide Prüfungen: `aliaslessIds` wurde nicht verglichen, der REMOVE nimmt den Eintrag trotzdem, die Rückweg-Datei kannte ihn nicht | **Übernommen, Variante „abbilden".** Beide Prüfstellen (Dialog-Read vor dem Download, Flow-Read vor dem Start) vergleichen auf Eintragsebene, `aliaslessIds` eingeschlossen; die Rückweg-Datei trägt `removedTarget.entries` mit `alias: string \| null`; `removedEntryCount` zählt den aliaslosen Eintrag; T2 prüft, wie ein solcher Eintrag heute in der Vorschau erscheint. Sperren verworfen: der Restore-Code kann den Eintrag zwar nicht ausdrücken (`aliases` verlangt nicht-leere Strings), aber diese Datei wird nie geladen — ihr Rückweg ist ein Mensch mit einem ADD ohne Alias, und den kann die Datei anleiten. Test für den gemischten Fall an beiden Prüfstellen und im Builder | Abschnitt 2, T2, T5, T7, T8; Abschnitt 7 |
+| 3 | high | Das asynchrone `settle` hing nicht am abgeschlossenen Lauf: `isRunning` fällt vor `onComplete`, ein neuer Import kann starten, `settle(key)` träfe eine fremde Queue; `RunResult.items` war ohnehin ein Snapshot | **Übernommen, Variante „lauf-gebundenes Ergebnis".** `engine.settle` entfällt; die Engine bleibt lauf-agnostisch. Der Service klärt auf einer Kopie des Snapshots, veröffentlicht Kopie und `settlement: 'settled'` atomar über `run.set` unter `applyIfCurrent`, und die Anzeige liest `importService.items` (Engine-Queue nur während `isRunning`, danach das eigene Ergebnis). Späte Rückrufe gegen einen neueren Lauf oder nach `reset()` fallen weg wie jede andere R15-Antwort. „Start gesperrt bis fertig" verworfen: es bräuchte einen vierten Arbiter-Zustand, blockierte Delete/Restore mit und ersetzte den Guard gegen späte Antworten trotzdem nicht (`reset()` und Kanalwechsel erzeugen dieselbe Lage). Tests: Neustart während des Lesens, `reset()` während des Lesens | T4, T5, T7; AK 15, 16 |
+| 4 | high | HTTP 500 als `failed` war eine falsche Sicherheit | **Übernommen**, Betreiber hat zugestimmt. Regel statt Liste: eine GraphQL-Antwort ist eindeutig (Erfolg/Backoff/`failed`); eine `4xx` aus 7TVs HTTP-Schicht ist „abgelehnt, bevor verarbeitet" und bleibt `failed`/Backoff/Abbruch — darunter der 401 mit dem Body außerhalb des Schemas, den `abortsForMissingPrivileges` am `httpStatus` erkennt und der weiter Token löscht und abbricht; alles andere (Status 0, jede 5xx inkl. 500) ist `unknown`. Test: 500 ⇒ `unknown`, 401 ⇒ `failed` + Abbruch, beide auf einer Operation mit dem Flag | T4; Abschnitt 1, 7 |
+| 5 | medium | Die Regel „jeder erzeugte Alias gültig" blockierte einen unveränderten Dialog mit `invalidNames`-Zeilen | **Übernommen.** Regel 3 gilt nur für den getippten Alias einer Rename-Zeile; Quellnamen (`toAdd`, Replace-ADD, Adopt) laufen wie heute, 7TV entscheidet. Test: keine Entscheidungen, eine `invalidNames`-Zeile ⇒ `ok: true` | T3; Abschnitt 7 |
+
+Keiner der fünf Befunde ist zurückgewiesen. Neue offene Fragen ergeben sich nicht; die beiden
+Variantenwahlen (2 „abbilden", 3 „lauf-gebunden") sind mit Grund im Plan und kippbar, ohne dass
+ein Task vor Beginn davon abhängt.
