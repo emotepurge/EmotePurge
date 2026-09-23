@@ -11,7 +11,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Npgsql;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
@@ -23,7 +22,8 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 //
 // The concurrency cases are made deterministic by waiting on Postgres itself rather than on a clock:
 // every contender runs on a context with its own application_name, and WaitUntilBlockedOnLockAsync
-// polls pg_stat_activity until that backend is actually waiting on a lock. No test sleeps and hopes.
+// (PostgresLockProbe) polls pg_stat_activity until that backend is actually waiting on a lock. No test
+// sleeps and hopes.
 [Collection("Postgres")]
 public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture redisFixture) : IClassFixture<RedisFixture>
 {
@@ -325,9 +325,9 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
             .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAtUtc, now));
 
         const string deletionTag = "acctdel-recheck-deletion";
-        await using var deletionDb = CreateTaggedDbContext(deletionTag);
+        await using var deletionDb = fixture.CreateTaggedDbContext(deletionTag);
         var deletion = CreateService(deletionDb).DeleteAsync(user.Id, AuditActor.System, AccountDeletionReason.Inactivity, now.AddDays(-365));
-        await WaitUntilBlockedOnLockAsync(deletionTag, deletion);
+        await fixture.WaitUntilBlockedOnLockAsync(deletionTag, deletion);
 
         await stampTransaction.CommitAsync();
 
@@ -427,9 +427,9 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
         const string deletionTag = "acctdel-overlap-a-deletion";
-        await using var deletionDb = CreateTaggedDbContext(deletionTag);
+        await using var deletionDb = fixture.CreateTaggedDbContext(deletionTag);
         var deletion = CreateService(deletionDb).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null);
-        await WaitUntilBlockedOnLockAsync(deletionTag, deletion);
+        await fixture.WaitUntilBlockedOnLockAsync(deletionTag, deletion);
 
         gate.Release.SetResult();
         Assert.Equal(0, await writer);
@@ -463,14 +463,14 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         await blockerDb.Database.ExecuteSqlAsync($"""SELECT 1 FROM "AuditLogEntries" WHERE "Id" = {entryId} FOR UPDATE""");
 
         const string deletionTag = "acctdel-overlap-b-deletion";
-        await using var deletionDb = CreateTaggedDbContext(deletionTag);
+        await using var deletionDb = fixture.CreateTaggedDbContext(deletionTag);
         var deletion = CreateService(deletionDb).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null);
-        await WaitUntilBlockedOnLockAsync(deletionTag, deletion);
+        await fixture.WaitUntilBlockedOnLockAsync(deletionTag, deletion);
 
         const string writerTag = "acctdel-overlap-b-writer";
-        await using var writerDb = CreateTaggedDbContext(writerTag);
+        await using var writerDb = fixture.CreateTaggedDbContext(writerTag);
         var writer = new UserService(writerDb, CreateCipher(), CreateRoleCache()).InvalidateRoleCacheAsync(user.Id, Admin);
-        await WaitUntilBlockedOnLockAsync(writerTag, writer);
+        await fixture.WaitUntilBlockedOnLockAsync(writerTag, writer);
 
         await blocker.RollbackAsync();
 
@@ -504,14 +504,14 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         await blockerDb.Database.ExecuteSqlAsync($"""SELECT 1 FROM "AuditLogEntries" WHERE "Id" = {entryId} FOR UPDATE""");
 
         const string deletionTag = "acctdel-vote-race-deletion";
-        await using var deletionDb = CreateTaggedDbContext(deletionTag);
+        await using var deletionDb = fixture.CreateTaggedDbContext(deletionTag);
         var deletion = CreateService(deletionDb).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null);
-        await WaitUntilBlockedOnLockAsync(deletionTag, deletion);
+        await fixture.WaitUntilBlockedOnLockAsync(deletionTag, deletion);
 
         const string voteTag = "acctdel-vote-race-vote";
-        await using var voteDb = CreateTaggedDbContext(voteTag);
+        await using var voteDb = fixture.CreateTaggedDbContext(voteTag);
         var vote = new VoteSessionService(voteDb).CastVoteAsync(channel.ChannelName, openSession.Id, emote.Id, user.Id, VoteType.Keep);
-        await WaitUntilBlockedOnLockAsync(voteTag, vote);
+        await fixture.WaitUntilBlockedOnLockAsync(voteTag, vote);
 
         await blocker.RollbackAsync();
 
@@ -540,55 +540,6 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
 
     private AccountDeletionService CreateService(AppDbContext db, IRateLimitTelemetry? telemetry = null) =>
         new(db, CreateRoleCache(), telemetry ?? CreateTelemetryStore(), NullLogger<AccountDeletionService>.Instance);
-
-    /// <summary>
-    /// A context whose connections carry their own <c>application_name</c>, so
-    /// <see cref="WaitUntilBlockedOnLockAsync"/> can find exactly this contender in pg_stat_activity.
-    /// </summary>
-    private AppDbContext CreateTaggedDbContext(string applicationName)
-    {
-        using var probe = fixture.CreateDbContext();
-        var connectionString = new NpgsqlConnectionStringBuilder(probe.Database.GetConnectionString())
-        {
-            ApplicationName = applicationName
-        }.ConnectionString;
-
-        return new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options);
-    }
-
-    /// <summary>
-    /// Returns once the backend tagged <paramref name="applicationName"/> is waiting on a lock. Fails
-    /// fast if <paramref name="contender"/> finishes instead — then it never blocked, and the ordering
-    /// the test depends on did not happen.
-    /// </summary>
-    private async Task WaitUntilBlockedOnLockAsync(string applicationName, Task contender)
-    {
-        await using var probe = fixture.CreateDbContext();
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-        while (true)
-        {
-            if (contender.IsCompleted)
-            {
-                await contender;
-                Assert.Fail($"{applicationName} completed without ever waiting on a lock.");
-            }
-
-            var waiting = await probe.Database
-                .SqlQuery<int>($"""SELECT count(*)::int AS "Value" FROM pg_stat_activity WHERE application_name = {applicationName} AND wait_event_type = 'Lock'""")
-                .SingleAsync();
-            if (waiting > 0)
-            {
-                return;
-            }
-
-            if (DateTime.UtcNow > deadline)
-            {
-                throw new TimeoutException($"{applicationName} never started waiting on a lock.");
-            }
-
-            await Task.Delay(20);
-        }
-    }
 
     private async Task<User> SeedUserAsync(string id, DateTime? lastLogin = null, DateTime? lastSeen = null)
     {
