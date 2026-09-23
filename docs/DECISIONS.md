@@ -10,6 +10,40 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Codex Sol review of #246: a splice-embedded tag value and a chat-text command word could still leak (amends the same day's "Chat content and chatter identities stay out of Worker logs" entry)
+
+**Betrifft:** `src/EmotePurge.Worker/IrcLineSpliceRule.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` ·
+`tests/EmotePurge.Worker.Tests/*`
+
+The #246 entry below claimed every free-text and identifying tag's value now redacts the same way,
+"so the block stays diagnosable without naming anyone" — Codex Sol's review of the branch found that
+claim did not hold in two related cases, both exploiting the same class of corruption the #114
+splice defect and this redaction logic exist to handle:
+
+1. **A splice landing *inside* a non-identifying tag's value kept its embedded tag unredacted.**
+   `IsSpliced` already proves a splice can land mid-value (`subscriber=0@badge-info=...`, where the
+   second line's tag block starts right after the first line's incomplete value, with no `;`
+   between them) — but `TagBlockForLog` only ever redacted *top-level*, `;`-separated tags. A line
+   like `subscriber=0@badge-info=subscriber/12` was treated as one tag, `subscriber`, which is not
+   itself identifying, so the embedded `badge-info` value reached the log unchanged. Fixed by
+   walking each non-identifying tag's value for an embedded tag-block start (the same shape
+   `ContainsTagBlockStart` already detects, now exposed with its match position via
+   `TryFindEmbeddedKeyStart`) and redacting *that* tag's value by the same free-text/identifying
+   rules as a top-level one — the embedded key stays (it is what proves the splice happened), only
+   its value is replaced.
+2. **`TwitchLibRawLineRedaction`'s command-word guard accepted any upper-case token, not just a real
+   one.** A free-text tag's value is chat text under a stranger's control; an unescaped space inside
+   it (the same corruption precondition as above) can push an upper-case word — e.g. a chatter
+   typing `SECRET` — into the position this class reports as the IRC command. "Every character is
+   upper-case" was too permissive a shape check for that: chat text can be upper-case too. Replaced
+   with a fixed allow-list of the exact tokens TwitchLib.Client 4.0.1's
+   `IrcParser.ParseCommand` switch recognises (decompiled, not guessed — anything else parses to
+   `IrcCommand.Unknown` there and is exactly what reaches `LogUnaccountedFor`), plus three-digit
+   numeric replies accepted by shape.
+
+Both fixes are pure and covered in `tests/EmotePurge.Worker.Tests`, including the exact shapes named
+above.
+
 ### 2026-09-23 — Drop the unused `user:read:email` OAuth scope (#242)
 
 **Betrifft:** `src/EmotePurge.Core/Twitch/TwitchModels.cs` · `web/src/app/features/login/login-page.ts` ·

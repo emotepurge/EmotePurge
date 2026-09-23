@@ -272,18 +272,74 @@ public class IrcLineSpliceRuleTests
     }
 
     [Fact]
-    public void TagBlockForLog_SplicedLineWithoutFreeTextTag_NonIdentifyingTagsSurviveVerbatim()
+    public void TagBlockForLog_SplicedLineWithoutFreeTextTag_EmbeddedIdentifyingTagIsStillRedacted()
     {
+        // Codex review finding P1: the leading "badge-info" tag is redacted as an identifying tag
+        // (#246) as before, but the spliced-in second "@badge-info=" — embedded inside the *value*
+        // of "subscriber", a non-identifying tag — used to survive verbatim, because the outer
+        // splitter only ever saw one tag, "subscriber", and that key alone is not identifying. The
+        // splice's own key (here "badge-info") is structural and stays, exactly like the
+        // non-identifying "room-id"/"user-type" tags around it, so the splice shape (the "@" a
+        // legitimate value can never contain, see IsSpliced's own remarks) is still visible in the
+        // log — but its (here empty) value goes through the same redaction rule as any other
+        // identifying tag's value would.
         var line = "@badge-info=;room-id=111111111;subscriber=0@badge-info=;room-id=222222222;user-type= "
             + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
 
-        // The leading badge-info tag is redacted as an identifying tag (#246); the spliced-in second
-        // "@badge-info=" is embedded inside the *value* of "subscriber" (a non-identifying tag) and
-        // is not recognised as its own tag by this line-based redaction, same as before #246 — it is
-        // the splice defect itself that made it invisible to the tag parser (E6), not a gap here.
         Assert.Equal(
-            "@badge-info=<entfernt>;room-id=111111111;subscriber=0@badge-info=;room-id=222222222;user-type=",
+            "@badge-info=<entfernt>;room-id=111111111;subscriber=0@badge-info=<entfernt>;room-id=222222222;user-type=",
             IrcLineSpliceRule.TagBlockForLog(line));
+    }
+
+    [Fact]
+    public void TagBlockForLog_SpliceEmbeddedInATypedTagValue_RedactsTheEmbeddedValue()
+    {
+        // The exact shape from the Codex Sol review (P1): unlike the test above, the embedded tag
+        // here carries a real, non-empty value ("subscriber/12") — proof that it is not merely the
+        // splice marker's key surviving but the actual embedded value that must be, and is, redacted.
+        var line = "@subscriber=0@badge-info=subscriber/12;room-id=111111111 "
+            + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal("@subscriber=0@badge-info=<entfernt>;room-id=111111111", tagBlock);
+        Assert.DoesNotContain("subscriber/12", tagBlock, StringComparison.Ordinal);
+        // The splice's own shape — a key sitting right after an unescaped '@' inside another tag's
+        // value — is still visible, which is the whole point of not simply dropping the tag: it is
+        // what IsSpliced itself keys on.
+        Assert.Contains("@badge-info=", tagBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TagBlockForLog_SpliceEmbedsIdentifyingChatterTags_BothAreRedacted()
+    {
+        // Two further Codex-requested shapes in one line: a splice landing inside a value can embed
+        // any tag, not only badge-info — here a display-name and, chained after it, a user-id.
+        var line = "@room-id=111111111@display-name=EvilName@user-id=444444444;subscriber=0 "
+            + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal("@room-id=111111111@display-name=<entfernt>@user-id=<entfernt>;subscriber=0", tagBlock);
+        Assert.DoesNotContain("EvilName", tagBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("444444444", tagBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TagBlockForLog_SpliceEmbedsAFreeTextTag_EmbeddedValueIsRedactedToo()
+    {
+        // A splice can just as easily land in front of a free-text tag as an identifying one — the
+        // embedded key's own redaction rule (free-text vs. identifying) is what decides, same as at
+        // the top level. IRCv3-escaped ("\s"), like every other in-value space in this file's
+        // synthetic tag data — a raw space would end the tag block right there instead.
+        var line = @"@room-id=111111111@reply-parent-msg-body=quoted\sstranger\stext;subscriber=0 "
+            + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal("@room-id=111111111@reply-parent-msg-body=<entfernt>;subscriber=0", tagBlock);
+        Assert.DoesNotContain("quoted", tagBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("stranger", tagBlock, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -161,8 +161,11 @@ public static class IrcLineSpliceRule
     private static bool IsFreeTextTag(ReadOnlySpan<char> tag)
     {
         var equalsIndex = tag.IndexOf('=');
-        return equalsIndex >= 0 && tag[..equalsIndex].EndsWith(FreeTextKeySuffix, StringComparison.Ordinal);
+        return equalsIndex >= 0 && IsFreeTextKey(tag[..equalsIndex]);
     }
+
+    private static bool IsFreeTextKey(ReadOnlySpan<char> key) =>
+        key.EndsWith(FreeTextKeySuffix, StringComparison.Ordinal);
 
     /// <summary>
     /// True if <paramref name="tag"/> is a <c>key=value</c> pair whose key identifies the chatter or
@@ -183,12 +186,11 @@ public static class IrcLineSpliceRule
     private static bool IsIdentifyingTag(ReadOnlySpan<char> tag)
     {
         var equalsIndex = tag.IndexOf('=');
-        if (equalsIndex < 0)
-        {
-            return false;
-        }
+        return equalsIndex >= 0 && IsIdentifyingKey(tag[..equalsIndex]);
+    }
 
-        var key = tag[..equalsIndex];
+    private static bool IsIdentifyingKey(ReadOnlySpan<char> key)
+    {
         foreach (var identifyingKey in IdentifyingKeys)
         {
             if (key.Equals(identifyingKey, StringComparison.Ordinal))
@@ -220,12 +222,24 @@ public static class IrcLineSpliceRule
     /// mention fails this: a login is followed by a space (escaped as <c>\s</c>) or the end of the
     /// value, never by <c>=</c>.
     /// </summary>
-    private static bool ContainsTagBlockStart(ReadOnlySpan<char> tag)
+    private static bool ContainsTagBlockStart(ReadOnlySpan<char> tag) => TryFindEmbeddedKeyStart(tag, out _, out _);
+
+    /// <summary>
+    /// Finds the first splice-embedded tag-block start in <paramref name="value"/> — the same shape
+    /// <see cref="ContainsTagBlockStart"/> tests for, an <c>@</c> followed by a non-empty tag key and
+    /// an <c>=</c> — and returns where the <c>@</c> and the terminating <c>=</c> sit. Used by
+    /// <see cref="AppendTagWithEmbeddedRedaction"/> (Codex review finding P1) to redact an embedded
+    /// tag's own value, not just top-level ones: <see cref="IsSpliced"/> already proves a splice can
+    /// land inside a typed tag's value (<c>subscriber=0@badge-info=...</c>) rather than cleanly
+    /// between two <c>;</c>-separated tags, and that embedded fragment can itself be an identifying
+    /// or free-text tag whose value must not reach the log any more than a top-level one would.
+    /// </summary>
+    private static bool TryFindEmbeddedKeyStart(ReadOnlySpan<char> value, out int atIndex, out int equalsIndex)
     {
-        var index = tag.IndexOf('@');
+        var index = value.IndexOf('@');
         while (index >= 0)
         {
-            var rest = tag[(index + 1)..];
+            var rest = value[(index + 1)..];
 
             var keyLength = 0;
             while (keyLength < rest.Length && IsTagKeyChar(rest[keyLength]))
@@ -235,18 +249,22 @@ public static class IrcLineSpliceRule
 
             if (keyLength > 0 && keyLength < rest.Length && rest[keyLength] == '=')
             {
+                atIndex = index;
+                equalsIndex = index + 1 + keyLength;
                 return true;
             }
 
             var next = rest.IndexOf('@');
             if (next < 0)
             {
-                return false;
+                break;
             }
 
             index += 1 + next;
         }
 
+        atIndex = -1;
+        equalsIndex = -1;
         return false;
     }
 
@@ -296,7 +314,7 @@ public static class IrcLineSpliceRule
             }
             else
             {
-                builder.Append(tag);
+                AppendTagWithEmbeddedRedaction(builder, tag);
             }
 
             if (separator < 0)
@@ -308,5 +326,60 @@ public static class IrcLineSpliceRule
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Appends <paramref name="tag"/> — already established by the caller to be neither a top-level
+    /// free-text nor a top-level identifying tag — while still redacting the value of any tag a
+    /// splice embedded inside it (Codex review finding P1, follow-up to #246). <see cref="IsSpliced"/>
+    /// fires on a line like <c>subscriber=0@badge-info=subscriber/12</c> just as much as on a clean
+    /// <c>;</c>-separated splice, because a splice can land mid-value: the second line's tag block
+    /// starts right after the first line's incomplete value, with no <c>;</c> between them. Without
+    /// this, that embedded <c>badge-info</c> — or a <c>display-name</c>, a <c>user-id</c>, a
+    /// <c>*msg-body</c> — would reach the log unchanged, because the outer splitter sees only one
+    /// tag, <c>subscriber</c>, and that key alone is not identifying. Every embedded key is kept
+    /// (splice keys are structural, like any other key in this class); every embedded value is
+    /// redacted exactly like a top-level one would be, so the splice's shape survives but nothing it
+    /// dragged along does.
+    /// </summary>
+    private static void AppendTagWithEmbeddedRedaction(StringBuilder builder, ReadOnlySpan<char> tag)
+    {
+        var firstEquals = tag.IndexOf('=');
+        if (firstEquals < 0)
+        {
+            builder.Append(tag);
+            return;
+        }
+
+        builder.Append(tag[..(firstEquals + 1)]);
+        var cursor = tag[(firstEquals + 1)..];
+
+        while (TryFindEmbeddedKeyStart(cursor, out var at, out var eq))
+        {
+            // Everything up to and including the embedded key's own '=' is structural — the outer
+            // tag's own (corrupted, but not identifying) value fragment, the splice's '@', and the
+            // embedded key — and is always kept, same as every other key in this class.
+            builder.Append(cursor[..(eq + 1)]);
+            var embeddedKey = cursor[(at + 1)..eq];
+            var afterEmbeddedKey = cursor[(eq + 1)..];
+
+            var embeddedValueEnd = TryFindEmbeddedKeyStart(afterEmbeddedKey, out var nextAt, out _)
+                ? nextAt
+                : afterEmbeddedKey.Length;
+            var embeddedValue = afterEmbeddedKey[..embeddedValueEnd];
+
+            if (IsFreeTextKey(embeddedKey) || IsIdentifyingKey(embeddedKey))
+            {
+                builder.Append(RedactedValue);
+            }
+            else
+            {
+                builder.Append(embeddedValue);
+            }
+
+            cursor = afterEmbeddedKey[embeddedValueEnd..];
+        }
+
+        builder.Append(cursor);
     }
 }
