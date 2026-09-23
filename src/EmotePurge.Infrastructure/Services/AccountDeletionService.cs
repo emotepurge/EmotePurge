@@ -45,8 +45,6 @@ public class AccountDeletionService(
     IRateLimitTelemetry rateLimitTelemetry,
     ILogger<AccountDeletionService> logger) : IAccountDeletionService
 {
-    private const string UserTargetType = "user";
-
     // The one details key of a "user" target entry that carries the user's identity
     // (user.revokeSessions and user.invalidateRoleCache both write { login }). Every other key stays.
     private const string LoginDetailKey = "login";
@@ -85,7 +83,8 @@ public class AccountDeletionService(
                 return new AccountDeletionResult(AccountDeletionOutcome.NotFound);
             }
 
-            if (reason == AccountDeletionReason.Inactivity && !(LastActivityUtc(user) < onlyIfInactiveBeforeUtc))
+            if (reason == AccountDeletionReason.Inactivity
+                && !(AccountRetentionQueries.LastActivityUtc(user) < onlyIfInactiveBeforeUtc))
             {
                 // Rechecked here, under the lock, rather than trusted from the caller's candidate
                 // selection: a login or a LastSeenAtUtc stamp in between wins.
@@ -93,17 +92,20 @@ public class AccountDeletionService(
             }
 
             // Votes first: Vote -> User is Restrict. Every session counts, open ones included — a vote
-            // is an opinion with an author, so its score contribution goes with the account.
+            // is an opinion with an author, so its score contribution goes with the account. The
+            // predicates are AccountRetentionQueries', which the retention job's dry run counts with.
+            string[] account = [twitchUserId];
             var votesInOpenSessions = await db.Votes
-                .Where(v => v.UserId == twitchUserId && v.VoteSession.IsActive)
+                .CastByAnyOf(account)
+                .Where(v => v.VoteSession.IsActive)
                 .CountAsync(cancellationToken);
             var votesDeleted = await db.Votes
-                .Where(v => v.UserId == twitchUserId)
+                .CastByAnyOf(account)
                 .ExecuteDeleteAsync(cancellationToken);
 
             var (asTarget, asBoth) = await PseudonymiseTargetEntriesAsync(twitchUserId, cancellationToken);
             var asActor = await db.AuditLogEntries
-                .Where(e => e.ActorTwitchUserId == twitchUserId)
+                .ActedByAnyOf(account)
                 .ExecuteUpdateAsync(
                     setters => setters
                         .SetProperty(e => e.ActorTwitchUserId, AuditActor.DeletedUser.TwitchUserId)
@@ -121,7 +123,7 @@ public class AccountDeletionService(
             db.AddAuditEntry(
                 recordedActor,
                 AuditActions.UserDelete,
-                targetType: UserTargetType,
+                targetType: AccountRetentionQueries.UserTargetType,
                 targetId: AuditActor.DeletedUser.TwitchUserId,
                 details: new
                 {
@@ -162,7 +164,7 @@ public class AccountDeletionService(
     private async Task<(int Rewritten, int AlsoActor)> PseudonymiseTargetEntriesAsync(string twitchUserId, CancellationToken cancellationToken)
     {
         var entries = await db.AuditLogEntries
-            .Where(e => e.TargetType == UserTargetType && e.TargetId == twitchUserId)
+            .TargetingAnyOf([twitchUserId])
             .ToListAsync(cancellationToken);
 
         var alsoActor = 0;
@@ -238,9 +240,6 @@ public class AccountDeletionService(
 
         return false;
     }
-
-    private static DateTime LastActivityUtc(User user) =>
-        user.LastSeenAtUtc is { } lastSeen && lastSeen > user.LastLogin ? lastSeen : user.LastLogin;
 
     private static string ReasonDetail(AccountDeletionReason reason) => reason switch
     {
