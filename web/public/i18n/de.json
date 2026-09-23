@@ -916,6 +916,10 @@
       "one": "{{ count }} Eintrag war bereits im Zielset und wurde übersprungen.",
       "other": "{{ count }} Einträge waren bereits im Zielset und wurden übersprungen."
     },
+    "skippedNameTaken": {
+      "one": "{{ count }} Alias übersprungen — der Name gehört inzwischen einem anderen Emote.",
+      "other": "{{ count }} Aliase übersprungen — die Namen gehören inzwischen anderen Emotes."
+    },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
   },
   "export": {

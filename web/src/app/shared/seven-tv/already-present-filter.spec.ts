@@ -318,9 +318,10 @@ describe('filterAlreadyPresentForRestore', () => {
   it('keeps a row whose emote is not in the set at all, unchanged', async () => {
     const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
 
-    expect(await run([row], [{ id: '7tv-other', alias: 'A' }])).toEqual({
+    expect(await run([row], [{ id: '7tv-other', alias: 'Z' }])).toEqual({
       rows: [row],
       skipped: 0,
+      skippedNameTaken: 0,
       available: true,
     });
   });
@@ -336,7 +337,7 @@ describe('filterAlreadyPresentForRestore', () => {
           { id: '7tv-1', alias: 'B' },
         ],
       ),
-    ).toEqual({ rows: [], skipped: 2, available: true });
+    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true });
   });
 
   // The partial retry the id-only check made impossible: A came back, B failed — re-running the
@@ -347,6 +348,7 @@ describe('filterAlreadyPresentForRestore', () => {
     expect(await run([row], [{ id: '7tv-1', alias: 'A' }])).toEqual({
       rows: [{ sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['B'] }],
       skipped: 1,
+      skippedNameTaken: 0,
       available: true,
     });
   });
@@ -359,6 +361,7 @@ describe('filterAlreadyPresentForRestore', () => {
     expect(await run([row], [{ id: '7tv-1', alias: 'C' }])).toEqual({
       rows: [],
       skipped: 2,
+      skippedNameTaken: 0,
       available: true,
     });
   });
@@ -374,7 +377,7 @@ describe('filterAlreadyPresentForRestore', () => {
           { id: '7tv-1', alias: 'C' },
         ],
       ),
-    ).toEqual({ rows: [], skipped: 2, available: true });
+    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true });
   });
 
   it('reads a row without aliases as [name], like the restore queue does', async () => {
@@ -389,7 +392,7 @@ describe('filterAlreadyPresentForRestore', () => {
           { id: '7tv-2', alias: 'NotB' },
         ],
       ),
-    ).toEqual({ rows: [], skipped: 2, available: true });
+    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true });
   });
 
   it('compares aliases exactly, so a case-only difference counts as a foreign alias', async () => {
@@ -398,6 +401,7 @@ describe('filterAlreadyPresentForRestore', () => {
     expect(await run([row], [{ id: '7tv-1', alias: 'PogU' }])).toEqual({
       rows: [],
       skipped: 1,
+      skippedNameTaken: 0,
       available: true,
     });
   });
@@ -408,7 +412,7 @@ describe('filterAlreadyPresentForRestore', () => {
     const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', rows));
     httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('network error'));
 
-    expect(await result$).toEqual({ rows, skipped: 0, available: false });
+    expect(await result$).toEqual({ rows, skipped: 0, skippedNameTaken: 0, available: false });
   });
 
   // K5 fix round, spec §37/§38: an aliasless 7TV entry occupies a slot the row can never name, so
@@ -420,6 +424,7 @@ describe('filterAlreadyPresentForRestore', () => {
     expect(await run([row], [{ id: '7tv-1', alias: 'PogU' }, { id: '7tv-1' }])).toEqual({
       rows: [],
       skipped: 1,
+      skippedNameTaken: 0,
       available: true,
     });
   });
@@ -427,7 +432,12 @@ describe('filterAlreadyPresentForRestore', () => {
   it('drops a row whose id is present only as an aliasless entry', async () => {
     const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] };
 
-    expect(await run([row], [{ id: '7tv-1' }])).toEqual({ rows: [], skipped: 1, available: true });
+    expect(await run([row], [{ id: '7tv-1' }])).toEqual({
+      rows: [],
+      skipped: 1,
+      skippedNameTaken: 0,
+      available: true,
+    });
   });
 
   // A removed transfer target restores its aliasless entry as `null`: present when the id has a
@@ -442,8 +452,66 @@ describe('filterAlreadyPresentForRestore', () => {
     ).toEqual({
       rows: [gone, { ...halfBack, aliases: [null] }],
       skipped: 2,
+      skippedNameTaken: 0,
       available: true,
     });
+  });
+
+  // Rule 4: a name another emote holds now cannot come back — its ADD could only end in 7TV's name
+  // conflict. Counted apart from "already present".
+  it('strikes an alias another emote now holds from the row, counted as name taken', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(await run([row], [{ id: '7tv-other', alias: 'A' }])).toEqual({
+      rows: [{ ...row, aliases: ['B'] }],
+      skipped: 0,
+      skippedNameTaken: 1,
+      available: true,
+    });
+  });
+
+  it('drops the row when another emote holds every one of its aliases', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(
+      await run(
+        [row],
+        [
+          { id: '7tv-other', alias: 'A' },
+          { id: '7tv-third', alias: 'B' },
+        ],
+      ),
+    ).toEqual({ rows: [], skipped: 0, skippedNameTaken: 2, available: true });
+  });
+
+  // The "replace target succeeded" case of a transfer-run file: the source emote holds the target's
+  // old name now, its aliasless entry is gone with it. One ADD without an alias goes out, and every
+  // entry of the input is accounted for — sent, already present or name taken, never lost.
+  it('restores only the missing aliasless entry of a row whose named alias is taken, and counts every entry', async () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: 'tgt-1', name: 'Kappa', aliases: ['Kappa', null] },
+      { sevenTvEmoteId: 'tgt-2', name: 'Pog', aliases: ['Pog', 'PogAlt', null] },
+    ];
+    const live = [
+      { id: 'src-1', alias: 'Kappa' },
+      { id: 'tgt-2', alias: 'Pog' },
+      { id: 'src-2', alias: 'PogAlt' },
+    ];
+
+    const result = await run(rows, live);
+
+    expect(result).toEqual({
+      rows: [
+        { sevenTvEmoteId: 'tgt-1', name: 'Kappa', aliases: [null] },
+        { sevenTvEmoteId: 'tgt-2', name: 'Pog', aliases: [null] },
+      ],
+      skipped: 1,
+      skippedNameTaken: 2,
+      available: true,
+    });
+    const sent = result.rows.reduce((sum, row) => sum + (row.aliases?.length ?? 1), 0);
+    const input = rows.reduce((sum, row) => sum + (row.aliases?.length ?? 1), 0);
+    expect(sent + result.skipped + result.skippedNameTaken).toBe(input);
   });
 
   // K5 stays for every row that does not name an aliasless entry itself — a purge-run row never
@@ -459,11 +527,13 @@ describe('filterAlreadyPresentForRestore', () => {
     expect(await run([purgeRow], [{ id: '7tv-1' }])).toEqual({
       rows: [],
       skipped: 1,
+      skippedNameTaken: 0,
       available: true,
     });
     expect(await run([transferRow], [{ id: '7tv-1' }])).toEqual({
       rows: [{ ...transferRow, aliases: ['PogU'] }],
       skipped: 1,
+      skippedNameTaken: 0,
       available: true,
     });
   });
@@ -505,7 +575,7 @@ describe('filterAlreadyPresentForRestore', () => {
 
     // The row's own id was seen (and matched) on the very first, well within-guard page — the
     // truncation happened later, for ids this row never needed to know about.
-    expect(await result$).toEqual({ rows: [], skipped: 1, available: true });
+    expect(await result$).toEqual({ rows: [], skipped: 1, skippedNameTaken: 0, available: true });
   });
 });
 

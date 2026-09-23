@@ -916,6 +916,10 @@
       "one": "{{ count }} entry was already in the target set and was skipped.",
       "other": "{{ count }} entries were already in the target set and were skipped."
     },
+    "skippedNameTaken": {
+      "one": "{{ count }} alias skipped — another emote holds that name now.",
+      "other": "{{ count }} aliases skipped — other emotes hold those names now."
+    },
     "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
   },
   "export": {

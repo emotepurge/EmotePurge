@@ -10,6 +10,46 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Restore leaves out an alias another emote now holds, for every restore source (#230)
+
+**Betrifft:** `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/shared/seven-tv/already-present-filter.ts` ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` ·
+`web/src/app/shared/seven-tv/restore-flow.ts`
+
+`filterAlreadyPresentForRestore` gains a fourth rule: an alias that is missing for the row's id but
+held by a **different** id in the live set is dropped from the row before the run, and a row with
+nothing left drops out. Its `ADD` could only end in 7TV's name conflict — a burnt
+`emote_set_change` ticket and a red row. Until now the filter only ever asked what the row's *own* id
+holds (`aliasesById.get(id)`), never who else holds a name. The held names come from the same read,
+no second request; only named aliases are compared. That leaves two cases open: a restored alias equal
+to the default name of another emote's *aliasless* entry, and a restored `null` entry whose default
+name another emote holds as an alias, can both still end in a 409 — no live probe has shown whether
+7TV counts a default name as occupying a name, so the rule does not guess (a visible failure, as
+before, never a silent drop).
+
+**Why for every source, not only transfer-run files.** The case that forced it is a successful
+"replace target" transfer: the source emote holds the target's old name by design, and restoring the
+target from the transfer file must close gaps only, not collide with — or remove — what the transfer
+put there (operator decision 2026-09-23). But a purge-run protocol meets the same situation whenever
+someone reused a name since the purge, and the 409 was just as certain there. One filter with a rule
+that applied to one source only would be two truths about the same question. **This changes
+behaviour for existing purge-run restores**: such a row is now left out before the run instead of
+failing in it. Reading purge-run files is untouched.
+
+**Counted apart, never silent.** The dropped aliases are counted in `skippedNameTaken`, not in
+`skipped` ("already present"): every alias of the input is either sent, `skipped` or
+`skippedNameTaken`. `SevenTvRestoreService.startRestore` takes the count as a sixth argument; it
+opens the same transient notice window as `skippedDuplicates` (a run left with nothing to queue still
+shows it) and gets its own dock line (`restore.skippedNameTaken`), shown in `MassDeletePanel` and
+spoken by `DockOutcomeAnnouncer` right after the "already present" count, so "skipped" is never read
+as "was already there". Nothing is removed to make room, and there is no automatic undo of a replace
+(follow-up issue).
+
+---
+
 ### 2026-09-23 — Restore reads transfer-run files: removed target entries only, an aliasless entry comes back without an alias (#230)
 
 **Betrifft:** `docs/UI-Designsprache.md` (§7.3) ·

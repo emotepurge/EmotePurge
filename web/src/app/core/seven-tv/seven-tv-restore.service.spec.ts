@@ -438,6 +438,22 @@ describe('SevenTvRestoreService', () => {
     });
   });
 
+  // Aliases the caller's pre-run check left out because another emote holds the name: carried apart
+  // from the "already present" count, and — for a run where that leaves nothing to queue — the only
+  // outcome there is, so it must open the notice window on its own and clear with reset().
+  it('carries the name-taken count apart from skippedDuplicates, opening the notice even when nothing queues', () => {
+    service.startRestore('set-1', 'sensitron', [], 0, true, 3);
+
+    expect(service.queue()).toEqual([]);
+    expect(service.skippedNameTaken()).toBe(3);
+    expect(service.skippedDuplicates()).toBe(0);
+    expect(service.duplicateNoticePending()).toBe(true);
+
+    service.reset();
+
+    expect(service.skippedNameTaken()).toBe(0);
+  });
+
   // #149 P2 (independent review): a fully-refused (all-duplicates) startRestore leaves no run/queue
   // behind, so this transient flag is what lets `dockVisible()` (`usage-stats-page.ts`, via
   // `action-dock.ts`) mount the notice at all — and what lets it clear on its own afterwards rather

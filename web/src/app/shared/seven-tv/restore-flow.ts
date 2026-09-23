@@ -129,10 +129,11 @@ export function startRestoreFlow(
       // which runs *because* something already went wrong and our mirror may still be stale) for
       // why this sits at confirm-time rather than dialog-open-time and for the residual race it
       // does not close. Per alias, not per id (operator decision 2026-09-22): a row whose id is
-      // present only under some of its own aliases re-adds just the missing ones — see
+      // present only under some of its own aliases re-adds just the missing ones, and an alias
+      // another emote now holds is left out rather than sent into a certain name conflict — see
       // `filterAlreadyPresentForRestore`.
       filterAlreadyPresentForRestore(deps.httpClient, setId, emotes).subscribe(
-        ({ rows: toRestore, skipped, available }) => {
+        ({ rows: toRestore, skipped, skippedNameTaken, available }) => {
           // #149 P2 review fix: the arbiter check above ran *before* this fetch, outside the
           // mutual-exclusion contract (design doc §4.3) it is meant to enforce — another run can
           // start in that window. Re-checked here, right before the only remaining call that
@@ -141,7 +142,14 @@ export function startRestoreFlow(
           if (deps.arbiter.activeRun() !== null) {
             return;
           }
-          deps.restoreService.startRestore(setId, channelName, toRestore, skipped, available);
+          deps.restoreService.startRestore(
+            setId,
+            channelName,
+            toRestore,
+            skipped,
+            available,
+            skippedNameTaken,
+          );
         },
       );
     });

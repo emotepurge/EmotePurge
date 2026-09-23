@@ -132,6 +132,12 @@ export class SevenTvRestoreService {
    *  one this exists to make visible. */
   readonly skippedDuplicates = signal(0);
 
+  /** How many `ADD`s the same pre-run check dropped because a *different* emote now holds that
+   *  alias in the target set (`filterAlreadyPresentForRestore`, rule 4) — shown apart from
+   *  `skippedDuplicates`, so "skipped" is never read as "was already there". Set unconditionally,
+   *  like `skippedDuplicates`, and part of the same transient notice. */
+  readonly skippedNameTaken = signal(0);
+
   /** Whether the caller's pre-run duplicate check (#149/T5, `already-present-filter.ts`) actually
    *  ran — `false` means its fetch failed, so `emotes` passed through unfiltered and an undetected
    *  duplicate is possible in this run. Same vocabulary as `AlreadyPresentFilterResult.available`;
@@ -140,9 +146,9 @@ export class SevenTvRestoreService {
    *  skip". */
   readonly duplicateCheckAvailable = signal(true);
 
-  /** #149 P2 (independent review): whether the notice built from the two signals above should
+  /** #149 P2 (independent review): whether the notice built from the three signals above should
    *  currently be shown — true for `DUPLICATE_NOTICE_MS` after any `startRestore` call that had
-   *  something to report (`skippedDuplicates > 0 || !duplicateCheckAvailable`), including a refused
+   *  something to report (a skip count above 0, or `!duplicateCheckAvailable`), including a refused
    *  (all-duplicates) call. `dockVisible()` (`usage-stats-page.ts`, via `action-dock.ts`) treats this
    *  exactly like an active restore, which is what lets `MassDeletePanel` mount at all in that
    *  refused case — without it the panel's own gate (`isRunning() || queue().length > 0`) would
@@ -159,17 +165,21 @@ export class SevenTvRestoreService {
    *  this method does no filtering of its own (see `already-present-filter.ts`, which every current
    *  caller runs first). Defaults to 0 so existing callers/tests that pass only three arguments are
    *  unaffected. `duplicateCheckAvailable` mirrors the same call's `available` and defaults to
-   *  `true` for the same reason. */
+   *  `true` for the same reason; `skippedNameTaken` is the same call's name-taken count, default 0. */
   startRestore(
     setId: string,
     channelName: string,
     emotes: readonly RestoreQueueEmote[],
     skippedDuplicates = 0,
     duplicateCheckAvailable = true,
+    skippedNameTaken = 0,
   ): void {
     this.skippedDuplicates.set(skippedDuplicates);
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
-    this.showDuplicateNotice(skippedDuplicates > 0 || !duplicateCheckAvailable);
+    this.skippedNameTaken.set(skippedNameTaken);
+    this.showDuplicateNotice(
+      skippedDuplicates > 0 || skippedNameTaken > 0 || !duplicateCheckAvailable,
+    );
     const started: RestoreRunInfo = { channelName, setId, result: null };
     const { queue, aliasByKey } = toRestoreQueue(emotes);
     const engineStarted = this.engine.start(setId, queue, addOperation(aliasByKey), (result) =>
@@ -177,9 +187,9 @@ export class SevenTvRestoreService {
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — leave every signal as it was, except
-      // skippedDuplicates and duplicateCheckAvailable above: an all-duplicates restore is a
-      // legitimate "refused" case whose count (and whether it is even trustworthy) the caller still
-      // needs to see.
+      // skippedDuplicates, skippedNameTaken and duplicateCheckAvailable above: an all-skipped
+      // restore is a legitimate "refused" case whose counts (and whether they are even
+      // trustworthy) the caller still needs to see.
       return;
     }
     this.run = started;
@@ -196,6 +206,7 @@ export class SevenTvRestoreService {
     this.syncReport.set('idle');
     this.resyncTrigger.set('idle');
     this.skippedDuplicates.set(0);
+    this.skippedNameTaken.set(0);
     this.duplicateCheckAvailable.set(true);
     this.showDuplicateNotice(false);
     this.run = null;

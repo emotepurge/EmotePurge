@@ -246,6 +246,15 @@ export interface DeletableEmote {
           }}
         </p>
       }
+      <!-- Aliases the same check left out because another emote now holds the name — its own line,
+           so "skipped" is never read as "was already there". -->
+      @if (restoreService.duplicateNoticePending() && restoreService.skippedNameTaken() > 0) {
+        <p aria-hidden="true" class="text-sm text-fg-secondary">
+          {{
+            restoreSkippedNameTakenKey() | transloco: { count: restoreService.skippedNameTaken() }
+          }}
+        </p>
+      }
       <!-- The pre-run duplicate check's fetch failed (already-present-filter.ts) — every row still
            went through, so a duplicate may have slipped in undetected. A quiet notice, not an
            alarm: the run is still expected to succeed, this only says the guard could not run. -->
@@ -480,6 +489,12 @@ export class MassDeletePanel {
     pluralKey(this.restoreService.skippedDuplicates(), 'restore.skippedDuplicates'),
   );
 
+  /** Wording for how many aliases the same check dropped because another emote now holds the name
+   *  (`restoreService.skippedNameTaken`) — same reason to live outside the run-progress panel. */
+  protected readonly restoreSkippedNameTakenKey = computed(() =>
+    pluralKey(this.restoreService.skippedNameTaken(), 'restore.skippedNameTaken'),
+  );
+
   constructor() {
     this.destroyRef.onDestroy(() => (this.destroyed = true));
 
@@ -694,10 +709,11 @@ export class MassDeletePanel {
       // which runs *because* something already went wrong and our mirror may still be stale) for
       // why this sits at confirm-time rather than dialog-open-time and for the residual race it
       // does not close. Per alias, not per id (operator decision 2026-09-22): a row whose id is
-      // present only under some of its own aliases re-adds just the missing ones — see
+      // present only under some of its own aliases re-adds just the missing ones, and an alias
+      // another emote now holds is left out rather than sent into a certain name conflict — see
       // `filterAlreadyPresentForRestore`.
       filterAlreadyPresentForRestore(this.httpClient, runSetId, emotes).subscribe(
-        ({ rows: toRestore, skipped, available }) => {
+        ({ rows: toRestore, skipped, skippedNameTaken, available }) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
           // to enforce, since a delete or import can start while the confirm dialog is open and
@@ -707,7 +723,14 @@ export class MassDeletePanel {
           if (this.arbiter.activeRun() !== null) {
             return;
           }
-          this.restoreService.startRestore(runSetId, runChannelName, toRestore, skipped, available);
+          this.restoreService.startRestore(
+            runSetId,
+            runChannelName,
+            toRestore,
+            skipped,
+            available,
+            skippedNameTaken,
+          );
         },
       );
     });

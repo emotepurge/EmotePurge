@@ -35,6 +35,10 @@ const DE_TRANSLATIONS = {
       one: '{{ count }} Emote ist bereits im Zielset und wurde übersprungen.',
       other: '{{ count }} Emotes sind bereits im Zielset und wurden übersprungen.',
     },
+    skippedNameTaken: {
+      one: '{{ count }} Alias übersprungen — der Name gehört inzwischen einem anderen Emote.',
+      other: '{{ count }} Aliase übersprungen — die Namen gehören inzwischen anderen Emotes.',
+    },
     resync: {
       pending: 'Synchronisierung wird angestoßen…',
       succeeded: 'Synchronisierung angestoßen.',
@@ -69,6 +73,9 @@ const DE_TRANSLATIONS = {
 interface FakeOutcomeSource {
   resyncTrigger: WritableSignal<ResyncTriggerState>;
   skippedDuplicates: WritableSignal<number>;
+  /** Only `SevenTvRestoreService` actually has this — shared shape, the import fake's copy is
+   *  never read. */
+  skippedNameTaken: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
   /** Only `SevenTvImportService` actually has this (finding 3, Live-Verifikation K2 2026-09-21,
@@ -84,6 +91,7 @@ function createFakeSource(): FakeOutcomeSource {
   return {
     resyncTrigger: signal<ResyncTriggerState>('idle'),
     skippedDuplicates: signal(0),
+    skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
     run: signal<ImportRunInfo | null>(null),
@@ -227,6 +235,23 @@ describe('DockOutcomeAnnouncer', () => {
     expect(spoken()).toEqual([
       '1 Emote ist bereits im Zielset und wurde übersprungen.',
       'Restore-Prüfung nicht möglich.',
+    ]);
+
+    restoreService.duplicateNoticePending.set(false);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+  });
+
+  // A restore's aliases left out because another emote holds the name: spoken on their own line,
+  // right after the "already present" count, within the same pending window.
+  it('speaks the name-taken count after the restore skip count, only while the window is open', () => {
+    restoreService.skippedDuplicates.set(1);
+    restoreService.skippedNameTaken.set(2);
+    restoreService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([
+      '1 Emote ist bereits im Zielset und wurde übersprungen.',
+      '2 Aliase übersprungen — die Namen gehören inzwischen anderen Emotes.',
     ]);
 
     restoreService.duplicateNoticePending.set(false);

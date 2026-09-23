@@ -268,13 +268,14 @@ describe('ImportTrigger', () => {
 
       // Fourth argument is the #149/T5 duplicate-check skip count — 0 because the fresh 7TV read
       // (`httpPost`) defaults to an empty target set. Fifth is whether that check actually ran
-      // (#149).
+      // (#149), sixth its name-taken count.
       expect(startRestore).toHaveBeenCalledWith(
         'set-a',
         'channel-a',
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
   });
@@ -307,6 +308,7 @@ describe('ImportTrigger', () => {
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
 
@@ -571,6 +573,7 @@ describe('ImportTrigger', () => {
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
+        0,
       );
     });
 

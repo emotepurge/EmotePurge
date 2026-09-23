@@ -98,12 +98,22 @@ export interface RestoreFilterRow {
   aliases?: readonly (string | null)[];
 }
 
+/** `filterAlreadyPresentForRestore`'s result: the shared filter outcome plus the aliases dropped
+ *  because another emote now holds their name (rule 4). Every alias of the input is accounted for
+ *  exactly once — sent (`rows`), `skipped` or `skippedNameTaken`. */
+export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilterResult<T> {
+  /** How many aliases were dropped because a *different* id holds that name in the target set.
+   *  Kept apart from `skipped` ("already present"): the entry is not back, it cannot come back under
+   *  that name. Always `0` when `available` is `false`. */
+  skippedNameTaken: number;
+}
+
 /**
  * The restore run's pre-run check — `filterAlreadyPresent`'s id comparison, refined per alias
  * ("middle rule", operator decision 2026-09-22, refining spec #200 7.2's literal
  * `(sevenTvEmoteId, alias)` comparison). Per row, against the target set's live entries:
  *
- * 1. **The id is not in the set** — the row goes through unchanged.
+ * 1. **The id is not in the set** — every alias of the row is missing (rule 4 still applies).
  * 2. **The id sits in the set under an alias the row does not name** — the whole row is dropped,
  *    exactly as the id-only check always did. Re-adding any of its aliases would put the same emote
  *    into the set a second time under another name: the #149 hole this filter exists for (7TV's
@@ -111,75 +121,101 @@ export interface RestoreFilterRow {
  *    entry *without* an alias counts as such an unnamed alias — unless the row itself names one
  *    (`null`), in which case it is that entry of the row, not a foreign one.
  * 3. **The id sits in the set only under aliases the row names** — those aliases are dropped from
- *    the row, the rest are re-added. This is the partial retry of a #74 duplicate cell: a restore
+ *    the row, the rest are missing. This is the partial retry of a #74 duplicate cell: a restore
  *    in which `A` came back and `B` failed is re-run from the same protocol, and `B` is the only
  *    thing still missing. The id-only check dropped the whole row there, and `B` was then
- *    unrecoverable from the protocol (spec 7.2, "Vorprüfung des Restore"). A row all of whose
- *    aliases are already present drops out entirely. A row's `null` alias is present when the id
- *    has a live entry without an alias (`aliaslessIds`), missing otherwise.
+ *    unrecoverable from the protocol (spec 7.2, "Vorprüfung des Restore"). A row's `null` alias is
+ *    present when the id has a live entry without an alias (`aliaslessIds`), missing otherwise.
+ * 4. **A missing alias that a different id now holds in the set** is dropped from the row too, and
+ *    counted in `skippedNameTaken`, not in `skipped`. Its `ADD` could only ever end in 7TV's name
+ *    conflict (a burnt ticket and a red row): the name went to another emote since the file was
+ *    written — after a successful "replace target" transfer the source emote holds it by design,
+ *    after a purge someone may have reused it. Nothing is removed to make room; a restore only
+ *    closes gaps. The held names come from the same read (`aliasesById`), no second request, and
+ *    only named aliases are compared — a `null` alias names nothing yet.
  *
- * `skipped` counts **aliases**, i.e. `ADD`s not sent, not rows (a `null` alias is one): the restore confirmation already
- * speaks in `ADD`s (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per
- * `ADD` (`${sevenTvEmoteId}#${alias}`), so what the run shows plus what this skipped adds up to the
- * number the dialog named. For every single-alias row — nearly all of them — the two counts are the
- * same thing. Fails open exactly like `filterAlreadyPresent` (see there).
+ * A row none of whose aliases is left drops out entirely. Every row, whichever source it came from
+ * (purge-run protocol, transfer-run file, finished delete run), goes through all four rules.
+ *
+ * `skipped` and `skippedNameTaken` count **aliases**, i.e. `ADD`s not sent, not rows (a `null`
+ * alias is one): the restore confirmation already speaks in `ADD`s
+ * (`RestoreConfirmDialogData.addCount`) and the run's own queue is one row per `ADD`
+ * (`${sevenTvEmoteId}#${alias}`), so what the run shows plus both counts adds up to the number the
+ * dialog named. For every single-alias row — nearly all of them — the two units are the same thing.
+ * Fails open exactly like `filterAlreadyPresent` (see there).
  *
  * `complete: false` from the read (the 10-page runaway guard, or a `totalCount` mismatch — K5 fix
  * round, see `seven-tv-set-entries.ts`) is deliberately **not** treated as a reason to fail open
  * here, unlike the delete run's own live alias read (`mass-delete-panel.ts`, spec 8.3's "a list
  * that only knows half must not delete"): failing open would return every row completely
  * unfiltered, while the per-alias comparison below, even against a partial read, still catches
- * every duplicate genuinely inside the pages it did see and drops exactly its already-present
- * aliases — strictly fewer wrong re-adds than discarding that signal outright would produce. This
- * only widens the existing, already-accepted gap (a window remains, always has, between any read —
- * complete or not — and each individual `addEmote` call); it does not create a new one. Restore
- * only ever fails open (available: false, nothing filtered) on an actual fetch/GraphQL error, same
- * as before this round.
+ * every duplicate and every taken name genuinely inside the pages it did see — strictly fewer wrong
+ * re-adds than discarding that signal outright would produce. This only widens the existing,
+ * already-accepted gap (a window remains, always has, between any read — complete or not — and each
+ * individual `addEmote` call); it does not create a new one. Restore only ever fails open
+ * (available: false, nothing filtered) on an actual fetch/GraphQL error.
  */
 export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   httpClient: HttpClient,
   targetSetId: string,
   rows: readonly T[],
-): Observable<AlreadyPresentFilterResult<T>> {
+): Observable<RestoreAlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
     map(({ aliasesById, aliaslessIds }) => {
+      const heldNames = new Set([...aliasesById.values()].flat());
       const kept: T[] = [];
       let skipped = 0;
+      let skippedNameTaken = 0;
       for (const row of rows) {
         const rowAliases: readonly (string | null)[] =
           row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
-        const present = aliasesById.get(row.sevenTvEmoteId);
-        if (present === undefined) {
-          // Never encountered at all — not in the set, not even under an aliasless entry (every
-          // entry this reader sees, aliased or not, gets a map entry; see `loadSevenTvSetEntries`).
-          kept.push(row);
-          continue;
-        }
-        // An entry 7TV lists without an alias occupies the set under a name the row cannot vouch
-        // for, so it takes rule 2 like any foreign alias would — even when the same id also has an
-        // aliased entry the row does name (K5 fix round, spec §37/§38: an aliasless entry must not
-        // be silently absorbed by a sibling aliased entry of the same id). A row that names an
-        // aliasless entry itself (`null`) does vouch for it: reading it as foreign would drop every
-        // such row without a trace.
-        const hasAliaslessLive = aliaslessIds.has(row.sevenTvEmoteId);
-        const foreignEntry =
-          (hasAliaslessLive && !rowAliases.includes(null)) ||
-          present.some((alias) => !rowAliases.includes(alias));
-        if (foreignEntry) {
-          skipped += rowAliases.length;
-          continue;
-        }
-        const missing = rowAliases.filter((alias) =>
-          alias === null ? !hasAliaslessLive : !present.includes(alias),
-        );
+        const missing = missingAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds);
         skipped += rowAliases.length - missing.length;
-        if (missing.length > 0) {
-          kept.push({ ...row, aliases: missing });
+        // A missing alias is never held by the row's own id (that would make it present), so any
+        // holder is another emote.
+        const free = missing.filter((alias) => alias === null || !heldNames.has(alias));
+        skippedNameTaken += missing.length - free.length;
+        if (free.length === rowAliases.length) {
+          kept.push(row);
+        } else if (free.length > 0) {
+          kept.push({ ...row, aliases: free });
         }
       }
-      return { rows: kept, skipped, available: true };
+      return { rows: kept, skipped, skippedNameTaken, available: true };
     }),
-    catchError(() => of({ rows: [...rows], skipped: 0, available: false })),
+    catchError(() => of({ rows: [...rows], skipped: 0, skippedNameTaken: 0, available: false })),
+  );
+}
+
+/** Rules 1–3 of `filterAlreadyPresentForRestore` for one row: the aliases of `rowAliases` the set
+ *  does not hold under `id` yet — all of them when the id is absent, none when the id sits under
+ *  an entry the row does not name (rule 2). */
+function missingAliases(
+  id: string,
+  rowAliases: readonly (string | null)[],
+  aliasesById: ReadonlyMap<string, readonly string[]>,
+  aliaslessIds: ReadonlySet<string>,
+): (string | null)[] {
+  const present = aliasesById.get(id);
+  if (present === undefined) {
+    // Never encountered at all — not in the set, not even under an aliasless entry (every entry
+    // this reader sees, aliased or not, gets a map entry; see `loadSevenTvSetEntries`).
+    return [...rowAliases];
+  }
+  // An entry 7TV lists without an alias occupies the set under a name the row cannot vouch for, so
+  // it takes rule 2 like any foreign alias would — even when the same id also has an aliased entry
+  // the row does name (K5 fix round, spec §37/§38: an aliasless entry must not be silently absorbed
+  // by a sibling aliased entry of the same id). A row that names an aliasless entry itself (`null`)
+  // does vouch for it: reading it as foreign would drop every such row without a trace.
+  const hasAliaslessLive = aliaslessIds.has(id);
+  const foreignEntry =
+    (hasAliaslessLive && !rowAliases.includes(null)) ||
+    present.some((alias) => !rowAliases.includes(alias));
+  if (foreignEntry) {
+    return [];
+  }
+  return rowAliases.filter((alias) =>
+    alias === null ? !hasAliaslessLive : !present.includes(alias),
   );
 }
 
