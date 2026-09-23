@@ -1588,7 +1588,7 @@ Plan-Sache:**
   `filterAlreadyPresent` bleibt, wie sie ist (ID-Vergleich, `already-present-filter.ts:151`) —
   sie ist das Sicherheitsnetz vor dem Lauf, nicht die Anzeige. **Ausblick, nicht Umfang:** eine
   zweispaltige Auflösungstabelle (Quellname links, Zielname rechts, Auswahl je Zeile: behalten,
-  umbenennen, überspringen) ist eine eigene, spätere Entwurfsrunde und wird unter Issue #201
+  umbenennen, überspringen) ist eine eigene, spätere Entwurfsrunde und wird unter Issue #230
   nachgehalten; dieses Konzept baut sie nicht.
 
 *Fünfte Fassung, Zahlen in der siebten korrigiert:* Für den Anlass selbst liefert der Zwischenweg
@@ -2123,8 +2123,8 @@ DECISIONS-Eintrag.
   `sevenTvEmoteId`, weil Protokollzeilen künftig `emoteId: null` tragen können und der Schlüssel der
   Auswahl ohnehin die 7TV-Id ist. Dazu, als **Ausblick** (siebte Fassung, Entscheidung des
   Betreibers): die zweispaltige Auflösungstabelle für Alias-Abweichungen — Quellname links,
-  Zielname rechts, Auswahl je Zeile — wird dort nachgehalten; #200 zeigt die Abweichungen nur an
-  (7.5). Sonst keine Berührung.
+  Zielname rechts, Auswahl je Zeile — wird unter Issue #230 nachgehalten; #200 zeigt die
+  Abweichungen nur an (7.5). Sonst keine Berührung.
 
 ### 12.2 Timing: hinter dem 2026-10-08, nicht auf ihm
 
