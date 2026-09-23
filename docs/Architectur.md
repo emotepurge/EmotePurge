@@ -111,7 +111,7 @@ Publishing sites per event type (as of 2026-08-01):
 #### B.1 Authentication
 
 - Twitch OAuth2 flow via the web API: `/api/auth/twitch/login` and `/api/auth/twitch/callback`.
-- Requests only the basic identity (`user:read:email` or basic profile).
+- Requests exactly `user:read:moderated_channels` and `user:read:subscriptions` (`TwitchOAuthDefaults.RequestedScopes`) — no email scope, nothing writable (#242).
 
 #### B.2 Live role check
 

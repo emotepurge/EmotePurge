@@ -37,10 +37,9 @@
     "loginButton": "Log in with Twitch",
     "scopes": {
       "title": "What Twitch shares",
-      "email": "The email address on file with Twitch.",
       "moderatedChannels": "The channels you moderate — this determines which channels you may manage here.",
       "subscriptions": "Your subscriptions — so sub-restricted votes know whether you may take part.",
-      "note": "All three are read permissions. EmotePurge cannot write, post, or change anything on your behalf."
+      "note": "Both are read permissions. EmotePurge cannot write, post, or change anything on your behalf."
     }
   },
   "landing": {
@@ -106,7 +105,7 @@
       "trust": {
         "twitch": {
           "term": "Twitch login",
-          "body": "EmotePurge asks Twitch for read permissions only: your email address, the channels you moderate, and your subscriptions. Nothing is ever written on your behalf."
+          "body": "EmotePurge asks Twitch for read permissions only: the channels you moderate and your subscriptions. Nothing is ever written on your behalf."
         },
         "token": {
           "term": "7TV token",

@@ -53,8 +53,8 @@ public static class IrcLineSpliceRule
     public const int DefaultMaxTagBlockLengthForLog = 512;
 
     /// <summary>
-    /// Replaces the value of every free-text tag in <see cref="TagBlockForLog"/>. German because it
-    /// is log output, like the message it is interpolated into.
+    /// Replaces the value of every free-text or identifying tag in <see cref="TagBlockForLog"/>.
+    /// German because it is log output, like the message it is interpolated into.
     /// </summary>
     private const string RedactedValue = "<entfernt>";
 
@@ -65,6 +65,24 @@ public static class IrcLineSpliceRule
     /// default instead of leaking on its first appearance.
     /// </summary>
     private const string FreeTextKeySuffix = "msg-body";
+
+    /// <summary>
+    /// Exact tag keys whose value identifies the chatter or reveals their badges (#246) —
+    /// <c>display-name</c>/<c>login</c>/<c>user-id</c> for the sender, <c>badges</c>/<c>badge-info</c>
+    /// for their sub/mod/VIP status, and the Shared Chat (#73) <c>source-*</c> equivalents of the
+    /// badge tags. Redacted the same way as a free-text tag: the key stays, only the value is
+    /// replaced, so the diagnostic structure (which tags were present, in which order) survives.
+    /// </summary>
+    private static readonly string[] IdentifyingKeys =
+    [
+        "display-name",
+        "login",
+        "user-id",
+        "badges",
+        "badge-info",
+        "source-badges",
+        "source-badge-info",
+    ];
 
     /// <summary>
     /// True if <paramref name="rawLine"/> is an IRC line whose tag block (the segment up to the
@@ -106,12 +124,14 @@ public static class IrcLineSpliceRule
     /// <summary>
     /// Extracts the tag block of <paramref name="rawLine"/> for logging: the segment up to the
     /// first space, or the whole line if there is no space, with the value of every free-text tag
-    /// replaced by <see cref="RedactedValue"/> and the result capped at <paramref name="maxLength"/>
+    /// and every identifying tag (<see cref="IdentifyingKeys"/>, #246) replaced by
+    /// <see cref="RedactedValue"/>, and the result capped at <paramref name="maxLength"/>
     /// characters. Used by the splice sentinel (#114) to log enough of the line to diagnose the
-    /// defect without ever including message text — neither this line's (it sits after the first
-    /// space) nor a stranger's (that is what the redaction is for) — and without letting a
-    /// pathologically long tag block blow up a log line. <c>null</c> or empty input yields an empty
-    /// string, so callers never need to guard the result.
+    /// defect without ever including message text or the chatter's identity — neither this line's
+    /// text (it sits after the first space) nor a stranger's (that is what the free-text redaction
+    /// is for) nor the sender's own display name/login/user id/badges (the identifying-tag
+    /// redaction) — and without letting a pathologically long tag block blow up a log line.
+    /// <c>null</c> or empty input yields an empty string, so callers never need to guard the result.
     /// </summary>
     public static string TagBlockForLog(string? rawLine, int maxLength = DefaultMaxTagBlockLengthForLog)
     {
@@ -120,7 +140,7 @@ public static class IrcLineSpliceRule
             return string.Empty;
         }
 
-        var tagBlock = RedactFreeTextValues(TagBlockSpan(rawLine));
+        var tagBlock = RedactValues(TagBlockSpan(rawLine));
         return tagBlock.Length > maxLength ? tagBlock[..maxLength] : tagBlock;
     }
 
@@ -141,7 +161,59 @@ public static class IrcLineSpliceRule
     private static bool IsFreeTextTag(ReadOnlySpan<char> tag)
     {
         var equalsIndex = tag.IndexOf('=');
-        return equalsIndex >= 0 && tag[..equalsIndex].EndsWith(FreeTextKeySuffix, StringComparison.Ordinal);
+        return equalsIndex >= 0 && IsFreeTextKey(tag[..equalsIndex]);
+    }
+
+    private static bool IsFreeTextKey(ReadOnlySpan<char> key) =>
+        key.EndsWith(FreeTextKeySuffix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// True if <paramref name="tag"/> is a <c>key=value</c> pair whose key identifies the chatter or
+    /// their badges. Three shapes, all exact-key or exact-suffix matches (never a bare substring, so
+    /// an unrelated tag that merely contains e.g. <c>login</c> is not swept in):
+    /// <list type="number">
+    /// <item>An exact key from <see cref="IdentifyingKeys"/>.</item>
+    /// <item>A <c>reply-parent-*</c> or <c>reply-thread-parent-*</c> tag ending in <c>user-id</c>,
+    /// <c>user-login</c> or <c>display-name</c> — the reply's <em>parent</em> message is written by a
+    /// different chatter than the one <see cref="IdentifyingKeys"/> already covers, e.g.
+    /// <c>reply-parent-user-login</c>, <c>reply-thread-parent-display-name</c>.</item>
+    /// <item>A <c>source-*</c> tag ending in <c>user-id</c> or <c>login</c> — Shared Chat (#73) does
+    /// not send one today (only the badge/room/message ids <see cref="IdentifyingKeys"/> already
+    /// lists), but the shape matches Twitch's naming convention for the rest of its per-user tags,
+    /// so a future addition is redacted by default instead of leaking on first appearance.</item>
+    /// </list>
+    /// </summary>
+    private static bool IsIdentifyingTag(ReadOnlySpan<char> tag)
+    {
+        var equalsIndex = tag.IndexOf('=');
+        return equalsIndex >= 0 && IsIdentifyingKey(tag[..equalsIndex]);
+    }
+
+    private static bool IsIdentifyingKey(ReadOnlySpan<char> key)
+    {
+        foreach (var identifyingKey in IdentifyingKeys)
+        {
+            if (key.Equals(identifyingKey, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        if (key.StartsWith("reply-parent-", StringComparison.Ordinal) ||
+            key.StartsWith("reply-thread-parent-", StringComparison.Ordinal))
+        {
+            return key.EndsWith("user-id", StringComparison.Ordinal) ||
+                   key.EndsWith("user-login", StringComparison.Ordinal) ||
+                   key.EndsWith("display-name", StringComparison.Ordinal);
+        }
+
+        if (key.StartsWith("source-", StringComparison.Ordinal))
+        {
+            return key.EndsWith("user-id", StringComparison.Ordinal) ||
+                   key.EndsWith("login", StringComparison.Ordinal);
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -150,12 +222,24 @@ public static class IrcLineSpliceRule
     /// mention fails this: a login is followed by a space (escaped as <c>\s</c>) or the end of the
     /// value, never by <c>=</c>.
     /// </summary>
-    private static bool ContainsTagBlockStart(ReadOnlySpan<char> tag)
+    private static bool ContainsTagBlockStart(ReadOnlySpan<char> tag) => TryFindEmbeddedKeyStart(tag, out _, out _);
+
+    /// <summary>
+    /// Finds the first splice-embedded tag-block start in <paramref name="value"/> — the same shape
+    /// <see cref="ContainsTagBlockStart"/> tests for, an <c>@</c> followed by a non-empty tag key and
+    /// an <c>=</c> — and returns where the <c>@</c> and the terminating <c>=</c> sit. Used by
+    /// <see cref="AppendTagWithEmbeddedRedaction"/> (Codex review finding P1) to redact an embedded
+    /// tag's own value, not just top-level ones: <see cref="IsSpliced"/> already proves a splice can
+    /// land inside a typed tag's value (<c>subscriber=0@badge-info=...</c>) rather than cleanly
+    /// between two <c>;</c>-separated tags, and that embedded fragment can itself be an identifying
+    /// or free-text tag whose value must not reach the log any more than a top-level one would.
+    /// </summary>
+    private static bool TryFindEmbeddedKeyStart(ReadOnlySpan<char> value, out int atIndex, out int equalsIndex)
     {
-        var index = tag.IndexOf('@');
+        var index = value.IndexOf('@');
         while (index >= 0)
         {
-            var rest = tag[(index + 1)..];
+            var rest = value[(index + 1)..];
 
             var keyLength = 0;
             while (keyLength < rest.Length && IsTagKeyChar(rest[keyLength]))
@@ -165,18 +249,22 @@ public static class IrcLineSpliceRule
 
             if (keyLength > 0 && keyLength < rest.Length && rest[keyLength] == '=')
             {
+                atIndex = index;
+                equalsIndex = index + 1 + keyLength;
                 return true;
             }
 
             var next = rest.IndexOf('@');
             if (next < 0)
             {
-                return false;
+                break;
             }
 
             index += 1 + next;
         }
 
+        atIndex = -1;
+        equalsIndex = -1;
         return false;
     }
 
@@ -189,17 +277,15 @@ public static class IrcLineSpliceRule
     private static bool IsTagKeyChar(char c) => char.IsAsciiLetterOrDigit(c) || c == '-';
 
     /// <summary>
-    /// Rebuilds <paramref name="tagBlock"/> with the value of every free-text tag replaced. Only
-    /// ever runs on the rare sentinel-hit path, so the allocation is irrelevant; the fast path below
-    /// keeps the ordinary tag block allocation-free apart from the one string the caller needs.
+    /// Rebuilds <paramref name="tagBlock"/> with the value of every free-text tag (<see cref="IsFreeTextTag"/>)
+    /// and every identifying tag (<see cref="IsIdentifyingTag"/>, #246) replaced. Only ever runs on
+    /// the rare sentinel-hit path, so the allocation is irrelevant — unlike the free-text-only
+    /// version this replaced, it has no fast path back to the unredacted span, because at least one
+    /// identifying tag (typically <c>user-id</c>, <c>display-name</c> and <c>badges</c>) is present
+    /// on almost every ordinary message.
     /// </summary>
-    private static string RedactFreeTextValues(ReadOnlySpan<char> tagBlock)
+    private static string RedactValues(ReadOnlySpan<char> tagBlock)
     {
-        if (!tagBlock.Contains(FreeTextKeySuffix, StringComparison.Ordinal))
-        {
-            return tagBlock.ToString();
-        }
-
         var builder = new StringBuilder(tagBlock.Length);
         var remaining = tagBlock;
 
@@ -222,13 +308,13 @@ public static class IrcLineSpliceRule
 
             isFirst = false;
 
-            if (IsFreeTextTag(tag))
+            if (IsFreeTextTag(tag) || IsIdentifyingTag(tag))
             {
                 builder.Append(tag[..(tag.IndexOf('=') + 1)]).Append(RedactedValue);
             }
             else
             {
-                builder.Append(tag);
+                AppendTagWithEmbeddedRedaction(builder, tag);
             }
 
             if (separator < 0)
@@ -240,5 +326,60 @@ public static class IrcLineSpliceRule
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Appends <paramref name="tag"/> — already established by the caller to be neither a top-level
+    /// free-text nor a top-level identifying tag — while still redacting the value of any tag a
+    /// splice embedded inside it (Codex review finding P1, follow-up to #246). <see cref="IsSpliced"/>
+    /// fires on a line like <c>subscriber=0@badge-info=subscriber/12</c> just as much as on a clean
+    /// <c>;</c>-separated splice, because a splice can land mid-value: the second line's tag block
+    /// starts right after the first line's incomplete value, with no <c>;</c> between them. Without
+    /// this, that embedded <c>badge-info</c> — or a <c>display-name</c>, a <c>user-id</c>, a
+    /// <c>*msg-body</c> — would reach the log unchanged, because the outer splitter sees only one
+    /// tag, <c>subscriber</c>, and that key alone is not identifying. Every embedded key is kept
+    /// (splice keys are structural, like any other key in this class); every embedded value is
+    /// redacted exactly like a top-level one would be, so the splice's shape survives but nothing it
+    /// dragged along does.
+    /// </summary>
+    private static void AppendTagWithEmbeddedRedaction(StringBuilder builder, ReadOnlySpan<char> tag)
+    {
+        var firstEquals = tag.IndexOf('=');
+        if (firstEquals < 0)
+        {
+            builder.Append(tag);
+            return;
+        }
+
+        builder.Append(tag[..(firstEquals + 1)]);
+        var cursor = tag[(firstEquals + 1)..];
+
+        while (TryFindEmbeddedKeyStart(cursor, out var at, out var eq))
+        {
+            // Everything up to and including the embedded key's own '=' is structural — the outer
+            // tag's own (corrupted, but not identifying) value fragment, the splice's '@', and the
+            // embedded key — and is always kept, same as every other key in this class.
+            builder.Append(cursor[..(eq + 1)]);
+            var embeddedKey = cursor[(at + 1)..eq];
+            var afterEmbeddedKey = cursor[(eq + 1)..];
+
+            var embeddedValueEnd = TryFindEmbeddedKeyStart(afterEmbeddedKey, out var nextAt, out _)
+                ? nextAt
+                : afterEmbeddedKey.Length;
+            var embeddedValue = afterEmbeddedKey[..embeddedValueEnd];
+
+            if (IsFreeTextKey(embeddedKey) || IsIdentifyingKey(embeddedKey))
+            {
+                builder.Append(RedactedValue);
+            }
+            else
+            {
+                builder.Append(embeddedValue);
+            }
+
+            cursor = afterEmbeddedKey[embeddedValueEnd..];
+        }
+
+        builder.Append(cursor);
     }
 }
