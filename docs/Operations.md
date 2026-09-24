@@ -135,6 +135,38 @@ either the emote counters or the bot detector — the sender is no longer proces
 category. There is nothing to do retroactively: already aggregated usage counts contain no
 identity, so no per-person removal is possible or necessary against them.
 
+## Blocking a channel from being rejoined (GDPR objection)
+
+The chatter exclusion above stops processing a single person's messages; it does not stop a
+broadcaster's own channel from being tracked again. `DELETE /{channelName}/purge` (admin area)
+deletes a channel's row and its whole history, but without a block list any moderator or
+broadcaster could immediately join it again through the ordinary join route — the objection would
+have no lasting effect. `Channels:ExcludedChannelIds` (env `EXCLUDED_CHANNEL_IDS`) closes that gap:
+every path that could create or reactivate a `Channel` row for chat observation refuses a blocked
+id, and **no caller is exempt, including a global admin** — the only way to undo a block is to
+remove the id from the list.
+
+For a streamer's own objection to their channel being tracked at all, in this order:
+
+1. From the objection, find the channel's **numeric Twitch broadcaster ID** — never the login,
+   which can change — the same way as for a chatter ID above (`GET
+   https://api.twitch.tv/helix/users?login=<login>`).
+2. Add the ID to `EXCLUDED_CHANNEL_IDS` in the `.env` next to `docker-compose.prod.yml` on the VPS
+   — comma-separated if the variable already holds other IDs, same shape as
+   `TWITCH_EXCLUDED_CHATTER_IDS` above.
+3. Recreate **both** `api` and `worker` (`docker compose -f docker-compose.prod.yml up -d --no-deps
+   api worker` in Portainer's stack directory, or the equivalent redeploy through Portainer's UI) so
+   both pick up the new environment — the join endpoint lives in the Api, the identity reconcile in
+   the Worker, and `Channels:ExcludedChannelIds` is read once, at startup, not polled.
+4. Only **then** purge the channel in the admin area (`DELETE /{channelName}/purge`). Doing this
+   last, after the block already takes effect, closes the exact gap this list exists for: without
+   this order, the channel could be rejoined in the moments between the purge and the block actually
+   being active.
+
+The join endpoint answers `403` with `{ errorCode: "channel_excluded" }` for a blocked channel —
+a short, neutral frontend message ("This channel cannot be added.") that names neither a legal
+objection nor a reason. Like the chatter list, only a count is ever logged, never an id.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,

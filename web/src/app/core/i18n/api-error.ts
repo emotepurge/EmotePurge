@@ -29,6 +29,7 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'channel_not_found',
   'channel_not_on_twitch',
   'channel_capacity_reached',
+  'channel_excluded',
   'foreign_channel_twitch_unavailable',
   'foreign_channel_no_seventv_account',
   'foreign_channel_no_active_emote_set',

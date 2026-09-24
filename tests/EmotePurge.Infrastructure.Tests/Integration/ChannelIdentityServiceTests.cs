@@ -302,6 +302,41 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Contains(harness.Logger.Entries, e => e.Message.Contains(survivor.Id) && e.Message.Contains(loser.Id));
     }
 
+    // GDPR Art. 21 objection gate (issue #252): the merge is the one place this pass can flip
+    // an inactive row active again (`survivor.IsBotActive |= loser.IsBotActive`), so a blocked id
+    // must refuse it the same way the loser-has-emotes case above does.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheChannelIdIsExcluded_RefusesTheMergeAndDoesNotReactivateTheSurvivor()
+    {
+        await using var db = fixture.CreateDbContext();
+        // The survivor is inactive — exactly the state a merge can otherwise reactivate. The loser is
+        // the active id-less duplicate a rejoin during a Twitch outage could have created before the
+        // id was known to be blocked (see the class remark on MergeAsync).
+        var survivor = await SeedChannelAsync(db, "identityexcludedold", "10099", isBotActive: false);
+        var loser = await SeedChannelAsync(db, "identityexcludednew", twitchChannelId: null);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10099").Returns(true);
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity("10099", "IdentityExcludedNew")], excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.MergesRefused);
+        Assert.Equal(0, summary.Merged);
+        Assert.Equal(0, summary.Renamed);
+        Assert.Empty(harness.Redis.Messages);
+
+        await using var verify = fixture.CreateDbContext();
+        var untouchedSurvivor = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == survivor.Id);
+        Assert.False(untouchedSurvivor.IsBotActive);
+        Assert.Null(untouchedSurvivor.TrackingResumedAt);
+        var untouchedLoser = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == loser.Id);
+        Assert.Equal("identityexcludednew", untouchedLoser.ChannelName);
+        Assert.True(untouchedLoser.IsBotActive);
+        Assert.Empty(await verify.AuditLogEntries.AsNoTracking().Where(e => e.ChannelName == "identityexcludednew").ToListAsync());
+    }
+
     [Fact]
     public async Task ReconcileActiveChannelsAsync_WhenAMergeStaysRefused_WarnsOncePerProcessRun()
     {
@@ -600,7 +635,8 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         IReadOnlyList<TwitchUserIdentity>? identities,
         string? token = "identity-app-token",
         ChannelIdentityWarningState? warningState = null,
-        bool failPublishes = false)
+        bool failPublishes = false,
+        IExcludedChannelFilter? excludedChannelFilter = null)
     {
         var helix = Substitute.For<ITwitchHelixClient>();
         helix.GetUsersAsync(
@@ -621,7 +657,9 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
             helix,
             publisher,
             logger,
-            new ChannelIdentityService(db, helix, appTokenProvider, publisher, state, logger));
+            new ChannelIdentityService(
+                db, helix, appTokenProvider, publisher, state,
+                excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(), logger));
     }
 
     private sealed record Harness(

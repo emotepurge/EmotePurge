@@ -305,6 +305,69 @@ public class ChannelServiceTests(PostgresFixture fixture)
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    // GDPR Art. 21 objection gate (issue #252): a blocked Twitch id must refuse the join before
+    // any row is created, matched on the immutable id resolved via Helix, never on the login.
+    [Fact]
+    public async Task JoinAsync_WhenTheChannelIdIsExcluded_RejectsTheJoin_AndWritesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990001").Returns(true);
+        var service = CreateService(
+            db, redisPublisher, IdentityFound("990001", "channelserviceexcluded1"),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcluded1", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(result.Channel);
+        Assert.Null(await service.GetByNameAsync("channelserviceexcluded1"));
+        Assert.Empty(await LoadAuditEntriesAsync(db, "channelserviceexcluded1"));
+        await redisPublisher.DidNotReceive().PublishAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Unlike the active-channel cap, no caller is exempt from this one — the operator removing the
+    // id from the list is the only way to undo it.
+    [Fact]
+    public async Task JoinAsync_WhenTheChannelIdIsExcluded_EvenAGlobalAdminIsRefused()
+    {
+        await using var db = fixture.CreateDbContext();
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990002").Returns(true);
+        var service = CreateService(
+            db, identityService: IdentityFound("990002", "channelserviceexcluded2"),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcluded2", Actor, isGlobalAdmin: true);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(await service.GetByNameAsync("channelserviceexcluded2"));
+    }
+
+    // Defense in depth for HandleUnknownTwitchLoginAsync: realistically unreachable in the normal
+    // objection procedure (PurgeAsync deletes the row a blocked id would be found under), but a
+    // known row must not be silently reactivated if it turns out to carry a blocked id.
+    [Fact]
+    public async Task JoinAsync_WhenTwitchDoesNotKnowTheLogin_ButTheKnownRowsIdIsExcluded_RejectsTheJoin()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "channelserviceexcluded3", "990003", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990003").Returns(true);
+        var service = CreateService(
+            db, identityService: IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.NotFound)),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcluded3", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        var stored = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(stored.IsBotActive);
+    }
+
     [Fact]
     public async Task JoinAsync_WhenTwitchDoesNotKnowTheLogin_ButWeAlreadyTrackIt_JoinsAnyway()
     {
@@ -704,7 +767,8 @@ public class ChannelServiceTests(PostgresFixture fixture)
         IRedisPublisher? redisPublisher = null,
         IChannelIdentityService? identityService = null,
         ILogger<ChannelService>? logger = null,
-        ChannelCapacityOptions? capacityOptions = null)
+        ChannelCapacityOptions? capacityOptions = null,
+        IExcludedChannelFilter? excludedChannelFilter = null)
     {
         return new ChannelService(
             db,
@@ -716,6 +780,7 @@ public class ChannelServiceTests(PostgresFixture fixture)
             // that runs before these — the production default of 80 would make these tests fail
             // depending on run order, not on anything this class actually does.
             capacityOptions ?? new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
+            excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(),
             logger ?? NullLogger<ChannelService>.Instance);
     }
 

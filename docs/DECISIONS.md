@@ -10,6 +10,78 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — A channel block list closes the "purge, then rejoin" gap of the GDPR objection (#252)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/IExcludedChannelFilter.cs` ·
+`src/EmotePurge.Infrastructure/Services/ExcludedChannelFilter.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ExcludedChannelFilterTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `.env.example` · `docs/Operations.md`
+
+The second gap the same GDPR review found: `ChannelService.PurgeAsync` deletes a channel's row and
+its whole history, but nothing stopped any moderator or broadcaster from immediately joining it
+again through the ordinary join route — the objection had no lasting effect at the channel level,
+only a momentary one.
+
+Added `Channels:ExcludedChannelIds` (env `EXCLUDED_CHANNEL_IDS`), same accepted shapes as
+`Twitch:ExcludedChatterIds`/`Twitch:AdditionalBotAccountIds` — indexed array keys or one
+comma-separated scalar, scalar wins — read into a new `ExcludedChannelFilter`
+(`IExcludedChannelFilter.IsExcluded`). It lives in `EmotePurge.Infrastructure`, not
+`EmotePurge.Worker` where the per-chatter filter lives: both the Api's join endpoint
+(`ChannelService`) and the Worker's identity reconcile (`ChannelIdentityService`) need it, and both
+already depend on this assembly through `AddEmotePurgeInfrastructure` — a single registration
+covers both hosts without either depending on the other.
+
+**Every path that can create or reactivate a `Channel` row for chat observation is guarded, matched
+on the immutable Twitch broadcaster id and never on the login:**
+
+- `ChannelService.JoinAsync`, the one path both the ordinary join endpoint and an admin's join go
+  through (there is no separate admin-join code path) — checked once the identity lookup resolves a
+  Twitch id, before `ResolveJoinTargetAsync` can create or lock a single row. A new
+  `ChannelJoinStatus.ChannelExcluded` carries the refusal out; unlike `CapacityReached`, **no
+  caller is exempt**, including a global admin — the cap protects Twitch's own connection limit, this
+  gate protects a person's right under Art. 21, and only the operator removing the id undoes it.
+- `HandleUnknownTwitchLoginAsync` (the "Twitch no longer answers for this login, but we already
+  track it" branch) gets the same check against the already-known row's stored `TwitchChannelId`,
+  defense in depth — realistically unreachable in the ordinary objection procedure, because
+  `PurgeAsync` deletes the row a blocked id would otherwise be found under.
+- `ChannelIdentityService.MergeAsync`, the identity reconcile's row consolidation: the only other
+  place a row can go from inactive to active is `survivor.IsBotActive |= loser.IsBotActive`, reached
+  when an id-less duplicate (which a join during a Helix outage can create — the join-path check
+  above has no id to check yet in that case) turns out to belong to a since-blocked id. Refused the
+  same way the existing "loser still has emotes" case already is: nothing is written, both rows stay
+  duplicated and unresolved until the operator clears the id, `ReconcileCounters.MergesRefused` is
+  reused rather than adding a fourth counter. Neither refusal path logs the id or either login —
+  logging which channel this concerns would itself leak the objection the block exists to honour.
+- Boot recovery and the periodic 7TV resync in the Worker deliberately get **no** guard: both only
+  ever continue observing rows the database already marks active (`ListActiveChannelNamesAsync`) —
+  neither creates nor reactivates a row, so there is nothing here for the block list to intercept.
+  `BackfillIdAsync` (an id-less active row learning its Twitch id) is the one acknowledged residual
+  gap — it neither creates nor reactivates a row either, so it is out of this change's stated scope,
+  but a channel joined during a Helix outage and blocked only afterward can stay active until the
+  operator notices and purges it by hand.
+
+Response contract: `ChannelJoinStatus.ChannelExcluded` maps to **403** with
+`{ errorCode: "channel_excluded" }` (`ApiErrorCodes.ChannelExcluded`) — distinct from the existing
+404 (`ChannelNotOnTwitch`, Twitch does not know the login at all) and 409
+(`CapacityReached`, a transient, admin-overridable cap). The frontend text on both locales is
+deliberately short and neutral — "This channel cannot be added." / "Dieser Kanal kann nicht
+hinzugefügt werden." — and names neither a legal objection nor a reason.
+
+`docs/Operations.md` extends the existing objection procedure: for a streamer's own objection, add
+the id to `EXCLUDED_CHANNEL_IDS`, recreate `api`/`worker` so both pick it up, *then* purge the
+channel in the admin area — in that order, so the channel cannot be rejoined in the gap between the
+purge and the block taking effect.
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·

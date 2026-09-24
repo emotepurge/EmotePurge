@@ -14,6 +14,7 @@ public class ChannelService(
     IRedisPublisher redisPublisher,
     IChannelIdentityService channelIdentityService,
     ChannelCapacityOptions channelCapacityOptions,
+    IExcludedChannelFilter excludedChannelFilter,
     ILogger<ChannelService> logger) : IChannelService
 {
     // The reason detail of a channel.purge entry written by the retention job, which is what tells it
@@ -52,6 +53,18 @@ public class ChannelService(
         // — should that matching rule ever loosen, this is the line that keeps the row on Helix's
         // spelling instead of silently storing the caller's.
         var targetName = identity is null ? normalized : ChannelName.Normalize(identity.Login);
+
+        // Objection gate (GDPR Art. 21, issue #252): checked here, once the immutable Twitch id
+        // is known and before ResolveJoinTargetAsync can create or lock a single row — never on the
+        // login, which PurgeAsync's deletion of the old row would let a rejoin sidestep entirely.
+        // Only reachable when identity is non-null (a Found lookup); an Unavailable lookup has no id
+        // to check and falls through unchanged, the same gap PurgeAsync's own comments already
+        // accept for "costs nothing but the id" (see docs/DECISIONS.md, this entry).
+        if (identity is not null && excludedChannelFilter.IsExcluded(identity.Id))
+        {
+            logger.LogWarning("Join rejected: the target channel is on the excluded-channel list.");
+            return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded);
+        }
 
         var (channel, isNewRow, renamedFrom) = await ResolveJoinTargetAsync(identity, targetName, actor, cancellationToken);
 
@@ -242,6 +255,17 @@ public class ChannelService(
                 "Join für {ChannelName} abgelehnt: Twitch kennt diesen Login nicht und wir führen keine Zeile dazu.",
                 normalized);
             return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelNotOnTwitch);
+        }
+
+        // Objection gate, defense in depth: realistically unreachable in the normal objection
+        // procedure (PurgeAsync deletes the row a blocked id would be found under), but a known row
+        // can still carry a blocked id here if Twitch stopped answering for this login afterward —
+        // refuse the same way the identity-resolved path above does, rather than silently reactivate
+        // a row this codebase otherwise treats as still worth rejoining (see the class remark below).
+        if (knownChannel.TwitchChannelId is not null && excludedChannelFilter.IsExcluded(knownChannel.TwitchChannelId))
+        {
+            logger.LogWarning("Join rejected: the target channel is on the excluded-channel list.");
+            return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded);
         }
 
         // No rename: there is nothing to rename onto. The stored TwitchChannelId stays exactly as it

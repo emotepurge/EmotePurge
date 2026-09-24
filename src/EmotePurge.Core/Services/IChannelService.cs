@@ -40,6 +40,13 @@ public enum ChannelJoinStatus
     // reached, and the caller is not a global admin. Never returned for a channel that is already
     // active — see ChannelService.JoinAsync's idempotency comment.
     CapacityReached,
+
+    // The broadcaster behind this Twitch id objected to processing (GDPR Art. 21, issue #252)
+    // and is on the configured block list (Channels:ExcludedChannelIds). Unlike CapacityReached,
+    // global admins are NOT exempt — the only way to undo this is for the operator to remove the id
+    // from the list. Matched on the immutable Twitch id, resolved before any row is written; never
+    // returned for a login Twitch could not resolve at all (that stays ChannelNotOnTwitch).
+    ChannelExcluded,
 }
 
 /// <summary>

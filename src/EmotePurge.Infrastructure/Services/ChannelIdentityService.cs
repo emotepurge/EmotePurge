@@ -29,6 +29,7 @@ public class ChannelIdentityService(
     ITwitchAppTokenProvider appTokenProvider,
     IRedisPublisher redisPublisher,
     ChannelIdentityWarningState warningState,
+    IExcludedChannelFilter excludedChannelFilter,
     ILogger<ChannelIdentityService> logger) : IChannelIdentityService
 {
     public async Task<ChannelIdentityReconcileSummary?> ReconcileActiveChannelsAsync(CancellationToken ct = default)
@@ -361,6 +362,22 @@ public class ChannelIdentityService(
         HashSet<string> settledChannelIds,
         CancellationToken ct)
     {
+        // Objection gate (GDPR Art. 21, issue #252): a merge is the one place this pass can flip
+        // an inactive row active again (`survivor.IsBotActive |= loser.IsBotActive` below) — exactly
+        // the "reactivation" the join path already refuses for this id. Refused the same way the
+        // loser-has-emotes case below is: nothing is written, both rows stay duplicated and
+        // unresolved until the operator removes the id from the list. Checked before the transaction
+        // even opens — cheaper, and it keeps a blocked id from taking either row's lock at all.
+        if (excludedChannelFilter.IsExcluded(twitchChannelId))
+        {
+            // Neither the id nor either login is logged here (same restraint as the join path's own
+            // rejection): a log line naming which channel this concerns would itself leak the
+            // objection the block exists to honour.
+            counters.MergesRefused++;
+            logger.LogWarning("Merge refused: the channel is on the excluded-channel list.");
+            return false;
+        }
+
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
         var survivor = await db.LoadChannelByTwitchIdForUpdateAsync(twitchChannelId, ct);
