@@ -249,6 +249,27 @@ channel in connection with the block — and then fixed what failed.
   a brand-new id-less row during a Helix outage: the worker sits in the IRC channel until the
   reconcile's next pass, but counts nothing and observes no 7TV set, as long as 7TV knows the account
   (and a channel 7TV does not know has no set to count against).
+- **A deactivated id-less row keeps the id it resolved to (P1).** The reconcile used to deactivate an
+  id-less row whose login resolved to an excluded id but leave `TwitchChannelId = null` ("never
+  backfilled"). A later join by that login while Helix answered `Unavailable` or `NotFound` then found
+  the row by name, saw no id to check, and reactivated it. `DeactivateExcludedRowAsync` now writes the
+  resolved id onto the row in the same save as the deactivation — the same backfill any other row
+  gets — so every join path's stored-id check refuses it from then on, whatever Twitch answers. It
+  cannot when another row already holds that id (the unique index): that row carries the block
+  itself, and the duplicate stays id-less. For that duplicate, `HandleUnknownTwitchLoginAsync` now
+  refuses to reactivate **any inactive row without a Twitch id** on a `NotFound` answer, with
+  `ChannelNotOnTwitch` (404) — the ban restraint above rests on the stored id, and without one
+  nothing ties the row to an account Twitch still knows; an active row, or one with an id, is
+  unaffected. Three alternatives were weighed and rejected. Refusing the same rows on `Unavailable`
+  too would have closed the last case, but it breaks an ordinary rejoin of every pre-#44 inactive
+  row during a Helix outage, which the three-state lookup exists to keep working. Deleting the
+  duplicate automatically would destroy history on an operator's typo in the list. And a marker
+  column would need a manual production migration for a case that only arises when a rename
+  duplicate meets an objection. **What stays open, deliberately:** during a Helix outage, a join by
+  login cannot be checked against the list when no row with a stored blocked id answers to that login
+  — a brand-new row (the gap the first entry above already accepted) or the id-less duplicate just
+  described. The 7TV sync's own gate (previous bullet) keeps such a channel uncounted and its set
+  unobserved, and the reconcile's next pass after the outage deactivates it again.
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 

@@ -379,8 +379,9 @@ public class ChannelIdentityService(
     /// <param name="twitchChannelId">
     /// The Twitch id the caller found excluded — <paramref name="row"/>'s own stored id for
     /// <see cref="ReconcileKnownIdRowAsync"/>, or the id its login just resolved to for
-    /// <see cref="ReconcileIdLessRowAsync"/> (not yet written to the row, and never will be — see
-    /// the class remark on why an excluded id is never backfilled).
+    /// <see cref="ReconcileIdLessRowAsync"/>. In the second case it is written onto the row together
+    /// with the deactivation whenever the unique index allows it, so the block survives on the row
+    /// itself (see the comment at the write).
     /// </param>
     private async Task DeactivateExcludedRowAsync(
         ChannelIdentityRow row, string twitchChannelId, ReconcileCounters counters, CancellationToken ct)
@@ -410,6 +411,22 @@ public class ChannelIdentityService(
             // row now belongs to a decision the next tick makes afresh — nothing to write and
             // nothing to warn about.
             return;
+        }
+
+        if (channel.TwitchChannelId is null
+            && !await db.Channels.AnyAsync(c => c.TwitchChannelId == twitchChannelId, ct))
+        {
+            // Fourth Codex review of the block list: a deactivated id-less row used to keep
+            // TwitchChannelId = null, so a later join by its login while Twitch answered Unavailable
+            // or NotFound found the row by name, saw no id to check and reactivated it. Writing the
+            // resolved id down — the same backfill BackfillIdAsync does for any other row, in the
+            // same save as the deactivation — makes every join path's stored-id check refuse it from
+            // then on, whatever Twitch answers. Skipped when another row already holds the id (the
+            // unique index would reject it): that row carries the block itself, and this duplicate
+            // keeps the join path's id-less fallback (ChannelService.HandleUnknownTwitchLoginAsync
+            // refuses an inactive id-less row outright; the Unavailable case is the documented
+            // outage gap, see docs/DECISIONS.md).
+            channel.TwitchChannelId = twitchChannelId;
         }
 
         try

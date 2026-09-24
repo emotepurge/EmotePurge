@@ -253,7 +253,7 @@ public class ChannelService(
 
     /// <summary>
     /// Twitch was reachable and knows no account under this login — but only a join that would
-    /// *create* a row is refused for it. That is what the rejection was for: a typo becoming a
+    /// *create* a row, or reactivate an inactive row that carries no Twitch id, is refused for it. That is what the rejection was for: a typo becoming a
     /// permanent, never-syncing row. On a channel we already track it would buy nothing and cost
     /// something real, because Helix answers the same way for a deleted account and for a banned
     /// one, and a ban can be lifted. Refusing here would let a temporary state block a moderator from
@@ -291,6 +291,22 @@ public class ChannelService(
         {
             logger.LogWarning("Join rejected: the target channel is on the excluded-channel list.");
             return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded);
+        }
+
+        // An inactive row without a Twitch id is refused like an unknown login (fourth Codex review of
+        // the block list). The ban restraint in the summary above rests on the stored id: it is what
+        // says this row is the channel whose ban may be lifted. Without one, nothing ties the row to
+        // any account at all — Twitch does not know the login, and we never learned an id — and one
+        // such row is exactly what the objection gate cannot recognise: an id-less duplicate the
+        // identity reconcile deactivated because its login resolved to an excluded id that another
+        // row already holds, so the id could not be written onto it. Reactivating it here would put
+        // a blocked channel back under observation. An active row is left alone: joining it
+        // reactivates nothing. Logged without the name, since this may be that row.
+        if (!knownChannel.IsBotActive && knownChannel.TwitchChannelId is null)
+        {
+            logger.LogInformation(
+                "Join rejected: Twitch does not know this login and the inactive row under it has no Twitch id to confirm it by.");
+            return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelNotOnTwitch);
         }
 
         // No rename: there is nothing to rename onto. The stored TwitchChannelId stays exactly as it

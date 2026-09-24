@@ -9,6 +9,7 @@ using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 
@@ -341,6 +342,9 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Equal("identityexcludednew", deactivatedLoser.ChannelName);
         Assert.False(deactivatedLoser.IsBotActive);
         Assert.NotNull(deactivatedLoser.DeactivatedAtUtc);
+        // The survivor already holds the id, so the unique index leaves no room to write it onto the
+        // duplicate too — the deactivation must still go through without it.
+        Assert.Null(deactivatedLoser.TwitchChannelId);
         var entry = await verify.AuditLogEntries.AsNoTracking()
             .SingleAsync(e => e.ChannelName == "identityexcludednew");
         Assert.Equal(AuditActions.ChannelLeave, entry.Action);
@@ -484,8 +488,11 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
     // backfilled into observation under that id — it is deactivated instead, and the id is
     // deliberately left unwritten (Assert.Null below), because the row is being told to stop being
     // observed, not brought into observation under a name that could be found again.
+    // Fourth Codex review: the deactivated row now also keeps the id it resolved to — without it, a
+    // later join by its login while Twitch answered Unavailable or NotFound found the row by name,
+    // saw no id to check and reactivated it (see the join-path test further down).
     [Fact]
-    public async Task ReconcileActiveChannelsAsync_WhenAnIdLessRowsLoginResolvesToAnExcludedId_DeactivatesInsteadOfBackfilling()
+    public async Task ReconcileActiveChannelsAsync_WhenAnIdLessRowsLoginResolvesToAnExcludedId_DeactivatesItAndWritesTheIdDown()
     {
         await using var db = fixture.CreateDbContext();
         var seeded = await SeedChannelAsync(db, "identityexcludedbackfill", twitchChannelId: null);
@@ -504,8 +511,47 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         await using var verify = fixture.CreateDbContext();
         var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
         Assert.False(channel.IsBotActive);
-        Assert.Null(channel.TwitchChannelId);
+        Assert.Equal("10095", channel.TwitchChannelId);
         Assert.NotNull(channel.DeactivatedAtUtc);
+    }
+
+    // The end-to-end shape of the fourth review's second P1: once the reconcile has deactivated an
+    // id-less row for an excluded id, a join by that row's login must stay refused whatever Twitch
+    // answers — Unavailable (no identity at all) and NotFound (the login is unknown right now) are
+    // the two answers that bypass the join path's identity check and fall back to the row by name.
+    [Theory]
+    [InlineData(TwitchUserLookupStatus.Unavailable)]
+    [InlineData(TwitchUserLookupStatus.NotFound)]
+    public async Task ReconcileActiveChannelsAsync_AfterDeactivatingAnIdLessExcludedRow_AJoinByItsLoginStaysRefusedWhateverTwitchAnswers(
+        TwitchUserLookupStatus joinLookupStatus)
+    {
+        await using var db = fixture.CreateDbContext();
+        var login = $"identityexcludedrejoin{(int)joinLookupStatus}";
+        var twitchChannelId = $"1009{(int)joinLookupStatus}0";
+        var seeded = await SeedChannelAsync(db, login, twitchChannelId: null);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded(twitchChannelId).Returns(true);
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity(twitchChannelId, login)], excludedChannelFilter: excludedChannelFilter);
+        Assert.Equal(1, (await harness.Service.ReconcileActiveChannelsAsync())?.Deactivated);
+
+        await using var joinDb = fixture.CreateDbContext();
+        var identityService = Substitute.For<IChannelIdentityService>();
+        identityService.LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(TwitchUserLookup.Failed(joinLookupStatus));
+        var channelService = new ChannelService(
+            joinDb,
+            Substitute.For<IRedisPublisher>(),
+            identityService,
+            new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
+            excludedChannelFilter,
+            NullLogger<ChannelService>.Instance);
+
+        var result = await channelService.JoinAsync(login, new AuditActor("4711", "sensitron"));
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive);
     }
 
     // P1 Codex finding (issue #260, third review round): the two early returns below (no app token,

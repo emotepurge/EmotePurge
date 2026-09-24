@@ -503,6 +503,31 @@ public class ChannelServiceTests(PostgresFixture fixture)
             BotCommands.Channel, "JOIN:channelservicebanned9", Arg.Any<CancellationToken>());
     }
 
+    // Fourth Codex review of the block list: the ban restraint above rests on the stored id. An
+    // inactive row without one is what the identity reconcile leaves behind when it deactivates an
+    // id-less duplicate of an excluded channel whose id another row already holds — reactivating it
+    // on a NotFound answer would put a blocked channel back under observation.
+    [Fact]
+    public async Task JoinAsync_WhenTwitchDoesNotKnowTheLogin_AndTheInactiveRowHasNoId_RejectsTheJoin_AndWritesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var logger = new RecordingLogger<ChannelService>();
+        var seeded = await SeedChannelAsync(db, "channelservicenoidinactive", twitchChannelId: null, isBotActive: false);
+        var service = CreateService(
+            db, redisPublisher, IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.NotFound)), logger);
+
+        var result = await service.JoinAsync("channelservicenoidinactive", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelNotOnTwitch, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive);
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelservicenoidinactive"));
+        await redisPublisher.DidNotReceive().PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        // This may be the id-less duplicate of a blocked channel, so the refusal names nothing.
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("channelservicenoidinactive"));
+    }
+
     [Fact]
     public async Task JoinAsync_WhenTwitchCannotBeAsked_JoinsExactlyAsBefore()
     {
