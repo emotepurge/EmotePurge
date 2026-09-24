@@ -209,13 +209,6 @@ const DISTRIBUTION_BUCKETS = 96;
 // channel-workspace-layout's RESYNC_FEEDBACK_MS and admin-channels-page's own feedback timer.
 const SELECTION_PRUNED_FEEDBACK_MS = 4000;
 
-// Matches the template's own `pb-40` (10rem) that guards this page's content against the dock —
-// the same reservation handed to DockClearanceService so AppShell's footer gets it too. Kept as a
-// plain number rather than read from the DOM: the dock's rendered height varies with its content
-// (a delete queue vs. a bare marked count), but both guards exist to clear a worst case, not to
-// track the bar pixel-for-pixel, and one contract value is what keeps them from drifting apart.
-const DOCK_CLEARANCE_PX = 160;
-
 function sortableLastUsed(lastUsedDate: string | null): number {
   if (!lastUsedDate) {
     return NEVER_USED_SORT_VALUE;
@@ -286,6 +279,18 @@ export class UsageStatsPage {
   private readonly sheetRef = viewChild.required<ElementRef<HTMLElement>>('sheet');
   private readonly stickyBarRef = viewChild.required<ElementRef<HTMLElement>>('stickyBar');
   private readonly viewport = viewChild(CdkVirtualScrollViewport);
+
+  /** The rendered `.app-dock` element, or `undefined` whenever the template's own
+   *  `@if (dockVisible() && !isCoarse())` does not mount it — not `.required`, unlike sheetRef/
+   *  stickyBarRef above, because a fresh mount, an empty selection or a coarse pointer all make it
+   *  legitimately absent. The constructor effect below measures it rather than requiring it. */
+  private readonly dockRef = viewChild<ElementRef<HTMLElement>>('dock');
+
+  /** The dock's own rendered height, in px — mirrored into `DockClearanceService.reserve()` below
+   *  and reused here for the page's own `pb-40` content guard (usage-stats-page.html), so both
+   *  guards read the one measured number instead of drifting apart. Zero whenever the dock is not
+   *  mounted at all. */
+  protected readonly dockHeightPx = signal(0);
 
   // The route guard admits 7TV editors (canViewUsageStats), but creating a vote session is a
   // management action (ChannelManagementAuthorizationFilter on the endpoint) — the button only
@@ -1053,11 +1058,33 @@ export class UsageStatsPage {
       }
     });
 
-    // Mirrors dockVisible() into the shared clearance signal so AppShell's footer reserves the
-    // same space this page's own template already does via pb-40 — see DockClearanceService and
-    // DOCK_CLEARANCE_PX for why a fixed bottom bar needs a guard on both sides of it.
-    effect(() => {
-      this.dockClearance.reserve(this.dockVisible() ? DOCK_CLEARANCE_PX : 0);
+    // Mirrors the dock's ACTUAL rendered height into the shared clearance signal, not a fixed
+    // guess mirrored from dockVisible() (Codex review, 2026-09-24) — a delete/import/restore run
+    // with several failed or in-progress rows can grow `.app-dock`'s scrollable inner container up
+    // to 70vh (usage-stats-page.html's `max-h-[70vh]`), well past what any single constant could
+    // cover, and a footer padded for less than that would sit under the dock's own overflow.
+    // Measuring the rendered element rather than re-deriving visibility also folds the isCoarse()
+    // gate in for free: the dock's own `@if (dockVisible() && !isCoarse())` in the template
+    // unmounts it under a coarse pointer exactly like it does when dockVisible() goes false, so
+    // dockRef() reads undefined either way and the branch below releases the reservation without a
+    // second, separately-maintained condition here.
+    effect((onCleanup) => {
+      const element = this.dockRef()?.nativeElement;
+      if (!element) {
+        this.dockHeightPx.set(0);
+        this.dockClearance.release();
+        return;
+      }
+
+      const measure = () => {
+        const height = element.offsetHeight;
+        this.dockHeightPx.set(height);
+        this.dockClearance.reserve(height);
+      };
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      onCleanup(() => observer.disconnect());
     });
 
     this.destroyRef.onDestroy(() => {

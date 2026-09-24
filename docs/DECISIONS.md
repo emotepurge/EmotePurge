@@ -47,10 +47,17 @@ rarely it is used.
    via an `effect()`, released in `DestroyRef.onDestroy`) and `AppShell` reads the resulting signal
    to add matching `padding-bottom` to the footer element. State-driven, not route-driven — the
    reservation appears and disappears with the dock itself, so this does not reintroduce the
-   per-route layout variation §8.4a rules out. `usage-stats-page.ts` reserves the same 160px
-   (`DOCK_CLEARANCE_PX`) as its own `pb-40` contract, kept as one named constant per file rather than
-   measured live, matching the existing guard's own reasoning (a worst-case reservation, not a
-   pixel-tracked one).
+   per-route layout variation §8.4a rules out. `usage-stats-page.ts` originally reserved a fixed
+   160px (`DOCK_CLEARANCE_PX`), matched by the same number in its own `pb-40` contract — a
+   worst-case guess, not a pixel-tracked one. A Codex review (2026-09-24) found that guess too
+   small once a delete/import/restore run's failed-row list or rate-limit notice grows the dock's
+   scrollable inner container towards its `max-h-[70vh]` cap: both guards now read a `ResizeObserver`
+   measurement of the rendered `.app-dock` element (`dockHeightPx()`) instead of a constant, so the
+   reserved space always equals the dock's actual current height. Measuring the element rather than
+   re-deriving visibility also closes a related P3: the dock's own `@if` additionally hides it under
+   `isCoarse()`, and the old code mirrored `dockVisible()` alone, so a coarse pointer left the
+   footer padded for a bar that the template never actually mounted — measuring the DOM directly
+   cannot drift from what is actually rendered.
 
 Verified live: the usage-stats action dock and the footer no longer overlap at the bottom of a
 short page nor at the bottom of a long one scrolled all the way down (both cases pinned in

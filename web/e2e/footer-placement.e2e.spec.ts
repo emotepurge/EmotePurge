@@ -10,6 +10,8 @@ import {
   mockChannelStatus,
   mockLegalAvailability,
   mockMyChannels,
+  mockSetWarning,
+  mockSevenTvGql,
   mockUsageTotals,
   mockWorkerHealth,
 } from './support/mocks';
@@ -68,6 +70,11 @@ test.describe('footer placement', () => {
 
     const footer = page.locator('footer');
     await expect(footer).toBeVisible();
+    // Wait for the empty state, not just the footer: the page renders `<app-skeleton-rows>` while
+    // `sessionsResource` is loading, and skeleton rows carry their own height. Measuring geometry
+    // before it resolves would size the short-page case against a transient layout, not the one
+    // this test claims to cover.
+    await expect(page.locator('app-empty-state')).toBeVisible();
 
     const viewportHeight = page.viewportSize()!.height;
     // The whole document fits without scrolling — otherwise this isn't the short-page case the
@@ -90,6 +97,10 @@ test.describe('footer placement', () => {
 
     const footer = page.locator('footer');
     await expect(footer).toBeAttached();
+    // Same reasoning as the short-page test above: wait for a real row before measuring
+    // scrollHeight, or this can pass while the page still shows `<app-skeleton-rows>`, whose own
+    // height happens to already clear the viewport for an unrelated reason.
+    await expect(page.getByText('Voting Runde 1', { exact: true })).toBeVisible();
 
     const viewportHeight = page.viewportSize()!.height;
     const documentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
@@ -145,6 +156,33 @@ async function openUsageStatsWithDockVisible(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: 'Löschen (1)' })).toBeVisible();
 }
 
+/**
+ * Waits for `.app-dock` to be fully rendered before any bounding-box measurement reads it — two
+ * things race the dock's own mount, and measuring through either would make the assertion about
+ * the wrong moment rather than about the layout: the 260ms entrance animation (`app-dock-in`,
+ * `translateY`) still moves the element for a beat after it becomes visible, and
+ * DockClearanceService's reservation (usage-stats-page.ts's `ResizeObserver` on the dock element)
+ * follows the dock's own render on its own tick rather than in the same synchronous pass. Waiting
+ * for the footer's actual computed `padding-bottom` to match the dock's rendered height is a
+ * direct check on the one invariant every test below asserts on, rather than a guessed delay.
+ */
+async function waitForDockSettled(page: Page): Promise<void> {
+  const dock = page.locator('.app-dock');
+  await expect(dock).toBeVisible();
+  await dock.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
+  await page.waitForFunction(() => {
+    const dockElement = document.querySelector('.app-dock');
+    const footerElement = document.querySelector('footer');
+    if (!dockElement || !footerElement) {
+      return false;
+    }
+    const paddingBottom = parseFloat(getComputedStyle(footerElement).paddingBottom || '0');
+    return Math.abs(paddingBottom - dockElement.getBoundingClientRect().height) < 1;
+  });
+}
+
 test.describe('footer placement above the usage-stats action dock', () => {
   test.beforeEach(async ({ page }) => {
     await mockAuthMe(page, AUTH_USER);
@@ -157,10 +195,10 @@ test.describe('footer placement above the usage-stats action dock', () => {
   }) => {
     await page.setViewportSize({ width: 1280, height: 2000 });
     await openUsageStatsWithDockVisible(page);
+    await waitForDockSettled(page);
 
     const dock = page.locator('.app-dock');
     const links = page.locator('app-legal-footer-links');
-    await expect(dock).toBeVisible();
     await expect(links).toBeVisible();
 
     const documentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
@@ -182,18 +220,97 @@ test.describe('footer placement above the usage-stats action dock', () => {
     await openUsageStatsWithDockVisible(page);
 
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-    // Let the dock's entrance animation (260ms, app-dock-in) settle before measuring.
-    await page.waitForTimeout(400);
+    await waitForDockSettled(page);
 
     const dock = page.locator('.app-dock');
     const links = page.locator('app-legal-footer-links');
-    await expect(dock).toBeVisible();
     await expect(links).toBeInViewport();
 
     const dockBox = await dock.boundingBox();
     const linksBox = await links.boundingBox();
     expect(dockBox).not.toBeNull();
     expect(linksBox).not.toBeNull();
+    expect(linksBox!.y + linksBox!.height).toBeLessThanOrEqual(dockBox!.y);
+  });
+
+  test('does not sit under an expanded dock — a run with failed rows grows it well past a bare mark-count strip', async ({
+    page,
+  }) => {
+    const emotes: MockEmoteUsage[] = [
+      { name: 'catJAM', uses: 900 },
+      { name: 'peepoSad', uses: 700 },
+      { name: 'monkaW', uses: 240 },
+      { name: 'KEKW', uses: 120 },
+      { name: 'Pog', uses: 90 },
+      { name: 'Sadge', uses: 40 },
+      { name: 'Bedge', uses: 12 },
+      { name: 'Copium', uses: 3 },
+    ].map((emote, index) => ({
+      emoteId: `x${index + 1}`,
+      emoteName: emote.name,
+      sevenTvEmoteId: `7tv-x${index + 1}`,
+      imageUrl: `https://cdn.7tv.app/emote/x${index + 1}/2x.webp`,
+      totalUseCount: emote.uses,
+    }));
+
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: 'sensitron', isBroadcaster: true, isTracked: true, isBotActive: true },
+    ]);
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelStatus(page, 'sensitron');
+    await mockActiveEmoteSet(page, 'sensitron');
+    await mockUsageTotals(page, 'sensitron', emotes);
+    await mockSetWarning(page, 'sensitron');
+    // A plain rejection with no `extensions.code` fails every row without aborting the run
+    // (see emote-import.e2e.spec.ts's identical case for the same engine) — the whole selection
+    // queues up as failed, and RunProgressPanel's failedItems() list is exactly what used to grow
+    // `.app-dock` past the fixed 160px DockClearanceService reservation used to assume.
+    await mockSevenTvGql(page, () => ({
+      errors: [{ message: '7TV had an internal error' }],
+    }));
+    await page.clock.install();
+
+    await page.goto('/channels/sensitron/usage-stats');
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+
+    // The toolbar's own mark-all button — unlike usage-atlas.e2e.spec.ts's never-used-band case,
+    // this list has no dead band (every emote here has at least one use), so there is no second,
+    // identically labelled per-band button to disambiguate against.
+    await page.getByRole('button', { name: 'alle markieren' }).click();
+
+    const deleteButton = page.getByRole('button', { name: `Löschen (${emotes.length})` });
+    await expect(deleteButton).toBeVisible();
+    await deleteButton.click();
+
+    const dialog = page.getByRole('dialog');
+    const confirmButton = dialog.getByRole('button', { name: 'Löschen starten' });
+    await expect(confirmButton).toBeEnabled();
+    await confirmButton.click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // Generous, same reasoning as the import-flow tests pacing the same engine: RUN_DELAY_MS
+    // (275ms) sits between each of the eight rows, all behind the frozen clock.
+    await page.clock.runFor(6000);
+
+    const dock = page.locator('.app-dock');
+    // Proof this is really the expanded-dock case the test claims, not just a taller viewport:
+    // every marked emote failed and shows up in the run's failure list.
+    await expect(dock.getByRole('alert').locator('li')).toHaveCount(emotes.length);
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await waitForDockSettled(page);
+
+    const links = page.locator('app-legal-footer-links');
+    await expect(links).toBeInViewport();
+
+    const dockBox = await dock.boundingBox();
+    const linksBox = await links.boundingBox();
+    expect(dockBox).not.toBeNull();
+    expect(linksBox).not.toBeNull();
+    // The regression this guards against: a dock this tall must still clear the footer by its own
+    // actual height, not by the old fixed guess that a run with several failed rows would exceed.
+    expect(dockBox!.height).toBeGreaterThan(160);
     expect(linksBox!.y + linksBox!.height).toBeLessThanOrEqual(dockBox!.y);
   });
 });
