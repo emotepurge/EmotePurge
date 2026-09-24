@@ -597,8 +597,13 @@ public static class SevenTvEndpoints
     /// A failure here is logged and swallowed, like the live event's: the report is committed, and
     /// answering it with a 500 would make the client retry a report that already succeeded. The
     /// worker's periodic resync still reaches the channel within its next tick.
+    /// <para>
+    /// <c>internal</c> because the legacy Guid-keyed <c>sync-deleted</c>/<c>sync-restored</c> in
+    /// <see cref="EmoteEndpoints"/> reuses this same stage 7 (restore-per-set spec 5.6, E4) rather
+    /// than duplicating the claim/trigger/release sequence a third time.
+    /// </para>
     /// </remarks>
-    private static async Task<bool> TryTriggerGuardedResyncAsync(
+    internal static async Task<bool> TryTriggerGuardedResyncAsync(
         string channelName,
         AuditActor actor,
         IChannelResyncCooldown resyncCooldown,

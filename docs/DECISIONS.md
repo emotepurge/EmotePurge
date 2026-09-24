@@ -13,9 +13,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 ### 2026-09-25 — Delete, restore and a replace's removals report per emote set — report plus resync
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
-`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (`PublishChannelSyncedAsync`, now shared) ·
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (`PublishChannelSyncedAsync`, now shared; T3: the
+legacy routes' own body/handler, plus `TryTriggerGuardedResyncAsync`, now `internal`) ·
 `src/EmotePurge.Core/Services/IEmoteService.cs` ·
 `src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs`,
+`src/EmotePurge.Api/Auth/UsageStatsAccessAuthorizationFilter.cs` (T3: the legacy form's own contract,
+`EmoteSetIdEmpty` retired) ·
+`web/src/app/core/i18n/api-error.ts`, `web/public/i18n/{de,en}.json` (T3: `emote_set_id_empty` retired) ·
 `web/src/app/core/seven-tv/seven-tv-emote-set.model.ts`,
 `web/src/app/core/seven-tv/seven-tv-emote-set.service.ts`,
 `web/src/app/core/seven-tv/sync-report-outcome.ts` (consumer, T4: wire model, `reportDeletedInSet`,
@@ -108,9 +113,26 @@ channel whose stored active set lags stays undetected until its periodic resync 
 a minute — the same rest a delete run has always had for every second channel. Named here, not
 closed.
 
-**Unchanged by this commit.** The channel-bound `sync-deleted`/`sync-restored` routes keep both of
-their body forms as they are: the frontend still calls them until its callers switch to the routes
-above. The commit that changes their contract appends it to this entry.
+**T3 — the legacy Guid form becomes audit-and-resync only (H4/E4/E24, spec 5.6, AK 22–23).** The
+channel-bound `sync-deleted`/`sync-restored` routes keep their filter chain, `Bookkeeping` policy and
+"legacy body form" log line until the E3 gate of the spec-200 plan (§21, Folge-Issue 1: behind K7, at
+least 14 days after deploy, once the API log shows no more legacy callers) — but
+`EmoteService.MarkDeletedAsync(channelName, emoteIds, actor)`/`MarkRestoredAsync(…)` no longer touch a
+row. A browser tab left open across a 7TV set switch could otherwise archive a row of the *new*
+active set on the strength of a body that only ever meant the old one, since this form carries no set
+of its own. It now only counts how many of the reported Guids are rows of the channel, writes the
+audit entry with `legacyBodyForm: true` whenever that count is above 0, and answers in the old shape
+— `archivedCount`/`restoredCount` is the *found* count, not a changed one (E24), so an old open tab
+still reads its report as succeeded instead of a false `partial`. It then triggers the same guarded
+resync (spec 5.1 stage 7, reused via `SevenTvEndpoints.TryTriggerGuardedResyncAsync`, now `internal`)
+under the per-channel cooldown — that resync, not this call, is what actually reconciles the row
+against 7TV. The endpoint publishes no `channel.synced` of its own for this form any more (nothing
+changed to publish); the resync's own worker tick does, same as before. **The set-scoped
+channel-bound body shape is retired in the same commit:** `{ emoteSetId, sevenTvEmoteIds }`, its own
+ladder steps (`ValidateSyncBookkeepingBody` is back down to a single empty-list check) and
+`ApiErrorCodes.EmoteSetIdEmpty` are gone — that shape never had a production caller (T2's set-centric
+routes above are its replacement), so a body still sending it now falls through to `EmoteIds == null`
+and gets the same 400 `emote_ids_empty` any other empty legacy body gets.
 
 ---
 

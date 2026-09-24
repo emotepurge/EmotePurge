@@ -10,7 +10,7 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
 {
     public async Task<SyncDeletedResultDto> MarkDeletedAsync(string channelName, IReadOnlyList<string> emoteIds, AuditActor actor, CancellationToken cancellationToken = default)
     {
-        // E3: measures how often the legacy body form is still in use, so retiring it (Folge-Issue 1,
+        // E4: measures how often the legacy body form is still in use, so retiring it (Folge-Issue 1,
         // 14 days after deploy at the earliest) is a decision the log can answer, not a guess.
         logger.LogInformation("sync-deleted: legacy body form {EmoteIds} used", emoteIds);
 
@@ -19,53 +19,42 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         var channel = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
         if (channel is null)
         {
-            return new SyncDeletedResultDto(0, emoteIds, 0);
+            return new SyncDeletedResultDto(0, emoteIds);
         }
 
-        // Already-archived rows are matched on purpose: with the EventAPI live sync enabled, the
-        // worker usually archives the emote off the 7TV dispatch before this bookkeeping call
-        // arrives. The goal state is reached either way, so both count as archived — reporting
-        // them as "not found" made every successful delete look like a failed sync in the UI.
-        var emotes = await db.Emotes
+        // H4/spec 5.6: this form carries no set, so blindly archiving a Guid match here could hit a
+        // row of a set the browser switched away from without ever telling us. It therefore never
+        // touches IsArchived/ArchivedAt/LastSyncedAt any more — it only counts which of the reported
+        // ids are rows of this channel; the endpoint's own guarded resync (stage 7) is what actually
+        // reconciles the channel against 7TV afterwards.
+        var matchedIds = await db.Emotes
             .Where(e => e.ChannelId == channel.Id && emoteIds.Contains(e.Id))
+            .Select(e => e.Id)
             .ToListAsync(cancellationToken);
 
-        var newlyArchived = emotes.Where(e => !e.IsArchived).ToList();
-        var now = DateTime.UtcNow;
-        foreach (var emote in newlyArchived)
-        {
-            emote.IsArchived = true;
-            // Only for the newly archived: a row the live sync already archived keeps the earlier
-            // (more accurate) date — this call is bookkeeping that may arrive minutes later.
-            emote.ArchivedAt = now;
-            emote.LastSyncedAt = now;
-        }
-
-        // Audited on the goal-state count, not on newlyArchived: the user's delete on 7TV happened
-        // either way, and with the live sync usually winning the race, gating on "this call changed
-        // rows" left most real deletes without a paper trail. A retried report can write a second
-        // row — the log records the reports, and a duplicate beats a gap. Only the live event stays
-        // tied to an actual state change (see the endpoint).
-        if (emotes.Count > 0)
+        // E24: the *found* count, not a changed one — there is none any more — so an old open tab
+        // still reads this report as succeeded instead of a false partial. A retried report can write
+        // a second entry, same as before: the log records the reports, and a duplicate beats a gap.
+        if (matchedIds.Count > 0)
         {
             db.AddAuditEntry(
                 actor,
                 AuditActions.EmotesSyncDeleted,
                 channelName: normalized,
-                details: new { emoteCount = emotes.Count });
+                details: new { emoteCount = matchedIds.Count, legacyBodyForm = true });
         }
 
         await db.SaveChangesAsync(cancellationToken);
 
-        var foundIds = emotes.Select(e => e.Id).ToHashSet();
+        var foundIds = matchedIds.ToHashSet();
         var notFoundIds = emoteIds.Where(id => !foundIds.Contains(id)).ToList();
 
-        return new SyncDeletedResultDto(emotes.Count, notFoundIds, newlyArchived.Count);
+        return new SyncDeletedResultDto(matchedIds.Count, notFoundIds);
     }
 
     public async Task<SyncRestoredResultDto> MarkRestoredAsync(string channelName, IReadOnlyList<string> emoteIds, AuditActor actor, CancellationToken cancellationToken = default)
     {
-        // Mirror of MarkDeletedAsync's legacy-form log line (E3).
+        // Mirror of MarkDeletedAsync's legacy-form log line (E4).
         logger.LogInformation("sync-restored: legacy body form {EmoteIds} used", emoteIds);
 
         var normalized = ChannelName.Normalize(channelName);
@@ -73,169 +62,30 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         var channel = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
         if (channel is null)
         {
-            return new SyncRestoredResultDto(0, emoteIds, 0);
+            return new SyncRestoredResultDto(0, emoteIds);
         }
 
-        // Mirror of MarkDeletedAsync, in the opposite direction: the live sync usually un-archives
-        // the emote off the 7TV ADD dispatch before this call arrives, so already-active rows count
-        // as restored (goal state reached) instead of landing in NotFoundIds.
-        var emotes = await db.Emotes
+        // Mirror of MarkDeletedAsync, in the opposite direction: no row is touched any more either.
+        var matchedIds = await db.Emotes
             .Where(e => e.ChannelId == channel.Id && emoteIds.Contains(e.Id))
+            .Select(e => e.Id)
             .ToListAsync(cancellationToken);
 
-        var newlyRestored = emotes.Where(e => e.IsArchived).ToList();
-        var now = DateTime.UtcNow;
-        foreach (var emote in newlyRestored)
-        {
-            emote.IsArchived = false;
-            // Active again, so the archive date is meaningless — same clearing UpsertEmote does.
-            emote.ArchivedAt = null;
-            emote.LastSyncedAt = now;
-        }
-
-        // Same audit semantics as the delete: the restore happened on 7TV regardless of who
-        // un-archived the row first.
-        if (emotes.Count > 0)
+        if (matchedIds.Count > 0)
         {
             db.AddAuditEntry(
                 actor,
                 AuditActions.EmotesSyncRestored,
                 channelName: normalized,
-                details: new { emoteCount = emotes.Count });
+                details: new { emoteCount = matchedIds.Count, legacyBodyForm = true });
         }
 
         await db.SaveChangesAsync(cancellationToken);
 
-        var foundIds = emotes.Select(e => e.Id).ToHashSet();
+        var foundIds = matchedIds.ToHashSet();
         var notFoundIds = emoteIds.Where(id => !foundIds.Contains(id)).ToList();
 
-        return new SyncRestoredResultDto(emotes.Count, notFoundIds, newlyRestored.Count);
-    }
-
-    public async Task<SyncDeletedResultDto> MarkDeletedAsync(string channelName, string emoteSetId, IReadOnlyList<string> sevenTvEmoteIds, AuditActor actor, CancellationToken cancellationToken = default)
-    {
-        var normalized = ChannelName.Normalize(channelName);
-        var dedupedIds = sevenTvEmoteIds.Distinct(StringComparer.Ordinal).ToList();
-
-        var channel = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
-        if (channel is null)
-        {
-            return new SyncDeletedResultDto(0, dedupedIds, 0, TargetIsActiveSetOfChannel: false);
-        }
-
-        var targetIsActiveSetOfChannel = string.Equals(emoteSetId, channel.ActiveEmoteSetId, StringComparison.Ordinal);
-        if (!targetIsActiveSetOfChannel)
-        {
-            // Spec 6.6: a non-active set has no Emote row to match against here — the active set is
-            // the only one this database ever archived rows under — so this is paper-only bookkeeping.
-            // Written unconditionally (unlike the active-set branch below), because there is no
-            // per-id match to gate it on: the report itself, not a row change, is what is recorded.
-            db.AddAuditEntry(
-                actor,
-                AuditActions.EmotesSyncDeleted,
-                channelName: normalized,
-                targetType: "emoteSet",
-                targetId: emoteSetId,
-                details: new { emoteCount = dedupedIds.Count, emoteSetId, targetIsActiveSetOfChannel = false });
-
-            await db.SaveChangesAsync(cancellationToken);
-
-            return new SyncDeletedResultDto(0, [], 0, TargetIsActiveSetOfChannel: false);
-        }
-
-        // Matches by (ChannelId, SevenTvEmoteId) instead of Emote.Id — the unique index on that pair
-        // (AppDbContext.cs:31) gives the same precision the Guid match had, without requiring the
-        // caller to know an internal id for a row it may never have seen (a live-only member has none).
-        var emotes = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id && dedupedIds.Contains(e.SevenTvEmoteId))
-            .ToListAsync(cancellationToken);
-
-        var newlyArchived = emotes.Where(e => !e.IsArchived).ToList();
-        var now = DateTime.UtcNow;
-        foreach (var emote in newlyArchived)
-        {
-            emote.IsArchived = true;
-            emote.ArchivedAt = now;
-            emote.LastSyncedAt = now;
-        }
-
-        if (emotes.Count > 0)
-        {
-            db.AddAuditEntry(
-                actor,
-                AuditActions.EmotesSyncDeleted,
-                channelName: normalized,
-                targetType: "emoteSet",
-                targetId: emoteSetId,
-                details: new { emoteCount = emotes.Count, emoteSetId, targetIsActiveSetOfChannel = true });
-        }
-
-        await db.SaveChangesAsync(cancellationToken);
-
-        var foundSevenTvIds = emotes.Select(e => e.SevenTvEmoteId).ToHashSet(StringComparer.Ordinal);
-        var notFoundIds = dedupedIds.Where(id => !foundSevenTvIds.Contains(id)).ToList();
-
-        return new SyncDeletedResultDto(emotes.Count, notFoundIds, newlyArchived.Count, TargetIsActiveSetOfChannel: true);
-    }
-
-    public async Task<SyncRestoredResultDto> MarkRestoredAsync(string channelName, string emoteSetId, IReadOnlyList<string> sevenTvEmoteIds, AuditActor actor, CancellationToken cancellationToken = default)
-    {
-        // Mirror of the set-scoped MarkDeletedAsync above, in the restore direction.
-        var normalized = ChannelName.Normalize(channelName);
-        var dedupedIds = sevenTvEmoteIds.Distinct(StringComparer.Ordinal).ToList();
-
-        var channel = await db.LoadChannelReadOnlyAsync(channelName, cancellationToken);
-        if (channel is null)
-        {
-            return new SyncRestoredResultDto(0, dedupedIds, 0, TargetIsActiveSetOfChannel: false);
-        }
-
-        var targetIsActiveSetOfChannel = string.Equals(emoteSetId, channel.ActiveEmoteSetId, StringComparison.Ordinal);
-        if (!targetIsActiveSetOfChannel)
-        {
-            db.AddAuditEntry(
-                actor,
-                AuditActions.EmotesSyncRestored,
-                channelName: normalized,
-                targetType: "emoteSet",
-                targetId: emoteSetId,
-                details: new { emoteCount = dedupedIds.Count, emoteSetId, targetIsActiveSetOfChannel = false });
-
-            await db.SaveChangesAsync(cancellationToken);
-
-            return new SyncRestoredResultDto(0, [], 0, TargetIsActiveSetOfChannel: false);
-        }
-
-        var emotes = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id && dedupedIds.Contains(e.SevenTvEmoteId))
-            .ToListAsync(cancellationToken);
-
-        var newlyRestored = emotes.Where(e => e.IsArchived).ToList();
-        var now = DateTime.UtcNow;
-        foreach (var emote in newlyRestored)
-        {
-            emote.IsArchived = false;
-            emote.ArchivedAt = null;
-            emote.LastSyncedAt = now;
-        }
-
-        if (emotes.Count > 0)
-        {
-            db.AddAuditEntry(
-                actor,
-                AuditActions.EmotesSyncRestored,
-                channelName: normalized,
-                targetType: "emoteSet",
-                targetId: emoteSetId,
-                details: new { emoteCount = emotes.Count, emoteSetId, targetIsActiveSetOfChannel = true });
-        }
-
-        await db.SaveChangesAsync(cancellationToken);
-
-        var foundSevenTvIds = emotes.Select(e => e.SevenTvEmoteId).ToHashSet(StringComparer.Ordinal);
-        var notFoundIds = dedupedIds.Where(id => !foundSevenTvIds.Contains(id)).ToList();
-
-        return new SyncRestoredResultDto(emotes.Count, notFoundIds, newlyRestored.Count, TargetIsActiveSetOfChannel: true);
+        return new SyncRestoredResultDto(matchedIds.Count, notFoundIds);
     }
 
     public async Task<bool> MarkImportedAsync(

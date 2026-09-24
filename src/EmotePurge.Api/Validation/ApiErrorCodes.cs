@@ -97,9 +97,6 @@ internal static class ApiErrorCodes
     // Regel 7 exists to prevent (AK 45).
     // EmoteSetIdValidationFilter's format check (E14) — the one code this task's routes return.
     public const string InvalidEmoteSetId = "invalid_emote_set_id";
-    // sync-deleted/sync-restored's new body form (6.6, T5.2): sevenTvEmoteIds set but emoteSetId
-    // missing or empty.
-    public const string EmoteSetIdEmpty = "emote_set_id_empty";
     // The set-centric import endpoint only (6.7, T2.4) — 7TV does not know the given set id. Distinct
     // from ForeignChannelNoActiveEmoteSet above, which the query-parameter preview path (6.4) reuses
     // for the very same underlying "unknown set" answer: that path already had a code whose text
