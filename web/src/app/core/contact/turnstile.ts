@@ -59,16 +59,22 @@ function loadTurnstileScript(): Promise<TurnstileApi> {
       }
     };
 
+    // On failure, both the cached promise and the failed <script> tag are cleared before
+    // rejecting. Neither used to be: the cached `loadPromise` would keep answering every future
+    // caller with the same already-rejected promise, and the dead tag would keep this function
+    // taking the "existing" branch below forever — so a visitor who returned to /contact (a fresh
+    // `ContactPage` instance, e.g. after a transient network blip or reconnecting Wi-Fi) could
+    // never get a genuine second attempt at loading the widget.
+    const onError = () => {
+      loadPromise = null;
+      document.getElementById(SCRIPT_ID)?.remove();
+      reject(new Error('Failed to load the Turnstile script.'));
+    };
+
     const existing = document.getElementById(SCRIPT_ID);
     if (existing) {
       existing.addEventListener('load', onReady, { once: true });
-      existing.addEventListener(
-        'error',
-        () => reject(new Error('Failed to load the Turnstile script.')),
-        {
-          once: true,
-        },
-      );
+      existing.addEventListener('error', onError, { once: true });
       return;
     }
 
@@ -78,13 +84,7 @@ function loadTurnstileScript(): Promise<TurnstileApi> {
     script.async = true;
     script.defer = true;
     script.addEventListener('load', onReady, { once: true });
-    script.addEventListener(
-      'error',
-      () => reject(new Error('Failed to load the Turnstile script.')),
-      {
-        once: true,
-      },
-    );
+    script.addEventListener('error', onError, { once: true });
     document.head.appendChild(script);
   });
 

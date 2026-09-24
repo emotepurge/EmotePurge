@@ -43,6 +43,25 @@ test.describe('contact form', () => {
     await expect(page.locator('form')).toHaveCount(0);
   });
 
+  test('keeps submit disabled and shows a hint for a too-short message even after completing the challenge', async ({
+    page,
+  }) => {
+    await mockContactConfig(page);
+    await mockTurnstile(page);
+
+    await page.goto('/contact');
+
+    await page.getByLabel('E-Mail-Adresse').fill('jane@example.com');
+    const message = page.getByLabel('Nachricht');
+    await message.fill('short');
+    await message.blur();
+
+    // The Turnstile stub still resolves the challenge on its own — the block below is the message
+    // field's own client-side length check, not a missing token.
+    await expect(page.getByText('Mindestens 10 Zeichen.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Nachricht senden' })).toBeDisabled();
+  });
+
   test('shows the captcha-failure message and keeps the form when the API rejects the token', async ({
     page,
   }) => {

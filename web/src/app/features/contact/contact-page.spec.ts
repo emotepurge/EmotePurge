@@ -34,6 +34,12 @@ const DE_TRANSLATIONS = {
     messageLabel: 'Nachricht',
     submit: 'Nachricht senden',
     completeChallengeHint: 'Bitte zuerst die Sicherheitsabfrage oben abschließen.',
+    nameTooLongHint: 'Höchstens 100 Zeichen.',
+    emailInvalidHint: 'Bitte eine gültige E-Mail-Adresse eingeben.',
+    emailTooLongHint: 'Höchstens 254 Zeichen.',
+    messageTooShortHint: 'Mindestens 10 Zeichen.',
+    messageTooLongHint: 'Höchstens 5000 Zeichen.',
+    messageCounter: '{{ count }} / {{ max }} Zeichen',
     success: 'Danke — deine Nachricht wurde versendet.',
     notAvailable:
       'Das Kontaktformular ist aktuell nicht verfügbar. Bitte nutze stattdessen die E-Mail-Adresse im',
@@ -286,6 +292,122 @@ describe('ContactPage', () => {
     );
     // Still on the form, not the success state.
     expect(fixture.nativeElement.querySelector('form')).not.toBeNull();
+  });
+
+  /**
+   * The client-side mirror of the server's own shape check (rule 12: behaviour, not template) —
+   * `ContactValidation.cs` rejects a message outside 10–5000 trimmed characters, a name over 100, and
+   * an implausible e-mail; a click that would only ever come back `contact_invalid` should never leave
+   * this page at all. Each case below completes the Turnstile challenge (proving the block is the
+   * field, not a missing token) and checks only the disabled state — never CSS or markup, per rule 12.
+   */
+  describe('mirrors the server-side shape limits before allowing submit', () => {
+    function setFieldValue(
+      fixture: ComponentFixture<ContactPage>,
+      id: string,
+      value: string,
+    ): void {
+      const element: HTMLInputElement | HTMLTextAreaElement = fixture.nativeElement.querySelector(
+        `#${id}`,
+      );
+      element.value = value;
+      element.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    it('blocks a message under 10 trimmed characters', async () => {
+      const fixture = await renderAvailable();
+      fillOutForm(fixture);
+      setFieldValue(fixture, 'contact-message', 'short');
+      completeTurnstile(fixture);
+
+      expect(submitButton(fixture).disabled).toBe(true);
+    });
+
+    it('blocks a message over 5000 characters', async () => {
+      const fixture = await renderAvailable();
+      fillOutForm(fixture);
+      setFieldValue(fixture, 'contact-message', 'a'.repeat(5001));
+      completeTurnstile(fixture);
+
+      expect(submitButton(fixture).disabled).toBe(true);
+    });
+
+    it('blocks a name over 100 characters, even with an otherwise valid form', async () => {
+      const fixture = await renderAvailable();
+      fillOutForm(fixture);
+      setFieldValue(fixture, 'contact-name', 'a'.repeat(101));
+      completeTurnstile(fixture);
+
+      expect(submitButton(fixture).disabled).toBe(true);
+    });
+
+    it('blocks an implausible e-mail address', async () => {
+      const fixture = await renderAvailable();
+      fillOutForm(fixture);
+      setFieldValue(fixture, 'contact-email', 'not-an-email');
+      completeTurnstile(fixture);
+
+      expect(submitButton(fixture).disabled).toBe(true);
+    });
+
+    it('allows submit again once the field is fixed, without a fresh Turnstile challenge', async () => {
+      const fixture = await renderAvailable();
+      fillOutForm(fixture);
+      setFieldValue(fixture, 'contact-message', 'short');
+      completeTurnstile(fixture);
+      expect(submitButton(fixture).disabled).toBe(true);
+
+      setFieldValue(fixture, 'contact-message', 'A message that is definitely long enough now.');
+
+      expect(submitButton(fixture).disabled).toBe(false);
+    });
+  });
+
+  it('shows the too-short-message hint only once the field has been left, not while still typing', async () => {
+    const fixture = await renderAvailable();
+    const message: HTMLTextAreaElement = fixture.nativeElement.querySelector('#contact-message');
+    message.value = 'short';
+    message.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).not.toContain('Mindestens 10 Zeichen.');
+
+    message.dispatchEvent(new Event('blur'));
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Mindestens 10 Zeichen.');
+  });
+
+  /**
+   * The other half of the same fix: a client-side block must never touch the already-completed
+   * Turnstile token — only a rejection from the server does that (the existing "resets the Turnstile
+   * widget after a failed submission" case below). Submitting the form directly (bypassing the
+   * disabled button, the same way every other case in this file drives a submit) with an invalid
+   * message must send no request and must not reset the widget.
+   */
+  it('does not send the request or touch the completed Turnstile token when submitted with an invalid field', async () => {
+    const fixture = await renderAvailable();
+    fillOutForm(fixture);
+    const message: HTMLTextAreaElement = fixture.nativeElement.querySelector('#contact-message');
+    message.value = 'short';
+    message.dispatchEvent(new Event('input'));
+    completeTurnstile(fixture);
+
+    fixture.nativeElement
+      .querySelector('form')
+      .dispatchEvent(new Event('submit', { cancelable: true }));
+    fixture.detectChanges();
+
+    httpMock.expectNone('/api/contact');
+    expect(turnstileApi.resetWidgetIds).toEqual([]);
+
+    // Proves the token itself is still held, not just that reset() was never called: fixing the
+    // field re-enables submit without going through Turnstile again.
+    message.value = 'A message that is definitely long enough now.';
+    message.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(submitButton(fixture).disabled).toBe(false);
   });
 
   it('resets the Turnstile widget after a failed submission, re-blocking submit', async () => {

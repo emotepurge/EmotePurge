@@ -143,8 +143,22 @@ closed with a test that failed before its fix. Backend first:
    construction moved inside `SendAsync`'s try/catch as defence in depth for any caller that skips the
    availability gate.
 
-(Two more findings from the same review — frontend, closed in the following commit — are numbered
-5–6 below.)
+And frontend:
+
+5. **(P2) A failed Turnstile script load left both the cached load promise and the dead `<script>` tag
+   behind**, so a visitor who returned to `/contact` after a transient failure (a network blip, a
+   momentary CDN hiccup) could never get a genuine retry — every future call resolved to the same
+   already-rejected promise. `loadTurnstileScript` now clears both on error before rejecting.
+6. **(P2) The frontend enforced none of the server's shape limits before submitting** — a visitor
+   whose message was too short or too long, whose name exceeded 100 characters, or whose e-mail was
+   obviously malformed only found out after a round trip that came back `contact_invalid`.
+   `ContactPage` gained computed signals mirroring `ContactValidation.cs`'s limits (name ≤ 100, e-mail
+   ≤ 254 with the same permissive pattern, message 10–5000 trimmed characters), each with an inline
+   hint following the §5.3 field-error pattern (`aria-invalid`/`aria-describedby`, touched-gated) plus
+   an always-visible character counter on the message field. `canSubmit` now also requires
+   `isLocallyValid()`; a blocked submit attempt marks every field touched (so every applicable hint
+   surfaces at once) but deliberately never touches the already-completed Turnstile token — only a
+   server-side rejection does that.
 
 ---
 

@@ -32,6 +32,20 @@ import { resolveLegalBackTarget } from '../legal/legal-back-target';
 
 const NOT_AVAILABLE_CONFIG: ContactConfigResponse = { available: false, turnstileSiteKey: null };
 
+// Mirrors ContactValidation.cs (Api layer) — kept in sync by hand, the two projects deploy
+// separately and neither can reference the other. The point here is not to duplicate the server's
+// authority (it re-validates regardless) but to give a visitor an inline reason before they submit,
+// rather than a round trip that comes back contact_invalid.
+const MAX_NAME_LENGTH = 100;
+const MAX_EMAIL_LENGTH = 254;
+const MIN_MESSAGE_LENGTH = 10;
+const MAX_MESSAGE_LENGTH = 5000;
+
+// Deliberately as permissive as ContactValidation.cs's own EmailPattern: one @, something on both
+// sides, a dot in the domain part — not full RFC 5322 grammar. Turnstile plus the server's own check
+// are the real gate on whether the address is genuine.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * `/contact` (docs/DECISIONS.md 2026-09-24, "contact form"): the electronic contact route § 5 DDG
  * requires next to the e-mail address in the imprint. Outside the app shell and every auth guard,
@@ -117,9 +131,19 @@ const NOT_AVAILABLE_CONFIG: ContactConfigResponse = { available: false, turnstil
                   autocomplete="name"
                   [value]="name()"
                   (input)="name.set($any($event.target).value)"
+                  (blur)="nameTouched.set(true)"
                   class="app-input"
+                  [attr.aria-invalid]="nameTouched() && nameError() ? 'true' : null"
+                  [attr.aria-describedby]="
+                    nameTouched() && nameError() ? 'contact-name-error' : null
+                  "
                 />
               </label>
+              @if (nameTouched() && nameError(); as errorKey) {
+                <p id="contact-name-error" class="text-sm text-danger-fg">
+                  {{ errorKey | transloco }}
+                </p>
+              }
 
               <label class="flex flex-col gap-1 text-sm text-fg-secondary">
                 {{ 'contact.emailLabel' | transloco }}
@@ -130,9 +154,19 @@ const NOT_AVAILABLE_CONFIG: ContactConfigResponse = { available: false, turnstil
                   required
                   [value]="email()"
                   (input)="email.set($any($event.target).value)"
+                  (blur)="emailTouched.set(true)"
                   class="app-input"
+                  [attr.aria-invalid]="emailTouched() && emailError() ? 'true' : null"
+                  [attr.aria-describedby]="
+                    emailTouched() && emailError() ? 'contact-email-error' : null
+                  "
                 />
               </label>
+              @if (emailTouched() && emailError(); as errorKey) {
+                <p id="contact-email-error" class="text-sm text-danger-fg">
+                  {{ errorKey | transloco }}
+                </p>
+              }
 
               <label class="flex flex-col gap-1 text-sm text-fg-secondary">
                 {{ 'contact.messageLabel' | transloco }}
@@ -142,9 +176,21 @@ const NOT_AVAILABLE_CONFIG: ContactConfigResponse = { available: false, turnstil
                   required
                   [value]="message()"
                   (input)="message.set($any($event.target).value)"
+                  (blur)="messageTouched.set(true)"
                   class="app-input"
+                  [attr.aria-invalid]="messageTouched() && messageError() ? 'true' : null"
+                  [attr.aria-describedby]="messageDescribedById()"
                 ></textarea>
               </label>
+              @if (messageTouched() && messageError(); as errorKey) {
+                <p id="contact-message-error" class="text-sm text-danger-fg">
+                  {{ errorKey | transloco }}
+                </p>
+              } @else {
+                <p id="contact-message-counter" class="text-xs text-fg-muted">
+                  {{ 'contact.messageCounter' | transloco: { count: messageLength(), max: 5000 } }}
+                </p>
+              }
 
               <!-- Honeypot: invisible and unreachable by a real visitor, never announced to a
                    screen reader. A bot filling every field it can find sets this one too, which the
@@ -222,6 +268,13 @@ export class ContactPage {
   protected readonly message = signal('');
   protected readonly website = signal('');
 
+  // Shown only once a field has been left (blur) or a blocked submit was attempted — matching
+  // §5.3's touched-gated field-error pattern — so an untouched, still-empty required field never
+  // flashes an error the moment the page renders.
+  protected readonly nameTouched = signal(false);
+  protected readonly emailTouched = signal(false);
+  protected readonly messageTouched = signal(false);
+
   protected readonly isSending = signal(false);
   protected readonly submitted = signal(false);
   protected readonly submitError = signal<string | null>(null);
@@ -249,8 +302,61 @@ export class ContactPage {
     ),
   );
 
+  protected readonly nameError = computed<string | null>(() =>
+    this.name().length > MAX_NAME_LENGTH ? 'contact.nameTooLongHint' : null,
+  );
+
+  protected readonly emailError = computed<string | null>(() => {
+    const value = this.email().trim();
+    if (value.length === 0) {
+      return null; // the native `required` attribute already blocks an empty submit
+    }
+    if (value.length > MAX_EMAIL_LENGTH) {
+      return 'contact.emailTooLongHint';
+    }
+    return EMAIL_PATTERN.test(value) ? null : 'contact.emailInvalidHint';
+  });
+
+  protected readonly messageLength = computed(() => this.message().trim().length);
+
+  protected readonly messageError = computed<string | null>(() => {
+    const length = this.messageLength();
+    if (length === 0) {
+      return null; // the native `required` attribute already blocks an empty submit
+    }
+    if (length < MIN_MESSAGE_LENGTH) {
+      return 'contact.messageTooShortHint';
+    }
+    return length > MAX_MESSAGE_LENGTH ? 'contact.messageTooLongHint' : null;
+  });
+
+  // Which <p> the message field's aria-describedby points at: the error once one applies and the
+  // field has been touched, the always-visible character counter otherwise — never both, and never
+  // neither, so the accessible description is always exactly the text currently shown.
+  protected readonly messageDescribedById = computed(() =>
+    this.messageTouched() && this.messageError()
+      ? 'contact-message-error'
+      : 'contact-message-counter',
+  );
+
+  // Mirrors the server's own shape check (ContactValidation.cs) so a click that would only come
+  // back contact_invalid never leaves this page at all. Independent of *Touched — those only gate
+  // whether the inline hint is *shown*, not whether the field is valid.
+  protected readonly isLocallyValid = computed(() => {
+    const email = this.email().trim();
+    const messageLength = this.messageLength();
+    return (
+      this.name().length <= MAX_NAME_LENGTH &&
+      email.length > 0 &&
+      email.length <= MAX_EMAIL_LENGTH &&
+      EMAIL_PATTERN.test(email) &&
+      messageLength >= MIN_MESSAGE_LENGTH &&
+      messageLength <= MAX_MESSAGE_LENGTH
+    );
+  });
+
   protected readonly canSubmit = computed(
-    () => !this.isSending() && this.turnstileToken() !== null,
+    () => !this.isSending() && this.turnstileToken() !== null && this.isLocallyValid(),
   );
 
   constructor() {
@@ -304,7 +410,19 @@ export class ContactPage {
 
   protected submit(event: Event): void {
     event.preventDefault();
+
+    // Reveals every applicable inline hint on a blocked attempt, not only on the fields the visitor
+    // happened to blur — the same "surface it now" behaviour disabled-submit buttons everywhere else
+    // in this app rely on (§5.4).
+    this.nameTouched.set(true);
+    this.emailTouched.set(true);
+    this.messageTouched.set(true);
+
     if (!this.canSubmit()) {
+      // Deliberately does not touch turnstileToken/turnstileApi here: a client-side block (e.g. the
+      // visitor edited the message back below 10 characters after already solving the challenge)
+      // must not force them through Turnstile a second time once they fix the field — only a
+      // rejection from the server does that (see the error handler below).
       return;
     }
     const token = this.turnstileToken();

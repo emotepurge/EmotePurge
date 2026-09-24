@@ -99,6 +99,36 @@ describe('loadTurnstileScript', () => {
     expect(secondResult).toBe(fakeApi);
   });
 
+  /**
+   * Codex P2 (docs/DECISIONS.md 2026-09-24 revision): before this fix, a failed load left the
+   * rejected `loadPromise` and the dead `<script>` tag both in place. A visitor returning to
+   * `/contact` (a fresh `ContactPage`, e.g. after a network blip) then re-injected nothing new —
+   * `loader()` short-circuited to the same already-rejected promise (`loadPromise` still set) and
+   * even a fresh call would have taken the "existing tag" branch on a tag that could never fire
+   * `load` again. Retrying is only possible once both are cleared.
+   */
+  it('clears the cached promise and the failed script tag on error, so a second call retries with a fresh one', async () => {
+    const loader = await freshLoader();
+
+    const promise = loader();
+    const failedScript = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
+    expect(failedScript).not.toBeNull();
+    failedScript!.dispatchEvent(new Event('error'));
+
+    await expect(promise).rejects.toThrow('Failed to load the Turnstile script.');
+    expect(document.getElementById(SCRIPT_ID)).toBeNull();
+
+    const fakeApi: TurnstileApi = { render: () => 'id', remove: () => {}, reset: () => {} };
+    const retry = loader();
+    const retryScript = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
+    expect(retryScript).not.toBeNull();
+    expect(retryScript).not.toBe(failedScript);
+    window.turnstile = fakeApi;
+    retryScript!.dispatchEvent(new Event('load'));
+
+    await expect(retry).resolves.toBe(fakeApi);
+  });
+
   it('reuses an already-present script tag (a second component instance) instead of appending another', async () => {
     const loader = await freshLoader();
 
