@@ -8,6 +8,7 @@ import { SOURCE_URL } from '../../shared/branding/links';
 import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
+import { LegalFooterLinks } from '../../shared/ui/legal-footer-links';
 import { SetShape } from './set-shape';
 
 /**
@@ -51,7 +52,15 @@ const TRUST = ['twitch', 'token', 'source'] as const;
 
 @Component({
   selector: 'app-landing-page',
-  imports: [AccountMenu, Button, NgOptimizedImage, RouterLink, TranslocoPipe, SetShape],
+  imports: [
+    AccountMenu,
+    Button,
+    LegalFooterLinks,
+    NgOptimizedImage,
+    RouterLink,
+    TranslocoPipe,
+    SetShape,
+  ],
   templateUrl: './landing-page.html',
 })
 export class LandingPage {

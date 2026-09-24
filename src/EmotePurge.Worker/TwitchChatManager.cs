@@ -25,6 +25,7 @@ public class TwitchChatManager(
     IEmoteMatchCache emoteMatchCache,
     IEmoteUsageCounter usageCounter,
     IBotChatterDetector botChatterDetector,
+    IExcludedChatterFilter excludedChatterFilter,
     WorkerStats stats) : ITwitchChatManager
 {
     // Twitch permits 20 joins per 10 seconds on a non-verified connection, and TwitchLib paces them
@@ -215,11 +216,14 @@ public class TwitchChatManager(
         // resurrect as a stale timestamp if the channel is ever rejoined.
         _lastMessageByChannelTicks.TryRemove(channelName, out _);
 
+        // The leave-path lines name the channel only at Debug (fourth Codex review of the block
+        // list): a channel whose Twitch id is on the excluded-channel list is parted right after the
+        // identity reconcile deactivates it, and naming it here would tie the block to it. Every
+        // leave comes from an audited write, so the name is on record there.
         if (!IsConnected)
         {
-            logger.LogWarning(
-                "Leave für {Channel} übersprungen — TwitchClient ist derzeit nicht verbunden.",
-                channelName);
+            logger.LogWarning("Leave for a channel skipped — the TwitchClient is not connected right now.");
+            logger.LogDebug("Leave skipped for {Channel}.", channelName);
             return;
         }
 
@@ -229,7 +233,8 @@ public class TwitchChatManager(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Leave fehlgeschlagen für {Channel}.", channelName);
+            logger.LogWarning(ex, "Leave failed for a channel.");
+            logger.LogDebug("Leave failed for {Channel}.", channelName);
         }
     }
 
@@ -964,7 +969,9 @@ public class TwitchChatManager(
 
     private Task OnLeftChannel(OnLeftChannelArgs e)
     {
-        logger.LogInformation("Channel {Channel} verlassen.", e.Channel);
+        // Named only at Debug, like the rest of the leave path (see LeaveChannelAsync).
+        logger.LogInformation("Left a channel.");
+        logger.LogDebug("Left {Channel}.", e.Channel);
         return Task.CompletedTask;
     }
 
@@ -1000,6 +1007,18 @@ public class TwitchChatManager(
         // first insert per channel.
         _lastMessageByChannelTicks[e.ChatMessage.Channel] = receivedAtTicks;
 
+        // Objection gate (GDPR Art. 21, issue #252): dropped here, immediately after the liveness
+        // bookkeeping above and before anything else touches this message — splice diagnostics,
+        // room/bot classification and emote counting all stay untouched for an excluded id. Matches
+        // only the immutable Twitch user id, never the login (ExcludedChatterFilter never reads
+        // one). The liveness update above is deliberately not skipped: an objecting chatter's
+        // messages still prove the socket is alive, same reasoning as for bot/Shared-Chat traffic
+        // in the class-level comment on this ordering.
+        if (excludedChatterFilter.IsExcluded(e.ChatMessage.UserId))
+        {
+            return Task.CompletedTask;
+        }
+
         // Sentinel for the TwitchLib double-read-loop defect (#114): warn and count, never drop —
         // the line still carries a real message and must be classified and matched like any other.
         // Reads RawIrcMessage, not UndocumentedTags (E6, see IrcLineSpliceRule). Hot path: one
@@ -1012,14 +1031,14 @@ public class TwitchChatManager(
 
             // No message text here on purpose (data minimisation) — the tag block alone is enough
             // to diagnose the splice. That holds for *foreign* text too: TagBlockForLog redacts the
-            // value of reply-parent-msg-body, which on a reply carries the parent message verbatim.
+            // value of every free-text tag (e.g. reply-parent-msg-body, which on a reply carries the
+            // parent message verbatim) and, since #246, the value of every identifying tag —
+            // display-name, login, user-id, badges — as well, so this line carries the chatter's
+            // presence but not their identity.
             logger.LogWarning(
                 "Gespleißte IRC-Zeile erkannt (#114) in Channel {Channel}, RoomId {RoomId}: {TagBlock}",
                 e.ChatMessage.Channel, e.ChatMessage.RoomId, tagBlock);
         }
-
-        logger.LogDebug("[{Channel}] {Username}: {Message}",
-            e.ChatMessage.Channel, e.ChatMessage.Username, e.ChatMessage.Message);
 
         var snapshot = emoteMatchCache.GetChannelSnapshot(e.ChatMessage.Channel);
         var channelEmotes = snapshot.NameToEmoteId;
@@ -1068,21 +1087,31 @@ public class TwitchChatManager(
 
     private void SetConnected(bool value) => Interlocked.Exchange(ref _connected, value ? 1 : 0);
 
-    private static TwitchClient CreateClient(ILoggerFactory loggerFactory) => new(
-        client: new WebSocketClient(
-            // NoReconnectionPolicy does not mean "never reconnect", it means "exactly one connect
-            // attempt per object": verified against TwitchLib.Communication 2.0.1, it is
-            // ReconnectionPolicy(reconnectInterval: 0, maxAttempts: 1), and OpenPrivateAsync's
-            // Reset(isReconnect: true) returns early *without* clearing _attemptsMade. After the
-            // one successful connect the budget is spent, so ReconnectAsync() on such a client can
-            // never succeed — its retry loop runs zero times and it raises "Fatal network error."
-            // instead. That is deliberate here: every rebuild is a new object (see
-            // ReconnectOnceAsync), so the attempt budget is fresh every time and the 2026-07-26
-            // trap — a client whose lifetime budget of ten attempts was silently exhausted, leaving
-            // the worker offline for >45min — is structurally impossible rather than merely fixed.
-            new ClientOptions(new NoReconnectionPolicy()),
-            loggerFactory.CreateLogger<WebSocketClient>()),
-        loggerFactory: loggerFactory);
+    private static TwitchClient CreateClient(ILoggerFactory loggerFactory)
+    {
+        // TwitchClient hands this factory to its own internal ILogger<TwitchClient> (category
+        // TwitchLib.Client.TwitchClient) and logs a parse failure with the raw, unredacted IRC line
+        // at Error — see RedactingTwitchClientLoggerFactory for the decompiled evidence (#246).
+        // Wrapping here, not swapping the factory in DI, keeps every other logger in the process
+        // (including this class's own) unaffected.
+        var redactingLoggerFactory = new RedactingTwitchClientLoggerFactory(loggerFactory);
+        return new TwitchClient(
+            client: new WebSocketClient(
+                // NoReconnectionPolicy does not mean "never reconnect", it means "exactly one
+                // connect attempt per object": verified against TwitchLib.Communication 2.0.1, it
+                // is ReconnectionPolicy(reconnectInterval: 0, maxAttempts: 1), and
+                // OpenPrivateAsync's Reset(isReconnect: true) returns early *without* clearing
+                // _attemptsMade. After the one successful connect the budget is spent, so
+                // ReconnectAsync() on such a client can never succeed — its retry loop runs zero
+                // times and it raises "Fatal network error." instead. That is deliberate here:
+                // every rebuild is a new object (see ReconnectOnceAsync), so the attempt budget is
+                // fresh every time and the 2026-07-26 trap — a client whose lifetime budget of ten
+                // attempts was silently exhausted, leaving the worker offline for >45min — is
+                // structurally impossible rather than merely fixed.
+                new ClientOptions(new NoReconnectionPolicy()),
+                redactingLoggerFactory.CreateLogger<WebSocketClient>()),
+            loggerFactory: redactingLoggerFactory);
+    }
 
     /// <summary>
     /// Wraps a handler that takes only the event arguments into the delegate TwitchLib's events

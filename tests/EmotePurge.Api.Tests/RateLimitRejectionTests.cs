@@ -413,6 +413,39 @@ public class RateLimitRejectionTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// Codex Sol review of #247 (P2): the legal endpoints used to share <c>PublicHealth</c>'s budget
+    /// with <c>GET /api/health</c> — two counters with unrelated legitimate callers (browser
+    /// visitors behind a possibly-shared IP vs. two machines on fixed cadences) that had no business
+    /// affecting each other. Exhausts the (overridden, tiny) <c>PublicLegal</c> budget against
+    /// <c>GET /api/legal/availability</c> and asserts <c>GET /api/health</c> is untouched by it —
+    /// and, since both routes are anonymous and this factory's default <c>TestAuthHandler</c> is not
+    /// exercised here at all, also that emptying <c>PublicLegal</c> does not affect an authenticated
+    /// <c>InteractiveRead</c> route either.
+    /// </summary>
+    [Fact]
+    public async Task PublicLegalBudget_ExhaustsIndependently_FromPublicHealthAndInteractiveRead()
+    {
+        using var factory = CreateFactory(new Dictionary<string, string>
+        {
+            ["RateLimiting:PublicLegal:PermitLimit"] = TestPermitLimit.ToString(),
+        });
+        using var client = factory.CreateClient();
+
+        using var rejected = await ExhaustAsync(
+            () => client.GetAsync("/api/legal/availability"),
+            TestPermitLimit + 2);
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+
+        // /api/health shares no counter with the now-exhausted PublicLegal budget.
+        using var health = await client.GetAsync("/api/health");
+        Assert.NotEqual(HttpStatusCode.TooManyRequests, health.StatusCode);
+
+        // Nor does an ordinary authenticated navigation route.
+        using var navigation = await SendAsync(client, HttpMethod.Get, PermissionsPath, "rate-limit-public-legal");
+        Assert.Equal(HttpStatusCode.OK, navigation.StatusCode);
+    }
+
+    /// <summary>
     /// A host of its own whose ChannelResync budget is spent in two requests. Its own, because a rate
     /// limiter is host state: a shared one would carry spent permits between test cases, and a
     /// logging provider has to be registered at startup anyway.
@@ -525,6 +558,9 @@ public class RateLimitRejectionTests : IClassFixture<ApiFactory>
 
         public Task RecordCacheLookupAsync(string cacheName, bool hit, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
+
+        public Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
 
         /// <summary>
         /// Waits until the expected number of decisions has arrived and hands them back. Then waits a

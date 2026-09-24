@@ -22,7 +22,7 @@ public static class TwitchOAuthDefaults
     // Space-delimited scope list sent to id.twitch.tv/oauth2/authorize at login. Also the
     // reference for scope-drift detection: a stored token pair granted with fewer scopes than
     // this cannot be repaired by refreshing — scopes are only ever granted in the authorize flow.
-    public const string RequestedScopes = "user:read:email user:read:moderated_channels user:read:subscriptions";
+    public const string RequestedScopes = "user:read:moderated_channels user:read:subscriptions";
 }
 
 // ProfileImageUrl is nullable because it is optional to us, not to Twitch: an account without a

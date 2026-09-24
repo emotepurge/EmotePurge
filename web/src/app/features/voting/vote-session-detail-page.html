@@ -47,16 +47,22 @@
             {{ 'voting.list.end' | transloco }}
           </button>
         }
-        <button
-          type="button"
-          appButton="neutral"
-          class="disabled:cursor-not-allowed"
-          [disabled]="emotes().length === 0"
-          [attr.aria-label]="'export.buttonAriaLabel' | transloco"
-          (click)="openExport()"
-        >
-          {{ 'export.button' | transloco }}
-        </button>
+        <!-- Mod-team only (canViewUsageStats): a plain voter cannot act on an export, and the
+             client-side serialization already withholds whatever the results themselves withhold
+             from them (openExport()'s comment), so there is nothing to leak — this is purely about
+             not offering a button that does nothing useful for the person looking at it. -->
+        @if (canViewUsageStats()) {
+          <button
+            type="button"
+            appButton="neutral"
+            class="disabled:cursor-not-allowed"
+            [disabled]="emotes().length === 0"
+            [attr.aria-label]="'export.buttonAriaLabel' | transloco"
+            (click)="openExport()"
+          >
+            {{ 'export.button' | transloco }}
+          </button>
+        }
         <button type="button" appButton="neutral" (click)="refresh()">
           {{ 'usageStats.refresh' | transloco }}
         </button>
@@ -141,9 +147,12 @@
     </app-notice-banner>
   }
 
-  @if (showLowParticipation()) {
-    <!-- info, not warning: thin participation is a caveat for reading the numbers, nothing is
-         degraded — and role="status" keeps it silent for screen readers (design doc §4.4). -->
+  @if (showLowParticipation() && canViewUsageStats()) {
+    <!-- Mod-team only (canViewUsageStats): the caveat is for whoever acts on the result, and a
+         plain voter cannot end a session or run a mass-delete off it — the notice would just be
+         noise for them. info, not warning: thin participation is a caveat for reading the numbers,
+         nothing is degraded — and role="status" keeps it silent for screen readers (design doc
+         §4.4). -->
     <app-notice-banner variant="info">
       {{ lowParticipationKey() | transloco: { count: voterCount() } }}
     </app-notice-banner>
@@ -329,13 +338,16 @@
                     [attr.title]="keepButtonTitle(emote)"
                     (click)="vote(emote, voteType.Keep)"
                   >
-                    @if (showVoteIcons()) {
+                    @if (stripIconMode(emote.keepVotes) !== 'none') {
                       <svg
                         viewBox="0 0 24 24"
                         fill="currentColor"
                         aria-hidden="true"
                         focusable="false"
-                        class="h-3.5 w-3.5 shrink-0"
+                        [class]="
+                          (stripIconMode(emote.keepVotes) === 'full' ? 'h-3.5 w-3.5' : 'h-2 w-2') +
+                          ' shrink-0'
+                        "
                       >
                         <path
                           d="M2 21h2a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1H2v11ZM22 11.5a2 2 0 0 0-2-2h-5.6l.8-4a2 2 0 0 0-2-2.4h-.2L8 9v12h11a2 2 0 0 0 1.9-1.4l1.9-6.6a2 2 0 0 0 .1-.5v-1Z"
@@ -362,13 +374,17 @@
                     [attr.title]="deleteButtonTitle(emote)"
                     (click)="vote(emote, voteType.Delete)"
                   >
-                    @if (showVoteIcons()) {
+                    @if (stripIconMode(emote.deleteVotes) !== 'none') {
                       <svg
                         viewBox="0 0 24 24"
                         fill="currentColor"
                         aria-hidden="true"
                         focusable="false"
-                        class="h-3.5 w-3.5 shrink-0 rotate-180"
+                        [class]="
+                          (stripIconMode(emote.deleteVotes) === 'full'
+                            ? 'h-3.5 w-3.5'
+                            : 'h-2 w-2') + ' shrink-0 rotate-180'
+                        "
                       >
                         <path
                           d="M2 21h2a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1H2v11ZM22 11.5a2 2 0 0 0-2-2h-5.6l.8-4a2 2 0 0 0-2-2.4h-.2L8 9v12h11a2 2 0 0 0 1.9-1.4l1.9-6.6a2 2 0 0 0 .1-.5v-1Z"

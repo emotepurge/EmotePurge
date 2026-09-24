@@ -34,6 +34,16 @@ internal static class ApiErrorCodes
     // track this channel", this one means Twitch itself knows no account under that login. Only a
     // definite Helix answer produces it — an unreachable Helix lets the join through unchanged.
     public const string ChannelNotOnTwitch = "channel_not_on_twitch";
+    // 409 from the join endpoint: the configured active-channel cap (Channels:MaxActiveChannels) is
+    // reached and the caller is not a global admin. Never returned for a join that would not itself
+    // activate a channel — an already-active channel stays idempotent regardless of the cap.
+    public const string ChannelCapacityReached = "channel_capacity_reached";
+    // 403 from the join endpoint: the channel's immutable Twitch id is on the configured block list
+    // (Channels:ExcludedChannelIds, GDPR Art. 21 objection — issue #252). Unlike
+    // ChannelCapacityReached above, global admins are NOT exempt from this one. Deliberately
+    // language-neutral and free of any mention of a legal objection — the frontend text says only
+    // that the channel cannot be added.
+    public const string ChannelExcluded = "channel_excluded";
     // Four codes for GET /api/seventv/channels/{channelName}/emotes (foreign-channel-import spec,
     // section 5) — ChannelNotOnTwitch above covers the fifth state that row shares with the join
     // endpoint. All four carry a 503/404 body with no further detail: the caller cannot act on more
@@ -98,4 +108,12 @@ internal static class ApiErrorCodes
     // CreateVoteSessionRequest's exclusion rule (6.9, K6): emoteSetId and sevenTvEmoteIds/emoteIds
     // disagree about which of the two session shapes this is.
     public const string VoteSessionSetBallotInvalid = "vote_session_set_ballot_invalid";
+
+    // 404 from GET /api/legal/{kind}/{language} (issue #247): the operator has not configured this
+    // document (no ContentPath, or no German file for it — German is authoritative, see
+    // ILegalContentService), or the route carried a kind/language outside the closed vocabulary
+    // (imprint/privacy, de/en). One code for both, because a caller cannot act on the two any
+    // differently — the availability endpoint is what tells the frontend which links to show at all,
+    // so a caller only ever reaches this by an unconfigured deep link or a route typo.
+    public const string LegalDocumentNotFound = "legal_document_not_found";
 }

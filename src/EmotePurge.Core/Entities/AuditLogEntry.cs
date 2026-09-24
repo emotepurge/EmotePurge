@@ -21,6 +21,11 @@ public static class AuditActions
     public const string ChannelResync = "channel.resync";
     public const string UserInvalidateRoleCache = "user.invalidateRoleCache";
 
+    // Written by IAccountDeletionService, on request or by the retention job. Deliberately carries no
+    // identity of the deleted account: TargetId is AuditActor.DeletedUser's id, and the details hold
+    // only the reason and counts.
+    public const string UserDelete = "user.delete";
+
     // The two identity-reconciliation actions. Unlike every constant above them these are written
     // by the worker under AuditActor.System rather than by a user's request — the audit log is the
     // only place a rename or a merge becomes visible after the fact, since both rewrite the very
@@ -43,8 +48,11 @@ public static class AuditActions
 /// restrict would forbid the purge outright.
 /// </para>
 /// <para>
-/// Retention is unbounded on purpose (see the decision log) — a cleanup job can be added later
-/// without changing this shape.
+/// Retention is bounded: entries older than twelve months are deleted by the retention job (data
+/// retention plan, #244). Deleting an account does <em>not</em> delete its entries — they are
+/// pseudonymised instead (<c>IAccountDeletionService</c>): the user's id and login are replaced by
+/// <c>AuditActor.DeletedUser</c> wherever they appear as actor, as a <c>"user"</c> target, or in that
+/// target's <c>login</c> detail, so the record of what happened survives without naming whom.
 /// </para>
 /// </summary>
 public class AuditLogEntry

@@ -4,6 +4,7 @@ import {
   AUTH_USER,
   mockAdminUsers,
   mockAuthMe,
+  mockDeleteUser,
   mockInvalidateRoleCache,
   mockRevokeSessions,
   mockWorkerHealth,
@@ -165,6 +166,83 @@ test.describe('global admin on /admin/users', () => {
     // The visible copy is a separate, aria-hidden element — otherwise the same message is spoken
     // twice, once from the live region and once from the visible text.
     await expect(roleCacheClearedNotice(row)).toBeVisible();
+  });
+
+  test('delete stays disabled until the exact Twitch login is typed, then deletes and reloads', async ({
+    page,
+  }) => {
+    await mockAdminUsers(page, [
+      { twitchUserId: '4712', twitchUsername: 'zweitaccount', displayName: 'Zweitaccount' },
+      { twitchUserId: '4713', twitchUsername: 'sensitron2', displayName: 'Sensitron2' },
+    ]);
+    await mockDeleteUser(page, '4712');
+
+    await page.goto('/admin/users');
+
+    await page
+      .getByRole('listitem')
+      .filter({ hasText: 'Zweitaccount' })
+      .getByRole('button', { name: 'Account löschen' })
+      .click();
+
+    // Scoped to the dialog throughout, same reasoning as the channel purge test: the row behind it
+    // repeats some of the same text and an unscoped locator would happily match the wrong element.
+    const dialog = page.getByRole('dialog');
+    await expect(
+      dialog.getByRole('heading', { name: 'Account unwiderruflich löschen' }),
+    ).toBeVisible();
+    await expect(dialog.getByText(/Der Account von Zweitaccount wird gelöscht/)).toBeVisible();
+    // Not the caller's own account, so no self-hint.
+    await expect(dialog.getByText(/Du wirst damit sofort abgemeldet/)).toHaveCount(0);
+
+    const confirmButton = dialog.getByRole('button', { name: 'Endgültig löschen' });
+    const input = dialog.getByLabel('Twitch-Login zur Bestätigung');
+
+    await expect(confirmButton).toBeDisabled();
+
+    // A near-miss must not unlock it — that is the entire point over a plain yes/no confirm
+    // (Purge-Präzedenz).
+    await input.fill('zweitaccou');
+    await expect(confirmButton).toBeDisabled();
+    await input.fill('Zweitaccount');
+    await expect(confirmButton).toBeDisabled();
+
+    await input.fill('zweitaccount');
+    await expect(confirmButton).toBeEnabled();
+
+    // Re-registered so the reload after the deletion answers without the deleted user. Playwright
+    // matches route handlers in reverse registration order, so this one wins from here on.
+    await mockAdminUsers(page, [
+      { twitchUserId: '4713', twitchUsername: 'sensitron2', displayName: 'Sensitron2' },
+    ]);
+
+    const deleteRequest = page.waitForRequest(
+      (request) => request.url().includes('/api/admin/users/4712') && request.method() === 'DELETE',
+    );
+    await confirmButton.click();
+    await deleteRequest;
+
+    // Row gone = the list actually reloaded rather than only the dialog closing.
+    await expect(page.getByText('Zweitaccount')).toHaveCount(0);
+    await expect(page.getByText('Sensitron2')).toBeVisible();
+  });
+
+  test('deleting one’s own account names the self-hint in the dialog', async ({ page }) => {
+    await mockAdminUsers(page, [
+      {
+        twitchUserId: AUTH_USER.twitchUserId,
+        twitchUsername: 'sensitron',
+        displayName: 'Sensitron',
+      },
+    ]);
+
+    await page.goto('/admin/users');
+    await page.getByRole('button', { name: 'Account löschen' }).click();
+
+    // The Revoke-precedent self-hint (design decision 6 of the retention plan): allowed, but named.
+    await expect(
+      page.getByRole('dialog').getByText(/Du wirst damit sofort abgemeldet/),
+    ).toBeVisible();
   });
 
   test('cancelling the dialog sends nothing', async ({ page }) => {

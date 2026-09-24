@@ -66,16 +66,12 @@ test.describe('landing', () => {
   test('the login page lists exactly the scopes the backend requests', async ({ page }) => {
     await page.goto('/login');
 
-    // Mirrors TwitchOAuthDefaults.RequestedScopes. The visitor sees the same three lines on
+    // Mirrors TwitchOAuthDefaults.RequestedScopes. The visitor sees the same two lines on
     // Twitch's own consent screen one click later; a page that undersells them loses its
     // credibility exactly where it matters.
-    for (const scope of [
-      'user:read:email',
-      'user:read:moderated_channels',
-      'user:read:subscriptions',
-    ]) {
+    for (const scope of ['user:read:moderated_channels', 'user:read:subscriptions']) {
       await expect(page.getByText(scope, { exact: true })).toBeVisible();
     }
-    await expect(page.getByText('Alle drei sind Leserechte', { exact: false })).toBeVisible();
+    await expect(page.getByText('Beide sind Leserechte', { exact: false })).toBeVisible();
   });
 });

@@ -287,6 +287,9 @@ public class ModeratedChannelsProviderTests(RedisFixture fixture)
             _lookups.Enqueue((cacheName, hit));
             return Task.CompletedTask;
         }
+
+        public Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
     }
 
     private static IConfiguration BuildConfiguration(int ttlMinutes = 10) =>

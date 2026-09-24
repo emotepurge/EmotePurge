@@ -4,22 +4,23 @@ import { RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
+import { LegalService } from '../../core/legal/legal.service';
 import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
+import { LegalFooterLinks } from '../../shared/ui/legal-footer-links';
 
 /**
  * Exactly what `TwitchOAuthDefaults.RequestedScopes` sends to id.twitch.tv/oauth2/authorize
  * (`src/EmotePurge.Core/Twitch/TwitchModels.cs`). Listed here rather than summarised, because the
- * visitor is one click away from Twitch's own consent screen and will read the same three lines
+ * visitor is one click away from Twitch's own consent screen and will read the same two lines
  * there — a page that says "we only need a little" and is then contradicted by the real dialog has
  * spent its credibility at the worst possible moment.
  *
- * All three are read scopes. If a write scope is ever added, this list has to grow with it; the
+ * Both are read scopes. If a write scope is ever added, this list has to grow with it; the
  * identifiers stay out of the translation files because they are literals, not language.
  */
 const SCOPES = [
-  { id: 'user:read:email', key: 'email' },
   { id: 'user:read:moderated_channels', key: 'moderatedChannels' },
   { id: 'user:read:subscriptions', key: 'subscriptions' },
 ];
@@ -27,7 +28,10 @@ const SCOPES = [
 @Component({
   selector: 'app-login-page',
   template: `
-    <div class="flex min-h-screen flex-col bg-page text-fg">
+    <!-- Sticky-footer layout, consistent with AppShell (app-shell.ts) — see the comment there for
+         why dvh rather than vh. This page already put <main> in a flex column with flex-1 before
+         the footer existed; only the viewport unit and the footer below change. -->
+    <div class="flex min-h-dvh flex-col bg-page text-fg">
       <!-- The login page renders outside the shell, so it brings both display-preference
            controls along itself rather than leaving the visitor without a theme switch. -->
       <header class="flex items-center justify-between px-4 py-3">
@@ -86,15 +90,29 @@ const SCOPES = [
           </div>
         </div>
       </main>
+
+      <!-- Same footer shape as app-shell.ts — reachable from here too, since this page renders
+           outside the shell and is exactly where a visitor stands right before the Twitch OAuth
+           redirect (issue #247, requirement 3). Same reduced padding/type size as app-shell.ts —
+           see the comment there. -->
+      @if (hasLegalLinks()) {
+        <footer class="border-t border-border px-4 py-2">
+          <div class="mx-auto flex max-w-7xl flex-wrap gap-5 text-xs text-fg-muted">
+            <app-legal-footer-links />
+          </div>
+        </footer>
+      }
     </div>
   `,
-  imports: [AccountMenu, Button, NgOptimizedImage, RouterLink, TranslocoPipe],
+  imports: [AccountMenu, Button, LegalFooterLinks, NgOptimizedImage, RouterLink, TranslocoPipe],
 })
 export class LoginPage {
   private readonly authService = inject(AuthService);
+  private readonly legalService = inject(LegalService);
 
   protected readonly scopes = SCOPES;
   protected readonly logoSrc = LOGO_SRC;
+  protected readonly hasLegalLinks = this.legalService.hasAnyDocument;
 
   protected login(): void {
     this.authService.login();

@@ -232,10 +232,14 @@ export class ChannelWorkspaceLayout {
       },
       error: (error: HttpErrorResponse) => {
         this.rejoinInProgress.set(false);
+        // 403 keeps its own copy (same wording as leave(), unusual for a rejoin but pre-existing);
+        // everything else — including a 409 channel_capacity_reached — goes through the generic
+        // mapping instead of the single hardcoded "could not reactivate" this used to fall back to,
+        // the same pattern resync() below already follows.
         this.errorMessage.set(
           error.status === 403
             ? 'channelWorkspace.errors.leaveForbidden'
-            : 'channelWorkspace.errors.rejoinFailed',
+            : apiErrorTranslationKey(error),
         );
       },
     });

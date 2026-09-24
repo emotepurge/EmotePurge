@@ -123,11 +123,20 @@ public class SevenTvPeriodicResyncWorker(
         var result = RosterPrunePolicy.DetermineChannelsToPrune(activeChannels, twitchChatManager.GetRoster(), _staleChannels);
         _staleChannels = result.StaleChannels;
 
+        if (result.ChannelsToPrune.Count > 0)
+        {
+            // A count, and the logins only at Debug (fourth Codex review of the block list): since
+            // the active roster leaves out rows whose Twitch id is on the excluded-channel list, this
+            // prune is also how a blocked channel whose LEAVE got lost is parted — naming it here
+            // would tie the block to it.
+            logger.LogInformation(
+                "Convergence net: leaving {Count} channel(s) that have not been active for two consecutive passes but are still on the roster (lost Redis LEAVE, issue #41).",
+                result.ChannelsToPrune.Count);
+        }
+
         foreach (var channelName in result.ChannelsToPrune)
         {
-            logger.LogInformation(
-                "Konvergenznetz: {Channel} ist seit zwei aufeinanderfolgenden Durchläufen nicht mehr aktiv, aber noch im Roster — verlasse (verlorenes Redis-LEAVE, Issue #41).",
-                channelName);
+            logger.LogDebug("Convergence net: leaving {Channel}.", channelName);
             emoteMatchCache.RemoveChannel(channelName);
             sevenTvEventClient.Unsubscribe(channelName);
             await twitchChatManager.LeaveChannelAsync(channelName);
