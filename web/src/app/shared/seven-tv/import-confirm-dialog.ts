@@ -231,6 +231,7 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
           [decisions]="stepDecisions()"
           [violations]="stepViolations()"
           [reservedRem]="stepReservedRem()"
+          [targetSetName]="resolveTargetSetName()"
           (decide)="onDecide($event)"
         />
       } @else {
@@ -1064,6 +1065,14 @@ export class ImportConfirmDialog {
       }
     }
     return mismatchStepRows(preview.aliasMismatchRows, imageUrlById);
+  });
+
+  /** The step's "Ziel · {set}" header/caption name — the same `targetSetLabel` resolution the
+   *  title's own `setName` param reads (issue #268), so the two never disagree. `null` until the
+   *  target has loaded, same as `stepRows`. */
+  protected readonly resolveTargetSetName = computed<string | null>(() => {
+    const target = this.ready();
+    return target === null ? null : this.targetSetLabel(target);
   });
 
   /** The committed decisions with this group's draft laid over them — what the step shows, and what

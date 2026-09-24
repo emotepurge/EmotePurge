@@ -59,7 +59,10 @@ export interface ViolationMessage {
  *  padding (`py-2`), for cross-browser font-metric slack — measured in a real browser (Chromium,
  *  `[data-resolve-index] > div` bounding box) rather than derived from the CSS, because a
  *  virtualized list needs one fixed height per row and every row, however short its own content,
- *  pays for the tallest one any row can reach. */
+ *  pays for the tallest one any row can reach. The header/caption row and the two reserved
+ *  consequence lines (issue #268) were measured the same way after landing and stay well inside
+ *  both budgets — worst case (a checked "Umbenennen" row with its typed-alias consequence) came to
+ *  62px wide / 162.5px narrow, still short of 86px/198px, so neither constant needed to move. */
 const ROW_WIDE_PX = 120;
 const ROW_NARROW_PX = 232;
 /** Content width below which the step switches to the stacked layout. Chosen so that, above it,
@@ -94,6 +97,46 @@ const FIELD_ERROR_KEYS: [ViolationRule, string][] = [
   ['aliasHeldByTarget', 'import.resolve.fieldError.taken'],
   ['duplicateGeneratedAlias', 'import.resolve.fieldError.duplicate'],
 ];
+
+/** The label key for each way a chosen action visibly changes a row, keyed by
+ *  {@link RowConsequence}'s `kind`. */
+const CONSEQUENCE_KEYS: Record<RowConsequence['kind'], string> = {
+  removed: 'import.resolve.consequence.removed',
+  becomes: 'import.resolve.consequence.becomes',
+  addedAs: 'import.resolve.consequence.addedAs',
+};
+
+/**
+ * What a chosen action visibly does to one side of a row — `null` for `skip`, which changes
+ * nothing. A decision only ever affects one side (issue #268's AK 2): `replaceTarget` and
+ * `adoptSourceName` describe the target, `renameSource` the source, through its currently typed
+ * alias — `null` while that field is empty, so the line shows nothing rather than an empty quote.
+ * Pure and independent of the row's other fields on purpose: the whole point is that it is derived
+ * from the decision alone, so the rename preview follows every keystroke without any state of its
+ * own to fall out of sync (rule 14).
+ */
+export interface RowConsequence {
+  side: 'source' | 'target';
+  kind: 'removed' | 'becomes' | 'addedAs';
+  /** The name the consequence names — the source name for `becomes`, the typed alias for
+   *  `addedAs`, unused (`''`) for `removed`. */
+  name: string;
+}
+
+export function rowConsequence(decision: RowDecision, sourceName: string): RowConsequence | null {
+  switch (decision.kind) {
+    case 'replaceTarget':
+      return { side: 'target', kind: 'removed', name: '' };
+    case 'adoptSourceName':
+      return { side: 'target', kind: 'becomes', name: sourceName };
+    case 'renameSource':
+      return decision.alias === ''
+        ? null
+        : { side: 'source', kind: 'addedAs', name: decision.alias };
+    case 'skip':
+      return null;
+  }
+}
 
 /**
  * Step rows for the name-collision group: skip, rename and replace (AK 6). Replace stays listed but
@@ -230,6 +273,24 @@ export function violationMessages(
         ) | transloco
       "
     >
+      <!-- Column headers for the wide layout only — the stacked layout captions each cell instead
+           (below), and every row already names both sides itself (rowLabel), so this row is
+           decorative and hidden from assistive tech. Sits above the viewport, not inside it: it
+           must never scroll with the rows. Same grid columns as a row, so headers and cells line
+           up; the arrow is markup here, not translated text, and appears nowhere else. -->
+      @if (!narrow()) {
+        <div
+          aria-hidden="true"
+          class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)] gap-3 px-1 pb-1 text-[11px] font-semibold uppercase tracking-[0.13em] text-fg-muted"
+        >
+          <span>{{ 'import.resolve.header.source' | transloco }}</span>
+          <span class="flex items-center gap-1">
+            <span>→</span>
+            <span>{{ targetHeaderKey() | transloco: { set: targetSetName() ?? '' } }}</span>
+          </span>
+          <span>{{ 'import.resolve.header.action' | transloco }}</span>
+        </div>
+      }
       <!-- Buffers in rows, not the CDK's 100/200 px default, which is less than one tall row. -->
       <cdk-virtual-scroll-viewport
         [itemSize]="rowPx()"
@@ -271,22 +332,60 @@ export function violationMessages(
                   <app-emote-sprite [url]="url" [size]="spritePx" />
                 }
               </span>
-              <span class="truncate text-sm text-fg">{{ row.sourceName }}</span>
+              <span class="flex min-w-0 flex-col">
+                @if (narrow()) {
+                  <span
+                    aria-hidden="true"
+                    class="text-[11px] font-semibold uppercase tracking-[0.13em] text-fg-muted"
+                  >
+                    {{ 'import.resolve.header.source' | transloco }}
+                  </span>
+                }
+                <span class="truncate text-sm text-fg">{{ row.sourceName }}</span>
+                <!-- Reserved even when empty (issue #268 AK 3): the row's fixed height must not
+                     change with the chosen action, on either side. -->
+                <span
+                  [id]="'resolve-consequence-' + row.key + '-source'"
+                  class="truncate text-xs text-fg-muted"
+                >
+                  @if (sourceConsequenceOf(row); as consequence) {
+                    {{
+                      consequenceLabelKeys[consequence.kind] | transloco: { name: consequence.name }
+                    }}
+                  }
+                </span>
+              </span>
             </div>
 
             <div class="flex min-w-0 items-center gap-2">
-              <span class="app-sprite-cell relative block h-10 w-10 shrink-0">
+              <span
+                class="app-sprite-cell relative block h-10 w-10 shrink-0"
+                [class.opacity-50]="targetConsequenceOf(row)?.kind === 'removed'"
+              >
                 @if (row.targetImageUrl; as url) {
                   <app-emote-sprite [url]="url" [size]="spritePx" />
                 }
               </span>
               <span class="flex min-w-0 flex-col">
+                @if (narrow()) {
+                  <span
+                    aria-hidden="true"
+                    class="text-[11px] font-semibold uppercase tracking-[0.13em] text-fg-muted"
+                  >
+                    {{ targetHeaderKey() | transloco: { set: targetSetName() ?? '' } }}
+                  </span>
+                }
                 @if (row.targetGone) {
                   <span class="truncate text-sm text-fg-muted">
                     {{ 'import.resolve.targetGone' | transloco }}
                   </span>
                 } @else {
-                  <span class="truncate text-sm text-fg-secondary">
+                  <span
+                    class="truncate text-sm"
+                    [class.line-through]="targetConsequenceOf(row)?.kind === 'removed'"
+                    [class.text-fg-muted]="targetConsequenceOf(row)?.kind === 'removed'"
+                    [class.text-fg-secondary]="targetConsequenceOf(row)?.kind !== 'removed'"
+                  >
                     {{ row.targetAliases.join(' · ') }}
                   </span>
                   @if (row.targetHasAliaslessEntry) {
@@ -295,6 +394,19 @@ export function violationMessages(
                     </span>
                   }
                 }
+                <!-- Reserved even when empty — see the source cell's own consequence line above. -->
+                <span
+                  [id]="'resolve-consequence-' + row.key + '-target'"
+                  class="truncate text-xs"
+                  [class.text-danger-fg]="targetConsequenceOf(row)?.kind === 'removed'"
+                  [class.text-fg-muted]="targetConsequenceOf(row)?.kind !== 'removed'"
+                >
+                  @if (targetConsequenceOf(row); as consequence) {
+                    {{
+                      consequenceLabelKeys[consequence.kind] | transloco: { name: consequence.name }
+                    }}
+                  }
+                </span>
               </span>
             </div>
 
@@ -304,6 +416,13 @@ export function violationMessages(
                 role="radiogroup"
                 [attr.aria-label]="
                   'import.resolve.actionGroupLabel' | transloco: { sourceName: row.sourceName }
+                "
+                [attr.aria-describedby]="
+                  'resolve-consequence-' +
+                  row.key +
+                  '-source resolve-consequence-' +
+                  row.key +
+                  '-target'
                 "
               >
                 @for (option of row.options; track option.kind) {
@@ -368,6 +487,10 @@ export class ImportConflictResolutionStep {
   /** Room the dialog's own chrome above and below this step takes, in rem, on top of the base
    *  allowance — same contract as `ForeignEmoteGrid.reservedRem`. */
   readonly reservedRem = input(0);
+  /** The target set's resolved display name (`targetSetLabel`, the same source the dialog's own
+   *  title reads) — `null` while the target has not loaded yet. Drives the "Ziel · {set}" header
+   *  and narrow-layout caption; `null` or `''` falls back to a plain "Ziel" (issue #268). */
+  readonly targetSetName = input<string | null>(null);
 
   readonly decide = output<{ key: string; decision: RowDecision }>();
 
@@ -375,6 +498,7 @@ export class ImportConflictResolutionStep {
 
   protected readonly spritePx = SPRITE_PX;
   protected readonly optionLabelKeys = OPTION_LABEL_KEYS;
+  protected readonly consequenceLabelKeys = CONSEQUENCE_KEYS;
 
   private readonly viewport = viewChild(CdkVirtualScrollViewport);
   private readonly container = viewChild<ElementRef<HTMLElement>>('container');
@@ -385,6 +509,13 @@ export class ImportConflictResolutionStep {
   protected readonly activeIndex = signal(0);
   protected readonly narrow = computed(() => this.containerWidth() < NARROW_BELOW_PX);
   protected readonly rowPx = computed(() => (this.narrow() ? ROW_NARROW_PX : ROW_WIDE_PX));
+
+  /** Which "Ziel …" label to show — with the set name once it is known, otherwise the plain form.
+   *  Read by both the wide header row and the narrow layout's per-cell caption, so the two always
+   *  agree. */
+  protected readonly targetHeaderKey = computed(() =>
+    this.targetSetName() ? 'import.resolve.header.target' : 'import.resolve.header.targetPlain',
+  );
 
   /** See `foreign-emote-grid.ts`'s `viewportHeight` for why this is measured against `dvh`: the
    *  pane would otherwise scroll too, and two nested scrollbars over one list is the known defect. */
@@ -453,6 +584,20 @@ export class ImportConflictResolutionStep {
 
   protected fieldErrorKey(key: string): string | null {
     return this.fieldErrors().get(key) ?? null;
+  }
+
+  /** The row's consequence, if it names the source side — reads `decisionOf`, which reads the
+   *  `decisions` input signal, so a typed alias re-renders this on every keystroke without any
+   *  state of its own (rule 14). */
+  protected sourceConsequenceOf(row: ConflictStepRow): RowConsequence | null {
+    const consequence = rowConsequence(this.decisionOf(row.key), row.sourceName);
+    return consequence?.side === 'source' ? consequence : null;
+  }
+
+  /** The row's consequence, if it names the target side — see {@link sourceConsequenceOf}. */
+  protected targetConsequenceOf(row: ConflictStepRow): RowConsequence | null {
+    const consequence = rowConsequence(this.decisionOf(row.key), row.sourceName);
+    return consequence?.side === 'target' ? consequence : null;
   }
 
   protected choose(row: ConflictStepRow, kind: RowDecision['kind']): void {

@@ -391,15 +391,26 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   `runBlocked` locks all three states silently, like "Copy".
 - **The resolution step is the second step of the same dialog, not an overlay of its own.**
   One conflict group per opening; the pane widens to `app-dialog-panel-wide` for exactly this step
-  and narrows again on the way back. Row order: a quiet explanation of the actions → the
-  virtualized table (source sprite and name, target sprite and name(s) — both aliases for a #74
-  duplicate —, then a radio group per row named "Action for {source}") → "Back" / "Apply" in the
-  action row, the lock reason beside "Apply" naming the rows by source name. Actions that do not
+  and narrows again on the way back. Row order: a quiet explanation of the actions → **column
+  headers** ("Source" → "Target · {set name}" | "Action", `label` micro type, `aria-hidden` — the
+  wide layout only; the target's name is the dialog's own resolved `targetSetLabel`, so header and
+  title never disagree) → the virtualized table (source sprite and name, target sprite and
+  name(s) — both aliases for a #74 duplicate —, then a radio group per row named "Action for
+  {source}") → "Back" / "Apply" in the action row, the lock reason beside "Apply" naming the rows
+  by source name. Below 760px content width the header row disappears and each stacked source/target
+  cell instead carries its own `aria-hidden` caption (issue #268). Actions that do not
   apply to a row stay listed, disabled, with their reason in brackets (the target picker's idiom
   above) — replace for an untracked target or for a drifted row whose live counterpart no
   longer holds the name ("reload target first"), adopt where the target name is taken or
   duplicated. A
-  rename opens a text field prefilled with the source name, with the §5.3 field error. "Apply"
+  rename opens a text field prefilled with the source name, with the §5.3 field error. **A reserved
+  consequence line sits below the name on whichever side an action affects** (issue #268), always
+  rendered so a chosen action never changes the row's fixed height: replace dims and strikes
+  through the target sprite/name and reads "will be removed" (`text-danger-fg`); adopt reads
+  "becomes '{source name}'" under the target; rename reads "will be added as '{typed alias}'"
+  under the source, following every keystroke; skip leaves both lines empty. Each row's radiogroup
+  points `aria-describedby` at both its source and target consequence line ids, present whether or
+  not they currently hold text. "Apply"
   commits the group's decisions; "Back" keeps the committed ones as they were and keeps the edits
   for the next opening. The rows carry a roving tabindex (arrow up/down, Home/End, scrolled into
   the viewport first), because a virtualized row outside the buffer is not in the DOM and Tab alone
