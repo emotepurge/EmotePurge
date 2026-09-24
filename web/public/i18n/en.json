@@ -1399,7 +1399,6 @@
       "no_health_data": "No worker data is available right now.",
       "health_data_unreadable": "The worker data could not be read.",
       "invalid_emote_set_id": "Invalid emote set id.",
-      "emote_set_id_empty": "No target set given.",
       "emote_set_not_found": "This 7TV emote set is unknown.",
       "vote_session_set_ballot_invalid": "Invalid ballot for this voting session.",
       "legal_document_not_found": "This document is not available.",

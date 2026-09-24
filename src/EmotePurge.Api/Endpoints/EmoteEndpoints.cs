@@ -100,17 +100,23 @@ public static class EmoteEndpoints
         .AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()
         .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
 
+        // The legacy Guid-keyed form (restore-per-set spec 5.6, E4): kept alive until the E3 gate of
+        // the spec-200 plan, but no longer changes a row (H4) — it only counts which reported ids are
+        // rows of this channel, audits that count with legacyBodyForm: true, and lets stage 7 below
+        // trigger the channel's guarded resync, which is what actually reconciles the row against
+        // 7TV. The set-scoped body shape and its own ladder steps are gone: a body still sending
+        // sevenTvEmoteIds lands on EmoteIds == null and gets the same 400 as any other empty body.
         group.MapPost("/sync-deleted", async (
             string channelName,
             SyncDeletedRequest request,
             HttpContext httpContext,
             IEmoteService emoteService,
-            IRedisPublisher redisPublisher,
+            IChannelResyncCooldown resyncCooldown,
+            IChannelService channelService,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            // Spec 6.6's four-step validation ladder, shared with sync-restored below.
-            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds, request.EmoteSetId, request.SevenTvEmoteIds);
+            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds);
             if (vocabularyError is not null)
             {
                 return Results.BadRequest(new { errorCode = vocabularyError });
@@ -122,20 +128,19 @@ public static class EmoteEndpoints
                 return Results.Unauthorized();
             }
 
-            // The ladder above guarantees exactly one of the two forms is populated by this point.
-            var result = request.SevenTvEmoteIds is { Count: > 0 }
-                ? await emoteService.MarkDeletedAsync(channelName, request.EmoteSetId!, request.SevenTvEmoteIds, actor, ct)
-                : await emoteService.MarkDeletedAsync(channelName, request.EmoteIds!, actor, ct);
-            if (result.NewlyArchivedCount > 0)
-            {
-                await PublishChannelSyncedAsync(redisPublisher, logger, channelName);
-            }
+            var result = await emoteService.MarkDeletedAsync(channelName, request.EmoteIds!, actor, ct);
+
+            // Stage 7 (spec 5.1/5.6): no row changed here any more, so there is no NewlyArchivedCount
+            // to publish a channel.synced live event on (5.4) — the guarded resync under the
+            // per-channel cooldown is what actually reconciles the channel against 7TV, whether the
+            // channel row exists or not (TryTriggerGuardedResyncAsync's own TriggerResyncAsync call
+            // answers NotFound and hands the cooldown slot back either way).
+            await SevenTvEndpoints.TryTriggerGuardedResyncAsync(channelName, actor, resyncCooldown, channelService, logger);
 
             return Results.Ok(new
             {
                 archivedCount = result.ArchivedCount,
                 notFoundIds = result.NotFoundIds,
-                targetIsActiveSetOfChannel = result.TargetIsActiveSetOfChannel
             });
         })
         // Overrides the group's policy: this is the one call that must never be dropped. The emotes
@@ -144,21 +149,21 @@ public static class EmoteEndpoints
         // several delete batches in one minute could exhaust.
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
-        // The restore counterpart: the browser has already re-added the emotes on 7TV, this call
-        // un-archives them here and — its actual reason to exist — writes the emotes.syncRestored
-        // audit entry. Without it a restore only ever showed up as an anonymous channel.resync
+        // The restore counterpart: same legacy-form treatment as sync-deleted above, in the opposite
+        // direction — its actual reason to exist is the emotes.syncRestored audit entry plus the
+        // resync it triggers. Without it a restore only ever showed up as an anonymous channel.resync
         // (or, under the resync cooldown, not at all).
         group.MapPost("/sync-restored", async (
             string channelName,
             SyncRestoredRequest request,
             HttpContext httpContext,
             IEmoteService emoteService,
-            IRedisPublisher redisPublisher,
+            IChannelResyncCooldown resyncCooldown,
+            IChannelService channelService,
             ILogger<Program> logger,
             CancellationToken ct) =>
         {
-            // Spec 6.6's four-step validation ladder, shared with sync-deleted above.
-            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds, request.EmoteSetId, request.SevenTvEmoteIds);
+            var vocabularyError = ValidateSyncBookkeepingBody(request.EmoteIds);
             if (vocabularyError is not null)
             {
                 return Results.BadRequest(new { errorCode = vocabularyError });
@@ -170,20 +175,15 @@ public static class EmoteEndpoints
                 return Results.Unauthorized();
             }
 
-            // The ladder above guarantees exactly one of the two forms is populated by this point.
-            var result = request.SevenTvEmoteIds is { Count: > 0 }
-                ? await emoteService.MarkRestoredAsync(channelName, request.EmoteSetId!, request.SevenTvEmoteIds, actor, ct)
-                : await emoteService.MarkRestoredAsync(channelName, request.EmoteIds!, actor, ct);
-            if (result.NewlyRestoredCount > 0)
-            {
-                await PublishChannelSyncedAsync(redisPublisher, logger, channelName);
-            }
+            var result = await emoteService.MarkRestoredAsync(channelName, request.EmoteIds!, actor, ct);
+
+            // Stage 7 (spec 5.1/5.6), mirror of sync-deleted above.
+            await SevenTvEndpoints.TryTriggerGuardedResyncAsync(channelName, actor, resyncCooldown, channelService, logger);
 
             return Results.Ok(new
             {
                 restoredCount = result.RestoredCount,
                 notFoundIds = result.NotFoundIds,
-                targetIsActiveSetOfChannel = result.TargetIsActiveSetOfChannel
             });
         })
         // Same reasoning as sync-deleted: the emotes are already back on 7TV, a dropped call here
@@ -266,55 +266,16 @@ public static class EmoteEndpoints
     }
 
     /// <summary>
-    /// The <c>sync-deleted</c>/<c>sync-restored</c> validation ladder (spec 6.6), shared verbatim by
-    /// both handlers above so the two bodies cannot drift apart. Checked in order — each step only
-    /// runs once the one before it passed:
-    /// <list type="number">
-    /// <item>both lists empty or missing → <see cref="ApiErrorCodes.EmoteIdsEmpty"/> (today's check)</item>
-    /// <item><paramref name="emoteIds"/> (legacy) and <paramref name="sevenTvEmoteIds"/> (new form)
-    /// both non-empty → <see cref="ApiErrorCodes.EmoteIdsInvalid"/> — a body cannot name both shapes</item>
-    /// <item><paramref name="sevenTvEmoteIds"/> non-empty but <paramref name="emoteSetId"/> missing or
-    /// empty → <see cref="ApiErrorCodes.EmoteSetIdEmpty"/></item>
-    /// <item><paramref name="emoteSetId"/> present but malformed →
-    /// <see cref="ApiErrorCodes.InvalidEmoteSetId"/> — checked inline rather than by
-    /// <see cref="EmoteSetIdValidationFilter"/>, which reads only the query string and route values,
-    /// not a body field (the same reason <c>sync-imported</c>'s own <c>TargetEmoteSetId</c> check is
-    /// inline above)</item>
-    /// </list>
-    /// Returns <c>null</c> when the body is internally consistent.
+    /// The <c>sync-deleted</c>/<c>sync-restored</c> validation, shared verbatim by both handlers above
+    /// so they cannot drift apart. Restore-per-set spec 5.6/E4 retired the set-scoped body shape and
+    /// its own ladder steps along with it — this is now just the one check the legacy Guid form ever
+    /// had: <paramref name="emoteIds"/> missing or empty → <see cref="ApiErrorCodes.EmoteIdsEmpty"/>.
+    /// A body that still sends <c>sevenTvEmoteIds</c> (an old caller of the retired shape, or the
+    /// set-centric body sent at the wrong route) has no <c>emoteIds</c> property of its own, so it
+    /// lands here the same way an empty body does. Returns <c>null</c> when the body is consistent.
     /// </summary>
-    internal static string? ValidateSyncBookkeepingBody(
-        IReadOnlyList<string>? emoteIds, string? emoteSetId, IReadOnlyList<string>? sevenTvEmoteIds)
-    {
-        var hasEmoteIds = emoteIds is { Count: > 0 };
-        var hasSevenTvEmoteIds = sevenTvEmoteIds is { Count: > 0 };
-
-        if (!hasEmoteIds && !hasSevenTvEmoteIds)
-        {
-            return ApiErrorCodes.EmoteIdsEmpty;
-        }
-
-        if (hasEmoteIds && hasSevenTvEmoteIds)
-        {
-            return ApiErrorCodes.EmoteIdsInvalid;
-        }
-
-        if (hasSevenTvEmoteIds && string.IsNullOrEmpty(emoteSetId))
-        {
-            return ApiErrorCodes.EmoteSetIdEmpty;
-        }
-
-        // Checked whenever an emoteSetId was sent at all, not only alongside sevenTvEmoteIds
-        // (#200 K5 finding E): a legacy body form carries no set of its own, but nothing stops a
-        // caller from sending a malformed emoteSetId next to it anyway, and letting that through
-        // unchecked would leave a bad value silently unvalidated rather than refused.
-        if (!string.IsNullOrEmpty(emoteSetId) && !EmoteSetIdValidation.IsValid(emoteSetId))
-        {
-            return ApiErrorCodes.InvalidEmoteSetId;
-        }
-
-        return null;
-    }
+    internal static string? ValidateSyncBookkeepingBody(IReadOnlyList<string>? emoteIds) =>
+        emoteIds is { Count: > 0 } ? null : ApiErrorCodes.EmoteIdsEmpty;
 
     /// <summary>
     /// The <c>sync-imported</c> body vocabulary table (spec 6.7), shared verbatim by this group's own
@@ -494,14 +455,14 @@ internal sealed record EmoteSetSummaryDto(
 
 internal sealed record EmoteSetObservationDto(DateTime FromUtc, DateTime? ToUtc);
 
-// A record, two shapes (spec 6.6): EmoteIds is the legacy form (active set, Guid match, E3);
-// EmoteSetId/SevenTvEmoteIds is the new, set-scoped form. All three stay optional — the validation
-// ladder (ValidateSyncBookkeepingBody) is what enforces "exactly one shape", not the model binder.
-internal sealed record SyncDeletedRequest(
-    IReadOnlyList<string>? EmoteIds = null, string? EmoteSetId = null, IReadOnlyList<string>? SevenTvEmoteIds = null);
+// The legacy Guid form only (restore-per-set spec 5.6, E4): the set-scoped shape
+// (EmoteSetId/SevenTvEmoteIds) this record used to carry alongside it is gone — the set-centric
+// sync-deleted/sync-restored in SevenTvEndpoints is its replacement. EmoteIds stays optional so a
+// missing or empty body reaches ValidateSyncBookkeepingBody's own check rather than failing model
+// binding first, the same reasoning that applied when this record had more than one shape.
+internal sealed record SyncDeletedRequest(IReadOnlyList<string>? EmoteIds = null);
 
-internal sealed record SyncRestoredRequest(
-    IReadOnlyList<string>? EmoteIds = null, string? EmoteSetId = null, IReadOnlyList<string>? SevenTvEmoteIds = null);
+internal sealed record SyncRestoredRequest(IReadOnlyList<string>? EmoteIds = null);
 
 // LeaderboardSort is the wire code (SevenTvLeaderboardSortWireCode.TrendingDailyWireCode /
 // TopAllTimeWireCode) carried separately from SourceChannelName (leaderboard-import spec E8): a

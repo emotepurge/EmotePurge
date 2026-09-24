@@ -8,13 +8,16 @@ namespace EmotePurge.Api.Auth;
 // usage-stats/totals; EmoteEndpoints: sync-deleted, set-warning, active-set) — not just the two
 // usage-stats read endpoints the name suggests.
 //
-// This deliberately includes sync-deleted, the one write path in that list: a 7TV editor can
-// already delete emotes directly via 7TV's own permission system, MarkDeletedAsync only flips
-// IsArchived = true (no hard delete, s. CLAUDE.md), and the 1-minute SevenTvPeriodicResyncWorker
-// resets that flag anyway on the next full sync if it was set without a matching real 7TV
-// deletion — so misuse of this endpoint self-heals within a minute. Anything with real management
-// semantics (join/leave, vote sessions, channel config) belongs behind the stricter
-// ChannelManagementAuthorizationFilter instead.
+// This deliberately includes sync-deleted (and its sync-restored neighbor), the write paths in
+// that list: a 7TV editor can already delete emotes directly via 7TV's own permission system.
+// Restore-per-set spec 5.6/E4 retired the row-changing legacy overload these two routes used to
+// call — MarkDeletedAsync/MarkRestoredAsync now only count and audit, never flip IsArchived — so
+// the self-heal this comment used to describe (the periodic resync resetting a wrongly set flag)
+// no longer applies to what this filter guards: there is no flag left for it to reset. What
+// remains at risk is the audit entry and the resync this filter's caller can trigger — a 7TV
+// editor whose only power here is one already backed by 7TV's own permission system. Anything with
+// real management semantics (join/leave, vote sessions, channel config) belongs behind the
+// stricter ChannelManagementAuthorizationFilter instead.
 public class UsageStatsAccessAuthorizationFilter : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)

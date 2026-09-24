@@ -1399,7 +1399,6 @@
       "no_health_data": "Es liegen aktuell keine Worker-Daten vor.",
       "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden.",
       "invalid_emote_set_id": "Ungültige Emote-Set-ID.",
-      "emote_set_id_empty": "Kein Ziel-Set angegeben.",
       "emote_set_not_found": "Dieses 7TV-Emote-Set ist unbekannt.",
       "vote_session_set_ballot_invalid": "Ungültige Stimmzettel-Angabe für diese Abstimmung.",
       "legal_document_not_found": "Dieses Dokument ist nicht verfügbar.",

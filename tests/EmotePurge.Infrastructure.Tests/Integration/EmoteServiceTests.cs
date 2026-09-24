@@ -27,8 +27,12 @@ public class EmoteServiceTests(PostgresFixture fixture)
     private static readonly AuditActor Actor = new("100", "synctester");
 
     [Fact]
-    public async Task MarkDeletedAsync_ArchivesActiveEmotes_AndReportsThemAsArchived()
+    public async Task MarkDeletedAsync_CountsGuidMatches_ButLeavesIsArchivedUnchanged()
     {
+        // H4/spec 5.6: this form no longer archives anything — a tab open across a set switch could
+        // otherwise archive a row of the *new* active set on the strength of a body that only ever
+        // meant the old one. It only counts and audits; the endpoint's own guarded resync (stage 7)
+        // is what actually reconciles the row against 7TV afterwards.
         await using var db = fixture.CreateDbContext();
         var channel = new Channel { ChannelName = "syncdeletetest_a", TwitchChannelId = "4001", ActiveEmoteSetId = "set-a" };
         var emote = new Emote { ChannelId = channel.Id, Channel = channel, Name = "PogU", SevenTvEmoteId = "7tv-a1", ImageUrl = "https://cdn/a1" };
@@ -40,23 +44,20 @@ public class EmoteServiceTests(PostgresFixture fixture)
         var result = await service.MarkDeletedAsync("syncdeletetest_a", [emote.Id], Actor);
 
         Assert.Equal(1, result.ArchivedCount);
-        // Drives the channel.synced live event in the endpoint: this call really changed state.
-        Assert.Equal(1, result.NewlyArchivedCount);
         Assert.Empty(result.NotFoundIds);
-        Assert.True(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
+        Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
 
+        // AK 23: the audit entry carries legacyBodyForm: true, so the admin view can tell this report
+        // apart from a set-checked one that actually changed a row.
         var audit = await db.AuditLogEntries.SingleAsync(a =>
             a.ChannelName == "syncdeletetest_a" && a.Action == AuditActions.EmotesSyncDeleted);
         Assert.Contains("\"emoteCount\":1", audit.DetailsJson);
+        Assert.Contains("\"legacyBodyForm\":true", audit.DetailsJson);
     }
 
     [Fact]
-    public async Task MarkDeletedAsync_CountsAlreadyArchivedEmoteAsArchived()
+    public async Task MarkDeletedAsync_CountsAnAlreadyArchivedEmoteToo()
     {
-        // The realistic race since the EventAPI live sync: the worker archives the emote off the
-        // 7TV dispatch seconds before the frontend's bookkeeping call arrives. That call must see
-        // "goal state reached", not "not found" — the old behavior made every successful delete
-        // look like a failed sync in the UI.
         await using var db = fixture.CreateDbContext();
         var channel = new Channel { ChannelName = "syncdeletetest_b", TwitchChannelId = "4002", ActiveEmoteSetId = "set-b" };
         var emote = new Emote { ChannelId = channel.Id, Channel = channel, Name = "KEKW", SevenTvEmoteId = "7tv-b1", ImageUrl = "https://cdn/b1", IsArchived = true };
@@ -69,38 +70,15 @@ public class EmoteServiceTests(PostgresFixture fixture)
 
         Assert.Equal(1, result.ArchivedCount);
         Assert.Empty(result.NotFoundIds);
-        // Goal state was already reached, so no rows changed — no live event. The audit row IS
-        // written regardless: the user's delete on 7TV happened, and with the live sync usually
-        // archiving first, gating the paper trail on this race made real deletes invisible.
-        Assert.Equal(0, result.NewlyArchivedCount);
+        // The audit row IS written regardless of the row's prior state — the point of this call is
+        // the paper trail (plus the resync it triggers), not a state change it no longer makes.
         Assert.Equal(1, await db.AuditLogEntries.CountAsync(a =>
             a.ChannelName == "syncdeletetest_b" && a.Action == AuditActions.EmotesSyncDeleted));
     }
 
     [Fact]
-    public async Task MarkDeletedAsync_StampsArchivedAt_ForNewlyArchivedEmotes()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = new Channel { ChannelName = "syncdeletetest_d", TwitchChannelId = "4005", ActiveEmoteSetId = "set-d" };
-        var emote = new Emote { ChannelId = channel.Id, Channel = channel, Name = "Stamp", SevenTvEmoteId = "7tv-d1", ImageUrl = "https://cdn/d1" };
-        db.Channels.Add(channel);
-        db.Emotes.Add(emote);
-        await db.SaveChangesAsync();
-
-        var before = DateTime.UtcNow;
-        var service = CreateService(db);
-        await service.MarkDeletedAsync("syncdeletetest_d", [emote.Id], Actor);
-
-        var archivedAt = await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.ArchivedAt).SingleAsync();
-        Assert.NotNull(archivedAt);
-        Assert.True(archivedAt >= before);
-    }
-
-    [Fact]
     public async Task MarkDeletedAsync_LeavesTheArchiveDateOfAnAlreadyArchivedEmoteAlone()
     {
-        // The live sync usually archives first (with the accurate timestamp); this later
-        // bookkeeping call counts the row as archived but must not overwrite the earlier date.
         await using var db = fixture.CreateDbContext();
         var earlier = DateTime.UtcNow.AddMinutes(-10);
         var channel = new Channel { ChannelName = "syncdeletetest_e", TwitchChannelId = "4006", ActiveEmoteSetId = "set-e" };
@@ -141,15 +119,31 @@ public class EmoteServiceTests(PostgresFixture fixture)
         var result = await service.MarkDeletedAsync("syncdeletetest_c", [foreignEmote.Id, "does-not-exist"], Actor);
 
         Assert.Equal(0, result.ArchivedCount);
-        Assert.Equal(0, result.NewlyArchivedCount);
         Assert.Equal(2, result.NotFoundIds.Count);
         // The foreign channel's emote stays untouched.
         Assert.False(await db.Emotes.Where(e => e.Id == foreignEmote.Id).Select(e => e.IsArchived).SingleAsync());
     }
 
     [Fact]
-    public async Task MarkRestoredAsync_UnarchivesEmotes_ClearsTheArchiveDate_AndWritesAnAuditRow()
+    public async Task MarkDeletedAsync_MissingChannel_ReturnsAllIdsAsNotFound_WithoutAnAuditRow()
     {
+        // Grenzfall (spec 5.6, point 1): the old response shape, unconditionally — the endpoint's own
+        // stage 7 still tries a resync (and releases the cooldown on NotFound), but that is the
+        // endpoint's job, not the service's.
+        await using var db = fixture.CreateDbContext();
+
+        var service = CreateService(db);
+        var result = await service.MarkDeletedAsync("syncdeletetest_missing", ["does-not-exist"], Actor);
+
+        Assert.Equal(0, result.ArchivedCount);
+        Assert.Equal(["does-not-exist"], result.NotFoundIds);
+        Assert.Equal(0, await db.AuditLogEntries.CountAsync(a => a.ChannelName == "syncdeletetest_missing"));
+    }
+
+    [Fact]
+    public async Task MarkRestoredAsync_CountsGuidMatches_ButLeavesIsArchivedUnchanged()
+    {
+        // Mirror of MarkDeletedAsync's inversion above, in the restore direction.
         await using var db = fixture.CreateDbContext();
         var channel = new Channel { ChannelName = "syncrestoretest_a", TwitchChannelId = "4101", ActiveEmoteSetId = "set-ra" };
         var emote = new Emote
@@ -170,26 +164,21 @@ public class EmoteServiceTests(PostgresFixture fixture)
         var result = await service.MarkRestoredAsync("syncrestoretest_a", [emote.Id], Actor);
 
         Assert.Equal(1, result.RestoredCount);
-        // Drives the channel.synced live event in the endpoint: this call really changed state.
-        Assert.Equal(1, result.NewlyRestoredCount);
         Assert.Empty(result.NotFoundIds);
 
         var row = await db.Emotes.Where(e => e.Id == emote.Id).Select(e => new { e.IsArchived, e.ArchivedAt }).SingleAsync();
-        Assert.False(row.IsArchived);
-        // Active again means the archive date is meaningless — same clearing UpsertEmote does.
-        Assert.Null(row.ArchivedAt);
+        Assert.True(row.IsArchived);
+        Assert.NotNull(row.ArchivedAt);
 
         var audit = await db.AuditLogEntries.SingleAsync(a =>
             a.ChannelName == "syncrestoretest_a" && a.Action == AuditActions.EmotesSyncRestored);
         Assert.Contains("\"emoteCount\":1", audit.DetailsJson);
+        Assert.Contains("\"legacyBodyForm\":true", audit.DetailsJson);
     }
 
     [Fact]
-    public async Task MarkRestoredAsync_CountsAnAlreadyActiveEmoteAsRestored_AndStillAudits()
+    public async Task MarkRestoredAsync_CountsAnAlreadyActiveEmoteToo()
     {
-        // The realistic race, mirrored from the delete: the EventAPI live sync un-archives the
-        // emote off the 7TV ADD dispatch before this bookkeeping call arrives. Goal state reached
-        // → counted, no live event — but the restore happened, so the paper trail is written.
         await using var db = fixture.CreateDbContext();
         var channel = new Channel { ChannelName = "syncrestoretest_b", TwitchChannelId = "4102", ActiveEmoteSetId = "set-rb" };
         var emote = new Emote { ChannelId = channel.Id, Channel = channel, Name = "Alive", SevenTvEmoteId = "7tv-rb1", ImageUrl = "https://cdn/rb1" };
@@ -201,7 +190,6 @@ public class EmoteServiceTests(PostgresFixture fixture)
         var result = await service.MarkRestoredAsync("syncrestoretest_b", [emote.Id], Actor);
 
         Assert.Equal(1, result.RestoredCount);
-        Assert.Equal(0, result.NewlyRestoredCount);
         Assert.Empty(result.NotFoundIds);
         Assert.Equal(1, await db.AuditLogEntries.CountAsync(a =>
             a.ChannelName == "syncrestoretest_b" && a.Action == AuditActions.EmotesSyncRestored));
@@ -222,9 +210,8 @@ public class EmoteServiceTests(PostgresFixture fixture)
         var result = await service.MarkRestoredAsync("syncrestoretest_c", [foreignEmote.Id, "does-not-exist"], Actor);
 
         Assert.Equal(0, result.RestoredCount);
-        Assert.Equal(0, result.NewlyRestoredCount);
         Assert.Equal(2, result.NotFoundIds.Count);
-        // The foreign channel's emote stays archived, and a call that matched nothing is no event.
+        // The foreign channel's emote stays archived, and a call that matched nothing writes no entry.
         Assert.True(await db.Emotes.Where(e => e.Id == foreignEmote.Id).Select(e => e.IsArchived).SingleAsync());
         Assert.Equal(0, await db.AuditLogEntries.CountAsync(a => a.ChannelName == "syncrestoretest_c"));
     }
@@ -386,88 +373,10 @@ public class EmoteServiceTests(PostgresFixture fixture)
         Assert.DoesNotContain("targetIsActiveSetOfChannel", audit.DetailsJson);
     }
 
-    // The set-scoped overloads below (spec 6.6, T5.2): the new sync-deleted/sync-restored body form.
-
-    [Fact]
-    public async Task MarkDeletedAsync_SetScoped_ActiveSet_ArchivesBySevenTvId_AndAuditsSetDetails()
-    {
-        // The precision claim of E1 in the spec's service section: matching by (ChannelId,
-        // SevenTvEmoteId) instead of Emote.Id finds the same row, and this is the only identity a
-        // live-only member (one the grid never saw a UsageStat for) even has.
-        await using var db = fixture.CreateDbContext();
-        var channel = new Channel { ChannelName = "syncdeletetest_seta", TwitchChannelId = "4301", ActiveEmoteSetId = "set-active-a" };
-        var emote = new Emote { ChannelId = channel.Id, Channel = channel, Name = "SetScoped", SevenTvEmoteId = "7tv-seta1", ImageUrl = "https://cdn/seta1" };
-        db.Channels.Add(channel);
-        db.Emotes.Add(emote);
-        await db.SaveChangesAsync();
-
-        var service = CreateService(db);
-        var result = await service.MarkDeletedAsync("syncdeletetest_seta", "set-active-a", ["7tv-seta1"], Actor);
-
-        Assert.Equal(1, result.ArchivedCount);
-        Assert.Equal(1, result.NewlyArchivedCount);
-        Assert.Empty(result.NotFoundIds);
-        Assert.True(result.TargetIsActiveSetOfChannel);
-        Assert.True(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
-
-        var audit = await db.AuditLogEntries.SingleAsync(a =>
-            a.ChannelName == "syncdeletetest_seta" && a.Action == AuditActions.EmotesSyncDeleted);
-        Assert.Equal("emoteSet", audit.TargetType);
-        Assert.Equal("set-active-a", audit.TargetId);
-        Assert.Contains("\"emoteCount\":1", audit.DetailsJson);
-        Assert.Contains("\"emoteSetId\":\"set-active-a\"", audit.DetailsJson);
-        Assert.Contains("\"targetIsActiveSetOfChannel\":true", audit.DetailsJson);
-    }
-
-    [Fact]
-    public async Task MarkDeletedAsync_SetScoped_NonActiveSet_WritesPaperOnly_NoRowChanged()
-    {
-        // Spec 6.6's paper case: a non-active set has no Emote row to match against, so nothing is
-        // archived — only the audit trail records that the report happened.
-        await using var db = fixture.CreateDbContext();
-        var channel = new Channel { ChannelName = "syncdeletetest_setb", TwitchChannelId = "4302", ActiveEmoteSetId = "set-active-b" };
-        var emote = new Emote { ChannelId = channel.Id, Channel = channel, Name = "Untouched", SevenTvEmoteId = "7tv-setb1", ImageUrl = "https://cdn/setb1" };
-        db.Channels.Add(channel);
-        db.Emotes.Add(emote);
-        await db.SaveChangesAsync();
-
-        var service = CreateService(db);
-        var result = await service.MarkDeletedAsync("syncdeletetest_setb", "set-other-b", ["7tv-setb1"], Actor);
-
-        Assert.Equal(0, result.ArchivedCount);
-        Assert.Equal(0, result.NewlyArchivedCount);
-        Assert.Empty(result.NotFoundIds);
-        Assert.False(result.TargetIsActiveSetOfChannel);
-        Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
-
-        var audit = await db.AuditLogEntries.SingleAsync(a =>
-            a.ChannelName == "syncdeletetest_setb" && a.Action == AuditActions.EmotesSyncDeleted);
-        Assert.Equal("emoteSet", audit.TargetType);
-        Assert.Equal("set-other-b", audit.TargetId);
-        Assert.Contains("\"emoteCount\":1", audit.DetailsJson);
-        Assert.Contains("\"targetIsActiveSetOfChannel\":false", audit.DetailsJson);
-    }
-
-    [Fact]
-    public async Task MarkDeletedAsync_SetScoped_NonActiveSet_DeduplicatesSevenTvEmoteIds_BeforeCountingEmoteCount()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = new Channel { ChannelName = "syncdeletetest_dedup", TwitchChannelId = "4303", ActiveEmoteSetId = "set-active-dedup" };
-        db.Channels.Add(channel);
-        await db.SaveChangesAsync();
-
-        var service = CreateService(db);
-        await service.MarkDeletedAsync("syncdeletetest_dedup", "set-other-dedup", ["7tv-dup1", "7tv-dup1"], Actor);
-
-        var audit = await db.AuditLogEntries.SingleAsync(a =>
-            a.ChannelName == "syncdeletetest_dedup" && a.Action == AuditActions.EmotesSyncDeleted);
-        Assert.Contains("\"emoteCount\":1", audit.DetailsJson);
-    }
-
     [Fact]
     public async Task MarkDeletedAsync_LegacyForm_LogsLegacyBodyFormUsage()
     {
-        // E3: the log line that lets Folge-Issue 1 measure, rather than guess, when the legacy body
+        // E4: the log line that lets Folge-Issue 1 measure, rather than guess, when the legacy body
         // form is safe to retire.
         await using var db = fixture.CreateDbContext();
         var channel = new Channel { ChannelName = "syncdeletetest_legacylog", TwitchChannelId = "4304", ActiveEmoteSetId = "set-legacylog" };
@@ -485,80 +394,6 @@ public class EmoteServiceTests(PostgresFixture fixture)
             e => e.Level == LogLevel.Information
                 && e.Message.Contains("sync-deleted", StringComparison.Ordinal)
                 && e.Message.Contains("legacy body form", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task MarkRestoredAsync_SetScoped_ActiveSet_UnarchivesBySevenTvId_AndAuditsSetDetails()
-    {
-        // Mirror of the set-scoped MarkDeletedAsync case above, in the restore direction.
-        await using var db = fixture.CreateDbContext();
-        var channel = new Channel { ChannelName = "syncrestoretest_seta", TwitchChannelId = "4305", ActiveEmoteSetId = "set-ractive-a" };
-        var emote = new Emote
-        {
-            ChannelId = channel.Id,
-            Channel = channel,
-            Name = "SetScopedBack",
-            SevenTvEmoteId = "7tv-rseta1",
-            ImageUrl = "https://cdn/rseta1",
-            IsArchived = true,
-            ArchivedAt = DateTime.UtcNow.AddMinutes(-5)
-        };
-        db.Channels.Add(channel);
-        db.Emotes.Add(emote);
-        await db.SaveChangesAsync();
-
-        var service = CreateService(db);
-        var result = await service.MarkRestoredAsync("syncrestoretest_seta", "set-ractive-a", ["7tv-rseta1"], Actor);
-
-        Assert.Equal(1, result.RestoredCount);
-        Assert.Equal(1, result.NewlyRestoredCount);
-        Assert.Empty(result.NotFoundIds);
-        Assert.True(result.TargetIsActiveSetOfChannel);
-
-        var row = await db.Emotes.Where(e => e.Id == emote.Id).Select(e => new { e.IsArchived, e.ArchivedAt }).SingleAsync();
-        Assert.False(row.IsArchived);
-        Assert.Null(row.ArchivedAt);
-
-        var audit = await db.AuditLogEntries.SingleAsync(a =>
-            a.ChannelName == "syncrestoretest_seta" && a.Action == AuditActions.EmotesSyncRestored);
-        Assert.Equal("emoteSet", audit.TargetType);
-        Assert.Equal("set-ractive-a", audit.TargetId);
-        Assert.Contains("\"targetIsActiveSetOfChannel\":true", audit.DetailsJson);
-    }
-
-    [Fact]
-    public async Task MarkRestoredAsync_SetScoped_NonActiveSet_WritesPaperOnly_NoRowChanged()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = new Channel { ChannelName = "syncrestoretest_setb", TwitchChannelId = "4306", ActiveEmoteSetId = "set-ractive-b" };
-        var emote = new Emote
-        {
-            ChannelId = channel.Id,
-            Channel = channel,
-            Name = "StaysArchived",
-            SevenTvEmoteId = "7tv-rsetb1",
-            ImageUrl = "https://cdn/rsetb1",
-            IsArchived = true,
-            ArchivedAt = DateTime.UtcNow.AddMinutes(-5)
-        };
-        db.Channels.Add(channel);
-        db.Emotes.Add(emote);
-        await db.SaveChangesAsync();
-
-        var service = CreateService(db);
-        var result = await service.MarkRestoredAsync("syncrestoretest_setb", "set-other-b", ["7tv-rsetb1"], Actor);
-
-        Assert.Equal(0, result.RestoredCount);
-        Assert.Equal(0, result.NewlyRestoredCount);
-        Assert.Empty(result.NotFoundIds);
-        Assert.False(result.TargetIsActiveSetOfChannel);
-        Assert.True(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
-
-        var audit = await db.AuditLogEntries.SingleAsync(a =>
-            a.ChannelName == "syncrestoretest_setb" && a.Action == AuditActions.EmotesSyncRestored);
-        Assert.Equal("emoteSet", audit.TargetType);
-        Assert.Equal("set-other-b", audit.TargetId);
-        Assert.Contains("\"targetIsActiveSetOfChannel\":false", audit.DetailsJson);
     }
 
     // The set-centric report (restore-per-set spec 5.2/5.5, AK 10–13, 28). Every case uses its own
