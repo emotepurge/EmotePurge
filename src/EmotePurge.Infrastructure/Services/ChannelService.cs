@@ -91,8 +91,6 @@ public class ChannelService(
 
     public async Task<bool> LeaveAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)
     {
-        var normalized = ChannelName.Normalize(channelName);
-
         var channel = await db.LoadChannelAsync(channelName, cancellationToken);
         if (channel is null)
         {
@@ -106,23 +104,19 @@ public class ChannelService(
         // returns the *current* set and past Twitch chat cannot be queried after the fact. A leave
         // is an operational action a moderator may perform; destroying history is not.
         // SevenTvPeriodicResyncWorker and Worker's boot recovery both filter on IsBotActive, and
-        // JoinAsync reactivates the row, so nothing else needs to change.
-        channel.IsBotActive = false;
-        // Measuring point for the 180-day retention purge (RetentionPolicy) — nulled again by
+        // JoinAsync reactivates the row, so nothing else needs to change. DeactivatedAtUtc is the
+        // measuring point for the 180-day retention purge (RetentionPolicy) — nulled again by
         // whatever reactivates the row (CompleteJoinAsync's reactivation branch, the identity
-        // merge).
-        channel.DeactivatedAtUtc = DateTime.UtcNow;
-        // Only reached for a channel that exists — the unknown-channel branch above returns without
-        // touching anything and therefore without an entry.
-        db.AddAuditEntry(actor, AuditActions.ChannelLeave, channelName: normalized);
-        await db.SaveChangesAsync(cancellationToken);
+        // merge). The write itself is shared with ChannelIdentityService's own objection-gate
+        // deactivation — see ChannelDeactivation for why that could not just inject this service.
+        //
         // Committed before published: if this throws (Redis outage), the row is already the source
         // of truth and SevenTvPeriodicResyncWorker's prune step (RosterPrunePolicy, issue #41) picks
         // the channel up within one resync interval regardless — this publish is an acceleration, not
         // a prerequisite. Same is true for JoinAsync below and TriggerResyncAsync via the periodic
         // sync loop itself; only this method needed a new convergence net, since JOIN/RESYNC already
         // had one.
-        await redisPublisher.PublishAsync(BotCommands.Channel, $"{BotCommands.LeavePrefix}{normalized}", cancellationToken);
+        await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, actor, cancellationToken);
 
         return true;
     }

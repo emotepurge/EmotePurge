@@ -16,8 +16,11 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/ExcludedChannelFilter.cs` ·
 `src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
 `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` (neu, second revision) ·
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
 `src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Core/Services/IChannelIdentityService.cs` (second revision) ·
+`src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` (second revision) ·
 `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
 `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
@@ -65,10 +68,6 @@ on the immutable Twitch broadcaster id and never on the login:**
 - Boot recovery and the periodic 7TV resync in the Worker deliberately get **no** guard: both only
   ever continue observing rows the database already marks active (`ListActiveChannelNamesAsync`) —
   neither creates nor reactivates a row, so there is nothing here for the block list to intercept.
-  `BackfillIdAsync` (an id-less active row learning its Twitch id) is the one acknowledged residual
-  gap — it neither creates nor reactivates a row either, so it is out of this change's stated scope,
-  but a channel joined during a Helix outage and blocked only afterward can stay active until the
-  operator notices and purges it by hand.
 
 Response contract: `ChannelJoinStatus.ChannelExcluded` maps to **403** with
 `{ errorCode: "channel_excluded" }` (`ApiErrorCodes.ChannelExcluded`) — distinct from the existing
@@ -102,6 +101,49 @@ own.
   warning line repeating too. Fixed by passing the two row ids the callers already have (from their
   own read-only lookups, no extra query) into `MergeAsync` and settling both the moment the
   exclusion check itself refuses, mirroring the emote-based refusal exactly.
+
+**Revised 2026-09-24 (second Codex review of this branch):** the residual gap the entry above used to
+document for `BackfillIdAsync` was in fact a live end-to-end path, not just a stray unblocked case.
+Concretely: an excluded broadcaster can have an active, id-bearing row under its old login (the
+survivor a merge would target) *and* an active id-less duplicate under its current login (the merge's
+would-be loser). `MergeAsync`'s own exclusion guard correctly refuses that merge, so both rows stay
+active — exactly as designed, at that point. But `docs/Operations.md`'s own recommended next step is
+for the operator to purge the channel after blocking it, and purging the *duplicate* row (the one
+sitting under the channel's current, visible name) frees that name. The next reconcile tick then finds
+the name vacant, and `ReconcileKnownIdRowAsync` did what it always does when a name frees up: called
+`RenameAsync` on the surviving blocked row and published a JOIN — silently undoing the block the
+operator had just gone through the documented procedure to enforce.
+
+Fixed with a general rule rather than another special case: **an active row whose Twitch id — known
+already, or just resolved through the row's login — is excluded is deactivated before any rename,
+merge or backfill decision is made for it**, in both `ReconcileKnownIdRowAsync` (checked first, ahead
+of even consulting Helix's answer for the login) and `ReconcileIdLessRowAsync` (checked immediately
+once the login resolves to an identity, ahead of the existing-holder lookup that feeds both
+`BackfillIdAsync` and `MergeAsync`). Deactivation reuses the exact write `ChannelService.LeaveAsync`
+already does — `IsBotActive = false`, `DeactivatedAtUtc` stamped, a `channel.leave` audit entry under
+`AuditActor.System`, and the LEAVE command published so the worker parts the chat — factored into a
+new `ChannelDeactivation.DeactivateAsync` static helper both services call, rather than
+`ChannelIdentityService` taking a dependency on `IChannelService` (which would be circular:
+`ChannelService` already depends on `IChannelIdentityService` for `LookupByLoginAsync`). A new
+`ChannelIdentityReconcileSummary.Deactivated` counter carries the count into the worker's log line,
+same restraint as every other counter here — never an id or a login.
+
+`MergeAsync`'s own exclusion guard is left in place as defense in depth rather than removed: with both
+callers now gating earlier, it should be unreachable for an excluded id in ordinary operation, but it
+is the one guard specifically against `survivor.IsBotActive |= loser.IsBotActive`, and a second line of
+defense there is worth the one extra `IsExcluded` call. Its own `settledChannelIds`-based
+deduplication (the previous revision above) is untouched and still exists for the merge refusal that
+is *not* about exclusion — the loser-still-has-emotes case.
+
+One consequence worth noting: two rows of the same excluded duplicate pair, both still active, are now
+deactivated **independently** rather than through one refused merge — each detects its own tie to the
+blocked id on its own turn in the pass. That is two real writes, not one event double-counted, so
+`Deactivated` correctly reads 2 for that shape rather than repeating the old `MergesRefused` semantics
+of "exactly one, however the pair is reached."
+
+`docs/Operations.md` revised to say the reconcile now enforces the block list on its own, within one
+reconcile interval of the block taking effect — purging remains the recommended step, but only to
+actually delete the row's data, not to keep the objection enforced.
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 

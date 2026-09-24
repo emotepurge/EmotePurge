@@ -46,7 +46,7 @@ public class ChannelIdentityService(
 
         if (rows.Count == 0)
         {
-            return new ChannelIdentityReconcileSummary(0, 0, 0, 0, 0, 0);
+            return new ChannelIdentityReconcileSummary(0, 0, 0, 0, 0, 0, 0);
         }
 
         var appToken = await appTokenProvider.GetTokenAsync(ct);
@@ -132,7 +132,8 @@ public class ChannelIdentityService(
             counters.Renamed,
             counters.Merged,
             counters.MergesRefused,
-            counters.LoginsMissing);
+            counters.LoginsMissing,
+            counters.Deactivated);
     }
 
     public async Task<TwitchUserLookup> LookupByLoginAsync(string login, CancellationToken ct = default)
@@ -173,6 +174,20 @@ public class ChannelIdentityService(
         HashSet<string> settledChannelIds,
         CancellationToken ct)
     {
+        // Objection gate (GDPR Art. 21, issue #260, this revision — supersedes the residual gap the
+        // #252 DECISIONS entry used to document): checked first, before Helix's answer is even
+        // consulted, so a row whose *known* Twitch id is excluded can never reach a rename or a
+        // merge decision below — not "refuse the one write that would reactivate it" (MergeAsync's
+        // own guard, still in place as defense in depth) but "stop observing it at all". Without
+        // this, purging the row's id-less duplicate under its current login (the operator's own
+        // documented cleanup step, Operations.md) freed that name for this row to be renamed onto
+        // and rejoined on the very next tick — the exact P1 Codex finding this closes.
+        if (excludedChannelFilter.IsExcluded(twitchChannelId))
+        {
+            await DeactivateExcludedRowAsync(row, counters, ct);
+            return;
+        }
+
         if (!identitiesById.TryGetValue(twitchChannelId, out var identity))
         {
             // Case 6: the id resolved to nothing in an otherwise successful response — the account
@@ -261,6 +276,20 @@ public class ChannelIdentityService(
 
         warningState.Clear(ChannelIdentityWarningState.LoginKey(row.ChannelName));
 
+        // Objection gate, the id-less counterpart of the check at the top of
+        // ReconcileKnownIdRowAsync: this row is about to learn (via backfill) or act on
+        // (via the merge below) a Twitch id that turns out to be excluded — "newly backfilled" in
+        // the DECISIONS wording. Checked before either LoadChannelByTwitchIdReadOnlyAsync or
+        // BackfillIdAsync can act on the identity, so this row is deactivated instead of being
+        // brought into observation under that id at all, whether or not another row already holds
+        // it (MergeAsync's own exclusion guard stays in place for that case too, as defense in
+        // depth — see the class remark on MergeAsync).
+        if (excludedChannelFilter.IsExcluded(identity.Id))
+        {
+            await DeactivateExcludedRowAsync(row, counters, ct);
+            return;
+        }
+
         // Read-only, like the occupant in ReconcileKnownIdRowAsync: a merge re-reads it under its lock.
         var holder = await db.LoadChannelByTwitchIdReadOnlyAsync(identity.Id, ct);
         if (holder is null)
@@ -284,6 +313,35 @@ public class ChannelIdentityService(
         // active rows are in the snapshot), which is exactly the row a retention purge can be deleting
         // right now — hence the lock MergeAsync takes on it.
         await MergeAsync(identity.Id, row.ChannelName, holder.Id, row.Id, counters, settledChannelIds, ct);
+    }
+
+    /// <summary>
+    /// The write both objection-gate checks above share: an active row whose (known or about-to-be-
+    /// learned) Twitch id is excluded is deactivated exactly like an operator's own leave — see
+    /// <see cref="ChannelDeactivation.DeactivateAsync"/> — instead of being renamed, merged, or
+    /// backfilled into observation. The row is reloaded tracked here rather than passed in: the
+    /// caller only has the read-only projection snapshot, and this write needs a tracked entity to
+    /// mutate, same as <see cref="RenameAsync"/> and <see cref="BackfillIdAsync"/>.
+    /// </summary>
+    private async Task DeactivateExcludedRowAsync(ChannelIdentityRow row, ReconcileCounters counters, CancellationToken ct)
+    {
+        var channel = await db.LoadChannelAsync(row.ChannelName, ct);
+        if (channel is null || !channel.IsBotActive)
+        {
+            // Gone, or already deactivated since the snapshot was taken (a concurrent leave, or this
+            // row's other half already settled it — see the class remark on why a duplicate pair is
+            // reached from both ends). Either way the outcome the block list exists for already
+            // holds, so there is nothing to write and nothing to warn about.
+            return;
+        }
+
+        await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, AuditActor.System, ct);
+        counters.Deactivated++;
+
+        // Neither the id nor the login is logged — same restraint as MergeAsync's own exclusion
+        // refusal: a log line naming which channel this concerns would itself leak the objection the
+        // block exists to honour.
+        logger.LogWarning("Channel deactivated: the channel is on the excluded-channel list.");
     }
 
     private async Task BackfillIdAsync(
@@ -373,6 +431,14 @@ public class ChannelIdentityService(
         // two row ids needed to settle the pair are therefore taken from the caller's own snapshot
         // (already loaded, read-only, before this call) rather than from a load this branch would
         // otherwise have to do just to name them.
+        //
+        // Defense in depth as of issue #260 (this revision): both callers now check
+        // excludedChannelFilter themselves before they ever decide to call MergeAsync at all — see
+        // the gate at the top of ReconcileKnownIdRowAsync and ReconcileIdLessRowAsync — and
+        // deactivate the row instead, so neither an active survivor nor an active loser can reach
+        // this point carrying an excluded id in ordinary operation any more. Left in place anyway:
+        // it is the guard against `survivor.IsBotActive |= loser.IsBotActive` specifically, and
+        // removing it would trade a second line of defense for saving one `IsExcluded` call.
         if (excludedChannelFilter.IsExcluded(twitchChannelId))
         {
             counters.MergesRefused++;
@@ -611,5 +677,6 @@ public class ChannelIdentityService(
         public int Merged;
         public int MergesRefused;
         public int LoginsMissing;
+        public int Deactivated;
     }
 }

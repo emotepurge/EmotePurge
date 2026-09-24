@@ -167,6 +167,17 @@ The join endpoint answers `403` with `{ errorCode: "channel_excluded" }` for a b
 a short, neutral frontend message ("This channel cannot be added.") that names neither a legal
 objection nor a reason. Like the chatter list, only a count is ever logged, never an id.
 
+**Since 2026-09-24, the identity reconcile enforces the block list on its own, without waiting for
+step 4.** Once `worker` has picked up the new `EXCLUDED_CHANNEL_IDS` (step 3), its hourly identity
+reconcile (`Twitch:IdentityReconcileIntervalMinutes`, default 60) deactivates — same write as an
+ordinary leave: `IsBotActive` off, the retention clock stamped, a LEAVE published — any channel row
+that is still active and whose Twitch id turns out to be on the list, whether the row already knew
+that id or only just resolved it through its current login. That closes the gap step 4 used to guard
+against by itself: even if the channel is never purged, it stops being observed within one reconcile
+interval of the block taking effect. Purging in step 4 is still the right thing to do and still
+recommended — it is what actually deletes the channel's data — but it is no longer what keeps the
+objection enforced.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,
