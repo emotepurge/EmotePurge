@@ -55,7 +55,7 @@ public sealed class ContactSubmissionService(
         // Only once Turnstile has actually verified this caller does a permit get spent — see the
         // class remarks for why the order matters. Still before the SMTP send: a caller must not be
         // able to spend that round trip without first reserving a place in the window.
-        if (!sendBudget.TryCharge())
+        if (!sendBudget.TryCharge(out var reservation))
         {
             logger.LogWarning("Contact form global send budget exhausted for the current window.");
             return ContactSubmissionOutcome.GlobalLimitReached;
@@ -65,8 +65,11 @@ public sealed class ContactSubmissionService(
         if (!sent)
         {
             // The reservation above was for a send that never happened — give it back rather than
-            // letting an SMTP hiccup also cost the visitor (and everyone behind them) a permit.
-            sendBudget.Release();
+            // letting an SMTP hiccup also cost the visitor (and everyone behind them) a permit. Passing
+            // the reservation itself (rather than "release whatever is newest") is what keeps this
+            // correct when another request's charge lands in between (Codex P2, docs/DECISIONS.md
+            // 2026-09-24 revision).
+            sendBudget.Release(reservation);
             return ContactSubmissionOutcome.Unavailable;
         }
 

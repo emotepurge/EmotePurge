@@ -34,8 +34,11 @@ public sealed class ContactSendBudget
     private readonly Lock _gate = new();
 
     // A LinkedList, not a Queue: TryCharge still only ever trims from the front (oldest first, same
-    // as before), but Release needs to drop the *most recently* granted entry, and a Queue offers no
-    // way to remove from that end. Neither operation is ever more than O(1) either way.
+    // as before), but Release now needs to drop one specific, caller-identified entry — not
+    // necessarily the front or the back — and a Queue offers no way to remove from the middle at all.
+    // Trimming and Release are both still O(1): trimming only ever walks from the front, and
+    // LinkedList<T>.Remove(node) is a constant-time unlink once the node itself is already in hand
+    // (see ContactSendReservation), no traversal needed.
     private readonly LinkedList<DateTimeOffset> _granted = new();
 
     public ContactSendBudget(int maxSends = DefaultMaxSends, TimeSpan? window = null, TimeProvider? timeProvider = null)
@@ -53,13 +56,14 @@ public sealed class ContactSendBudget
 
     /// <summary>
     /// Takes one permit for one send, without waiting. <see langword="false"/> means the caller must
-    /// not send. The caller charges this only once a Turnstile verification has already succeeded —
-    /// and, importantly, must not have spent an SMTP round trip getting here — so that a burst of
-    /// shape-valid requests carrying an invalid token can fail Turnstile as many times as it likes
-    /// without ever touching this budget (Codex P1, docs/DECISIONS.md 2026-09-24 revision). See
-    /// <see cref="Release"/> for undoing a charge whose SMTP send then failed anyway.
+    /// not send, and <paramref name="reservation"/> is then meaningless. The caller charges this only
+    /// once a Turnstile verification has already succeeded — and, importantly, must not have spent an
+    /// SMTP round trip getting here — so that a burst of shape-valid requests carrying an invalid
+    /// token can fail Turnstile as many times as it likes without ever touching this budget (Codex P1,
+    /// docs/DECISIONS.md 2026-09-24 revision). Pass the granted <paramref name="reservation"/> to
+    /// <see cref="Release"/> to undo a charge whose SMTP send then failed anyway.
     /// </summary>
-    public bool TryCharge()
+    public bool TryCharge(out ContactSendReservation reservation)
     {
         lock (_gate)
         {
@@ -71,31 +75,59 @@ public sealed class ContactSendBudget
 
             if (_granted.Count >= MaxSends)
             {
+                reservation = default;
                 return false;
             }
 
-            _granted.AddLast(now);
+            reservation = new ContactSendReservation(_granted.AddLast(now));
             return true;
         }
     }
 
     /// <summary>
-    /// Refunds the most recently granted permit — for a caller that charged <see cref="TryCharge"/>
-    /// expecting to send, but whose SMTP send then failed: only a message that actually left for the
-    /// operator's mailbox should count against this budget, not an attempt an unrelated SMTP hiccup
-    /// aborted. Removes the newest entry rather than the oldest so the refund pairs with the charge
-    /// this same call just made — the two always run back-to-back on the same request, never
-    /// interleaved with an unrelated charge under the lock. A no-op with nothing granted (defensive
-    /// only: a caller must never be able to call this without a matching prior <see cref="TryCharge"/>).
+    /// Refunds exactly the permit <paramref name="reservation"/> identifies — for a caller that
+    /// charged <see cref="TryCharge"/> expecting to send, but whose SMTP send then failed: only a
+    /// message that actually left for the operator's mailbox should count against this budget, not an
+    /// attempt an unrelated SMTP hiccup aborted.
     /// </summary>
-    public void Release()
+    /// <remarks>
+    /// Revised 2026-09-24 (Codex P2): this used to drop whichever entry was newest, on the assumption
+    /// that a charge and its own release always run back-to-back with nothing else interleaved. Two
+    /// sends overlapping in flight broke that assumption — charge A, charge B, then A's SMTP send
+    /// fails — and dropping "newest" refunded B's still-good reservation while leaving A's, the one
+    /// that actually failed, occupying a slot until it aged out on its own. Removing the node the
+    /// caller's own reservation names, instead of a position in the list, makes the refund correct
+    /// regardless of how many other charges happened in between. A no-op if the reservation's node is
+    /// no longer in this budget — already trimmed by a since-elapsed window, or already released once
+    /// (defensive only: a caller must never be able to call this twice for the same reservation, or
+    /// without a matching prior <see cref="TryCharge"/>, but a double release must not corrupt an
+    /// unrelated entry that happens to occupy the same list position afterwards).
+    /// </remarks>
+    public void Release(ContactSendReservation reservation)
     {
         lock (_gate)
         {
-            if (_granted.Count > 0)
+            var node = reservation.Node;
+            if (node is not null && node.List == _granted)
             {
-                _granted.RemoveLast();
+                _granted.Remove(node);
             }
         }
     }
+}
+
+/// <summary>
+/// An opaque handle to one permit granted by <see cref="ContactSendBudget.TryCharge"/>, consumed by
+/// <see cref="ContactSendBudget.Release"/> to refund that exact permit — never "whichever one is
+/// newest" (see that method's remarks for why that used to be wrong). The default value (as produced
+/// by a refused <see cref="ContactSendBudget.TryCharge"/>) identifies nothing and releases nothing.
+/// </summary>
+public readonly struct ContactSendReservation
+{
+    internal ContactSendReservation(LinkedListNode<DateTimeOffset> node)
+    {
+        Node = node;
+    }
+
+    internal LinkedListNode<DateTimeOffset>? Node { get; }
 }

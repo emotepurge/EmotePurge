@@ -45,7 +45,7 @@ public class ContactSubmissionServiceTests
             .Returns(TurnstileVerificationResult.Success);
         var mailSender = Substitute.For<IContactMailSender>();
         var service = CreateService(FullyConfigured(), turnstile, mailSender, out var budget, maxSends: 1);
-        Assert.True(budget.TryCharge()); // exhaust the one-permit budget before the service ever runs
+        Assert.True(budget.TryCharge(out _)); // exhaust the one-permit budget before the service ever runs
 
         var outcome = await service.SubmitAsync(Submission, "token", "203.0.113.1", CancellationToken.None);
 
@@ -79,7 +79,7 @@ public class ContactSubmissionServiceTests
 
         // The one-permit budget must still be fully intact — none of the thirty failed-captcha
         // attempts spent it.
-        Assert.True(budget.TryCharge());
+        Assert.True(budget.TryCharge(out _));
         await mailSender.DidNotReceive().SendAsync(Arg.Any<string?>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -166,7 +166,7 @@ public class ContactSubmissionServiceTests
         var outcome = await service.SubmitAsync(Submission, "token", "203.0.113.1", CancellationToken.None);
 
         Assert.Equal(ContactSubmissionOutcome.Unavailable, outcome);
-        Assert.True(budget.TryCharge());
+        Assert.True(budget.TryCharge(out _));
     }
 
     [Fact]

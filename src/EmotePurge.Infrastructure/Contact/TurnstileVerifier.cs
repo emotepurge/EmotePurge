@@ -25,6 +25,27 @@ public sealed class TurnstileVerifier(
     private const string ResponseFormKey = "response";
     private const string RemoteIpFormKey = "remoteip";
 
+    // Cloudflare's documented siteverify error-codes (developers.cloudflare.com/turnstile/get-started/
+    // server-side-validation/, "Error codes" table, checked 2026-09-24) split into two kinds. These
+    // three are about the *token the visitor's browser produced* — an ordinary, expected outcome of a
+    // real visitor, nothing an operator did wrong:
+    //   - invalid-input-response: "The response parameter is invalid or has expired."
+    //   - timeout-or-duplicate: "The response parameter has already been validated before."
+    //   - missing-input-response: "The response parameter was not passed." — reachable when the
+    //     widget never produced a token at all (blocked script, ad blocker, a visitor who submits
+    //     before the challenge finishes), not something the operator's own request shape controls.
+    // Every other documented code — missing-input-secret, invalid-input-secret (both about the
+    // operator's own secret key), bad-request (a malformed request this backend sent), and
+    // internal-error (Cloudflare's own outage) — is the operator's or Cloudflare's problem, not the
+    // visitor's, and must not be reported to them as "captcha failed" (Codex P2, docs/DECISIONS.md
+    // 2026-09-24 revision).
+    private static readonly HashSet<string> VisitorTokenErrorCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "invalid-input-response",
+        "timeout-or-duplicate",
+        "missing-input-response",
+    };
+
     public async Task<TurnstileVerificationResult> VerifyAsync(
         string token, string? remoteIp, CancellationToken cancellationToken)
     {
@@ -60,9 +81,28 @@ public sealed class TurnstileVerifier(
             }
 
             var body = await response.Content.ReadFromJsonAsync<SiteVerifyResponse>(cancellationToken);
-            return body is { Success: true }
-                ? TurnstileVerificationResult.Success
-                : TurnstileVerificationResult.Failed;
+            if (body is { Success: true })
+            {
+                return TurnstileVerificationResult.Success;
+            }
+
+            var errorCodes = body?.ErrorCodes ?? [];
+            if (errorCodes.Count == 0 || errorCodes.All(code => VisitorTokenErrorCodes.Contains(code)))
+            {
+                // Either no code at all (rejected token, no further detail) or every reported code is
+                // about the token itself — an ordinary "this visitor's answer did not check out".
+                return TurnstileVerificationResult.Failed;
+            }
+
+            // At least one reported code is about the operator's own secret key, a malformed request
+            // this backend sent, or Cloudflare's own internal error — never the visitor's fault, so
+            // this must not read to them as "wrong answer". Logged at Warning, without the token or the
+            // secret key itself, so a misconfigured secret is caught from the logs instead of looking
+            // like ordinary visitor churn.
+            logger.LogWarning(
+                "Turnstile siteverify reported a configuration-side problem: {ErrorCodes}",
+                string.Join(", ", errorCodes));
+            return TurnstileVerificationResult.Unavailable;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or NotSupportedException
             or System.Text.Json.JsonException)
