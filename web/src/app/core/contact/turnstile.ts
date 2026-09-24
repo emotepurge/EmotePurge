@@ -51,10 +51,24 @@ function loadTurnstileScript(): Promise<TurnstileApi> {
   }
 
   loadPromise = new Promise<TurnstileApi>((resolve, reject) => {
+    // Shared by onReady's "loaded but window.turnstile is missing" branch and onError below: both
+    // are a failed load in every way that matters to the next caller, so both get the same recovery
+    // — see onError's own comment for why clearing the cache and the tag matters.
+    const clearFailedLoad = () => {
+      loadPromise = null;
+      document.getElementById(SCRIPT_ID)?.remove();
+    };
+
     const onReady = () => {
       if (window.turnstile) {
         resolve(window.turnstile);
       } else {
+        // The script fired `load` but never actually defined the global — same dead end as a
+        // network-level failure below. Without clearing here (Codex P2), the cached `loadPromise`
+        // would keep answering every future caller with this same already-rejected promise, and the
+        // now-inert <script> tag would keep this function taking the "existing" branch below forever
+        // — so a visitor who returned to /contact could never get a genuine retry.
+        clearFailedLoad();
         reject(new Error('Turnstile script loaded without exposing window.turnstile.'));
       }
     };
@@ -66,8 +80,7 @@ function loadTurnstileScript(): Promise<TurnstileApi> {
     // `ContactPage` instance, e.g. after a transient network blip or reconnecting Wi-Fi) could
     // never get a genuine second attempt at loading the widget.
     const onError = () => {
-      loadPromise = null;
-      document.getElementById(SCRIPT_ID)?.remove();
+      clearFailedLoad();
       reject(new Error('Failed to load the Turnstile script.'));
     };
 

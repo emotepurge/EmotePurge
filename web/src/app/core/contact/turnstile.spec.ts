@@ -129,6 +129,35 @@ describe('loadTurnstileScript', () => {
     await expect(retry).resolves.toBe(fakeApi);
   });
 
+  /**
+   * Codex P2 (docs/DECISIONS.md 2026-09-24 revision): the `load`-without-`window.turnstile` branch
+   * used to reject without the cleanup the `error` branch above already had, leaving the same two
+   * traps behind — the cached, already-rejected `loadPromise` answering every future caller, and the
+   * inert `<script>` tag (which will never fire `load` or `error` again) keeping this function on the
+   * "existing tag" branch forever. Mirrors the error-path retry test above for the other failure shape.
+   */
+  it('clears the cached promise and the script tag when load fires without window.turnstile, so a second call retries with a fresh one', async () => {
+    const loader = await freshLoader();
+
+    const promise = loader();
+    const failedScript = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
+    expect(failedScript).not.toBeNull();
+    failedScript!.dispatchEvent(new Event('load'));
+
+    await expect(promise).rejects.toThrow('window.turnstile');
+    expect(document.getElementById(SCRIPT_ID)).toBeNull();
+
+    const fakeApi: TurnstileApi = { render: () => 'id', remove: () => {}, reset: () => {} };
+    const retry = loader();
+    const retryScript = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
+    expect(retryScript).not.toBeNull();
+    expect(retryScript).not.toBe(failedScript);
+    window.turnstile = fakeApi;
+    retryScript!.dispatchEvent(new Event('load'));
+
+    await expect(retry).resolves.toBe(fakeApi);
+  });
+
   it('reuses an already-present script tag (a second component instance) instead of appending another', async () => {
     const loader = await freshLoader();
 

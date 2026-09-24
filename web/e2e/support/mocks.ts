@@ -1206,20 +1206,46 @@ export async function mockContactSubmit(
  * would after a real visitor solves the real challenge — exercising the app's actual script-loading
  * code path (unlike `TURNSTILE_LOADER`'s DI override in the Vitest specs, which never touches it).
  * Call before `page.goto`, same as `installLiveStub`/`mockSevenTvGql`.
+ *
+ * `render()` also inserts a surrogate element into the given container, sized to Cloudflare's
+ * documented "normal" widget footprint — 300×65px (developers.cloudflare.com/turnstile/get-started/
+ * client-side-rendering/widget-configurations/, "Widget size" table, checked 2026-09-24) — with
+ * neutral, inert styling. Before this (Codex P3), the stub called back with a token but never put
+ * anything in the DOM, so the UI audit (`ui-audit.audit.ts`, 'contact' scenario) screenshotted an
+ * empty gap where the real widget's iframe would sit, instead of a representative reserved footprint.
+ * `aria-hidden` and no interactive role: it exists only to occupy layout space for the screenshot,
+ * never as something the audit's own accessibility checks should evaluate as a real control — the
+ * real widget's own iframe carries its own accessible name, which this stub does not attempt to fake.
  */
 export async function mockTurnstile(page: Page, { token = 'e2e-fake-token' } = {}): Promise<void> {
   await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/javascript',
-      body: `window.turnstile = {
-        render: function (container, options) {
-          setTimeout(function () { options.callback(${JSON.stringify(token)}); }, 0);
-          return 'e2e-stub-widget';
-        },
-        remove: function () {},
-        reset: function () {},
-      };`,
+      body: `window.turnstile = (function () {
+        var elements = {};
+        var nextId = 0;
+        return {
+          render: function (container, options) {
+            var el = document.createElement('div');
+            el.setAttribute('aria-hidden', 'true');
+            el.style.cssText =
+              'width:300px;height:65px;border:1px solid #d1d5db;border-radius:4px;' +
+              'background:#f3f4f6;box-sizing:border-box;';
+            container.appendChild(el);
+            var widgetId = 'e2e-stub-widget-' + (nextId++);
+            elements[widgetId] = el;
+            setTimeout(function () { options.callback(${JSON.stringify(token)}); }, 0);
+            return widgetId;
+          },
+          remove: function (widgetId) {
+            var el = elements[widgetId];
+            if (el && el.parentNode) { el.parentNode.removeChild(el); }
+            delete elements[widgetId];
+          },
+          reset: function () {},
+        };
+      })();`,
     }),
   );
 }

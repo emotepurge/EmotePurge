@@ -8,6 +8,7 @@ import {
   effect,
   inject,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
@@ -360,30 +361,49 @@ export class ContactPage {
   );
 
   constructor() {
-    // Renders the Turnstile widget exactly once, the moment the form becomes available AND its
-    // container exists in the DOM — both conditions this effect itself reads as signals, so it
-    // re-runs the instant either flips. Guarded by turnstileWidgetId() so a later, unrelated signal
-    // change (e.g. re-fetching config) never renders a second widget into the same container.
+    // Renders the Turnstile widget the moment the form becomes available AND its container exists
+    // in the DOM, and re-renders it whenever the resolved theme or the active language changes
+    // afterwards — both read unconditionally up front so they are always tracked dependencies of
+    // this effect, not only inside the `.then()` below (a read inside an async callback runs after
+    // the effect has already finished executing, so it is never tracked at all — before this fix,
+    // changing either through this page's own AccountMenu left the widget showing its old
+    // language/theme until the next full render, Codex P2, docs/DECISIONS.md 2026-09-24 revision).
+    //
+    // `turnstileApi`/`turnstileWidgetId` are deliberately read through `untracked()`: this effect
+    // itself is what writes them (directly here, and asynchronously once `turnstileLoader()`
+    // resolves), and tracking them too would make each of those writes reschedule this very effect —
+    // remove, re-render, which writes the id again, which reschedules again, forever. Only
+    // config/container/theme/language should ever cause a re-render.
     effect(() => {
       const config = this.configResource.hasValue() ? this.configResource.value() : null;
       const container = this.turnstileContainer();
-      if (
-        !config?.available ||
-        !config.turnstileSiteKey ||
-        !container ||
-        this.turnstileWidgetId() !== null
-      ) {
+      const theme = this.themeService.resolved();
+      const language = this.languageService.lang();
+
+      if (!config?.available || !config.turnstileSiteKey || !container) {
         return;
       }
 
       const siteKey = config.turnstileSiteKey;
+
+      const previousApi = untracked(() => this.turnstileApi());
+      const previousWidgetId = untracked(() => this.turnstileWidgetId());
+      if (previousWidgetId !== null) {
+        previousApi?.remove(previousWidgetId);
+        this.turnstileWidgetId.set(null);
+        // The completed/expired state of a rendered widget belongs to that widget instance, which
+        // is about to be removed — force a fresh challenge under the new language/theme rather than
+        // keep a token issued under the old one.
+        this.turnstileToken.set(null);
+      }
+
       this.turnstileLoader()
         .then((api) => {
           this.turnstileApi.set(api);
           const widgetId = api.render(container.nativeElement, {
             sitekey: siteKey,
-            theme: this.themeService.resolved(),
-            language: this.languageService.lang(),
+            theme,
+            language,
             callback: (token) => this.turnstileToken.set(token),
             'expired-callback': () => this.turnstileToken.set(null),
             'error-callback': () => this.turnstileToken.set(null),

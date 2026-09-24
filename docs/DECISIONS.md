@@ -160,6 +160,49 @@ And frontend:
    surfaces at once) but deliberately never touches the already-completed Turnstile token — only a
    server-side rejection does that.
 
+**Revised 2026-09-24 (final Codex Sol review before merge, five findings, all closed with a test that
+failed before its fix):**
+
+1. **(P2) `ContactSendBudget.Release()` dropped whichever permit was newest**, on the assumption that
+   a charge and its own release always run back-to-back with nothing interleaved — true for a single
+   request, not once two sends overlap in flight: charge A, charge B, then A's send fails, and the old
+   behaviour refunded B's still-good reservation while A's, the one that actually failed, kept
+   occupying a slot until it aged out on its own. `TryCharge()` now returns an opaque
+   `ContactSendReservation` (wrapping the underlying `LinkedListNode`) and `Release(reservation)` frees
+   exactly that entry, regardless of what else was charged in between; a stale or already-released
+   reservation is a no-op rather than corrupting whatever now occupies its old list position.
+2. **(P2) `TurnstileVerifier` read every non-success `siteverify` answer as "the visitor's token was
+   wrong"**, including Cloudflare's documented operator/configuration codes
+   (developers.cloudflare.com/turnstile/get-started/server-side-validation/, "Error codes" table) —
+   `missing-input-secret`/`invalid-input-secret` (the operator's own secret key), `bad-request` (a
+   malformed request this backend sent) and `internal-error` (Cloudflare's own outage). A misconfigured
+   secret would have shown every visitor "captcha failed" forever instead of surfacing as the
+   `contact_unavailable` 503 it actually is. Now maps only the token-side codes
+   (`invalid-input-response`, `timeout-or-duplicate`, `missing-input-response`) to a captcha failure;
+   every other documented code, and a mixed answer carrying any of them, becomes `Unavailable` and is
+   logged at Warning without the secret or the token.
+3. **(P2) A Turnstile script that fired `load` without ever defining `window.turnstile` left the
+   cached `loadPromise` and the dead `<script>` tag behind**, unlike the sibling `onError` path fixed
+   in the first revision above — the same trap, reachable a different way. `loadTurnstileScript` now
+   clears both from that branch too.
+4. **(P2) `ContactPage`'s Turnstile-render effect read the resolved theme and the active language only
+   inside the `.then()` callback of the widget's async render** — a read inside an async callback runs
+   after the effect has already finished executing, so neither was ever a tracked dependency. Changing
+   either through this page's own `AccountMenu` left the already-rendered widget showing its old
+   theme/language indefinitely. Both are now read unconditionally at the top of the effect; a change to
+   either removes the current widget and renders a fresh one under the new value, clearing the token
+   with it (a completed/expired state belongs to the widget instance that produced it).
+   `turnstileApi`/`turnstileWidgetId` are deliberately read through `untracked()` inside the same
+   effect — tracking them too would make each of the effect's own writes to them reschedule itself,
+   remove-then-render forever.
+5. **(P3) The Playwright Turnstile stub (`mockTurnstile`) never put anything in the DOM**, so the UI
+   audit's 'contact' scenario screenshotted an empty gap where the widget's iframe would sit. `render()`
+   now inserts an inert, `aria-hidden` surrogate sized to Cloudflare's documented "normal" widget
+   footprint (300×65px, developers.cloudflare.com/turnstile/get-started/client-side-rendering/
+   widget-configurations/, "Widget size" table) and `remove()` actually removes it — re-run of the
+   audit filtered to 'contact' (`--grep "contact @"`): 10 scenarios, `horizontalOverflowPx` and
+   `contrastViolations` both 0 throughout.
+
 ---
 
 ### 2026-09-24 — A channel block list closes the "purge, then rejoin" gap of the GDPR objection (#252)

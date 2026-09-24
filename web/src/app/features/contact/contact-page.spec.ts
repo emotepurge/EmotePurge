@@ -11,6 +11,8 @@ import {
   TurnstileApi,
   TurnstileRenderOptions,
 } from '../../core/contact/turnstile';
+import { LanguageService } from '../../core/i18n/language.service';
+import { ThemeService } from '../../core/theme/theme.service';
 import { ContactPage } from './contact-page';
 
 const DE_TRANSLATIONS = {
@@ -408,6 +410,63 @@ describe('ContactPage', () => {
     message.dispatchEvent(new Event('input'));
     fixture.detectChanges();
     expect(submitButton(fixture).disabled).toBe(false);
+  });
+
+  /**
+   * Codex P2 (docs/DECISIONS.md 2026-09-24 revision): the effect used to read `themeService.resolved()`
+   * and `languageService.lang()` only inside the `.then()` callback of the widget's async render —
+   * outside Angular's reactive tracking, since a read inside an async callback runs after the effect
+   * has already finished executing. Changing either via this page's own AccountMenu therefore left
+   * the rendered widget showing its old theme/language until some unrelated signal happened to
+   * re-run the effect. This pins the fix: the widget is removed and re-rendered with the new value,
+   * and the stale token is cleared with it (a token belongs to the widget instance that produced it).
+   */
+  it('re-renders the Turnstile widget under the new theme and clears the token when the theme changes after render', async () => {
+    const fixture = await renderAvailable();
+    fillOutForm(fixture);
+    completeTurnstile(fixture);
+    expect(submitButton(fixture).disabled).toBe(false);
+    expect(turnstileApi.renderedOptions[0].theme).toBe('light');
+
+    TestBed.inject(ThemeService).setPreference('dark');
+    await settle(fixture);
+
+    expect(turnstileApi.removedWidgetIds).toEqual(['widget-1']);
+    expect(turnstileApi.renderedOptions).toHaveLength(2);
+    expect(turnstileApi.renderedOptions[1].theme).toBe('dark');
+    // The old widget's completed token must not survive onto the new one.
+    expect(submitButton(fixture).disabled).toBe(true);
+  });
+
+  it('re-renders the Turnstile widget under the new language when the language changes after render', async () => {
+    const fixture = await renderAvailable();
+    const languageService = TestBed.inject(LanguageService);
+    const initialLanguage = turnstileApi.renderedOptions[0].language;
+    expect(languageService.lang()).toBe(initialLanguage);
+    const nextLanguage = initialLanguage === 'de' ? 'en' : 'de';
+
+    // Bypasses LanguageService.setLang's own async TranslocoService.load round trip (this testing
+    // module only registers 'de') — the effect's own reactivity to the `lang` signal is what this
+    // test is about, not how a caller happens to change it.
+    languageService.lang.set(nextLanguage);
+    await settle(fixture);
+
+    expect(turnstileApi.removedWidgetIds).toEqual(['widget-1']);
+    expect(turnstileApi.renderedOptions).toHaveLength(2);
+    expect(turnstileApi.renderedOptions[1].language).toBe(nextLanguage);
+  });
+
+  it('does not re-render the Turnstile widget on an unrelated change once it is already rendered', async () => {
+    const fixture = await renderAvailable();
+    expect(turnstileApi.renderedOptions).toHaveLength(1);
+
+    const message: HTMLTextAreaElement = fixture.nativeElement.querySelector('#contact-message');
+    message.value = 'Typing should not disturb the already-rendered widget.';
+    message.dispatchEvent(new Event('input'));
+    await settle(fixture);
+
+    expect(turnstileApi.renderedOptions).toHaveLength(1);
+    expect(turnstileApi.removedWidgetIds).toEqual([]);
   });
 
   it('resets the Turnstile widget after a failed submission, re-blocking submit', async () => {
