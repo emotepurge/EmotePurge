@@ -10,6 +10,42 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — The chat-log backfill harness honours the same objection gate (#260, supersedes a point of the same day's #252 entry)
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/HarnessRunner.cs` ·
+`tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs` · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `docs/Operations.md`
+
+A GDPR review of the privacy policy found the gap the #252 entry below explicitly accepted: it said
+the harness (#69, a second entry point of the same `EmotePurge.Worker` image that replays archived
+chat logs through its own `ReplayDayCounter` rather than the live `TwitchChatManager` path) was
+"untouched" and out of scope, reasoning that it "already stores no identity of its own". That is
+true for what the harness *writes*, but not for what it *counts on the way there*: before this
+change, a re-run of the harness over a channel's archive window would still count every message from
+an objecting chatter into `HumanCounts`/`BotCounts`/the k-distribution, exactly as if the objection
+did not exist — the archive itself is untouched by an objection (it lives outside this repo's
+control), so only the counting step can honour one.
+
+Fixed the same way the live path already does it: `HarnessRunner` now takes the same
+`IExcludedChatterFilter` (already registered for both entry points via `AddWorkerCore`, no new DI
+wiring needed) and checks it as the very first thing in the per-message counting callback inside
+`ExecuteAsync` — before the `sawUserId`/`sawBadges` bookkeeping that decides whether a day's logs
+even carry a chatter signal, and before the message reaches `ReplayDayCounter.Count` at all. Mirrors
+`TwitchChatManager.OnMessageReceived`'s own ordering (check first, drop before anything else touches
+the message) so neither path can count what the other has been told to forget. Wired the existing
+`TWITCH_EXCLUDED_CHATTER_IDS` env var into the `harness` service in both compose files the same way
+it already reaches `worker` — no new config key.
+
+Tested at the `ReplayDayCounter`/message-callback seam in `HarnessRunnerTests` (container-free, like
+the rest of the harness's decision logic): an excluded chatter's hit does not reach a day line's
+`HumanCounts` while a co-present non-excluded chatter's hit still does, and the default
+(non-excluded) fixture used throughout the rest of the file stands in for the empty-list case,
+confirmed by its own explicit test.
+
+`docs/Operations.md`'s "Excluding a chatter" procedure now says the harness picks up the same list
+without a restart step of its own — it is a one-shot process, so every invocation already reads the
+current `.env`.
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·

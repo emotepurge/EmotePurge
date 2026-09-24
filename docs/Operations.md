@@ -135,6 +135,15 @@ either the emote counters or the bot detector — the sender is no longer proces
 category. There is nothing to do retroactively: already aggregated usage counts contain no
 identity, so no per-person removal is possible or necessary against them.
 
+**The harness (issue #69) honours the same list, since 2026-09-24 (#260).** `docker compose
+--profile harness run ...` reads `Twitch:ExcludedChatterIds` through the same
+`IExcludedChatterFilter` as the worker and drops an excluded chatter's archived messages before
+they reach `ReplayDayCounter` — a replay can therefore not resurface what the live path no longer
+counts. No separate step is needed for it beyond updating `TWITCH_EXCLUDED_CHATTER_IDS` in step 2
+above: the harness is a one-shot process, so every invocation already starts fresh with the current
+`.env`, unlike the worker's step 3, which only needs an explicit restart because it otherwise keeps
+running.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,

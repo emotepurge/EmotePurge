@@ -48,6 +48,7 @@ public class HarnessRunnerTests : IDisposable
     private readonly IUsageStatQueryService _usage = Substitute.For<IUsageStatQueryService>();
     private readonly IChatLogArchiveClient _archive = Substitute.For<IChatLogArchiveClient>();
     private readonly IBotChatterDetector _bots = Substitute.For<IBotChatterDetector>();
+    private readonly IExcludedChatterFilter _excludedChatters = Substitute.For<IExcludedChatterFilter>();
 
     public HarnessRunnerTests()
     {
@@ -64,6 +65,7 @@ public class HarnessRunnerTests : IDisposable
         _usage.GetEarliestBotUsageDateAsync(ChannelId, Arg.Any<CancellationToken>()).Returns(new DateOnly(2026, 8, 30));
         _bots.KnownBotAccountIds.Returns(new HashSet<string> { "19264788" });
         _bots.IsBot(Arg.Any<string?>(), Arg.Any<IReadOnlyList<KeyValuePair<string, string>>?>()).Returns(false);
+        _excludedChatters.IsExcluded(Arg.Any<string?>()).Returns(false);
     }
 
     public void Dispose()
@@ -553,6 +555,50 @@ public class HarnessRunnerTests : IDisposable
         // not a gate figure.
         Assert.Contains("Quartilsgröße (nominal)", markdown);
         Assert.Contains("keine Gate-Kennzahl, nur Bericht", markdown);
+    }
+
+    // GDPR Art. 21 objection gate (issue #252/#260): the harness must honour
+    // Twitch:ExcludedChatterIds exactly like the live worker does, so a replay of the archive cannot
+    // resurface what an objecting chatter's live traffic no longer produces.
+    [Fact]
+    public async Task AnExcludedChatterId_MessageIsNotCounted()
+    {
+        _excludedChatters.IsExcluded("objector-1").Returns(true);
+
+        RespondWith(async (day, onMessage) =>
+        {
+            // Two chatters hit the same emote on the same day; only the non-excluded one may reach
+            // the counter. The non-excluded message also keeps sawUserId/sawBadges set, so the run
+            // does not fall back to ExitUndecidable for lack of either signal.
+            await onMessage(Message(day, "objector-1", "PogChamp"));
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(2);
+        });
+
+        Assert.Equal(0, await Run(3));
+
+        var jsonl = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        // One hit per day, not two: the excluded chatter's message never reached ReplayDayCounter.
+        Assert.Contains("\"humanCounts\":{\"e1\":1}", jsonl);
+        Assert.DoesNotContain("\"humanCounts\":{\"e1\":2}", jsonl);
+    }
+
+    [Fact]
+    public async Task NoExcludedChatterIds_MessagesAreCountedExactlyAsBefore()
+    {
+        // The constructor's default IsExcluded(...) => false fixture stands in for an empty/missing
+        // Twitch:ExcludedChatterIds: the gate must change nothing about the counting path when it has
+        // nothing to exclude.
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(0, await Run(3));
+
+        var jsonl = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+        Assert.Contains("\"humanCounts\":{\"e1\":1}", jsonl);
     }
 
     [Fact]
@@ -1448,6 +1494,7 @@ public class HarnessRunnerTests : IDisposable
             _usage,
             _archive,
             _bots,
+            _excludedChatters,
             new HarnessOptions
             {
                 OutputDirectory = _directory,
@@ -1535,6 +1582,7 @@ public class HarnessRunnerTests : IDisposable
             _usage,
             _archive,
             _bots,
+            _excludedChatters,
             new HarnessOptions
             {
                 OutputDirectory = _directory,
@@ -1558,6 +1606,7 @@ public class HarnessRunnerTests : IDisposable
             _usage,
             _archive,
             _bots,
+            _excludedChatters,
             new HarnessOptions
             {
                 OutputDirectory = _directory,

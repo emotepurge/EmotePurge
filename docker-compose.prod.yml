@@ -177,6 +177,10 @@ services:
       # (HarnessRunIdentity.BotAccountIds). A later cleanup round that removes the dead lines
       # would silently change the bot classification here, and thus the measured number.
       - Twitch__AdditionalBotAccountIds=${TWITCH_ADDITIONAL_BOT_ACCOUNT_IDS:-}
+      # Same objection gate as the Worker (GDPR Art. 21, issue #252/#260): HarnessRunner reads it via
+      # the same IExcludedChatterFilter and drops an excluded chatter's archived messages before they
+      # reach the counter, so a replay cannot resurface what the live path no longer counts.
+      - Twitch__ExcludedChatterIds=${TWITCH_EXCLUDED_CHATTER_IDS:-}
       - Harness__OutputDirectory=/data/harness
       - Harness__MaxMegabytesPerRun=${HARNESS_MAX_MEGABYTES_PER_RUN:-200}
       - Harness__SharedChatCutover=${HARNESS_SHARED_CHAT_CUTOVER:-}

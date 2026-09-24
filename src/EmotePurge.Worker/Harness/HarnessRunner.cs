@@ -43,12 +43,20 @@ namespace EmotePurge.Worker.Harness;
 /// to be reassessed. None of them is "the numbers were bad" — that verdict is a human reading the
 /// report against the pre-registration in #69.
 /// </para>
+/// <para>
+/// <b>Honours the same objection gate as the live worker (GDPR Art. 21, issue #252/#260).</b> A
+/// message from an id in <c>Twitch:ExcludedChatterIds</c> is dropped in the counting callback before
+/// <c>sawUserId</c>/<c>sawBadges</c> bookkeeping and before it reaches <see cref="ReplayDayCounter"/>
+/// at all — the same ordering <c>TwitchChatManager.OnMessageReceived</c> uses for the live path, so a
+/// replayed archive cannot resurface what an objecting chatter's live traffic no longer produces.
+/// </para>
 /// </summary>
 public sealed class HarnessRunner(
     IChannelService channelService,
     IUsageStatQueryService usageStatQueryService,
     IChatLogArchiveClient archiveClient,
     IBotChatterDetector botChatterDetector,
+    IExcludedChatterFilter excludedChatterFilter,
     HarnessOptions options,
     TimeProvider timeProvider,
     ILogger<HarnessRunner> logger)
@@ -375,6 +383,17 @@ public sealed class HarnessRunner(
                     remainingBytes,
                     message =>
                     {
+                        // Objection gate (GDPR Art. 21, issue #252/#260): dropped before the
+                        // sawUserId/sawBadges bookkeeping below and before the message reaches
+                        // ReplayDayCounter at all — same ordering as the early return in
+                        // TwitchChatManager.OnMessageReceived, so a replayed archive counts nothing
+                        // an excluded chatter's live traffic would not count either. Matches only
+                        // the immutable Twitch user id, never a login.
+                        if (excludedChatterFilter.IsExcluded(message.UserId))
+                        {
+                            return ValueTask.CompletedTask;
+                        }
+
                         if (!string.IsNullOrEmpty(message.UserId))
                         {
                             sawUserId = true;
