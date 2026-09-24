@@ -270,8 +270,7 @@ describe('ImportTrigger', () => {
       // (`httpPost`) defaults to an empty target set. Fifth is whether that check actually ran
       // (#149), sixth its name-taken count.
       expect(startRestore).toHaveBeenCalledWith(
-        'set-a',
-        'channel-a',
+        expect.objectContaining({ setId: 'set-a', hostChannelName: 'channel-a' }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
@@ -303,8 +302,7 @@ describe('ImportTrigger', () => {
       closedAt<boolean>(2).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        CURRENT_SET,
-        CURRENT_CHANNEL,
+        expect.objectContaining({ setId: CURRENT_SET, hostChannelName: CURRENT_CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
@@ -568,8 +566,7 @@ describe('ImportTrigger', () => {
       closedAt<boolean>(1).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        'set-halloween',
-        CURRENT_CHANNEL,
+        expect.objectContaining({ setId: 'set-halloween', hostChannelName: CURRENT_CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,

@@ -95,8 +95,8 @@ function toImportTarget(
  * **All four doors target `setId` itself (spec 8.6, T4.5), restore included since K5 (T5.2/T5.3)**
  * — the page's *selected* set, active or not (`toImportTarget` above for the other three;
  * `startRestoreFlow`'s own `setId`/`setName` parameters for restore). Restore books its un-archive
- * through the set-aware `EmoteAdminService.syncRestored(channelName, { emoteSetId, … })` call
- * (`restore-flow.ts`, T5.2), and its confirmation names the set it re-adds into (T5.3, spec 8.8) —
+ * through the set-centric `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call
+ * (`SevenTvRestoreService`, spec 6.4), and its confirmation names the set it re-adds into (T5.3, spec 8.8) —
  * restoring from a file is therefore never locked to the active set here either; the interim
  * `FileImportStep.restoreEnabled` gate that used to enforce that (T4.5) was removed once T5.3
  * lifted it for good (K5 fix round, #200 finding F). The protocol *match* check itself (`setId` vs.

@@ -827,6 +827,75 @@ export async function mockSyncImportedToSet(page: Page, emoteSetId: string): Pro
   );
 }
 
+/** The body of both set-centric bookkeeping routes (spec 5.1), as the client sends it. */
+export interface MockSyncInSetBody {
+  sevenTvEmoteIds: string[];
+  expectedChannelName: string | null;
+}
+
+/** How {@link mockSyncDeletedInSet}/{@link mockSyncRestoredInSet} answer (spec 5.3). The default
+ *  is a paper-only 200 — `channels: []`, no `unresolvedChannel`, nothing resynced — which the
+ *  client reads as a plain success. `channels[].count` is `archivedCount`/`restoredCount`; left
+ *  out, it is the full reported count. `status` other than 200 answers with that status and no
+ *  body instead. */
+export interface MockSyncInSetAnswer {
+  status?: number;
+  channels?: { channelName: string; count?: number; notFoundIds?: string[] }[];
+  unresolvedChannel?: { channelName: string; reason: 'notTracked' | 'activeSetDiffers' } | null;
+  resyncTriggered?: string[];
+}
+
+async function mockSyncInSet(
+  page: Page,
+  emoteSetId: string,
+  direction: 'deleted' | 'restored',
+  answer: MockSyncInSetAnswer,
+): Promise<MockSyncInSetBody[]> {
+  const bodies: MockSyncInSetBody[] = [];
+  await page.route(`**/api/seventv/emote-sets/${emoteSetId}/sync-${direction}`, (route) => {
+    const body = route.request().postDataJSON() as MockSyncInSetBody;
+    bodies.push(body);
+    if (answer.status !== undefined && answer.status !== 200) {
+      return route.fulfill({ status: answer.status });
+    }
+    const reportedCount = new Set(body.sevenTvEmoteIds).size;
+    const countField = direction === 'deleted' ? 'archivedCount' : 'restoredCount';
+    return fulfillJson(route, 200, {
+      reportedCount,
+      channels: (answer.channels ?? []).map((channel) => ({
+        channelName: channel.channelName,
+        [countField]: channel.count ?? reportedCount,
+        notFoundIds: channel.notFoundIds ?? [],
+      })),
+      unresolvedChannel: answer.unresolvedChannel ?? null,
+      resyncTriggered: answer.resyncTriggered ?? [],
+    });
+  });
+  return bodies;
+}
+
+/** POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted (spec 5.1, 5.3) — the set-centric
+ *  deletion report of a delete run and of a replace run's removals. Resolves to the list the
+ *  request bodies land in as they arrive, for a test to assert `{ sevenTvEmoteIds,
+ *  expectedChannelName }` against (AK 8). */
+export async function mockSyncDeletedInSet(
+  page: Page,
+  emoteSetId: string,
+  answer: MockSyncInSetAnswer = {},
+): Promise<MockSyncInSetBody[]> {
+  return mockSyncInSet(page, emoteSetId, 'deleted', answer);
+}
+
+/** POST /api/seventv/emote-sets/{emoteSetId}/sync-restored (spec 5.1, 5.3) — the restore's
+ *  counterpart of {@link mockSyncDeletedInSet}, same answer options, same captured bodies (AK 7). */
+export async function mockSyncRestoredInSet(
+  page: Page,
+  emoteSetId: string,
+  answer: MockSyncInSetAnswer = {},
+): Promise<MockSyncInSetBody[]> {
+  return mockSyncInSet(page, emoteSetId, 'restored', answer);
+}
+
 export interface MockEmoteSetTargetSet {
   id: string;
   name: string;

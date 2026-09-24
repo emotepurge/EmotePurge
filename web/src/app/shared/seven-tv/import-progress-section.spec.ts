@@ -13,7 +13,7 @@ import {
 } from '../../core/seven-tv/seven-tv-import.service';
 import { ResyncTriggerState } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SyncReportState } from '../../core/seven-tv/sync-report-outcome';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportProgressSection } from './import-progress-section';
 
@@ -71,6 +71,9 @@ const DE_TRANSLATIONS = {
       failed: 'Abgleich konnte nicht angestoßen werden.',
     },
   },
+  syncReportReason: {
+    setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
+  },
 };
 
 function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
@@ -107,6 +110,7 @@ interface FakeImportService {
   run: WritableSignal<ImportRunInfo | null>;
   syncReport: WritableSignal<SyncReportState>;
   removalReport: WritableSignal<SyncReportState>;
+  removalReportReason: WritableSignal<SyncReportReason | null>;
   resyncTrigger: WritableSignal<ResyncTriggerState>;
   abortedForPrivileges: WritableSignal<boolean>;
   skippedDuplicates: WritableSignal<number>;
@@ -130,6 +134,7 @@ function createFakeImportService(): FakeImportService {
     run: signal<ImportRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
     removalReport: signal<SyncReportState>('idle'),
+    removalReportReason: signal<SyncReportReason | null>(null),
     resyncTrigger: signal<ResyncTriggerState>('idle'),
     abortedForPrivileges: signal(false),
     skippedDuplicates: signal(0),
@@ -701,6 +706,27 @@ describe('ImportProgressSection', () => {
       findButton(fixture, 'Entfernung erneut melden')?.click();
 
       expect(importService.retryRemovalReport).toHaveBeenCalledTimes(1);
+    });
+
+    // Spec E23: the removal banner carries the reason as its own line.
+    it('shows the reason line under a failed removal report, and none without a reason', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('failed');
+      importService.removalReportReason.set('setNotFound');
+
+      const withReason = render();
+      expect(withReason.nativeElement.textContent).toContain(
+        'Grund: Das Set gibt es bei 7TV nicht mehr.',
+      );
+
+      importService.removalReportReason.set(null);
+      const withoutReason = render();
+      expect(withoutReason.nativeElement.textContent).toContain(
+        'Entfernungs-Rückmeldung fehlgeschlagen',
+      );
+      expect(withoutReason.nativeElement.textContent).not.toContain('Grund:');
     });
 
     it('shows the same retry banner for a partial removal report', () => {

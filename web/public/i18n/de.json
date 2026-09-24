@@ -932,7 +932,8 @@
       "pending": "Synchronisierung wird angestoßen…",
       "succeeded": "Synchronisierung angestoßen — die Liste aktualisiert sich gleich.",
       "cooldown": "Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.",
-      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach."
+      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.",
+      "backendTriggered": "Abgleich läuft bereits — die Liste aktualisiert sich gleich."
     },
     "import": {
       "trigger": "Importieren",
@@ -1059,6 +1060,14 @@
       }
     },
     "anotherRunStarted": "Inzwischen hat ein anderer 7TV-Lauf begonnen."
+  },
+  "syncReportReason": {
+    "forbidden": "Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.",
+    "setNotFound": "Grund: Das Set gibt es bei 7TV nicht mehr.",
+    "unavailable": "Grund: EmotePurge oder 7TV war gerade nicht erreichbar.",
+    "channelMismatch": "Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.",
+    "shortfall": "Grund: Nicht alle Emotes waren in EmotePurge vermerkt.",
+    "other": "Grund: Unerwarteter Fehler."
   },
   "import": {
     "copyButton": "Übertragen",

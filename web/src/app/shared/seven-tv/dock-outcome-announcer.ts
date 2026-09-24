@@ -10,7 +10,10 @@ import {
 
 /** Translation key for a run's resync acknowledgement, or `null` while there is nothing to say.
  *  Shared by this announcer and the two visible notices it speaks for (`MassDeletePanel`,
- *  `ImportProgressSection`), so the spoken and the shown wording cannot drift apart. */
+ *  `ImportProgressSection`), so the spoken and the shown wording cannot drift apart. Every
+ *  non-`'idle'` state maps to `<family>.resync.<state>`, so a new `ResyncTriggerState` needs its
+ *  key in both locales — `'backendTriggered'` only under `restore`, since the import never takes
+ *  it (spec 6.4/6.5). */
 export function resyncNoticeKey(
   state: ResyncTriggerState,
   family: 'import' | 'restore',

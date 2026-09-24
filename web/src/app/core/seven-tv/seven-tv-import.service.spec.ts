@@ -6,6 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ImportOrigin, ImportRow } from './import-source';
+import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvImportService } from './seven-tv-import.service';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
@@ -42,7 +43,21 @@ const RESYNC_B = '/api/channels/kanal_b/resync';
 const SYNC_IMPORTED_C = '/api/channels/kanal_c/emotes/sync-imported';
 const RESYNC_C = '/api/channels/kanal_c/resync';
 const SYNC_IMPORTED_SET_U = '/api/seventv/emote-sets/set-u/sync-imported';
-const SYNC_DELETED_B = '/api/channels/kanal_b/emotes/sync-deleted';
+// The removal report is set-centric (spec 6.5): addressed to the run's target set, not a channel.
+const SYNC_DELETED_B = '/api/seventv/emote-sets/set-b/sync-deleted';
+
+/** A set-centric `sync-deleted` answer (spec 5.3) — paper only by default. */
+function deletedAnswer(
+  overrides: Partial<SyncDeletedInSetResponse> = {},
+): SyncDeletedInSetResponse {
+  return {
+    reportedCount: 1,
+    channels: [],
+    unresolvedChannel: null,
+    resyncTriggered: [],
+    ...overrides,
+  };
+}
 
 const CHANNEL_ORIGIN: ImportOrigin = { kind: 'channel', channelName: 'brudivoeller_tv' };
 const FOREIGN_CHANNEL_ORIGIN: ImportOrigin = {
@@ -790,7 +805,7 @@ describe('SevenTvImportService', () => {
 
       expect(service.destructiveRunActive()).toBe(false);
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -850,11 +865,13 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.removedCount).toBe(1);
 
       httpMock.expectNone(SYNC_IMPORTED_B);
-      expect(httpMock.expectOne(SYNC_DELETED_B).request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      removalReq.flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
-    it("reports the removal through sync-deleted with the target set's emoteSetId", () => {
+    it("reports the removal to the target set's sync-deleted, expecting the target channel of an active set", () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
       answerNext({});
       answerNext({});
@@ -862,11 +879,98 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       const removal = httpMock.expectOne(SYNC_DELETED_B);
       expect(removal.request.method).toBe('POST');
-      expect(removal.request.body).toEqual({ emoteSetId: 'set-b', sevenTvEmoteIds: ['tgt-x'] });
+      expect(removal.request.body).toEqual({
+        sevenTvEmoteIds: ['tgt-x'],
+        expectedChannelName: 'kanal_b',
+      });
       expect(service.removalReport()).toBe('pending');
-      removal.flush({ archivedCount: 1, notFoundIds: [] });
+      // F15: the resync waits for the removal report's answer.
+      httpMock.expectNone(RESYNC_B);
+      removal.flush(deletedAnswer());
       expect(service.removalReport()).toBe('succeeded');
+      expect(service.removalReportReason()).toBeNull();
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    // Spec 6.5, F15, AK 27: a channel the removal report's answer names in resyncTriggered was
+    // resynced by the backend already — the import's own resync skips it.
+    it('skips its own resync when the removal report says the backend already resynced the channel', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      answerNext({});
+      answerNext({});
+
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_B).flush(
+        deletedAnswer({
+          channels: [{ channelName: 'kanal_b', archivedCount: 1, notFoundIds: [] }],
+          resyncTriggered: ['kanal_b'],
+        }),
+      );
+
+      httpMock.expectNone(RESYNC_B);
+      expect(service.removalReport()).toBe('succeeded');
+      // The import never takes 'backendTriggered' — it simply stays idle.
+      expect(service.resyncTrigger()).toBe('idle');
+    });
+
+    // Spec 6.5: a tracked target that is not the channel's active set expects no channel — and, as
+    // before, gets no import resync (it would resync the active set, not this one).
+    it('reports a removal from a non-active set without an expected channel and without a resync', () => {
+      service.startImport({ ...TARGET_B, isActiveSet: false }, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
+      answerNext({});
+      answerNext({});
+
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+      const removal = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removal.request.body).toEqual({
+        sevenTvEmoteIds: ['tgt-x'],
+        expectedChannelName: null,
+      });
+      removal.flush(deletedAnswer());
+
+      httpMock.expectNone(RESYNC_B);
+      expect(service.removalReport()).toBe('succeeded');
+    });
+
+    // AK 15: the removal report reads its answer through the same threeway classification.
+    it('reads an unresolved expected channel in the removal answer as partial/channelMismatch', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      answerNext({});
+      answerNext({});
+
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_B).flush(
+        deletedAnswer({
+          unresolvedChannel: { channelName: 'kanal_b', reason: 'activeSetDiffers' },
+          resyncTriggered: ['kanal_b'],
+        }),
+      );
+
+      expect(service.removalReport()).toBe('partial');
+      expect(service.removalReportReason()).toBe('channelMismatch');
+      httpMock.expectNone(RESYNC_B);
+    });
+
+    // AK 15, #224: a vanished target set is failed/setNotFound, never succeeded — and the resync,
+    // which the failed report did not cover, still runs.
+    it('reads a 404 removal report after the retries as failed/setNotFound and still resyncs', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      answerNext({});
+      answerNext({});
+
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_B).flush(null, { status: 404, statusText: 'Not Found' });
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_DELETED_B).flush(null, { status: 404, statusText: 'Not Found' });
+      vi.advanceTimersByTime(4000);
+      httpMock.expectOne(SYNC_DELETED_B).flush(null, { status: 404, statusText: 'Not Found' });
+
+      expect(service.removalReport()).toBe('failed');
+      expect(service.removalReportReason()).toBe('setNotFound');
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+      expect(service.resyncTrigger()).toBe('succeeded');
     });
 
     it('throws for a replace plan against an untracked target and sends nothing', () => {
@@ -918,8 +1022,11 @@ describe('SevenTvImportService', () => {
       service.retryRemovalReport();
 
       const retry = httpMock.expectOne(SYNC_DELETED_B);
-      expect(retry.request.body).toEqual({ emoteSetId: 'set-b', sevenTvEmoteIds: ['tgt-x'] });
-      retry.flush({ archivedCount: 1, notFoundIds: [] });
+      expect(retry.request.body).toEqual({
+        sevenTvEmoteIds: ['tgt-x'],
+        expectedChannelName: 'kanal_b',
+      });
+      retry.flush(deletedAnswer());
       expect(service.removalReport()).toBe('succeeded');
       expect(service.run()).toBe(record);
       httpMock.expectNone(SYNC_IMPORTED_B);
@@ -948,7 +1055,7 @@ describe('SevenTvImportService', () => {
       // The one re-read, answered with a failure so the run settles without it.
       httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'unavailable' }] });
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -981,7 +1088,7 @@ describe('SevenTvImportService', () => {
         'src-x',
         'src-y',
       ]);
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1000,7 +1107,9 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.removedCount).toBe(1);
 
       httpMock.expectNone(SYNC_IMPORTED_B);
-      expect(httpMock.expectOne(SYNC_DELETED_B).request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      removalReq.flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1026,7 +1135,9 @@ describe('SevenTvImportService', () => {
       });
 
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-y']);
-      expect(httpMock.expectOne(SYNC_DELETED_B).request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      removalReq.flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1052,7 +1163,7 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.result?.items[1].status).toBe('failed');
       expect(service.syncReport()).toBe('pending');
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1083,7 +1194,8 @@ describe('SevenTvImportService', () => {
       expect(staleImported.request.body.sevenTvEmoteIds).toEqual(['src-x', 'src-y']);
       const staleRemoved = httpMock.expectOne(SYNC_DELETED_B);
       expect(staleRemoved.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
-      const staleResync = httpMock.expectOne(RESYNC_B);
+      // The resync waits for the removal report's answer (F15).
+      httpMock.expectNone(RESYNC_B);
       // …but run 1 is never shown again, and none of its report states lands on run 2.
       expect(service.run()).toBe(second);
       expect(service.items().map((item) => item.key)).toEqual(['src-z']);
@@ -1092,7 +1204,7 @@ describe('SevenTvImportService', () => {
       expect(service.resyncTrigger()).toBe('idle');
       staleImported.flush({}, { status: 401, statusText: 'Unauthorized' });
       staleRemoved.flush({}, { status: 401, statusText: 'Unauthorized' });
-      staleResync.flush(null, { status: 202, statusText: 'Accepted' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
       expect(service.syncReport()).toBe('idle');
       expect(service.removalReport()).toBe('idle');
       expect(service.resyncTrigger()).toBe('idle');
@@ -1124,7 +1236,7 @@ describe('SevenTvImportService', () => {
       const removed = httpMock.expectOne(SYNC_DELETED_B);
       expect(removed.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
       imported.flush(null, { status: 204, statusText: 'OK' });
-      removed.flush({ archivedCount: 1, notFoundIds: [] });
+      removed.flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
       expect(service.syncReport()).toBe('idle');
       expect(service.removalReport()).toBe('idle');
@@ -1185,7 +1297,7 @@ describe('SevenTvImportService', () => {
       expect(add?.sevenTvErrorMessage).toBeUndefined();
       expect(service.run()?.unknownCount).toBe(1);
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1232,7 +1344,7 @@ describe('SevenTvImportService', () => {
       expect(service.run()).toMatchObject({ settlement: 'settled', unknownCount: 1 });
       expect(service.run()?.result?.items[1].status).toBe('unknown');
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1253,7 +1365,7 @@ describe('SevenTvImportService', () => {
       expect(read.cancelled).toBe(true);
       expect(service.run()).toMatchObject({ settlement: 'settled', unknownCount: 1 });
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1285,7 +1397,7 @@ describe('SevenTvImportService', () => {
         }
         // An adopt reports nothing either way: the imported ids are the replace's alone.
         expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-y']);
-        httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+        httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
         httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
       },
     );
@@ -1306,7 +1418,9 @@ describe('SevenTvImportService', () => {
       httpMock.expectNone(GQL_ENDPOINT);
 
       httpMock.expectNone(SYNC_IMPORTED_B);
-      expect(httpMock.expectOne(SYNC_DELETED_B).request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      removalReq.flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1327,7 +1441,7 @@ describe('SevenTvImportService', () => {
 
       expect(service.destructiveRunActive()).toBe(false);
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
   });
@@ -1360,7 +1474,7 @@ describe('SevenTvImportService', () => {
       expect(removeSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
-      httpMock.expectOne(SYNC_DELETED_B).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 

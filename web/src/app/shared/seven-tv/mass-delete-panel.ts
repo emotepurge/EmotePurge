@@ -198,6 +198,7 @@ export interface DeletableEmote {
           [items]="deleteService.queue()"
           [isRunning]="deleteService.isRunning()"
           [syncReport]="deleteService.syncReport()"
+          [syncReportReason]="deleteService.syncReportReason()"
           [rateLimitPauseSeconds]="deleteService.rateLimitPauseSeconds()"
           (cancelled)="deleteService.cancel()"
           (dismissed)="deleteService.reset()"
@@ -269,6 +270,7 @@ export interface DeletableEmote {
           [isRunning]="restoreService.isRunning()"
           labelPrefix="restore"
           [syncReport]="restoreService.syncReport()"
+          [syncReportReason]="restoreService.syncReportReason()"
           [rateLimitPauseSeconds]="restoreService.rateLimitPauseSeconds()"
           (cancelled)="restoreService.cancel()"
           (dismissed)="restoreService.reset()"
@@ -723,9 +725,18 @@ export class MassDeletePanel {
           if (this.arbiter.activeRun() !== null) {
             return;
           }
+          // Interim (spec 6.4): the target comes from the delete run's own values — its set, its
+          // channel, and whether that set is the channel's active one — until the restore entry
+          // derives it from the resolved target instead.
           this.restoreService.startRestore(
-            runSetId,
-            runChannelName,
+            {
+              setId: runSetId,
+              expectedChannelName: runIsActiveSet ? runChannelName : null,
+              resyncChannelName: runIsActiveSet ? null : runChannelName,
+              hostChannelName: runChannelName,
+              setName: data.setName,
+              ownerOrChannelLabel: runChannelName,
+            },
             toRestore,
             skipped,
             available,
@@ -1016,7 +1027,11 @@ export class MassDeletePanel {
             : emote.aliases,
       };
     });
-    this.deleteService.startDelete(frozenSetId, frozenChannelName, emotes);
+    // The page's channel is the expected hit only when the run's set is its active one (spec 4.6
+    // point 21); a non-active set's report is paper only and expects no channel.
+    const expectedChannelName =
+      frozenSetId === this.effectiveActiveSetId() ? frozenChannelName : null;
+    this.deleteService.startDelete(frozenSetId, frozenChannelName, emotes, expectedChannelName);
   }
 
   /**

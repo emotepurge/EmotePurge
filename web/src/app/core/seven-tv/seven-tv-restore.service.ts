@@ -4,15 +4,22 @@ import { TranslocoService } from '@jsverse/transloco';
 import { retry, throwError, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
-import { EmoteAdminService, SyncRestoredResult } from '../emotes/emote-admin.service';
 import {
   DeleteQueueEmote,
   MAX_AUTOMATIC_SYNC_RETRIES,
   SYNC_RETRY_DELAY_MS,
 } from './seven-tv-delete.service';
+import { SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { RunOperation, RunQueueEmote, RunResult, SevenTvRunEngine } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
-import { SyncReportState } from './sync-report-outcome';
+import {
+  SyncReportOutcome,
+  SyncReportReason,
+  SyncReportState,
+  classifySyncInSetFailure,
+  classifySyncInSetResponse,
+} from './sync-report-outcome';
 
 /** Same shape as the delete's REMOVE, with `addEmote` and the alias to restore under. `alias`
  *  restores the chat alias the emote had at delete time — without it 7TV falls back to the emote's
@@ -66,22 +73,60 @@ const DUPLICATE_NOTICE_MS = 4000;
 
 /** Outcome of the closing resync trigger. 'cooldown' is not a failure: the per-channel cooldown
  *  (429) means a sync just ran or is about to — the periodic worker heals the view within its
- *  60s tick either way. */
-export type ResyncTriggerState = 'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed';
+ *  60s tick either way. `'backendTriggered'` (restore only, spec 6.4/E12/F15) means the report's
+ *  own answer named the channel in `resyncTriggered`: the backend already started the resync, so
+ *  no request of ours went out — the dock says "being re-synced" all the same. The import never
+ *  takes this value; its resync skips such a channel and stays `'idle'`. */
+export type ResyncTriggerState =
+  'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed' | 'backendTriggered';
 
 /**
- * One restore run, from the moment it starts to the moment both closing calls are done. Everything
- * the two asynchronous follow-ups need hangs off *this* object, never off a field next to the
- * service (R15, #72, T12) — see the identical note on `DeleteRunInfo` in
+ * Where a restore run goes and whom it tells (spec 6.4, E12, E13, E18) — the first parameter of
+ * `startRestore`. The caller derives it from the resolved target, the service never re-derives
+ * anything from it:
+ *
+ * - `setId` — the 7TV set every `ADD`, the report and every retry name.
+ * - `expectedChannelName` — the tracked channel the report expects to touch: the target account's
+ *   tracked channel when the target is its *active* set, otherwise `null` (E18).
+ * - `resyncChannelName` — the tracked channel whose resync the client itself may trigger: set only
+ *   for a *non-active* set of a tracked channel, otherwise `null` (E12). No backend resync covers
+ *   that case, and it is what reloads the non-active set's member list (spec #200, 8.3).
+ * - `hostChannelName` — the channel of the page the run was started on; only
+ *   `resetIfChannelChanged` compares against it (F7).
+ * - `setName`, `ownerOrChannelLabel` — display only, never compared (the dock's target line, 4.4
+ *   point 12).
+ */
+export interface RestoreStartTarget {
+  setId: string;
+  expectedChannelName: string | null;
+  resyncChannelName: string | null;
+  hostChannelName: string;
+  setName: string;
+  ownerOrChannelLabel: string;
+}
+
+/**
+ * One restore run, from the moment it starts to the moment both closing calls are done (spec E13).
+ * Everything the two asynchronous follow-ups need hangs off *this* object, never off a field next
+ * to the service (R15, #72, T12) — see the identical note on `DeleteRunInfo` in
  * `seven-tv-delete.service.ts` and on `ImportRunInfo` in `seven-tv-import.service.ts`. A restore has
  * *two* callbacks racing a superseded run (`sync-restored` and `resync`), each checked
  * independently: one settling first must not stop the other's guard from applying.
  */
-interface RestoreRunInfo {
-  channelName: string;
+export interface RestoreRunInfo {
   /** The set the run re-adds into, frozen when it starts (spec #200, 7.2, AK 71) — the report and
    *  every retry name this set. */
-  setId: string;
+  targetSetId: string;
+  /** See `RestoreStartTarget.expectedChannelName` — sent with every report and retry. */
+  expectedChannelName: string | null;
+  /** See `RestoreStartTarget.resyncChannelName`. */
+  resyncChannelName: string | null;
+  /** See `RestoreStartTarget.hostChannelName`. */
+  hostChannelName: string;
+  /** Display only (the dock's target line). */
+  setName: string;
+  /** Display only (the dock's target line): the tracked channel or the owner's display name. */
+  ownerOrChannelLabel: string;
   /** `null` while the run is in flight; set once the engine reports the run complete. */
   result: RunResult | null;
 }
@@ -91,18 +136,18 @@ interface RestoreRunInfo {
  * (pacing, backoff, token) as the delete — ADD draws tickets from the same `emote_set_change`
  * bucket. Zero-knowledge holds: the write token never leaves the browser.
  *
- * A finished run reports itself twice, for two different reasons. `sync-restored` is the
- * bookkeeping call (mirror of the delete's `sync-deleted`): it un-archives the rows and — the
- * reason it exists at all — writes the `emotes.syncRestored` audit entry; before it, a restore
- * only ever appeared in the log as an anonymous `channel.resync`, or under the resync cooldown
- * not at all (user decision 2026-08-02, revising the original "no sync-restored endpoint" call).
- * The A8 resync trigger stays on top as reconciliation against 7TV as the authority — aliases the
- * run could not restore, and anything else that drifted.
+ * A finished run reports itself to the set-centric `sync-restored` (spec 5.1, 6.4): the
+ * bookkeeping call that un-archives the rows of every tracked channel whose active set this is
+ * and — the reason it exists at all — writes the `emotes.syncRestored` audit entry, for any
+ * target, tracked or not. The backend resyncs every channel it touched (E17) and says so in
+ * `resyncTriggered`; this service only follows up with its own resync for a non-active set of a
+ * tracked channel (E12), and only once the report has answered, so a channel is never resynced
+ * twice for one report (F15, AK 27).
  */
 @Injectable({ providedIn: 'root' })
 export class SevenTvRestoreService {
   private readonly channelService = inject(ChannelService);
-  private readonly emoteAdminService = inject(EmoteAdminService);
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
 
   /** Own engine instance — see the identical note in SevenTvDeleteService. */
   private readonly engine = new SevenTvRunEngine(
@@ -112,7 +157,11 @@ export class SevenTvRestoreService {
   );
 
   /** The run every asynchronous follow-up is bound to (R15). */
-  private run: RestoreRunInfo | null = null;
+  private readonly runState = signal<RestoreRunInfo | null>(null);
+
+  /** The run this service is showing — in flight (`result === null`) or finished. Read-only view,
+   *  for the dock's target line (`setName`, `ownerOrChannelLabel`). */
+  readonly run = this.runState.asReadonly();
 
   readonly queue = this.engine.queue;
   readonly isRunning = this.engine.isRunning;
@@ -121,6 +170,10 @@ export class SevenTvRestoreService {
 
   /** State of the closing sync-restored call — same contract as the delete's syncReport. */
   readonly syncReport = signal<SyncReportState>('idle');
+
+  /** Why `syncReport` is `'failed'`/`'partial'` (spec E23), `null` otherwise — the dock shows it as
+   *  its own line under the report notice. */
+  readonly syncReportReason = signal<SyncReportReason | null>(null);
 
   readonly resyncTrigger = signal<ResyncTriggerState>('idle');
 
@@ -161,14 +214,15 @@ export class SevenTvRestoreService {
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
-  /** `skippedDuplicates` is the caller's own count from filtering `emotes` *before* this call —
-   *  this method does no filtering of its own (see `already-present-filter.ts`, which every current
-   *  caller runs first). Defaults to 0 so existing callers/tests that pass only three arguments are
-   *  unaffected. `duplicateCheckAvailable` mirrors the same call's `available` and defaults to
-   *  `true` for the same reason; `skippedNameTaken` is the same call's name-taken count, default 0. */
+  /** `target` is where the run goes and whom it tells — see `RestoreStartTarget`; frozen into the
+   *  run record here and never read again from the caller. `skippedDuplicates` is the caller's own
+   *  count from filtering `emotes` *before* this call — this method does no filtering of its own
+   *  (see `already-present-filter.ts`, which every current caller runs first). Defaults to 0 so
+   *  callers/tests that pass only two arguments are unaffected. `duplicateCheckAvailable` mirrors
+   *  the same call's `available` and defaults to `true` for the same reason; `skippedNameTaken` is
+   *  the same call's name-taken count, default 0. */
   startRestore(
-    setId: string,
-    channelName: string,
+    target: RestoreStartTarget,
     emotes: readonly RestoreQueueEmote[],
     skippedDuplicates = 0,
     duplicateCheckAvailable = true,
@@ -180,10 +234,21 @@ export class SevenTvRestoreService {
     this.showDuplicateNotice(
       skippedDuplicates > 0 || skippedNameTaken > 0 || !duplicateCheckAvailable,
     );
-    const started: RestoreRunInfo = { channelName, setId, result: null };
+    const started: RestoreRunInfo = {
+      targetSetId: target.setId,
+      expectedChannelName: target.expectedChannelName,
+      resyncChannelName: target.resyncChannelName,
+      hostChannelName: target.hostChannelName,
+      setName: target.setName,
+      ownerOrChannelLabel: target.ownerOrChannelLabel,
+      result: null,
+    };
     const { queue, aliasByKey } = toRestoreQueue(emotes);
-    const engineStarted = this.engine.start(setId, queue, addOperation(aliasByKey), (result) =>
-      this.onRunComplete(started, result),
+    const engineStarted = this.engine.start(
+      target.setId,
+      queue,
+      addOperation(aliasByKey),
+      (result) => this.onRunComplete(started, result),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — leave every signal as it was, except
@@ -192,8 +257,9 @@ export class SevenTvRestoreService {
       // trustworthy) the caller still needs to see.
       return;
     }
-    this.run = started;
+    this.runState.set(started);
     this.syncReport.set('idle');
+    this.syncReportReason.set(null);
     this.resyncTrigger.set('idle');
   }
 
@@ -204,28 +270,35 @@ export class SevenTvRestoreService {
   reset(): void {
     this.engine.reset();
     this.syncReport.set('idle');
+    this.syncReportReason.set(null);
     this.resyncTrigger.set('idle');
     this.skippedDuplicates.set(0);
     this.skippedNameTaken.set(0);
     this.duplicateCheckAvailable.set(true);
     this.showDuplicateNotice(false);
-    this.run = null;
+    this.runState.set(null);
   }
 
-  /** Same page-follows-user reasoning as the delete service's counterpart. */
-  resetIfChannelChanged(channelName: string): void {
-    if (this.isRunning() || this.run === null || this.run.channelName === channelName) {
+  /** Same page-follows-user reasoning as the delete service's counterpart — compared against the
+   *  channel of the page the run was started on (`hostChannelName`, F7/E13), never against the
+   *  target: the layout calling this only knows its own page's channel, and a run into another
+   *  channel's set or an untracked set still belongs to the page it was started from (AK 20). A
+   *  running run is left alone, and a finished one's report has gone out regardless. */
+  resetIfChannelChanged(pageChannelName: string): void {
+    const current = this.runState();
+    if (this.isRunning() || current === null || current.hostChannelName === pageChannelName) {
       return;
     }
     this.reset();
   }
 
   /** Manual retry for the closing report — the 7TV re-adds are long done, so this only re-sends
-   *  the bookkeeping call. Safe to repeat: ids already un-archived still count as restored.
-   *  Channel, set *and* keys come from the same record, so a retry can never mix one run's ids with
-   *  another's channel or with a set chosen after the run started (R15, AK 71). */
+   *  the bookkeeping call, never the resync (that followed the first report already). Safe to
+   *  repeat: ids already un-archived still count as restored. Set, expected channel *and* keys come
+   *  from the same record, so a retry can never mix one run's ids with another's target or with a
+   *  set chosen after the run started (R15, AK 71). */
   retrySyncReport(): void {
-    const current = this.run;
+    const current = this.runState();
     if (
       this.syncReport() === 'pending' ||
       !current?.result ||
@@ -238,39 +311,45 @@ export class SevenTvRestoreService {
   }
 
   private onRunComplete(started: RestoreRunInfo, result: RunResult): void {
-    if (this.run !== started) {
+    if (this.runState() !== started) {
       // Only reachable via reset()/resetIfChannelChanged() during the run: the shown run is not
       // this one any more, so neither its result nor its bookkeeping belong on screen.
       return;
     }
 
     const finished: RestoreRunInfo = { ...started, result };
-    this.run = finished;
+    this.runState.set(finished);
 
     if (result.doneKeys.length === 0) {
       return;
     }
-    // Deliberately both, in parallel: the report is bookkeeping + audit trail for exactly these
-    // ids, the resync is reconciliation against 7TV as the authority. Neither replaces the other.
-    this.reportRestored(finished, result);
-    this.resyncTrigger.set('pending');
-    this.channelService.resync(finished.channelName).subscribe({
-      next: () => this.applyIfCurrent(finished, () => this.resyncTrigger.set('succeeded')),
-      error: (error: HttpErrorResponse) =>
-        // 429 = the per-channel cooldown: a sync just ran or will run — "coming on its own",
-        // reported as such rather than as an error.
-        this.applyIfCurrent(finished, () =>
-          this.resyncTrigger.set(error.status === 429 ? 'cooldown' : 'failed'),
-        ),
-    });
+    // The report first, the resync after it (spec 6.4, F15): only the report's answer says whether
+    // the backend already resynced the channel, and a second resync of ours would merely run into
+    // the cooldown.
+    this.reportRestored(finished, result, (resyncTriggered) =>
+      this.resyncAfterReport(finished, resyncTriggered),
+    );
   }
 
-  private reportRestored(run: RestoreRunInfo, result: RunResult): void {
+  /** `afterReport` runs once the report has settled either way — with the answer's
+   *  `resyncTriggered` on success, with an empty list on failure (the backend may or may not have
+   *  resynced; a resync of ours is then the safe side, the cooldown absorbs a duplicate). It runs
+   *  even for a superseded run: the report and the resync are owed to 7TV's state, not to what the
+   *  dock shows; only the *state* each writes is guarded (`applyIfCurrent`). */
+  private reportRestored(
+    run: RestoreRunInfo,
+    result: RunResult,
+    afterReport?: (resyncTriggered: readonly string[]) => void,
+  ): void {
     this.syncReport.set('pending');
+    this.syncReportReason.set(null);
     const sevenTvEmoteIds = doneSevenTvEmoteIds(result);
 
-    this.emoteAdminService
-      .syncRestored(run.channelName, { emoteSetId: run.setId, sevenTvEmoteIds })
+    this.emoteSetService
+      .reportRestoredInSet(run.targetSetId, {
+        sevenTvEmoteIds,
+        expectedChannelName: run.expectedChannelName,
+      })
       .pipe(
         // Same policy as the delete's report: waiting can fix a 429/5xx, not a 401/403.
         retry({
@@ -282,18 +361,54 @@ export class SevenTvRestoreService {
         }),
       )
       .subscribe({
-        next: (answer: SyncRestoredResult) =>
-          // Paper only for a non-active set (spec #200, 6.6) — `restoredCount` is 0 by design there.
+        next: (answer: SyncRestoredInSetResponse) => {
+          // The threeway reading lives in one place for all three services (F8, E23, AK 15) —
+          // never an `>=` of our own here.
           this.applyIfCurrent(run, () =>
-            this.syncReport.set(
-              answer.targetIsActiveSetOfChannel === false ||
-                answer.restoredCount >= sevenTvEmoteIds.length
-                ? 'succeeded'
-                : 'partial',
-            ),
-          ),
-        error: () => this.applyIfCurrent(run, () => this.syncReport.set('failed')),
+            this.applyReportOutcome(classifySyncInSetResponse(answer, sevenTvEmoteIds.length)),
+          );
+          afterReport?.(answer.resyncTriggered);
+        },
+        error: (error: HttpErrorResponse) => {
+          // A 404 (the set is gone) ends in 'failed'/'setNotFound' — never in 'succeeded' (#224).
+          this.applyIfCurrent(run, () =>
+            this.applyReportOutcome(classifySyncInSetFailure(error.status)),
+          );
+          afterReport?.([]);
+        },
       });
+  }
+
+  /** E12, F15, AK 21/27: a resync of our own only for a non-active set of a tracked channel
+   *  (`resyncChannelName`), and only when the report's answer does not already name that channel
+   *  in `resyncTriggered` — then the dock says "being re-synced" without a request of ours. No
+   *  `resyncChannelName` (active set: the backend covers it; untracked target: nothing to resync)
+   *  leaves `resyncTrigger` on `'idle'`, and the dock shows no resync line. */
+  private resyncAfterReport(run: RestoreRunInfo, resyncTriggered: readonly string[]): void {
+    const channelName = run.resyncChannelName;
+    if (channelName === null) {
+      return;
+    }
+    const normalized = channelName.toLowerCase();
+    if (resyncTriggered.some((triggered) => triggered.toLowerCase() === normalized)) {
+      this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
+      return;
+    }
+    this.applyIfCurrent(run, () => this.resyncTrigger.set('pending'));
+    this.channelService.resync(channelName).subscribe({
+      next: () => this.applyIfCurrent(run, () => this.resyncTrigger.set('succeeded')),
+      error: (error: HttpErrorResponse) =>
+        // 429 = the per-channel cooldown: a sync just ran or will run — "coming on its own",
+        // reported as such rather than as an error.
+        this.applyIfCurrent(run, () =>
+          this.resyncTrigger.set(error.status === 429 ? 'cooldown' : 'failed'),
+        ),
+    });
+  }
+
+  private applyReportOutcome(outcome: SyncReportOutcome): void {
+    this.syncReport.set(outcome.state);
+    this.syncReportReason.set(outcome.reason);
   }
 
   /** The R15 guard in one place: an answer that belongs to a superseded run is dropped silently —
@@ -301,7 +416,7 @@ export class SevenTvRestoreService {
    *  that is must not inherit its outcome. Shared by both closing calls (`sync-restored`, `resync`)
    *  — each checks independently, so one settling does not gate the other. */
   private applyIfCurrent(run: RestoreRunInfo, apply: () => void): void {
-    if (this.run !== run) {
+    if (this.runState() !== run) {
       return;
     }
     apply();

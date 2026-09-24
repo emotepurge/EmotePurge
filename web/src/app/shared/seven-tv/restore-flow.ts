@@ -6,6 +6,7 @@ import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import {
   RestoreQueueEmote,
+  RestoreStartTarget,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -143,8 +144,7 @@ export function startRestoreFlow(
             return;
           }
           deps.restoreService.startRestore(
-            setId,
-            channelName,
+            restoreStartTarget(channelName, setId, setName, isActiveSet),
             toRestore,
             skipped,
             available,
@@ -164,4 +164,24 @@ export function startRestoreFlow(
       openConfirm();
     }
   });
+}
+
+/** Interim derivation of the run's target from the page's frozen values (spec 6.4) — the target
+ *  here is always a set of the page's own, tracked channel: its active set is the expected hit
+ *  (E18), a non-active one is the channel the client resyncs itself (E12). Replaced by the
+ *  derivation from the resolved target once the flow receives one. */
+function restoreStartTarget(
+  channelName: string,
+  setId: string,
+  setName: string | null,
+  isActiveSet: boolean,
+): RestoreStartTarget {
+  return {
+    setId,
+    expectedChannelName: isActiveSet ? channelName : null,
+    resyncChannelName: isActiveSet ? null : channelName,
+    hostChannelName: channelName,
+    setName: setName ?? setId,
+    ownerOrChannelLabel: channelName,
+  };
 }
