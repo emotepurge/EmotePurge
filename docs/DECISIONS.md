@@ -79,6 +79,28 @@ time a later day actually has a gated message to check. Tested in `HarnessRunner
 chatter is excluded, days 2 and 3 each carry an ordinary message, and the run succeeds with day 1
 recorded as a valid `Complete`, empty-`HumanCounts` day rather than aborting.
 
+**Revised 2026-09-24 (third Codex review of this branch):** the first revision above bumped
+`AlgorithmVersion` and added `ExcludedChatterIdsDigest` so a *resumed run* refuses to continue a file
+written under a different exclusion list — `ExecuteAsync`/`RunAsync` always rebuild a fresh
+`HarnessRunIdentity` and `HarnessReportFile.ReadHeader` compares it to the file's byte for byte. A
+**report-only recompute** (`RecomputeReportAsync`/`ExecuteRecomputeAsync`, #119) never goes through
+that path: it reads the header with `TryReadHeader` and checked `AlgorithmVersion` by hand, but ran no
+comparison against the exclusion list at all — recomputing a file's day lines under a
+`TWITCH_EXCLUDED_CHATTER_IDS` that has since changed could issue a report that no longer reflects what
+a fresh run (or the live worker) would count today, exactly the drift the digest exists to catch on
+the run side. Closed with a new, distinct exit code, `HarnessRunner.ExitExclusionListChanged` (7) —
+not folded into `ExitPreconditionViolated` (3), because an operator reading the exit code needs to
+tell "this file cannot be recomputed at all" from "this file could be recomputed, but not honestly,
+because the policy under it changed"; only the first is fixed by fixing the file, the second only by
+finishing a fresh run. The check sits right after the existing `AlgorithmVersion` refusal, before any
+database access, and compares `ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds)`
+against the header's stored digest — never the raw ids, same reasoning as the digest itself. Tested in
+`HarnessRunnerTests` (`ReportOnly_WhenTheExclusionListDriftedSinceTheRun_RefusesBeforeAnyDatabaseAccess`):
+a run under the default (empty) exclusion list, recomputed after the configured list gained an id,
+refuses with the new exit code and touches neither the archive client nor the usage-stat query
+service. `docs/Operations.md`'s note on `--report-only` and the exclusion list is extended with this
+case.
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·

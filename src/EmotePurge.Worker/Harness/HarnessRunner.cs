@@ -37,10 +37,12 @@ namespace EmotePurge.Worker.Harness;
 /// <c>ServiceCollectionExtensions</c>).
 /// </para>
 /// <para>
-/// The return value is the process exit code, and the four non-zero ones say different things on
+/// The return value is the process exit code, and the non-zero ones say different things on
 /// purpose: a violated precondition (3) means the question could not be asked, an abort (4) means
 /// it can be asked again from the resume point, and "undecidable" (5) means the approach itself has
-/// to be reassessed. None of them is "the numbers were bad" — that verdict is a human reading the
+/// to be reassessed. <see cref="ExitExclusionListChanged"/> (7) is a <c>--report-only</c> recompute's
+/// own precondition, kept distinct from (3) rather than folded into it — see its own doc comment.
+/// None of them is meant to read as "the numbers were bad": that verdict is a human reading the
 /// report against the pre-registration in #69.
 /// </para>
 /// <para>
@@ -113,6 +115,23 @@ public sealed class HarnessRunner(
     /// exception is logged; the file on disk stays valid and resumable.
     /// </summary>
     public const int ExitUnexpectedError = 6;
+
+    /// <summary>
+    /// A <c>--report-only</c> recompute (<see cref="RecomputeReportAsync"/>) found that the report
+    /// file's <see cref="HarnessRunIdentity.ExcludedChatterIdsDigest"/> no longer matches the
+    /// currently configured <c>Twitch:ExcludedChatterIds</c> (P2 Codex finding, issue #260, third
+    /// review). Distinct from <see cref="ExitPreconditionViolated"/> on purpose: that code covers a
+    /// file that cannot be recomputed at all (missing, malformed, foreign algorithm version, wrong
+    /// channel); this one covers a file that reads fine but whose day lines were counted under a
+    /// chatter exclusion policy that no longer holds — recomputing it anyway would issue a possibly
+    /// binding report from stale day lines, and an operator reading the exit code needs to tell the
+    /// two apart: this one is fixed only by a fresh run, not by fixing the file. Resuming a run
+    /// (<see cref="RunAsync"/>) already refuses the same drift on its own, byte-for-byte, via
+    /// <see cref="HarnessReportFile.ReadHeader"/> comparing the whole identity — a recompute reads
+    /// the header with <see cref="HarnessReportFile.TryReadHeader"/> instead and never ran that
+    /// comparison, which is the gap this exit code closes.
+    /// </summary>
+    public const int ExitExclusionListChanged = 7;
 
     private const int BytesPerMegabyte = 1024 * 1024;
 
@@ -583,6 +602,27 @@ public sealed class HarnessRunner(
                 "Report-only file '{File}' was written by algorithm version '{FileVersion}', but this build only recomputes '{CurrentVersion}'; there is no migration between versions.",
                 sourceFile.Path, identity.AlgorithmVersion, AlgorithmVersion);
             return ExitPreconditionViolated;
+        }
+
+        // Refuses a drifted chatter exclusion list, the recompute-side counterpart of the check
+        // above (P2 Codex finding, issue #260, third review): TryReadHeader just above reads the
+        // header without comparing it, unlike ReadHeader's byte-for-byte identity check that a
+        // resumed *run* (RunAsync/ExecuteAsync) already gets "for free" because it always rebuilds a
+        // fresh identity to compare against. A recompute never rebuilds one — it only reads what is
+        // on disk — so nothing here previously noticed that TWITCH_EXCLUDED_CHATTER_IDS changed
+        // since the file was written. Left unrefused, the day lines being recomputed could have been
+        // counted while the archive still saw messages from a chatter who has objected since, and
+        // ExecuteAsync's original run would already have gated those messages out — a report claiming
+        // to be a faithful re-evaluation of that same run would silently no longer be one. Compared as
+        // a digest, never as the raw id list, for the same reason HarnessRunIdentity carries one
+        // rather than the ids themselves (see ExcludedChatterIdsDigest's own remarks).
+        var currentExclusionDigest = ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds);
+        if (!string.Equals(identity.ExcludedChatterIdsDigest, currentExclusionDigest, StringComparison.Ordinal))
+        {
+            logger.LogError(
+                "Report-only file '{File}' was written under a different chatter exclusion list than is currently configured; recomputing it could issue a binding report built from day lines counted under a policy that no longer holds. Finish a fresh run instead.",
+                sourceFile.Path);
+            return ExitExclusionListChanged;
         }
 
         // The channel NAME is deliberately not compared — a rename (#34/#44) keeps the id and must

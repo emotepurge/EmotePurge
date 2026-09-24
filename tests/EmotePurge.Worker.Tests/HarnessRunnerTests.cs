@@ -1464,6 +1464,49 @@ public class HarnessRunnerTests : IDisposable
         Assert.Empty(_usage.ReceivedCalls());
     }
 
+    // P2 Codex finding (issue #260, third review round): the algorithm-version refusal above only
+    // catches a foreign counting rule — it says nothing about TWITCH_EXCLUDED_CHATTER_IDS having
+    // changed since the file was written. A *resumed run* already refuses that drift for free,
+    // because ExecuteAsync always rebuilds a fresh HarnessRunIdentity and ReadHeader compares it to
+    // the file's byte for byte (ExcludedChatterIdsDigest is part of that identity, see the class
+    // remark on AlgorithmVersion). A *recompute* only ever reads the header off disk with
+    // TryReadHeader and never ran that comparison — recomputing day lines counted under one
+    // exclusion list against today's different one could issue a binding report that misrepresents
+    // what a fresh run would count today, exactly the gap AlgorithmVersion's own bump closed for a
+    // changed counting rule.
+    [Fact]
+    public async Task ReportOnly_WhenTheExclusionListDriftedSinceTheRun_RefusesBeforeAnyDatabaseAccess()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(0, await Run(3));
+
+        var fileName = Path.GetFileName(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
+
+        // The original run's identity carries the digest of the empty list (the fixture's default,
+        // see the constructor). Simulate an operator having added an id to
+        // TWITCH_EXCLUDED_CHATTER_IDS since — the exact drift the digest exists to catch.
+        _excludedChatters.ExcludedChatterIds.Returns(new HashSet<string> { "999999" });
+
+        var filesBefore = ListFiles();
+        _archive.ClearReceivedCalls();
+        _usage.ClearReceivedCalls();
+        _channels.ClearReceivedCalls();
+
+        var exitCode = await Recompute(fileName);
+
+        Assert.Equal(HarnessRunner.ExitExclusionListChanged, exitCode);
+        Assert.NotEqual(HarnessRunner.ExitPreconditionViolated, exitCode);
+        Assert.Equal(filesBefore, ListFiles());
+        // Refuses before touching the database, like the algorithm-version check right above it —
+        // there is nothing a DB round trip could add to a decision the header alone already settles.
+        Assert.Empty(_archive.ReceivedCalls());
+        Assert.Empty(_usage.ReceivedCalls());
+    }
+
     // P2-2 (Codex "MUST" #2) of the #119 second review round: an ordinary run can never write a
     // duplicated day line itself (its in-memory dayLines dictionary makes a second write for the
     // same day impossible, and a *resumed* run with one already on disk throws on ToDictionary before

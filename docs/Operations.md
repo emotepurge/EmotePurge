@@ -154,6 +154,12 @@ exclusion-list change mid-run costs the archive requests already spent on it. Th
 binding run before adding an ID if at all possible, and expect a resumed multi-invocation run to
 restart from scratch if the list changes underneath it.
 
+The same drift check applies to `--report-only`: recomputing an existing run's file refuses with
+exit code 7 if `TWITCH_EXCLUDED_CHATTER_IDS` has changed since the file was written (distinct from
+exit code 3, which means the file itself cannot be recomputed at all — a foreign algorithm version,
+a missing or damaged header, and the like). There is no way to recompute around this: finish a fresh
+run instead, the same advice as above for a list change mid-measurement.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,
