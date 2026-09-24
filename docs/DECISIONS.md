@@ -24,7 +24,8 @@ Principle 5, "Erklären statt verkaufen"). Two operational limits reinforce the 
 the active-channel cap of 80 (`Channels:MaxActiveChannels`, s. Eintrag 2026-09-23) and Twitch's
 own hard ceiling of 100 simultaneously joined chatrooms make uncontrolled, search-driven growth
 undesirable right now regardless of legal readiness — more sign-ups than the worker can actually
-join would just turn into silent capacity failures.
+join would just turn into explicit join rejections (`409 channel_capacity_reached`) for streamers who
+found the site but cannot be served.
 
 This retires "open `robots.txt`" as the last step of the launch checklist (docs/Review-2026-07-29.md,
 S2-20). It is not replaced by a new checklist item: opening the file is now an independent product
