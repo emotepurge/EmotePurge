@@ -23,6 +23,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Core/Services/IChannelIdentityService.cs` (second revision) ·
 `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` (second revision) ·
 `src/EmotePurge.Worker/Worker.cs` (fourth revision) ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` (fourth revision) ·
 `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
 `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
@@ -30,7 +31,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Infrastructure.Tests/Integration/ChannelServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
 `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
-`tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` (fourth revision) · `docker-compose.yml` ·
+`tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` (fourth revision) ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` (fourth revision) · `docker-compose.yml` ·
 `docker-compose.prod.yml` · `.env.example` · `docs/Operations.md`
 
 The second gap the same GDPR review found: `ChannelService.PurgeAsync` deletes a channel's row and
@@ -235,6 +237,18 @@ channel in connection with the block — and then fixed what failed.
   not a second predicate — and ignore the command otherwise, with a log line that names nothing. On a
   database error they fail closed; the periodic resync's `EnsureJoinedAsync` is the convergence net
   that joins a legitimately active channel on its next tick.
+- **The 7TV sync refuses a blocked channel itself.** `SevenTvSyncService` is the one place every
+  7TV-observing path funnels through — boot recovery, the periodic resync, the JOIN/RESYNC handlers
+  and the EventAPI follow-ups — so it now checks the row's stored id after the row gate (no 7TV call,
+  no match-cache warm-up, no result for a caller to subscribe), and `ApplyEmoteSetUpdateAsync`
+  answers a dispatch for such a row with `ChannelUnknown`, which makes the EventAPI client drop the
+  subscription. For an id-less row the sync learns the id from **7TV**, independently of Helix, and
+  refuses right there — before the duplicate warning (which would name the id) and before the
+  backfill — and takes the match-cache entry the warm-up just filled back out. That is the one
+  Helix-independent identity source this codebase has, so it also covers a blocked channel joined as
+  a brand-new id-less row during a Helix outage: the worker sits in the IRC channel until the
+  reconcile's next pass, but counts nothing and observes no 7TV set, as long as 7TV knows the account
+  (and a channel 7TV does not know has no set to count against).
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 

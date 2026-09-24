@@ -14,6 +14,7 @@ public class SevenTvSyncService(
     IEmoteMatchCache emoteMatchCache,
     IDuplicateEmoteNameTracker duplicateNameTracker,
     ChannelSyncGate channelSyncGate,
+    IExcludedChannelFilter excludedChannelFilter,
     ILogger<SevenTvSyncService> logger)
     : ISevenTvSyncService
 {
@@ -38,6 +39,18 @@ public class SevenTvSyncService(
             logger.LogInformation(
                 "SyncChannelAsync: Zeile von {Channel} ({ChannelId}) ist zwischenzeitlich verschwunden (vermutlich zusammengeführt) — Sync übersprungen.",
                 normalized, channel.Id);
+            return null;
+        }
+
+        // Objection gate (fourth Codex review of the block list): a row whose stored Twitch id is
+        // excluded is never synced — no 7TV call, no match-cache warm-up, no EventAPI subscription
+        // for the caller to register. Checked after the row gate so the decision is taken on the
+        // re-read row. Every caller reaches this: boot recovery, the periodic resync, the JOIN and
+        // RESYNC handlers and the EventAPI follow-ups, so it holds even for a path that got past its
+        // own roster check.
+        if (excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
+        {
+            RefuseExcludedChannel(channel);
             return null;
         }
 
@@ -150,6 +163,15 @@ public class SevenTvSyncService(
             return SevenTvDeltaResult.WithoutChannel(SevenTvDeltaOutcome.ChannelUnknown);
         }
 
+        // Same objection gate as the full sync. ChannelUnknown rather than a new outcome: the
+        // EventAPI client answers it by dropping the subscription, which is exactly what a blocked
+        // channel needs, and it reports no login back.
+        if (excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
+        {
+            RefuseExcludedChannel(channel);
+            return SevenTvDeltaResult.WithoutChannel(SevenTvDeltaOutcome.ChannelUnknown);
+        }
+
         // Past the row gate the row has been re-read, so this — not the name the dispatch arrived
         // under — is the login every outcome below reports back (issue #60).
         var currentName = channel.ChannelName;
@@ -227,6 +249,18 @@ public class SevenTvSyncService(
             "7TV-Dispatch auf {Channel} angewendet: {Pushed} hinzugefügt, {Updated} aktualisiert, {Pulled} entfernt.",
             normalized, delta.Pushed.Count, delta.Updated.Count, delta.PulledIds.Count);
         return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.Applied, currentName);
+    }
+
+    /// <summary>
+    /// What every objection-gate refusal in this class shares: the channel's match-cache entry is
+    /// dropped, so the chat of a blocked channel the worker may still sit in counts nothing, and a
+    /// line that names neither the channel nor its id says why the sync stopped — naming it would
+    /// leak the objection the block honours. Nothing is written to the row.
+    /// </summary>
+    private void RefuseExcludedChannel(Channel channel)
+    {
+        emoteMatchCache.RemoveChannel(channel.ChannelName);
+        logger.LogInformation("7TV sync skipped: the channel is on the excluded-channel list.");
     }
 
     /// <summary>
@@ -320,6 +354,17 @@ public class SevenTvSyncService(
         }
 
         var twitchUserId = resolved.TwitchUserId;
+
+        // The id-less half of the objection gate in SyncChannelAsync: a row created while Twitch
+        // could not be asked learns its id only here, from 7TV — independently of Helix, so this
+        // also catches a blocked channel joined during a Helix outage. Checked before the duplicate
+        // lookup below, whose warning would otherwise name the blocked id, and before the backfill:
+        // nothing is written for it. The warm-up that already ran for this call is undone.
+        if (excludedChannelFilter.IsExcluded(twitchUserId))
+        {
+            RefuseExcludedChannel(channel);
+            return null;
+        }
 
         // A rename leaves this exact shape: a second row under the new name, still without its own
         // TwitchChannelId, resolving to the Twitch account the original row already holds. Writing it
