@@ -154,6 +154,16 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public ILegalContentService LegalContent { get; } = Substitute.For<ILegalContentService>();
 
     /// <summary>
+    /// Substituted so the contact-form tests (docs/DECISIONS.md 2026-09-24, "contact form") can
+    /// drive <c>GetAvailability</c>/<c>SubmitAsync</c> directly, without a real Turnstile call or an
+    /// SMTP send — the real implementation's collaborators are a typed <c>HttpClient</c> and MailKit,
+    /// neither of which belongs in this filter-matrix-style suite. Defaults to "available" with a
+    /// public site key so the POST route's own tests reach <c>SubmitAsync</c> without every test
+    /// having to arrange availability first; the GET /api/contact/config tests override it.
+    /// </summary>
+    public IContactSubmissionService Contact { get; } = Substitute.For<IContactSubmissionService>();
+
+    /// <summary>
     /// Substituted so the admin account-deletion filter-matrix tests can reach the handler at all
     /// (the real implementation locks a Postgres row) and drive its outcome directly — the same
     /// reasoning as <see cref="Emotes"/>.
@@ -164,6 +174,12 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
             .Returns(new LegalDocumentAvailability(ImprintAvailable: false, PrivacyAvailable: false));
+
+        Contact.GetAvailability()
+            .Returns(new ContactAvailability(Available: true, TurnstileSiteKey: "test-site-key"));
+        Contact
+            .SubmitAsync(Arg.Any<ContactSubmission>(), Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(ContactSubmissionOutcome.Sent);
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -207,6 +223,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => _migrationGuard);
             services.AddSingleton(_ => LegalContent);
             services.AddScoped(_ => AccountDeletion);
+            services.AddScoped(_ => Contact);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
