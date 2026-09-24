@@ -8,11 +8,12 @@ import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService, SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { JSON_MIME } from '../export/export-envelope';
 import { DeleteConfirmDialog, DeleteConfirmDialogData } from './delete-confirm-dialog';

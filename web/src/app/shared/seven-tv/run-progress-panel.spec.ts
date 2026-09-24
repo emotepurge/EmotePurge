@@ -4,8 +4,8 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
 import { RunItemStatus, RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { RunProgressPanel } from './run-progress-panel';
 
 // Only the keys this panel itself translates — not the full app translation file. Texts are the

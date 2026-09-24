@@ -13,6 +13,7 @@ import {
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import { SyncReportState } from './sync-report-outcome';
 
 /** Kept under its historical name — the engine's constant is the same value. */
 export { RUN_DELAY_MS as DELETE_DELAY_MS } from './seven-tv-run-engine';
@@ -74,10 +75,6 @@ export interface DeleteQueueEmote {
 /** Historical aliases — the panel and both host pages import these names. */
 export type DeleteItemStatus = RunItemStatus;
 export type DeleteQueueItem = RunQueueItem;
-
-/** Outcome of reporting the finished run back to our own API (not to 7TV).
- *  'partial' means the call succeeded but the backend archived fewer emotes than we reported. */
-export type SyncReportState = 'idle' | 'pending' | 'succeeded' | 'partial' | 'failed';
 
 /**
  * One delete run, from the moment it starts to the moment its closing report is done. Everything

@@ -2,7 +2,7 @@ import { Component, computed, inject, input, output } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import { SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 

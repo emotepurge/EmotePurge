@@ -15,7 +15,6 @@ import {
   MAX_AUTOMATIC_SYNC_RETRIES,
   REMOVE_EMOTE_MUTATION,
   SYNC_RETRY_DELAY_MS,
-  SyncReportState,
 } from './seven-tv-delete.service';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { ResyncTriggerState } from './seven-tv-restore.service';
@@ -28,6 +27,7 @@ import {
 } from './seven-tv-run-engine';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import { SyncReportState } from './sync-report-outcome';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`

@@ -837,6 +837,16 @@ export interface MockEmoteSetTargetSet {
   isActive?: boolean;
   isPersonal?: boolean;
   ownerDisplayName?: string | null;
+  /** `owner.id` (spec 5.8/E19) — only meaningful together with a
+   *  {@link MockEmoteSetTargetAccount.sevenTvUserId} for a test that exercises `editable`'s own
+   *  computation; every other test only needs {@link editable} itself. */
+  ownerSevenTvUserId?: string | null;
+  /** Spec 5.8/E19, F9 — defaults to `true`: every caller of this mock that predates `editable`
+   *  (#253) expects every mocked set to be a valid target, the way the picker and the shared
+   *  pre-check (`resolveEditableSet`) already behaved before this field existed. A test for
+   *  `targetNotEditable`/`targetCheckUnavailable` sets it (or `sevenTvUnavailable`/
+   *  `setsUnavailable`) explicitly. */
+  editable?: boolean;
 }
 
 export interface MockEmoteSetTargetAccount {
@@ -847,6 +857,10 @@ export interface MockEmoteSetTargetAccount {
    *  set it to put the account (and therefore its sets) under the *tracked* one instead. */
   trackedChannelName?: string | null;
   activeEmoteSetId?: string | null;
+  /** `userByConnection.id` (spec 5.8/E19) — `null` (the default) reads as "this account's own 7TV
+   *  id is unknown to the mock", harmless for every test that only cares about `editable` itself
+   *  rather than its computation. */
+  sevenTvUserId?: string | null;
   sets?: MockEmoteSetTargetSet[];
   setsUnavailable?: boolean;
 }
@@ -870,6 +884,7 @@ export async function mockEmoteSetTargets(
         isOwnAccount: account.isOwnAccount ?? false,
         trackedChannelName: account.trackedChannelName ?? null,
         activeEmoteSetId: account.activeEmoteSetId ?? null,
+        sevenTvUserId: account.sevenTvUserId ?? null,
         sets: (account.sets ?? []).map((set) => ({
           id: set.id,
           name: set.name,
@@ -878,6 +893,8 @@ export async function mockEmoteSetTargets(
           isActive: set.isActive ?? false,
           isPersonal: set.isPersonal ?? false,
           ownerDisplayName: set.ownerDisplayName ?? null,
+          ownerSevenTvUserId: set.ownerSevenTvUserId ?? null,
+          editable: set.editable ?? true,
         })),
         setsUnavailable: account.setsUnavailable ?? false,
       })),

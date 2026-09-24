@@ -1,11 +1,21 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
-import { Observable, of, tap } from 'rxjs';
+import { map, Observable, of, tap } from 'rxjs';
 
 import { normalizeChannelName } from '../channels/channel-name';
 import { ForeignEmoteSetResponse } from './foreign-emote-set.model';
 import { LeaderboardSort } from './leaderboard.model';
-import { EmoteSetListResponse, EmoteSetTargetsResponse } from './seven-tv-emote-set.model';
+import {
+  EditableSetResolution,
+  EditableSetTarget,
+  EmoteSetListResponse,
+  EmoteSetTargetAccount,
+  EmoteSetTargetSummary,
+  EmoteSetTargetsResponse,
+  SyncDeletedInSetResponse,
+  SyncInSetBody,
+  SyncRestoredInSetResponse,
+} from './seven-tv-emote-set.model';
 
 /**
  * Mirrors the backend's own cache TTL for the set-ID preview route (6.4's Redis entry, keyed per
@@ -22,6 +32,93 @@ const EMOTE_SET_PREVIEW_CACHE_TTL_MS = 60_000;
 interface EmoteSetPreviewCacheEntry {
   readonly response: ForeignEmoteSetResponse;
   readonly expiresAtMs: number;
+}
+
+/**
+ * 60 s, same TTL and same reasoning as {@link EMOTE_SET_PREVIEW_CACHE_TTL_MS} (spec F3, E19): the
+ * target list sits behind the same `ForeignEmoteLookup` bucket, and since E19 up to three
+ * pre-checks (restore, delete, replace) can ask for it inside one user action — without this, each
+ * would spend its own permit for what is, in the common case, the exact same answer.
+ */
+const EMOTE_SET_TARGETS_CACHE_TTL_MS = 60_000;
+
+interface EmoteSetTargetsCacheEntry {
+  readonly response: EmoteSetTargetsResponse;
+  readonly expiresAtMs: number;
+}
+
+/** Every set across every account of a target list, paired with the account it belongs to — the
+ *  shape {@link toEditableSetTarget} needs to build an {@link EditableSetTarget} without querying
+ *  the response twice for the same account. */
+function findTargetSet(
+  response: EmoteSetTargetsResponse,
+  emoteSetId: string,
+): { readonly account: EmoteSetTargetAccount; readonly set: EmoteSetTargetSummary } | null {
+  for (const account of response.accounts) {
+    const set = account.sets.find((candidate) => candidate.id === emoteSetId);
+    if (set !== undefined) {
+      return { account, set };
+    }
+  }
+  return null;
+}
+
+/** A blank or whitespace-only display value counts as absent, same rule as
+ *  `import-target-choices.ts`'s `resolveOwnerLabel` — the one other place this codebase already
+ *  falls a 7TV display name back to a Twitch login. Not imported from there: `shared/` may depend
+ *  on `core/`, never the other way round (Schichtentreue). */
+function nonBlank(value: string): string | null {
+  return value.trim().length > 0 ? value : null;
+}
+
+function toEditableSetTarget(
+  account: EmoteSetTargetAccount,
+  set: EmoteSetTargetSummary,
+): EditableSetTarget {
+  const ownerDisplayName = set.ownerDisplayName !== null ? nonBlank(set.ownerDisplayName) : null;
+  return {
+    emoteSetId: set.id,
+    setName: nonBlank(set.name) ?? set.id,
+    ownerDisplayName: ownerDisplayName ?? account.twitchLogin,
+    twitchLogin: account.twitchLogin,
+    trackedChannelName: account.trackedChannelName,
+    isActiveSet: account.activeEmoteSetId === set.id,
+  };
+}
+
+/**
+ * Pure classification behind {@link SevenTvEmoteSetService.resolveEditableSet} (spec 4.2, E19) —
+ * kept as a free function so it reads as one decision table instead of being buried in the
+ * Observable pipeline. Order matters (spec 4.2's Grenzfälle):
+ *
+ * 1. A found set with `kind !== 'NORMAL'` is `notSelectable` *regardless* of `editable` — a
+ *    personal/global/special set is never offered as a target in the first place (E11), so a
+ *    stray one reaching here can only be a rückweg-Datei from before that rule, never a case where
+ *    "but it's editable" should win.
+ * 2. A found, `NORMAL`, `editable` set is `editable` outright — even when the response also
+ *    reports `sevenTvUnavailable` for some *other*, unrelated account (spec 4.2 Grenzfall,
+ *    Abschnitt 6 Nr. 2): a confirmed positive is never downgraded by a degradation elsewhere.
+ * 3. Anything else (not found at all, or found but `editable === false`) is `notEditable` unless
+ *    the list itself was incomplete (`sevenTvUnavailable`, or some account's own list unreadable) —
+ *    then it is `unavailable`, because the true answer might be `editable` and the list simply
+ *    never got to say so (F5).
+ */
+function classifyEditableSet(
+  response: EmoteSetTargetsResponse,
+  emoteSetId: string,
+): EditableSetResolution {
+  const found = findTargetSet(response, emoteSetId);
+  if (found !== null) {
+    if (found.set.kind !== 'NORMAL') {
+      return { status: 'notSelectable' };
+    }
+    if (found.set.editable) {
+      return { status: 'editable', target: toEditableSetTarget(found.account, found.set) };
+    }
+  }
+  const listIncomplete =
+    response.sevenTvUnavailable || response.accounts.some((account) => account.setsUnavailable);
+  return { status: listIncomplete ? 'unavailable' : 'notEditable' };
 }
 
 /** Request body of the set-centric report (spec 6.7) — the same shape as
@@ -60,6 +157,12 @@ export class SevenTvEmoteSetService {
    *  itself, see that cached method's doc for why. */
   private readonly cachedPreviews = new Map<string, EmoteSetPreviewCacheEntry>();
 
+  /** Backing store for {@link loadCachedEmoteSetTargets} only — a single entry, unlike
+   *  {@link cachedPreviews}: there is exactly one target list per caller (`GET
+   *  /api/seventv/me/emote-set-targets` takes no parameters), so a `Map` would only add a key
+   *  nothing ever varies. */
+  private cachedTargets: EmoteSetTargetsCacheEntry | null = null;
+
   /** 6.1 — the set list of a *tracked* channel (K4's usage-stats dropdown). `isActive` in the
    *  response is `Channel.ActiveEmoteSetId` (E21), our own observed state. */
   listChannelEmoteSets(channelName: string): Observable<EmoteSetListResponse> {
@@ -68,9 +171,84 @@ export class SevenTvEmoteSetService {
   }
 
   /** 6.2 — the target picker's offer list (K2): the caller's own 7TV account, plus every account
-   *  they hold a 7TV editor grant for, own account first. */
+   *  they hold a 7TV editor grant for, own account first. Uncached — {@link loadCachedEmoteSetTargets}
+   *  is the 60 s-deduped wrapper every caller since E19 should reach for instead; this stays the
+   *  one place that actually issues the request. */
   listEmoteSetTargets(): Observable<EmoteSetTargetsResponse> {
     return this.http.get<EmoteSetTargetsResponse>('/api/seventv/me/emote-set-targets');
+  }
+
+  /**
+   * A cached wrapper around {@link listEmoteSetTargets} (spec F3, 6.2, E19) — same three rules as
+   * {@link loadCachedEmoteSetPreview}, just for the single target list instead of a per-set preview:
+   * a call within {@link EMOTE_SET_TARGETS_CACHE_TTL_MS} of the last *successful* answer is served
+   * from here without a request; `options.refresh` always bypasses the cache and replaces whatever
+   * was there; only a successful response is ever cached, so a retry after an error always asks
+   * again. This is what lets up to three pre-checks in one user action (restore's file step, a
+   * delete confirmation, a replace start) and the target picker itself cost at most one permit
+   * together (AK 6) — {@link resolveEditableSet} reads through this, and so does
+   * `ImportTargetDialog`, whose own retry action is the one caller that passes `refresh: true`.
+   */
+  loadCachedEmoteSetTargets(
+    options: { refresh?: boolean } = {},
+  ): Observable<EmoteSetTargetsResponse> {
+    if (
+      !options.refresh &&
+      this.cachedTargets !== null &&
+      this.cachedTargets.expiresAtMs > Date.now()
+    ) {
+      return of(this.cachedTargets.response);
+    }
+    return this.listEmoteSetTargets().pipe(
+      tap((response) => {
+        this.cachedTargets = {
+          response,
+          expiresAtMs: Date.now() + EMOTE_SET_TARGETS_CACHE_TTL_MS,
+        };
+      }),
+    );
+  }
+
+  /**
+   * The one shared pre-check every first mutation into a 7TV set runs before touching it (spec 4.2,
+   * 6.2, E19: restore's file step, a delete confirmation, a replace start with a replace row) — it
+   * reads {@link loadCachedEmoteSetTargets} (so it is free whenever the picker or another pre-check
+   * already warmed the cache this minute) and classifies the one set the caller cares about into
+   * the four outcomes {@link EditableSetResolution} distinguishes. It trusts the backend's own
+   * `editable` verdict rather than recomputing it (spec 5.8: "das Frontend liest `editable`, es
+   * berechnet es nicht") — see {@link classifyEditableSet} for the exact decision table.
+   */
+  resolveEditableSet(emoteSetId: string): Observable<EditableSetResolution> {
+    return this.loadCachedEmoteSetTargets().pipe(
+      map((response) => classifyEditableSet(response, emoteSetId)),
+    );
+  }
+
+  /** `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted` (spec 5.1, 6.4/6.5) — the set-centric
+   *  closing report for a delete or a replace's confirmed removals. Replaces the channel-bound
+   *  `EmoteAdminService.syncDeleted` for every caller (spec E3); `expectedChannelName` in the body
+   *  is what lets the backend tell "nothing to report" apart from "reported the wrong channel"
+   *  (E18). */
+  reportDeletedInSet(
+    emoteSetId: string,
+    body: SyncInSetBody,
+  ): Observable<SyncDeletedInSetResponse> {
+    return this.http.post<SyncDeletedInSetResponse>(
+      `/api/seventv/emote-sets/${emoteSetId}/sync-deleted`,
+      body,
+    );
+  }
+
+  /** `POST /api/seventv/emote-sets/{emoteSetId}/sync-restored` (spec 5.1, 6.4) — spiegelbildlich zu
+   *  {@link reportDeletedInSet}; replaces the channel-bound `EmoteAdminService.syncRestored`. */
+  reportRestoredInSet(
+    emoteSetId: string,
+    body: SyncInSetBody,
+  ): Observable<SyncRestoredInSetResponse> {
+    return this.http.post<SyncRestoredInSetResponse>(
+      `/api/seventv/emote-sets/${emoteSetId}/sync-restored`,
+      body,
+    );
   }
 
   /** 6.3 — the set list of a *foreign* channel (K3's source-set picker). `isActive` in the response

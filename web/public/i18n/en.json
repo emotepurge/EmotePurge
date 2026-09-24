@@ -1089,6 +1089,7 @@
       "untracked": "not tracked",
       "kindUnavailable": "not a target set",
       "isSource": "this is the source",
+      "notEditable": "not editable",
       "setsUnavailable": "sets could not be read",
       "noUsableSets": "No usable set",
       "none": "No set found to copy into.",

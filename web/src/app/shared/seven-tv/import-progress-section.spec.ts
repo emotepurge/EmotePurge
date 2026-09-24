@@ -6,7 +6,6 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
 import {
   ImportRunInfo,
   ImportRunItem,
@@ -14,6 +13,7 @@ import {
 } from '../../core/seven-tv/seven-tv-import.service';
 import { ResyncTriggerState } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportProgressSection } from './import-progress-section';
 

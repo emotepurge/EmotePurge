@@ -9,10 +9,10 @@ import {
   DeleteQueueEmote,
   MAX_AUTOMATIC_SYNC_RETRIES,
   SYNC_RETRY_DELAY_MS,
-  SyncReportState,
 } from './seven-tv-delete.service';
 import { RunOperation, RunQueueEmote, RunResult, SevenTvRunEngine } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import { SyncReportState } from './sync-report-outcome';
 
 /** Same shape as the delete's REMOVE, with `addEmote` and the alias to restore under. `alias`
  *  restores the chat alias the emote had at delete time — without it 7TV falls back to the emote's
