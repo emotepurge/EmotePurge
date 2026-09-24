@@ -10,6 +10,349 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-23 — Data retention runs as a tenth hosted service, dry run warns every tick, `RETENTION_ENFORCE` is the switch (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Worker/DataRetentionWorker.cs` ·
+`src/EmotePurge.Worker/RetentionRunSummaryFormatter.cs` ·
+`src/EmotePurge.Worker/WorkerServiceRegistration.cs` ·
+`src/EmotePurge.Worker/appsettings.json` ·
+`docker-compose.prod.yml` · `docker-compose.yml` · `.env.example`
+
+Seventh step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T7): wiring T6's
+`IDataRetentionService` into the worker as its tenth hosted service.
+
+- **`DataRetentionWorker` follows the house pattern of `TwitchIdentityReconcileWorker`/
+  `SevenTvPeriodicResyncWorker`:** waits for `BootRecoveryGate.Completed` (the channel purge inside
+  `RunAsync` touches rows boot recovery reads and writes), then `Retention:StartupDelayMinutes`
+  (default 10) so a restart loop does not begin every start with a pass, then one scope and one
+  `RunAsync(options.Enforce)` call immediately and again every `Retention:IntervalHours` (default 24)
+  on a `PeriodicTimer`. A catch around the whole tick keeps a Postgres hiccup to one tick, never the
+  host — but logs only the exception type and, if a Postgres error is in the chain, its SQLSTATE,
+  never the exception message: `RunAsync`'s own remark warns that a message can quote a key value.
+- **One summary line per tick, even at all zero — the only proof the job is alive.** A dry run
+  (`Retention:Enforce = false`, the default) logs it as a **Warning** stating that nothing was deleted
+  and `Retention:Enforce` is false, on purpose (plan decision 4): the daily reminder against a forever-
+  forgotten `false`. An enforced run logs Information. Both carry the full `RetentionRunSummary` —
+  every parent and cascade field, `CapReached`, and the `StillActive`/`NotFound`/`Failed` counts — and
+  nothing else: only counts, never a login, a user id or a channel name. The rendering is
+  `RetentionRunSummaryFormatter.Format`, a pure function tested in `Worker.Tests` (rule 11) rather than
+  inlined, since the summary carries around twenty fields across three nested records.
+- **Configuration:** `Retention` section with the T6 defaults added to the worker's
+  `appsettings.json`. `docker-compose.prod.yml` and `docker-compose.yml` (dev) pass
+  `Retention__Enforce=${RETENTION_ENFORCE:-false}` on the worker service, mirroring the existing
+  `SevenTv__EventApi__Enabled` pattern; `.env.example` documents `RETENTION_ENFORCE=false`. Flipping
+  it in production is an env edit plus a stack update, not an image rebuild (plan decision 4). The
+  periods themselves stay code constants (`RetentionPolicy`, previous entry) — this switch only
+  toggles whether the already-fixed periods are enforced.
+- **Nine hosted services become ten:** `WorkerServiceRegistrationTests` and the "nine" doc comments in
+  `WorkerServiceRegistration`/`HarnessCommandLine` now read ten; the worker's stop-order comment in
+  both compose files ("N other services stop before `UsageFlushWorker`", registered second, hosted
+  services stop in reverse registration order) moves from seven to eight.
+- **Not covered here, and deliberately not written as a unit test:** the tick loop itself
+  (boot-gate wait, startup delay, timer cadence) stays as thin as its siblings' and is live-verified
+  per rule 16 instead, the same way `TwitchLivePollWorker`'s and `TwitchIdentityReconcileWorker`'s are
+  — only `RetentionRunSummaryFormatter` and the hosted-service count are unit-tested.
+
+---
+
+### 2026-09-23 — Retention periods as code constants, one predicate per category for count and delete, cascade counts in the dry run, and the dry-run default (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/RetentionPolicy.cs` ·
+`src/EmotePurge.Core/Services/IDataRetentionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/DataRetentionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/RetentionOptions.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AccountRetentionQueries.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`
+
+Sixth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T6): the service the worker's
+retention job (T7) calls once per tick. `IDataRetentionService.RunAsync(enforce)` runs one pass and
+returns a `RetentionRunSummary` of counts only.
+
+- **The periods are constants in `RetentionPolicy` (Core)** — tokens 30 days, accounts, ended vote
+  sessions and audit entries 365 days ("twelve months" is a fixed 365 days), deactivated channels 180
+  days, all measured exclusively (a row exactly one period old is not due). Not configuration: the
+  privacy policy (#247) states them, and an environment variable that changed one would make that text
+  wrong. Configurable are only switch and pacing, `RetentionOptions` (section `Retention`): `Enforce`
+  (default `false`), `IntervalHours` (24), `StartupDelayMinutes` (10), `MaxAccountsPerRun` (100), bound
+  and validated at startup in `AddEmotePurgeInfrastructure` like `ChannelCapacityOptions`.
+- **Fixed order, own transactions:** tokens (one conditional `UPDATE` of all four token columns for
+  users last active before the cutoff that hold any of them) → accounts (at most `MaxAccountsPerRun`
+  candidates, longest-absent first, each through `IAccountDeletionService` with `AuditActor.System`,
+  `Inactivity` and the cutoff, its own transaction and recheck; `StillActive`, `NotFound` and failures
+  are counted and do not stop the others) → ended vote sessions (`IsActive = false AND
+  COALESCE(EndedAt, StartedAt) < cutoff`, keyset batches of 500, votes and ballot rows by cascade, no
+  audit entry) → audit log (`OccurredAtUtc < cutoff`, keyset batches of 5,000 deleted by primary key —
+  Postgres has no `DELETE … LIMIT`) → channels (first stamp inactive rows without `DeactivatedAtUtc`
+  with the pass's reference time, in the dry run too; then each channel deactivated before the cutoff
+  through `IChannelService.PurgeIfInactiveSinceAsync`). Cutoffs come from one `TimeProvider` reading
+  per pass; `TimeProvider.System` is registered with `TryAddSingleton`.
+- **One predicate per category, used by both modes.** The dry run walks the same selection (same
+  expression, same batches, same account cap) and stops before the write. The account deletion's own
+  predicates — last activity, votes of the user, audit entries as actor and as `"user"` target — moved
+  into `AccountRetentionQueries`, set-shaped, so `AccountDeletionService` deletes with exactly the
+  expressions the dry run counts with.
+- **Cascade counts in the summary, in both modes, from the selected parents:** per account votes (and
+  the part in open sessions) and pseudonymised audit entries; per session votes and ballot rows; per
+  channel emotes, usage rows, live days, sessions and votes. **Overlap is subtracted, not double
+  counted:** an enforced pass deletes a user's votes before the session category counts, and ended
+  sessions before a channel purge cascades, so every later cascade count leaves out the votes of the
+  accounts this pass removed (dry: would remove) and the sessions the session category covers — a no-op
+  when enforcing, the exact correction in the dry run. Without concurrent writers both modes report the
+  same numbers (tested on an overlapping data set, together with the check that the enforced counts
+  equal the rows that actually went). The per-account audit count sums "distinct entries" per account,
+  as the deletion reports it: an entry where one deleted account acts on another counts for both.
+- **The scope's `AppDbContext` is shared** with the account deletion and the channel purge, so the
+  service clears the change tracker after every account and channel. Otherwise a deletion that threw
+  would leave its tracked removal pending, and the next item's `SaveChanges` would replay it outside
+  the lock and recheck that guarded it (or fail every remaining item on the same error).
+- **Log lines carry counts and error kinds only** (exception type, Postgres SQLSTATE) — never an
+  exception message, which can quote a key value, and never a login, id or channel name. A category
+  whose bulk statement fails aborts the pass (the job retries on the next tick); per-item failures in
+  accounts and channels are counted instead.
+- **Dry run by default:** the irreversible mistake would hit the whole existing database on the first
+  enforced pass, the opposite mistake (a forgotten `Enforce`) costs nothing and shows as the job's daily
+  warning line (T7). The stamps are the only write of a dry run: not destructive, and without them the
+  channel period would never start.
+
+### 2026-09-23 — Join and retention purge serialise on the channel row (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs`
+
+Fifth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T5, finding 9). `JoinAsync`
+loaded an inactive row unlocked and saved its reactivation later, outside any transaction. A retention
+purge committing in between still saw the old, inactive, due row, cascaded its emotes, usage stats,
+live days, vote sessions and votes away, and the join then failed with a concurrency exception (500) —
+losing exactly the history a rejoin within the period is supposed to keep.
+
+- **New `IChannelService.PurgeIfInactiveSinceAsync(channelName, deactivatedBeforeUtc, actor)`** →
+  `ChannelRetentionPurgeResult` `Purged | NotFound | StillActive`. Own transaction, row locked
+  `SELECT … FOR UPDATE`, and the condition — `IsBotActive = false AND DeactivatedAtUtc < cutoff` —
+  checked **after** the lock; a null stamp is never due, and `StillActive` covers "active again" and
+  "not due yet" alike. Then the same cascade and the same `channel.purge` action as the admin purge,
+  with details `{ reason: "retention" }` (the admin purge keeps writing no details and is unchanged,
+  LEAVE-before-write included). No LEAVE publish: the worker is not in an inactive channel. `NotFound`
+  and `StillActive` write nothing. The cutoff must be `DateTimeKind.Utc` (`ArgumentException`
+  otherwise): it is compared in memory, where `DateTime` ignores the kind.
+- **`JoinAsync` runs in one explicit transaction**, opened after the Helix lookup (no row lock across
+  an HTTP call) and committed before the Redis publishes (the worker resolves the committed row by
+  name). Every existing row it may activate is loaded through the lock helper — by name, by Twitch id,
+  and the rename path's occupant. Outcome: purge first → the join waits, finds no row and creates the
+  channel afresh (`TrackingResumedAt` null, `CreatedAt` honest); join first → the purge waits and
+  answers `StillActive`. Neither side gets an exception. Rejections (cap, unknown login) roll back.
+- **The identity merge locks both rows** in one transaction: survivor (by Twitch id) first, then the
+  loser (by name), and decides on the rows as re-read under the lock — the caller's snapshot reads are
+  now untracked (`LoadChannelReadOnlyAsync`, new `LoadChannelByTwitchIdReadOnlyAsync`). The survivor
+  can be an inactive, due row (case 4). Purge first → the merge finds no survivor and skips (logged at
+  Information; the next pass backfills the id onto the remaining row); merge first → the purge sees the
+  row active and renamed away (`NotFound`). The merge now also skips, instead of fusing, if the loser
+  acquired a Twitch id or the pair collapsed into one row in between.
+- **Lock helpers: `ChannelQueries.LoadChannelForUpdateAsync` (name) and
+  `LoadChannelByTwitchIdForUpdateAsync`.** Like `UserQueries.LockUserAsync` they refuse to run outside
+  a transaction. Unlike it they also guard EF's identity map: a tracking query returns an instance the
+  context already tracks *without* refreshing it, so a row read before the lock would come back with the
+  very stale state the lock is for. Such an instance is reloaded under the lock; one with pending
+  changes is refused (`InvalidOperationException`), since a reload would silently discard them.
+- **Lock order and why it cannot cycle.** Where two channel rows are locked, the Twitch-id row always
+  comes before the name row (join rename path, merge); every other path locks one row. The account
+  deletion locks user rows, never channel rows, and no channel path locks a user row. The plain channel
+  writers (leave, 7TV sync, reconciliation rename and backfill) never lock a second channel row; the 7TV
+  sync, the only one that also touches emote rows, runs for active channels only, which the purge
+  never deletes. One overlap remains at the vote level: an account deletion
+  (`DELETE … WHERE UserId`) and a channel purge (cascading over the same channel's votes) can lock
+  the same vote rows in different orders. Postgres detects that cycle and aborts one side with a
+  deadlock error after about a second — a clean rollback, not a hang. It needs an admin action
+  racing the job, since the job runs accounts and channels one after the other; accepted.
+- **Accepted residual windows**: `LeaveAsync`, `PurgeAsync` and vote-session creation still load
+  unlocked. Racing a retention purge on the same inactive, due channel they fail with a 500 in a
+  window of milliseconds once a day — the deletion itself is correct either way, and none of them can
+  make the purge delete a channel that is being reactivated, which is the case the lock is for. A join
+  holding the lock also makes FK inserts that reference the channel (new emotes, live days, sessions)
+  wait for its commit, because `FOR UPDATE` conflicts with the key-share lock an FK check takes; the
+  join transaction is a count and one save, so the wait is milliseconds.
+- The dry run's cascade counts are not part of this step; they belong to the retention service (T6),
+  which selects the candidates and counts their dependent rows.
+
+### 2026-09-23 — Admin account deletion: `DELETE /api/admin/users/{id}`, a self-deletion escape hatch, no new error code (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` · `web/src/app/core/admin/admin.service.ts` ·
+`web/src/app/features/admin/admin-users-page.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/shared/audit/audit-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+Fourth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T4): the admin-facing side
+of the account-deletion path T3 built.
+
+- **`DELETE /api/admin/users/{twitchUserId}`**, in the `/api/admin` group (inherits
+  `GlobalAdminAuthorizationFilter`), same shape as the pre-existing `revoke-sessions`/
+  `invalidate-role-cache` routes. Calls `IAccountDeletionService.DeleteAsync` with
+  `AccountDeletionReason.AdminRequest` and `onlyIfInactiveBeforeUtc: null` — an admin may delete an
+  active account, not just an inactive one. `Deleted` → 204, `NotFound` → 404, both without a new
+  `ApiErrorCode` (the plan's decision: nothing here needs a translated message, the row is either
+  gone or it is not). `StillActive` cannot occur for `AdminRequest` and is guarded as unreachable.
+- **An admin may delete their own account from the admin list** (operator decision 6): no special
+  case blocks it, same precedent as self-revocation. The confirmation dialog names the consequence
+  (`admin.users.delete.selfHint`) rather than the endpoint refusing it — a refusal would need a new
+  error code for a case that is not actually harmful.
+- **Frontend uses the same `TypedConfirmDialog` as the channel list's purge**, not the plain
+  `ConfirmDialog` revoke uses: deletion is not recoverable (votes gone, audit entries
+  pseudonymised), so retyping the Twitch login is the gate, same reasoning as purge retyping the
+  channel name. The row-level trigger button stays `danger-quiet` per §4.2 of the design language —
+  severity does not override the repetition rule, only the confirmation dialog behind it does the
+  actual gating.
+- **No bespoke handling for the self-deletion aftermath.** The reload after a successful delete hits
+  `GET /api/admin/users` with the now-missing row; `OnValidatePrincipal` (T2) answers 401 for that,
+  and the existing `apiAuthInterceptor` already turns any unexpected 401 into
+  `AuthService.handleSessionExpired()` — a redirect to `/login`, the same mechanism self-revocation
+  already relied on before this task existed.
+- **`user.delete` joins the audit vocabulary client-side**: `ACTION_KEYS`, `CHANNELLESS_ACTIONS`,
+  and the `AuditAction` union all learn it; `audit.actions.userDelete` is translated in both
+  locales. The deleted-user actor marker (`deleted-user`) needed no new code — `actorLogin` is
+  always rendered as plain interpolated text, the same path `system` already uses, so it reads as
+  "by deleted-user" without a lookup table entry (`audit.actors.deletedUser` stays unused, per the
+  plan's "optional, not required").
+
+### 2026-09-23 — Account deletion: row lock and recheck, votes go, audit entries are pseudonymised, the deletion entry carries no identity, late audit writers lock the row, Redis cleanup is retried once and otherwise bounded by TTL (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/UserQueries.cs` ·
+`src/EmotePurge.Infrastructure/Services/UserService.cs` · `src/EmotePurge.Core/Services/AuditActor.cs` ·
+`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Services/IRateLimitTelemetry.cs` ·
+`src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`
+
+Third step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T3): the one path that
+deletes a user account, shared by the admin endpoint (T4, on request) and the retention job (T6,
+after twelve months without activity). `IAccountDeletionService.DeleteAsync(id, actor, reason,
+onlyIfInactiveBeforeUtc)` returns `Deleted | NotFound | StillActive` plus counts.
+
+- **One transaction under `SELECT … FOR UPDATE` on the user row**, taken first
+  (`UserQueries.LockUserAsync`, which refuses to run outside a transaction — a lock there would be
+  released by autocommit and guard nothing). Missing row → `NotFound`, nothing written, no audit entry,
+  Redis untouched (the id is unverified input then). A second or concurrent call finds no row.
+- **Inactivity is rechecked under the lock** (`max(LastLogin, LastSeenAtUtc) < cutoff`, else
+  `StillActive`). The cutoff is mandatory for `Inactivity` and forbidden for `AdminRequest`
+  (`ArgumentException`). A login or `LastSeenAtUtc` stamp that is in flight when the deletion arrives
+  holds a row lock; the deletion waits and then reads the new version, so the user's activity wins.
+- **Votes are deleted explicitly first** (`Vote → User` stays `Restrict`), in every session including
+  open ones — the scores of running votings drop by that user's votes. A vote racing the deletion does
+  not break it: its FK check takes a key-share lock on the user row, which conflicts with
+  `FOR UPDATE`, so the vote waits and then fails its FK check against the deleted row (the plan
+  expected the deletion to fail at the FK instead; it cannot while it holds the lock).
+- **Audit entries are pseudonymised, not deleted.** Entries with the user as actor get
+  `AuditActor.DeletedUser` (`deleted-user`/`deleted-user` — a hyphen is not valid in a Twitch login,
+  and the string is no Twitch id) as actor; entries with `TargetType = "user"` and the user's id get
+  the marker as `TargetId` and in their `login` detail, every other column and detail key unchanged.
+  Deliberately not "every string equal to the login": a broadcaster's login is also their channel's
+  name and their id is the channel's Twitch id, and channel history is channel data.
+- **The `user.delete` entry carries no identity**: `TargetId` is the marker, details are
+  `{ reason, votesDeleted, auditEntriesPseudonymised }`. When the actor is the deleted user
+  themself (an admin deleting their own account), the actor is the marker too — otherwise this one
+  entry would restore what the same transaction removed everywhere else.
+- **Late audit writers lock the row.** `UserService.InvalidateRoleCacheAsync` wrote an entry naming the
+  user without touching the user row, so nothing stopped it from landing after a deletion. It now runs
+  in a transaction that takes `FOR SHARE` before its Redis call and audit insert: holding it, the
+  deletion waits and pseudonymises the new entry; losing it, the writer finds no row and writes
+  nothing (returns `null`). `RevokeSessionsAsync` needed nothing — its user `UPDATE` is in the same
+  save as its entry and fails against a deleted row. Residual gap, accepted (plan decision 9): an entry
+  with the deleted user as *actor*, written by an in-flight request of that very user after an admin
+  deletion committed. The inactivity path is free of it through the recheck.
+- **Redis cleanup after the commit**: the role-cache keys through `IModRoleCache.InvalidateUserAsync`,
+  and the rate-limit telemetry's last-rejection slot through the new
+  `IRateLimitTelemetry.ForgetPartitionAsync`. Each is idempotent, needs no row, and gets one retry;
+  if that fails too, one warning with the number of failed steps (never the id), and the TTLs bound
+  the leftovers: 10 min for role keys, 25 h for the slot (which the next rejection of anyone
+  overwrites). `ForgetPartitionAsync` stays fail-open (never throws) but returns `false` when Redis was
+  unreachable, so the caller can retry; it deletes the slot only when its partition is the given one or
+  a sub-partition (`{id}:{sessionId}`, the voting policy), atomically by a compare-and-delete script
+  (Redis 7.2 — `DELEX` would need 8.4). **The partition is the bare Twitch user id, not `user:{id}`**
+  as the plan assumed; the doc comment on `RateLimitPolicyDecision.Partition` had the wrong example
+  and is corrected.
+- `AuditLogEntry` no longer claims unbounded retention: twelve months, and pseudonymisation on account
+  deletion.
+
+### 2026-09-23 — A session whose user row is gone is rejected, and `LastSeenAtUtc` is written at most daily from the principal check (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IUserService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UserService.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Core/Services/IAdminUserQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AdminUserQueryService.cs`
+
+Second step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T2), building on T1's new
+`User.LastSeenAtUtc` column.
+
+- **`IUserService.GetSessionsValidFromUtcAsync` is replaced by `CheckSessionAsync`**, which returns
+  `SessionCheckResult?` instead of a bare `DateTime?`. The old contract could not tell a missing
+  user row apart from a present one that was never revoked — both read as `null`. That distinction
+  used to be harmless (no code path deleted a `User` row), but the retention job and admin account
+  deletion (later tasks) both do. `Program.cs`'s `OnValidatePrincipal` now rejects the principal and
+  signs the cookie out when the row is gone, the same as it already does for a cookie predating
+  session tracking — without this, a deleted account's cookie would keep authenticating until it
+  expired on its own, up to 14 days later.
+- **`CheckSessionAsync` now takes the cookie's own issue time (`issuedAtUtc`) and decides revocation
+  itself**, returning `SessionCheckResult(bool IsValid)` instead of handing a raw `RevokedBefore`
+  cutoff back for `Program.cs` to compare. Fixed here in reaction to a Codex Sol review finding
+  (P2): the original split — stamp first in `CheckSessionAsync`, compare against the cutoff
+  afterwards in `OnValidatePrincipal` — stamped `LastSeenAtUtc` before the caller had any chance to
+  reject the session, so a client that kept replaying an already-revoked cookie was rejected on
+  every request yet still moved its own account's 30-day-token/365-day-account retention cutoffs on
+  every one of those rejected requests. `CheckSessionAsync` now compares `issuedAtUtc` against
+  `SessionsValidFromUtc` before the stamp, and only reaches the throttle/stamp step on a valid
+  session; `OnValidatePrincipal` just reads `sessionCheck.IsValid` and rejects on `false`, the same
+  as it already does when the row is missing.
+- **The stamp is still throttled to once per 24 hours per user, and still a single conditional
+  `UPDATE`.** The read already runs on every authenticated request; the throttle check rides the
+  same projection (`SessionsValidFromUtc` and `LastSeenAtUtc` in one query), so the common case — a
+  stamp already fresh, or a session about to be rejected — costs no extra roundtrip. The write
+  itself is one conditional `UPDATE` (`WHERE ... AND (LastSeenAtUtc IS NULL OR LastSeenAtUtc < now -
+  24h)`) rather than a load-modify-save, which makes it safe under several concurrent requests for
+  the same user: whichever commits first moves the stamp inside the throttle window, so every other
+  concurrent `UPDATE`'s `WHERE` clause then matches zero rows instead of re-writing the same value
+  or losing an update.
+- **`AdminUserDto` gains `LastSeenAtUtc`.** The admin user list keeps sorting by `LastLogin`;
+  rendering the new field in the UI is out of scope for this task.
+
+### 2026-09-23 — Two retention timestamps, both backfilled to migration time: `LastSeenAtUtc` and `DeactivatedAtUtc` (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/User.cs` · `src/EmotePurge.Core/Entities/Channel.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20260923194321_AddRetentionTimestamps.cs`
+
+First step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T1). Two nullable
+`DateTime` columns give the retention job (later tasks) something to measure its cutoffs from:
+
+- **`User.LastSeenAtUtc`**: "last login" alone cannot answer "still around" — the session cookie
+  is 14 days sliding, so a user who visits weekly never logs in again, and a 12-month-since-login
+  purge would delete active users. The retention job will read `max(LastLogin, LastSeenAtUtc)`;
+  this task only adds the column (stamped from `OnValidatePrincipal` in a later task).
+- **`Channel.DeactivatedAtUtc`**: `LeaveAsync` now stamps it when it sets `IsBotActive = false`;
+  whatever reactivates an inactive row nulls it again — `CompleteJoinAsync`'s reactivation branch
+  (mirroring what it already does for `TrackingResumedAt`) and the `ChannelIdentityService` merge,
+  when folding an active loser into an inactive survivor makes the survivor active.
+
+Both columns are **backfilled to the migration instant** for existing rows (`AddRetentionTimestamps`,
+`UPDATE ... SET ... = now()`), not left `NULL`. Without it, an existing user who is active weekly
+but logged in months ago would be indistinguishable from a genuine 12-month dropout on the first
+enforcement run — the dry run could not tell them apart, and the sharp run would delete the active
+one; the same reasoning applies to already-inactive channels and the 180-day purge, since the audit
+log that could recover their true leave date only exists since 2026-07-31. The columns say "since
+we started measuring" rather than a true historical instant no existing row can prove. Price: real
+dropouts among the existing rows get up to a few months of extra grace before they become due — the
+operator approved this trade-off on 2026-09-23 (plan, "Entscheidungen des Betreibers", point 1) over
+the alternative of a separate "no retention before deploy + N days" constant, which would encode the
+same fact twice.
+
 ### 2026-09-23 — Codex Sol review of #247: a dedicated rate-limit budget, resilient footer availability, wrapping footers, audit coverage
 
 **Betrifft:** `src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` ·

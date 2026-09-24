@@ -113,8 +113,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasForeignKey(v => v.EmoteId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            // Restrict, not Cascade: no code path deletes a User today, but a future one shouldn't
-            // silently wipe vote history as a side effect.
+            // Restrict, not Cascade: a user row must never take votes with it as a side effect. The one
+            // path that deletes users (AccountDeletionService) deletes their votes explicitly first.
             entity.HasOne(v => v.User)
                 .WithMany()
                 .HasForeignKey(v => v.UserId)

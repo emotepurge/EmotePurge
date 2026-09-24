@@ -507,6 +507,14 @@
         "message": "Revoke all sessions of {{name}}? The user is signed out everywhere and their stored Twitch tokens are dropped — they can simply log in again.",
         "selfHint": "This is your own account: you will be signed out immediately.",
         "confirm": "Revoke sessions"
+      },
+      "delete": {
+        "button": "Delete account",
+        "title": "Delete account irreversibly",
+        "message": "The account of {{name}} will be deleted: every vote they cast is removed, and audit-log entries naming them are anonymised instead of deleted.\n\nThis cannot be undone.",
+        "selfHint": "This is your own account: you will be signed out immediately, because the account it belongs to is gone.",
+        "inputLabel": "Twitch login to confirm",
+        "confirm": "Delete permanently"
       }
     },
     "audit": {
@@ -545,7 +553,8 @@
       "emotesSyncRestored": "Emotes restored",
       "emotesSyncImported": "Emotes imported",
       "userRevokeSessions": "User sessions revoked",
-      "userInvalidateRoleCache": "Role cache cleared"
+      "userInvalidateRoleCache": "Role cache cleared",
+      "userDelete": "Account deleted"
     },
     "details": {
       "emoteCount": "{{count}} emotes",

@@ -44,5 +44,14 @@ public class Channel
     // a channel that fixed its 7TV side stops being told it is broken.
     public string? LastSyncFailureReason { get; set; }
 
+    // When this channel was last deactivated by LeaveAsync, the measuring point for the 180-day
+    // retention purge. Null means the channel is active, or was never left, or (for a row that
+    // was already inactive when this column was introduced) was backfilled to the migration
+    // timestamp rather than left blank — the purge counts from "since we started measuring", not
+    // from the true, unrecorded leave date, which is the honest answer given what the row can
+    // prove. Nulled again by whatever reactivates the row: CompleteJoinAsync's reactivation branch,
+    // and the ChannelIdentityService merge when it makes the survivor active.
+    public DateTime? DeactivatedAtUtc { get; set; }
+
     public ICollection<Emote> Emotes { get; set; } = new List<Emote>();
 }

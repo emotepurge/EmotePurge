@@ -94,7 +94,7 @@ services:
     # #122: Docker's default for stop is 10 s until SIGKILL. The .NET `ShutdownTimeout` of the
     # host deliberately stays at the default of 30 s (a second budget in code buys nothing as long
     # as Docker holds the larger one) — but hosted services stop sequentially in reverse
-    # registration order (WorkerServiceRegistration.cs), and seven other services stop before the
+    # registration order (WorkerServiceRegistration.cs), and eight other services stop before the
     # UsageFlushWorker, which is registered second. 60 s covers the 30 s with margin, so the final
     # flush arrives predictably instead of being cut off by SIGKILL (Concept 4.6, G3).
     stop_grace_period: 60s
@@ -117,6 +117,9 @@ services:
       # Channel-specific bots that appear on no third-party list (see IBotChatterDetector) —
       # comma-separated Twitch user IDs, supplements the built-in static list without a release.
       - Twitch__AdditionalBotAccountIds=${TWITCH_ADDITIONAL_BOT_ACCOUNT_IDS:-}
+      # Data retention (#243/#244, DataRetentionWorker): false (the default) only counts and warns,
+      # true actually deletes.
+      - Retention__Enforce=${RETENTION_ENFORCE:-false}
     networks:
       - emotepurge-network
     depends_on:

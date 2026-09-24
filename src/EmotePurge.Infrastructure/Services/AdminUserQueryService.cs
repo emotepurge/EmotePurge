@@ -26,6 +26,7 @@ public class AdminUserQueryService(AppDbContext db) : IAdminUserQueryService
                 u.DisplayName,
                 u.LastLogin,
                 u.SessionsValidFromUtc,
+                u.LastSeenAtUtc,
                 u.TwitchRefreshToken != null,
                 u.TwitchAccessTokenExpiresAtUtc,
                 u.TwitchTokenScopes))

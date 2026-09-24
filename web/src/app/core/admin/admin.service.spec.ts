@@ -321,6 +321,27 @@ describe('AdminService', () => {
     expect(completed).toBe(true);
   });
 
+  it('deleteUser DELETEs the user-scoped account-deletion endpoint', () => {
+    let completed = false;
+    service.deleteUser('4711').subscribe(() => (completed = true));
+
+    const req = httpMock.expectOne('/api/admin/users/4711');
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+
+    expect(completed).toBe(true);
+  });
+
+  it('deleteUser encodes the Twitch id into the path', () => {
+    // Twitch ids are digits only in practice, but the id is still user-derived data reaching a URL
+    // segment — same reasoning as resyncChannel's channel-name encoding below.
+    service.deleteUser('47 11').subscribe();
+
+    httpMock
+      .expectOne('/api/admin/users/47%2011')
+      .flush(null, { status: 204, statusText: 'No Content' });
+  });
+
   it('resyncChannel POSTs to the channel-scoped resync endpoint with an empty body', () => {
     let completed = false;
     service.resyncChannel('handofblood').subscribe(() => (completed = true));
