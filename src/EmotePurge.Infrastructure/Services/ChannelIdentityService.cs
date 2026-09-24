@@ -172,19 +172,22 @@ public class ChannelIdentityService(
     {
         var normalized = ChannelName.Normalize(login);
 
+        // Both outage lines name no login (fourth Codex review of the block list): a join during
+        // either outage can still be refused for a row whose stored Twitch id is on the
+        // excluded-channel list, and a line naming the login right before that anonymous refusal
+        // would tie the block to it. An outage is diagnosed by the fact that it happens, not by
+        // which login was asked about.
         var appToken = await appTokenProvider.GetTokenAsync(ct);
         if (appToken is null)
         {
-            logger.LogInformation(
-                "Kein App-Token verfügbar — Twitch-Identität für {ChannelName} nicht auflösbar.", normalized);
+            logger.LogInformation("No app token available — a Twitch identity could not be resolved.");
             return TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable);
         }
 
         var identities = await helixClient.GetUsersAsync([], [normalized], appToken, ct);
         if (identities is null)
         {
-            logger.LogInformation(
-                "Helix nicht erreichbar — Twitch-Identität für {ChannelName} nicht auflösbar.", normalized);
+            logger.LogInformation("Helix not reachable — a Twitch identity could not be resolved.");
             return TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable);
         }
 

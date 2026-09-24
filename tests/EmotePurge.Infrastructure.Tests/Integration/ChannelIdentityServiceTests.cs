@@ -1039,6 +1039,10 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         // rejecting a channel because we could not reach Twitch.
         Assert.Equal(TwitchUserLookupStatus.Unavailable, lookup.Status);
         Assert.Null(lookup.User);
+        // Fourth Codex review: the join path can still refuse a row with a blocked stored id after
+        // this, and a line naming the login right before that refusal would tie the block to it.
+        Assert.Contains(harness.Logger.Entries, e => e.Message.Contains("No app token"));
+        Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains("identitylookuptoken"));
     }
 
     [Fact]
@@ -1051,6 +1055,8 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
 
         Assert.Equal(TwitchUserLookupStatus.Unavailable, lookup.Status);
         Assert.Null(lookup.User);
+        Assert.Contains(harness.Logger.Entries, e => e.Message.Contains("Helix not reachable"));
+        Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains("identitylookupdown"));
     }
 
     // Fourth Codex review: a channel.leave by the system actor is written for nothing but the

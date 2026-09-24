@@ -280,12 +280,14 @@ channel in connection with the block — and then fixed what failed.
   id-less path fell through to the main loop's catch, which does the same. `DeactivateExcludedRowAsync`
   now catches its own failed save: it clears the tracker, logs a line naming nothing and returns
   without counting, and the still-active row is retried next pass; the named per-row catch is only
-  reached by writes that are not about the block. The inventory found three more lines of the same
-  kind, silenced or anonymised the same way: the reconcile's case-3 warning when the row sitting on
+  reached by writes that are not about the block. The inventory found more lines of the same kind,
+  silenced or anonymised the same way: the reconcile's case-3 warning when the row sitting on
   a channel's new login carries an excluded id (it named both rows, the blocked id and the login
   the blocked channel last had), and the join path's rename-collision and id-mismatch lines, which
   named the blocked row's login or stored id right before `JoinAsync` refused the join for exactly
-  that id. The audit entry the objection-gate deactivation writes is a `channel.leave` by the system
+  that id — and `LookupByLoginAsync`'s two outage lines (no app token, Helix unreachable), which
+  named the login right before a join could be refused on the stored id of the row under it. The
+  audit entry the objection-gate deactivation writes is a `channel.leave` by the system
   actor — written for nothing else — so it now carries `reason = "excluded"` and **no channel name**
   (`ChannelDeactivation.DeactivateAsync(forExclusion: true)`); an entry naming the channel would have
   told every admin reading the audit log which channel the objection concerns. A user's own leave
@@ -302,6 +304,16 @@ channel in connection with the block — and then fixed what failed.
   only blocked ones — a leave-path line cannot know why it runs, and every LEAVE comes from an audited
   write (a user's leave, a purge, a rename or merge handover) that keeps the name on record. Join-path
   lines are untouched: they name a channel before anything about a block is known.
+- **Left open on purpose, for a separate decision.** The chat-log harness (`harness <channel>`, and
+  its `--report-only` recompute) fetches and replays a channel's archived chat by its Twitch id and
+  has no channel-level gate: run by hand on a blocked channel whose row was not purged yet, it would
+  process that channel's chat. It is frozen for a pre-registered measurement until 2026-10-08, so the
+  guard (refuse before any archive or database access when the row's stored id is excluded, with a
+  line that names nothing) is deferred to after that date rather than slipped into this round. The
+  foreign-channel preview (`ForeignEmoteSetService`) reads any channel's public 7TV set on a user's
+  request — no row, no subscription, no chat — and whether an objection covers that read is a policy
+  question for the operator, not a gap in this gate; answering "yes" would need its own refusal
+  status and error code.
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
