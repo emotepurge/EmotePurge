@@ -2,6 +2,8 @@ using System.Diagnostics;
 using EmotePurge.Api.Auth;
 using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
+using EmotePurge.Core.Entities;
+using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 
@@ -273,6 +275,78 @@ public static class SevenTvEndpoints
             return Results.NoContent();
         });
 
+        // POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted and .../sync-restored (restore-per-set
+        // spec 5.1, E3): the set-centric reports of a delete, a restore and a replace's removals. The
+        // reported set, not a channel, is the subject — every tracked channel with that set active is
+        // written, and an untracked set still leaves a paper entry. Authorized like sync-imported
+        // above, by the owner check rather than the channel role (DECISIONS 2026-09-25, "Who may
+        // report is decided by 7TV editing rights"), and on Bookkeeping for the same reason. The two
+        // handlers share their ladder (stages 3-4) and their aftermath (stages 6-7); only the service
+        // call and the name of the count on the wire differ.
+        emoteSetGroup.MapPost("/sync-deleted", async (
+            string emoteSetId,
+            SyncInSetRequest request,
+            HttpContext httpContext,
+            IImportTargetOwnershipService ownershipService,
+            IEmoteService emoteService,
+            IRedisPublisher redisPublisher,
+            IChannelResyncCooldown resyncCooldown,
+            IChannelService channelService,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
+        {
+            var ladder = await PassSyncInSetLadderAsync(emoteSetId, request, httpContext, ownershipService, ct);
+            if (ladder.Rejection is not null)
+            {
+                return ladder.Rejection;
+            }
+
+            // Stage 5.
+            var result = await emoteService.MarkDeletedInSetAsync(
+                emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, request.SevenTvEmoteIds!,
+                ladder.ExpectedChannelName, ladder.Actor!, ct);
+            var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
+                result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
+
+            return Results.Ok(new SyncDeletedInSetResponse(
+                result.ReportedCount,
+                [.. result.Channels.Select(channel => new SyncDeletedInSetChannelResponse(channel.ChannelName, channel.Count, channel.NotFoundIds))],
+                ToUnresolvedChannelResponse(result.UnresolvedChannel),
+                resyncTriggered));
+        });
+
+        emoteSetGroup.MapPost("/sync-restored", async (
+            string emoteSetId,
+            SyncInSetRequest request,
+            HttpContext httpContext,
+            IImportTargetOwnershipService ownershipService,
+            IEmoteService emoteService,
+            IRedisPublisher redisPublisher,
+            IChannelResyncCooldown resyncCooldown,
+            IChannelService channelService,
+            ILogger<Program> logger,
+            CancellationToken ct) =>
+        {
+            var ladder = await PassSyncInSetLadderAsync(emoteSetId, request, httpContext, ownershipService, ct);
+            if (ladder.Rejection is not null)
+            {
+                return ladder.Rejection;
+            }
+
+            // Stage 5.
+            var result = await emoteService.MarkRestoredInSetAsync(
+                emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, request.SevenTvEmoteIds!,
+                ladder.ExpectedChannelName, ladder.Actor!, ct);
+            var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
+                result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
+
+            return Results.Ok(new SyncRestoredInSetResponse(
+                result.ReportedCount,
+                [.. result.Channels.Select(channel => new SyncRestoredInSetChannelResponse(channel.ChannelName, channel.Count, channel.NotFoundIds))],
+                ToUnresolvedChannelResponse(result.UnresolvedChannel),
+                resyncTriggered));
+        });
+
         // GET /api/seventv/leaderboard (7TV-leaderboard-as-import-source spec 2026-09-13, section 4):
         // a network-wide ranking, not scoped to any channel — RequireAuthorization() only, no
         // ChannelNameValidationFilter (there is no channel name here at all) and no
@@ -418,6 +492,155 @@ public static class SevenTvEndpoints
 
         return new ForeignEmoteSetListResponse(activeEmoteSetId, sets);
     }
+
+    /// <summary>
+    /// Stages 3-4 of the set-centric <c>sync-deleted</c>/<c>sync-restored</c> ladder (restore-per-set
+    /// spec 5.1): the body, then the owner check. A non-null <see cref="SyncInSetLadder.Rejection"/>
+    /// is the answer; nothing was reported, audited or resynced on any of those exits. Otherwise the
+    /// actor, the resolved owner identity and the normalized expected channel (Regel 9) are set.
+    /// </summary>
+    private static async Task<SyncInSetLadder> PassSyncInSetLadderAsync(
+        string emoteSetId,
+        SyncInSetRequest request,
+        HttpContext httpContext,
+        IImportTargetOwnershipService ownershipService,
+        CancellationToken ct)
+    {
+        if (request.SevenTvEmoteIds is not { Count: > 0 })
+        {
+            return SyncInSetLadder.Reject(Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsEmpty }));
+        }
+
+        if (request.ExpectedChannelName is not null && !ChannelNameValidation.IsValid(request.ExpectedChannelName))
+        {
+            return SyncInSetLadder.Reject(Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidChannelName }));
+        }
+
+        var actor = httpContext.User.TryBuildAuditActor();
+        if (actor is null)
+        {
+            return SyncInSetLadder.Reject(Results.Unauthorized());
+        }
+
+        // The same owner check and the same three exits as sync-imported: 404 with a code, a bare
+        // 403, and 503 when 7TV could not be asked.
+        var ownership = await ownershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId, ct);
+        switch (ownership.Status)
+        {
+            case SevenTvEmoteSetOwnershipStatus.SetNotFound:
+                return SyncInSetLadder.Reject(Results.NotFound(new { errorCode = ApiErrorCodes.EmoteSetNotFound }));
+            case SevenTvEmoteSetOwnershipStatus.Forbidden:
+                return SyncInSetLadder.Reject(Results.Forbid());
+            case SevenTvEmoteSetOwnershipStatus.Unavailable:
+                return SyncInSetLadder.Reject(Results.Json(
+                    new { errorCode = ApiErrorCodes.ForeignChannelSevenTvUnavailable },
+                    statusCode: StatusCodes.Status503ServiceUnavailable));
+        }
+
+        var expectedChannelName = request.ExpectedChannelName is null ? null : ChannelName.Normalize(request.ExpectedChannelName);
+        return new SyncInSetLadder(null, actor, ownership.OwnerSevenTvUserId, ownership.OwnerTwitchLogin, expectedChannelName);
+    }
+
+    /// <summary>
+    /// Stages 6-7 of the set-centric report (restore-per-set spec 5.1, 5.4, E17): one
+    /// <c>channel.synced</c> per channel whose rows this call actually changed, then one guarded
+    /// resync per hit channel and for an <c>activeSetDiffers</c> mismatch — never for
+    /// <c>notTracked</c>, which has nothing to resync and must not behave differently for a blocked
+    /// channel. Returns the channels whose resync was triggered (<c>resyncTriggered</c>).
+    /// </summary>
+    /// <remarks>
+    /// The resync is what heals a report that lied (F12): the reported rows change at once, on the
+    /// strength of cached rights, and the worker's read of 7TV puts every row back to the truth. That
+    /// is why none of these steps take the request's token — like the live event, they run after the
+    /// write is committed, and a client hanging up right after the report must not skip its resync.
+    /// </remarks>
+    private static async Task<IReadOnlyList<string>> PublishAndResyncAfterSyncInSetAsync(
+        IReadOnlyList<SyncInSetChannelResultDto> channels,
+        UnresolvedChannelDto? unresolvedChannel,
+        AuditActor actor,
+        IRedisPublisher redisPublisher,
+        IChannelResyncCooldown resyncCooldown,
+        IChannelService channelService,
+        ILogger logger)
+    {
+        foreach (var channel in channels.Where(channel => channel.NewlyChangedCount > 0))
+        {
+            await EmoteEndpoints.PublishChannelSyncedAsync(redisPublisher, logger, channel.ChannelName);
+        }
+
+        var resyncCandidates = channels.Select(channel => channel.ChannelName).ToList();
+        if (unresolvedChannel is { Reason: UnresolvedChannelReasons.ActiveSetDiffers })
+        {
+            resyncCandidates.Add(unresolvedChannel.ChannelName);
+        }
+
+        var resyncTriggered = new List<string>();
+        foreach (var channelName in resyncCandidates)
+        {
+            if (await TryTriggerGuardedResyncAsync(channelName, actor, resyncCooldown, channelService, logger))
+            {
+                resyncTriggered.Add(channelName);
+            }
+        }
+
+        return resyncTriggered;
+    }
+
+    /// <summary>
+    /// One channel's resync under the per-channel cooldown, the same claim-trigger-release sequence as
+    /// <c>POST /api/channels/{channelName}/resync</c> (<see cref="ChannelEndpoints"/>). A cooldown that
+    /// is not acquired means a resync ran within the window and its result is on the way (F15) — no
+    /// error, just <c>false</c>. A resync that was claimed but not triggered (channel gone or no
+    /// longer active) hands its slot back.
+    /// </summary>
+    /// <remarks>
+    /// A failure here is logged and swallowed, like the live event's: the report is committed, and
+    /// answering it with a 500 would make the client retry a report that already succeeded. The
+    /// worker's periodic resync still reaches the channel within its next tick.
+    /// </remarks>
+    private static async Task<bool> TryTriggerGuardedResyncAsync(
+        string channelName,
+        AuditActor actor,
+        IChannelResyncCooldown resyncCooldown,
+        IChannelService channelService,
+        ILogger logger)
+    {
+        try
+        {
+            var cooldown = await resyncCooldown.TryBeginAsync(channelName, CancellationToken.None);
+            if (!cooldown.Acquired)
+            {
+                return false;
+            }
+
+            var result = await channelService.TriggerResyncAsync(channelName, actor, CancellationToken.None);
+            if (result == ChannelResyncResult.Triggered)
+            {
+                return true;
+            }
+
+            await resyncCooldown.ReleaseAsync(channelName, CancellationToken.None);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Resync after a set-centric report could not be triggered for {Channel}.", channelName);
+            return false;
+        }
+    }
+
+    private static UnresolvedChannelResponse? ToUnresolvedChannelResponse(UnresolvedChannelDto? unresolvedChannel) =>
+        unresolvedChannel is null ? null : new UnresolvedChannelResponse(unresolvedChannel.ChannelName, unresolvedChannel.Reason);
+
+    /// <summary>
+    /// What <see cref="PassSyncInSetLadderAsync"/> hands back: either a <see cref="Rejection"/>, or
+    /// everything stage 5 needs — never both.
+    /// </summary>
+    private sealed record SyncInSetLadder(
+        IResult? Rejection, AuditActor? Actor, string? OwnerSevenTvUserId, string? OwnerTwitchLogin, string? ExpectedChannelName)
+    {
+        public static SyncInSetLadder Reject(IResult rejection) => new(rejection, null, null, null, null);
+    }
 }
 
 /// <summary>
@@ -488,3 +711,53 @@ internal sealed record EmoteSetTargetSummaryDto(
 /// </summary>
 internal sealed record SyncImportedToSetRequest(
     IReadOnlyList<string> SevenTvEmoteIds, string? SourceChannelName, string SourceKind, string? LeaderboardSort = null);
+
+/// <summary>
+/// Body of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted</c> and <c>…/sync-restored</c>
+/// (restore-per-set spec 5.1). No <c>emoteSetId</c> in the body, for the same reason as
+/// <see cref="SyncImportedToSetRequest"/>: the route carries it.
+/// </summary>
+/// <param name="SevenTvEmoteIds">The 7TV ids the client mutated; missing or empty is 400 <c>emote_ids_empty</c>.</param>
+/// <param name="ExpectedChannelName">
+/// The tracked channel the client expects to hit (spec E18) — the target account's channel when the
+/// set is its active one — or <c>null</c> when it expects none. Validated with
+/// <c>ChannelNameValidation.IsValid</c> and normalized before it reaches the service (Regel 9).
+/// </param>
+internal sealed record SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName);
+
+/// <summary>
+/// Answer of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted</c> (restore-per-set spec 5.3).
+/// <see cref="Channels"/> empty and <see cref="UnresolvedChannel"/> null together mean "paper only".
+/// </summary>
+/// <param name="ReportedCount">The reported 7TV ids after ordinal deduplication.</param>
+/// <param name="Channels">The hit tracked channels, ordinal by name.</param>
+/// <param name="UnresolvedChannel">The expected channel when it was not hit, with the reason; otherwise <c>null</c>.</param>
+/// <param name="ResyncTriggered">
+/// The channels this call actually triggered a resync for (stage 7). A channel whose cooldown was
+/// held is absent — a resync is on its way already, and the client must not start another (F15).
+/// </param>
+internal sealed record SyncDeletedInSetResponse(
+    int ReportedCount,
+    IReadOnlyList<SyncDeletedInSetChannelResponse> Channels,
+    UnresolvedChannelResponse? UnresolvedChannel,
+    IReadOnlyList<string> ResyncTriggered);
+
+/// <summary>One hit channel of <see cref="SyncDeletedInSetResponse"/>: rows found (archived now or before) and the ids without a row there.</summary>
+internal sealed record SyncDeletedInSetChannelResponse(string ChannelName, int ArchivedCount, IReadOnlyList<string> NotFoundIds);
+
+/// <summary>Mirror of <see cref="SyncDeletedInSetResponse"/> for <c>…/sync-restored</c>.</summary>
+internal sealed record SyncRestoredInSetResponse(
+    int ReportedCount,
+    IReadOnlyList<SyncRestoredInSetChannelResponse> Channels,
+    UnresolvedChannelResponse? UnresolvedChannel,
+    IReadOnlyList<string> ResyncTriggered);
+
+/// <summary>One hit channel of <see cref="SyncRestoredInSetResponse"/>.</summary>
+internal sealed record SyncRestoredInSetChannelResponse(string ChannelName, int RestoredCount, IReadOnlyList<string> NotFoundIds);
+
+/// <summary>
+/// The expected channel the report missed (spec E18): <c>reason</c> is <c>notTracked</c> (missing,
+/// left or blocked — the block is never named) or <c>activeSetDiffers</c> (tracked, but its stored
+/// active set is another one, F13).
+/// </summary>
+internal sealed record UnresolvedChannelResponse(string ChannelName, string Reason);

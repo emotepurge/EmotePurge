@@ -46,6 +46,10 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     // call runs, same reasoning as its channel-scoped sibling two lines up — Bookkeeping, not
     // ForeignEmoteLookup, so a spent read budget cannot drop the paper trail.
     [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-imported", RateLimitPolicyNames.Bookkeeping)]
+    // The set-centric delete/restore reports (restore-per-set spec 5.1, AK 9): the same reasoning —
+    // the mutation already happened, so a spent read budget must not cost the paper trail.
+    [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-deleted", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/seventv/emote-sets/{emoteSetId}/sync-restored", RateLimitPolicyNames.Bookkeeping)]
     // K6 whole-branch review, Fable A (spec 6.10): a set-session's branch of this route reads the
     // set's live 7TV membership (paginated), same provider-budget shape as the ForeignEmoteLookup
     // routes above — its own group otherwise defaults to Bookkeeping (end/delete keep it, unaffected).

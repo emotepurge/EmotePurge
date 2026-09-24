@@ -405,8 +405,13 @@ public static class EmoteEndpoints
     /// allowed by rule 4. Failure is logged and swallowed — the archiving is committed and the
     /// response must not change because Redis hiccuped.
     /// </para>
+    /// <para>
+    /// <c>internal</c> because the set-centric <c>sync-deleted</c>/<c>sync-restored</c> in
+    /// <see cref="SevenTvEndpoints"/> publish through this same method, once per changed channel
+    /// (restore-per-set spec 5.4) — one helper, one error handling, no copy.
+    /// </para>
     /// </summary>
-    private static async Task PublishChannelSyncedAsync(
+    internal static async Task PublishChannelSyncedAsync(
         IRedisPublisher redisPublisher,
         ILogger logger,
         string channelName)

@@ -12,6 +12,34 @@ public record SyncDeletedResultDto(int ArchivedCount, IReadOnlyList<string> NotF
 // NewlyRestoredCount the subset this call actually un-archived.
 public record SyncRestoredResultDto(int RestoredCount, IReadOnlyList<string> NotFoundIds, int NewlyRestoredCount, bool TargetIsActiveSetOfChannel = true);
 
+// The set-centric report (restore-per-set spec 5.2/5.3): one entry per tracked channel whose active
+// set is the reported set. Count is the goal-state count (rows found for the reported ids in this
+// channel, already-archived/already-active ones included) and goes on the wire as archivedCount or
+// restoredCount; NewlyChangedCount is the subset this call actually wrote and never leaves the
+// server — it only decides whether the endpoint publishes channel.synced (spec 5.4). NotFoundIds are
+// the reported 7TV ids with no row in *this* channel.
+public record SyncInSetChannelResultDto(string ChannelName, int Count, int NewlyChangedCount, IReadOnlyList<string> NotFoundIds);
+
+// The channel the client expected to hit (spec E18) when the report did not hit it. Reason is one of
+// UnresolvedChannelReasons; ChannelName is the normalized name the client sent.
+public record UnresolvedChannelDto(string ChannelName, string Reason);
+
+// The two wire values of UnresolvedChannelDto.Reason (spec 5.3). NotTracked deliberately also
+// covers a channel on the block list (Channels:ExcludedChannelIds): the block is never revealed
+// here, the same way channel_excluded only ever exists at join time.
+public static class UnresolvedChannelReasons
+{
+    public const string NotTracked = "notTracked";
+    public const string ActiveSetDiffers = "activeSetDiffers";
+}
+
+// ReportedCount = the reported 7TV ids after ordinal deduplication. Channels empty and
+// UnresolvedChannel null together mean "paper only": no tracked channel has this set active.
+public record SyncDeletedInSetResultDto(int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel);
+
+// Mirror of SyncDeletedInSetResultDto for the restore direction.
+public record SyncRestoredInSetResultDto(int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel);
+
 public interface IEmoteService
 {
     // Soft-archive (IsArchived=true), never a hard delete — see CLAUDE.md decision log on why
@@ -51,6 +79,27 @@ public interface IEmoteService
 
     // Mirror of the set-scoped MarkDeletedAsync overload, in the restore direction.
     Task<SyncRestoredResultDto> MarkRestoredAsync(string channelName, string emoteSetId, IReadOnlyList<string> sevenTvEmoteIds, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // The set-centric report (restore-per-set spec 5.2): the reported set, not a channel, is the
+    // subject. The caller (the endpoint's owner check, IImportTargetOwnershipService.CheckAsync) has
+    // already resolved ownerSevenTvUserId/ownerTwitchLogin. Every tracked channel whose active set is
+    // emoteSetId (IsBotActive, not on the block list) is hit: its rows matched by (ChannelId,
+    // SevenTvEmoteId) are archived — only the not-yet-archived ones, so an earlier archive date
+    // survives — and one audit entry naming that channel is written when rows were found.
+    // expectedChannelName (spec E18) is the channel the client meant to hit; if it is not among the
+    // hits it comes back as UnresolvedChannel (notTracked / activeSetDiffers), and none of its rows is
+    // touched. A paper entry (ChannelName = null, owner identity in the details) is written whenever
+    // no channel entry was, or a channel stayed unresolved — so every call leaves at least one audit
+    // entry. Rows and audit entries are saved together, in one SaveChangesAsync.
+    Task<SyncDeletedInSetResultDto> MarkDeletedInSetAsync(
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
+        string? expectedChannelName, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // Mirror of MarkDeletedInSetAsync, in the restore direction: un-archives (IsArchived = false,
+    // ArchivedAt = null) only the rows that are still archived, and audits emotes.syncRestored.
+    Task<SyncRestoredInSetResultDto> MarkRestoredInSetAsync(
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
+        string? expectedChannelName, AuditActor actor, CancellationToken cancellationToken = default);
 
     // Unlike MarkDeletedAsync/MarkRestoredAsync, this touches no Emote row at all: an import never
     // creates or un-archives anything here, the target channel's own resync does that afterwards

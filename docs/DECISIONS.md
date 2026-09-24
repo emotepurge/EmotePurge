@@ -10,6 +10,110 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — Delete, restore and a replace's removals report per emote set — report plus resync
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (`PublishChannelSyncedAsync`, now shared) ·
+`src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts`,
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts`,
+`web/src/app/core/seven-tv/sync-report-outcome.ts` (consumer, T4: wire model, `reportDeletedInSet`,
+`reportRestoredInSet`, `classifySyncInSetResponse`) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (consumer, T7) ·
+`web/e2e/support/mocks.ts` (consumer, T10)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E3/E9/E17/E18, sections 5.1–5.5). A delete, a restore and the removals of a replace mutate one
+7TV **emote set**; which EmotePurge channels that touches is a consequence, not the address. The
+channel-bound report (`POST /api/channels/{channelName}/emotes/sync-deleted`) could not say so: it
+needed a tracked channel to exist, and its set-scoped variant answered an untracked or non-active
+target with a paper entry that looked like success (#224).
+
+**Two routes.** `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted` and `…/sync-restored`,
+in the `emoteSetGroup` next to `sync-imported`, with the body
+`{ sevenTvEmoteIds: string[], expectedChannelName: string | null }` — no set id in the body, the
+route carries it. Policy `Bookkeeping`, not `ForeignEmoteLookup`: the 7TV mutation already happened,
+and a spent read budget must not cost the paper trail. The ladder, in order: middleware (401,
+429) → `EmoteSetIdValidationFilter` (400 `invalid_emote_set_id`) → body (400 `emote_ids_empty`,
+400 `invalid_channel_name` for a set but invalid `expectedChannelName`, 401 without an actor) →
+the owner check `IImportTargetOwnershipService.CheckAsync` (404 `emote_set_not_found`, 403 bare,
+503 `foreign_channel_seventv_unavailable`; no service call, audit entry, live event or resync on any
+of these) → the service → the live event → the resync → 200. Who passes the owner check is the
+subject of the entry below ("Who may report is decided by 7TV editing rights") and is not repeated
+here.
+
+**What the service writes** (`IEmoteService.MarkDeletedInSetAsync`/`MarkRestoredInSetAsync`). The
+hit channels are every `Channel` with `IsBotActive && ActiveEmoteSetId == emoteSetId`, minus the
+block list (`IExcludedChannelFilter`, now an `EmoteService` dependency — a blocked channel is written
+nowhere and never named). In each hit channel the rows matched by `(ChannelId, SevenTvEmoteId)` are
+archived or restored with the goal-state semantics the channel-bound active branch always had: every
+found row counts, only the ones not yet in the target state are written, and an earlier `ArchivedAt`
+survives. The reported ids are deduplicated ordinally first; `reportedCount` is that number.
+
+**The expected channel (E18).** The client names the channel it expects to hit — the target
+account's tracked channel when the set is its active one, otherwise `null`. If that channel is not
+among the hits, the answer carries `unresolvedChannel: { channelName, reason }`: `activeSetDiffers`
+when it is tracked with another stored active set (`ActiveEmoteSetId` lags a set switch on 7TV), and
+`notTracked` when it is missing, left, or blocked — the block is deliberately not revealed, the same
+way `channel_excluded` exists only at join time. None of that channel's rows is touched or counted.
+Without this, a report that hit nothing would look exactly like a successful paper-only report — the
+class of error #224 was.
+
+**Answer.** `{ reportedCount, channels: [{ channelName, archivedCount | restoredCount, notFoundIds }],
+unresolvedChannel | null, resyncTriggered: string[] }`, channels ordinal by name. `channels` empty
+and `unresolvedChannel` null together mean "paper only". The service's `NewlyChangedCount` per
+channel never goes on the wire; it only decides the live event.
+
+**Audit.** Per hit channel with a goal-state count above 0, one entry with that channel,
+`TargetType = "emoteSet"`, `TargetId = emoteSetId` and the details
+`{ emoteCount, emoteSetId, targetIsActiveSetOfChannel: true }` — the same shape the set-scoped active
+branch writes, so the audit view renders it as before. When no channel entry was written (no hit, or
+every hit found 0 rows) **or** a channel stayed unresolved, one paper entry with `ChannelName = null`
+and `{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin }`,
+plus `unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` on a mismatch; it
+carries no `targetIsActiveSetOfChannel`, so the view renders it "for <ownerLogin>". Every successful
+call therefore leaves at least one entry; rows and entries are saved in one transaction. A retried
+report may write a second entry — a duplicate beats a gap.
+
+**Live event and resync, both in the endpoint.** One `channel.synced` per channel whose rows this
+call actually changed, through the same `EmoteEndpoints.PublishChannelSyncedAsync` (now `internal`)
+and its error handling — logged and swallowed, no request token. Then, per hit channel and for an
+`activeSetDiffers` mismatch (never for `notTracked`): `IChannelResyncCooldown.TryBeginAsync`, on
+success `IChannelService.TriggerResyncAsync` under the reporter's own account, and the slot is handed
+back when the trigger answers anything but `Triggered` — the sequence `POST /resync` uses. A held
+cooldown means a resync ran within 60 s and its result is on its way: no error, and the channel is
+not named in `resyncTriggered`, which lists exactly the channels triggered by this call. The client
+reads it to never start a second resync of its own (E12, F15), so a channel is resynced at most once
+per 60 s however many reports touch it. Two choices beyond the spec's wording: the resync steps take
+no request token either, so a client that hangs up after the write cannot skip the resync that is
+meant to check it; and a failure in them is logged and swallowed rather than turned into a 500,
+because the report is committed and a 500 would make the client retry a report that succeeded — the
+worker's periodic resync reaches the channel on its next tick regardless. `sync-imported` stays
+without a backend resync; its frontend resync is unchanged.
+
+**Residual risk, accepted (F12, F13).** The report changes rows on the client's word: the server
+checks who reports (cached 7TV rights, up to 10 minutes old in the grants cache), not whether the
+mutation really happened on 7TV. An editor whose right was just revoked can therefore still archive
+or restore rows of a tracked channel for a few minutes. The reach is the rows of that set's
+channels; the resync this same report triggers reads 7TV and restores the truth within the 60 s
+cooldown, at the latest with the next worker tick. The alternative — letting a report act only after
+a 7TV read of its own — would put an unbudgeted request on every report and undo the reason these
+routes sit on `Bookkeeping` at all. The channel-role check that authorized the channel-bound report
+was weaker still: it did not even know which set was meant. Second rest: for a set shared by two
+tracked channels the client can only name the channel of its own target account; a **second**
+channel whose stored active set lags stays undetected until its periodic resync picks it up within
+a minute — the same rest a delete run has always had for every second channel. Named here, not
+closed.
+
+**Unchanged by this commit.** The channel-bound `sync-deleted`/`sync-restored` routes keep both of
+their body forms as they are: the frontend still calls them until its callers switch to the routes
+above. The commit that changes their contract appends it to this entry.
+
+---
+
 ### 2026-09-25 — Who may report is decided by 7TV editing rights — list and report apply the same rule
 
 **Betrifft:** `src/EmotePurge.Core/Services/EmoteSetEditability.cs` ·
