@@ -19,7 +19,11 @@ const DE_TRANSLATIONS = {
       other: '{{ count }} Emotes wieder zum Set hinzufügen?',
     },
     confirmSetLine: 'In das Set „{{ setName }}“.',
+    confirmSetIdLine: 'Set-ID: {{ emoteSetId }}',
+    confirmOwnerLine: 'Besitzer: {{ ownerDisplayName }}',
+    confirmChannelLine: 'Kanal: {{ channelName }}',
     confirmSetNotActive: 'Dieses Set ist gerade nicht aktiv.',
+    confirmForeignToView: 'Diese Ansicht zeigt von diesem Lauf nichts.',
     confirmExecute: 'Wiederherstellen',
     capacityProjection: 'Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.',
     capacityWarning: 'Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.',
@@ -36,6 +40,10 @@ interface RenderOptions {
   slots?: { occupied: number; capacity: number } | null;
   setName?: string;
   isActiveSet?: boolean;
+  emoteSetId?: string;
+  ownerDisplayName?: string;
+  trackedChannelName?: string | null;
+  foreignToView?: boolean;
 }
 
 interface Harness {
@@ -91,6 +99,11 @@ describe('RestoreConfirmDialog', () => {
       slots: slots.asReadonly(),
       setName: options.setName ?? 'Hauptset',
       isActiveSet: options.isActiveSet ?? true,
+      emoteSetId: options.emoteSetId ?? 'set-1',
+      ownerDisplayName: options.ownerDisplayName ?? 'SomeOwner',
+      trackedChannelName:
+        options.trackedChannelName === undefined ? 'somechannel' : options.trackedChannelName,
+      foreignToView: options.foreignToView ?? false,
     };
 
     const fixture = TestBed.createComponent(RestoreConfirmDialog);
@@ -134,8 +147,9 @@ describe('RestoreConfirmDialog', () => {
     });
   });
 
-  // spec #200, 8.8 (AK 73): the dialog names the set the run re-adds into, with the "not
-  // currently active" addition gated on isActiveSet alone.
+  // spec #200, 8.8 (AK 73); since #253 the "not currently active" addition is gated on a tracked
+  // channel too (spec 4.3, point 6) — see the "target-class line order" describe block below for
+  // the untracked case.
   describe('naming the set (spec #200, 8.8)', () => {
     it('names the set and shows no "not active" note for the active set', () => {
       const dialog = render({ setName: 'Halloween', isActiveSet: true });
@@ -149,6 +163,73 @@ describe('RestoreConfirmDialog', () => {
 
       expect(dialog.text()).toContain('In das Set „Halloween“.');
       expect(dialog.text()).toContain('Dieses Set ist gerade nicht aktiv.');
+    });
+  });
+
+  // Task brief T6, "+4": the line order is contract (set, set id, owner, channel [tracked only],
+  // "not active" [tracked and not active only], foreign-to-view hint) — one test per target class,
+  // asserting presence/absence and relative order rather than wording (Regel 12).
+  describe('target-class line order (spec 4.3, point 6; E21)', () => {
+    it('shows set, set id, owner and channel in order for a tracked, active target', () => {
+      const dialog = render({
+        setName: 'Halloween',
+        emoteSetId: 'set-halloween',
+        ownerDisplayName: 'HandOfBlood',
+        trackedChannelName: 'handofblood',
+        isActiveSet: true,
+      });
+
+      const text = dialog.text();
+      expect(text).toContain('In das Set „Halloween“.');
+      expect(text).toContain('Set-ID: set-halloween');
+      expect(text).toContain('Besitzer: HandOfBlood');
+      expect(text).toContain('Kanal: handofblood');
+      expect(text).not.toContain('Dieses Set ist gerade nicht aktiv.');
+
+      const setIndex = text.indexOf('In das Set');
+      const idIndex = text.indexOf('Set-ID:');
+      const ownerIndex = text.indexOf('Besitzer:');
+      const channelIndex = text.indexOf('Kanal:');
+      expect(setIndex).toBeLessThan(idIndex);
+      expect(idIndex).toBeLessThan(ownerIndex);
+      expect(ownerIndex).toBeLessThan(channelIndex);
+    });
+
+    it('adds the "not active" line after the channel line for a tracked, non-active target', () => {
+      const dialog = render({
+        trackedChannelName: 'handofblood',
+        isActiveSet: false,
+      });
+
+      const text = dialog.text();
+      expect(text).toContain('Kanal: handofblood');
+      expect(text).toContain('Dieses Set ist gerade nicht aktiv.');
+      expect(text.indexOf('Kanal:')).toBeLessThan(
+        text.indexOf('Dieses Set ist gerade nicht aktiv.'),
+      );
+    });
+
+    it('shows the owner but no channel and no "not active" line for an untracked target', () => {
+      const dialog = render({
+        ownerDisplayName: 'SomeOwner',
+        trackedChannelName: null,
+        isActiveSet: false,
+      });
+
+      const text = dialog.text();
+      expect(text).toContain('Besitzer: SomeOwner');
+      expect(text).not.toContain('Kanal:');
+      expect(text).not.toContain('Dieses Set ist gerade nicht aktiv.');
+    });
+
+    it('shows the foreign-to-view hint when the target differs from the host-selected set', () => {
+      const dialog = render({ foreignToView: true });
+      expect(dialog.text()).toContain('Diese Ansicht zeigt von diesem Lauf nichts.');
+    });
+
+    it('shows no foreign-to-view hint for the host-selected set itself', () => {
+      const dialog = render({ foreignToView: false });
+      expect(dialog.text()).not.toContain('Diese Ansicht zeigt von diesem Lauf nichts.');
     });
   });
 

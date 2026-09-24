@@ -14,7 +14,7 @@ import { startForeignChannelImportFlow, startLeaderboardImportFlow } from './for
 import { importTriggerDisabled } from './import-trigger-gate';
 import { openImportSourceDialog } from './import-source-dialog';
 import { ImportFlowTarget, startImportFlow } from './import-flow';
-import { startRestoreFlow } from './restore-flow';
+import { ResolvedRestoreTarget, startRestoreFlow } from './restore-flow';
 
 /**
  * The channel's active set as far as this trigger may assume it: an *omitted* input (`undefined` —
@@ -93,8 +93,9 @@ function toImportTarget(
  * this trigger is placed inside on the page, alongside "Übertragen" (plan §1.2 point 3).
  *
  * **All four doors target `setId` itself (spec 8.6, T4.5), restore included since K5 (T5.2/T5.3)**
- * — the page's *selected* set, active or not (`toImportTarget` above for the other three;
- * `startRestoreFlow`'s own `setId`/`setName` parameters for restore). Restore books its un-archive
+ * — the page's *selected* set, active or not (`toImportTarget` above for the other three; the
+ * interim `ResolvedRestoreTarget` built from the same frozen `setId`/`setName` for restore, spec
+ * 6.4/2.5 of the plan). Restore books its un-archive
  * through the set-centric `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call
  * (`SevenTvRestoreService`, spec 6.4), and its confirmation names the set it re-adds into (T5.3, spec 8.8) —
  * restoring from a file is therefore never locked to the active set here either; the interim
@@ -185,22 +186,42 @@ export class ImportTrigger {
         return;
       }
       if (result.kind === 'restore') {
-        startRestoreFlow(
-          {
-            dialog: this.dialog,
-            emoteAdminService: this.emoteAdminService,
-            emoteSetService: this.emoteSetService,
-            httpClient: this.httpClient,
-            tokenService: this.tokenService,
-            restoreService: this.restoreService,
-            arbiter: this.arbiter,
-          },
-          channelName,
-          setId,
-          setName,
-          restoreIsActiveSet,
-          result.rows,
-        );
+        // Interim (spec 6.4/2.5 of the plan): `FileImportStep` does not resolve a target yet
+        // (T5), so this trigger still builds one from the page's own frozen values — but never
+        // without the shared pre-check (E19) having cleared this set first, same as every other
+        // first mutation. A block is silent (no confirmation, no request), matching every other
+        // pre-check caller until T5 gives this door its own banner. The five interim fields (E19's
+        // gap, T5 closes it): `ownerDisplayName` is left blank (nothing here knows a display name
+        // for this set's real owner) and `twitchLogin` falls back to the channel name, same
+        // placeholder convention `toImportTarget` already uses for the other three doors.
+        this.emoteSetService.resolveEditableSet(setId).subscribe((resolution) => {
+          if (resolution.status !== 'editable') {
+            return;
+          }
+          const target: ResolvedRestoreTarget = {
+            emoteSetId: setId,
+            setName: setName ?? setId,
+            ownerDisplayName: '',
+            twitchLogin: channelName,
+            trackedChannelName: channelName,
+            isActiveSet: restoreIsActiveSet,
+            hostChannelName: channelName,
+            hostSelectedSetId: setId,
+          };
+          startRestoreFlow(
+            {
+              dialog: this.dialog,
+              emoteAdminService: this.emoteAdminService,
+              emoteSetService: this.emoteSetService,
+              httpClient: this.httpClient,
+              tokenService: this.tokenService,
+              restoreService: this.restoreService,
+              arbiter: this.arbiter,
+            },
+            target,
+            result.rows,
+          );
+        });
         return;
       }
       const importDeps = {

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { EmoteSetTargetsResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -2644,15 +2645,64 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
 // bug finding A fixed for `setId`. Pinned here against a panel whose live `channelName` input
 // disagrees with the run's own, which cannot happen in production today but must not silently
 // resolve to the live value if it ever does.
-describe("MassDeletePanel — the restore-confirm path reads the run's own channelName, not the live input (#200 K5 finding F)", () => {
+/** `resolveEditableSet(setId)` finds `setId` under `trackedChannel`'s account, `kind: 'NORMAL'`
+ *  and `editable: true` — the one account/set pair every test in the block below needs, since
+ *  `SevenTvEmoteSetService` is never mocked at the service level here (real service, real
+ *  `HttpClient`, intercepted by `HttpTestingController` like every other request in this block). */
+function targetsResponse(setId: string, trackedChannel: string): EmoteSetTargetsResponse {
+  return {
+    accounts: [
+      {
+        twitchChannelId: 'tw-1',
+        twitchLogin: trackedChannel,
+        isOwnAccount: true,
+        trackedChannelName: trackedChannel,
+        activeEmoteSetId: setId,
+        sets: [
+          {
+            id: setId,
+            name: setId,
+            capacity: null,
+            kind: 'NORMAL',
+            isActive: true,
+            isPersonal: false,
+            ownerDisplayName: null,
+            ownerSevenTvUserId: 'owner-1',
+            editable: true,
+          },
+        ],
+        setsUnavailable: false,
+        sevenTvUserId: 'owner-1',
+      },
+    ],
+    sevenTvUnavailable: false,
+  };
+}
+
+describe('MassDeletePanel — the restore-confirm path resolves its target fresh and attributes the dock to the live page (#253 spec E13/E16)', () => {
   let fixture: ComponentFixture<MassDeletePanel>;
   let httpMock: HttpTestingController;
   let getSetStatus: ReturnType<typeof vi.fn>;
   let startRestore: ReturnType<typeof vi.fn>;
   let closed: Subject<boolean | undefined>;
 
+  // The tracked channel the fresh pre-check resolves `set-1` to — deliberately equal to the
+  // delete run's own frozen `channelName` (a realistic case: the account that owns the target set
+  // is the same one that ran the delete), and deliberately distinct from `LIVE_CHANNEL` so a test
+  // that asserted the *pre-#253* value would still fail if this leaked in by accident. `LIVE_CHANNEL`
+  // is the panel's current page — since #253 that is `hostChannelName`, no longer the mutation's
+  // expected channel (spec 6.3: `hostChannelName = channelName()`, `expectedChannelName` comes from
+  // the resolved target instead).
   const RUN_CHANNEL = 'runchannel';
   const LIVE_CHANNEL = 'livechannel';
+
+  /** Flushes the one pre-check request every test in this block triggers via `openRestoreConfirm`
+   *  (spec E16, E19) before the rest of the chain can proceed. */
+  function flushTargetsResponse(): void {
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(targetsResponse('set-1', RUN_CHANNEL));
+  }
 
   beforeEach(async () => {
     closed = new Subject<boolean | undefined>();
@@ -2717,28 +2767,33 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
     httpMock.verify();
   });
 
-  it("reads the slot-status check from the run's channelName, not the panel's live one", () => {
+  it("reads the slot-status check from the resolved target's tracked channel, not the live page", () => {
     fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
 
     expect(getSetStatus).toHaveBeenCalledWith(RUN_CHANNEL);
     expect(getSetStatus).not.toHaveBeenCalledWith(LIVE_CHANNEL);
   });
 
-  it("starts the restore against the run's channelName, not the panel's live one", () => {
+  it('starts the restore against the resolved target, attributing the dock to the live page', () => {
     fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
     closed.next(true);
 
     // filterAlreadyPresent's own 7TV read — fails open, same as a network hiccup would.
     httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
 
     expect(startRestore).toHaveBeenCalledTimes(1);
-    // Interim target (spec 6.4) built from the delete run's own values: its set is the active one
-    // here, so its channel is the expected hit and there is no client resync.
+    // The mutation target (expectedChannelName/resyncChannelName/ownerOrChannelLabel) comes from
+    // the fresh pre-check (spec 6.2/6.4), never from the panel's live channelName — its set is the
+    // resolved account's active one here, so its channel is the expected hit and there is no
+    // client resync. `hostChannelName` is the live page instead (spec 6.3, E13): the dock belongs
+    // to wherever the button was actually clicked, not to the delete run's frozen channel.
     expect(startRestore.mock.calls[0][0]).toEqual({
       setId: 'set-1',
       expectedChannelName: RUN_CHANNEL,
       resyncChannelName: null,
-      hostChannelName: RUN_CHANNEL,
+      hostChannelName: LIVE_CHANNEL,
       setName: 'set-1',
       ownerOrChannelLabel: RUN_CHANNEL,
     });
@@ -2747,6 +2802,7 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
   // same per-alias check as the file restore — here, the run's one alias is already back.
   it('skips an alias of the run that is already back in the set, counted per alias', () => {
     fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
     closed.next(true);
 
     httpMock.expectOne('https://7tv.io/v4/gql').flush({
@@ -2764,11 +2820,41 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
     });
 
     expect(startRestore).toHaveBeenCalledWith(
-      expect.objectContaining({ setId: 'set-1', hostChannelName: RUN_CHANNEL }),
+      expect.objectContaining({ setId: 'set-1', hostChannelName: LIVE_CHANNEL }),
       [],
       1,
       true,
       0,
     );
+  });
+
+  // Spec E16, 4.6 point 22; Plan-253 §6, Nr. 3: a blocked pre-check shows the panel's existing
+  // abort notice with a restore-specific lead line and the `restore.errors.*` family — no
+  // confirmation, no slot-status read, no run.
+  it('shows the abort notice and starts nothing when the pre-check finds the set not editable', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: false });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetNotEditable',
+    });
+    expect(getSetStatus).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: true });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetCheckUnavailable',
+    });
+    expect(startRestore).not.toHaveBeenCalled();
   });
 });

@@ -17,6 +17,33 @@ import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-co
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
 /**
+ * Everything a restore run needs to know where it goes, whom it tells, what its confirmation
+ * shows, and whether that differs from the page it was started on (spec 6.1) — the shared
+ * pre-check's outcome (`EditableSetTarget`, spec 6.2) plus the two fields only a caller attached to
+ * a page can supply:
+ *
+ * - `hostChannelName` — the channel of the page the run was started on (E13); only
+ *   `resetIfChannelChanged` compares against it (F7), never the target itself.
+ * - `hostSelectedSetId` — the page's *selected* set, `null` when it has none; the confirmation's
+ *   foreign-to-view hint compares this against `emoteSetId` (E21) — a different set of the *same*
+ *   channel and a page with no selection both count as foreign.
+ *
+ * Produced by `resolveEditableSet` plus these two fields today (`MassDeletePanel`'s
+ * `openRestoreConfirm`); `FileImportStep` becomes the file-based producer once T5 wires it up (2.5
+ * of the plan) — until then `ImportTrigger` builds an interim one from the page's frozen values.
+ */
+export interface ResolvedRestoreTarget {
+  emoteSetId: string;
+  setName: string;
+  ownerDisplayName: string;
+  twitchLogin: string;
+  trackedChannelName: string | null;
+  isActiveSet: boolean;
+  hostChannelName: string;
+  hostSelectedSetId: string | null;
+}
+
+/**
  * Everything the flow needs, handed in rather than injected — same reasoning as `ImportFlowDeps`
  * in `import-flow.ts` (see there): the flow opens dialogs, which live in `shared/`, while the
  * services it drives live in `core/`, and `core/` may not import from `shared/`. A service here
@@ -48,18 +75,13 @@ export interface RestoreFlowDeps {
  * preview step worth protecting the token prompt's ordering against — do not "align" this with
  * the import flow.
  *
- * `channelName` and `setId` are the values frozen at the moment the caller chose this file/run —
- * the flow never reads them from a live signal, so a channel switch while a dialog of this chain
- * is still open cannot change what gets restored. `setName`/`isActiveSet` are frozen the same way
- * (spec #200, 8.8) — the confirmation names the set the run actually re-adds into, not whatever
- * the dropdown shows by the time the dialog opens.
+ * `target` is the value frozen at the moment the caller resolved it — the flow never re-reads it
+ * from a live signal, so a channel or set switch while a dialog of this chain is still open cannot
+ * change what gets restored or where (spec #200, 8.8, carried over to `ResolvedRestoreTarget`).
  */
 export function startRestoreFlow(
   deps: RestoreFlowDeps,
-  channelName: string,
-  setId: string,
-  setName: string | null,
-  isActiveSet: boolean,
+  target: ResolvedRestoreTarget,
   rows: readonly RestoreRow[],
 ): void {
   const openConfirm = (): void => {
@@ -67,10 +89,13 @@ export function startRestoreFlow(
     // here, next to its one subscription and its one reader — openConfirm runs at most once per
     // flow, so there is nothing to reset it from.
     const slots = signal<{ occupied: number; capacity: number } | null>(null);
-    // Active set: the cheap, non-7TV Api status (unchanged). Any other set: the live preview
-    // (spec 8.3) — the active-set status endpoint has no set-scoped form at all.
-    if (isActiveSet) {
-      deps.emoteAdminService.getSetStatus(channelName).subscribe({
+    // Slot-preview fork (spec 4.3, point 8 — same fork `loadImportTarget` already uses): a
+    // tracked, *active* target reads the cheap, non-7TV-rate-limited status; anything else — a
+    // non-active set of a tracked channel, or an untracked target — reads the live per-set preview
+    // instead, keyed by the tracked channel when there is one, otherwise the account's own
+    // `twitchLogin` (the active-set status endpoint has no set-scoped or untracked form at all).
+    if (target.trackedChannelName !== null && target.isActiveSet) {
+      deps.emoteAdminService.getSetStatus(target.trackedChannelName).subscribe({
         next: (status) =>
           slots.set(
             status.capacity === null
@@ -80,15 +105,17 @@ export function startRestoreFlow(
         error: () => slots.set(null),
       });
     } else {
-      deps.emoteSetService.loadEmoteSetPreview(channelName, setId).subscribe({
-        next: (preview) =>
-          slots.set(
-            preview.capacity === null
-              ? null
-              : { occupied: preview.totalCount, capacity: preview.capacity },
-          ),
-        error: () => slots.set(null),
-      });
+      deps.emoteSetService
+        .loadEmoteSetPreview(target.trackedChannelName ?? target.twitchLogin, target.emoteSetId)
+        .subscribe({
+          next: (preview) =>
+            slots.set(
+              preview.capacity === null
+                ? null
+                : { occupied: preview.totalCount, capacity: preview.capacity },
+            ),
+          error: () => slots.set(null),
+        });
     }
 
     // spec #200, 7.2: the projection is against ADDs, not rows — a #74 duplicate cell's row
@@ -100,8 +127,14 @@ export function startRestoreFlow(
       names: rows.map((row) => row.name),
       addCount,
       slots: slots.asReadonly(),
-      setName: setName ?? setId,
-      isActiveSet,
+      setName: target.setName,
+      isActiveSet: target.isActiveSet,
+      emoteSetId: target.emoteSetId,
+      ownerDisplayName: target.ownerDisplayName,
+      trackedChannelName: target.trackedChannelName,
+      // Spec E21: a different set of the page's own channel, and a page with no selected set at
+      // all, both count as foreign — never a channel comparison.
+      foreignToView: target.emoteSetId !== target.hostSelectedSetId,
     };
     openRestoreConfirmDialog(deps.dialog, data).closed.subscribe((confirmed) => {
       if (!confirmed) {
@@ -133,7 +166,7 @@ export function startRestoreFlow(
       // present only under some of its own aliases re-adds just the missing ones, and an alias
       // another emote now holds is left out rather than sent into a certain name conflict — see
       // `filterAlreadyPresentForRestore`.
-      filterAlreadyPresentForRestore(deps.httpClient, setId, emotes).subscribe(
+      filterAlreadyPresentForRestore(deps.httpClient, target.emoteSetId, emotes).subscribe(
         ({ rows: toRestore, skipped, skippedNameTaken, available }) => {
           // #149 P2 review fix: the arbiter check above ran *before* this fetch, outside the
           // mutual-exclusion contract (design doc §4.3) it is meant to enforce — another run can
@@ -144,7 +177,7 @@ export function startRestoreFlow(
             return;
           }
           deps.restoreService.startRestore(
-            restoreStartTarget(channelName, setId, setName, isActiveSet),
+            restoreStartTarget(target),
             toRestore,
             skipped,
             available,
@@ -166,22 +199,24 @@ export function startRestoreFlow(
   });
 }
 
-/** Interim derivation of the run's target from the page's frozen values (spec 6.4) — the target
- *  here is always a set of the page's own, tracked channel: its active set is the expected hit
- *  (E18), a non-active one is the channel the client resyncs itself (E12). Replaced by the
- *  derivation from the resolved target once the flow receives one. */
-function restoreStartTarget(
-  channelName: string,
-  setId: string,
-  setName: string | null,
-  isActiveSet: boolean,
-): RestoreStartTarget {
+/** Derives the restore service's `RestoreStartTarget` from the resolved target (spec 6.4):
+ *  `expectedChannelName` is the tracked channel only when the target is its *active* set (E18);
+ *  `resyncChannelName` is the tracked channel only when it is *not* (E12), the one case no backend
+ *  resync covers; an untracked target sends neither. `ownerOrChannelLabel` prefers the tracked
+ *  channel, falling back to the owner's display name for an untracked target — display only
+ *  (the dock's target line), never compared. Exported: `MassDeletePanel`'s own restore-confirm
+ *  chain (spec E16) needs the identical derivation and stays its own chain rather than folding
+ *  into `startRestoreFlow` — its rows come from a finished delete run's `RunQueueItem`s, not from
+ *  a file's `RestoreRow`s, so the two `filterAlreadyPresentForRestore`/`startRestore` call sites
+ *  are not otherwise byte-identical (task brief, Plan-253 §6 Nr. 3). */
+export function restoreStartTarget(target: ResolvedRestoreTarget): RestoreStartTarget {
+  const channel = target.trackedChannelName;
   return {
-    setId,
-    expectedChannelName: isActiveSet ? channelName : null,
-    resyncChannelName: isActiveSet ? null : channelName,
-    hostChannelName: channelName,
-    setName: setName ?? setId,
-    ownerOrChannelLabel: channelName,
+    setId: target.emoteSetId,
+    expectedChannelName: channel !== null && target.isActiveSet ? channel : null,
+    resyncChannelName: channel !== null && !target.isActiveSet ? channel : null,
+    hostChannelName: target.hostChannelName,
+    setName: target.setName,
+    ownerOrChannelLabel: channel ?? target.ownerDisplayName,
   };
 }

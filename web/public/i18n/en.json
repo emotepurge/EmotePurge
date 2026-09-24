@@ -916,11 +916,21 @@
       "other": "Add {{ count }} emotes back to the set?"
     },
     "confirmSetLine": "Into the set “{{ setName }}”.",
+    "confirmSetIdLine": "Set ID: {{ emoteSetId }}",
+    "confirmOwnerLine": "Owner: {{ ownerDisplayName }}",
+    "confirmChannelLine": "Channel: {{ channelName }}",
     "confirmSetNotActive": "This set is not the active one right now.",
+    "confirmForeignToView": "This view shows nothing from this run.",
     "confirmExecute": "Restore",
     "capacityProjection": "The set would then hold {{ projected }} of {{ capacity }} slots.",
     "capacityWarning": "That exceeds the capacity — 7TV will reject the surplus emotes.",
     "historyNote": "The usage history stays unchanged.",
+    "nothingRestored": "Nothing restored.",
+    "errors": {
+      "targetNotEditable": "The set is not (or no longer) editable, or it does not exist.",
+      "targetNotSelectable": "This set is not a normal emote set.",
+      "targetCheckUnavailable": "Could not be checked right now — try again later."
+    },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were restored on 7TV, but EmotePurge could not record it. This usually resolves itself within a minute.",
     "syncRetry": "Report again",
