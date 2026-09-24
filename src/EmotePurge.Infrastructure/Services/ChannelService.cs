@@ -202,14 +202,27 @@ public class ChannelService(
 
     public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default)
     {
-        // AsNoTracking because both callers only ever read the names: this runs once per minute
+        // AsNoTracking because every caller only ever reads the names: this runs once per minute
         // forever in SevenTvPeriodicResyncWorker, and tracking entities nobody mutates is pure cost.
-        return await db.Channels
+        var activeRows = await db.Channels
             .AsNoTracking()
             .Where(c => c.IsBotActive)
-            .Select(c => c.ChannelName)
-            .OrderBy(name => name)
+            .Select(c => new { c.ChannelName, c.TwitchChannelId })
+            .OrderBy(row => row.ChannelName)
             .ToListAsync(cancellationToken);
+
+        // Objection gate (fourth Codex review of the block list): an active row whose stored Twitch
+        // id is excluded is left out here, in memory and through the same IsExcluded the join path
+        // uses, rather than as a second copy of the rule in SQL. The roster is capped well below a
+        // hundred rows, so filtering after the read costs nothing. This is the one change that keeps
+        // boot recovery from joining such a row after the operator adds the id and restarts the
+        // worker (the identity reconcile only runs once boot recovery is over), and it makes the
+        // periodic resync's roster prune part it within two ticks even when a LEAVE was lost. The
+        // reconcile's own deactivation stays the durable, database-side step.
+        return activeRows
+            .Where(row => !excludedChannelFilter.IsExcluded(row.TwitchChannelId))
+            .Select(row => row.ChannelName)
+            .ToList();
     }
 
     public async Task<ChannelResyncResult> TriggerResyncAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)

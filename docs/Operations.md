@@ -167,6 +167,18 @@ The join endpoint answers `403` with `{ errorCode: "channel_excluded" }` for a b
 a short, neutral frontend message ("This channel cannot be added.") that names neither a legal
 objection nor a reason. Like the chatter list, only a count is ever logged, never an id.
 
+**What step 3 does by itself.** Once `worker` restarts with the new `EXCLUDED_CHANNEL_IDS`, a
+channel row that already carries the blocked Twitch id is no longer on the worker's active roster:
+boot recovery does not join it or sync its 7TV set, the periodic 7TV resync and the live poll skip
+it, a JOIN or RESYNC command for it is ignored, and should the worker still be in that chat anyway
+(a LEAVE that got lost), the periodic resync's roster prune parts it within two resync ticks
+(`SevenTv:ResyncIntervalSeconds`, default 60 — so one to two minutes). The row itself stays active
+in the database until the identity reconcile below deactivates it, which happens in the reconcile's
+first pass right after boot recovery. A row that has **no** Twitch id yet (created while Twitch
+could not be asked) cannot be matched against the list without asking Twitch, so for such a row
+the reconcile's first pass is what stops observation. Purging in step 4 is still recommended — it
+is what actually deletes the channel's data.
+
 **Since 2026-09-24, the identity reconcile enforces the block list on its own, without waiting for
 step 4.** Once `worker` has picked up the new `EXCLUDED_CHANNEL_IDS` (step 3), its hourly identity
 reconcile (`Twitch:IdentityReconcileIntervalMinutes`, default 60) deactivates — same write as an

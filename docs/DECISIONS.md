@@ -22,13 +22,15 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Core/Services/IChannelService.cs` ·
 `src/EmotePurge.Core/Services/IChannelIdentityService.cs` (second revision) ·
 `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` (second revision) ·
+`src/EmotePurge.Worker/Worker.cs` (fourth revision) ·
 `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
 `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
 `tests/EmotePurge.Infrastructure.Tests/Unit/ExcludedChannelFilterTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/ChannelServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
-`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` · `docker-compose.yml` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` (fourth revision) · `docker-compose.yml` ·
 `docker-compose.prod.yml` · `.env.example` · `docs/Operations.md`
 
 The second gap the same GDPR review found: `ChannelService.PurgeAsync` deletes a channel's row and
@@ -204,6 +206,35 @@ the same login, simulated by having the `IExcludedChannelFilter` substitute perf
 purge and re-join the moment it is asked about the row's id (the one call every row makes before its
 own reload), landing the mutation exactly between the snapshot and the reload — the replacement row
 is left untouched and `Deactivated` stays 0.
+
+**Revised 2026-09-24 (fourth Codex review of this branch):** this round did not stop at the reported
+findings. It first listed every path that joins or observes a channel or reactivates a row, and every
+log line on those paths, against the two properties the list has to hold once an id is on it — (I1)
+no path starts or continues observing that channel's chat or 7TV set, (I2) no log line names the
+channel in connection with the block — and then fixed what failed.
+
+- **The worker's roster source leaves blocked rows out (P1).** The first entry above said boot
+  recovery and the periodic resync needed no guard because they "only ever continue observing rows
+  the database already marks active". That was the gap: after the documented procedure (add the id,
+  recreate `api`/`worker`), boot recovery joined and synced every active row before the identity
+  reconcile — which waits for boot recovery — could deactivate anything.
+  `IChannelService.ListActiveChannelNamesAsync` now leaves out an active row whose **stored**
+  `TwitchChannelId` is excluded, filtered in memory through the same `IsExcluded` the join path uses
+  (the roster is capped far below a hundred rows). Every consumer was checked: boot recovery, the
+  periodic 7TV resync and its roster prune, and the live poll (all worker-side, all must stop
+  observing — which is the point); no admin list or count reads it (`AdminChannelQueryService` has
+  its own query, which keeps showing the row as it is). One change therefore covers boot, the
+  resync, the live poll *and* a lost LEAVE: the roster prune now parts such a channel within two
+  resync ticks even if the LEAVE publish never arrived. The reconcile's deactivation stays the
+  durable, database-side step.
+- **JOIN and RESYNC commands are checked against that same roster.** `Worker` used to follow both
+  blindly, so an Api still running with an older list (between the two recreations of step 3, or if
+  only `worker` was recreated) or an admin RESYNC of a row the reconcile had not deactivated yet made
+  the worker enter a channel its own configuration blocks. Both handlers now ask
+  `ListActiveChannelNamesAsync` first — one definition of "this worker should be in that channel",
+  not a second predicate — and ignore the command otherwise, with a log line that names nothing. On a
+  database error they fail closed; the periodic resync's `EnsureJoinedAsync` is the convergence net
+  that joins a legitimately active channel on its next tick.
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 

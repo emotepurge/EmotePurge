@@ -158,6 +158,14 @@ public interface IChannelService
     // method rather than as the identical inline query both hosted services used to carry, because
     // "which channels are active?" is a domain question and because the direct AppDbContext access
     // it replaced was the one place in the repo that stepped around the layering rule.
+    //
+    // "Meant to be in" excludes a row whose stored Twitch id is on the excluded-channel list
+    // (Channels:ExcludedChannelIds), even while the row itself is still active: this list is the
+    // worker's whole roster source (boot recovery, periodic resync and its roster prune, the live
+    // poll, the JOIN/RESYNC command guard), so leaving such a row out is what stops the worker from
+    // observing it the moment it restarts with the id configured, before the identity reconcile has
+    // deactivated the row itself. Admin views that must still show the row read their own query
+    // (IAdminChannelQueryService), not this one.
     Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default);
 
     // Publishes a RESYNC command for an active channel, making the worker re-resolve the full 7TV

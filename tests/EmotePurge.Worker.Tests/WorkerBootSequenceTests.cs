@@ -122,6 +122,70 @@ public class WorkerBootSequenceTests
         await chatManager.DidNotReceive().SimulateServerReconnectAsync();
     }
 
+    // Fourth Codex review of the block list: JOIN and RESYNC commands used to be followed blindly, so
+    // an Api still running with an older exclusion list — or an admin RESYNC of a row the identity
+    // reconcile had not deactivated yet — made this worker join a channel its own roster source
+    // (IChannelService.ListActiveChannelNamesAsync, which leaves out rows with an excluded stored id)
+    // no longer lists. Only the listed channel may be entered, by either command.
+    [Theory]
+    [InlineData("JOIN:")]
+    [InlineData("RESYNC:")]
+    public async Task Worker_EntersOnlyAChannelOnTheActiveRoster_ForJoinAndResyncCommands(string prefix)
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        // Empty during boot recovery, so every JoinChannelAsync/EnsureJoinedAsync below comes from
+        // the command under test.
+        var roster = new List<string>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>()).Returns(_ => roster);
+        var syncService = Substitute.For<ISevenTvSyncService>();
+
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        Func<string, string, Task>? capturedHandler = null;
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        subscriber.When(x => x.SubscribeAsync(Arg.Any<string>(), Arg.Any<Func<string, string, Task>>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo => capturedHandler = callInfo.Arg<Func<string, string, Task>>());
+
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            chatManager,
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            CreateScopeFactory(channelService, syncService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.CommandChannelSubscribed.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(capturedHandler);
+            roster.Add("listedchannel");
+
+            await capturedHandler!(BotCommands.Channel, prefix + "unlistedchannel");
+            await capturedHandler(BotCommands.Channel, prefix + "listedchannel");
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        await chatManager.DidNotReceive().JoinChannelAsync("unlistedchannel");
+        await chatManager.DidNotReceive().EnsureJoinedAsync("unlistedchannel");
+        await syncService.DidNotReceive().SyncChannelAsync("unlistedchannel", Arg.Any<CancellationToken>());
+        await syncService.Received(1).SyncChannelAsync("listedchannel", Arg.Any<CancellationToken>());
+        if (prefix == "JOIN:")
+        {
+            await chatManager.Received(1).JoinChannelAsync("listedchannel");
+        }
+        else
+        {
+            await chatManager.Received(1).EnsureJoinedAsync("listedchannel");
+        }
+    }
+
     [Fact]
     public async Task TwitchIdentityReconcileWorker_DoesNotRunItsFirstPassOnBootRecoveryAlone()
     {
@@ -164,12 +228,12 @@ public class WorkerBootSequenceTests
         }
     }
 
-    private static IServiceScopeFactory CreateScopeFactory(IChannelService channelService)
+    private static IServiceScopeFactory CreateScopeFactory(IChannelService channelService, ISevenTvSyncService? syncService = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(channelService);
         // Returns null for every channel, so SyncSevenTvAsync stops right after the call.
-        services.AddSingleton(Substitute.For<ISevenTvSyncService>());
+        services.AddSingleton(syncService ?? Substitute.For<ISevenTvSyncService>());
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 

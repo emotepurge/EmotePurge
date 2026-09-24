@@ -829,6 +829,34 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.Equal(names.OrderBy(n => n, StringComparer.Ordinal), names);
     }
 
+    // Fourth Codex review of the block list: the worker's boot recovery reads this list before the
+    // identity reconcile has had any chance to deactivate a row, so after the operator adds an id
+    // and restarts the worker, an active row still carrying that id must not be on it — otherwise
+    // boot recovery joins and syncs the very channel the objection is about.
+    [Fact]
+    public async Task ListActiveChannelNamesAsync_LeavesOutAnActiveRowWhoseStoredIdIsExcluded()
+    {
+        await using var db = fixture.CreateDbContext();
+        await SeedChannelAsync(db, "channelserviceroster1", "770101");
+        await SeedChannelAsync(db, "channelserviceroster2", "770102");
+        await SeedChannelAsync(db, "channelserviceroster3", twitchChannelId: null);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("770102").Returns(true);
+        var service = CreateService(db, excludedChannelFilter: excludedChannelFilter);
+
+        var names = await service.ListActiveChannelNamesAsync();
+
+        Assert.Contains("channelserviceroster1", names);
+        Assert.DoesNotContain("channelserviceroster2", names);
+        // An id-less row cannot be matched against the list without asking Twitch — that stays the
+        // identity reconcile's job — so it is listed like any other active row.
+        Assert.Contains("channelserviceroster3", names);
+
+        await using var verify = fixture.CreateDbContext();
+        // Read-only: the row itself stays active until the reconcile deactivates it.
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == "channelserviceroster2")).IsBotActive);
+    }
+
     /// <summary>
     /// Builds the service under test. The identity lookup defaults to
     /// <see cref="TwitchUserLookupStatus.Unavailable"/> on purpose: that status is defined as "carry
