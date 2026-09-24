@@ -364,6 +364,8 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             Substitute.For<IRedisPublisher>(),
             identityService,
             new ChannelEmoteSetObservationService(db),
+            new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
+            Substitute.For<IExcludedChannelFilter>(),
             NullLogger<ChannelService>.Instance);
     }
 
@@ -384,6 +386,7 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             new DuplicateEmoteNameTracker(),
             new ChannelEmoteSetObservationService(db),
             new ChannelSyncGate(),
+            Substitute.For<IExcludedChannelFilter>(),
             NullLogger<SevenTvSyncService>.Instance);
     }
 

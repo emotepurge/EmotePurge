@@ -59,6 +59,269 @@ usually answers differently — nginx `limit_req` returns `503` — so the statu
 which layer rejected a throttled client. No raw WebSocket endpoint exists; SSE needs no
 `Upgrade` handling.
 
+## Legal pages (imprint, privacy policy)
+
+The repository is public and self-hostable, so it ships no imprint or privacy policy text of its
+own (issue #247) — a fork must not carry the original operator's legal identity. Content comes
+from Markdown files the operator supplies on the host, mounted read-only into the container and
+never baked into an image.
+
+1. Create a directory on the host, e.g. `/opt/emotepurge/legal`, and put up to four files in it:
+
+   | File | Required | Content |
+   |---|---|---|
+   | `imprint.de.md` | for the imprint to appear at all | German imprint |
+   | `imprint.en.md` | optional | English imprint |
+   | `privacy.de.md` | for the privacy policy to appear at all | German privacy policy |
+   | `privacy.en.md` | optional | English privacy policy |
+
+   **German is authoritative.** A document is considered configured only once its German file
+   exists — an English file with no German counterpart next to it is treated the same as no file
+   at all (`ILegalContentService`/`LegalContentService` in `EmotePurge.Infrastructure/Services/`).
+   If the English file is missing, an English request answers with the German text plus a flag
+   the frontend reads to show "only available in German" instead of silently mixing languages.
+   The frontend pages live at `/imprint` and `/privacy`; they read from the API's
+   `GET /api/legal/availability` and `GET /api/legal/{imprint,privacy}/{de,en}`.
+2. `docker-compose.prod.yml`'s `api` service already carries the mount and the variable, pointed
+   at `/opt/emotepurge/legal:/legal:ro` — create that directory on the VPS and put the files from
+   step 1 there. `docker-compose.yml` (local dev) mounts `./legal-content` the same way, so the
+   feature is testable locally by creating that (gitignored, empty-by-default) directory next to
+   the repo — neither line needs editing, only the host directory needs to exist and be filled.
+3. Redeploy (`docker compose up -d --build` locally, or pull + recreate in Portainer for prod —
+   this needs no database migration and no code change, only the mount and the environment
+   variable). The two endpoints and the footer links appear as soon as the container restarts
+   with the new configuration; nothing needs to be rebuilt.
+
+An edit to an existing file is picked up on the **next request**, not only on a restart —
+`LegalContentService` caches each file's rendered HTML keyed by its own last-write time and
+re-renders only when that changes, so there is no cache to flush by hand. Markdown is rendered
+to HTML **server-side** with raw HTML disabled (Markdig `DisableHtml()`), so a literal
+`<script>` typed into the source file cannot execute — it is escaped like any other text. Both
+`/api/legal/availability` (tells the frontend which links to show) and the document endpoints are
+anonymous and IP-partitioned like `GET /api/health`, but behind their own `PublicLegal` policy
+(`RateLimiting:PublicLegal`, 60/min by default) rather than a share of `PublicHealth`'s — the two
+have unrelated legitimate callers (browser visitors vs. two machines on fixed cadences) and must
+not be able to exhaust each other's budget.
+
+`.env.example`-style template: none is checked in, because every line would either be empty or a
+placeholder path with nothing to demonstrate — `Legal:ContentPath` is documented here instead,
+the way `BACKUP_DIR`/`RETENTION_DAYS` above are.
+
+## Excluding a chatter (GDPR objection)
+
+The worker processes public chat on a legitimate-interest basis (GDPR Art. 6(1)(f)) to count emote
+usage; it stores no message text and no chatter identity, but every message is briefly held in
+memory with the sender's Twitch user ID for bot detection. Anyone relying on that basis must honour
+an objection under Art. 21. Objections are expected to arrive by e-mail and to be rare — there is no
+self-service opt-out (chat command or web form) and none is planned.
+
+1. From the objection, find the chatter's **numeric Twitch user ID** — never the login, which can
+   change. The Twitch API (`GET https://api.twitch.tv/helix/users?login=<login>`, an App Access
+   Token, the same credentials the worker's own Helix calls already use) or a third-party lookup
+   tool both return it.
+2. Add the ID to `TWITCH_EXCLUDED_CHATTER_IDS` in the `.env` next to `docker-compose.prod.yml` on
+   the VPS — comma-separated if the variable already holds other IDs, same shape as
+   `TWITCH_ADDITIONAL_BOT_ACCOUNT_IDS` above it.
+3. Recreate the worker so it picks up the new environment (`docker compose -f
+   docker-compose.prod.yml up -d --no-deps worker` in Portainer's stack directory, or the
+   equivalent redeploy through Portainer's UI). The change takes effect only after this restart —
+   `Twitch:ExcludedChatterIds` is read once, at startup, not polled.
+4. The worker logs how many IDs are configured (`Configured N excluded chatter id(s).`) on the next
+   start — never the IDs themselves, and never a login — so the restart can be confirmed from the
+   container logs without looking at the `.env` again.
+
+From the moment the worker restarts, a message from an excluded ID is dropped before it reaches
+either the emote counters or the bot detector — the sender is no longer processed at all, in any
+category. There is nothing to do retroactively: already aggregated usage counts contain no
+identity, so no per-person removal is possible or necessary against them.
+
+## Blocking a channel from being rejoined (GDPR objection)
+
+The chatter exclusion above stops processing a single person's messages; it does not stop a
+broadcaster's own channel from being tracked again. `DELETE /{channelName}/purge` (admin area)
+deletes a channel's row and its whole history, but without a block list any moderator or
+broadcaster could immediately join it again through the ordinary join route — the objection would
+have no lasting effect. `Channels:ExcludedChannelIds` (env `EXCLUDED_CHANNEL_IDS`) closes that gap:
+every path that could create or reactivate a `Channel` row for chat observation refuses a blocked
+id, and **no caller is exempt, including a global admin** — the only way to undo a block is to
+remove the id from the list.
+
+For a streamer's own objection to their channel being tracked at all, in this order:
+
+1. From the objection, find the channel's **numeric Twitch broadcaster ID** — never the login,
+   which can change — the same way as for a chatter ID above (`GET
+   https://api.twitch.tv/helix/users?login=<login>`).
+2. Add the ID to `EXCLUDED_CHANNEL_IDS` in the `.env` next to `docker-compose.prod.yml` on the VPS
+   — comma-separated if the variable already holds other IDs, same shape as
+   `TWITCH_EXCLUDED_CHATTER_IDS` above.
+3. Recreate **both** `api` and `worker` (`docker compose -f docker-compose.prod.yml up -d --no-deps
+   api worker` in Portainer's stack directory, or the equivalent redeploy through Portainer's UI) so
+   both pick up the new environment — the join endpoint lives in the Api, the identity reconcile in
+   the Worker, and `Channels:ExcludedChannelIds` is read once, at startup, not polled.
+4. Only **then** purge the channel in the admin area (`DELETE /{channelName}/purge`). Doing this
+   last, after the block already takes effect, closes the exact gap this list exists for: without
+   this order, the channel could be rejoined in the moments between the purge and the block actually
+   being active.
+
+The join endpoint answers `403` with `{ errorCode: "channel_excluded" }` for a blocked channel —
+a short, neutral frontend message ("This channel cannot be added.") that names neither a legal
+objection nor a reason. Like the chatter list, only a count is ever logged, never an id.
+
+**What step 3 does by itself.** Once `worker` restarts with the new `EXCLUDED_CHANNEL_IDS`, a
+channel row that already carries the blocked Twitch id is no longer on the worker's active roster:
+boot recovery does not join it or sync its 7TV set, the periodic 7TV resync and the live poll skip
+it, a JOIN or RESYNC command for it is ignored, and should the worker still be in that chat anyway
+(a LEAVE that got lost), the periodic resync's roster prune parts it within two resync ticks
+(`SevenTv:ResyncIntervalSeconds`, default 60 — so one to two minutes). The row itself stays active
+in the database until the identity reconcile below deactivates it, which happens in the reconcile's
+first pass right after boot recovery. A row that has **no** Twitch id yet (created while Twitch
+could not be asked) cannot be matched against the list without asking Twitch, so for such a row
+the reconcile's first pass is what stops observation. Purging in step 4 is still recommended — it
+is what actually deletes the channel's data.
+
+**Since 2026-09-24, the identity reconcile enforces the block list on its own, without waiting for
+step 4.** Once `worker` has picked up the new `EXCLUDED_CHANNEL_IDS` (step 3), its hourly identity
+reconcile (`Twitch:IdentityReconcileIntervalMinutes`, default 60) deactivates — same write as an
+ordinary leave: `IsBotActive` off, the retention clock stamped, a LEAVE published — any channel row
+that is still active and whose Twitch id turns out to be on the list, whether the row already knew
+that id or only just resolved it through its current login. That closes the gap step 4 used to guard
+against by itself: even if the channel is never purged, it stops being observed within one reconcile
+interval of the block taking effect. Purging in step 4 is still the right thing to do and still
+recommended — it is what actually deletes the channel's data — but it is no longer what keeps the
+objection enforced.
+
+## Data retention
+
+Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,
+in-database mechanism that deletes or clears user and channel data on a schedule, independent of
+whether any backup exists. `DataRetentionWorker`, the tenth hosted service in `EmotePurge.Worker`,
+enforces it once a day by default.
+
+### The periods
+
+Fixed in `src/EmotePurge.Core/Services/RetentionPolicy.cs`, the one place in the code the numbers
+stand:
+
+| Data | Period | Measured from |
+|---|---|---|
+| Encrypted Twitch tokens | cleared 30 days after last activity | `max(LastLogin, LastSeenAtUtc)` |
+| User account | deleted 365 days after last activity | `max(LastLogin, LastSeenAtUtc)` |
+| Ended vote session, with its votes | deleted 365 days after it ended | `EndedAt` (falls back to `StartedAt`) |
+| Audit log entry | deleted 365 days after it occurred | `OccurredAtUtc` |
+| Channel after "leave" | deleted with its whole history 180 days after it was deactivated | `DeactivatedAtUtc` |
+
+"Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
+writes at most once per 24 hours — without it, a user who never logs out again (the session
+cookie slides for 14 days) but never re-authenticates either would look inactive by `LastLogin`
+alone. Active channels and their statistics are never touched. These periods are deliberately
+**not configurable** — a privacy policy quotes them (issue #247), and an environment variable
+that could silently change one would turn that text into a lie. What is configurable is only
+whether the job writes and how often it runs (below).
+
+**Migration backfill.** The migration that introduced `LastSeenAtUtc` and `DeactivatedAtUtc`
+(`AddRetentionTimestamps`) backfills both columns to the migration's own timestamp for existing
+rows — every existing user's `LastSeenAtUtc` becomes "now", and every already-inactive channel's
+`DeactivatedAtUtc` becomes "now". Without that, an existing user who logged in weeks ago but has
+kept a valid session since would look overdue for token clearing on the very first enforced pass,
+and a dry run could not tell them apart from someone genuinely gone. The cost is the mirror image:
+a genuinely stale account or channel from before the migration gets up to one extra period of
+grace, measured from the migration instant rather than from whenever it actually went quiet.
+
+### Dry run by default
+
+`Retention:Enforce` defaults to `false`. In that mode the job counts what it *would* delete but
+writes nothing except one thing: it stamps `DeactivatedAtUtc` on inactive channels that do not yet
+carry it (rows deactivated by an older image before this feature existed, or in the gap between
+applying the migration and deploying the image that stamps on leave) — without that stamp the
+180-day period for those channels would never start. Every pass, dry run or enforced, logs
+exactly one line per tick, even when every count is zero — the log line is deliberately the job's
+only proof of being alive, so a Warning is the safety net against a `Retention:Enforce=false` that
+gets deployed once and then forgotten for a year:
+
+```
+Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0
+```
+
+An enforced pass logs the identical set of fields at `Information` instead, prefixed
+`Retention pass enforced.` — the counts then describe what was actually deleted, not a
+projection. Every count is a plain number, never a login, a user id or a channel name (the same
+rule the rest of the worker's logging follows). Reading the fields: the first clause of each
+category is the "parent" row count (tokens cleared, accounts deleted, vote sessions deleted,
+audit log entries deleted, channels purged); everything after it in that category is a cascade —
+rows that go with the parent (votes with an account or a session, emotes/usage rows/live
+days/vote sessions/votes with a channel). `still active`/`not found`/`failed` count per-item
+outcomes that do not stop the rest of the category (a login won a race against an inactivity
+deletion, a row already gone, or a transient failure — the item is retried on the next day's
+pass). `cap reached: True` on the accounts category means `Retention:MaxAccountsPerRun` was hit
+for this tick; the remaining overdue accounts are not lost, they are simply the first ones picked
+up on the next pass.
+
+**Recommended procedure:** deploy with the default (`RETENTION_ENFORCE` unset or `false`), watch
+a handful of daily dry-run lines, and sanity-check the numbers against what you expect for your
+instance's size and age (a large `accounts deleted` count on day one against a young instance is
+worth investigating before switching on deletion, not after). Once the numbers look right, set
+`RETENTION_ENFORCE=true` in the `.env` file next to your production compose file and recreate the
+worker container (`docker compose up -d --build worker`, or the equivalent recreate in whatever
+orchestrates your deployment) — no image rebuild is needed, only the environment variable and a
+container recreate. To switch back to counting only, set `RETENTION_ENFORCE=false` (or unset it)
+and recreate the worker container again; nothing already deleted comes back, but no further
+deletions happen until it is set to `true` again.
+
+### The other `Retention:*` keys
+
+Only `Enforce` is meant to be flipped in production. The remaining three live in the worker's
+`appsettings.json` and are not exposed as `.env`/compose variables — they pace the job rather than
+change what it does, and changing them needs a rebuilt image:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Retention:IntervalHours` | `24` | Hours between two passes. |
+| `Retention:StartupDelayMinutes` | `10` | Minutes the job waits after the worker's boot recovery before its first pass, so a restart loop does not begin every start with a pass. |
+| `Retention:MaxAccountsPerRun` | `100` | Ceiling on account deletions per pass; bounds how long the first enforced pass can run against an existing database. The rest follow on later passes, see `cap reached` above. |
+
+### Account deletion on request
+
+For anyone who asks you to delete their account by email (or however you take such requests): an
+admin (one of `Auth:AdminTwitchLogins`) can delete a single account immediately from the admin
+user list, independent of the retention job's schedule and independent of whether the account is
+inactive. The row's delete action asks for the account's Twitch login typed out before it
+unlocks, the same typed-confirmation dialog the channel list's purge action uses — an accidental
+click cannot trigger it.
+
+Deletion goes through the same path the retention job uses (`IAccountDeletionService`):
+
+- All of the account's votes are removed, in both open and already-ended vote sessions — a vote
+  is an opinion with an author, so it does not survive the account, and no aggregate total is
+  kept in its place.
+- The account row itself, and with it the encrypted Twitch tokens stored on it, is removed.
+- Audit log entries are **not** removed but pseudonymised: any entry where the account was the
+  actor, or was the named target (`user.revokeSessions`, `user.invalidateRoleCache`), has its
+  identifying fields replaced by the fixed marker `deleted-user`. Every other column and detail
+  key is left as is — in particular, a channel's own history (a rename, say) that happens to share
+  a name with the deleted account's login is untouched, since that is channel data, not account
+  data. The deletion's own audit entry (`user.delete`) carries no identity at all, only the reason
+  and the counts (votes removed, entries pseudonymised); if the deleted account is itself the
+  actor of that entry (an admin deleting their own account), the marker is recorded as the actor
+  too, so that entry cannot re-identify what the rest of the transaction just removed.
+- Two pieces of Redis state tied to the account's id are cleared after the deletion commits: the
+  role-cache keys (`modlist:`, `7tveditor:`, `subcheck:`) and the rate-limit telemetry's
+  last-rejection slot. Each is idempotent and gets one retry if the first attempt fails; if both
+  fail, the leftover keys still expire on their own — at most 10 minutes for the role-cache keys,
+  at most 25 hours for the telemetry slot (which the very next rejected request from anyone
+  overwrites anyway).
+
+None of this reaches your backups: a dump taken before the deletion still contains the account,
+and it stays recoverable from that dump for as long as your backups retain it. If a request needs
+that closed off too, the affected backup generations need deleting by hand.
+
+### Deploying this feature
+
+The migration behind it (`AddRetentionTimestamps`) is additive — two new nullable columns plus
+their backfill — so it does no harm against the *old* image still running while you apply it.
+The reverse is not true: a *new* image expects those columns to exist. Apply the migration before
+you deploy the new images, not after, the same rule this project follows for every migration
+(`dotnet ef database update`, run by hand — migrations do not run automatically at app start).
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates

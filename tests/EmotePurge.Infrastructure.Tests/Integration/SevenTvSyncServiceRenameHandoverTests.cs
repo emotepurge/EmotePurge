@@ -192,7 +192,7 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(SetId, liveEmotes))));
         return new SevenTvSyncService(
             db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), gate,
-            NullLogger<SevenTvSyncService>.Instance);
+            Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
     }
 
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string name)

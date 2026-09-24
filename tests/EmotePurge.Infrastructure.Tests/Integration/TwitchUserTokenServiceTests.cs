@@ -192,7 +192,7 @@ public class TwitchUserTokenServiceTests(PostgresFixture fixture)
     public async Task ScopeDrift_ReportsReauthRequired_WithoutBurningARefresh()
     {
         // Stored grant lacks one of the currently requested scopes — refreshing can never add it.
-        await SeedUserWithTokensAsync("uts-drift", DateTime.UtcNow.AddHours(2), scopes: "user:read:email");
+        await SeedUserWithTokensAsync("uts-drift", DateTime.UtcNow.AddHours(2), scopes: "user:read:moderated_channels");
         var authClient = Substitute.For<ITwitchAuthClient>();
         await using var db = fixture.CreateDbContext();
         var service = CreateService(db, authClient, new TwitchTokenRefreshGate());

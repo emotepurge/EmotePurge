@@ -144,6 +144,28 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     private readonly IPendingMigrationGuard _migrationGuard = Substitute.For<IPendingMigrationGuard>();
 
+    /// <summary>
+    /// Substituted so the legal-pages tests (issue #247) can drive "configured" vs. "not configured"
+    /// directly, without a real ContentPath on disk. NSubstitute's own default for a Task&lt;record&gt;
+    /// member is a null record, not a record of falses/nulls, so the availability default is set
+    /// explicitly below — the endpoint dereferences the record's fields directly and would otherwise
+    /// throw on every test that never overrides it.
+    /// </summary>
+    public ILegalContentService LegalContent { get; } = Substitute.For<ILegalContentService>();
+
+    /// <summary>
+    /// Substituted so the admin account-deletion filter-matrix tests can reach the handler at all
+    /// (the real implementation locks a Postgres row) and drive its outcome directly — the same
+    /// reasoning as <see cref="Emotes"/>.
+    /// </summary>
+    public IAccountDeletionService AccountDeletion { get; } = Substitute.For<IAccountDeletionService>();
+
+    public ApiFactory()
+    {
+        LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
+            .Returns(new LegalDocumentAvailability(ImprintAvailable: false, PrivacyAvailable: false));
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // "Testing" rather than the default "Development": Development would load the developer's
@@ -183,6 +205,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => GuardedEditorGrants);
             services.AddScoped(_ => SevenTvApi);
             services.AddScoped(_ => _migrationGuard);
+            services.AddSingleton(_ => LegalContent);
+            services.AddScoped(_ => AccountDeletion);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about

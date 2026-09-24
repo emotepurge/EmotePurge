@@ -1,5 +1,7 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Redis;
+using EmotePurge.Infrastructure.SevenTv;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -42,6 +44,23 @@ public class ModRoleCacheTests(RedisFixture fixture)
         Assert.Null(await cache.TryGetSevenTvEditorGrantsAsync("user-invalidate-1"));
     }
 
+    // Review finding on the account/session revocation path: the held 7TV editor-grants failure
+    // (SevenTvEditorGrantsHoldCache, key "7tveditorhold:") used to outlive its user, because
+    // InvalidateUserAsync only ever reached "7tveditor:", "modlist:" and the subcheck keys.
+    [Fact]
+    public async Task InvalidateUserAsync_RemovesTheHeldSevenTvEditorGrantsFailure()
+    {
+        var cache = new ModRoleCache(fixture.Connection, BuildConfiguration(), NullLogger<ModRoleCache>.Instance);
+        var holdCache = new SevenTvEditorGrantsHoldCache(fixture.Connection, NullLogger<SevenTvEditorGrantsHoldCache>.Instance);
+        await holdCache.SetAsync("user-invalidate-hold", SevenTvLookupStatus.Unavailable, TimeSpan.FromMinutes(10));
+
+        var removed = await cache.InvalidateUserAsync("user-invalidate-hold");
+
+        Assert.Equal(1, removed);
+        Assert.False(await fixture.Connection.GetDatabase().KeyExistsAsync(SevenTvEditorGrantsHoldCache.BuildKey("user-invalidate-hold")));
+        Assert.Null(await holdCache.TryGetAsync("user-invalidate-hold"));
+    }
+
     [Fact]
     public async Task InvalidateUserAsync_LeavesOtherUsersEntriesUntouched()
     {
@@ -63,8 +82,8 @@ public class ModRoleCacheTests(RedisFixture fixture)
     [Fact]
     public async Task InvalidateUserAsync_ForUserWithoutEntries_ReturnsZero()
     {
-        // Including the unconditionally probed 7tveditor and modlist keys: they are only counted
-        // when they actually existed.
+        // Including the unconditionally probed 7tveditor, modlist and held-failure keys: they are
+        // only counted when they actually existed.
         var cache = new ModRoleCache(fixture.Connection, BuildConfiguration(), NullLogger<ModRoleCache>.Instance);
 
         Assert.Equal(0, await cache.InvalidateUserAsync("user-invalidate-nobody"));

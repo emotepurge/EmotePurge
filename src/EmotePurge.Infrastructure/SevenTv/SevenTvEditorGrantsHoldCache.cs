@@ -65,5 +65,7 @@ public class SevenTvEditorGrantsHoldCache(IConnectionMultiplexer connectionMulti
         }
     }
 
-    private static string BuildKey(string twitchUserId) => $"{KeyPrefix}{twitchUserId}";
+    // Public so ModRoleCache.InvalidateUserAsync (Redis/ModRoleCache.cs) can delete this key on
+    // account/session revocation without duplicating the "7tveditorhold:" prefix as a second literal.
+    public static string BuildKey(string twitchUserId) => $"{KeyPrefix}{twitchUserId}";
 }

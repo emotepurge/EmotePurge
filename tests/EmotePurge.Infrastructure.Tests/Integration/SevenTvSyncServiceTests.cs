@@ -36,7 +36,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
     private static SevenTvSyncService CreateService(Persistence.AppDbContext db, EmoteMatchCache cache) =>
         new(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
-            new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+            new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
 
     // The REST answer a seeded channel would get back unchanged — same set, same emotes, same
     // image urls, so a sync over it is a true no-op.
@@ -50,7 +50,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes))));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
     }
 
     // Same as CreateRestService, but with an explicit set capacity. Separate method because a
@@ -67,7 +67,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes, capacity))));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
     }
 
     // As CreateRestService, but with a logger of the caller's choosing. Separate method for the
@@ -83,7 +83,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes))));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), logger);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), logger);
     }
 
     private static string SeededImageUrl(string sevenTvId) => $"https://cdn.7tv.app/emote/{sevenTvId}/2x.webp";
@@ -126,7 +126,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(SetId,
                 [LiveEmote("7tv-dup-a", "Dup"), LiveEmote("7tv-dup-b", "Dup"), LiveEmote("7tv-solo", "Solo")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, tracker, new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        var service = new SevenTvSyncService(db, apiClient, cache, tracker, new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
 
         await service.SyncChannelAsync(channel.ChannelName);
 
@@ -324,7 +324,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState(
                 "7tv-user-77",
                 new SevenTvEmoteSet(SetId, [new SevenTvEmote("e1", "hi", "https://cdn/e1.webp")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync("wstest_syncresult");
 
@@ -871,7 +871,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Failed(status));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
     }
 
     [Theory]
@@ -1014,7 +1014,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.ResolveTwitchUserIdAsync("wstest_reason_noid", Arg.Any<CancellationToken>())
             .Returns(SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.NoSevenTvAccount));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync("wstest_reason_noid");
 
@@ -1042,13 +1042,93 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             .Returns(SevenTvTwitchUserIdResult.Ok("222"));
         apiClient.GetChannelStateForTwitchUserAsync("222", Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user-222", new SevenTvEmoteSet(SetId, [LiveEmote("e1", "hi")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.NotNull(result);
         Assert.Equal("222", await db.Channels.Where(c => c.Id == channel.Id)
             .Select(c => c.TwitchChannelId).SingleAsync());
+    }
+
+    // ---- Objection gate (fourth Codex review of the block list) ----
+
+    [Fact]
+    public async Task SyncChannel_WhenTheStoredTwitchIdIsExcluded_NeitherAsks7TvNorWarmsTheCache()
+    {
+        // Every sync caller reaches this — boot recovery, the periodic resync, the JOIN/RESYNC
+        // handlers and the EventAPI follow-ups — so this is what keeps a blocked channel's 7TV set
+        // unobserved even on a path that got past its own roster check.
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_excluded_known", ("e1", "active", false));
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded(channel.TwitchChannelId).Returns(true);
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        var service = new SevenTvSyncService(
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, logger);
+
+        var result = await service.SyncChannelAsync(channel.ChannelName);
+
+        Assert.Null(result);
+        Assert.Empty(apiClient.ReceivedCalls());
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("wstest_excluded_known") || e.Message.Contains(channel.Id));
+    }
+
+    [Fact]
+    public async Task SyncChannel_WhenAnIdLessRowResolvesToAnExcludedId_StopsWithoutBackfillingAndDropsTheWarmedCache()
+    {
+        // The Helix-independent half: a row created while Twitch could not be asked learns its id
+        // here, from 7TV. The warm-up from Postgres has already run by then, so the refusal has to
+        // take the cache entry back out, or the worker keeps counting a blocked channel's chat.
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_excluded_noid", ("e1", "active", false));
+        channel.TwitchChannelId = null;
+        await db.SaveChangesAsync();
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        apiClient.ResolveTwitchUserIdAsync("wstest_excluded_noid", Arg.Any<CancellationToken>())
+            .Returns(SevenTvTwitchUserIdResult.Ok("880001"));
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("880001").Returns(true);
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        var service = new SevenTvSyncService(
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, logger);
+
+        var result = await service.SyncChannelAsync(channel.ChannelName);
+
+        Assert.Null(result);
+        await apiClient.DidNotReceive().GetChannelStateForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Null(await db.Channels.AsNoTracking().Where(c => c.Id == channel.Id).Select(c => c.TwitchChannelId).SingleAsync());
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("880001"));
+        // The refusal itself stays below the default level: it follows lines of the same call that
+        // name the channel (the warm-up's, the caller's "joining"), and beside them it would tie the
+        // block to that channel.
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Debug && e.Message.Contains("excluded-channel list"));
+        Assert.DoesNotContain(logger.Entries, e => e.Level > LogLevel.Debug && e.Message.Contains("excluded-channel list"));
+    }
+
+    [Fact]
+    public async Task ApplyEmoteSetUpdate_WhenTheStoredTwitchIdIsExcluded_WritesNothingAndReportsTheChannelUnknown()
+    {
+        // ChannelUnknown is what makes the EventAPI client drop the subscription.
+        await using var db = fixture.CreateDbContext();
+        var cache = new EmoteMatchCache();
+        var channel = await SeedChannelAsync(db, "wstest_excluded_delta", ("e1", "active", false));
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded(channel.TwitchChannelId).Returns(true);
+        var service = new SevenTvSyncService(
+            db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
+            excludedChannelFilter, NullLogger<SevenTvSyncService>.Instance);
+
+        var result = await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetId, Delta(pulledIds: ["e1"]));
+
+        Assert.Equal(SevenTvDeltaOutcome.ChannelUnknown, result.Outcome);
+        Assert.Null(result.ChannelName);
+        Assert.False(await db.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).Select(e => e.IsArchived).SingleAsync());
     }
 
     // ---- Warm start: the match cache is seeded from Postgres before the first 7TV call ----
@@ -1083,7 +1163,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
                 .Returns(SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.Unavailable));
         }
 
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
@@ -1170,7 +1250,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         // member; the real bug is the unique-index collision that follows, not a missing stub.
         apiClient.GetChannelStateForTwitchUserAsync("111", Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user-dup", new SevenTvEmoteSet(SetId, [LiveEmote("e1", "hi")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), NullLogger<SevenTvSyncService>.Instance);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync(renamed.ChannelName);
 

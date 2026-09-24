@@ -5,11 +5,14 @@ import { TranslocoPipe } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
 import { WorkerHealthService } from '../../core/health/worker-health.service';
+import { DockClearanceService } from '../../core/layout/dock-clearance.service';
+import { LegalService } from '../../core/legal/legal.service';
 import { LiveQuotaService } from '../../core/live/live-quota.service';
 import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
 import { HealthMarker } from '../../shared/ui/health-marker';
+import { LegalFooterLinks } from '../../shared/ui/legal-footer-links';
 import { Popover } from '../../shared/ui/popover';
 
 @Component({
@@ -18,6 +21,7 @@ import { Popover } from '../../shared/ui/popover';
     AccountMenu,
     Button,
     HealthMarker,
+    LegalFooterLinks,
     NgOptimizedImage,
     Popover,
     RouterLink,
@@ -25,7 +29,17 @@ import { Popover } from '../../shared/ui/popover';
     TranslocoPipe,
   ],
   template: `
-    <div class="isolate min-h-screen bg-page text-fg">
+    <!-- flex min-h-dvh flex-col + <main> as flex-1: a sticky-footer layout, not position:fixed —
+         on a short page (e.g. a channel list with a handful of rows) the footer sits at the
+         bottom of the viewport; on a long one it follows after the content, in normal document
+         flow. dvh rather than vh: 100vh on a mobile browser is the height with the address bar
+         hidden, so the footer would sit below the fold on first paint and only reach the visible
+         bottom once the chrome collapses on scroll — dvh tracks whichever is currently visible.
+         This adds no scroll container of its own (no overflow property here), so the page keeps
+         scrolling as one document (§8.5) and every position: sticky layer below keeps working
+         against the same, single scrolling ancestor. Same shell for every route — the footer
+         never varies by page (design doc §8.4a). -->
+    <div class="isolate flex min-h-dvh flex-col bg-page text-fg">
       <!-- h-14 is a contract, not styling: the sticky tab bars pin at top-14 and the sticky
            filter toolbars at top-24, both assuming exactly this header height (design doc §8.5).
            z-30 keeps the header (and its mobile disclosure) above the z-20 sticky bars — it is a
@@ -190,21 +204,54 @@ import { Popover } from '../../shared/ui/popover';
         </div>
       </header>
 
-      <main class="mx-auto max-w-7xl px-4 py-8">
+      <main class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">
         <router-outlet />
       </main>
+
+      <!-- Present on every route this shell serves, never per-route (§8.4a's "the frame must not
+           jump per route" applies here too) — hidden outright rather than shown empty when the
+           operator has configured neither document (issue #247, requirement 4).
+           py-2 + text-xs rather than the original py-4 + text-sm: these links are rarely used
+           (operator feedback — the footer read as a large block on short pages) and the row does
+           not need the same weight as page content. The link hit targets stay untouched —
+           LegalFooterLinks keeps its own px-1 py-2
+           on each anchor, so shrinking the row's own padding does not shrink what is clickable
+           (design doc §12, smallTargetsUnder24 gate). border-border is already the quiet border
+           token (not border-border-strong), so the rule stays as-is rather than gaining an
+           opacity modifier the design tokens don't otherwise use (§2.0).
+           footerClearancePx adds extra bottom padding only while a page's own fixed bottom bar
+           asks for it (DockClearanceService) — on a page short enough that this footer reaches
+           the viewport's bottom edge, that is exactly where a position: fixed bar like the
+           usage-stats action dock renders too, regardless of scroll position (§8.5's z-ladder
+           puts .app-dock at z-30, same as this header, above the footer's own stacking order).
+           A style binding rather than a class: the amount is state-driven pixels from a signal,
+           not one of a fixed set of Tailwind steps. -->
+      @if (hasLegalLinks()) {
+        <footer
+          class="border-t border-border px-4 py-2"
+          [style.paddingBottom.px]="footerClearancePx() > 0 ? footerClearancePx() : null"
+        >
+          <div class="mx-auto flex max-w-7xl flex-wrap gap-5 text-xs text-fg-muted">
+            <app-legal-footer-links />
+          </div>
+        </footer>
+      }
     </div>
   `,
 })
 export class AppShell {
   private readonly authService = inject(AuthService);
+  private readonly dockClearanceService = inject(DockClearanceService);
   private readonly healthService = inject(WorkerHealthService);
+  private readonly legalService = inject(LegalService);
   private readonly liveQuotaService = inject(LiveQuotaService);
   private readonly router = inject(Router);
 
   protected readonly currentUser = this.authService.currentUser;
   protected readonly authResolved = this.authService.isResolved;
   protected readonly workerStale = computed(() => this.healthService.status() === 'stale');
+  protected readonly hasLegalLinks = this.legalService.hasAnyDocument;
+  protected readonly footerClearancePx = this.dockClearanceService.px;
   protected readonly liveQuotaExhausted = this.liveQuotaService.perSubscriberLimitReached;
   protected readonly liveQuota = this.liveQuotaService.quota;
   protected readonly liveHintOpen = signal(false);

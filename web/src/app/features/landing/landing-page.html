@@ -1,4 +1,9 @@
-<div class="min-h-screen bg-page text-fg">
+<!-- flex min-h-dvh flex-col + <main> as flex-1: same sticky-footer layout as app-shell.ts and
+     login-page.ts — the landing page is long enough in practice that this rarely shows, but a
+     very short viewport (a wide, short browser window) got the same "footer stranded mid-page"
+     look without it, and one convention for placement beats a second one that only kicks in for
+     the tallest screens. -->
+<div class="flex min-h-dvh flex-col bg-page text-fg">
   <!-- z-30 for consistency with the app shell's header ladder (design doc §8.5) — the landing has
        no sticky sub-bars, but one ladder everywhere beats two conventions. -->
   <header class="app-sticky-bar top-0 z-30 border-b border-border">
@@ -38,7 +43,7 @@
     </nav>
   </header>
 
-  <main id="top">
+  <main id="top" class="flex-1">
     <!-- Hero. Left-aligned and asymmetric: the diagram is the argument, so it gets the larger half
          and the words next to it stay a lede rather than a pitch. There is no hero logo any more —
          the mark is already in the header two rows up, and a 112 px repeat of it was the page's
@@ -186,12 +191,14 @@
     </section>
   </main>
 
-  <footer class="border-t border-border px-4 py-8">
+  <!-- Same reduced padding/type size as app-shell.ts and login-page.ts — content is unchanged,
+       only placement (sticky footer above) and height. -->
+  <footer class="border-t border-border px-4 py-2">
     <div
-      class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-sm text-fg-muted"
+      class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-xs text-fg-muted"
     >
       <span>{{ 'landing.footer.copyright' | transloco }}</span>
-      <div class="flex gap-5">
+      <div class="flex flex-wrap gap-5">
         <a
           routerLink="/welcome"
           fragment="does"
@@ -211,6 +218,7 @@
           class="inline-block px-1 py-2 transition hover:text-fg-secondary"
           >{{ 'landing.footer.source' | transloco }}</a
         >
+        <app-legal-footer-links />
       </div>
     </div>
   </footer>

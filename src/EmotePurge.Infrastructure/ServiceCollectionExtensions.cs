@@ -13,6 +13,7 @@ using EmotePurge.Infrastructure.Twitch;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 
@@ -62,6 +63,21 @@ public static class ServiceCollectionExtensions
         // request or worker tick — the point of the "tracked only, rides the caller's SaveChangesAsync"
         // contract on most of its methods.
         services.AddScoped<IChannelEmoteSetObservationService, ChannelEmoteSetObservationService>();
+
+        // Bound and validated eagerly (fail-fast, same reasoning as RateLimitingOptions.Validate() in
+        // the Api's Program.cs) rather than behind IOptions: ChannelService reads it on every join,
+        // and there is no reload hook that would ever make a live snapshot indirection pay for itself.
+        var channelCapacityOptions = new ChannelCapacityOptions();
+        configuration.GetSection(ChannelCapacityOptions.SectionName).Bind(channelCapacityOptions);
+        channelCapacityOptions.Validate();
+        services.AddSingleton(channelCapacityOptions);
+
+        // GDPR Art. 21 objection gate for channels (#252, the counterpart of
+        // IExcludedChatterFilter in EmotePurge.Worker): read once here so both the Api's join
+        // endpoint (ChannelService) and the Worker's identity reconcile (ChannelIdentityService) see
+        // the same list without either depending on the other.
+        services.AddSingleton<IExcludedChannelFilter, ExcludedChannelFilter>();
+
         services.AddScoped<IChannelService, ChannelService>();
         // Scoped like every other AppDbContext consumer, with its warning deduplication parked in a
         // singleton beside it: the worker opens a fresh scope per reconcile tick, so a set living on
@@ -231,6 +247,19 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITokenCipher, AesGcmTokenCipher>();
         services.AddSingleton<TwitchTokenRefreshGate>();
         services.AddScoped<IUserService, UserService>();
+        // The one account deletion path, shared by the admin endpoint and the retention job.
+        services.AddScoped<IAccountDeletionService, AccountDeletionService>();
+
+        // The retention pass the worker's job runs once a day. Options bound and validated eagerly like
+        // ChannelCapacityOptions above; only switch and pacing are configurable, the periods are
+        // RetentionPolicy constants. The clock is a TimeProvider from DI (TryAdd, so a host or a test that
+        // registered its own keeps it), which is what lets tests pin the cutoffs.
+        var retentionOptions = new RetentionOptions();
+        configuration.GetSection(RetentionOptions.SectionName).Bind(retentionOptions);
+        retentionOptions.Validate();
+        services.AddSingleton(retentionOptions);
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<IDataRetentionService, DataRetentionService>();
         services.AddScoped<ITwitchUserTokenService, TwitchUserTokenService>();
         services.AddScoped<IModeratedChannelsProvider, ModeratedChannelsProvider>();
         services.AddScoped<IModeratorCheckService, ModeratorCheckService>();
@@ -266,6 +295,16 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IVoteSessionService, VoteSessionService>();
         services.AddScoped<IVoteSessionQueryService, VoteSessionQueryService>();
         services.AddScoped<IVoteEligibilityService, VoteEligibilityService>();
+
+        // Operator-supplied imprint/privacy Markdown (issue #247). Bound directly rather than
+        // through IOptions like ChatLogArchiveOptions above: there is nothing to validate here, an
+        // unset ContentPath is a supported "nothing configured yet" state, not a startup error.
+        var legalContentOptions = new LegalContentOptions();
+        configuration.GetSection(LegalContentOptions.SectionName).Bind(legalContentOptions);
+        // Singleton: its only state is the per-file render cache, which exists to survive across
+        // requests (see the class comment).
+        services.AddSingleton(legalContentOptions);
+        services.AddSingleton<ILegalContentService, LegalContentService>();
 
         return services;
     }

@@ -376,6 +376,34 @@ public static class AdminEndpoints
             return Results.Ok(result);
         });
 
+        group.MapDelete("/users/{twitchUserId}", async (
+            string twitchUserId,
+            ClaimsPrincipal principal,
+            IAccountDeletionService accountDeletionService,
+            CancellationToken ct) =>
+        {
+            var actor = principal.TryBuildAuditActor();
+            if (actor is null)
+            {
+                // Unreachable behind RequireAuthorization + the admin filter; guard, not a case.
+                return Results.Unauthorized();
+            }
+
+            // AdminRequest, so onlyIfInactiveBeforeUtc is null (only the retention job's Inactivity
+            // path rechecks a cutoff) — an admin may delete any account on request, active or not.
+            // Deleting one's own account this way is allowed (same precedent as revoke-sessions
+            // below); the frontend's confirmation dialog names that case.
+            var result = await accountDeletionService.DeleteAsync(
+                twitchUserId, actor, AccountDeletionReason.AdminRequest, onlyIfInactiveBeforeUtc: null, ct);
+            return result.Outcome switch
+            {
+                AccountDeletionOutcome.Deleted => Results.NoContent(),
+                AccountDeletionOutcome.NotFound => Results.NotFound(),
+                // StillActive cannot occur for AdminRequest (IAccountDeletionService contract).
+                _ => Results.Problem(),
+            };
+        });
+
         group.MapPost("/users/{twitchUserId}/revoke-sessions", async (
             string twitchUserId,
             ClaimsPrincipal principal,
@@ -467,9 +495,13 @@ public static class AdminEndpoints
         RateLimitPolicyDescriptor.TokenBucket(RateLimitPolicyNames.Voting, options.Voting, "twitch-user+vote-session"),
         RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.Bookkeeping, options.Bookkeeping, PerUserPartition),
         RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.ChannelResync, options.ChannelResync, PerUserPartition),
-        // The one anonymous policy: PartitionPerUser falls back to the remote IP when there is no
-        // authenticated Twitch user, which for this route is every caller (RateLimitRejection.cs).
+        // The two anonymous policies: PartitionPerUser falls back to the remote IP when there is no
+        // authenticated Twitch user, which for these two routes is every caller (RateLimitRejection.cs).
         RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.PublicHealth, options.PublicHealth, "remote-ip"),
+        // Issue #247, split from PublicHealth (Codex Sol review, P2): unrelated legitimate callers
+        // (browser visitors vs. two machines on a fixed cadence) must not be able to exhaust each
+        // other's budget.
+        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.PublicLegal, options.PublicLegal, "remote-ip"),
         // The foreign-channel preview's per-user half (spec E5a). Its provider-wide half (E5b) is
         // deliberately absent from this list: that budget is not an ASP.NET policy at all, has no
         // partition, and lives in the Infrastructure decorator — listing it here would claim a shape

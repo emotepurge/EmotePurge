@@ -1,5 +1,6 @@
 using System.Text.Json;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.SevenTv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
@@ -94,8 +95,16 @@ public class ModRoleCache(IConnectionMultiplexer connectionMultiplexer, IConfigu
         // scanning for — they expire on their own within the TTL (ten minutes by default) and no
         // reader ever looks at them again.
         // The modlist key format has to stay in step with ModeratedChannelsProvider.BuildKey — this
-        // is the only place outside that service that names it.
-        var keys = new List<RedisKey> { $"7tveditor:{twitchUserId}", $"modlist:{twitchUserId}" };
+        // is the only place outside that service that names it. The held-failure key comes from
+        // SevenTvEditorGrantsHoldCache.BuildKey rather than a second "7tveditorhold:" literal here:
+        // without it, an account deletion or session revocation left a stale held Unavailable/
+        // NoSevenTvAccount answer behind for whatever TTL SetAsync gave it, outliving the account.
+        var keys = new List<RedisKey>
+        {
+            $"7tveditor:{twitchUserId}",
+            $"modlist:{twitchUserId}",
+            SevenTvEditorGrantsHoldCache.BuildKey(twitchUserId)
+        };
         foreach (var endpoint in connectionMultiplexer.GetEndPoints())
         {
             var server = connectionMultiplexer.GetServer(endpoint);

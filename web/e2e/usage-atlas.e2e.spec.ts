@@ -11,6 +11,7 @@ import {
   mockChannelPermissions,
   mockChannelStatus,
   mockForeignEmoteSetPreview,
+  mockLegalAvailability,
   mockMyChannels,
   mockUsageChannelSeries,
   mockUsageDaily,
@@ -1112,6 +1113,9 @@ test.describe('set view (#200, K4)', () => {
     });
     page.on('pageerror', (error) => consoleProblems.push(`pageerror: ${error.message}`));
 
+    // The app shell asks for the legal-page availability on every page; unanswered, the dev
+    // proxy's 502 lands in the console this test asserts to be clean.
+    await mockLegalAvailability(page);
     await mockSetViewChannel(page);
     await mockUsageTotalsBySet(page, CHANNEL, {
       [ACTIVE_SET_ID]: [],

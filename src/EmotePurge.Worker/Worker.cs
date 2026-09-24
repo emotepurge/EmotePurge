@@ -46,6 +46,11 @@ public class Worker(
             if (message.StartsWith(BotCommands.JoinPrefix, StringComparison.Ordinal))
             {
                 var channelName = message[BotCommands.JoinPrefix.Length..];
+                if (!await IsInActiveRosterAsync(channelName, stoppingToken))
+                {
+                    return;
+                }
+
                 logger.LogInformation("Redis-Kommando: joine {Channel}.", channelName);
                 await twitchChatManager.JoinChannelAsync(channelName);
                 await SyncSevenTvAsync(channelName, stoppingToken, publishCompletion: true);
@@ -53,7 +58,13 @@ public class Worker(
             else if (message.StartsWith(BotCommands.LeavePrefix, StringComparison.Ordinal))
             {
                 var channelName = message[BotCommands.LeavePrefix.Length..];
-                logger.LogInformation("Redis-Kommando: verlasse {Channel}.", channelName);
+                // The login only at Debug (fourth Codex review of the block list): the identity
+                // reconcile publishes a LEAVE for a channel it deactivates because its Twitch id is
+                // on the excluded-channel list, and a line naming it next to the reconcile's own
+                // anonymous line would tie the block to that channel. Every LEAVE comes from an
+                // audited write (leave, purge, rename or merge handover), so the name is on record.
+                logger.LogInformation("Redis command: leaving a channel.");
+                logger.LogDebug("Redis command: leaving {Channel}.", channelName);
                 emoteMatchCache.RemoveChannel(channelName);
                 sevenTvEventClient.Unsubscribe(channelName);
                 await twitchChatManager.LeaveChannelAsync(channelName);
@@ -63,6 +74,11 @@ public class Worker(
                 // Admin-getriggerter Sofort-Resync: gleiche Schritte wie ein Tick des periodischen
                 // Resyncs für genau diesen Channel (EnsureJoined als Konvergenznetz inklusive).
                 var channelName = message[BotCommands.ResyncPrefix.Length..];
+                if (!await IsInActiveRosterAsync(channelName, stoppingToken))
+                {
+                    return;
+                }
+
                 logger.LogInformation("Redis-Kommando: resynce {Channel}.", channelName);
                 await twitchChatManager.EnsureJoinedAsync(channelName);
                 await SyncSevenTvAsync(channelName, stoppingToken, publishCompletion: true);
@@ -123,6 +139,50 @@ public class Worker(
             // Releases the periodic resync worker even if boot recovery failed, so a broken boot
             // never turns into a permanently blocked convergence path.
             bootRecoveryGate.MarkCompleted();
+        }
+    }
+
+    /// <summary>
+    /// The guard in front of the two commands that make this process enter a channel (JOIN, RESYNC):
+    /// only a channel on the same roster source boot recovery and the periodic resync use —
+    /// <see cref="IChannelService.ListActiveChannelNamesAsync"/>, which leaves out a row whose stored
+    /// Twitch id is on the excluded-channel list — is joined. Without it an Api still running with
+    /// an older <c>EXCLUDED_CHANNEL_IDS</c>, or an admin RESYNC of a row the identity reconcile has
+    /// not deactivated yet, would make this worker observe a channel its own configuration blocks,
+    /// until the roster prune parted it again two resync ticks later (fourth Codex review of the
+    /// block list). Reading the whole list rather than one row keeps a single definition of "this
+    /// worker should be in that channel"; it is capped well below a hundred names and JOIN/RESYNC
+    /// commands are rare, user-triggered events.
+    /// <para>
+    /// A refusal names nothing: the channel may be refused precisely because of an objection, and a
+    /// log line naming it would leak that. Fails closed on a database error for the same reason the
+    /// periodic resync can afford to — its <c>EnsureJoinedAsync</c> is the convergence net that joins
+    /// a legitimately active channel on the next tick.
+    /// </para>
+    /// </summary>
+    private async Task<bool> IsInActiveRosterAsync(string channelName, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var channelService = scope.ServiceProvider.GetRequiredService<IChannelService>();
+            var activeChannels = await channelService.ListActiveChannelNamesAsync(ct);
+            var normalized = ChannelName.Normalize(channelName);
+            if (activeChannels.Contains(normalized, StringComparer.Ordinal))
+            {
+                return true;
+            }
+
+            logger.LogInformation(
+                "Redis command ignored: the channel is not on the active roster (inactive, gone, or on the excluded-channel list).");
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                ex,
+                "Redis command ignored: the active roster could not be read — the periodic resync joins the channel on its next tick if it is still active.");
+            return false;
         }
     }
 

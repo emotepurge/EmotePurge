@@ -28,6 +28,8 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'invalid_source_kind',
   'channel_not_found',
   'channel_not_on_twitch',
+  'channel_capacity_reached',
+  'channel_excluded',
   'foreign_channel_twitch_unavailable',
   'foreign_channel_no_seventv_account',
   'foreign_channel_no_active_emote_set',
@@ -51,6 +53,7 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'emote_set_id_empty',
   'emote_set_not_found',
   'vote_session_set_ballot_invalid',
+  'legal_document_not_found',
 ]);
 
 /**

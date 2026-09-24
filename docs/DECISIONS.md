@@ -10,6 +10,491 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — Every deactivation closes the emote-set observation interval, the objection gate's included
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelEmoteSetObservationService.cs`
+
+Found while merging main into the emote-set epic. The epic closed a channel's open observation
+interval inside `ChannelService.LeaveAsync` (`ClosedBy.Leave`, spec 4.3); main meanwhile factored
+the deactivation write out into `ChannelDeactivation.DeactivateAsync` and gave it a second caller,
+the identity reconcile's objection-gate deactivation. That second caller never closed the interval,
+so a blocked channel ended up inactive with an interval still open — contradicting the invariant
+`RecordObservedSetAsync` relies on ("`IsBotActive = false` implies no open row, both written in one
+save"; the converse does not hold — a channel that just joined and has not synced yet is active with
+no open row of its own).
+
+**Decision:** the close moves into the shared helper, so every deactivation closes the interval in
+the same `SaveChangesAsync` as the flip and the audit entry. The objection gate uses
+`ClosedBy.Leave` as well: it writes a `channel.leave` audit entry, and no separate vocabulary value
+would tell a reader anything the audit log does not already say (and a distinct value would name the
+objection, which the gate's log lines deliberately avoid). `LeaveAsync` no longer calls
+`CloseOpenIntervalAsync` itself.
+
+---
+
+### 2026-09-24 — A channel block list closes the "purge, then rejoin" gap of the GDPR objection (#252)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/IExcludedChannelFilter.cs` ·
+`src/EmotePurge.Infrastructure/Services/ExcludedChannelFilter.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` (neu, second revision) ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` (third revision) ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Core/Services/IChannelIdentityService.cs` (second revision) ·
+`src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` (second revision) ·
+`src/EmotePurge.Worker/Worker.cs` (fourth revision) ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` (fourth revision) ·
+`src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` ·
+`src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` (all fourth revision, leave-path logs only) ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ExcludedChannelFilterTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` (fourth revision) ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` (fourth revision) · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `.env.example` · `docs/Operations.md`
+
+The second gap the same GDPR review found: `ChannelService.PurgeAsync` deletes a channel's row and
+its whole history, but nothing stopped any moderator or broadcaster from immediately joining it
+again through the ordinary join route — the objection had no lasting effect at the channel level,
+only a momentary one.
+
+Added `Channels:ExcludedChannelIds` (env `EXCLUDED_CHANNEL_IDS`), same accepted shapes as
+`Twitch:ExcludedChatterIds`/`Twitch:AdditionalBotAccountIds` — indexed array keys or one
+comma-separated scalar, scalar wins — read into a new `ExcludedChannelFilter`
+(`IExcludedChannelFilter.IsExcluded`). It lives in `EmotePurge.Infrastructure`, not
+`EmotePurge.Worker` where the per-chatter filter lives: both the Api's join endpoint
+(`ChannelService`) and the Worker's identity reconcile (`ChannelIdentityService`) need it, and both
+already depend on this assembly through `AddEmotePurgeInfrastructure` — a single registration
+covers both hosts without either depending on the other.
+
+**Every path that can create or reactivate a `Channel` row for chat observation is guarded, matched
+on the immutable Twitch broadcaster id and never on the login:**
+
+- `ChannelService.JoinAsync`, the one path both the ordinary join endpoint and an admin's join go
+  through (there is no separate admin-join code path) — checked once the identity lookup resolves a
+  Twitch id, before `ResolveJoinTargetAsync` can create or lock a single row. A new
+  `ChannelJoinStatus.ChannelExcluded` carries the refusal out; unlike `CapacityReached`, **no
+  caller is exempt**, including a global admin — the cap protects Twitch's own connection limit, this
+  gate protects a person's right under Art. 21, and only the operator removing the id undoes it.
+- `HandleUnknownTwitchLoginAsync` (the "Twitch no longer answers for this login, but we already
+  track it" branch) gets the same check against the already-known row's stored `TwitchChannelId`,
+  defense in depth — realistically unreachable in the ordinary objection procedure, because
+  `PurgeAsync` deletes the row a blocked id would otherwise be found under.
+- `ChannelIdentityService.MergeAsync`, the identity reconcile's row consolidation: the only other
+  place a row can go from inactive to active is `survivor.IsBotActive |= loser.IsBotActive`, reached
+  when an id-less duplicate (which a join during a Helix outage can create — the join-path check
+  above has no id to check yet in that case) turns out to belong to a since-blocked id. Refused the
+  same way the existing "loser still has emotes" case already is: nothing is written, both rows stay
+  duplicated and unresolved until the operator clears the id, `ReconcileCounters.MergesRefused` is
+  reused rather than adding a fourth counter. Neither refusal path logs the id or either login —
+  logging which channel this concerns would itself leak the objection the block exists to honour.
+- Boot recovery and the periodic 7TV resync in the Worker deliberately get **no** guard: both only
+  ever continue observing rows the database already marks active (`ListActiveChannelNamesAsync`) —
+  neither creates nor reactivates a row, so there is nothing here for the block list to intercept.
+
+Response contract: `ChannelJoinStatus.ChannelExcluded` maps to **403** with
+`{ errorCode: "channel_excluded" }` (`ApiErrorCodes.ChannelExcluded`) — distinct from the existing
+404 (`ChannelNotOnTwitch`, Twitch does not know the login at all) and 409
+(`CapacityReached`, a transient, admin-overridable cap). The frontend text on both locales is
+deliberately short and neutral — "This channel cannot be added." / "Dieser Kanal kann nicht
+hinzugefügt werden." — and names neither a legal objection nor a reason.
+
+`docs/Operations.md` extends the existing objection procedure: for a streamer's own objection, add
+the id to `EXCLUDED_CHANNEL_IDS`, recreate `api`/`worker` so both pick it up, *then* purge the
+channel in the admin area — in that order, so the channel cannot be rejoined in the gap between the
+purge and the block taking effect.
+
+**Revised 2026-09-24 (Codex P1/P2 review of this branch):** the two guards above had gaps of their
+own.
+
+- `ChannelService.JoinAsync` checked only the identity Helix resolved *this* call, so (a) a join
+  during a Helix outage (`Unavailable`) never reached the check at all, even when the existing row
+  it was about to reactivate carried a known, blocked `TwitchChannelId`, and (b) a non-excluded
+  identity that resolved to a login already held by a stale occupant row (the ordinary
+  rename-collision case `ResolveChannelByIdentityAsync` already handles) could reactivate that
+  occupant without ever inspecting *its* stored id. Fixed with one additional check, right before
+  `CompleteJoinAsync`, against the `TwitchChannelId` of the row `ResolveJoinTargetAsync` actually
+  picked — not the identity, the row. Refusing is the answer for both cases: a brand-new row can
+  never trip it (its id is either null or the already-checked identity), so this only ever blocks a
+  join that would touch an existing, blocked row.
+- `ChannelIdentityService.MergeAsync`'s exclusion refusal ran *before* `settledChannelIds` could be
+  updated (it returns before either row is even loaded), so a pair where both the id row and its
+  id-less duplicate are active — reached from both ends in the same pass, exactly like the
+  loser-has-emotes refusal already handles — was refused and counted twice per tick, with the
+  warning line repeating too. Fixed by passing the two row ids the callers already have (from their
+  own read-only lookups, no extra query) into `MergeAsync` and settling both the moment the
+  exclusion check itself refuses, mirroring the emote-based refusal exactly.
+
+**Revised 2026-09-24 (second Codex review of this branch):** the residual gap the entry above used to
+document for `BackfillIdAsync` was in fact a live end-to-end path, not just a stray unblocked case.
+Concretely: an excluded broadcaster can have an active, id-bearing row under its old login (the
+survivor a merge would target) *and* an active id-less duplicate under its current login (the merge's
+would-be loser). `MergeAsync`'s own exclusion guard correctly refuses that merge, so both rows stay
+active — exactly as designed, at that point. But `docs/Operations.md`'s own recommended next step is
+for the operator to purge the channel after blocking it, and purging the *duplicate* row (the one
+sitting under the channel's current, visible name) frees that name. The next reconcile tick then finds
+the name vacant, and `ReconcileKnownIdRowAsync` did what it always does when a name frees up: called
+`RenameAsync` on the surviving blocked row and published a JOIN — silently undoing the block the
+operator had just gone through the documented procedure to enforce.
+
+Fixed with a general rule rather than another special case: **an active row whose Twitch id — known
+already, or just resolved through the row's login — is excluded is deactivated before any rename,
+merge or backfill decision is made for it**, in both `ReconcileKnownIdRowAsync` (checked first, ahead
+of even consulting Helix's answer for the login) and `ReconcileIdLessRowAsync` (checked immediately
+once the login resolves to an identity, ahead of the existing-holder lookup that feeds both
+`BackfillIdAsync` and `MergeAsync`). Deactivation reuses the exact write `ChannelService.LeaveAsync`
+already does — `IsBotActive = false`, `DeactivatedAtUtc` stamped, a `channel.leave` audit entry under
+`AuditActor.System`, and the LEAVE command published so the worker parts the chat — factored into a
+new `ChannelDeactivation.DeactivateAsync` static helper both services call, rather than
+`ChannelIdentityService` taking a dependency on `IChannelService` (which would be circular:
+`ChannelService` already depends on `IChannelIdentityService` for `LookupByLoginAsync`). A new
+`ChannelIdentityReconcileSummary.Deactivated` counter carries the count into the worker's log line,
+same restraint as every other counter here — never an id or a login.
+
+`MergeAsync`'s own exclusion guard is left in place as defense in depth rather than removed: with both
+callers now gating earlier, it should be unreachable for an excluded id in ordinary operation, but it
+is the one guard specifically against `survivor.IsBotActive |= loser.IsBotActive`, and a second line of
+defense there is worth the one extra `IsExcluded` call. Its own `settledChannelIds`-based
+deduplication (the previous revision above) is untouched and still exists for the merge refusal that
+is *not* about exclusion — the loser-still-has-emotes case.
+
+One consequence worth noting: two rows of the same excluded duplicate pair, both still active, are now
+deactivated **independently** rather than through one refused merge — each detects its own tie to the
+blocked id on its own turn in the pass. That is two real writes, not one event double-counted, so
+`Deactivated` correctly reads 2 for that shape rather than repeating the old `MergesRefused` semantics
+of "exactly one, however the pair is reached."
+
+`docs/Operations.md` revised to say the reconcile now enforces the block list on its own, within one
+reconcile interval of the block taking effect — purging remains the recommended step, but only to
+actually delete the row's data, not to keep the objection enforced.
+
+**Revised 2026-09-24 (third Codex review of this branch):** three more gaps, all in the write the
+second revision above introduced.
+
+1. **P1 — the known-id exclusion pass ran too late.** `ReconcileActiveChannelsAsync` checked the
+   app token, then Helix, before ever looking at the exclusion list — during either outage the whole
+   tick returned early (`null`, "skipped without writing anything") and an active row whose *stored*
+   Twitch id is on the block list kept being observed for as long as the outage lasted, exactly the
+   observation the list exists to stop. Deactivating such a row needs no Twitch answer at all — the
+   id is already on the row — so the known-id gate now runs first, over the whole snapshot, before
+   either early return. Rows it settles are added to `settledChannelIds` so the main loop (reached
+   only once the token and Helix both answer) never re-decides them. The `null` contract is
+   unchanged in spirit but sharpened: it now means "nothing was written", not just "no Helix answer"
+   — an outage that *did* deactivate something returns a `ChannelIdentityReconcileSummary` with only
+   `Deactivated` populated, so the worker's log line still reports it instead of staying silent.
+2. **P1 — a failed LEAVE publish escaped the per-row catch.** `ChannelDeactivation.DeactivateAsync`
+   commits the deactivation before it publishes, exactly like every other write-then-announce path in
+   this class — but unlike `RenameAsync`/`MergeAsync`, which route their own publish through
+   `PublishHandoverAsync`'s own try/catch, `DeactivateExcludedRowAsync` let a thrown publish escape
+   uncaught. The pass's per-row catch only ever matched `DbUpdateException`, so a Redis outage on this
+   one write aborted the rest of the tick and threw the whole summary away — every row behind the
+   failing one stayed unprocessed that tick. Fixed by wrapping the call to
+   `ChannelDeactivation.DeactivateAsync` in `DeactivateExcludedRowAsync` itself: any exception except
+   `OperationCanceledException` or `DbUpdateException` (left to propagate — nothing was written that
+   time, and the per-row catch already retries it next tick) is logged (no id, no login, same
+   restraint as every log line in this write) and counted into `Deactivated` regardless, mirroring how
+   `RenameAsync`/`MergeAsync` already increment their own counters before their publish, not after it.
+   **Not the shared helper's job, on purpose:** `ChannelService.LeaveAsync`'s user-facing leave shares
+   `ChannelDeactivation.DeactivateAsync`, and its contract is unchanged — a failed publish there still
+   propagates and fails the request, exactly as before this fix. Catching it in the shared helper
+   instead would have silently changed that contract too; only the reconcile caller, which already
+   treats a lost publish as self-healing elsewhere in this class, catches it. **The self-healing
+   itself was already covered, not newly added:** `RosterPrunePolicy` (issue #41) is the general
+   convergence net for exactly this shape — a row the database now excludes from
+   `ListActiveChannelNamesAsync` but that the worker never got a LEAVE for. It prunes such a roster
+   entry (drops it from `EmoteMatchCache`, unsubscribes its 7TV EventAPI subscription, leaves the IRC
+   channel) after two consecutive periodic-resync ticks find it inactive, roughly one to two minutes
+   at the default 60s interval — not until a restart.
+3. **P1 — the reload before the write used the row's name, not its id.** `DeactivateExcludedRowAsync`
+   reloaded the row it was about to deactivate by `row.ChannelName`. A concurrent purge of that exact
+   row followed by a fresh join under the same login replaces it with an unrelated row before the
+   write runs, and a name-based reload finds and deactivates *that* row instead — silently pulling an
+   active, unexcluded channel back out of observation for a decision that was never about it. Fixed by
+   reloading via a new `ChannelQueries.LoadChannelByIdAsync` (by primary key) and re-checking, after
+   the reload, that the row still qualifies: still active, and its stored Twitch id (`row`'s own
+   snapshot value — `null` for the id-less path, unchanged) still matches what the decision was made
+   for. A purged-and-replaced row simply has a different `Id`, so the reload finds nothing for the
+   original one and the call is skipped like every other "the row is gone" case — no row lock needed
+   on top of that (unlike `MergeAsync`'s `FOR UPDATE` pair): the narrow window between the reload and
+   the write is already covered by the same per-row `DbUpdateException` catch every single-row write
+   in this class relies on instead of a lock (`RenameAsync`, `BackfillIdAsync`).
+
+All three verified with their own integration test in `ChannelIdentityServiceTests`: a known excluded
+stored id deactivated with no app token and, separately, with Helix unreachable; two independently
+excluded rows both deactivated despite every LEAVE publish throwing; and a purge-then-rejoin under
+the same login, simulated by having the `IExcludedChannelFilter` substitute perform the "concurrent"
+purge and re-join the moment it is asked about the row's id (the one call every row makes before its
+own reload), landing the mutation exactly between the snapshot and the reload — the replacement row
+is left untouched and `Deactivated` stays 0.
+
+**Revised 2026-09-24 (fourth Codex review of this branch):** this round did not stop at the reported
+findings. It first listed every path that joins or observes a channel or reactivates a row, and every
+log line on those paths, against the two properties the list has to hold once an id is on it — (I1)
+no path starts or continues observing that channel's chat or 7TV set, (I2) no log line names the
+channel in connection with the block — and then fixed what failed.
+
+- **The worker's roster source leaves blocked rows out (P1).** The first entry above said boot
+  recovery and the periodic resync needed no guard because they "only ever continue observing rows
+  the database already marks active". That was the gap: after the documented procedure (add the id,
+  recreate `api`/`worker`), boot recovery joined and synced every active row before the identity
+  reconcile — which waits for boot recovery — could deactivate anything.
+  `IChannelService.ListActiveChannelNamesAsync` now leaves out an active row whose **stored**
+  `TwitchChannelId` is excluded, filtered in memory through the same `IsExcluded` the join path uses
+  (the roster is capped far below a hundred rows). Every consumer was checked: boot recovery, the
+  periodic 7TV resync and its roster prune, and the live poll (all worker-side, all must stop
+  observing — which is the point); no admin list or count reads it (`AdminChannelQueryService` has
+  its own query, which keeps showing the row as it is). One change therefore covers boot, the
+  resync, the live poll *and* a lost LEAVE: the roster prune now parts such a channel within two
+  resync ticks even if the LEAVE publish never arrived. The reconcile's deactivation stays the
+  durable, database-side step.
+- **JOIN and RESYNC commands are checked against that same roster.** `Worker` used to follow both
+  blindly, so an Api still running with an older list (between the two recreations of step 3, or if
+  only `worker` was recreated) or an admin RESYNC of a row the reconcile had not deactivated yet made
+  the worker enter a channel its own configuration blocks. Both handlers now ask
+  `ListActiveChannelNamesAsync` first — one definition of "this worker should be in that channel",
+  not a second predicate — and ignore the command otherwise, with a log line that names nothing. On a
+  database error they fail closed; the periodic resync's `EnsureJoinedAsync` is the convergence net
+  that joins a legitimately active channel on its next tick.
+- **The 7TV sync refuses a blocked channel itself.** `SevenTvSyncService` is the one place every
+  7TV-observing path funnels through — boot recovery, the periodic resync, the JOIN/RESYNC handlers
+  and the EventAPI follow-ups — so it now checks the row's stored id after the row gate (no 7TV call,
+  no match-cache warm-up, no result for a caller to subscribe), and `ApplyEmoteSetUpdateAsync`
+  answers a dispatch for such a row with `ChannelUnknown`, which makes the EventAPI client drop the
+  subscription. For an id-less row the sync learns the id from **7TV**, independently of Helix, and
+  refuses right there — before the duplicate warning (which would name the id) and before the
+  backfill — and takes the match-cache entry the warm-up just filled back out. That is the one
+  Helix-independent identity source this codebase has, so it also covers a blocked channel joined as
+  a brand-new id-less row during a Helix outage: the worker sits in the IRC channel until the
+  reconcile's next pass, but counts nothing and observes no 7TV set, as long as 7TV knows the account
+  (and a channel 7TV does not know has no set to count against). The refusal logs at Debug only: it
+  names nothing, but it follows lines of the same call that do (boot recovery's or the JOIN handler's
+  "joining {Channel}", the warm-up's line), and beside them it would identify the channel anyway; the
+  operator-visible signal is the reconcile's deactivation count.
+- **A deactivated id-less row keeps the id it resolved to (P1).** The reconcile used to deactivate an
+  id-less row whose login resolved to an excluded id but leave `TwitchChannelId = null` ("never
+  backfilled"). A later join by that login while Helix answered `Unavailable` or `NotFound` then found
+  the row by name, saw no id to check, and reactivated it. `DeactivateExcludedRowAsync` now writes the
+  resolved id onto the row in the same save as the deactivation — the same backfill any other row
+  gets — so every join path's stored-id check refuses it from then on, whatever Twitch answers. It
+  cannot when another row already holds that id (the unique index): that row carries the block
+  itself, and the duplicate stays id-less. For that duplicate, `HandleUnknownTwitchLoginAsync` now
+  refuses to reactivate **any inactive row without a Twitch id** on a `NotFound` answer, with
+  `ChannelNotOnTwitch` (404) — the ban restraint above rests on the stored id, and without one
+  nothing ties the row to an account Twitch still knows; an active row, or one with an id, is
+  unaffected. Three alternatives were weighed and rejected. Refusing the same rows on `Unavailable`
+  too would have closed the last case, but it breaks an ordinary rejoin of every pre-#44 inactive
+  row during a Helix outage, which the three-state lookup exists to keep working. Deleting the
+  duplicate automatically would destroy history on an operator's typo in the list. And a marker
+  column would need a manual production migration for a case that only arises when a rename
+  duplicate meets an objection. **What stays open, deliberately:** during a Helix outage, a join by
+  login cannot be checked against the list when no row with a stored blocked id answers to that login
+  — a brand-new row (the gap the first entry above already accepted) or the id-less duplicate just
+  described. The 7TV sync's own gate (previous bullet) keeps such a channel uncounted and its set
+  unobserved, and the reconcile's next pass after the outage deactivates it again.
+- **Every exclusion-related failure and side log is anonymous (P2).** The known-id pass's
+  `DbUpdateException` catch logged the row's login and internal id, and a failed deactivation on the
+  id-less path fell through to the main loop's catch, which does the same. `DeactivateExcludedRowAsync`
+  now catches its own failed save: it clears the tracker, logs a line naming nothing and returns
+  without counting, and the still-active row is retried next pass; the named per-row catch is only
+  reached by writes that are not about the block. The inventory found more lines of the same kind,
+  silenced or anonymised the same way: the reconcile's case-3 warning when the row sitting on
+  a channel's new login carries an excluded id (it named both rows, the blocked id and the login
+  the blocked channel last had), and the join path's rename-collision and id-mismatch lines, which
+  named the blocked row's login or stored id right before `JoinAsync` refused the join for exactly
+  that id — and `LookupByLoginAsync`'s two outage lines (no app token, Helix unreachable), which
+  named the login right before a join could be refused on the stored id of the row under it. The
+  audit entry the objection-gate deactivation writes is a `channel.leave` by the system
+  actor — written for nothing else — so it now carries `reason = "excluded"` and **no channel name**
+  (`ChannelDeactivation.DeactivateAsync(forExclusion: true)`); an entry naming the channel would have
+  told every admin reading the audit log which channel the objection concerns. A user's own leave
+  still names its channel.
+- **The worker names a channel it leaves only at Debug.** The inventory's last finding sat on the
+  worker side: when the reconcile deactivates a blocked row the worker is still in (the id-less case,
+  which boot recovery could not recognise), it publishes a LEAVE, and every line on the leave path —
+  the command handler's "verlasse {Channel}", the roster prune's line, `TwitchChatManager`'s
+  skipped/failed/left lines, and TwitchLib's own "Leaving channel: {channel}" — named that channel
+  right after the reconcile's anonymous deactivation line. All of them now log the event at their
+  old level without the login and repeat the login only at Debug; TwitchLib's line goes through the
+  existing `RedactingTwitchClientLoggerFactory` (#246), matched by event name `LogLeavingChannel`
+  like the two redactions already there, with its login withheld. This applies to every leave, not
+  only blocked ones — a leave-path line cannot know why it runs, and every LEAVE comes from an audited
+  write (a user's leave, a purge, a rename or merge handover) that keeps the name on record. Join-path
+  lines are untouched: they name a channel before anything about a block is known.
+- **Left open on purpose, for a separate decision.** The chat-log harness (`harness <channel>`, and
+  its `--report-only` recompute) fetches and replays a channel's archived chat by its Twitch id and
+  has no channel-level gate: run by hand on a blocked channel whose row was not purged yet, it would
+  process that channel's chat. It is frozen for a pre-registered measurement until 2026-10-08, so the
+  guard (refuse before any archive or database access when the row's stored id is excluded, with a
+  line that names nothing) is deferred to after that date rather than slipped into this round. The
+  foreign-channel preview (`ForeignEmoteSetService`) reads any channel's public 7TV set on a user's
+  request — no row, no subscription, no chat — and whether an objection covers that read is a policy
+  question for the operator, not a gap in this gate; answering "yes" would need its own refusal
+  status and error code.
+
+### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
+
+**Betrifft:** `web/src/app/features/legal/legal-page.ts` ·
+`web/src/app/features/legal/legal-back-target.ts` (+ spec) ·
+`web/src/app/core/routing/navigation-history.service.ts` (+ spec) · `web/src/app/app.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/legal-pages.e2e.spec.ts`
+
+Operator report: `/imprint` and `/privacy` (#247) only ever offered "Zurück zur Startseite", fixed
+to `/welcome`. A logged-in visitor who opened either page from inside the app — e.g. the footer on
+a channel page — landed on the public landing page instead of back where they came from on click.
+
+1. **`NavigationHistoryService` (`core/routing/`, `@Service()`)** tracks the position of the
+   ACTIVE browser-history entry within this app instance's own navigation sequence and exposes
+   `hasPreviousPage()` — true unless the active entry is the very first one. Deliberately not
+   `history.length`: that also counts pages outside this app (an external referrer, an earlier tab
+   session), which would make a `Location.back()` gated on it leave the app. Injected eagerly from
+   `App` (`app.ts`, alongside the existing `ThemeService` eager-injection for the same reason) so it
+   is already listening before the very first `NavigationEnd` of the session — by the time a
+   lazily-loaded page such as `LegalPage` would inject it for itself, that page's own arrival may
+   already be indistinguishable from "no previous page".
+   **Revised same day:** the first version counted completed `NavigationEnd`s over the tab's whole
+   lifetime instead of tracking position, and a Codex review caught the gap (P2): open `/imprint`
+   directly, click the fallback link to `/welcome`, then press the browser's own Back button — the
+   count was 2 ("has a previous page"), but `/imprint` is again this tab's very FIRST history entry,
+   so the resulting `Location.back()` did nothing in a fresh tab or left the app to an external
+   referrer. The service now tracks the position of the active entry instead: it advances by one on
+   an in-app `'imperative'` navigation unless that navigation's own extras report `replaceUrl` or
+   `skipLocationChange`; on a browser `'popstate'`, it looks up the index recorded for
+   `restoredState.navigationId` rather than assuming a fixed step. A guard redirect (e.g.
+   `homeGuard` sending `/` to `/welcome`) needs no special case — the cancelled, superseded first
+   attempt never reaches `NavigationEnd`, and the redirect's own completing navigation carries
+   `replaceUrl: false` and performs a genuine `pushState` (verified against a `RouterTestingHarness`
+   probe of Angular 22's actual event/entries sequence), so it still advances the index by exactly
+   one, matching the one real history entry it leaves behind.
+2. **`resolveLegalBackTarget(hasPreviousPage, isLoggedIn)` (`legal-back-target.ts`)** is the pure
+   decision: a previous in-app page always wins and yields a literal "Zurück"/"Back", regardless of
+   login state, because `hasPreviousPage()` already guarantees the target is inside the app. With no
+   previous page (fresh tab, reload, external link — the legal page was the session's own entry
+   point) it falls back to a fixed destination as before: the visitor's own overview (`/`, which
+   `homeGuard` resolves) if logged in, `/welcome` otherwise.
+3. **`LegalPage` renders `Location.back()` for the "back" case, `app-back-link` unchanged for the
+   fallback case.** `Location.back()` over re-navigating to a recorded URL: it is real browser-back
+   (no forward-breaking history entry, scroll position restores through the app's own
+   `withInMemoryScrolling` config) and is safe from leaving the app only because it is gated on
+   `NavigationHistoryService`, never on raw history depth. This is a deliberate, narrow exception to
+   `BackLink`'s own contract ("never `history.back()`", see its doc comment) — every other consumer
+   of that primitive is a fixed hierarchical parent in the route tree, while `LegalPage` sits
+   outside the whole app-shell route tree and is reachable from everywhere in it, so a fixed parent
+   does not exist for it to point at.
+
+New translation key `legal.backAction` ("Zurück"/"Back") in both locales; `legal.back` and
+`nav.overview` are reused unchanged for the two fallback cases.
+
+Verified live and in `legal-pages.e2e.spec.ts`: arriving via the footer from the overview shows
+"Zurück" and returns to the overview on click; opening `/imprint` directly falls back to
+`/welcome` (anonymous) or `/` (logged in); the Codex-flagged sequence (direct load, fallback
+click, browser Back) shows the fallback link again rather than a dead-end "Zurück".
+
+### 2026-09-24 — Footer placement: sticky-footer layout instead of an unpinned block, plus a shell/dock clearance contract
+
+**Betrifft:** `web/src/app/features/shell/app-shell.ts` · `web/src/app/features/login/login-page.ts` ·
+`web/src/app/features/landing/landing-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/core/layout/dock-clearance.service.ts` (+ spec) ·
+`web/e2e/footer-placement.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts`
+
+Operator feedback (with screenshots) on #247's legal footer: on a short page (e.g. "Meine
+Channels"/"Meine Abstimmungen" with a handful of rows) the footer sat right under the content,
+stranded mid-screen with a lot of empty page below it, and read as a heavy block relative to how
+rarely it is used.
+
+1. **Sticky-footer layout, not a fixed block.** `AppShell`, `LoginPage` and `LandingPage` each wrap
+   their page in `flex min-h-dvh flex-col`, with the routed `<main>`/content area as `flex-1`. On a
+   page shorter than the viewport the footer now sits at the viewport's bottom edge; on a longer
+   page it follows the content in normal document flow, exactly as before. `dvh` rather than `vh`:
+   `100vh` on a mobile browser is the height with the address bar hidden, which would strand the
+   footer below the fold on first paint. No inner scroll container is introduced — the page still
+   scrolls as one document (`docs/UI-Designsprache.md` §8.5).
+2. **Much less height.** The footer's own padding dropped from `py-4`/`text-sm` to `py-2`/`text-xs`
+   on all three pages (`AppShell`, `LoginPage`, `LandingPage` — content unchanged). Link hit targets
+   are untouched: `LegalFooterLinks` keeps its own `px-1 py-2` per anchor, so the row's own padding
+   shrinking does not shrink what is clickable (audit's `smallTargetsUnder24` gate).
+3. **`DockClearanceService` (`core/layout/`) — a new, small contract between a page's own
+   `position: fixed` bottom bar and the shell's footer.** A `position: fixed` element is anchored to
+   the viewport, not the document, so it renders in the same strip regardless of scroll position.
+   Once the footer could reach the viewport's bottom edge (point 1), that is exactly where the
+   usage-stats action dock (`.app-dock`, `z-30`, fixed to `bottom: 0`) also renders — on a short
+   page, or at the bottom of a long one once scrolled all the way down, the dock would sit directly
+   on top of the footer's link row. `usage-stats-page.html` already reserves `pb-40` inside its own
+   content while `dockVisible()` (`actionDockHasContent`), but that padding sits before the footer
+   and does nothing for it. `DockClearanceService` is the generic form of the same guard: any page
+   with a fixed bottom bar calls `reserve(px)`/`release()` (mirrored from its own visibility signal
+   via an `effect()`, released in `DestroyRef.onDestroy`) and `AppShell` reads the resulting signal
+   to add matching `padding-bottom` to the footer element. State-driven, not route-driven — the
+   reservation appears and disappears with the dock itself, so this does not reintroduce the
+   per-route layout variation §8.4a rules out. `usage-stats-page.ts` originally reserved a fixed
+   160px (`DOCK_CLEARANCE_PX`), matched by the same number in its own `pb-40` contract — a
+   worst-case guess, not a pixel-tracked one. A Codex review (2026-09-24) found that guess too
+   small once a delete/import/restore run's failed-row list or rate-limit notice grows the dock's
+   scrollable inner container towards its `max-h-[70vh]` cap: both guards now read a `ResizeObserver`
+   measurement of the rendered `.app-dock` element (`dockHeightPx()`) instead of a constant, so the
+   reserved space always equals the dock's actual current height. Measuring the element rather than
+   re-deriving visibility also closes a related P3: the dock's own `@if` additionally hides it under
+   `isCoarse()`, and the old code mirrored `dockVisible()` alone, so a coarse pointer left the
+   footer padded for a bar that the template never actually mounted — measuring the DOM directly
+   cannot drift from what is actually rendered.
+
+Verified live: the usage-stats action dock and the footer no longer overlap at the bottom of a
+short page nor at the bottom of a long one scrolled all the way down (both cases pinned in
+`footer-placement.e2e.spec.ts`); UI audit harness run for the affected scenarios (`overview-*`,
+`my-votings-*`, `login`, and a new `usage-stats-dock` scenario) found zero horizontal overflow, zero
+`serious`/`critical` contrast violations, and no new `smallTargetsUnder24` entries beyond the
+pre-existing "show details" atlas-cell affordance.
+
+### 2026-09-24 — Per-chatter GDPR objection: a config-driven exclusion gate ahead of counting and bot detection (#252)
+
+**Betrifft:** `src/EmotePurge.Worker/IExcludedChatterFilter.cs` ·
+`src/EmotePurge.Worker/ExcludedChatterFilter.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` ·
+`src/EmotePurge.Worker/WorkerServiceRegistration.cs` ·
+`tests/EmotePurge.Worker.Tests/ExcludedChatterFilterTests.cs` · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `.env.example` · `docs/Operations.md`
+
+The worker's chat processing rests on legitimate interest (GDPR Art. 6(1)(f)); anyone relying on
+that basis must be able to honour an objection under Art. 21. The only existing per-user knob,
+`Twitch:AdditionalBotAccountIds` (`BotChatterDetector`), does not stop processing an account — a
+listed ID is still counted, just in the bot bucket. There was no way to actually stop processing a
+single chatter's messages.
+
+Added `Twitch:ExcludedChatterIds` (env `TWITCH_EXCLUDED_CHATTER_IDS`), same accepted shapes as
+`Twitch:AdditionalBotAccountIds` — indexed array keys or one comma-separated scalar, scalar wins —
+read into a new, pure, TwitchLib-free `ExcludedChatterFilter` (`IExcludedChatterFilter.IsExcluded`).
+`TwitchChatManager.OnMessageReceived` checks it immediately after the mandatory watchdog liveness
+bookkeeping (the two writes that must run for every message regardless of sender, including bot and
+Shared-Chat traffic — see that method's existing class-level comment) and returns before anything
+else touches the message: no splice diagnostics, no room/bot classification, no emote counting. An
+empty or missing list changes nothing, since the check then always answers `false`.
+
+Matching is on the immutable numeric Twitch user ID only, never the login, the same choice
+`AdditionalBotAccountIds` already made and for the same reason: a login can change, an account's ID
+cannot. `ExcludedChatterFilter`'s constructor logs only the configured count
+(`Configured N excluded chatter id(s).`) at startup — never the IDs, never a login — so an operator
+can confirm a restart picked up a change from the container logs alone, without a log line ever
+being able to name whom an objection concerns.
+
+Deliberately out of scope, matching the issue: no self-service opt-out (a chat command or web form
+— objections arrive by e-mail and are rare) and no retroactive change to already aggregated counts,
+which carry no identity and therefore have nothing to remove per person. The harness (#69, a
+separate accuracy-probe entry point that replays archived logs through its own `ReplayDayCounter`)
+is untouched — the issue scopes the gate to the live message path, and the harness already stores no
+identity of its own.
+
+`docs/Operations.md` documents the operator procedure: look up the numeric ID for an objecting
+chatter, add it to the env var, recreate the worker; the change takes effect on that restart, not
+before.
+
 ### 2026-09-23 — The import dialog becomes a deleting operation: name conflicts resolved per row, recovery file before the first removal (#230)
 
 **Betrifft:** `docs/UI-Designsprache.md` (§7.2) · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
@@ -231,6 +716,712 @@ reads the K5 rule 2 ("the id sits under an entry the row does not name ⇒ drop 
 a live aliasless entry is foreign only to a row that does **not** name one. Without that reading K5
 would drop every row carrying an aliasless entry without a trace. A purge-run row never names one, so
 K5 is unchanged for it; `skipped` still counts per alias, `null` as one.
+
+---
+
+### 2026-09-23 — Data retention runs as a tenth hosted service, dry run warns every tick, `RETENTION_ENFORCE` is the switch (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Worker/DataRetentionWorker.cs` ·
+`src/EmotePurge.Worker/RetentionRunSummaryFormatter.cs` ·
+`src/EmotePurge.Worker/WorkerServiceRegistration.cs` ·
+`src/EmotePurge.Worker/appsettings.json` ·
+`docker-compose.prod.yml` · `docker-compose.yml` · `.env.example`
+
+Seventh step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T7): wiring T6's
+`IDataRetentionService` into the worker as its tenth hosted service.
+
+- **`DataRetentionWorker` follows the house pattern of `TwitchIdentityReconcileWorker`/
+  `SevenTvPeriodicResyncWorker`:** waits for `BootRecoveryGate.Completed` (the channel purge inside
+  `RunAsync` touches rows boot recovery reads and writes), then `Retention:StartupDelayMinutes`
+  (default 10) so a restart loop does not begin every start with a pass, then one scope and one
+  `RunAsync(options.Enforce)` call immediately and again every `Retention:IntervalHours` (default 24)
+  on a `PeriodicTimer`. A catch around the whole tick keeps a Postgres hiccup to one tick, never the
+  host — but logs only the exception type and, if a Postgres error is in the chain, its SQLSTATE,
+  never the exception message: `RunAsync`'s own remark warns that a message can quote a key value.
+- **One summary line per tick, even at all zero — the only proof the job is alive.** A dry run
+  (`Retention:Enforce = false`, the default) logs it as a **Warning** stating that nothing was deleted
+  and `Retention:Enforce` is false, on purpose (plan decision 4): the daily reminder against a forever-
+  forgotten `false`. An enforced run logs Information. Both carry the full `RetentionRunSummary` —
+  every parent and cascade field, `CapReached`, and the `StillActive`/`NotFound`/`Failed` counts — and
+  nothing else: only counts, never a login, a user id or a channel name. The rendering is
+  `RetentionRunSummaryFormatter.Format`, a pure function tested in `Worker.Tests` (rule 11) rather than
+  inlined, since the summary carries around twenty fields across three nested records.
+- **Configuration:** `Retention` section with the T6 defaults added to the worker's
+  `appsettings.json`. `docker-compose.prod.yml` and `docker-compose.yml` (dev) pass
+  `Retention__Enforce=${RETENTION_ENFORCE:-false}` on the worker service, mirroring the existing
+  `SevenTv__EventApi__Enabled` pattern; `.env.example` documents `RETENTION_ENFORCE=false`. Flipping
+  it in production is an env edit plus a stack update, not an image rebuild (plan decision 4). The
+  periods themselves stay code constants (`RetentionPolicy`, previous entry) — this switch only
+  toggles whether the already-fixed periods are enforced.
+- **Nine hosted services become ten:** `WorkerServiceRegistrationTests` and the "nine" doc comments in
+  `WorkerServiceRegistration`/`HarnessCommandLine` now read ten; the worker's stop-order comment in
+  both compose files ("N other services stop before `UsageFlushWorker`", registered second, hosted
+  services stop in reverse registration order) moves from seven to eight.
+- **Not covered here, and deliberately not written as a unit test:** the tick loop itself
+  (boot-gate wait, startup delay, timer cadence) stays as thin as its siblings' and is live-verified
+  per rule 16 instead, the same way `TwitchLivePollWorker`'s and `TwitchIdentityReconcileWorker`'s are
+  — only `RetentionRunSummaryFormatter` and the hosted-service count are unit-tested.
+
+---
+
+### 2026-09-23 — Retention periods as code constants, one predicate per category for count and delete, cascade counts in the dry run, and the dry-run default (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/RetentionPolicy.cs` ·
+`src/EmotePurge.Core/Services/IDataRetentionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/DataRetentionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/RetentionOptions.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/AccountRetentionQueries.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`
+
+Sixth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T6): the service the worker's
+retention job (T7) calls once per tick. `IDataRetentionService.RunAsync(enforce)` runs one pass and
+returns a `RetentionRunSummary` of counts only.
+
+- **The periods are constants in `RetentionPolicy` (Core)** — tokens 30 days, accounts, ended vote
+  sessions and audit entries 365 days ("twelve months" is a fixed 365 days), deactivated channels 180
+  days, all measured exclusively (a row exactly one period old is not due). Not configuration: the
+  privacy policy (#247) states them, and an environment variable that changed one would make that text
+  wrong. Configurable are only switch and pacing, `RetentionOptions` (section `Retention`): `Enforce`
+  (default `false`), `IntervalHours` (24), `StartupDelayMinutes` (10), `MaxAccountsPerRun` (100), bound
+  and validated at startup in `AddEmotePurgeInfrastructure` like `ChannelCapacityOptions`.
+- **Fixed order, own transactions:** tokens (one conditional `UPDATE` of all four token columns for
+  users last active before the cutoff that hold any of them) → accounts (at most `MaxAccountsPerRun`
+  candidates, longest-absent first, each through `IAccountDeletionService` with `AuditActor.System`,
+  `Inactivity` and the cutoff, its own transaction and recheck; `StillActive`, `NotFound` and failures
+  are counted and do not stop the others) → ended vote sessions (`IsActive = false AND
+  COALESCE(EndedAt, StartedAt) < cutoff`, keyset batches of 500, votes and ballot rows by cascade, no
+  audit entry) → audit log (`OccurredAtUtc < cutoff`, keyset batches of 5,000 deleted by primary key —
+  Postgres has no `DELETE … LIMIT`) → channels (first stamp inactive rows without `DeactivatedAtUtc`
+  with the pass's reference time, in the dry run too; then each channel deactivated before the cutoff
+  through `IChannelService.PurgeIfInactiveSinceAsync`). Cutoffs come from one `TimeProvider` reading
+  per pass; `TimeProvider.System` is registered with `TryAddSingleton`.
+- **One predicate per category, used by both modes.** The dry run walks the same selection (same
+  expression, same batches, same account cap) and stops before the write. The account deletion's own
+  predicates — last activity, votes of the user, audit entries as actor and as `"user"` target — moved
+  into `AccountRetentionQueries`, set-shaped, so `AccountDeletionService` deletes with exactly the
+  expressions the dry run counts with.
+- **Cascade counts in the summary, in both modes, from the selected parents:** per account votes (and
+  the part in open sessions) and pseudonymised audit entries; per session votes and ballot rows; per
+  channel emotes, usage rows, live days, sessions and votes. **Overlap is subtracted, not double
+  counted:** an enforced pass deletes a user's votes before the session category counts, and ended
+  sessions before a channel purge cascades, so every later cascade count leaves out the votes of the
+  accounts this pass removed (dry: would remove) and the sessions the session category covers — a no-op
+  when enforcing, the exact correction in the dry run. Without concurrent writers both modes report the
+  same numbers (tested on an overlapping data set, together with the check that the enforced counts
+  equal the rows that actually went). The per-account audit count sums "distinct entries" per account,
+  as the deletion reports it: an entry where one deleted account acts on another counts for both.
+- **The scope's `AppDbContext` is shared** with the account deletion and the channel purge, so the
+  service clears the change tracker after every account and channel. Otherwise a deletion that threw
+  would leave its tracked removal pending, and the next item's `SaveChanges` would replay it outside
+  the lock and recheck that guarded it (or fail every remaining item on the same error).
+- **Log lines carry counts and error kinds only** (exception type, Postgres SQLSTATE) — never an
+  exception message, which can quote a key value, and never a login, id or channel name. A category
+  whose bulk statement fails aborts the pass (the job retries on the next tick); per-item failures in
+  accounts and channels are counted instead.
+- **Dry run by default:** the irreversible mistake would hit the whole existing database on the first
+  enforced pass, the opposite mistake (a forgotten `Enforce`) costs nothing and shows as the job's daily
+  warning line (T7). The stamps are the only write of a dry run: not destructive, and without them the
+  channel period would never start.
+
+### 2026-09-23 — Join and retention purge serialise on the channel row (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs`
+
+Fifth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T5, finding 9). `JoinAsync`
+loaded an inactive row unlocked and saved its reactivation later, outside any transaction. A retention
+purge committing in between still saw the old, inactive, due row, cascaded its emotes, usage stats,
+live days, vote sessions and votes away, and the join then failed with a concurrency exception (500) —
+losing exactly the history a rejoin within the period is supposed to keep.
+
+- **New `IChannelService.PurgeIfInactiveSinceAsync(channelName, deactivatedBeforeUtc, actor)`** →
+  `ChannelRetentionPurgeResult` `Purged | NotFound | StillActive`. Own transaction, row locked
+  `SELECT … FOR UPDATE`, and the condition — `IsBotActive = false AND DeactivatedAtUtc < cutoff` —
+  checked **after** the lock; a null stamp is never due, and `StillActive` covers "active again" and
+  "not due yet" alike. Then the same cascade and the same `channel.purge` action as the admin purge,
+  with details `{ reason: "retention" }` (the admin purge keeps writing no details and is unchanged,
+  LEAVE-before-write included). No LEAVE publish: the worker is not in an inactive channel. `NotFound`
+  and `StillActive` write nothing. The cutoff must be `DateTimeKind.Utc` (`ArgumentException`
+  otherwise): it is compared in memory, where `DateTime` ignores the kind.
+- **`JoinAsync` runs in one explicit transaction**, opened after the Helix lookup (no row lock across
+  an HTTP call) and committed before the Redis publishes (the worker resolves the committed row by
+  name). Every existing row it may activate is loaded through the lock helper — by name, by Twitch id,
+  and the rename path's occupant. Outcome: purge first → the join waits, finds no row and creates the
+  channel afresh (`TrackingResumedAt` null, `CreatedAt` honest); join first → the purge waits and
+  answers `StillActive`. Neither side gets an exception. Rejections (cap, unknown login) roll back.
+- **The identity merge locks both rows** in one transaction: survivor (by Twitch id) first, then the
+  loser (by name), and decides on the rows as re-read under the lock — the caller's snapshot reads are
+  now untracked (`LoadChannelReadOnlyAsync`, new `LoadChannelByTwitchIdReadOnlyAsync`). The survivor
+  can be an inactive, due row (case 4). Purge first → the merge finds no survivor and skips (logged at
+  Information; the next pass backfills the id onto the remaining row); merge first → the purge sees the
+  row active and renamed away (`NotFound`). The merge now also skips, instead of fusing, if the loser
+  acquired a Twitch id or the pair collapsed into one row in between.
+- **Lock helpers: `ChannelQueries.LoadChannelForUpdateAsync` (name) and
+  `LoadChannelByTwitchIdForUpdateAsync`.** Like `UserQueries.LockUserAsync` they refuse to run outside
+  a transaction. Unlike it they also guard EF's identity map: a tracking query returns an instance the
+  context already tracks *without* refreshing it, so a row read before the lock would come back with the
+  very stale state the lock is for. Such an instance is reloaded under the lock; one with pending
+  changes is refused (`InvalidOperationException`), since a reload would silently discard them.
+- **Lock order and why it cannot cycle.** Where two channel rows are locked, the Twitch-id row always
+  comes before the name row (join rename path, merge); every other path locks one row. The account
+  deletion locks user rows, never channel rows, and no channel path locks a user row. The plain channel
+  writers (leave, 7TV sync, reconciliation rename and backfill) never lock a second channel row; the 7TV
+  sync, the only one that also touches emote rows, runs for active channels only, which the purge
+  never deletes. One overlap remains at the vote level: an account deletion
+  (`DELETE … WHERE UserId`) and a channel purge (cascading over the same channel's votes) can lock
+  the same vote rows in different orders. Postgres detects that cycle and aborts one side with a
+  deadlock error after about a second — a clean rollback, not a hang. It needs an admin action
+  racing the job, since the job runs accounts and channels one after the other; accepted.
+- **Accepted residual windows**: `LeaveAsync`, `PurgeAsync` and vote-session creation still load
+  unlocked. Racing a retention purge on the same inactive, due channel they fail with a 500 in a
+  window of milliseconds once a day — the deletion itself is correct either way, and none of them can
+  make the purge delete a channel that is being reactivated, which is the case the lock is for. A join
+  holding the lock also makes FK inserts that reference the channel (new emotes, live days, sessions)
+  wait for its commit, because `FOR UPDATE` conflicts with the key-share lock an FK check takes; the
+  join transaction is a count and one save, so the wait is milliseconds.
+- The dry run's cascade counts are not part of this step; they belong to the retention service (T6),
+  which selects the candidates and counts their dependent rows.
+
+### 2026-09-23 — Admin account deletion: `DELETE /api/admin/users/{id}`, a self-deletion escape hatch, no new error code (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs` · `web/src/app/core/admin/admin.service.ts` ·
+`web/src/app/features/admin/admin-users-page.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/shared/audit/audit-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+Fourth step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T4): the admin-facing side
+of the account-deletion path T3 built.
+
+- **`DELETE /api/admin/users/{twitchUserId}`**, in the `/api/admin` group (inherits
+  `GlobalAdminAuthorizationFilter`), same shape as the pre-existing `revoke-sessions`/
+  `invalidate-role-cache` routes. Calls `IAccountDeletionService.DeleteAsync` with
+  `AccountDeletionReason.AdminRequest` and `onlyIfInactiveBeforeUtc: null` — an admin may delete an
+  active account, not just an inactive one. `Deleted` → 204, `NotFound` → 404, both without a new
+  `ApiErrorCode` (the plan's decision: nothing here needs a translated message, the row is either
+  gone or it is not). `StillActive` cannot occur for `AdminRequest` and is guarded as unreachable.
+- **An admin may delete their own account from the admin list** (operator decision 6): no special
+  case blocks it, same precedent as self-revocation. The confirmation dialog names the consequence
+  (`admin.users.delete.selfHint`) rather than the endpoint refusing it — a refusal would need a new
+  error code for a case that is not actually harmful.
+- **Frontend uses the same `TypedConfirmDialog` as the channel list's purge**, not the plain
+  `ConfirmDialog` revoke uses: deletion is not recoverable (votes gone, audit entries
+  pseudonymised), so retyping the Twitch login is the gate, same reasoning as purge retyping the
+  channel name. The row-level trigger button stays `danger-quiet` per §4.2 of the design language —
+  severity does not override the repetition rule, only the confirmation dialog behind it does the
+  actual gating.
+- **No bespoke handling for the self-deletion aftermath.** The reload after a successful delete hits
+  `GET /api/admin/users` with the now-missing row; `OnValidatePrincipal` (T2) answers 401 for that,
+  and the existing `apiAuthInterceptor` already turns any unexpected 401 into
+  `AuthService.handleSessionExpired()` — a redirect to `/login`, the same mechanism self-revocation
+  already relied on before this task existed.
+- **`user.delete` joins the audit vocabulary client-side**: `ACTION_KEYS`, `CHANNELLESS_ACTIONS`,
+  and the `AuditAction` union all learn it; `audit.actions.userDelete` is translated in both
+  locales. The deleted-user actor marker (`deleted-user`) needed no new code — `actorLogin` is
+  always rendered as plain interpolated text, the same path `system` already uses, so it reads as
+  "by deleted-user" without a lookup table entry (`audit.actors.deletedUser` stays unused, per the
+  plan's "optional, not required").
+
+### 2026-09-23 — Account deletion: row lock and recheck, votes go, audit entries are pseudonymised, the deletion entry carries no identity, late audit writers lock the row, Redis cleanup is retried once and otherwise bounded by TTL (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IAccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AccountDeletionService.cs` ·
+`src/EmotePurge.Infrastructure/Persistence/UserQueries.cs` ·
+`src/EmotePurge.Infrastructure/Services/UserService.cs` · `src/EmotePurge.Core/Services/AuditActor.cs` ·
+`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Services/IRateLimitTelemetry.cs` ·
+`src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs`
+
+Third step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T3): the one path that
+deletes a user account, shared by the admin endpoint (T4, on request) and the retention job (T6,
+after twelve months without activity). `IAccountDeletionService.DeleteAsync(id, actor, reason,
+onlyIfInactiveBeforeUtc)` returns `Deleted | NotFound | StillActive` plus counts.
+
+- **One transaction under `SELECT … FOR UPDATE` on the user row**, taken first
+  (`UserQueries.LockUserAsync`, which refuses to run outside a transaction — a lock there would be
+  released by autocommit and guard nothing). Missing row → `NotFound`, nothing written, no audit entry,
+  Redis untouched (the id is unverified input then). A second or concurrent call finds no row.
+- **Inactivity is rechecked under the lock** (`max(LastLogin, LastSeenAtUtc) < cutoff`, else
+  `StillActive`). The cutoff is mandatory for `Inactivity` and forbidden for `AdminRequest`
+  (`ArgumentException`). A login or `LastSeenAtUtc` stamp that is in flight when the deletion arrives
+  holds a row lock; the deletion waits and then reads the new version, so the user's activity wins.
+- **Votes are deleted explicitly first** (`Vote → User` stays `Restrict`), in every session including
+  open ones — the scores of running votings drop by that user's votes. A vote racing the deletion does
+  not break it: its FK check takes a key-share lock on the user row, which conflicts with
+  `FOR UPDATE`, so the vote waits and then fails its FK check against the deleted row (the plan
+  expected the deletion to fail at the FK instead; it cannot while it holds the lock).
+- **Audit entries are pseudonymised, not deleted.** Entries with the user as actor get
+  `AuditActor.DeletedUser` (`deleted-user`/`deleted-user` — a hyphen is not valid in a Twitch login,
+  and the string is no Twitch id) as actor; entries with `TargetType = "user"` and the user's id get
+  the marker as `TargetId` and in their `login` detail, every other column and detail key unchanged.
+  Deliberately not "every string equal to the login": a broadcaster's login is also their channel's
+  name and their id is the channel's Twitch id, and channel history is channel data.
+- **The `user.delete` entry carries no identity**: `TargetId` is the marker, details are
+  `{ reason, votesDeleted, auditEntriesPseudonymised }`. When the actor is the deleted user
+  themself (an admin deleting their own account), the actor is the marker too — otherwise this one
+  entry would restore what the same transaction removed everywhere else.
+- **Late audit writers lock the row.** `UserService.InvalidateRoleCacheAsync` wrote an entry naming the
+  user without touching the user row, so nothing stopped it from landing after a deletion. It now runs
+  in a transaction that takes `FOR SHARE` before its Redis call and audit insert: holding it, the
+  deletion waits and pseudonymises the new entry; losing it, the writer finds no row and writes
+  nothing (returns `null`). `RevokeSessionsAsync` needed nothing — its user `UPDATE` is in the same
+  save as its entry and fails against a deleted row. Residual gap, accepted (plan decision 9): an entry
+  with the deleted user as *actor*, written by an in-flight request of that very user after an admin
+  deletion committed. The inactivity path is free of it through the recheck.
+- **Redis cleanup after the commit**: the role-cache keys through `IModRoleCache.InvalidateUserAsync`,
+  and the rate-limit telemetry's last-rejection slot through the new
+  `IRateLimitTelemetry.ForgetPartitionAsync`. Each is idempotent, needs no row, and gets one retry;
+  if that fails too, one warning with the number of failed steps (never the id), and the TTLs bound
+  the leftovers: 10 min for role keys, 25 h for the slot (which the next rejection of anyone
+  overwrites). `ForgetPartitionAsync` stays fail-open (never throws) but returns `false` when Redis was
+  unreachable, so the caller can retry; it deletes the slot only when its partition is the given one or
+  a sub-partition (`{id}:{sessionId}`, the voting policy), atomically by a compare-and-delete script
+  (Redis 7.2 — `DELEX` would need 8.4). **The partition is the bare Twitch user id, not `user:{id}`**
+  as the plan assumed; the doc comment on `RateLimitPolicyDecision.Partition` had the wrong example
+  and is corrected.
+- `AuditLogEntry` no longer claims unbounded retention: twelve months, and pseudonymisation on account
+  deletion.
+
+### 2026-09-23 — A session whose user row is gone is rejected, and `LastSeenAtUtc` is written at most daily from the principal check (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IUserService.cs` ·
+`src/EmotePurge.Infrastructure/Services/UserService.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Core/Services/IAdminUserQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AdminUserQueryService.cs`
+
+Second step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T2), building on T1's new
+`User.LastSeenAtUtc` column.
+
+- **`IUserService.GetSessionsValidFromUtcAsync` is replaced by `CheckSessionAsync`**, which returns
+  `SessionCheckResult?` instead of a bare `DateTime?`. The old contract could not tell a missing
+  user row apart from a present one that was never revoked — both read as `null`. That distinction
+  used to be harmless (no code path deleted a `User` row), but the retention job and admin account
+  deletion (later tasks) both do. `Program.cs`'s `OnValidatePrincipal` now rejects the principal and
+  signs the cookie out when the row is gone, the same as it already does for a cookie predating
+  session tracking — without this, a deleted account's cookie would keep authenticating until it
+  expired on its own, up to 14 days later.
+- **`CheckSessionAsync` now takes the cookie's own issue time (`issuedAtUtc`) and decides revocation
+  itself**, returning `SessionCheckResult(bool IsValid)` instead of handing a raw `RevokedBefore`
+  cutoff back for `Program.cs` to compare. Fixed here in reaction to a Codex Sol review finding
+  (P2): the original split — stamp first in `CheckSessionAsync`, compare against the cutoff
+  afterwards in `OnValidatePrincipal` — stamped `LastSeenAtUtc` before the caller had any chance to
+  reject the session, so a client that kept replaying an already-revoked cookie was rejected on
+  every request yet still moved its own account's 30-day-token/365-day-account retention cutoffs on
+  every one of those rejected requests. `CheckSessionAsync` now compares `issuedAtUtc` against
+  `SessionsValidFromUtc` before the stamp, and only reaches the throttle/stamp step on a valid
+  session; `OnValidatePrincipal` just reads `sessionCheck.IsValid` and rejects on `false`, the same
+  as it already does when the row is missing.
+- **The stamp is still throttled to once per 24 hours per user, and still a single conditional
+  `UPDATE`.** The read already runs on every authenticated request; the throttle check rides the
+  same projection (`SessionsValidFromUtc` and `LastSeenAtUtc` in one query), so the common case — a
+  stamp already fresh, or a session about to be rejected — costs no extra roundtrip. The write
+  itself is one conditional `UPDATE` (`WHERE ... AND (LastSeenAtUtc IS NULL OR LastSeenAtUtc < now -
+  24h)`) rather than a load-modify-save, which makes it safe under several concurrent requests for
+  the same user: whichever commits first moves the stamp inside the throttle window, so every other
+  concurrent `UPDATE`'s `WHERE` clause then matches zero rows instead of re-writing the same value
+  or losing an update.
+- **`AdminUserDto` gains `LastSeenAtUtc`.** The admin user list keeps sorting by `LastLogin`;
+  rendering the new field in the UI is out of scope for this task.
+
+### 2026-09-23 — Two retention timestamps, both backfilled to migration time: `LastSeenAtUtc` and `DeactivatedAtUtc` (#243/#244)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/User.cs` · `src/EmotePurge.Core/Entities/Channel.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Migrations/20260923194321_AddRetentionTimestamps.cs`
+
+First step of the data-retention plan
+(`docs/superpowers/plans/2026-09-23-datenaufbewahrung-243-244.md`, task T1). Two nullable
+`DateTime` columns give the retention job (later tasks) something to measure its cutoffs from:
+
+- **`User.LastSeenAtUtc`**: "last login" alone cannot answer "still around" — the session cookie
+  is 14 days sliding, so a user who visits weekly never logs in again, and a 12-month-since-login
+  purge would delete active users. The retention job will read `max(LastLogin, LastSeenAtUtc)`;
+  this task only adds the column (stamped from `OnValidatePrincipal` in a later task).
+- **`Channel.DeactivatedAtUtc`**: `LeaveAsync` now stamps it when it sets `IsBotActive = false`;
+  whatever reactivates an inactive row nulls it again — `CompleteJoinAsync`'s reactivation branch
+  (mirroring what it already does for `TrackingResumedAt`) and the `ChannelIdentityService` merge,
+  when folding an active loser into an inactive survivor makes the survivor active.
+
+Both columns are **backfilled to the migration instant** for existing rows (`AddRetentionTimestamps`,
+`UPDATE ... SET ... = now()`), not left `NULL`. Without it, an existing user who is active weekly
+but logged in months ago would be indistinguishable from a genuine 12-month dropout on the first
+enforcement run — the dry run could not tell them apart, and the sharp run would delete the active
+one; the same reasoning applies to already-inactive channels and the 180-day purge, since the audit
+log that could recover their true leave date only exists since 2026-07-31. The columns say "since
+we started measuring" rather than a true historical instant no existing row can prove. Price: real
+dropouts among the existing rows get up to a few months of extra grace before they become due — the
+operator approved this trade-off on 2026-09-23 (plan, "Entscheidungen des Betreibers", point 1) over
+the alternative of a separate "no retention before deploy + N days" constant, which would encode the
+same fact twice.
+
+### 2026-09-23 — Codex Sol review of #247: a dedicated rate-limit budget, resilient footer availability, wrapping footers, audit coverage
+
+**Betrifft:** `src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` ·
+`src/EmotePurge.Api/RateLimiting/RateLimitingOptions.cs` · `src/EmotePurge.Api/Program.cs` ·
+`src/EmotePurge.Api/Endpoints/LegalEndpoints.cs` · `src/EmotePurge.Api/appsettings.json` ·
+`tests/EmotePurge.Api.Tests/RateLimitRejectionTests.cs` ·
+`web/src/app/core/legal/legal.service.ts` (+ spec) · `web/src/app/features/landing/landing-page.html` ·
+`web/src/app/features/shell/app-shell.ts` · `web/src/app/features/login/login-page.ts` ·
+`web/e2e/audit/ui-audit.audit.ts` · `docs/Operations.md`
+
+Three P2 findings from Codex Sol's review of the #247 branch, all accepted.
+
+1. **The two legal endpoints shared `PublicHealth`'s 30/min budget** with `GET /api/health`. The two
+   have unrelated legitimate callers — `PublicHealth`'s are two machines on fixed cadences (the
+   container HEALTHCHECK, the uptime monitor), the legal endpoints' are browser visitors, who can
+   arrive in numbers behind one shared IP (an office or campus NAT) that neither machine caller
+   ever does. Sharing the counter meant ordinary visitor traffic could 429 the health check away,
+   or the reverse. Split into its own `PublicLegal` policy, sized at 60/min: one availability check
+   per SPA load, one document fetch per page view of `/imprint`/`/privacy`, one more per language
+   switch while on one of those pages — a single visitor's session rarely exceeds half a dozen such
+   requests, so 60/min gives headroom for roughly a dozen visitors a minute from one shared IP.
+   `RateLimitRejectionTests.PublicLegalBudget_ExhaustsIndependently_FromPublicHealth` (rule 11)
+   proves the two budgets are now independent in both directions.
+2. **A failed availability request used to hide both footer links for the rest of the SPA session.**
+   `LegalService` fetched `GET /api/legal/availability` exactly once, in its constructor, and
+   `catchError` folded any failure (including a transient 429, before the split above existed) into
+   the same "nothing configured" `{false, false}` state as a genuinely empty deployment — with no
+   way back for the rest of that page load. Fixed by tracking a failed fetch separately from "not
+   configured" and retrying once per completed navigation (`Router`'s `NavigationEnd`) until it
+   succeeds — paced by the visitor's own navigation rather than a timer, so a retry never adds load
+   on its own and a transient failure (the window resetting, a dropped connection) self-heals the
+   next time the visitor moves to another page. Covered in `legal.service.spec.ts`.
+3. **The landing page's existing footer row (`flex gap-5`) doesn't wrap**, and the two new footers
+   added to `AppShell`/`LoginPage` copied that shape — on a narrow phone the added legal links could
+   overflow the row or break mid-word. Zero horizontal overflow is a hard rule
+   (`web/.claude/CLAUDE.md`; `docs/UI-Designsprache.md`, accessibility checklist). Fixed by adding
+   `flex-wrap` to all three footer rows, so extra items drop to a second line instead of pushing the
+   viewport wider.
+
+Additionally: `/imprint` and `/privacy` scenarios added to the UI audit harness
+(`web/e2e/audit/ui-audit.audit.ts`) with mocked document responses, following the existing
+registration pattern for other pages.
+
+### 2026-09-23 — Operator-supplied imprint/privacy pages, read from a mounted directory, never from the repo (#247)
+
+**Betrifft:** `src/EmotePurge.Core/Services/ILegalContentService.cs` ·
+`src/EmotePurge.Infrastructure/Services/LegalContentService.cs` ·
+`src/EmotePurge.Infrastructure/Services/LegalContentOptions.cs` ·
+`src/EmotePurge.Api/Endpoints/LegalEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`docker-compose.yml` · `docker-compose.prod.yml` · `docs/Operations.md` · `.gitignore` ·
+`web/src/app/core/legal/*` · `web/src/app/features/legal/legal-page.ts` ·
+`web/src/app/shared/ui/legal-footer-links.ts` · `web/src/app/app.routes.ts`
+
+The repo is public and self-hostable, so it must never carry the original operator's legal
+identity — an imprint or privacy policy checked in as a file, or hardcoded as a translation key,
+would ship to every fork. Content instead comes from Markdown files the operator supplies on the
+host: `imprint.de.md`, `imprint.en.md`, `privacy.de.md`, `privacy.en.md` under a directory named
+by the new `Legal:ContentPath` config key (`Legal__ContentPath` as an environment variable),
+mounted read-only into the `api` container (`docker-compose.prod.yml`: `/opt/emotepurge/legal`;
+`docker-compose.yml`: a gitignored `./legal-content` for local testing). An unset or empty
+`ContentPath` is a supported "nothing configured yet" state, not a startup error — the fail-fast
+posture `ChannelCapacityOptions`/`RateLimitingOptions` take for genuinely required config does not
+fit here, since a fresh self-hoster has no legal text on day one and the app must still boot and
+run.
+
+**German is authoritative; a document counts as configured only once its German file exists.** An
+English file with no German counterpart is treated the same as no file at all — the alternative
+(letting a translation stand in as the source of truth) contradicts the one authority rule this
+exists to enforce. If English is requested but only German exists, the response carries the
+German text plus an `isGermanFallback` flag the frontend reads to show "only available in
+German" instead of silently mixing languages or 404ing on a document that does exist.
+
+Two new anonymous endpoints, `GET /api/legal/availability` (which documents exist, so the footer
+can hide a link entirely rather than show one that then 404s) and
+`GET /api/legal/{imprint,privacy}/{de,en}`, both behind their own new anonymous, IP-partitioned
+`PublicLegal` rate-limit policy (60/min) — not a share of `PublicHealth`'s, see the Codex Sol
+review entry below for why. Markdown renders to HTML **server-side** via Markdig
+with `DisableHtml()`, so a literal `<script>` (or any other raw HTML) typed into the operator's
+file is escaped on output rather than passed through; the frontend still binds the result through
+Angular's `[innerHTML]` sanitizer on top of that as defence in depth. Rendered HTML is cached per
+file, keyed by the file's own last-write time — an operator edit is picked up on the next
+request, no restart required, without needing a cache-invalidation endpoint or hook.
+
+Frontend: `/imprint` and `/privacy` are top-level routes outside the app shell and every auth
+guard (reachable without login, before the Twitch OAuth redirect — issue #247 requirement 3), and
+a small `LegalFooterLinks` primitive adds the two links, each independently hidden when its
+document is not configured, to the landing page's existing footer and to two new footers (same
+shape, hidden outright rather than shown empty) added to `AppShell` and `LoginPage`, since neither
+carried a footer before this.
+
+### 2026-09-23 — Codex Sol review of #246: a splice-embedded tag value and a chat-text command word could still leak (amends the same day's "Chat content and chatter identities stay out of Worker logs" entry)
+
+**Betrifft:** `src/EmotePurge.Worker/IrcLineSpliceRule.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` ·
+`tests/EmotePurge.Worker.Tests/*`
+
+The #246 entry below claimed every free-text and identifying tag's value now redacts the same way,
+"so the block stays diagnosable without naming anyone" — Codex Sol's review of the branch found that
+claim did not hold in two related cases, both exploiting the same class of corruption the #114
+splice defect and this redaction logic exist to handle:
+
+1. **A splice landing *inside* a non-identifying tag's value kept its embedded tag unredacted.**
+   `IsSpliced` already proves a splice can land mid-value (`subscriber=0@badge-info=...`, where the
+   second line's tag block starts right after the first line's incomplete value, with no `;`
+   between them) — but `TagBlockForLog` only ever redacted *top-level*, `;`-separated tags. A line
+   like `subscriber=0@badge-info=subscriber/12` was treated as one tag, `subscriber`, which is not
+   itself identifying, so the embedded `badge-info` value reached the log unchanged. Fixed by
+   walking each non-identifying tag's value for an embedded tag-block start (the same shape
+   `ContainsTagBlockStart` already detects, now exposed with its match position via
+   `TryFindEmbeddedKeyStart`) and redacting *that* tag's value by the same free-text/identifying
+   rules as a top-level one — the embedded key stays (it is what proves the splice happened), only
+   its value is replaced.
+2. **`TwitchLibRawLineRedaction`'s command-word guard accepted any upper-case token, not just a real
+   one.** A free-text tag's value is chat text under a stranger's control; an unescaped space inside
+   it (the same corruption precondition as above) can push an upper-case word — e.g. a chatter
+   typing `SECRET` — into the position this class reports as the IRC command. "Every character is
+   upper-case" was too permissive a shape check for that: chat text can be upper-case too. Replaced
+   with a fixed allow-list of the exact tokens TwitchLib.Client 4.0.1's
+   `IrcParser.ParseCommand` switch recognises (decompiled, not guessed — anything else parses to
+   `IrcCommand.Unknown` there and is exactly what reaches `LogUnaccountedFor`), plus three-digit
+   numeric replies accepted by shape.
+
+Both fixes are pure and covered in `tests/EmotePurge.Worker.Tests`, including the exact shapes named
+above.
+
+### 2026-09-23 — Drop the unused `user:read:email` OAuth scope (#242)
+
+**Betrifft:** `src/EmotePurge.Core/Twitch/TwitchModels.cs` · `web/src/app/features/login/login-page.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `docs/Architectur.md`
+
+`TwitchOAuthDefaults.RequestedScopes` asked for `user:read:email`, but nothing in the codebase ever
+read or stored an e-mail address — `TwitchUserInfo` only carries `Id`, `Login`, `DisplayName`,
+`ProfileImageUrl`, and no `Email`/`email` field exists anywhere in `Core`, `Infrastructure` or
+`Api`. A scope requested and never used both violates data minimisation (GDPR Art. 5(1)(c) — no
+legal basis to ask for data that is never processed) and needlessly tells the visitor, twice (this
+app's own login page and Twitch's real consent screen), that their e-mail will be shared. Dropped
+from `RequestedScopes`, which now reads `user:read:moderated_channels user:read:subscriptions`. The
+login page's scope list (`login-page.ts`) and both locales' copy (`login.scopes.email`,
+`login.scopes.note` — "all three" became "both" — and the `landing.close.trust.twitch.body` line
+that named the e-mail address explicitly) lost the e-mail line to match; `docs/Architectur.md`'s
+stale one-line summary of the scope set was updated too. `landing.e2e.spec.ts`'s scope-list
+assertion and `TwitchUserTokenServiceTests.ScopeDrift_ReportsReauthRequired_WithoutBurningARefresh`'s
+seeded scope (previously `user:read:email`, which no longer overlaps any currently-requested scope
+at all) were both updated to stay meaningful against the new two-scope list.
+
+**Left open, deliberately:** a session created before this change has a stored `TwitchTokenScopes`
+that still contains `user:read:email` — `ScopesDrifted` only flags a stored grant *missing* a
+currently-requested scope, so a superset (today's already-issued tokens) does not trigger it.
+Nothing here forces a re-login; an already-authenticated user keeps the wider grant until they
+re-authenticate or the refresh token expires. Whether that is worth calling out in a privacy policy
+is left to the separate, still-open legal-pages issue.
+
+### 2026-09-23 — Api's outgoing HTTP client requests log at Warning, matching the Worker (#246)
+
+**Betrifft:** `src/EmotePurge.Api/appsettings.json`
+
+`SevenTvApiClient.GetEditorGrantsAsync` calls `GET users/twitch/{twitchUserId}` — a Twitch user id
+embedded in the URL — and that path is reached from ordinary, unauthenticated-looking Api traffic
+(`ChannelAccessService.CanViewUsageStatsAsync`, `MyChannelsService`), not just an admin tool.
+ASP.NET Core's default `HttpClientFactory` logging handlers log the outgoing request URI at
+`Information` unless told otherwise. The Worker's `appsettings.json` already carried
+`"System.Net.Http.HttpClient": "Warning"` for exactly this reason; the Api's did not, so its own
+outgoing calls — including this one — were logged at the default level with the Twitch user id
+still in the URL. Added the same override to the Api's base `appsettings.json`. Neither
+`docker-compose.yml` nor `docker-compose.prod.yml` sets `ASPNETCORE_ENVIRONMENT` for either
+service, so `appsettings.Development.json` is never loaded in a container and the base file is what
+actually governs there — the fix had to land in `appsettings.json`, not the `Development` overlay,
+for it to take effect in dev-docker and prod alike.
+
+### 2026-09-23 — Chat content and chatter identities stay out of Worker logs at the default level (#246)
+
+**Betrifft:** `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Worker/IrcLineSpliceRule.cs` ·
+`src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` (new) ·
+`src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` (new) · `tests/EmotePurge.Worker.Tests/*`
+
+Three separate leaks, fixed together as one privacy pass before launch:
+
+1. **TwitchLib.Client's own logging carried the raw IRC line.** `TwitchChatManager.CreateClient`
+   hands TwitchLib the same `ILoggerFactory` this app uses everywhere else, so its internal
+   `ILogger<TwitchClient>` (category `TwitchLib.Client.TwitchClient`) writes through our sinks like
+   any of our own log lines. Decompiling the installed TwitchLib.Client 4.0.1
+   (`TwitchLib.Client.Extensions.LogExtensions`) shows two Roslyn-`LoggerMessage`-generated calls
+   that log the *entire* line — chat text and tags included, unredacted — whenever TwitchLib itself
+   fails to make sense of it: `LogParsingError` (Error, on a parse exception) and `LogUnaccountedFor`
+   (Warning, on an IRC command it does not recognise). Both are at or above the Worker's configured
+   minimum for this category (`Information`), so both reached the sink. Raising that category's
+   minimum level was rejected — it also logs connection-relevant events at the same or higher
+   levels (e.g. `LogReconnecting`) that must keep surfacing. Instead, `TwitchChatManager.CreateClient`
+   now wraps the factory in the new `RedactingTwitchClientLoggerFactory`: it matches exactly those
+   two calls by `EventId.Name` (pinned against the decompiled source, not invented), replaces their
+   raw-line argument with `TwitchLibRawLineRedaction.Redact`'s output — the IRC command word and the
+   tag block's *keys*, never a value, with a guard so a corrupted line's stray value fragment cannot
+   be mistaken for the command word and logged as one — and passes every other call, on this
+   category and any other, through unchanged.
+2. **The #114 splice sentinel logged identifying tags.** `IrcLineSpliceRule.TagBlockForLog` already
+   redacted the *value* of free-text tags (`reply-parent-msg-body` and its thread-parent sibling) but
+   left `display-name`, `login`, `user-id` and the badge tags (`badges`, `badge-info`, and the Shared
+   Chat #73 `source-badges`/`source-badge-info` pair) in the clear, plus the same fields on the
+   reply's parent message (`reply-parent-user-id`/`user-login`/`display-name`,
+   `reply-thread-parent-user-login`/`display-name`). All of those now redact the same way — key
+   survives, value does not — so the block stays diagnosable without naming anyone.
+3. **A Debug line logged every chat message verbatim.**
+   `logger.LogDebug("[{Channel}] {Username}: {Message}", ...)` in `TwitchChatManager.OnMessageReceived`
+   ran unconditionally once Debug logging was enabled for this category, with no redaction at all.
+   Removed outright — nothing in this codebase needs per-message chat content at the log level, and
+   its only past use was casual local debugging that a breakpoint serves just as well.
+
+All three pieces of new logic (`RedactingTwitchClientLoggerFactory`, `TwitchLibRawLineRedaction`, the
+extended `IrcLineSpliceRule` redaction) are pure and container-free, tested in
+`tests/EmotePurge.Worker.Tests` per rule 11 — the `RedactingTwitchClientLoggerFactory` tests drive it
+through the real `Microsoft.Extensions.Logging.LoggerMessage.Define` API (the same mechanism
+TwitchLib's generated code uses) rather than a hand-built fake state object, so the test is honest
+about the actual shape .NET's logging infrastructure hands to `ILogger.Log`.
+
+### 2026-09-23 — The export button and the low-participation notice are mod-team-only (`canViewUsageStats`)
+
+**Betrifft:** `web/src/app/features/voting/vote-session-detail-page.{ts,html,spec.ts}`
+
+Both were shown to every viewer of a vote session, including plain voters (subs/everyone
+audiences) who can neither act on a low-participation caveat — they cannot end the session or run
+the mass-delete it feeds — nor get anything out of an export beyond a file they cannot do anything
+with. Gated on `canViewUsageStats` from `GET /api/channels/{name}/permissions`, deliberately not
+`canManage`: it is a superset that also admits the channel's 7TV editors, which is the operator's
+stated boundary for "mod team" here — editors are often the ones who carry out the deletion in 7TV.
+This is a different line from the one the results endpoint draws: usage figures and, on a hidden
+active ballot, the tallies are withheld from everyone `CanManageChannelAsync` rejects, 7TV editors
+included, so an editor's export carries neither column. That is intended, not a gap. The export itself was never a leak (`openExport()`'s own
+comment: client-side serialization of what the results already carry, so a withheld tally/usage
+column drops out on its own) — this is purely about not offering a button and a caveat that do
+nothing useful for the person looking at them.
+
+**Known trade-off, not fixed here:** `canViewUsageStats()` defaults to `false` while
+`permissionsResource` is still in flight — the same pattern `canManage()` already uses for this
+page's "end session" button — so a mod can see the export button/notice appear a beat after the
+header above them has already rendered, if `/permissions` happens to resolve after `/results`.
+Both requests fire from the constructor at the same time, and `/permissions` is small and
+30-second cached per channel (2026-08-06 entry, "`/permissions` wird pro Channel 30 s
+zwischengespeichert"), so in practice the two settle close together; fixing the residual case
+would mean delaying the whole results-dependent header for every voter until permissions resolve
+too, which was judged the worse trade for a case that is rare and purely cosmetic.
+
+### 2026-09-23 — The dense ballot strip's thumb icon is not optional any more; a fit measurement decides when the number wins (amends 2026-08-06 "Zug 3, erste Fläche")
+
+**Betrifft:** `web/src/app/core/voting/vote-strip-icon.ts` (neu) ·
+`web/src/app/core/voting/vote-strip-icon.spec.ts` (neu) ·
+`web/src/app/features/voting/vote-session-detail-page.{ts,html}`
+
+The 2026-08-06 entry fixed the dense (desktop, 64 px cell / 24 px strip) half of the ballot's vote
+strip on "number only" — right for the icon's *size* at the time, wrong for what a voter sees when
+`hideResultsUntilEnd` withholds the tally on an active session: two grey slabs with no number and,
+on the dense strip, no icon either, so nothing on the card said "these are buttons". The mobile
+strip (96 px cell / 44 px, thumb icon + number) never had this problem — more room, and the icon
+was never gated there.
+
+**The icon now always renders, on both strips — it signals "clickable", it does not replace the
+number.** The decision is `voteStripIconMode(isNarrowStrip, tally): 'full' | 'compact' | 'none'`,
+a pure function in the new `core/voting/vote-strip-icon.ts` (following the same
+extraction-next-to-the-component pattern as `core/voting/vote-audience.ts`), with its own
+`vote-strip-icon.spec.ts` — the page's `stripIconMode()` is a thin wrapper that supplies the
+current strip context. On the mobile strip it is always `'full'` (14 px, `h-3.5 w-3.5`) — there was
+never a fit problem there, at any tally width. On the dense strip: a **withheld** tally (`null`)
+also gets `'full'` — an 8 px icon there would be a speck exactly where a voter most needs to see
+"this is a button", and nothing shares the 32 px half with it when there is no number to render. A **rendered** tally gets `'compact'`
+(8 px, `h-2 w-2`) below `STRIP_ICON_DENSE_OVERFLOW_AT = 1000`, or `'none'` at or past it.
+
+That threshold is a fit measurement, done twice: first in isolation (a production build's compiled
+Tailwind CSS, rendered headlessly with Playwright at the exact 64 px cell width the dense strip's
+two halves share), then confirmed against the running app with its real, self-hosted fonts — the
+two disagreed by a couple of px, and the app is the one that counts. The existing 14 px icon
+overflows badly the moment a tally needs more than two digits — a 3-digit tally forces each half to
+roughly a 36 px min-content width against the 31.5 px it actually has. The 8 px `'compact'` icon
+does far better: a 3-digit tally ("999") overflows its half by only about 1.5 px, which the 4 px
+`gap-1` between grid columns absorbs without a visible seam — confirmed by a full-page screenshot of
+three sample tallies (1/2/3 digits) at that icon size, no clipping or bleed into the next cell. A
+4-digit tally overflows by several times that, well past what the gap could hide, so past
+`STRIP_ICON_DENSE_OVERFLOW_AT` the icon gives way entirely (keep and delete checked independently,
+since one side's tally can cross the line without the other's doing so — confirmed live with a
+1234/987 pair rendering as number-only/icon-plus-number respectively). No emote in this app has
+ever collected 1000 keep or delete votes, so this is a safety margin rather than an observed case.
+The strip's own height/width contract (24 px / 44 px strip, 64 px / 96 px cell) is unchanged — the
+fit came from shrinking the icon, not from growing the strip.
+
+### 2026-09-23 — A hard cap on simultaneously active channels: 80 by default, admins exempt, overshoot accepted (supersedes the "display only" half of the 2026-08-01 roster entry)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/{ChannelService,ChannelCapacityOptions}.cs` (latter neu) ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Api/appsettings.json` ·
+`web/src/app/core/i18n/api-error.ts` · `web/public/i18n/{de,en}.json` ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` ·
+`tests/EmotePurge.Infrastructure.Tests/{Unit/ChannelCapacityOptionsTests,Integration/{ChannelServiceTests,ChannelServiceCapacityTests}}.cs` ·
+`CLAUDE.md` (JOIN-limit bullet under "Bekannte offene Grenzen")
+
+**The gap this closes.** Twitch allows one account at most 100 simultaneously joined chatrooms
+(CLAUDE.md, "Bekannte offene Grenzen"). Nothing enforced that: any logged-in Twitch account could add
+their own channel and every channel they moderate through `POST /api/channels/{channelName}/join`.
+The 2026-08-01 roster entry gave the admin monitoring page two honestly labeled ceilings
+(`WorkerCapacity.TwitchConcurrentChannelLimit` = 100, `TwitchJoinBudgetChannels` = 20) but deliberately
+left them display-only — a dashboard number, not a gate. With a group of subscribers about to be
+invited to a community vote and some of them likely to click "Hinzufügen" on their own channel, a
+silent crossing of Twitch's real limit became a plausible near-term event, not a theoretical one:
+past it, a TwitchLib reconnect/rejoin would silently lose channels with no error anywhere a caller
+could see. This entry adds the enforcement the 2026-08-01 entry chose not to build yet; the two
+display numbers on the monitoring page are untouched.
+
+**The cap is configuration, not a repeat of the two existing constants.** `Channels:MaxActiveChannels`
+(env override `Channels__MaxActiveChannels`), default 80 — comfortably under Twitch's 100 to leave
+headroom for the linear-time rejoin after a reconnect (#68/#114) and to stay clear of the ceiling
+itself even under the accepted race described below. Bound and validated fail-fast at startup
+(`ChannelCapacityOptions.Validate()`, called from `AddEmotePurgeInfrastructure` — both hosts, since
+`ChannelService` is shared infrastructure), the same pattern as `RateLimitingOptions`: a
+misconfigured value stops the container with a readable message instead of silently handing every
+join a capacity of zero.
+
+**What the cap gates, precisely.** `ChannelService.JoinAsync` now checks the cap against
+`COUNT(*) WHERE IsBotActive` for every transition *into* the active state — a brand-new channel and
+reactivating a previously left one alike, on every one of the join path's branches (identity found,
+identity not found but the row is known, Twitch unreachable). A join on a channel that is **already**
+active stays unconditionally idempotent: the check runs only when the join would actually flip
+`IsBotActive` from false (or not-yet-existing) to true, so clicking "join" twice, or two open tabs
+doing the same thing, can never turn into a rejection just because the cap happens to be full at that
+moment.
+
+**Global admins (`Auth:AdminTwitchLogins`) are exempt from the cap but still count toward it.** The
+endpoint resolves `IChannelAccessService.IsGlobalAdmin` from the request's claims and passes the
+result into `JoinAsync(channelName, actor, isGlobalAdmin, ct)` — the service itself has no
+`ClaimsPrincipal` to derive it from. An admin can always add a channel Twitch itself would still fit
+(the operator remains free to catch up on genuinely over-limit situations by hand); their join still
+increments the count the next non-admin's join is checked against.
+
+**Rejected as 409 Conflict, `channel_capacity_reached` (Regel 7).** The same status
+`TriggerResyncAsync`'s `NotActive` case already uses for "well-formed request, but the state you're
+asking for conflicts with the one we're in" — chosen over inventing a capacity-specific status
+because nothing here is really "not found" (404) or an authorization failure (403), and 409 already
+has exactly this meaning elsewhere in this file. The frontend maps it generically through the
+existing `errorCode → errors.api.<code>` mechanism (`apiErrorTranslationKey`); the only code change
+needed on top of the new translation entries was `channel-workspace-layout.ts`'s `rejoin()`, which
+used to swallow every non-403 error into one hardcoded "could not reactivate" message instead of
+going through that mechanism the way `resync()` right below it already does — the minimal fix makes
+it do the same.
+
+**The concurrency race is accepted, not closed.** Two joins racing the count-then-activate check can
+both read a count under the cap and both proceed, overshooting it by at most the number of concurrent
+joins. No lock was added: the cap's purpose is staying comfortably clear of Twitch's real ceiling for
+ordinary traffic, not being airtight against a handful of clicks landing in the same millisecond, and
+a lock around every join was judged not worth its cost for that. Documented in a code comment at the
+check itself so the next reader does not have to rediscover this by testing it.
+
+**Test isolation forced a change orthogonal to the feature.** `tests/.../Integration/ChannelServiceTests.cs`
+and the new `ChannelServiceCapacityTests.cs` both run under the `[Collection("Postgres")]` fixture,
+which is one real Postgres container — and one database — shared across every test in the assembly,
+never truncated between tests. A cap check that counts every active row in that database is
+therefore not something the existing tests could absorb at the production default of 80: by the time
+enough of the collection had run, the shared database already held over a hundred active rows left
+behind by unrelated tests, and `ChannelServiceTests`' unmodified assertions started failing on
+`CapacityReached` depending on run order alone. Fix: `ChannelServiceTests` now builds its `ChannelService`
+with an effectively uncapped `MaxActiveChannels = int.MaxValue` (it is not testing the cap), and the
+new `ChannelServiceCapacityTests` creates its own fresh, freshly migrated database per test
+(`CREATE DATABASE` on the same container, same technique `PendingMigrationGuardTests` already used)
+so its counting assertions are deterministic regardless of what the rest of the collection has done.
 
 ---
 

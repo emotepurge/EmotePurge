@@ -3,6 +3,7 @@ using EmotePurge.Core.Services;
 using EmotePurge.Worker.SevenTv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -122,6 +123,115 @@ public class WorkerBootSequenceTests
         await chatManager.DidNotReceive().SimulateServerReconnectAsync();
     }
 
+    // Fourth Codex review of the block list: JOIN and RESYNC commands used to be followed blindly, so
+    // an Api still running with an older exclusion list — or an admin RESYNC of a row the identity
+    // reconcile had not deactivated yet — made this worker join a channel its own roster source
+    // (IChannelService.ListActiveChannelNamesAsync, which leaves out rows with an excluded stored id)
+    // no longer lists. Only the listed channel may be entered, by either command.
+    [Theory]
+    [InlineData("JOIN:")]
+    [InlineData("RESYNC:")]
+    public async Task Worker_EntersOnlyAChannelOnTheActiveRoster_ForJoinAndResyncCommands(string prefix)
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        // Empty during boot recovery, so every JoinChannelAsync/EnsureJoinedAsync below comes from
+        // the command under test.
+        var roster = new List<string>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>()).Returns(_ => roster);
+        var syncService = Substitute.For<ISevenTvSyncService>();
+
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        Func<string, string, Task>? capturedHandler = null;
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        subscriber.When(x => x.SubscribeAsync(Arg.Any<string>(), Arg.Any<Func<string, string, Task>>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo => capturedHandler = callInfo.Arg<Func<string, string, Task>>());
+
+        var worker = new WorkerService(
+            NullLogger<WorkerService>.Instance,
+            chatManager,
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            CreateScopeFactory(channelService, syncService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.CommandChannelSubscribed.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(capturedHandler);
+            roster.Add("listedchannel");
+
+            await capturedHandler!(BotCommands.Channel, prefix + "unlistedchannel");
+            await capturedHandler(BotCommands.Channel, prefix + "listedchannel");
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        await chatManager.DidNotReceive().JoinChannelAsync("unlistedchannel");
+        await chatManager.DidNotReceive().EnsureJoinedAsync("unlistedchannel");
+        await syncService.DidNotReceive().SyncChannelAsync("unlistedchannel", Arg.Any<CancellationToken>());
+        await syncService.Received(1).SyncChannelAsync("listedchannel", Arg.Any<CancellationToken>());
+        if (prefix == "JOIN:")
+        {
+            await chatManager.Received(1).JoinChannelAsync("listedchannel");
+        }
+        else
+        {
+            await chatManager.Received(1).EnsureJoinedAsync("listedchannel");
+        }
+    }
+
+    // Fourth Codex review of the block list: the identity reconcile publishes a LEAVE for a channel
+    // it deactivates because its Twitch id is on the excluded-channel list, and the handler's line
+    // used to name that channel right after the reconcile's own anonymous one.
+    [Fact]
+    public async Task Worker_NamesTheChannelOfALeaveCommandOnlyAtDebug()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>()).Returns(new List<string>());
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        Func<string, string, Task>? capturedHandler = null;
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        subscriber.When(x => x.SubscribeAsync(Arg.Any<string>(), Arg.Any<Func<string, string, Task>>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo => capturedHandler = callInfo.Arg<Func<string, string, Task>>());
+        var logger = new RecordingLogger<WorkerService>();
+
+        var worker = new WorkerService(
+            logger,
+            chatManager,
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            CreateScopeFactory(channelService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.CommandChannelSubscribed.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(capturedHandler);
+            await capturedHandler!(BotCommands.Channel, "LEAVE:leftchannel_test");
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        await chatManager.Received(1).LeaveChannelAsync("leftchannel_test");
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("leaving a channel"));
+        Assert.DoesNotContain(
+            logger.Entries, e => e.Level > LogLevel.Debug && e.Message.Contains("leftchannel_test", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task TwitchIdentityReconcileWorker_DoesNotRunItsFirstPassOnBootRecoveryAlone()
     {
@@ -164,13 +274,41 @@ public class WorkerBootSequenceTests
         }
     }
 
-    private static IServiceScopeFactory CreateScopeFactory(IChannelService channelService)
+    private static IServiceScopeFactory CreateScopeFactory(IChannelService channelService, ISevenTvSyncService? syncService = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(channelService);
         // Returns null for every channel, so SyncSevenTvAsync stops right after the call.
-        services.AddSingleton(Substitute.For<ISevenTvSyncService>());
+        services.AddSingleton(syncService ?? Substitute.For<ISevenTvSyncService>());
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries
+        {
+            get
+            {
+                lock (_entries)
+                {
+                    return [.. _entries];
+                }
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            lock (_entries)
+            {
+                _entries.Add((logLevel, formatter(state, exception)));
+            }
+        }
     }
 
     private static IServiceScopeFactory CreateScopeFactory(IChannelIdentityService identityService)

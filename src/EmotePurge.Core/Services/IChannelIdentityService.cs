@@ -83,6 +83,14 @@ public sealed class TwitchUserLookup
 /// acted on, so splitting the field would only invite a caller to treat them differently. What must
 /// not happen instead is a log line that names only one of the two; the log line spells out both.
 /// </para>
+/// <para>
+/// <see cref="Deactivated"/> (issue #260, this revision) counts an active row the pass stopped
+/// observing because its Twitch id — known already, or just resolved by the row's login — is on
+/// <c>Channels:ExcludedChannelIds</c>: the objection gate that would otherwise let a rename or a
+/// merge bring it back into observation. It is a write, not a no-op case like
+/// <see cref="LoginsMissing"/>, and it never carries an id or a login into the log for the same
+/// reason the gate itself does not.
+/// </para>
 /// </summary>
 public record ChannelIdentityReconcileSummary(
     int Checked,
@@ -90,7 +98,8 @@ public record ChannelIdentityReconcileSummary(
     int Renamed,
     int Merged,
     int MergesRefused,
-    int LoginsMissing);
+    int LoginsMissing,
+    int Deactivated);
 
 /// <summary>
 /// Keeps the stored channel rows in step with Twitch's own view of who they are. The immutable

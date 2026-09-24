@@ -93,6 +93,9 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("DeactivatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<bool>("IsBotActive")
                         .HasColumnType("boolean");
 
@@ -275,6 +278,9 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasColumnType("text");
 
                     b.Property<DateTime>("LastLogin")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastSeenAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("SessionsValidFromUtc")

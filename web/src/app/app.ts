@@ -1,6 +1,7 @@
 import { Component, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 
+import { NavigationHistoryService } from './core/routing/navigation-history.service';
 import { ThemeService } from './core/theme/theme.service';
 
 @Component({
@@ -16,4 +17,10 @@ export class App {
   // stamped at load and does not follow a live OS theme change, because the service that listens
   // for it was never created.
   private readonly themeService = inject(ThemeService);
+
+  // Same reasoning as above, for a different symptom: NavigationHistoryService has to be listening
+  // before the FIRST NavigationEnd of the session, not just before the first page that happens to
+  // read it (see the service's own doc comment) — LegalPage is one such reader, and it can be that
+  // very first page (a deep link straight to /imprint).
+  private readonly navigationHistoryService = inject(NavigationHistoryService);
 }

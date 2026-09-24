@@ -134,11 +134,62 @@ public class ChannelServiceTests(PostgresFixture fixture)
         await JoinChannelAsync(service, "channelservicetracking2");
         await service.LeaveAsync("channelservicetracking2", Actor);
         var rejoined = await JoinChannelAsync(service, "channelservicetracking2");
-        var resumedAt = rejoined.TrackingResumedAt;
+        // Read back as stored rather than taken from the in-memory entity: the next join locks the row
+        // and re-reads it (ChannelQueries.LoadChannelForUpdateAsync), which brings the value back at
+        // Postgres' microsecond precision instead of the tick precision it was written with.
+        var resumedAt = (await db.Channels.AsNoTracking().SingleAsync(c => c.Id == rejoined.Id)).TrackingResumedAt;
 
         var joinedAgain = await JoinChannelAsync(service, "channelservicetracking2");
 
         Assert.Equal(resumedAt, joinedAgain.TrackingResumedAt);
+    }
+
+    [Fact]
+    public async Task LeaveAsync_StampsDeactivatedAtUtc()
+    {
+        // The measuring point RetentionPolicy's 180-day channel purge reads from.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, "channelserviceretention1");
+        Assert.Null(joined.DeactivatedAtUtc);
+        var before = DateTime.UtcNow;
+
+        await service.LeaveAsync("channelserviceretention1", Actor);
+
+        var channel = await service.GetByNameAsync("channelserviceretention1");
+        Assert.NotNull(channel!.DeactivatedAtUtc);
+        Assert.InRange(channel.DeactivatedAtUtc.Value, before.AddMilliseconds(-1), DateTime.UtcNow.AddMilliseconds(1));
+    }
+
+    [Fact]
+    public async Task JoinAsync_AfterLeave_NullsDeactivatedAtUtc()
+    {
+        // A reactivated channel must not stay a retention-purge candidate.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        await JoinChannelAsync(service, "channelserviceretention2");
+        await service.LeaveAsync("channelserviceretention2", Actor);
+        var deactivated = await service.GetByNameAsync("channelserviceretention2");
+        Assert.NotNull(deactivated!.DeactivatedAtUtc);
+
+        var rejoined = await JoinChannelAsync(service, "channelserviceretention2");
+
+        Assert.Null(rejoined.DeactivatedAtUtc);
+    }
+
+    [Fact]
+    public async Task JoinAsync_OnAnAlreadyActiveChannel_DoesNotChangeDeactivatedAtUtc()
+    {
+        // The channel was never deactivated, so a join on it (no-op for coverage) must not touch a
+        // column that is already an honest null.
+        await using var db = fixture.CreateDbContext();
+        var service = CreateService(db);
+        var joined = await JoinChannelAsync(service, "channelserviceretention3");
+        Assert.Null(joined.DeactivatedAtUtc);
+
+        var joinedAgain = await JoinChannelAsync(service, "channelserviceretention3");
+
+        Assert.Null(joinedAgain.DeactivatedAtUtc);
     }
 
     [Fact]
@@ -293,6 +344,171 @@ public class ChannelServiceTests(PostgresFixture fixture)
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    // GDPR Art. 21 objection gate (issue #252): a blocked Twitch id must refuse the join before
+    // any row is created, matched on the immutable id resolved via Helix, never on the login.
+    [Fact]
+    public async Task JoinAsync_WhenTheChannelIdIsExcluded_RejectsTheJoin_AndWritesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990001").Returns(true);
+        var service = CreateService(
+            db, redisPublisher, IdentityFound("990001", "channelserviceexcluded1"),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcluded1", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(result.Channel);
+        Assert.Null(await service.GetByNameAsync("channelserviceexcluded1"));
+        Assert.Empty(await LoadAuditEntriesAsync(db, "channelserviceexcluded1"));
+        await redisPublisher.DidNotReceive().PublishAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Unlike the active-channel cap, no caller is exempt from this one — the operator removing the
+    // id from the list is the only way to undo it.
+    [Fact]
+    public async Task JoinAsync_WhenTheChannelIdIsExcluded_EvenAGlobalAdminIsRefused()
+    {
+        await using var db = fixture.CreateDbContext();
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990002").Returns(true);
+        var service = CreateService(
+            db, identityService: IdentityFound("990002", "channelserviceexcluded2"),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcluded2", Actor, isGlobalAdmin: true);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(await service.GetByNameAsync("channelserviceexcluded2"));
+    }
+
+    // Defense in depth for HandleUnknownTwitchLoginAsync: realistically unreachable in the normal
+    // objection procedure (PurgeAsync deletes the row a blocked id would be found under), but a
+    // known row must not be silently reactivated if it turns out to carry a blocked id.
+    [Fact]
+    public async Task JoinAsync_WhenTwitchDoesNotKnowTheLogin_ButTheKnownRowsIdIsExcluded_RejectsTheJoin()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "channelserviceexcluded3", "990003", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990003").Returns(true);
+        var service = CreateService(
+            db, identityService: IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.NotFound)),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcluded3", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        var stored = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(stored.IsBotActive);
+    }
+
+    // P1 Codex finding (a): the objection gate above only ever inspects the identity Helix just
+    // resolved, which is never reached when Helix is Unavailable — the whole point of that status
+    // being "carry on as before" for everything else. Without a second check against the row this
+    // join would actually reactivate, an outage on our side would let a rejoin of a blocked channel
+    // through on the one path Helix cannot object on.
+    [Fact]
+    public async Task JoinAsync_WhenHelixIsUnavailable_ButTheKnownRowsIdIsExcluded_RejectsTheJoin_AndDoesNotReactivate()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var seeded = await SeedChannelAsync(db, "channelserviceexcludedunavail1", "990010", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990010").Returns(true);
+        var service = CreateService(
+            db, redisPublisher, IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable)),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcludedunavail1", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(result.Channel);
+        await using var verify = fixture.CreateDbContext();
+        var stored = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(stored.IsBotActive);
+        Assert.Null(stored.TrackingResumedAt);
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelserviceexcludedunavail1"));
+        await redisPublisher.DidNotReceive().PublishAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // P1 Codex finding (b): a non-excluded identity can still resolve to a login already occupied
+    // by a stale row that itself carries a blocked id — the id-row's own name changed on Twitch
+    // (or the occupant predates the objection), and ResolveJoinTargetAsync hands that occupant back
+    // exactly like the ordinary rename-collision case (JoinAsync_WhenTheNewLoginIsHeldByAnotherRow_
+    // JoinsThatRow_AndLeavesTheMergeToReconciliation). Refusing is the safe answer: joining it would
+    // let Twitch's own bookkeeping resurface a channel this codebase was told to stop observing.
+    [Fact]
+    public async Task JoinAsync_WhenTheResolvedLoginIsHeldByAStaleRowWithAnExcludedId_RejectsTheJoin_AndDoesNotReactivateIt()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var idRow = await SeedChannelAsync(db, "channelserviceexcludedstale1old", "990011");
+        var staleOccupant = await SeedChannelAsync(
+            db, "channelserviceexcludedstale1new", "990012", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        // The *resolved* identity is not excluded — only the occupant's own, stale id is.
+        excludedChannelFilter.IsExcluded("990011").Returns(false);
+        excludedChannelFilter.IsExcluded("990012").Returns(true);
+        var logger = new RecordingLogger<ChannelService>();
+        var service = CreateService(
+            db, redisPublisher, IdentityFound("990011", "channelserviceexcludedstale1new"), logger,
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcludedstale1new", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(result.Channel);
+        // Fourth Codex review: the rename-collision warning used to name the target login — the
+        // blocked channel's last one — right beside the refusal.
+        AssertNamesNothing(logger, "channelserviceexcludedstale1", "990012", staleOccupant.Id);
+
+        await using var verify = fixture.CreateDbContext();
+        // Untouched on both sides: no rename of the id row, and the stale occupant stays exactly as
+        // it was — in particular, still inactive.
+        Assert.Equal(
+            "channelserviceexcludedstale1old",
+            (await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == idRow.Id)).ChannelName);
+        var untouchedOccupant = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == staleOccupant.Id);
+        Assert.Equal("channelserviceexcludedstale1new", untouchedOccupant.ChannelName);
+        Assert.False(untouchedOccupant.IsBotActive);
+        Assert.Null(untouchedOccupant.TrackingResumedAt);
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelserviceexcludedstale1new"));
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelserviceexcludedstale1old"));
+        await redisPublisher.DidNotReceive().PublishAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Fourth Codex review of the block list: the mirror image of the test above, reached when no row
+    // holds the resolved id yet. The mismatch line used to name the row's login and its (blocked)
+    // stored id right before the join was refused for exactly that id.
+    [Fact]
+    public async Task JoinAsync_WhenTheRowUnderTheNameClaimsAnExcludedId_RejectsTheJoin_AndNamesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var staleRow = await SeedChannelAsync(db, "channelserviceexcludedmismatch", "990021", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990021").Returns(true);
+        var logger = new RecordingLogger<ChannelService>();
+        var service = CreateService(
+            db, redisPublisher, IdentityFound("990022", "channelserviceexcludedmismatch"), logger,
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcludedmismatch", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == staleRow.Id)).IsBotActive);
+        await redisPublisher.DidNotReceive().PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        AssertNamesNothing(logger, "channelserviceexcludedmismatch", "990021", staleRow.Id);
+    }
+
     [Fact]
     public async Task JoinAsync_WhenTwitchDoesNotKnowTheLogin_ButWeAlreadyTrackIt_JoinsAnyway()
     {
@@ -353,6 +569,31 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.Equal("770009", stored.TwitchChannelId);
         await redisPublisher.Received(1).PublishAsync(
             BotCommands.Channel, "JOIN:channelservicebanned9", Arg.Any<CancellationToken>());
+    }
+
+    // Fourth Codex review of the block list: the ban restraint above rests on the stored id. An
+    // inactive row without one is what the identity reconcile leaves behind when it deactivates an
+    // id-less duplicate of an excluded channel whose id another row already holds — reactivating it
+    // on a NotFound answer would put a blocked channel back under observation.
+    [Fact]
+    public async Task JoinAsync_WhenTwitchDoesNotKnowTheLogin_AndTheInactiveRowHasNoId_RejectsTheJoin_AndWritesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var logger = new RecordingLogger<ChannelService>();
+        var seeded = await SeedChannelAsync(db, "channelservicenoidinactive", twitchChannelId: null, isBotActive: false);
+        var service = CreateService(
+            db, redisPublisher, IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.NotFound)), logger);
+
+        var result = await service.JoinAsync("channelservicenoidinactive", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelNotOnTwitch, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive);
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelservicenoidinactive"));
+        await redisPublisher.DidNotReceive().PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        // This may be the id-less duplicate of a blocked channel, so the refusal names nothing.
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("channelservicenoidinactive"));
     }
 
     [Fact]
@@ -681,6 +922,51 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.Equal(names.OrderBy(n => n, StringComparer.Ordinal), names);
     }
 
+    // Fourth Codex review of the block list: the worker's boot recovery reads this list before the
+    // identity reconcile has had any chance to deactivate a row, so after the operator adds an id
+    // and restarts the worker, an active row still carrying that id must not be on it — otherwise
+    // boot recovery joins and syncs the very channel the objection is about.
+    [Fact]
+    public async Task ListActiveChannelNamesAsync_LeavesOutAnActiveRowWhoseStoredIdIsExcluded()
+    {
+        await using var db = fixture.CreateDbContext();
+        await SeedChannelAsync(db, "channelserviceroster1", "770101");
+        await SeedChannelAsync(db, "channelserviceroster2", "770102");
+        await SeedChannelAsync(db, "channelserviceroster3", twitchChannelId: null);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("770102").Returns(true);
+        var service = CreateService(db, excludedChannelFilter: excludedChannelFilter);
+
+        var names = await service.ListActiveChannelNamesAsync();
+
+        Assert.Contains("channelserviceroster1", names);
+        Assert.DoesNotContain("channelserviceroster2", names);
+        // An id-less row cannot be matched against the list without asking Twitch — that stays the
+        // identity reconcile's job — so it is listed like any other active row.
+        Assert.Contains("channelserviceroster3", names);
+
+        await using var verify = fixture.CreateDbContext();
+        // Read-only: the row itself stays active until the reconcile deactivates it.
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == "channelserviceroster2")).IsBotActive);
+    }
+
+    // Review finding on the emote-set target picker (GET /api/seventv/me/emote-set-targets): this
+    // lookup skipped the objection gate that ListActiveChannelNamesAsync already applies, so an
+    // active row whose stored id was excluded still looked like a valid transfer target.
+    [Fact]
+    public async Task GetActiveByTwitchChannelIdAsync_ReturnsNull_ForAnActiveRowWhoseStoredIdIsExcluded()
+    {
+        await using var db = fixture.CreateDbContext();
+        await SeedChannelAsync(db, "channelserviceactivebyid1", "770201");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("770201").Returns(true);
+        var service = CreateService(db, excludedChannelFilter: excludedChannelFilter);
+
+        var channel = await service.GetActiveByTwitchChannelIdAsync("770201");
+
+        Assert.Null(channel);
+    }
+
     /// <summary>
     /// Builds the service under test. The identity lookup defaults to
     /// <see cref="TwitchUserLookupStatus.Unavailable"/> on purpose: that status is defined as "carry
@@ -691,14 +977,23 @@ public class ChannelServiceTests(PostgresFixture fixture)
         AppDbContext db,
         IRedisPublisher? redisPublisher = null,
         IChannelIdentityService? identityService = null,
+        ILogger<ChannelService>? logger = null,
         IChannelEmoteSetObservationService? emoteSetObservationService = null,
-        ILogger<ChannelService>? logger = null)
+        ChannelCapacityOptions? capacityOptions = null,
+        IExcludedChannelFilter? excludedChannelFilter = null)
     {
         return new ChannelService(
             db,
             redisPublisher ?? Substitute.For<IRedisPublisher>(),
             identityService ?? IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable)),
             emoteSetObservationService ?? Substitute.For<IChannelEmoteSetObservationService>(),
+            // Effectively uncapped: this class is not about the cap (that is
+            // ChannelServiceCapacityTests, on its own isolated database), and the "Postgres"
+            // collection's single shared database accumulates active channels across every test
+            // that runs before these — the production default of 80 would make these tests fail
+            // depending on run order, not on anything this class actually does.
+            capacityOptions ?? new ChannelCapacityOptions { MaxActiveChannels = int.MaxValue },
+            excludedChannelFilter ?? Substitute.For<IExcludedChannelFilter>(),
             logger ?? NullLogger<ChannelService>.Instance);
     }
 
@@ -737,6 +1032,14 @@ public class ChannelServiceTests(PostgresFixture fixture)
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;
+    }
+
+    private static void AssertNamesNothing(RecordingLogger<ChannelService> logger, params string[] identifiers)
+    {
+        foreach (var identifier in identifiers)
+        {
+            Assert.DoesNotContain(logger.Entries, e => e.Message.Contains(identifier, StringComparison.Ordinal));
+        }
     }
 
     private static async Task<IReadOnlyList<AuditLogEntry>> LoadAuditEntriesAsync(AppDbContext db, string channelName)

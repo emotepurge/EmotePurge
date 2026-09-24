@@ -9,6 +9,22 @@ public enum ChannelResyncResult
     NotActive,
 }
 
+/// <summary>What <see cref="IChannelService.PurgeIfInactiveSinceAsync"/> did.</summary>
+public enum ChannelRetentionPurgeResult
+{
+    /// <summary>The row and, by cascade, its whole history are gone; a <c>channel.purge</c> entry was written.</summary>
+    Purged,
+
+    /// <summary>No row under this name (any more) — nothing written, not even an audit entry.</summary>
+    NotFound,
+
+    /// <summary>
+    /// The row exists but is not due: active again, deactivated at or after the cutoff, or never
+    /// stamped (<c>DeactivatedAtUtc</c> null). Checked under the row lock; nothing written.
+    /// </summary>
+    StillActive,
+}
+
 public enum ChannelJoinStatus
 {
     Joined,
@@ -18,6 +34,19 @@ public enum ChannelJoinStatus
     // typo'd login quietly becoming a permanent, never-syncing row — is what this status exists to
     // prevent, and an outage is not evidence of a typo.
     ChannelNotOnTwitch,
+
+    // The join would activate a channel (a brand-new row, or reactivating one that was left) while
+    // the configured cap on simultaneously active channels (Channels:MaxActiveChannels) is already
+    // reached, and the caller is not a global admin. Never returned for a channel that is already
+    // active — see ChannelService.JoinAsync's idempotency comment.
+    CapacityReached,
+
+    // The broadcaster behind this Twitch id objected to processing (GDPR Art. 21, issue #252)
+    // and is on the configured block list (Channels:ExcludedChannelIds). Unlike CapacityReached,
+    // global admins are NOT exempt — the only way to undo this is for the operator to remove the id
+    // from the list. Matched on the immutable Twitch id, resolved before any row is written; never
+    // returned for a login Twitch could not resolve at all (that stays ChannelNotOnTwitch).
+    ChannelExcluded,
 }
 
 /// <summary>
@@ -86,11 +115,22 @@ public interface IChannelService
     // All three write methods take the acting user: each writes its own AuditLogEntry into the same
     // transaction as the change itself (see the implementations). The actor is a required parameter
     // rather than an optional one so a new call site cannot silently produce unattributed history.
+    //
+    // Runs in one transaction that locks every existing row it may activate (SELECT ... FOR UPDATE),
+    // so it serialises with PurgeIfInactiveSinceAsync; the Twitch lookup happens before it, the Redis
+    // publishes after the commit.
+    //
     // Resolves the channel's Twitch identity before it writes anything (IChannelIdentityService):
     // the immutable Twitch id is what a channel *is*, and asking for it at the one moment a human is
     // waiting for an answer is what lets a join reject a login Twitch does not know, follow a rename
     // onto the existing row, and stamp the id onto a row that is being created anyway.
-    Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default);
+    //
+    // isGlobalAdmin exempts the caller from the active-channel cap (Channels:MaxActiveChannels,
+    // ChannelJoinStatus.CapacityReached) — passed in rather than re-derived here because the caller
+    // already resolved it from the request's claims (IChannelAccessService.IsGlobalAdmin), and this
+    // service has no ClaimsPrincipal to work from. Defaults to false so every existing caller keeps
+    // being subject to the cap unless it explicitly says otherwise.
+    Task<ChannelJoinResult> JoinAsync(string channelName, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default);
 
     // Deactivates the bot for this channel and keeps the row and all its history. Reversible via
     // JoinAsync. See PurgeAsync for the irreversible variant.
@@ -100,6 +140,16 @@ public interface IChannelService
     // sessions and votes. Admin-only by design — see the endpoint. The audit entry deliberately
     // outlives the channel (AuditLogEntry.ChannelName is a snapshot, not an FK).
     Task<bool> PurgeAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // The retention job's purge: deletes the channel like PurgeAsync, but only if it is *still* due —
+    // inactive, and deactivated before deactivatedBeforeUtc (a UTC cutoff, RetentionPolicy's 180 days).
+    // The condition is checked under a row lock (SELECT ... FOR UPDATE) that JoinAsync and the identity
+    // merge take as well, so a join racing the purge either lands first (the purge then sees an active
+    // row: StillActive) or waits and finds no row, creating a fresh one — never a 500, never a purged
+    // channel that was just reactivated. Audited as channel.purge with { reason: "retention" }. No
+    // LEAVE is published: the worker is not in an inactive channel.
+    Task<ChannelRetentionPurgeResult> PurgeIfInactiveSinceAsync(
+        string channelName, DateTime deactivatedBeforeUtc, AuditActor actor, CancellationToken cancellationToken = default);
 
     Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default);
 
@@ -115,6 +165,14 @@ public interface IChannelService
     // method rather than as the identical inline query both hosted services used to carry, because
     // "which channels are active?" is a domain question and because the direct AppDbContext access
     // it replaced was the one place in the repo that stepped around the layering rule.
+    //
+    // "Meant to be in" excludes a row whose stored Twitch id is on the excluded-channel list
+    // (Channels:ExcludedChannelIds), even while the row itself is still active: this list is the
+    // worker's whole roster source (boot recovery, periodic resync and its roster prune, the live
+    // poll, the JOIN/RESYNC command guard), so leaving such a row out is what stops the worker from
+    // observing it the moment it restarts with the id configured, before the identity reconcile has
+    // deactivated the row itself. Admin views that must still show the row read their own query
+    // (IAdminChannelQueryService), not this one.
     Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default);
 
     // Publishes a RESYNC command for an active channel, making the worker re-resolve the full 7TV

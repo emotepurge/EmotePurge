@@ -44,6 +44,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.Emotes.ClearReceivedCalls();
         factory.EmoteSetList.ClearReceivedCalls();
         factory.EmoteSetOwnership.ClearReceivedCalls();
+        factory.AccountDeletion.ClearReceivedCalls();
 
         // Default to "the slot was free", so the cooldown never masks the status code a test is
         // actually asserting. The one case that cares sets it explicitly.
@@ -74,6 +75,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/vote-sessions/mine")]
     [InlineData("GET", "/api/admin/channels")]
     [InlineData("GET", "/api/admin/rate-limits")]
+    [InlineData("DELETE", "/api/admin/users/12345")]
     [InlineData("GET", "/api/auth/me")]
     [InlineData("GET", "/api/channels/live-events")]
     [InlineData("GET", "/api/admin/live")]
@@ -141,6 +143,77 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Join_Answers409_WithChannelCapacityReached_WhenTheServiceReportsCapacityReached()
+    {
+        // The handler's own status contract (not the filter's): a caller who is allowed to manage the
+        // channel can still be turned away because the configured cap on active channels
+        // (Channels:MaxActiveChannels) has no room left. This is the one new-code branch in the join
+        // handler that a filter test alone cannot reach.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelCapacityReached, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task Join_Answers403_WithChannelExcluded_WhenTheServiceReportsChannelExcluded()
+    {
+        // GDPR Art. 21 objection gate (issue #252): unlike CapacityReached above, this one must
+        // stay refused even for a global admin — asserted separately below.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelExcluded, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task Join_Answers403_WithChannelExcluded_EvenForAGlobalAdmin()
+    {
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelExcluded, await ReadErrorCodeAsync(response));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Join_PassesIsGlobalAdminFromTheAccessService_ToJoinAsync(bool isGlobalAdmin)
+    {
+        // The handler rebuilds the principal and asks IsGlobalAdmin itself rather than reusing the
+        // filter's decision (see the comment in ChannelEndpoints), so this is a distinct call to pin:
+        // a global admin must never be turned away by the capacity cap, and JoinAsync is what decides
+        // that — it can only do so if this argument carries what the access service actually answered.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(isGlobalAdmin);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        await _factory.Channels.Received(1)
+            .JoinAsync(Channel, Arg.Any<AuditActor>(), isGlobalAdmin, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task GlobalAdminFilter_Answers403_ForANonAdmin_EvenOnTheirOwnChannel()
     {
         // Purge sits behind the admin filter rather than the management filter: a broadcaster may
@@ -162,6 +235,46 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         var response = await SendAsync("GET", "/api/admin/channels", NewUserId());
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteUser_Answers403_ForANonAdmin()
+    {
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(false);
+
+        var response = await SendAsync("DELETE", "/api/admin/users/12345", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await _factory.AccountDeletion.DidNotReceive().DeleteAsync(
+            Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<AccountDeletionReason>(), Arg.Any<DateTime?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteUser_Answers204_AndCallsTheServiceWithAdminRequestAndNoInactivityCutoff_WhenAnAdminDeletes()
+    {
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
+        _factory.AccountDeletion.DeleteAsync(
+                "12345", Arg.Any<AuditActor>(), AccountDeletionReason.AdminRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.Deleted));
+
+        var response = await SendAsync("DELETE", "/api/admin/users/12345", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await _factory.AccountDeletion.Received(1).DeleteAsync(
+            "12345", Arg.Any<AuditActor>(), AccountDeletionReason.AdminRequest, null, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteUser_Answers404_WhenTheServiceReportsNotFound()
+    {
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
+        _factory.AccountDeletion.DeleteAsync(
+                "12345", Arg.Any<AuditActor>(), AccountDeletionReason.AdminRequest, null, Arg.Any<CancellationToken>())
+            .Returns(new AccountDeletionResult(AccountDeletionOutcome.NotFound));
+
+        var response = await SendAsync("DELETE", "/api/admin/users/12345", NewUserId());
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Fact]

@@ -13,7 +13,7 @@ public abstract record HarnessCommandLineResult
     {
     }
 
-    /// <summary>No arguments: the normal worker, with all nine hosted services.</summary>
+    /// <summary>No arguments: the normal worker, with all ten hosted services.</summary>
     public sealed record RunWorker : HarnessCommandLineResult;
 
     /// <summary>
