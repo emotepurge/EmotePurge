@@ -154,6 +154,37 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.ChannelCapacityReached, await ReadErrorCodeAsync(response));
     }
 
+    [Fact]
+    public async Task Join_Answers403_WithChannelExcluded_WhenTheServiceReportsChannelExcluded()
+    {
+        // GDPR Art. 21 objection gate (issue #252): unlike CapacityReached above, this one must
+        // stay refused even for a global admin — asserted separately below.
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelExcluded, await ReadErrorCodeAsync(response));
+    }
+
+    [Fact]
+    public async Task Join_Answers403_WithChannelExcluded_EvenForAGlobalAdmin()
+    {
+        _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(true);
+        _factory.Channels.JoinAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded));
+
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/join", NewUserId());
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ChannelExcluded, await ReadErrorCodeAsync(response));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

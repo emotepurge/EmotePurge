@@ -229,6 +229,61 @@ either the emote counters or the bot detector — the sender is no longer proces
 category. There is nothing to do retroactively: already aggregated usage counts contain no
 identity, so no per-person removal is possible or necessary against them.
 
+## Blocking a channel from being rejoined (GDPR objection)
+
+The chatter exclusion above stops processing a single person's messages; it does not stop a
+broadcaster's own channel from being tracked again. `DELETE /{channelName}/purge` (admin area)
+deletes a channel's row and its whole history, but without a block list any moderator or
+broadcaster could immediately join it again through the ordinary join route — the objection would
+have no lasting effect. `Channels:ExcludedChannelIds` (env `EXCLUDED_CHANNEL_IDS`) closes that gap:
+every path that could create or reactivate a `Channel` row for chat observation refuses a blocked
+id, and **no caller is exempt, including a global admin** — the only way to undo a block is to
+remove the id from the list.
+
+For a streamer's own objection to their channel being tracked at all, in this order:
+
+1. From the objection, find the channel's **numeric Twitch broadcaster ID** — never the login,
+   which can change — the same way as for a chatter ID above (`GET
+   https://api.twitch.tv/helix/users?login=<login>`).
+2. Add the ID to `EXCLUDED_CHANNEL_IDS` in the `.env` next to `docker-compose.prod.yml` on the VPS
+   — comma-separated if the variable already holds other IDs, same shape as
+   `TWITCH_EXCLUDED_CHATTER_IDS` above.
+3. Recreate **both** `api` and `worker` (`docker compose -f docker-compose.prod.yml up -d --no-deps
+   api worker` in Portainer's stack directory, or the equivalent redeploy through Portainer's UI) so
+   both pick up the new environment — the join endpoint lives in the Api, the identity reconcile in
+   the Worker, and `Channels:ExcludedChannelIds` is read once, at startup, not polled.
+4. Only **then** purge the channel in the admin area (`DELETE /{channelName}/purge`). Doing this
+   last, after the block already takes effect, closes the exact gap this list exists for: without
+   this order, the channel could be rejoined in the moments between the purge and the block actually
+   being active.
+
+The join endpoint answers `403` with `{ errorCode: "channel_excluded" }` for a blocked channel —
+a short, neutral frontend message ("This channel cannot be added.") that names neither a legal
+objection nor a reason. Like the chatter list, only a count is ever logged, never an id.
+
+**What step 3 does by itself.** Once `worker` restarts with the new `EXCLUDED_CHANNEL_IDS`, a
+channel row that already carries the blocked Twitch id is no longer on the worker's active roster:
+boot recovery does not join it or sync its 7TV set, the periodic 7TV resync and the live poll skip
+it, a JOIN or RESYNC command for it is ignored, and should the worker still be in that chat anyway
+(a LEAVE that got lost), the periodic resync's roster prune parts it within two resync ticks
+(`SevenTv:ResyncIntervalSeconds`, default 60 — so one to two minutes). The row itself stays active
+in the database until the identity reconcile below deactivates it, which happens in the reconcile's
+first pass right after boot recovery. A row that has **no** Twitch id yet (created while Twitch
+could not be asked) cannot be matched against the list without asking Twitch, so for such a row
+the reconcile's first pass is what stops observation. Purging in step 4 is still recommended — it
+is what actually deletes the channel's data.
+
+**Since 2026-09-24, the identity reconcile enforces the block list on its own, without waiting for
+step 4.** Once `worker` has picked up the new `EXCLUDED_CHANNEL_IDS` (step 3), its hourly identity
+reconcile (`Twitch:IdentityReconcileIntervalMinutes`, default 60) deactivates — same write as an
+ordinary leave: `IsBotActive` off, the retention clock stamped, a LEAVE published — any channel row
+that is still active and whose Twitch id turns out to be on the list, whether the row already knew
+that id or only just resolved it through its current login. That closes the gap step 4 used to guard
+against by itself: even if the channel is never purged, it stops being observed within one reconcile
+interval of the block taking effect. Purging in step 4 is still the right thing to do and still
+recommended — it is what actually deletes the channel's data — but it is no longer what keeps the
+objection enforced.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,

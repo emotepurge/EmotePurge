@@ -38,6 +38,12 @@ internal static class ApiErrorCodes
     // reached and the caller is not a global admin. Never returned for a join that would not itself
     // activate a channel — an already-active channel stays idempotent regardless of the cap.
     public const string ChannelCapacityReached = "channel_capacity_reached";
+    // 403 from the join endpoint: the channel's immutable Twitch id is on the configured block list
+    // (Channels:ExcludedChannelIds, GDPR Art. 21 objection — issue #252). Unlike
+    // ChannelCapacityReached above, global admins are NOT exempt from this one. Deliberately
+    // language-neutral and free of any mention of a legal objection — the frontend text says only
+    // that the channel cannot be added.
+    public const string ChannelExcluded = "channel_excluded";
     // Four codes for GET /api/seventv/channels/{channelName}/emotes (foreign-channel-import spec,
     // section 5) — ChannelNotOnTwitch above covers the fifth state that row shares with the join
     // endpoint. All four carry a 503/404 body with no further detail: the caller cannot act on more

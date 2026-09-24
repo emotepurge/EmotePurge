@@ -67,6 +67,12 @@ public static class ServiceCollectionExtensions
         channelCapacityOptions.Validate();
         services.AddSingleton(channelCapacityOptions);
 
+        // GDPR Art. 21 objection gate for channels (#252, the counterpart of
+        // IExcludedChatterFilter in EmotePurge.Worker): read once here so both the Api's join
+        // endpoint (ChannelService) and the Worker's identity reconcile (ChannelIdentityService) see
+        // the same list without either depending on the other.
+        services.AddSingleton<IExcludedChannelFilter, ExcludedChannelFilter>();
+
         services.AddScoped<IChannelService, ChannelService>();
         // Scoped like every other AppDbContext consumer, with its warning deduplication parked in a
         // singleton beside it: the worker opens a fresh scope per reconcile tick, so a set living on

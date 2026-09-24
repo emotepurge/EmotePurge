@@ -1183,6 +1183,7 @@
       "channel_not_found": "Channel nicht gefunden.",
       "channel_not_on_twitch": "Diesen Channel gibt es auf Twitch nicht (mehr). Bitte prüf die Schreibweise.",
       "channel_capacity_reached": "Gerade sind keine freien Channel-Plätze verfügbar. Bitte wende dich an den Betreiber.",
+      "channel_excluded": "Dieser Kanal kann nicht hinzugefügt werden.",
       "foreign_channel_twitch_unavailable": "Twitch ist gerade nicht erreichbar. Bitte versuch es in Kürze erneut.",
       "foreign_channel_no_seventv_account": "Für diesen Channel existiert kein 7TV-Account.",
       "foreign_channel_no_active_emote_set": "Dieser Channel hat aktuell kein aktives 7TV-Emote-Set.",
