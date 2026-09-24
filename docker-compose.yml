@@ -117,6 +117,10 @@ services:
       # Channel-specific bots that appear on no third-party list (see IBotChatterDetector) —
       # comma-separated Twitch user IDs, supplements the built-in static list without a release.
       - Twitch__AdditionalBotAccountIds=${TWITCH_ADDITIONAL_BOT_ACCOUNT_IDS:-}
+      # Twitch user IDs of chatters who objected to processing (GDPR Art. 21, issue #252, see
+      # IExcludedChatterFilter) — comma-separated, dropped before any counting or classification.
+      # Takes effect on the next worker restart; empty by default changes nothing.
+      - Twitch__ExcludedChatterIds=${TWITCH_EXCLUDED_CHATTER_IDS:-}
       # Data retention (#243/#244, DataRetentionWorker): false (the default) only counts and warns,
       # true actually deletes.
       - Retention__Enforce=${RETENTION_ENFORCE:-false}

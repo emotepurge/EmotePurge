@@ -109,6 +109,47 @@ short page nor at the bottom of a long one scrolled all the way down (both cases
 `serious`/`critical` contrast violations, and no new `smallTargetsUnder24` entries beyond the
 pre-existing "show details" atlas-cell affordance.
 
+### 2026-09-24 — Per-chatter GDPR objection: a config-driven exclusion gate ahead of counting and bot detection (#252)
+
+**Betrifft:** `src/EmotePurge.Worker/IExcludedChatterFilter.cs` ·
+`src/EmotePurge.Worker/ExcludedChatterFilter.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` ·
+`src/EmotePurge.Worker/WorkerServiceRegistration.cs` ·
+`tests/EmotePurge.Worker.Tests/ExcludedChatterFilterTests.cs` · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `.env.example` · `docs/Operations.md`
+
+The worker's chat processing rests on legitimate interest (GDPR Art. 6(1)(f)); anyone relying on
+that basis must be able to honour an objection under Art. 21. The only existing per-user knob,
+`Twitch:AdditionalBotAccountIds` (`BotChatterDetector`), does not stop processing an account — a
+listed ID is still counted, just in the bot bucket. There was no way to actually stop processing a
+single chatter's messages.
+
+Added `Twitch:ExcludedChatterIds` (env `TWITCH_EXCLUDED_CHATTER_IDS`), same accepted shapes as
+`Twitch:AdditionalBotAccountIds` — indexed array keys or one comma-separated scalar, scalar wins —
+read into a new, pure, TwitchLib-free `ExcludedChatterFilter` (`IExcludedChatterFilter.IsExcluded`).
+`TwitchChatManager.OnMessageReceived` checks it immediately after the mandatory watchdog liveness
+bookkeeping (the two writes that must run for every message regardless of sender, including bot and
+Shared-Chat traffic — see that method's existing class-level comment) and returns before anything
+else touches the message: no splice diagnostics, no room/bot classification, no emote counting. An
+empty or missing list changes nothing, since the check then always answers `false`.
+
+Matching is on the immutable numeric Twitch user ID only, never the login, the same choice
+`AdditionalBotAccountIds` already made and for the same reason: a login can change, an account's ID
+cannot. `ExcludedChatterFilter`'s constructor logs only the configured count
+(`Configured N excluded chatter id(s).`) at startup — never the IDs, never a login — so an operator
+can confirm a restart picked up a change from the container logs alone, without a log line ever
+being able to name whom an objection concerns.
+
+Deliberately out of scope, matching the issue: no self-service opt-out (a chat command or web form
+— objections arrive by e-mail and are rare) and no retroactive change to already aggregated counts,
+which carry no identity and therefore have nothing to remove per person. The harness (#69, a
+separate accuracy-probe entry point that replays archived logs through its own `ReplayDayCounter`)
+is untouched — the issue scopes the gate to the live message path, and the harness already stores no
+identity of its own.
+
+`docs/Operations.md` documents the operator procedure: look up the numeric ID for an objecting
+chatter, add it to the env var, recreate the worker; the change takes effect on that restart, not
+before.
+
 ### 2026-09-23 — Data retention runs as a tenth hosted service, dry run warns every tick, `RETENTION_ENFORCE` is the switch (#243/#244)
 
 **Betrifft:** `src/EmotePurge.Worker/DataRetentionWorker.cs` ·

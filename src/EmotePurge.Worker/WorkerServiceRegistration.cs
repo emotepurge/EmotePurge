@@ -32,6 +32,7 @@ public static class WorkerServiceRegistration
         services.AddSingleton<ITwitchChatManager, TwitchChatManager>();
         services.AddSingleton<IEmoteUsageCounter, EmoteUsageCounter>();
         services.AddSingleton<IBotChatterDetector, BotChatterDetector>();
+        services.AddSingleton<IExcludedChatterFilter, ExcludedChatterFilter>();
         services.AddSingleton<BootRecoveryGate>();
         services.AddSingleton<WorkerStats>();
         services.AddSingleton<WorkerIdentity>();
