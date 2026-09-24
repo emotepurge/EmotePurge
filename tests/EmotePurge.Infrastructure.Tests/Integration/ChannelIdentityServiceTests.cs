@@ -345,10 +345,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         // The survivor already holds the id, so the unique index leaves no room to write it onto the
         // duplicate too — the deactivation must still go through without it.
         Assert.Null(deactivatedLoser.TwitchChannelId);
-        var entry = await verify.AuditLogEntries.AsNoTracking()
-            .SingleAsync(e => e.ChannelName == "identityexcludednew");
-        Assert.Equal(AuditActions.ChannelLeave, entry.Action);
-        Assert.Equal("system", entry.ActorLogin);
+        await AssertAnonymousExclusionLeaveAsync(verify, "identityexcludednew");
     }
 
     // P2 Codex finding (issue #260, revised further in this same revision): when *both* the id-bearing
@@ -390,9 +387,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         var deactivatedLoser = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == loser.Id);
         Assert.Equal("identityexcludedbothnew", deactivatedLoser.ChannelName);
         Assert.False(deactivatedLoser.IsBotActive);
-        Assert.Equal(
-            2, await verify.AuditLogEntries.AsNoTracking().CountAsync(e => e.Action == AuditActions.ChannelLeave
-                && (e.ChannelName == "identityexcludedbothold" || e.ChannelName == "identityexcludedbothnew")));
+        await AssertAnonymousExclusionLeaveAsync(verify, "identityexcludedbothold", "identityexcludedbothnew");
         // Two distinct rows deactivating is two events, not one repeated — unlike the merge-refusal
         // dedup case, this line is expected to appear twice.
         Assert.Equal(2, harness.Logger.Entries.Count(e => e.Message.Contains("excluded-channel list")));
@@ -478,9 +473,7 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
         Assert.False(channel.IsBotActive);
         Assert.NotNull(channel.DeactivatedAtUtc);
-        var entry = await verify.AuditLogEntries.AsNoTracking()
-            .SingleAsync(e => e.Action == AuditActions.ChannelLeave && e.ChannelName == "identityexcludedknown");
-        Assert.Equal("system", entry.ActorLogin);
+        await AssertAnonymousExclusionLeaveAsync(verify, "identityexcludedknown");
     }
 
     // The BackfillIdAsync residual gap the #252 DECISIONS entry used to document explicitly, closed
@@ -719,6 +712,69 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Equal("20099", replacement.TwitchChannelId);
         Assert.NotEqual(seeded.Id, replacement.Id);
         Assert.Null(replacement.DeactivatedAtUtc);
+    }
+
+    // Fourth Codex review, finding 3: a failed deactivation write on either exclusion path — the
+    // known-id pass ahead of the Helix call, and the id-less path inside the main loop — used to reach
+    // a catch that logged the row's login and internal id. Injected at the save, where a real
+    // failure happens; the row stays active for the next pass to retry.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconcileActiveChannelsAsync_WhenAnExcludedRowsDeactivationFails_WarnsWithoutNamingIt(bool idLess)
+    {
+        await using var db = fixture.CreateDbContext();
+        var login = idLess ? "identityexcludedfailnoid" : "identityexcludedfailknown";
+        var twitchChannelId = idLess ? "10281" : "10282";
+        var seeded = await SeedChannelAsync(db, login, idLess ? null : twitchChannelId);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded(twitchChannelId).Returns(true);
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity(twitchChannelId, login)], excludedChannelFilter: excludedChannelFilter);
+        db.SavingChanges += (_, _) => throw new DbUpdateException("injected save failure");
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(0, summary.Deactivated);
+        Assert.Contains(harness.Logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("excluded-channel list"));
+        foreach (var identifier in new[] { login, seeded.Id, twitchChannelId })
+        {
+            Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains(identifier, StringComparison.Ordinal));
+        }
+
+        Assert.Empty(harness.Redis.Messages);
+        await using var verify = fixture.CreateDbContext();
+        Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id)).IsBotActive);
+    }
+
+    // Fourth Codex review: case 3 ("the new login is held by a row with a different id") names both
+    // rows and the blocking row's id. When that row is the blocked channel's, all three tie the block
+    // to it — the new login is the name the blocked channel last had.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheNewLoginIsHeldByAnExcludedRow_SkipsAndNamesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var row = await SeedChannelAsync(db, "identitycase3excludedold", "10291");
+        var blocked = await SeedChannelAsync(db, "identitycase3excludednew", "10292", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10292").Returns(true);
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity("10291", "IdentityCase3ExcludedNew")], excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(0, summary.Renamed);
+        Assert.Equal(0, summary.Merged);
+        Assert.Contains(harness.Logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("excluded-channel list"));
+        foreach (var identifier in new[] { "identitycase3excluded", "10291", "10292", row.Id, blocked.Id })
+        {
+            Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains(identifier, StringComparison.Ordinal));
+        }
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal("identitycase3excludedold", (await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == row.Id)).ChannelName);
     }
 
     [Fact]
@@ -995,6 +1051,19 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
 
         Assert.Equal(TwitchUserLookupStatus.Unavailable, lookup.Status);
         Assert.Null(lookup.User);
+    }
+
+    // Fourth Codex review: a channel.leave by the system actor is written for nothing but the
+    // objection gate, so an entry naming the channel would tell every admin reading the audit log
+    // which channel the objection concerns. The entry exists, but carries only the reason.
+    private static async Task AssertAnonymousExclusionLeaveAsync(AppDbContext verify, params string[] channelNames)
+    {
+        Assert.False(await verify.AuditLogEntries.AsNoTracking().AnyAsync(e => channelNames.Contains(e.ChannelName)));
+        var anonymousSystemLeaves = await verify.AuditLogEntries.AsNoTracking()
+            .Where(e => e.Action == AuditActions.ChannelLeave && e.ActorLogin == "system" && e.ChannelName == null)
+            .Select(e => e.DetailsJson)
+            .ToListAsync();
+        Assert.Contains(anonymousSystemLeaves, details => details is not null && details.Contains("\"excluded\"", StringComparison.Ordinal));
     }
 
     private static async Task<Channel> SeedChannelAsync(

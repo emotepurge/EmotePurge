@@ -416,14 +416,18 @@ public class ChannelServiceTests(PostgresFixture fixture)
         // The *resolved* identity is not excluded — only the occupant's own, stale id is.
         excludedChannelFilter.IsExcluded("990011").Returns(false);
         excludedChannelFilter.IsExcluded("990012").Returns(true);
+        var logger = new RecordingLogger<ChannelService>();
         var service = CreateService(
-            db, redisPublisher, IdentityFound("990011", "channelserviceexcludedstale1new"),
+            db, redisPublisher, IdentityFound("990011", "channelserviceexcludedstale1new"), logger,
             excludedChannelFilter: excludedChannelFilter);
 
         var result = await service.JoinAsync("channelserviceexcludedstale1new", Actor);
 
         Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
         Assert.Null(result.Channel);
+        // Fourth Codex review: the rename-collision warning used to name the target login — the
+        // blocked channel's last one — right beside the refusal.
+        AssertNamesNothing(logger, "channelserviceexcludedstale1", "990012", staleOccupant.Id);
 
         await using var verify = fixture.CreateDbContext();
         // Untouched on both sides: no rename of the id row, and the stale occupant stays exactly as
@@ -439,6 +443,31 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.Empty(await LoadAuditEntriesAsync(verify, "channelserviceexcludedstale1old"));
         await redisPublisher.DidNotReceive().PublishAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Fourth Codex review of the block list: the mirror image of the test above, reached when no row
+    // holds the resolved id yet. The mismatch line used to name the row's login and its (blocked)
+    // stored id right before the join was refused for exactly that id.
+    [Fact]
+    public async Task JoinAsync_WhenTheRowUnderTheNameClaimsAnExcludedId_RejectsTheJoin_AndNamesNothing()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var staleRow = await SeedChannelAsync(db, "channelserviceexcludedmismatch", "990021", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990021").Returns(true);
+        var logger = new RecordingLogger<ChannelService>();
+        var service = CreateService(
+            db, redisPublisher, IdentityFound("990022", "channelserviceexcludedmismatch"), logger,
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcludedmismatch", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == staleRow.Id)).IsBotActive);
+        await redisPublisher.DidNotReceive().PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        AssertNamesNothing(logger, "channelserviceexcludedmismatch", "990021", staleRow.Id);
     }
 
     [Fact]
@@ -945,6 +974,14 @@ public class ChannelServiceTests(PostgresFixture fixture)
         db.Channels.Add(channel);
         await db.SaveChangesAsync();
         return channel;
+    }
+
+    private static void AssertNamesNothing(RecordingLogger<ChannelService> logger, params string[] identifiers)
+    {
+        foreach (var identifier in identifiers)
+        {
+            Assert.DoesNotContain(logger.Entries, e => e.Message.Contains(identifier, StringComparison.Ordinal));
+        }
     }
 
     private static async Task<IReadOnlyList<AuditLogEntry>> LoadAuditEntriesAsync(AppDbContext db, string channelName)

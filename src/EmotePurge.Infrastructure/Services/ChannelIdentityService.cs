@@ -73,21 +73,9 @@ public class ChannelIdentityService(
                 continue;
             }
 
-            try
-            {
-                await DeactivateExcludedRowAsync(row, storedTwitchChannelId, counters, ct);
-            }
-            catch (DbUpdateException ex)
-            {
-                // Same reasoning as the identical catch around the main loop further down: one row's
-                // failed write must not cost the rest of the tick, and the next tick retries it.
-                logger.LogWarning(
-                    ex,
-                    "Identitätsabgleich für Kanal {ChannelName} ({ChannelId}) fehlgeschlagen — Zeile übersprungen, der nächste Durchlauf versucht es erneut.",
-                    row.ChannelName, row.Id);
-                db.ChangeTracker.Clear();
-            }
-
+            // No catch here: DeactivateExcludedRowAsync handles its own failed write, so that its
+            // warning can stay anonymous (see there).
+            await DeactivateExcludedRowAsync(row, storedTwitchChannelId, counters, ct);
             settledChannelIds.Add(row.Id);
         }
 
@@ -275,6 +263,22 @@ public class ChannelIdentityService(
             return;
         }
 
+        if (excludedChannelFilter.IsExcluded(occupant.TwitchChannelId))
+        {
+            // Case 3, blocked by a row on the excluded-channel list (fourth Codex review of the block
+            // list): the same skip as the case below, but the warning names nothing. The row sitting
+            // on the name is the blocked channel's, and naming either row — or the new login, which
+            // is the name the blocked channel last had — would tie the block to a channel. The name
+            // frees up once the operator purges that row, as the objection procedure recommends.
+            if (warningState.ShouldWarn(ChannelIdentityWarningState.BlockedKey(row.Id)))
+            {
+                logger.LogWarning(
+                    "A channel's new login is held by a row on the excluded-channel list — skipped until that row is purged.");
+            }
+
+            return;
+        }
+
         if (occupant.TwitchChannelId is not null)
         {
             // Case 3, blocked: the row sitting on the target name claims a different Twitch id than
@@ -394,9 +398,9 @@ public class ChannelIdentityService(
         // so reloading by row.Id simply finds nothing once the original row is gone, and this call
         // is skipped below like every other "the row is gone" case. No row lock is taken on top of
         // that (unlike MergeAsync's FOR UPDATE pair): the narrow window between this reload and the
-        // write further down is already covered by the DbUpdateException catch every caller of this
-        // method already wraps it in, the same as every other single-row write in this class
-        // (RenameAsync, BackfillIdAsync) that reloads without a lock for the same reason.
+        // write further down is covered by this method's own DbUpdateException catch, the same way
+        // every other single-row write in this class (RenameAsync, BackfillIdAsync) that reloads
+        // without a lock relies on the per-row catch instead.
         var channel = await db.LoadChannelByIdAsync(row.Id, ct);
         if (channel is null
             || !channel.IsBotActive
@@ -431,18 +435,32 @@ public class ChannelIdentityService(
 
         try
         {
-            await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, AuditActor.System, ct);
+            await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, AuditActor.System, forExclusion: true, ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException and not DbUpdateException)
+        catch (DbUpdateException ex)
+        {
+            // Caught here rather than by the per-row catch every other write in this pass relies on
+            // (fourth Codex review of the block list): that catch names the row's login and id, and
+            // on this path the row is one whose Twitch id is on the excluded-channel list — naming it
+            // would leak the objection. Nothing was written (the save failed), so nothing is counted;
+            // the row is still active and the next pass retries it. The tracker is cleared for the same
+            // reason the per-row catch clears it: the failed changes would otherwise be re-sent by
+            // the next row's save.
+            db.ChangeTracker.Clear();
+            logger.LogWarning(
+                ex,
+                "Deactivating a channel on the excluded-channel list failed — skipped, the next pass retries it.");
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // The write already committed — DeactivateAsync saves before it publishes, same order as
             // every write-then-announce path in this class (RenameAsync/MergeAsync's own
             // PublishHandoverAsync). A thrown LEAVE publish must not escape uncaught here (P1 Codex
-            // finding, issue #260, third review): unlike the DbUpdateException left to propagate
-            // (both this method's callers already wrap it in the per-row catch that retries the row
-            // next tick, appropriate because nothing was written that time), retrying a row that DID
-            // write would just find it already inactive and never publish again — this is the one
-            // chance to push the LEAVE to the worker directly. Deliberately not the shared
+            // finding, issue #260, third review): unlike the DbUpdateException above (nothing was
+            // written that time, so the next pass retries the row), retrying a row that DID write
+            // would just find it already inactive and never publish again — this is the one chance
+            // to push the LEAVE to the worker directly. Deliberately not the shared
             // ChannelDeactivation.DeactivateAsync helper's job to swallow: ChannelService.LeaveAsync's
             // user-facing leave shares that helper and must keep failing loudly on a publish it could
             // not deliver — changing the helper would silently change that contract too — so only

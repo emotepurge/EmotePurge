@@ -116,7 +116,7 @@ public class ChannelService(
         // a prerequisite. Same is true for JoinAsync below and TriggerResyncAsync via the periodic
         // sync loop itself; only this method needed a new convergence net, since JOIN/RESYNC already
         // had one.
-        await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, actor, cancellationToken);
+        await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, actor, forExclusion: false, cancellationToken);
 
         return true;
     }
@@ -387,9 +387,17 @@ public class ChannelService(
         // is the reconciliation's job, which refuses rather than guesses when emote histories are
         // involved. So the join proceeds on the occupant, exactly as it did before identities were
         // resolved here.
-        logger.LogWarning(
-            "Kanal {ChannelName} (Twitch-ID {TwitchChannelId}) heißt auf Twitch jetzt {NewChannelName}, aber dieser Name gehört bereits einer anderen Zeile — Join läuft auf die bestehende Zeile, die Zusammenführung übernimmt der periodische Abgleich.",
-            rowWithId.ChannelName, identity.Id, targetName);
+        //
+        // Not logged when the occupant carries an excluded id (fourth Codex review of the block
+        // list): JoinAsync refuses that join right after this returns, and a line naming the target
+        // name — the blocked channel's last login — next to that refusal would tie the block to it.
+        if (!excludedChannelFilter.IsExcluded(occupant.TwitchChannelId))
+        {
+            logger.LogWarning(
+                "Kanal {ChannelName} (Twitch-ID {TwitchChannelId}) heißt auf Twitch jetzt {NewChannelName}, aber dieser Name gehört bereits einer anderen Zeile — Join läuft auf die bestehende Zeile, die Zusammenführung übernimmt der periodische Abgleich.",
+                rowWithId.ChannelName, identity.Id, targetName);
+        }
+
         return (occupant, null);
     }
 
@@ -422,7 +430,11 @@ public class ChannelService(
             channel.TwitchChannelId = identity.Id;
         }
         else if (identity is not null
-                 && !string.Equals(channel.TwitchChannelId, identity.Id, StringComparison.Ordinal))
+                 && !string.Equals(channel.TwitchChannelId, identity.Id, StringComparison.Ordinal)
+                 // Silent when the stored id is excluded, for the same reason as the occupant warning
+                 // in ResolveChannelByIdentityAsync: JoinAsync refuses this join next, and the line
+                 // would name the blocked id and its row's login right beside that refusal.
+                 && !excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
         {
             // The row under this name claims a different Twitch id than Helix does — the mirror image
             // of the occupant case in ResolveChannelByIdentityAsync, reached when the id's own row

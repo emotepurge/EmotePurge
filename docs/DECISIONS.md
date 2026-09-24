@@ -270,6 +270,21 @@ channel in connection with the block — and then fixed what failed.
   — a brand-new row (the gap the first entry above already accepted) or the id-less duplicate just
   described. The 7TV sync's own gate (previous bullet) keeps such a channel uncounted and its set
   unobserved, and the reconcile's next pass after the outage deactivates it again.
+- **Every exclusion-related failure and side log is anonymous (P2).** The known-id pass's
+  `DbUpdateException` catch logged the row's login and internal id, and a failed deactivation on the
+  id-less path fell through to the main loop's catch, which does the same. `DeactivateExcludedRowAsync`
+  now catches its own failed save: it clears the tracker, logs a line naming nothing and returns
+  without counting, and the still-active row is retried next pass; the named per-row catch is only
+  reached by writes that are not about the block. The inventory found three more lines of the same
+  kind, silenced or anonymised the same way: the reconcile's case-3 warning when the row sitting on
+  a channel's new login carries an excluded id (it named both rows, the blocked id and the login
+  the blocked channel last had), and the join path's rename-collision and id-mismatch lines, which
+  named the blocked row's login or stored id right before `JoinAsync` refused the join for exactly
+  that id. The audit entry the objection-gate deactivation writes is a `channel.leave` by the system
+  actor — written for nothing else — so it now carries `reason = "excluded"` and **no channel name**
+  (`ChannelDeactivation.DeactivateAsync(forExclusion: true)`); an entry naming the channel would have
+  told every admin reading the audit log which channel the objection concerns. A user's own leave
+  still names its channel.
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
