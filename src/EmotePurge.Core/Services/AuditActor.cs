@@ -18,4 +18,13 @@ public record AuditActor(string TwitchUserId, string Login)
     /// resolve it to an account.
     /// </summary>
     public static AuditActor System { get; } = new("system", "system");
+
+    /// <summary>
+    /// The marker an account deletion writes over the deleted user's id and login wherever the audit
+    /// log named them (<see cref="IAccountDeletionService"/>): as actor, as a <c>"user"</c> target, and
+    /// in that target's <c>login</c> detail. Analogous to <see cref="System"/> and rendered the same
+    /// way, as plain text. It cannot collide with a real account: a hyphen is not allowed in a Twitch
+    /// login, and the string is not a Twitch id (those are digits).
+    /// </summary>
+    public static AuditActor DeletedUser { get; } = new("deleted-user", "deleted-user");
 }

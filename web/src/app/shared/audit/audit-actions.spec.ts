@@ -23,10 +23,10 @@ function lookup(bundle: unknown, key: string): unknown {
 }
 
 describe('audit action tables', () => {
-  it('names all fourteen AuditActions constants', () => {
+  it('names all fifteen AuditActions constants', () => {
     // A gap here is the whole point of the lookup: a newly added backend action must show up as a
     // missing entry rather than as a silently generated key.
-    expect(Object.keys(ACTION_KEYS)).toHaveLength(14);
+    expect(Object.keys(ACTION_KEYS)).toHaveLength(15);
   });
 
   it('excludes the user-scoped actions from the channel-scoped set', () => {
@@ -34,7 +34,8 @@ describe('audit action tables', () => {
     expect(CHANNEL_SCOPED_ACTIONS).toHaveLength(12);
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.revokeSessions');
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.invalidateRoleCache');
-    expect(CHANNELLESS_ACTIONS.size).toBe(2);
+    expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.delete');
+    expect(CHANNELLESS_ACTIONS.size).toBe(3);
   });
 
   it.each(Object.entries(ACTION_KEYS))('translates %s in both locales', (_action, key) => {

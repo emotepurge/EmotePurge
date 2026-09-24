@@ -93,8 +93,22 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             }
 
             var userService = context.HttpContext.RequestServices.GetRequiredService<IUserService>();
-            var validFrom = await userService.GetSessionsValidFromUtcAsync(twitchUserId, context.HttpContext.RequestAborted);
-            if (validFrom is { } revokedBefore && issuedAt.ToUniversalTime() < revokedBefore)
+            var sessionCheck = await userService.CheckSessionAsync(
+                twitchUserId, issuedAt.ToUniversalTime(), context.HttpContext.RequestAborted);
+            if (sessionCheck is null)
+            {
+                // The user row is gone — a deleted account (retention job or admin deletion), never
+                // grandfathered in the same way a missing claim above is not. Reading a missing row
+                // as "never revoked" would leave a deleted account's cookie working until it expires
+                // on its own, up to 14 days later.
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                return;
+            }
+
+            // CheckSessionAsync already compared issuedAt against the revocation cutoff — and only
+            // stamped LastSeenAtUtc when it found the session still valid. Nothing left to compare.
+            if (!sessionCheck.IsValid)
             {
                 context.RejectPrincipal();
                 await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);

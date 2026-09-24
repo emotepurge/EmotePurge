@@ -376,6 +376,34 @@ public static class AdminEndpoints
             return Results.Ok(result);
         });
 
+        group.MapDelete("/users/{twitchUserId}", async (
+            string twitchUserId,
+            ClaimsPrincipal principal,
+            IAccountDeletionService accountDeletionService,
+            CancellationToken ct) =>
+        {
+            var actor = principal.TryBuildAuditActor();
+            if (actor is null)
+            {
+                // Unreachable behind RequireAuthorization + the admin filter; guard, not a case.
+                return Results.Unauthorized();
+            }
+
+            // AdminRequest, so onlyIfInactiveBeforeUtc is null (only the retention job's Inactivity
+            // path rechecks a cutoff) — an admin may delete any account on request, active or not.
+            // Deleting one's own account this way is allowed (same precedent as revoke-sessions
+            // below); the frontend's confirmation dialog names that case.
+            var result = await accountDeletionService.DeleteAsync(
+                twitchUserId, actor, AccountDeletionReason.AdminRequest, onlyIfInactiveBeforeUtc: null, ct);
+            return result.Outcome switch
+            {
+                AccountDeletionOutcome.Deleted => Results.NoContent(),
+                AccountDeletionOutcome.NotFound => Results.NotFound(),
+                // StillActive cannot occur for AdminRequest (IAccountDeletionService contract).
+                _ => Results.Problem(),
+            };
+        });
+
         group.MapPost("/users/{twitchUserId}/revoke-sessions", async (
             string twitchUserId,
             ClaimsPrincipal principal,

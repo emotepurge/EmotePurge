@@ -9,6 +9,22 @@ public enum ChannelResyncResult
     NotActive,
 }
 
+/// <summary>What <see cref="IChannelService.PurgeIfInactiveSinceAsync"/> did.</summary>
+public enum ChannelRetentionPurgeResult
+{
+    /// <summary>The row and, by cascade, its whole history are gone; a <c>channel.purge</c> entry was written.</summary>
+    Purged,
+
+    /// <summary>No row under this name (any more) — nothing written, not even an audit entry.</summary>
+    NotFound,
+
+    /// <summary>
+    /// The row exists but is not due: active again, deactivated at or after the cutoff, or never
+    /// stamped (<c>DeactivatedAtUtc</c> null). Checked under the row lock; nothing written.
+    /// </summary>
+    StillActive,
+}
+
 public enum ChannelJoinStatus
 {
     Joined,
@@ -92,6 +108,11 @@ public interface IChannelService
     // All three write methods take the acting user: each writes its own AuditLogEntry into the same
     // transaction as the change itself (see the implementations). The actor is a required parameter
     // rather than an optional one so a new call site cannot silently produce unattributed history.
+    //
+    // Runs in one transaction that locks every existing row it may activate (SELECT ... FOR UPDATE),
+    // so it serialises with PurgeIfInactiveSinceAsync; the Twitch lookup happens before it, the Redis
+    // publishes after the commit.
+    //
     // Resolves the channel's Twitch identity before it writes anything (IChannelIdentityService):
     // the immutable Twitch id is what a channel *is*, and asking for it at the one moment a human is
     // waiting for an answer is what lets a join reject a login Twitch does not know, follow a rename
@@ -112,6 +133,16 @@ public interface IChannelService
     // sessions and votes. Admin-only by design — see the endpoint. The audit entry deliberately
     // outlives the channel (AuditLogEntry.ChannelName is a snapshot, not an FK).
     Task<bool> PurgeAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default);
+
+    // The retention job's purge: deletes the channel like PurgeAsync, but only if it is *still* due —
+    // inactive, and deactivated before deactivatedBeforeUtc (a UTC cutoff, RetentionPolicy's 180 days).
+    // The condition is checked under a row lock (SELECT ... FOR UPDATE) that JoinAsync and the identity
+    // merge take as well, so a join racing the purge either lands first (the purge then sees an active
+    // row: StillActive) or waits and finds no row, creating a fresh one — never a 500, never a purged
+    // channel that was just reactivated. Audited as channel.purge with { reason: "retention" }. No
+    // LEAVE is published: the worker is not in an inactive channel.
+    Task<ChannelRetentionPurgeResult> PurgeIfInactiveSinceAsync(
+        string channelName, DateTime deactivatedBeforeUtc, AuditActor actor, CancellationToken cancellationToken = default);
 
     Task<Channel?> GetByNameAsync(string channelName, CancellationToken cancellationToken = default);
 

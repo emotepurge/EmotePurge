@@ -198,7 +198,8 @@ public class ChannelIdentityService(
             return;
         }
 
-        var occupant = await db.LoadChannelAsync(newLogin, ct);
+        // Read-only: this only decides which case applies. A merge re-reads both rows under its locks.
+        var occupant = await db.LoadChannelReadOnlyAsync(newLogin, ct);
         if (occupant is null)
         {
             await RenameAsync(twitchChannelId, newLogin, counters, ct);
@@ -228,20 +229,10 @@ public class ChannelIdentityService(
 
         // Case 3, mergeable: the id-less row under the new name is the duplicate the rename created
         // — someone joined the channel again under its new name while the old row kept the history.
-        var survivor = await db.LoadChannelByTwitchIdAsync(twitchChannelId, ct);
-        if (survivor is null)
+        if (await MergeAsync(twitchChannelId, newLogin, counters, settledChannelIds, ct))
         {
-            // The snapshot said this row exists; it no longer does. A concurrent purge is the only
-            // known cause, and it is benign — but a silent return would leave a counter that simply
-            // never moves and no trace of why.
-            logger.LogInformation(
-                "Überlebende Zeile mit Twitch-ID {TwitchChannelId} war beim Zusammenführen nicht mehr auffindbar — übersprungen.",
-                twitchChannelId);
-            return;
+            warningState.Clear(ChannelIdentityWarningState.BlockedKey(row.Id));
         }
-
-        await MergeAsync(survivor, occupant, newLogin, twitchChannelId, counters, settledChannelIds, ct);
-        warningState.Clear(ChannelIdentityWarningState.BlockedKey(row.Id));
     }
 
     private async Task ReconcileIdLessRowAsync(
@@ -269,7 +260,8 @@ public class ChannelIdentityService(
 
         warningState.Clear(ChannelIdentityWarningState.LoginKey(row.ChannelName));
 
-        var holder = await db.LoadChannelByTwitchIdAsync(identity.Id, ct);
+        // Read-only, like the occupant in ReconcileKnownIdRowAsync: a merge re-reads it under its lock.
+        var holder = await db.LoadChannelByTwitchIdReadOnlyAsync(identity.Id, ct);
         if (holder is null)
         {
             await BackfillIdAsync(row, identity.Id, counters, ct);
@@ -287,16 +279,10 @@ public class ChannelIdentityService(
 
         // Case 4, the duplicate with the roles swapped: another row already carries this Twitch id,
         // so *that* one is the channel and this one is the second row a rename left behind. The id
-        // row survives — it holds the emotes and the usage history.
-        var loser = await db.LoadChannelAsync(row.ChannelName, ct);
-        if (loser is null)
-        {
-            logger.LogInformation(
-                "Zusammenzuführende Zeile {ChannelName} war nicht mehr auffindbar — übersprungen.", row.ChannelName);
-            return;
-        }
-
-        await MergeAsync(holder, loser, row.ChannelName, identity.Id, counters, settledChannelIds, ct);
+        // row survives — it holds the emotes and the usage history. It may well be inactive (only
+        // active rows are in the snapshot), which is exactly the row a retention purge can be deleting
+        // right now — hence the lock MergeAsync takes on it.
+        await MergeAsync(identity.Id, row.ChannelName, counters, settledChannelIds, ct);
     }
 
     private async Task BackfillIdAsync(
@@ -355,18 +341,60 @@ public class ChannelIdentityService(
     }
 
     /// <summary>
-    /// Folds <paramref name="loser"/> into <paramref name="survivor"/> and puts the survivor under
-    /// <paramref name="newLogin"/>. Guarded: the loser must be emote-less.
+    /// Folds the id-less row under <paramref name="newLogin"/> (the loser) into the row holding
+    /// <paramref name="twitchChannelId"/> (the survivor) and puts the survivor under that name. Guarded:
+    /// the loser must be emote-less. Returns whether the pair was ruled on — merged, or refused for the
+    /// loser's emotes — as opposed to skipped because one of the two rows vanished or changed first.
     /// </summary>
-    private async Task MergeAsync(
-        Channel survivor,
-        Channel loser,
-        string newLogin,
+    /// <remarks>
+    /// One transaction, both rows locked <c>FOR UPDATE</c> before anything is decided — the survivor
+    /// first, then the loser, the same id-before-name order a join takes, so the two cannot deadlock.
+    /// The survivor's lock is what the retention purge serialises on (it may be an inactive row that is
+    /// due): a purge holding it makes this find no survivor and skip; a merge holding it makes the purge
+    /// see the survivor active (or renamed away) afterwards. Both rows are re-read under the lock, so
+    /// the decision is taken on their current state, not on the caller's snapshot.
+    /// </remarks>
+    private async Task<bool> MergeAsync(
         string twitchChannelId,
+        string newLogin,
         ReconcileCounters counters,
         HashSet<string> settledChannelIds,
         CancellationToken ct)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
+        var survivor = await db.LoadChannelByTwitchIdForUpdateAsync(twitchChannelId, ct);
+        if (survivor is null)
+        {
+            // The snapshot said this row exists; it no longer does. A concurrent purge — an admin's, or
+            // the retention job's on an inactive survivor — is the only known cause, and it is benign:
+            // the next pass sees the id-less row on its own and backfills the id. But a silent return
+            // would leave a counter that simply never moves and no trace of why.
+            logger.LogInformation(
+                "Überlebende Zeile mit Twitch-ID {TwitchChannelId} war beim Zusammenführen nicht mehr auffindbar — übersprungen.",
+                twitchChannelId);
+            return false;
+        }
+
+        var loser = await db.LoadChannelForUpdateAsync(newLogin, ct);
+        if (loser is null)
+        {
+            logger.LogInformation(
+                "Zusammenzuführende Zeile {ChannelName} war nicht mehr auffindbar — übersprungen.", newLogin);
+            return false;
+        }
+
+        if (string.Equals(survivor.Id, loser.Id, StringComparison.Ordinal) || loser.TwitchChannelId is not null)
+        {
+            // The pair the caller saw no longer exists as such: the survivor already answers to the
+            // name, or the name's row acquired a Twitch id of its own in the meantime. Merging now could
+            // fuse two different channels; the next pass decides from the new state.
+            logger.LogInformation(
+                "Channel {ChannelName} changed after it was picked for a merge — skipped, the next pass decides afresh.",
+                newLogin);
+            return false;
+        }
+
         var oldLogin = survivor.ChannelName;
 
         // The invariant that makes this safe at all. Emotes carry UsageStats, VoteSessionEmotes and
@@ -397,7 +425,8 @@ public class ChannelIdentityService(
                     loser.ChannelName, loser.Id, survivor.ChannelName, survivor.Id);
             }
 
-            return;
+            // Nothing was written; disposing the transaction rolls back and releases both locks.
+            return true;
         }
 
         // Regel 10: the collision check runs off two scalar date lists rather than a navigation join
@@ -445,7 +474,18 @@ public class ChannelIdentityService(
             session.ChannelId = survivor.Id;
         }
 
+        // Captured before the flip: DeactivatedAtUtc must only be nulled when the merge is what
+        // makes the survivor active, not when it already was (in which case the column is already
+        // null and nulling it again is a no-op, but the read makes the condition mean what it says).
+        var survivorWasActive = survivor.IsBotActive;
         survivor.IsBotActive |= loser.IsBotActive;
+        if (!survivorWasActive && survivor.IsBotActive)
+        {
+            // The retention clock stops here too, same as CompleteJoinAsync's reactivation branch —
+            // an inactive survivor absorbing an active loser must not stay a purge candidate.
+            survivor.DeactivatedAtUtc = null;
+        }
+
         survivor.ChannelName = newLogin;
         survivor.TrackingResumedAt = DateTime.UtcNow;
         db.AddAuditEntry(
@@ -473,6 +513,7 @@ public class ChannelIdentityService(
         // generalizing: two *updates* swapping a unique value get no such edge and still need two
         // saves.
         await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
 
         settledChannelIds.Add(loser.Id);
         settledChannelIds.Add(survivor.Id);
@@ -486,6 +527,7 @@ public class ChannelIdentityService(
             "Kanal {LoserChannelName} ({LoserChannelId}) in {SurvivorChannelName} ({SurvivorChannelId}) zusammengeführt und auf {NewChannelName} umbenannt: {MovedLiveDayCount} Live-Tage übernommen, {CollapsedLiveDayCount} kollidierende Tage zusammengefaltet, {SessionCount} Abstimmungen übernommen.",
             loser.ChannelName, loser.Id, oldLogin, survivor.Id, newLogin, movedLiveDays, collapsedLiveDays, sessions.Count);
         await PublishHandoverAsync(oldLogin, newLogin, ct);
+        return true;
     }
 
     /// <summary>

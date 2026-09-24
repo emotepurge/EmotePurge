@@ -17,7 +17,7 @@ namespace EmotePurge.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -91,6 +91,9 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasColumnType("text");
 
                     b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DeactivatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<bool>("IsBotActive")
@@ -235,6 +238,9 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasColumnType("text");
 
                     b.Property<DateTime>("LastLogin")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastSeenAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("SessionsValidFromUtc")

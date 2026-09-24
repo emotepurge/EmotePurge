@@ -135,6 +135,138 @@ either the emote counters or the bot detector — the sender is no longer proces
 category. There is nothing to do retroactively: already aggregated usage counts contain no
 identity, so no per-person removal is possible or necessary against them.
 
+## Data retention
+
+Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,
+in-database mechanism that deletes or clears user and channel data on a schedule, independent of
+whether any backup exists. `DataRetentionWorker`, the tenth hosted service in `EmotePurge.Worker`,
+enforces it once a day by default.
+
+### The periods
+
+Fixed in `src/EmotePurge.Core/Services/RetentionPolicy.cs`, the one place in the code the numbers
+stand:
+
+| Data | Period | Measured from |
+|---|---|---|
+| Encrypted Twitch tokens | cleared 30 days after last activity | `max(LastLogin, LastSeenAtUtc)` |
+| User account | deleted 365 days after last activity | `max(LastLogin, LastSeenAtUtc)` |
+| Ended vote session, with its votes | deleted 365 days after it ended | `EndedAt` (falls back to `StartedAt`) |
+| Audit log entry | deleted 365 days after it occurred | `OccurredAtUtc` |
+| Channel after "leave" | deleted with its whole history 180 days after it was deactivated | `DeactivatedAtUtc` |
+
+"Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
+writes at most once per 24 hours — without it, a user who never logs out again (the session
+cookie slides for 14 days) but never re-authenticates either would look inactive by `LastLogin`
+alone. Active channels and their statistics are never touched. These periods are deliberately
+**not configurable** — a privacy policy quotes them (issue #247), and an environment variable
+that could silently change one would turn that text into a lie. What is configurable is only
+whether the job writes and how often it runs (below).
+
+**Migration backfill.** The migration that introduced `LastSeenAtUtc` and `DeactivatedAtUtc`
+(`AddRetentionTimestamps`) backfills both columns to the migration's own timestamp for existing
+rows — every existing user's `LastSeenAtUtc` becomes "now", and every already-inactive channel's
+`DeactivatedAtUtc` becomes "now". Without that, an existing user who logged in weeks ago but has
+kept a valid session since would look overdue for token clearing on the very first enforced pass,
+and a dry run could not tell them apart from someone genuinely gone. The cost is the mirror image:
+a genuinely stale account or channel from before the migration gets up to one extra period of
+grace, measured from the migration instant rather than from whenever it actually went quiet.
+
+### Dry run by default
+
+`Retention:Enforce` defaults to `false`. In that mode the job counts what it *would* delete but
+writes nothing except one thing: it stamps `DeactivatedAtUtc` on inactive channels that do not yet
+carry it (rows deactivated by an older image before this feature existed, or in the gap between
+applying the migration and deploying the image that stamps on leave) — without that stamp the
+180-day period for those channels would never start. Every pass, dry run or enforced, logs
+exactly one line per tick, even when every count is zero — the log line is deliberately the job's
+only proof of being alive, so a Warning is the safety net against a `Retention:Enforce=false` that
+gets deployed once and then forgotten for a year:
+
+```
+Retention dry run: nothing was deleted, Retention:Enforce is false. tokens cleared: 3; accounts deleted: 0, still active: 0, not found: 0, failed: 0, cap reached: False, votes deleted: 12 (4 in open sessions), audit entries pseudonymised: 5; vote sessions deleted: 2, votes deleted: 34, ballot entries deleted: 2; audit log entries deleted: 118; channels restamped: 1, purged: 0, still active: 0, not found: 0, failed: 0, emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, votes deleted: 0
+```
+
+An enforced pass logs the identical set of fields at `Information` instead, prefixed
+`Retention pass enforced.` — the counts then describe what was actually deleted, not a
+projection. Every count is a plain number, never a login, a user id or a channel name (the same
+rule the rest of the worker's logging follows). Reading the fields: the first clause of each
+category is the "parent" row count (tokens cleared, accounts deleted, vote sessions deleted,
+audit log entries deleted, channels purged); everything after it in that category is a cascade —
+rows that go with the parent (votes with an account or a session, emotes/usage rows/live
+days/vote sessions/votes with a channel). `still active`/`not found`/`failed` count per-item
+outcomes that do not stop the rest of the category (a login won a race against an inactivity
+deletion, a row already gone, or a transient failure — the item is retried on the next day's
+pass). `cap reached: True` on the accounts category means `Retention:MaxAccountsPerRun` was hit
+for this tick; the remaining overdue accounts are not lost, they are simply the first ones picked
+up on the next pass.
+
+**Recommended procedure:** deploy with the default (`RETENTION_ENFORCE` unset or `false`), watch
+a handful of daily dry-run lines, and sanity-check the numbers against what you expect for your
+instance's size and age (a large `accounts deleted` count on day one against a young instance is
+worth investigating before switching on deletion, not after). Once the numbers look right, set
+`RETENTION_ENFORCE=true` in the `.env` file next to your production compose file and recreate the
+worker container (`docker compose up -d --build worker`, or the equivalent recreate in whatever
+orchestrates your deployment) — no image rebuild is needed, only the environment variable and a
+container recreate. To switch back to counting only, set `RETENTION_ENFORCE=false` (or unset it)
+and recreate the worker container again; nothing already deleted comes back, but no further
+deletions happen until it is set to `true` again.
+
+### The other `Retention:*` keys
+
+Only `Enforce` is meant to be flipped in production. The remaining three live in the worker's
+`appsettings.json` and are not exposed as `.env`/compose variables — they pace the job rather than
+change what it does, and changing them needs a rebuilt image:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Retention:IntervalHours` | `24` | Hours between two passes. |
+| `Retention:StartupDelayMinutes` | `10` | Minutes the job waits after the worker's boot recovery before its first pass, so a restart loop does not begin every start with a pass. |
+| `Retention:MaxAccountsPerRun` | `100` | Ceiling on account deletions per pass; bounds how long the first enforced pass can run against an existing database. The rest follow on later passes, see `cap reached` above. |
+
+### Account deletion on request
+
+For anyone who asks you to delete their account by email (or however you take such requests): an
+admin (one of `Auth:AdminTwitchLogins`) can delete a single account immediately from the admin
+user list, independent of the retention job's schedule and independent of whether the account is
+inactive. The row's delete action asks for the account's Twitch login typed out before it
+unlocks, the same typed-confirmation dialog the channel list's purge action uses — an accidental
+click cannot trigger it.
+
+Deletion goes through the same path the retention job uses (`IAccountDeletionService`):
+
+- All of the account's votes are removed, in both open and already-ended vote sessions — a vote
+  is an opinion with an author, so it does not survive the account, and no aggregate total is
+  kept in its place.
+- The account row itself, and with it the encrypted Twitch tokens stored on it, is removed.
+- Audit log entries are **not** removed but pseudonymised: any entry where the account was the
+  actor, or was the named target (`user.revokeSessions`, `user.invalidateRoleCache`), has its
+  identifying fields replaced by the fixed marker `deleted-user`. Every other column and detail
+  key is left as is — in particular, a channel's own history (a rename, say) that happens to share
+  a name with the deleted account's login is untouched, since that is channel data, not account
+  data. The deletion's own audit entry (`user.delete`) carries no identity at all, only the reason
+  and the counts (votes removed, entries pseudonymised); if the deleted account is itself the
+  actor of that entry (an admin deleting their own account), the marker is recorded as the actor
+  too, so that entry cannot re-identify what the rest of the transaction just removed.
+- Two pieces of Redis state tied to the account's id are cleared after the deletion commits: the
+  role-cache keys (`modlist:`, `7tveditor:`, `subcheck:`) and the rate-limit telemetry's
+  last-rejection slot. Each is idempotent and gets one retry if the first attempt fails; if both
+  fail, the leftover keys still expire on their own — at most 10 minutes for the role-cache keys,
+  at most 25 hours for the telemetry slot (which the very next rejected request from anyone
+  overwrites anyway).
+
+None of this reaches your backups: a dump taken before the deletion still contains the account,
+and it stays recoverable from that dump for as long as your backups retain it. If a request needs
+that closed off too, the affected backup generations need deleting by hand.
+
+### Deploying this feature
+
+The migration behind it (`AddRetentionTimestamps`) is additive — two new nullable columns plus
+their backfill — so it does no harm against the *old* image still running while you apply it.
+The reverse is not true: a *new* image expects those columns to exist. Apply the migration before
+you deploy the new images, not after, the same rule this project follows for every migration
+(`dotnet ef database update`, run by hand — migrations do not run automatically at app start).
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates

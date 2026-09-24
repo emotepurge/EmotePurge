@@ -31,4 +31,7 @@ public sealed class RecordingRateLimitTelemetry : IRateLimitTelemetry
         _cacheLookups.Add((cacheName, hit));
         return Task.CompletedTask;
     }
+
+    public Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default) =>
+        Task.FromResult(true);
 }
