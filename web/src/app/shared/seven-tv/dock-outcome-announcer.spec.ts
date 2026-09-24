@@ -44,6 +44,7 @@ const DE_TRANSLATIONS = {
       succeeded: 'Synchronisierung angestoßen.',
       cooldown: 'Sync-Cooldown aktiv.',
       failed: 'Synchronisierung fehlgeschlagen.',
+      backendTriggered: 'Wird abgeglichen.',
     },
   },
   import: {
@@ -121,6 +122,7 @@ const SPOKEN_STATES = {
   succeeded: true,
   cooldown: true,
   failed: true,
+  backendTriggered: true,
 } satisfies Record<Exclude<ResyncTriggerState, 'idle'>, true>;
 
 describe('resyncNoticeKey', () => {

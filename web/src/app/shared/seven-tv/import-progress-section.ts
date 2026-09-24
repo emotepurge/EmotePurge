@@ -145,7 +145,7 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ unknownRowsKey() | transloco: { count: run.unknownCount } }}
                 </span>
               }
-              <!-- The removal report (channel-scoped sync-deleted) — mirrors RunProgressPanel's own
+              <!-- The removal report (set-centric sync-deleted) — mirrors RunProgressPanel's own
                    syncReport banner+retry one level up, which only ever speaks for the ADD report
                    (sync-imported). A replace run needs both, distinguishably, since either can fail
                    independently of the other. -->
@@ -159,6 +159,10 @@ import { RunProgressPanel } from './run-progress-panel';
                       'import.removalSyncFailedTitle' | transloco
                     }}</span>
                     <span>{{ 'import.removalSyncFailed' | transloco }}</span>
+                    <!-- Why the removal report failed or fell short (spec E23). -->
+                    @if (importService.removalReportReason(); as reason) {
+                      <span>{{ 'syncReportReason.' + reason | transloco }}</span>
+                    }
                   </span>
                   <button
                     notice-action

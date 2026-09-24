@@ -15,7 +15,6 @@ import {
   MAX_AUTOMATIC_SYNC_RETRIES,
   REMOVE_EMOTE_MUTATION,
   SYNC_RETRY_DELAY_MS,
-  SyncReportState,
 } from './seven-tv-delete.service';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { ResyncTriggerState } from './seven-tv-restore.service';
@@ -28,6 +27,12 @@ import {
 } from './seven-tv-run-engine';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import {
+  SyncReportReason,
+  SyncReportState,
+  classifySyncInSetFailure,
+  classifySyncInSetResponse,
+} from './sync-report-outcome';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
@@ -216,7 +221,7 @@ interface ImportRunContext {
  * `replace`, an alias UPDATE for `adoptSourceName`. A plan with a `replace` row is the one run of
  * this service that deletes, and three things follow from it: its rows end `unknown` on a lost
  * answer instead of `failed`, the run is re-read before anything is reported, and the confirmed
- * REMOVEs are reported through the channel-scoped `sync-deleted` next to the `sync-imported` of
+ * REMOVEs are reported through the set-centric `sync-deleted` next to the `sync-imported` of
  * the ADDs. A plan of `add` rows only runs exactly as a plain copy always did.
  *
  * It does not know the `SevenTvRunArbiter`, and does not report to it: the arbiter derives its
@@ -276,6 +281,10 @@ export class SevenTvImportService {
    *  vocabulary and evaluation as the delete run's own report. Stays `'idle'` for a run without
    *  a confirmed REMOVE. */
   readonly removalReport = signal<SyncReportState>('idle');
+
+  /** Why `removalReport` is `'failed'`/`'partial'` (spec E23), `null` otherwise — the dock shows it
+   *  as its own line under the removal-report notice. */
+  readonly removalReportReason = signal<SyncReportReason | null>(null);
 
   readonly resyncTrigger = signal<ResyncTriggerState>('idle');
 
@@ -356,10 +365,10 @@ export class SevenTvImportService {
    *  the same call's `available` and defaults to `true` for the same reason. `replaceSkippedDrift`
    *  is the same re-check's count of held-back `replace` rows, default 0.
    *
-   *  Throws, before anything is sent, for a plan with a `replace` row against an untracked target:
-   *  the removal report is channel-scoped, and a run that deletes without being able to report it
-   *  is a programming error, not a state to run through silently (the plan's own validation,
-   *  `replaceNeedsTrackedTarget`, is the first guard; this is the second). */
+   *  Throws, before anything is sent, for a plan with a `replace` row against an untracked target
+   *  — the second guard behind the plan's own validation (`replaceNeedsTrackedTarget`). The removal
+   *  report no longer needs a channel (it is set-centric, spec 6.5); both guards fall together with
+   *  the validation rule (spec 6.6), not here. */
   startImport(
     target: {
       setId: string;
@@ -432,6 +441,7 @@ export class SevenTvImportService {
     this.run.set(started);
     this.syncReport.set('idle');
     this.removalReport.set('idle');
+    this.removalReportReason.set(null);
     this.resyncTrigger.set('idle');
     this.abortedForPrivileges.set(false);
     this.protocolSaved.set(false);
@@ -448,6 +458,7 @@ export class SevenTvImportService {
     this.run.set(null);
     this.syncReport.set('idle');
     this.removalReport.set('idle');
+    this.removalReportReason.set(null);
     this.resyncTrigger.set('idle');
     this.abortedForPrivileges.set(false);
     this.skippedDuplicates.set(0);
@@ -612,9 +623,6 @@ export class SevenTvImportService {
     if (imported.length > 0) {
       this.reportImported(run);
     }
-    if (removed.length > 0) {
-      this.reportRemoved(run);
-    }
 
     // The resync is what actually pulls the changed emote rows into the *channel's active* set
     // view — only meaningful for a *tracked target on its active set* (T2.6/8.6 for the channel
@@ -626,13 +634,29 @@ export class SevenTvImportService {
     const adopted = run.result?.items.some(
       (item) => item.status === 'done' && item.transfer.action === 'adoptSourceName',
     );
-    if (imported.length === 0 && removed.length === 0 && !adopted) {
+    const resyncChannel =
+      (imported.length > 0 || removed.length > 0 || adopted === true) && run.targetIsActiveSet
+        ? run.targetChannelName
+        : null;
+
+    if (removed.length > 0) {
+      // With a removal report, the resync waits for its answer (spec 6.5, F15): the backend resyncs
+      // every channel that report touched and names it in `resyncTriggered` — a second resync of
+      // ours would only run into the per-channel cooldown. A failed report names nothing, so the
+      // resync runs as it always did.
+      this.reportRemoved(run, (resyncTriggered) => {
+        if (resyncChannel !== null && !includesChannel(resyncTriggered, resyncChannel)) {
+          this.triggerResync(run, resyncChannel);
+        }
+      });
       return;
     }
-    const channelName = run.targetChannelName;
-    if (channelName === null || !run.targetIsActiveSet) {
-      return;
+    if (resyncChannel !== null) {
+      this.triggerResync(run, resyncChannel);
     }
+  }
+
+  private triggerResync(run: ImportRunInfo, channelName: string): void {
     this.applyIfCurrent(run, () => this.resyncTrigger.set('pending'));
     this.channelService.resync(channelName).subscribe({
       next: () => this.applyIfCurrent(run, () => this.resyncTrigger.set('succeeded')),
@@ -681,31 +705,45 @@ export class SevenTvImportService {
     });
   }
 
-  /** The removal report: the channel-scoped `sync-deleted`, the delete run's own bookkeeping call
-   *  (a non-active set is paper only there, spec #200 6.6). A replace row only exists for a tracked
-   *  target (`startImport` refuses anything else), so there is always a channel to send it to. */
-  private reportRemoved(run: ImportRunInfo): void {
-    const channelName = run.targetChannelName;
-    if (channelName === null) {
-      return;
-    }
-    const sevenTvEmoteIds = removedTargetIds(run);
-    this.applyIfCurrent(run, () => this.removalReport.set('pending'));
+  /** The removal report: the set-centric `sync-deleted` (spec 6.5), the delete run's own
+   *  bookkeeping call — addressed to the set the run wrote into, tracked or not, with the target's
+   *  channel as the expected hit only when that set is the channel's active one (E18).
+   *  `afterReport` (the first report only, never a manual retry) runs once it has settled either
+   *  way, with the answer's `resyncTriggered` or, on failure, an empty list; it runs even for a
+   *  superseded run, only the state written here is guarded (`applyIfCurrent`). */
+  private reportRemoved(
+    run: ImportRunInfo,
+    afterReport?: (resyncTriggered: readonly string[]) => void,
+  ): void {
+    const sevenTvEmoteIds = [...new Set(removedTargetIds(run))];
+    this.applyIfCurrent(run, () => {
+      this.removalReport.set('pending');
+      this.removalReportReason.set(null);
+    });
 
-    this.emoteAdminService
-      .syncDeleted(channelName, { emoteSetId: run.targetSetId, sevenTvEmoteIds })
+    this.emoteSetService
+      .reportDeletedInSet(run.targetSetId, {
+        sevenTvEmoteIds,
+        expectedChannelName: run.targetIsActiveSet ? run.targetChannelName : null,
+      })
       .pipe(retryTransientSyncFailures())
       .subscribe({
-        next: (answer) =>
-          this.applyIfCurrent(run, () =>
-            this.removalReport.set(
-              answer.targetIsActiveSetOfChannel === false ||
-                answer.archivedCount >= sevenTvEmoteIds.length
-                ? 'succeeded'
-                : 'partial',
-            ),
-          ),
-        error: () => this.applyIfCurrent(run, () => this.removalReport.set('failed')),
+        next: (answer) => {
+          const outcome = classifySyncInSetResponse(answer, sevenTvEmoteIds.length);
+          this.applyIfCurrent(run, () => {
+            this.removalReport.set(outcome.state);
+            this.removalReportReason.set(outcome.reason);
+          });
+          afterReport?.(answer.resyncTriggered);
+        },
+        error: (error: HttpErrorResponse) => {
+          const outcome = classifySyncInSetFailure(error.status);
+          this.applyIfCurrent(run, () => {
+            this.removalReport.set(outcome.state);
+            this.removalReportReason.set(outcome.reason);
+          });
+          afterReport?.([]);
+        },
       });
   }
 
@@ -761,6 +799,13 @@ function preventUnload(event: BeforeUnloadEvent): void {
 
 /** Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a
  *  401/403. */
+/** Whether `channelName` is among the channels a report's answer says the backend resynced —
+ *  case-insensitive, since the backend answers with normalized names. */
+function includesChannel(channels: readonly string[], channelName: string): boolean {
+  const normalized = channelName.toLowerCase();
+  return channels.some((channel) => channel.toLowerCase() === normalized);
+}
+
 function retryTransientSyncFailures<T>() {
   return retry<T>({
     count: MAX_AUTOMATIC_SYNC_RETRIES,

@@ -11,6 +11,7 @@ import {
   DeleteQueueEmote,
   SevenTvDeleteService,
 } from './seven-tv-delete.service';
+import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
@@ -50,7 +51,21 @@ function rateLimitResponse(resetSeconds: number, limit: number | null = 100) {
 }
 
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
-const SYNC_ENDPOINT = '/api/channels/sensitron/emotes/sync-deleted';
+const SYNC_ENDPOINT = '/api/seventv/emote-sets/set-1/sync-deleted';
+const SYNC_ENDPOINT_SET_2 = '/api/seventv/emote-sets/set-2/sync-deleted';
+
+/** A set-centric `sync-deleted` answer (spec 5.3) — paper only by default. */
+function deletedAnswer(
+  overrides: Partial<SyncDeletedInSetResponse> = {},
+): SyncDeletedInSetResponse {
+  return {
+    reportedCount: 1,
+    channels: [],
+    unresolvedChannel: null,
+    resyncTriggered: [],
+    ...overrides,
+  };
+}
 
 const EMOTES: DeleteQueueEmote[] = [
   { emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU' },
@@ -96,7 +111,7 @@ describe('SevenTvDeleteService', () => {
   // Drives one emote all the way through the 7TV queue and returns the closing sync-deleted request,
   // which is what the sync-report tests below are actually about.
   function runOneDeleteToSyncRequest() {
-    service.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+    service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     return httpMock.expectOne(SYNC_ENDPOINT);
@@ -104,19 +119,73 @@ describe('SevenTvDeleteService', () => {
 
   describe('sync report', () => {
     it('reports success only when the backend archived everything', () => {
-      runOneDeleteToSyncRequest().flush({ archivedCount: 1, notFoundIds: [] });
+      runOneDeleteToSyncRequest().flush(
+        deletedAnswer({
+          channels: [{ channelName: 'sensitron', archivedCount: 1, notFoundIds: [] }],
+          resyncTriggered: ['sensitron'],
+        }),
+      );
 
       expect(service.syncReport()).toBe('succeeded');
+      expect(service.syncReportReason()).toBeNull();
     });
 
-    it('treats an under-count as partial — all ids in notFoundIds used to look like success', () => {
-      runOneDeleteToSyncRequest().flush({
-        archivedCount: 0,
-        notFoundIds: ['7tv-1'],
-        targetIsActiveSetOfChannel: true,
-      });
+    // AK 15, F8: a touched channel short of the reported ids is partial/shortfall.
+    it('treats an under-count as partial/shortfall — all ids in notFoundIds used to look like success', () => {
+      runOneDeleteToSyncRequest().flush(
+        deletedAnswer({
+          channels: [{ channelName: 'sensitron', archivedCount: 0, notFoundIds: ['7tv-1'] }],
+        }),
+      );
 
       expect(service.syncReport()).toBe('partial');
+      expect(service.syncReportReason()).toBe('shortfall');
+    });
+
+    // AK 15, E18: the expected channel was not hit (stale active set) — partial/channelMismatch.
+    it('treats an unresolved expected channel as partial/channelMismatch', () => {
+      runOneDeleteToSyncRequest().flush(
+        deletedAnswer({
+          unresolvedChannel: { channelName: 'sensitron', reason: 'activeSetDiffers' },
+          resyncTriggered: ['sensitron'],
+        }),
+      );
+
+      expect(service.syncReport()).toBe('partial');
+      expect(service.syncReportReason()).toBe('channelMismatch');
+    });
+
+    // AK 15: a revoked right is final — no automatic retry, failed/forbidden.
+    it('reads a 403 as failed/forbidden without retrying', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+      vi.advanceTimersByTime(10_000);
+      httpMock.expectNone(SYNC_ENDPOINT);
+    });
+
+    // AK 15, #224: a vanished set must never read as succeeded.
+    it('reads a 404 after the retries as failed/setNotFound, never succeeded', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 404, statusText: 'Not Found' });
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 404, statusText: 'Not Found' });
+      vi.advanceTimersByTime(4000);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 404, statusText: 'Not Found' });
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('setNotFound');
+    });
+
+    it('reads a 503 or a network failure after the retries as failed/unavailable', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 429, statusText: 'Too Many' });
+      vi.advanceTimersByTime(4000);
+      httpMock.expectOne(SYNC_ENDPOINT).error(new ProgressEvent('error'));
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('unavailable');
     });
 
     it('retries a transient failure and succeeds on the second attempt', () => {
@@ -124,7 +193,7 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReport()).toBe('pending');
 
       vi.advanceTimersByTime(2000);
-      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
 
       expect(service.syncReport()).toBe('succeeded');
     });
@@ -155,38 +224,43 @@ describe('SevenTvDeleteService', () => {
       service.retrySyncReport();
 
       const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
-      expect(retryReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
-      retryReq.flush({ archivedCount: 1, notFoundIds: [] });
+      expect(retryReq.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: 'sensitron',
+      });
+      retryReq.flush(deletedAnswer());
 
       expect(service.syncReport()).toBe('succeeded');
     });
 
-    it('reset() clears the sync report as well', () => {
+    it('reset() clears the sync report and its reason as well', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
+      expect(service.syncReportReason()).toBe('other');
 
       service.reset();
 
       expect(service.syncReport()).toBe('idle');
+      expect(service.syncReportReason()).toBeNull();
     });
   });
 
   it('does nothing without a stored token', () => {
     tokenService.clearToken();
 
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     expect(service.isRunning()).toBe(false);
     expect(service.queue()).toEqual([]);
   });
 
   it('does nothing when the emote list is empty', () => {
-    service.startDelete('set-1', 'sensitron', []);
+    service.startDelete('set-1', 'sensitron', [], 'sensitron');
 
     expect(service.isRunning()).toBe(false);
   });
 
   it('keys every queue row by its 7TV id', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     expect(service.queue().map((item) => item.key)).toEqual(['7tv-1', '7tv-2']);
 
@@ -194,11 +268,11 @@ describe('SevenTvDeleteService', () => {
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
-    httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 2, notFoundIds: [] });
+    httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
   });
 
   it('deletes emotes sequentially with a delay, then syncs the archived ids', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     expect(service.isRunning()).toBe(true);
     expect(service.queue().map((i) => i.status)).toEqual(['in-progress', 'pending']);
@@ -223,16 +297,16 @@ describe('SevenTvDeleteService', () => {
     expect(service.isRunning()).toBe(false);
     expect(service.progress()).toEqual({ finished: 2, total: 2 });
 
-    const syncReq = httpMock.expectOne('/api/channels/sensitron/emotes/sync-deleted');
+    const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
     expect(syncReq.request.body).toEqual({
-      emoteSetId: 'set-1',
       sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+      expectedChannelName: 'sensitron',
     });
-    syncReq.flush({ archivedCount: 2, notFoundIds: [] });
+    syncReq.flush(deletedAnswer());
   });
 
   it('marks a GraphQL error response as failed and continues the queue', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'emote not found' }] });
 
@@ -244,14 +318,17 @@ describe('SevenTvDeleteService', () => {
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
     // Only the successful one gets synced back to Postgres.
-    const syncReq = httpMock.expectOne('/api/channels/sensitron/emotes/sync-deleted');
-    expect(syncReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-2'] });
-    syncReq.flush({ archivedCount: 1, notFoundIds: [] });
+    const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
+    expect(syncReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-2'],
+      expectedChannelName: 'sensitron',
+    });
+    syncReq.flush(deletedAnswer());
   });
 
   describe('7TV rate limiting', () => {
     it('waits out the reported reset and retries the same emote instead of failing it', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
 
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30));
 
@@ -270,11 +347,11 @@ describe('SevenTvDeleteService', () => {
       expect(service.rateLimitPauseSeconds()).toBeNull();
 
       vi.advanceTimersByTime(330);
-      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
     it('re-paces the rest of the run from the reported quota', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES);
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
       // limit 100 over a window of 0ms elapsed + 30s remaining => 300ms/request, +10% margin => 330ms.
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30, 100));
@@ -289,11 +366,11 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(GQL_ENDPOINT).flush({});
 
       vi.advanceTimersByTime(330);
-      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 2, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
     it('gives up on an emote after the retries are exhausted, without stalling the queue', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
 
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(1));
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -307,7 +384,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('backs off a bare HTTP 429 for a full window without mis-learning a pace from it', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
 
       httpMock
         .expectOne(GQL_ENDPOINT)
@@ -322,17 +399,17 @@ describe('SevenTvDeleteService', () => {
       expect(service.queue()[0].status).toBe('done');
       // A headerless rejection carries no quota, so the starting pace must survive it.
       vi.advanceTimersByTime(DELETE_DELAY_MS);
-      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
     it('reports the achieved rate at the end of a run — the only way we learn 7TVs real quota', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES);
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
       httpMock.expectOne(GQL_ENDPOINT).flush({});
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       httpMock.expectOne(GQL_ENDPOINT).flush({});
       vi.advanceTimersByTime(DELETE_DELAY_MS);
-      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 2, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
 
       expect(console.info).toHaveBeenCalledWith(
         '[EmotePurge] 7TV mass delete finished',
@@ -348,7 +425,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('counts only the busiest 60s span, not the whole run', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES);
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
       httpMock.expectOne(GQL_ENDPOINT).flush({});
       vi.advanceTimersByTime(DELETE_DELAY_MS);
@@ -360,7 +437,7 @@ describe('SevenTvDeleteService', () => {
 
       // Re-paced to (275ms elapsed + 90s reset) / 100 * 1.1 ≈ 993ms.
       vi.advanceTimersByTime(993);
-      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 2, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
 
       expect(console.info).toHaveBeenCalledWith(
         '[EmotePurge] 7TV mass delete finished',
@@ -369,7 +446,7 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('cancel() during a rate-limit pause stops the run and clears the countdown', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES);
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
       httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30));
 
       service.cancel();
@@ -384,7 +461,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('clears the stored token and reports a friendly message on 401', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     httpMock.expectOne(GQL_ENDPOINT).flush(null, { status: 401, statusText: 'Unauthorized' });
 
@@ -395,13 +472,11 @@ describe('SevenTvDeleteService', () => {
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
-    httpMock
-      .expectOne('/api/channels/sensitron/emotes/sync-deleted')
-      .flush({ archivedCount: 1, notFoundIds: [] });
+    httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
   });
 
   it('cancel() marks pending/in-progress items as cancelled and stops the run', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
     httpMock.expectOne(GQL_ENDPOINT).flush({});
 
     // Second item is now 'pending', waiting out the inter-request delay — cancel before it fires.
@@ -411,9 +486,12 @@ describe('SevenTvDeleteService', () => {
     expect(service.queue().map((i) => i.status)).toEqual(['done', 'cancelled']);
 
     // Only the already-done emote gets synced back.
-    const syncReq = httpMock.expectOne('/api/channels/sensitron/emotes/sync-deleted');
-    expect(syncReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
-    syncReq.flush({ archivedCount: 1, notFoundIds: [] });
+    const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
+    expect(syncReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-1'],
+      expectedChannelName: 'sensitron',
+    });
+    syncReq.flush(deletedAnswer());
 
     // Advancing time afterwards must not fire the second (cancelled) request.
     vi.advanceTimersByTime(DELETE_DELAY_MS);
@@ -421,12 +499,10 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('reset() clears the queue', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     service.cancel();
-    httpMock
-      .expectOne('/api/channels/sensitron/emotes/sync-deleted')
-      .flush({ archivedCount: 1, notFoundIds: [] });
+    httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
 
     service.reset();
 
@@ -443,7 +519,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('resetIfChannelChanged() clears a finished run when entering another channel', () => {
-    runOneDeleteToSyncRequest().flush({ archivedCount: 1, notFoundIds: [] });
+    runOneDeleteToSyncRequest().flush(deletedAnswer());
 
     service.resetIfChannelChanged('other-channel');
 
@@ -452,7 +528,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('resetIfChannelChanged() keeps a finished run in its own channel', () => {
-    runOneDeleteToSyncRequest().flush({ archivedCount: 1, notFoundIds: [] });
+    runOneDeleteToSyncRequest().flush(deletedAnswer());
 
     service.resetIfChannelChanged('sensitron');
 
@@ -461,7 +537,7 @@ describe('SevenTvDeleteService', () => {
   });
 
   it('resetIfChannelChanged() leaves a running run alone, even for another channel', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     service.resetIfChannelChanged('other-channel');
 
@@ -473,7 +549,7 @@ describe('SevenTvDeleteService', () => {
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
-    httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 2, notFoundIds: [] });
+    httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
   });
 
   // R15 (#72, T12): finish() flips isRunning() to false *before* the closing sync-deleted call
@@ -484,13 +560,13 @@ describe('SevenTvDeleteService', () => {
     expect(service.isRunning()).toBe(false); // finish() already flipped this before the follow-up
 
     // A second run starts, for a different channel, before run 1's answer comes back.
-    service.startDelete('set-2', 'other-channel', [EMOTES[1]]);
+    service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel');
     expect(service.isRunning()).toBe(true);
     expect(service.syncReport()).toBe('idle'); // run 2's own state, reset at start
     expect(service.lastRun()).toBeNull(); // run 2 has not finished yet
 
     // Run 1's late answer resolves successfully — even so, it must not resurrect run 1's outcome.
-    staleSyncReq.flush({ archivedCount: 1, notFoundIds: [] });
+    staleSyncReq.flush(deletedAnswer());
     expect(service.syncReport()).toBe('idle');
     expect(service.lastRun()).toBeNull();
 
@@ -498,9 +574,7 @@ describe('SevenTvDeleteService', () => {
     // flank along with the stale one.
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
-    httpMock
-      .expectOne('/api/channels/other-channel/emotes/sync-deleted')
-      .flush({ archivedCount: 1, notFoundIds: [] });
+    httpMock.expectOne(SYNC_ENDPOINT_SET_2).flush(deletedAnswer());
 
     expect(service.syncReport()).toBe('succeeded');
     expect(service.lastRun()?.channelName).toBe('other-channel');
@@ -508,23 +582,34 @@ describe('SevenTvDeleteService', () => {
 
     // A retry now must send run 2's ids to run 2's channel and set, never run 1's.
     service.retrySyncReport();
-    const retryReq = httpMock.expectOne('/api/channels/other-channel/emotes/sync-deleted');
-    expect(retryReq.request.body).toEqual({ emoteSetId: 'set-2', sevenTvEmoteIds: ['7tv-2'] });
-    retryReq.flush({ archivedCount: 1, notFoundIds: [] });
+    const retryReq = httpMock.expectOne(SYNC_ENDPOINT_SET_2);
+    expect(retryReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-2'],
+      expectedChannelName: 'other-channel',
+    });
+    retryReq.flush(deletedAnswer());
   });
 
   // Spec #200, 7.2 / AK 68: a set-view row may have no local emote at all — it runs, is reported by
   // its 7TV id, and keeps `emoteId` absent on the item the protocol is written from.
   it('runs a row without an emoteId and reports it by its 7TV id', () => {
-    service.startDelete('set-1', 'sensitron', [{ sevenTvEmoteId: '7tv-live', name: 'LiveOnly' }]);
+    service.startDelete(
+      'set-1',
+      'sensitron',
+      [{ sevenTvEmoteId: '7tv-live', name: 'LiveOnly' }],
+      'sensitron',
+    );
 
     expect(service.queue()[0].key).toBe('7tv-live');
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
     const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
-    expect(syncReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-live'] });
-    syncReq.flush({ archivedCount: 1, notFoundIds: [] });
+    expect(syncReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-live'],
+      expectedChannelName: 'sensitron',
+    });
+    syncReq.flush(deletedAnswer());
     expect(service.lastRun()?.result.doneKeys).toEqual(['7tv-live']);
     expect(service.lastRun()?.result.items[0].emoteId).toBeUndefined();
   });
@@ -533,44 +618,61 @@ describe('SevenTvDeleteService', () => {
   // afterwards (modelled here by a refused second start naming another set), the first report and
   // the manual retry both name the run's own set.
   it('reports and retries with the set id frozen at the start of the run', () => {
-    service.startDelete('set-1', 'sensitron', [EMOTES[0]]);
-    service.startDelete('set-2', 'sensitron', [EMOTES[1]]);
+    service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+    service.startDelete('set-2', 'sensitron', [EMOTES[1]], 'sensitron');
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
+    // The set is in the route now: the report is addressed to set-1, never to set-2.
     const firstReport = httpMock.expectOne(SYNC_ENDPOINT);
-    expect(firstReport.request.body.emoteSetId).toBe('set-1');
+    httpMock.expectNone(SYNC_ENDPOINT_SET_2);
     firstReport.flush(null, { status: 401, statusText: 'Unauthorized' });
     expect(service.lastRun()?.setId).toBe('set-1');
 
     service.retrySyncReport();
     const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
-    expect(retryReq.request.body).toEqual({ emoteSetId: 'set-1', sevenTvEmoteIds: ['7tv-1'] });
-    retryReq.flush({ archivedCount: 1, notFoundIds: [] });
+    expect(retryReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-1'],
+      expectedChannelName: 'sensitron',
+    });
+    retryReq.flush(deletedAnswer());
   });
 
-  // Spec 6.6, E3: the legacy `{ emoteIds }` body stays valid on the server for old tabs, but this
+  // Spec 5.1, E3: the legacy `{ emoteIds }` body stays valid on the server for old tabs, but this
   // client never sends it — not even when every row carries a Guid.
-  it('sends only the set-scoped body form, never the legacy emoteIds', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+  it('sends only the set-centric body form, never the legacy emoteIds', () => {
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
 
     const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
-    expect(Object.keys(syncReq.request.body).sort()).toEqual(['emoteSetId', 'sevenTvEmoteIds']);
+    expect(Object.keys(syncReq.request.body).sort()).toEqual([
+      'expectedChannelName',
+      'sevenTvEmoteIds',
+    ]);
     expect(syncReq.request.body.emoteIds).toBeUndefined();
-    syncReq.flush({ archivedCount: 2, notFoundIds: [] });
+    syncReq.flush(deletedAnswer());
   });
 
   // Sonde 5, branch A (spec 7.2, AK 68): one REMOVE without an alias takes both entries of a #74
   // duplicate, so the cell is one queue row and one request — carrying both aliases for the
   // protocol.
   it('runs a duplicate cell as one row with one REMOVE and keeps both aliases', () => {
-    service.startDelete('set-1', 'sensitron', [
-      { emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
-    ]);
+    service.startDelete(
+      'set-1',
+      'sensitron',
+      [
+        {
+          emoteId: 'internal-1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'PogU',
+          aliases: ['PogU', 'PogU2'],
+        },
+      ],
+      'sensitron',
+    );
 
     expect(service.queue()).toHaveLength(1);
     expect(service.queue()[0].key).toBe('7tv-1');
@@ -582,27 +684,37 @@ describe('SevenTvDeleteService', () => {
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     httpMock.expectNone(GQL_ENDPOINT);
 
-    httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 1, notFoundIds: [] });
+    httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     expect(service.lastRun()?.result.doneKeys).toEqual(['7tv-1']);
   });
 
-  // Spec 6.6: a report for a set that is not the channel's active one is paper only — the server
-  // archives nothing by design, so `archivedCount: 0` there is not a shortfall.
-  it('treats a paper-only answer for a non-active set as succeeded, not partial', () => {
-    runOneDeleteToSyncRequest().flush({
-      archivedCount: 0,
-      notFoundIds: [],
-      targetIsActiveSetOfChannel: false,
+  // Spec 4.6 point 21 / 6.5: a delete from a set that is not the page's active one expects no
+  // channel, and the server's paper-only answer (`channels: []`) is a plain success, not partial.
+  it('reports a non-active set with no expected channel and reads the paper-only answer as succeeded', () => {
+    service.startDelete('set-2', 'sensitron', [EMOTES[0]], null);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+    const syncReq = httpMock.expectOne(SYNC_ENDPOINT_SET_2);
+    expect(syncReq.request.body).toEqual({
+      sevenTvEmoteIds: ['7tv-1'],
+      expectedChannelName: null,
     });
+    syncReq.flush(deletedAnswer());
 
     expect(service.syncReport()).toBe('succeeded');
+    expect(service.syncReportReason()).toBeNull();
+    // The delete has no resync of its own (spec 6.5).
+    httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    // The run record keeps the page's channel for the protocol, whatever it expected.
+    expect(service.lastRun()?.channelName).toBe('sensitron');
   });
 
   it('does not start a second run while one is already in progress', () => {
-    service.startDelete('set-1', 'sensitron', EMOTES);
+    service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
     const firstQueueLength = service.queue().length;
 
-    service.startDelete('set-2', 'other-channel', [EMOTES[0]]);
+    service.startDelete('set-2', 'other-channel', [EMOTES[0]], 'other-channel');
 
     expect(service.queue()).toHaveLength(firstQueueLength);
 
@@ -610,9 +722,7 @@ describe('SevenTvDeleteService', () => {
     vi.advanceTimersByTime(DELETE_DELAY_MS);
     httpMock.expectOne(GQL_ENDPOINT).flush({});
     vi.advanceTimersByTime(DELETE_DELAY_MS);
-    httpMock
-      .expectOne('/api/channels/sensitron/emotes/sync-deleted')
-      .flush({ archivedCount: 2, notFoundIds: [] });
+    httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
   });
 
   // The arbiter (#70, Task 4) has no lock of its own — it reads this service's own isRunning
@@ -627,21 +737,19 @@ describe('SevenTvDeleteService', () => {
     });
 
     it('reports "delete" as the active run while this service runs, then null once it ends', () => {
-      service.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
 
       expect(arbiter.activeRun()).toBe('delete');
 
       httpMock.expectOne(GQL_ENDPOINT).flush({});
       vi.advanceTimersByTime(DELETE_DELAY_MS);
-      httpMock
-        .expectOne('/api/channels/sensitron/emotes/sync-deleted')
-        .flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
 
       expect(arbiter.activeRun()).toBeNull();
     });
 
     it('clears the active run once cancel() ends it', () => {
-      service.startDelete('set-1', 'sensitron', EMOTES);
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
       httpMock.expectOne(GQL_ENDPOINT).flush({});
 
       service.cancel();
@@ -649,15 +757,13 @@ describe('SevenTvDeleteService', () => {
       expect(arbiter.activeRun()).toBeNull();
 
       // Drain the closing sync-deleted call so afterEach's httpMock.verify() stays green.
-      httpMock
-        .expectOne('/api/channels/sensitron/emotes/sync-deleted')
-        .flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
     it('leaves no active run when the engine refuses the start for a cleared token', () => {
       tokenService.clearToken();
 
-      service.startDelete('set-1', 'sensitron', EMOTES);
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
       expect(service.isRunning()).toBe(false);
       expect(arbiter.activeRun()).toBeNull();
@@ -683,7 +789,7 @@ describe('SevenTvDeleteService', () => {
 
     it('is dropped at once once the confirmed delete actually became a run', () => {
       service.beginConfirmedRun();
-      service.startDelete('set-1', 'sensitron', EMOTES);
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
       httpMock.expectOne(GQL_ENDPOINT).flush({});
 
       service.endConfirmedRun();
@@ -693,7 +799,7 @@ describe('SevenTvDeleteService', () => {
       expect(service.confirmedRunPending()).toBe(false);
 
       service.cancel();
-      httpMock.expectOne(SYNC_ENDPOINT).flush({ archivedCount: 1, notFoundIds: [] });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
     it('is held for the abort notice when no run started, and clears itself afterwards', () => {

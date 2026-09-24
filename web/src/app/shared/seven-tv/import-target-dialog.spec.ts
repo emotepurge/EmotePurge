@@ -76,6 +76,7 @@ function account(
     activeEmoteSetId: null,
     sets: [],
     setsUnavailable: false,
+    sevenTvUserId: 'owner-1',
     ...overrides,
   };
 }
@@ -90,6 +91,10 @@ function set(
     isActive: false,
     isPersonal: false,
     ownerDisplayName: 'SomeOwner',
+    ownerSevenTvUserId: 'owner-1',
+    // Every existing test below predates `editable` and expects every mocked set to be a valid
+    // target — spec F9's "Default true" for the same reason `mockEmoteSetTargets` picks it.
+    editable: true,
     ...overrides,
   };
 }
@@ -135,17 +140,23 @@ interface Harness {
 describe('ImportTargetDialog', () => {
   let dialogData: ImportTargetDialogData;
   let closed: (ImportTargetChoice | undefined)[];
-  /** One entry per `listEmoteSetTargets()` call — a fresh `Subject` each time, so a test can resolve
-   *  a specific attempt (e.g. the first, superseded one stays open while the retry answers). */
+  /** One entry per `loadCachedEmoteSetTargets()` call — a fresh `Subject` each time, so a test can
+   *  resolve a specific attempt (e.g. the first, superseded one stays open while the retry
+   *  answers). */
   let listTargetsCalls: Subject<EmoteSetTargetsResponse>[];
-  let listEmoteSetTargets: ReturnType<typeof vi.fn>;
+  /** The `{ refresh }` option each call above was made with, same index as {@link listTargetsCalls}
+   *  — what the reload-forces-refresh test (spec 6.2, F3) reads. */
+  let listTargetsOptions: { refresh?: boolean }[];
+  let loadCachedEmoteSetTargets: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     closed = [];
     listTargetsCalls = [];
-    listEmoteSetTargets = vi.fn(() => {
+    listTargetsOptions = [];
+    loadCachedEmoteSetTargets = vi.fn((options: { refresh?: boolean } = {}) => {
       const subject = new Subject<EmoteSetTargetsResponse>();
       listTargetsCalls.push(subject);
+      listTargetsOptions.push(options);
       return subject;
     });
 
@@ -168,7 +179,7 @@ describe('ImportTargetDialog', () => {
         },
         {
           provide: SevenTvEmoteSetService,
-          useValue: { listEmoteSetTargets } as unknown as SevenTvEmoteSetService,
+          useValue: { loadCachedEmoteSetTargets } as unknown as SevenTvEmoteSetService,
         },
       ],
     }).compileComponents();
@@ -179,8 +190,9 @@ describe('ImportTargetDialog', () => {
   /**
    * One dialog per test, mirroring `import-confirm-dialog.spec.ts`: `DIALOG_DATA` is resolved once
    * per injector. `fixture.detectChanges()` flushes the `rxResource`'s initial effect, which is what
-   * actually issues the `listEmoteSetTargets()` call — a test that never calls `detect()`/resolves
-   * the subject inspects the dialog while it is still in the (only) loading state.
+   * actually issues the `loadCachedEmoteSetTargets()` call — a test that never calls
+   * `detect()`/resolves the subject inspects the dialog while it is still in the (only) loading
+   * state.
    */
   function render(data: ImportTargetDialogData = defaultData()): Harness {
     dialogData = data;
@@ -237,8 +249,8 @@ describe('ImportTargetDialog', () => {
   }
 
   /**
-   * Resolves the `index`-th `listEmoteSetTargets()` call and flushes the resulting re-render.
-   * `rxResource` settles the underlying `resource()` primitive through a promise (see
+   * Resolves the `index`-th `loadCachedEmoteSetTargets()` call and flushes the resulting
+   * re-render. `rxResource` settles the underlying `resource()` primitive through a promise (see
    * `@angular/core/rxjs-interop`'s `rxResource`), so the update only lands after a microtask —
    * `whenStable()` is what actually waits for that, `detectChanges()` alone is not enough.
    */
@@ -378,14 +390,29 @@ describe('ImportTargetDialog', () => {
       expect(dialog.text()).not.toContain('Die Angebotsliste ist gerade unvollständig');
     });
 
-    it('re-issues listEmoteSetTargets() through targetsResource.reload() when the retry button is clicked', async () => {
+    it('re-issues loadCachedEmoteSetTargets() through targetsResource.reload() when the retry button is clicked', async () => {
       const dialog = render();
       await fail(dialog, 0, new HttpErrorResponse({ status: 500 }));
 
       dialog.button(RETRY).click();
       dialog.detect();
 
-      expect(listEmoteSetTargets).toHaveBeenCalledTimes(2);
+      expect(loadCachedEmoteSetTargets).toHaveBeenCalledTimes(2);
+    });
+
+    // Spec 6.2/F3, T4 brief: "Der Picker liest dieselbe Kopie (sein `reload` erzwingt `refresh`)" —
+    // the initial load may be a cache hit (another pre-check already warmed it this minute), but a
+    // load the user explicitly asked to retry must never come back stale from that same cache.
+    it('forces refresh:true on the retried load — the initial load does not', async () => {
+      const dialog = render();
+      await fail(dialog, 0, new HttpErrorResponse({ status: 500 }));
+
+      expect(listTargetsOptions[0]).toEqual({ refresh: false });
+
+      dialog.button(RETRY).click();
+      dialog.detect();
+
+      expect(listTargetsOptions[1]).toEqual({ refresh: true });
     });
 
     it('shows only the offer-incomplete info notice when sevenTvUnavailable is true on an otherwise-successful load', async () => {

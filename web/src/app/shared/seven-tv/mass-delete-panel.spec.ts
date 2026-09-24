@@ -8,11 +8,12 @@ import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService, SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { JSON_MIME } from '../export/export-envelope';
 import { DeleteConfirmDialog, DeleteConfirmDialogData } from './delete-confirm-dialog';
@@ -142,6 +143,7 @@ describe('MassDeletePanel row composition', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun: signal(null),
           } as unknown as SevenTvDeleteService,
@@ -152,6 +154,7 @@ describe('MassDeletePanel row composition', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
@@ -293,6 +296,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun,
           } as unknown as SevenTvDeleteService,
@@ -303,6 +307,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
@@ -440,6 +445,7 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun: signal(null),
           } as unknown as SevenTvDeleteService,
@@ -450,6 +456,7 @@ describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => 
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
@@ -592,6 +599,7 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun: signal(null),
           } as unknown as SevenTvDeleteService,
@@ -615,6 +623,7 @@ describe('MassDeletePanel — resync and duplicate-check notices are shown, not 
               },
             ]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger,
             skippedDuplicates: signal(0),
@@ -688,6 +697,7 @@ type DeleteServiceFake = Pick<
   | 'isRunning'
   | 'queue'
   | 'syncReport'
+  | 'syncReportReason'
   | 'rateLimitPauseSeconds'
   | 'lastRun'
   | 'confirmedRunPending'
@@ -701,6 +711,7 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     isRunning: signal(false),
     queue: signal<RunQueueItem[]>([]),
     syncReport: signal<SyncReportState>('idle'),
+    syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
     lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
     // The dock's claim on a confirmed-but-not-yet-running delete. Spied rather than implemented:
@@ -721,6 +732,7 @@ type RestoreServiceFake = Pick<
   | 'isRunning'
   | 'queue'
   | 'syncReport'
+  | 'syncReportReason'
   | 'rateLimitPauseSeconds'
   | 'resyncTrigger'
   | 'skippedDuplicates'
@@ -734,6 +746,7 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
     isRunning: signal(false),
     queue: signal<RunQueueItem[]>([]),
     syncReport: signal<SyncReportState>('idle'),
+    syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
     resyncTrigger: signal('idle'),
     skippedDuplicates: signal(0),
@@ -1591,10 +1604,15 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
     fixture.componentInstance['openConfirm']();
     closed.next(true);
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
-      { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+        { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
+      ],
+      'somechannel',
+    );
   });
 
   it('starts nothing once the panel itself is gone when the dialog confirms', () => {
@@ -1718,10 +1736,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       ]),
     );
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   // Superseded by #227 P1 (below, "blocks the whole run…"): a cell the live read does not know at
@@ -1745,10 +1768,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
         ]),
       );
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogUOld', 'PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogUOld', 'PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   // The degenerate case: the fallback name happens to already be one of the live aliases — nothing
@@ -1776,9 +1804,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     confirm();
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+    );
   });
 
   it('deletes nothing when the live read fails, and says why', () => {
@@ -1897,10 +1928,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     confirm();
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }, { id: '7tv-2' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   /** The three dock-claim calls of the fake service, typed for the block below. */
@@ -2152,9 +2188,13 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     confirm();
 
     httpMock.expectNone(GQL);
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
-    ]);
+    // Spec 4.6 point 21: a delete from a non-active set expects no channel (`null`).
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] }],
+      null,
+    );
   });
 
   // A caller that leaves this specific input false makes no active-set read regardless of any
@@ -2191,10 +2231,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       ]),
     );
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   it('does not sweep in an id added to the live selection only after the dialog was confirmed', () => {
@@ -2236,9 +2281,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
     closed.next(true);
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+    );
   });
 
   // The same thing on the branch that actually matters, checked against what the dialog itself last
@@ -2261,9 +2309,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     closed.next(true);
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+    );
   });
 
   // The extreme of the same reload: nothing is left to delete at confirm time. startDelete would
@@ -2404,14 +2455,19 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
     expect(req.request.body.variables.id).toBe('set-halloween');
     req.flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-halloween', 'somechannel', [
-      {
-        emoteId: 'e1',
-        sevenTvEmoteId: '7tv-pump',
-        name: 'PumpkinAtCreation',
-        aliases: ['Pumpkin'],
-      },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-halloween',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin'],
+        },
+      ],
+      null,
+    );
   });
 
   it('records every alias of a #74 duplicate read live from the non-active set', async () => {
@@ -2431,14 +2487,19 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
       ]),
     );
 
-    expect(startDelete).toHaveBeenCalledWith('set-halloween', 'somechannel', [
-      {
-        emoteId: 'e1',
-        sevenTvEmoteId: '7tv-pump',
-        name: 'PumpkinAtCreation',
-        aliases: ['Pumpkin', 'Pumpkin2'],
-      },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-halloween',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin', 'Pumpkin2'],
+        },
+      ],
+      null,
+    );
   });
 
   // The behaviour #227's issue explicitly asks for: a delete must not silently continue under the
@@ -2495,14 +2556,19 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
     confirm();
 
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      {
-        emoteId: 'e1',
-        sevenTvEmoteId: '7tv-pump',
-        name: 'PumpkinAtCreation',
-        aliases: ['Pumpkin'],
-      },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin'],
+        },
+      ],
+      'somechannel',
+    );
   });
 
   // Opus review P1 (#227): the exact case the issue describes — Ghost was on the frozen ballot,
@@ -2666,7 +2732,16 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
     httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
 
     expect(startRestore).toHaveBeenCalledTimes(1);
-    expect(startRestore.mock.calls[0][1]).toBe(RUN_CHANNEL);
+    // Interim target (spec 6.4) built from the delete run's own values: its set is the active one
+    // here, so its channel is the expected hit and there is no client resync.
+    expect(startRestore.mock.calls[0][0]).toEqual({
+      setId: 'set-1',
+      expectedChannelName: RUN_CHANNEL,
+      resyncChannelName: null,
+      hostChannelName: RUN_CHANNEL,
+      setName: 'set-1',
+      ownerOrChannelLabel: RUN_CHANNEL,
+    });
   });
   // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
   // same per-alias check as the file restore — here, the run's one alias is already back.
@@ -2688,6 +2763,12 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
       },
     });
 
-    expect(startRestore).toHaveBeenCalledWith('set-1', RUN_CHANNEL, [], 1, true, 0);
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: 'set-1', hostChannelName: RUN_CHANNEL }),
+      [],
+      1,
+      true,
+      0,
+    );
   });
 });

@@ -232,13 +232,49 @@ describe('startRestoreFlow', () => {
     // whether that check actually ran — true, since the fetch succeeded (#149). Sixth is how many
     // aliases it left out because another emote holds the name — 0, nothing is held.
     expect(startRestore).toHaveBeenCalledWith(
-      SET_ID,
-      CHANNEL,
+      expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
       [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       0,
       true,
       0,
     );
+  });
+
+  // Spec 6.4, E12, E18 (interim derivation from the page's frozen values): the page's active set
+  // makes its channel the expected hit and leaves the resync to the backend; a non-active set of
+  // the page's channel expects no channel and names it for the client's own resync.
+  describe('restore start target (spec 6.4)', () => {
+    it('expects the page channel and resyncs nothing itself for the active set', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: CHANNEL,
+        resyncChannelName: null,
+        hostChannelName: CHANNEL,
+        setName: SET_NAME,
+        ownerOrChannelLabel: CHANNEL,
+      });
+    });
+
+    it('expects no channel and names the page channel for its own resync for a non-active set', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, CHANNEL, SET_ID, null, false, rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: null,
+        resyncChannelName: CHANNEL,
+        hostChannelName: CHANNEL,
+        setName: SET_ID,
+        ownerOrChannelLabel: CHANNEL,
+      });
+    });
   });
 
   // #149/T5: restore never had any duplicate protection — these two pin the fix in from the flow
@@ -267,7 +303,13 @@ describe('startRestoreFlow', () => {
       startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 1, true, 0);
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        1,
+        true,
+        0,
+      );
     });
 
     // A second restore over the exact same protocol rows — e.g. the user runs restore, then runs
@@ -281,7 +323,13 @@ describe('startRestoreFlow', () => {
       startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, theRows);
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], theRows.length, true, 0);
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        theRows.length,
+        true,
+        0,
+      );
     });
 
     // #149 P1 (independent review): the first version of this check asked our own database
@@ -302,8 +350,7 @@ describe('startRestoreFlow', () => {
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
@@ -322,8 +369,7 @@ describe('startRestoreFlow', () => {
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
         1,
         true,
@@ -340,7 +386,13 @@ describe('startRestoreFlow', () => {
       startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 2, true, 0);
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        2,
+        true,
+        0,
+      );
     });
 
     // A purge-run row whose name another emote took since the purge: left out before the run
@@ -354,8 +406,7 @@ describe('startRestoreFlow', () => {
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
         0,
         true,
@@ -375,8 +426,7 @@ describe('startRestoreFlow', () => {
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         false,

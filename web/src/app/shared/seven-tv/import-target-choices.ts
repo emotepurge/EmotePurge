@@ -3,10 +3,13 @@ import {
   EmoteSetTargetsResponse,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
 
-/** Why a set's radio is disabled — spec 8.6, second/third bullet. Positively named after the rule
- *  that makes a set unselectable ("is NORMAL"), not after every kind that fails it: a future fifth
- *  `kind` value must land as `notNormalKind` without a code change here. */
-export type ImportTargetDisabledReason = 'notNormalKind' | 'isSourceSet';
+/** Why a set's radio is disabled — spec 8.6, second/third bullet; `notEditable` added by spec 5.8/
+ *  E19 (#253, AK 29): a set the response lists but marks `editable: false` (F16 — no owner id
+ *  7TV would let the backend match, or matched to none of the caller's own readable accounts).
+ *  Positively named after the rule that makes a set unselectable ("is NORMAL"), not after every
+ *  kind that fails it: a future fifth `kind` value must land as `notNormalKind` without a code
+ *  change here. */
+export type ImportTargetDisabledReason = 'notNormalKind' | 'isSourceSet' | 'notEditable';
 
 /** One selectable set row of the target picker (spec 8.6, addendum 39). Carries everything the
  *  dialog needs at selection time to build the eventual `ImportTargetChoice` it closes with —
@@ -183,16 +186,21 @@ function toAccountGroup(
         unknownOwnerLabel,
       ),
       isActive: set.isActive,
-      disabled: set.id === sourceEmoteSetId || set.kind !== 'NORMAL',
+      disabled: set.id === sourceEmoteSetId || set.kind !== 'NORMAL' || !set.editable,
       disabledReason:
         // The source takes precedence when (implausibly) both apply — "this is where it came
         // from" is the more specific, more actionable reason of the two. `notNormalKind` can now
         // only ever mean GLOBAL/SPECIAL — PERSONAL is filtered out above before this ternary runs.
+        // `notEditable` is checked last (spec #253, brief T4): a non-NORMAL kind is already the
+        // more specific reason a set never reaches this picker at all (E11), so a set that is
+        // both wins on `notNormalKind`, not on the ownership question `editable` answers.
         set.id === sourceEmoteSetId
           ? 'isSourceSet'
           : set.kind !== 'NORMAL'
             ? 'notNormalKind'
-            : null,
+            : !set.editable
+              ? 'notEditable'
+              : null,
     })),
   };
 }

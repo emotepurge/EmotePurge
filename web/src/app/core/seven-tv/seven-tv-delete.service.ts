@@ -3,7 +3,8 @@ import { inject, Injectable, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { retry, throwError, timer } from 'rxjs';
 
-import { EmoteAdminService, SyncDeletedResult } from '../emotes/emote-admin.service';
+import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
   RunItemStatus,
   RunOperation,
@@ -13,6 +14,13 @@ import {
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import {
+  SyncReportOutcome,
+  SyncReportReason,
+  SyncReportState,
+  classifySyncInSetFailure,
+  classifySyncInSetResponse,
+} from './sync-report-outcome';
 
 /** Kept under its historical name — the engine's constant is the same value. */
 export { RUN_DELAY_MS as DELETE_DELAY_MS } from './seven-tv-run-engine';
@@ -75,10 +83,6 @@ export interface DeleteQueueEmote {
 export type DeleteItemStatus = RunItemStatus;
 export type DeleteQueueItem = RunQueueItem;
 
-/** Outcome of reporting the finished run back to our own API (not to 7TV).
- *  'partial' means the call succeeded but the backend archived fewer emotes than we reported. */
-export type SyncReportState = 'idle' | 'pending' | 'succeeded' | 'partial' | 'failed';
-
 /**
  * One delete run, from the moment it starts to the moment its closing report is done. Everything
  * the asynchronous follow-up needs hangs off *this* object, never off a field next to the service
@@ -91,7 +95,14 @@ export type SyncReportState = 'idle' | 'pending' | 'succeeded' | 'partial' | 'fa
  * `ImportRunInfo` in `seven-tv-import.service.ts`.
  */
 interface DeleteRunInfo {
+  /** The channel of the page the run was started on — the purge protocol's envelope
+   *  `channelName`, its filename and `resetIfChannelChanged` read it (spec 6.5). No longer the
+   *  addressee of the report: that is the set (`setId`), with `expectedChannelName` beside it. */
   channelName: string;
+  /** The tracked channel the report expects to touch (spec 4.6 point 21, E18): the page's channel
+   *  when the run's set is its active one, otherwise `null`. Frozen with the run, sent with the
+   *  report and every retry. */
+  expectedChannelName: string | null;
   /** The set the run removes from, frozen when it starts (spec #200, 7.2, AK 71): the first
    *  report and every retry name this set, whatever the page's set dropdown shows by then. */
   setId: string;
@@ -101,7 +112,7 @@ interface DeleteRunInfo {
 
 @Injectable({ providedIn: 'root' })
 export class SevenTvDeleteService {
-  private readonly emoteAdminService = inject(EmoteAdminService);
+  private readonly emoteSetService = inject(SevenTvEmoteSetService);
 
   /** Own engine instance (not a shared singleton), so `isRunning` can never mean "the *other*
    *  service is busy". All pacing/backoff/token mechanics live there — see SevenTvRunEngine. */
@@ -124,6 +135,10 @@ export class SevenTvDeleteService {
    *  optimistically removing rows: 'failed'/'partial' means the backend does not (fully) know about
    *  the deletion yet, so filtering the list client-side would show a state that isn't real. */
   readonly syncReport = signal<SyncReportState>('idle');
+
+  /** Why `syncReport` is `'failed'`/`'partial'` (spec E23), `null` otherwise — the dock shows it as
+   *  its own line under the report notice. */
+  readonly syncReportReason = signal<SyncReportReason | null>(null);
 
   /** The finished run, kept for the summary/protocol UI (A6). Cleared on reset() — once the panel
    *  is dismissed, the downloaded protocol file is the only remaining artifact, by design. */
@@ -195,8 +210,15 @@ export class SevenTvDeleteService {
     this.confirmedRunPending.set(false);
   }
 
-  startDelete(setId: string, channelName: string, emotes: DeleteQueueEmote[]): void {
-    const started: DeleteRunInfo = { channelName, setId, result: null };
+  /** `expectedChannelName` is `channelName` when `setId` is the page's active set, `null`
+   *  otherwise (spec 6.5) — the caller knows which, this service does not. */
+  startDelete(
+    setId: string,
+    channelName: string,
+    emotes: DeleteQueueEmote[],
+    expectedChannelName: string | null,
+  ): void {
+    const started: DeleteRunInfo = { channelName, expectedChannelName, setId, result: null };
     const engineStarted = this.engine.start(
       setId,
       toDeleteQueue(emotes),
@@ -209,6 +231,7 @@ export class SevenTvDeleteService {
     }
     this.run = started;
     this.syncReport.set('idle');
+    this.syncReportReason.set(null);
     this.lastRun.set(null);
   }
 
@@ -222,6 +245,7 @@ export class SevenTvDeleteService {
   reset(): void {
     this.engine.reset();
     this.syncReport.set('idle');
+    this.syncReportReason.set(null);
     this.run = null;
     this.lastRun.set(null);
     // The restore service clears its own transient notice flag here for the same reason: whatever
@@ -242,8 +266,8 @@ export class SevenTvDeleteService {
 
   /** Manual retry for the closing report. The 7TV deletions are long done at this point, so this
    *  only re-sends the bookkeeping call — safe to repeat, ids already archived still count.
-   *  Channel, set *and* keys come from the same record, so a retry can never mix one run's ids
-   *  with another's channel or with a set chosen after the run started (R15, AK 71). */
+   *  Set, expected channel *and* keys come from the same record, so a retry can never mix one
+   *  run's ids with another's target or with a set chosen after the run started (R15, AK 71). */
   retrySyncReport(): void {
     const current = this.run;
     if (
@@ -275,17 +299,24 @@ export class SevenTvDeleteService {
     }
   }
 
+  /** No resync of its own (spec 6.5): the delete never had one, the backend resyncs every channel
+   *  the report touched (E17), and the page lives off the resulting `channel.synced`. */
   private reportDeleted(run: DeleteRunInfo, result: RunResult): void {
     this.syncReport.set('pending');
+    this.syncReportReason.set(null);
     // A delete run's keys are its 7TV ids (see toDeleteQueue) — one per cell, unique in the run.
     const sevenTvEmoteIds = result.doneKeys;
 
-    this.emoteAdminService
-      .syncDeleted(run.channelName, { emoteSetId: run.setId, sevenTvEmoteIds })
+    this.emoteSetService
+      .reportDeletedInSet(run.setId, {
+        sevenTvEmoteIds,
+        expectedChannelName: run.expectedChannelName,
+      })
       .pipe(
         // A 429 is the realistic case: sync-deleted shares a rate-limit budget with other calls, and
         // a swallowed 429 used to look exactly like success. A 401 (session expired during a long
-        // run) cannot be fixed by waiting, so it is not retried.
+        // run) or a 403 (the right to the set is gone) cannot be fixed by waiting, so neither is
+        // retried.
         retry({
           count: MAX_AUTOMATIC_SYNC_RETRIES,
           delay: (error: HttpErrorResponse, attempt) =>
@@ -295,21 +326,24 @@ export class SevenTvDeleteService {
         }),
       )
       .subscribe({
-        next: (answer: SyncDeletedResult) =>
-          // notFoundIds covers ids the backend could not archive (unknown, foreign channel). All of
-          // them coming back is indistinguishable from success in the raw numbers, which is why the
-          // result is evaluated at all instead of being discarded. A non-active set is paper only
-          // (spec #200, 6.6): `archivedCount` is 0 by design there, the audit entry is the success.
+        // The threeway reading lives in one place for all three services (F8, E23, AK 15): a
+        // channel short of the reported ids is 'partial'/'shortfall', a missed expected channel
+        // 'partial'/'channelMismatch', a paper-only answer (`channels: []`) a plain success.
+        next: (answer: SyncDeletedInSetResponse) =>
           this.applyIfCurrent(run, () =>
-            this.syncReport.set(
-              answer.targetIsActiveSetOfChannel === false ||
-                answer.archivedCount >= sevenTvEmoteIds.length
-                ? 'succeeded'
-                : 'partial',
-            ),
+            this.applyReportOutcome(classifySyncInSetResponse(answer, sevenTvEmoteIds.length)),
           ),
-        error: () => this.applyIfCurrent(run, () => this.syncReport.set('failed')),
+        // A 404 (the set is gone) ends in 'failed'/'setNotFound' — never in 'succeeded' (#224).
+        error: (error: HttpErrorResponse) =>
+          this.applyIfCurrent(run, () =>
+            this.applyReportOutcome(classifySyncInSetFailure(error.status)),
+          ),
       });
+  }
+
+  private applyReportOutcome(outcome: SyncReportOutcome): void {
+    this.syncReport.set(outcome.state);
+    this.syncReportReason.set(outcome.reason);
   }
 
   /** The R15 guard in one place: an answer that belongs to a superseded run is dropped silently —

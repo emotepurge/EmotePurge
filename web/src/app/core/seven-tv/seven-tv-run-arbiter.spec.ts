@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImportOrigin, ImportRow } from './import-source';
 import { DeleteQueueEmote, SevenTvDeleteService } from './seven-tv-delete.service';
 import { SevenTvImportService } from './seven-tv-import.service';
-import { SevenTvRestoreService } from './seven-tv-restore.service';
+import { RestoreStartTarget, SevenTvRestoreService } from './seven-tv-restore.service';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import { TransferPlan } from './transfer-plan';
@@ -24,6 +24,15 @@ const DE_TRANSLATIONS = {
       rateLimitedGaveUp: 'Übersprungen.',
     },
   },
+};
+
+const RESTORE_TARGET: RestoreStartTarget = {
+  setId: 'set-1',
+  expectedChannelName: 'sensitron',
+  resyncChannelName: null,
+  hostChannelName: 'sensitron',
+  setName: 'Set 1',
+  ownerOrChannelLabel: 'sensitron',
 };
 
 const EMOTES: DeleteQueueEmote[] = [
@@ -86,7 +95,7 @@ describe('SevenTvRunArbiter', () => {
   });
 
   it('reports "delete" while a delete run is active, then null again after it ends', () => {
-    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
 
     expect(arbiter.activeRun()).toBe('delete');
 
@@ -96,7 +105,7 @@ describe('SevenTvRunArbiter', () => {
   });
 
   it('reports "restore" while a restore run is active, then null again after it ends', () => {
-    restoreService.startRestore('set-1', 'sensitron', [EMOTES[0]]);
+    restoreService.startRestore(RESTORE_TARGET, [EMOTES[0]]);
 
     expect(arbiter.activeRun()).toBe('restore');
 
@@ -123,8 +132,8 @@ describe('SevenTvRunArbiter', () => {
   // starting a second kind), so this pins the computed's fixed check order rather than an outcome
   // that can occur unaided — see Plan-70 Task 3.
   it('prefers "delete" when a delete and a restore run are both active at once', () => {
-    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]]);
-    restoreService.startRestore('set-1', 'sensitron', [EMOTES[1]]);
+    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
+    restoreService.startRestore(RESTORE_TARGET, [EMOTES[1]]);
 
     expect(arbiter.activeRun()).toBe('delete');
 
@@ -135,7 +144,7 @@ describe('SevenTvRunArbiter', () => {
   // Same construction one branch further down: the import is checked last, so a delete running
   // alongside it wins.
   it('prefers "delete" when a delete and an import run are both active at once', () => {
-    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]]);
+    deleteService.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron');
     importService.startImport(
       { setId: 'set-2', channelName: 'kanal_b' },
       IMPORT_ORIGIN,

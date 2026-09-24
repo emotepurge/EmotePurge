@@ -138,12 +138,7 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
         @if (loadFailed()) {
           <app-notice-banner variant="error">
             {{ 'import.target.loadFailed' | transloco }}
-            <button
-              notice-action
-              type="button"
-              appButton="outline"
-              (click)="targetsResource.reload()"
-            >
+            <button notice-action type="button" appButton="outline" (click)="retryLoad()">
               {{ 'import.target.retry' | transloco }}
             </button>
           </app-notice-banner>
@@ -325,6 +320,10 @@ type TargetSelection = Omit<ImportTargetChoice, 'scope'> | null;
               <span class="text-xs text-fg-muted">
                 ({{ 'import.target.kindUnavailable' | transloco }})
               </span>
+            } @else if (set.disabledReason === 'notEditable') {
+              <span class="text-xs text-fg-muted">
+                ({{ 'import.target.notEditable' | transloco }})
+              </span>
             }
           </label>
         }
@@ -381,8 +380,17 @@ export class ImportTargetDialog {
    *  promoting this into `target()` — there is no second "Weiter" click for the untracked class. */
   protected readonly pendingUntrackedTarget = signal<TargetSelection>(null);
 
+  // Starts `false`, so the first load is a plain read — a cache hit when the picker or another
+  // pre-check (spec 6.2, E19) already warmed the 60 s copy this minute, a request otherwise. Once
+  // set (only the retry action below does that), every subsequent load bypasses the cache: a retry
+  // exists specifically because the caller no longer trusts what is there, and the cache holds
+  // nothing from the failed attempt anyway (a failure is never cached, spec F3) — this flag is what
+  // makes that bypass an explicit contract instead of an incidental side effect of "there was
+  // nothing to hit".
+  private readonly forceRefresh = signal(false);
+
   protected readonly targetsResource = rxResource({
-    stream: () => this.emoteSetService.listEmoteSetTargets(),
+    stream: () => this.emoteSetService.loadCachedEmoteSetTargets({ refresh: this.forceRefresh() }),
   });
 
   // A genuine transport failure (network, 5xx) — distinct from the degraded-but-200
@@ -483,6 +491,15 @@ export class ImportTargetDialog {
     }
     const current = this.target();
     return current !== null && current.emoteSetId === emoteSetId;
+  }
+
+  /** Retry action for the load-failed banner (spec 6.2, F3) — forces the next load past the 60 s
+   *  cache. Never needs to be undone: the cache holds nothing from the attempt that just failed
+   *  (a failure is never cached), and every load from here on staying uncached is the correct,
+   *  intended behaviour for the remainder of this dialog's lifetime, not just for the one retry. */
+  protected retryLoad(): void {
+    this.forceRefresh.set(true);
+    this.targetsResource.reload();
   }
 
   /** The id an account's own heading renders under, and what every one of its set radios points

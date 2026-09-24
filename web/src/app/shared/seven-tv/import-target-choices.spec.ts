@@ -16,6 +16,10 @@ function set(
     isActive: false,
     isPersonal: false,
     ownerDisplayName: 'SomeOwner',
+    ownerSevenTvUserId: 'owner-1',
+    // Every existing test below predates `editable` and expects every mocked set to be a valid
+    // target — spec F9's "Default true" for the same reason.
+    editable: true,
     ...overrides,
   };
 }
@@ -30,6 +34,7 @@ function account(
     activeEmoteSetId: null,
     sets: [],
     setsUnavailable: false,
+    sevenTvUserId: 'owner-1',
     ...overrides,
   };
 }
@@ -145,6 +150,43 @@ describe('importTargetChoices', () => {
     );
 
     expect(result.tracked[0].sets[0]).toMatchObject({ disabled: false, disabledReason: null });
+  });
+
+  // #253/T4, spec 5.8/E19, AK 29: `editable` moved from something the picker computed itself into
+  // something the target list already answers — the picker now just reads it.
+  it('disables a set with editable: false, with reason "notEditable"', () => {
+    const result = importTargetChoices(
+      response([
+        account({
+          twitchChannelId: '1',
+          trackedChannelName: 'handofblood',
+          sets: [set({ id: 'set-x', editable: false })],
+        }),
+      ]),
+      'source-set',
+      UNKNOWN_OWNER,
+    );
+
+    expect(result.tracked[0].sets[0]).toMatchObject({
+      disabled: true,
+      disabledReason: 'notEditable',
+    });
+  });
+
+  it('prefers "notNormalKind" over "notEditable" for a set that is both', () => {
+    const result = importTargetChoices(
+      response([
+        account({
+          twitchChannelId: '1',
+          trackedChannelName: 'handofblood',
+          sets: [set({ id: 'set-x', kind: 'GLOBAL', editable: false })],
+        }),
+      ]),
+      'source-set',
+      UNKNOWN_OWNER,
+    );
+
+    expect(result.tracked[0].sets[0].disabledReason).toBe('notNormalKind');
   });
 
   it('prefers "isSourceSet" over "notNormalKind" for the implausible case where both apply', () => {

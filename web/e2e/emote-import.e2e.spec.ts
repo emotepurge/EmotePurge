@@ -23,8 +23,10 @@ import {
   mockSetWarning,
   mockSevenTvGql,
   mockSevenTvLeaderboard,
+  mockSyncDeletedInSet,
   mockSyncImported,
   mockSyncImportedToSet,
+  mockSyncRestoredInSet,
   mockUsageTotals,
   mockVoteSessionList,
   mockWorkerHealth,
@@ -2823,19 +2825,8 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       syncImportedBody = route.request().postDataJSON();
       await route.fulfill({ status: 204 });
     });
-    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
-    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
-      syncDeletedBody = route.request().postDataJSON();
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          archivedCount: 1,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: true,
-        }),
-      });
-    });
+    // The replace's removal report is set-centric (spec 6.5): addressed to the target set.
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'target-set');
     await mockChannelScopedResync(page, TARGET_CHANNEL);
 
     const liveTarget: LiveSetEntry[] = [
@@ -2963,10 +2954,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     // sync-imported names every row that added an emote (CatJAM's replace, KEKW's rename) — never
     // the adopt, which renames an existing entry rather than adding one.
     expect(syncImportedBody?.sevenTvEmoteIds?.slice().sort()).toEqual(['7tv-1', '7tv-2']);
-    // sync-deleted (the channel-scoped removal report `SevenTvImportService.removalReport` sends,
-    // not a set-centred endpoint — the plan's #230 text describing one does not exist, see
-    // adjustment G) names only the replaced target.
-    expect(syncDeletedBody?.sevenTvEmoteIds).toEqual(['target-catjam']);
+    // sync-deleted (the set-centric removal report `SevenTvImportService.removalReport` sends,
+    // spec 6.5) names only the replaced target.
+    expect(syncDeletedBodies[0]?.sevenTvEmoteIds).toEqual(['target-catjam']);
+    // The target is the tracked channel's active set: its channel is the expected hit (AK 8).
+    expect(syncDeletedBodies[0]?.expectedChannelName).toBe(TARGET_CHANNEL);
   });
 
   test('a replace whose ADD 409s ends the row failed with the gap reason, still reports the removal, and the finished protocol records failedStep 1', async ({
@@ -2986,19 +2978,8 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       { sevenTvEmoteId: 'target-catjam', name: 'CatJAM' },
     ]);
 
-    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
-    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
-      syncDeletedBody = route.request().postDataJSON();
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          archivedCount: 1,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: true,
-        }),
-      });
-    });
+    // The replace's removal report is set-centric (spec 6.5): addressed to the target set.
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'target-set');
     await mockSyncImported(page, TARGET_CHANNEL);
     await mockChannelScopedResync(page, TARGET_CHANNEL);
 
@@ -3066,7 +3047,9 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
 
     // The removal report still names the target: 7TV confirmed the REMOVE regardless of the row's
     // own final status.
-    expect(syncDeletedBody?.sevenTvEmoteIds).toEqual(['target-catjam']);
+    expect(syncDeletedBodies[0]?.sevenTvEmoteIds).toEqual(['target-catjam']);
+    // The target is the tracked channel's active set: its channel is the expected hit (AK 8).
+    expect(syncDeletedBodies[0]?.expectedChannelName).toBe(TARGET_CHANNEL);
 
     const protocolDownloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Protokoll herunterladen' }).click();
@@ -3292,19 +3275,8 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       syncImportedBody = route.request().postDataJSON();
       await route.fulfill({ status: 204 });
     });
-    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
-    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
-      syncDeletedBody = route.request().postDataJSON();
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          archivedCount: 2,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: true,
-        }),
-      });
-    });
+    // The replace's removal report is set-centric (spec 6.5): addressed to the target set.
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'target-set');
     await mockChannelScopedResync(page, TARGET_CHANNEL);
 
     const confirmedTarget: LiveSetEntry[] = [
@@ -3396,7 +3368,9 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     ).toBeVisible();
 
     expect(syncImportedBody?.sevenTvEmoteIds).toEqual(['7tv-1']);
-    expect(syncDeletedBody?.sevenTvEmoteIds?.slice().sort()).toEqual(['target-a', 'target-b']);
+    expect(syncDeletedBodies[0]?.sevenTvEmoteIds?.slice().sort()).toEqual(['target-a', 'target-b']);
+    // The target is the tracked channel's active set: its channel is the expected hit (AK 8).
+    expect(syncDeletedBodies[0]?.expectedChannelName).toBe(TARGET_CHANNEL);
   });
 
   test('restoring from the finished protocol of a two-replace run skips the row a successful replace now owns and re-adds only the gap, exactly once', async ({
@@ -3414,32 +3388,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       { sevenTvEmoteId: 'target-b', name: 'KEKW' },
     ]);
 
-    let syncDeletedBody: { sevenTvEmoteIds?: string[] } | null = null;
-    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-deleted`, async (route) => {
-      syncDeletedBody = route.request().postDataJSON();
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          archivedCount: 2,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: true,
-        }),
-      });
-    });
+    // The replace's removal report is set-centric (spec 6.5): addressed to the target set.
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'target-set');
     await mockSyncImported(page, TARGET_CHANNEL);
     await mockChannelScopedResync(page, TARGET_CHANNEL);
-    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-restored`, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          restoredCount: 1,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: true,
-        }),
-      }),
-    );
+    const syncRestoredBodies = await mockSyncRestoredInSet(page, 'target-set');
 
     const confirmedTarget: LiveSetEntry[] = [
       { id: 'target-a', aliases: ['CatJAM'] },
@@ -3510,7 +3463,9 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
 
     await page.clock.runFor(4000);
     await expect(page.getByText('1 kopiert · 1 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
-    expect(syncDeletedBody?.sevenTvEmoteIds?.slice().sort()).toEqual(['target-a', 'target-b']);
+    expect(syncDeletedBodies[0]?.sevenTvEmoteIds?.slice().sort()).toEqual(['target-a', 'target-b']);
+    // The target is the tracked channel's active set: its channel is the expected hit (AK 8).
+    expect(syncDeletedBodies[0]?.expectedChannelName).toBe(TARGET_CHANNEL);
 
     const protocolDownloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Protokoll herunterladen' }).click();
@@ -3560,6 +3515,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     expect(restoreMutations.map((call) => call.kind)).toEqual(['addEmote']);
     expect(restoreMutations[0].variables).toMatchObject({ emoteId: 'target-b', alias: 'KEKW' });
     expect(restoreCalls.some((call) => call.kind === 'removeEmote')).toBe(false);
+    // The restore reports set-centrically too (spec 6.4, AK 7): the one re-added id, with the
+    // target's tracked channel expected, since the set is its active one.
+    await expect
+      .poll(() => syncRestoredBodies[0])
+      .toEqual({ sevenTvEmoteIds: ['target-b'], expectedChannelName: TARGET_CHANNEL });
     // The dock's own "name taken" notice for the row the restore itself could not bring back
     // (target-a, since 7tv-1 already holds 'CatJAM') — lives in the mass-delete panel + its
     // announcer, not import-progress-section (adjustment G row 5). Two elements carry this text by

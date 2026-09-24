@@ -2,7 +2,7 @@ import { Component, computed, inject, input, output } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 
@@ -94,6 +94,11 @@ import { NoticeBanner } from '../ui/notice-banner';
           <span class="flex flex-col gap-1">
             <span class="font-medium">{{ labelPrefix() + '.syncFailedTitle' | transloco }}</span>
             <span>{{ labelPrefix() + '.syncFailed' | transloco }}</span>
+            <!-- Why the report failed or fell short (spec E23) — its own line, because a bare
+                 "failed" does not say whether the right is gone or the server did not answer. -->
+            @if (syncReportReason(); as reason) {
+              <span>{{ 'syncReportReason.' + reason | transloco }}</span>
+            }
           </span>
           <button
             notice-action
@@ -120,6 +125,9 @@ export class RunProgressPanel {
   /** State of the run's closing bookkeeping call (sync-deleted / sync-restored). Defaults to the
    *  state that renders nothing; the notice wording follows labelPrefix. */
   readonly syncReport = input<SyncReportState>('idle');
+  /** Why `syncReport` is `'failed'`/`'partial'` (spec E23) — shown as its own line in the report
+   *  notice, `null` (the default) shows none. One wording family for all three runs. */
+  readonly syncReportReason = input<SyncReportReason | null>(null);
   /** Seconds left on a 7TV rate-limit pause, null while running normally. */
   readonly rateLimitPauseSeconds = input<number | null>(null);
   /** Whether Close is offered once the run stops running. A host binds this to its own settlement
