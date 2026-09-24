@@ -141,6 +141,20 @@
       "description": "This instance's operator has not added this document yet."
     }
   },
+  "contact": {
+    "title": "Contact",
+    "nameLabel": "Name (optional)",
+    "emailLabel": "E-mail address",
+    "messageLabel": "Message",
+    "submit": "Send message",
+    "completeChallengeHint": "Please complete the security check above first.",
+    "success": "Thanks — your message has been sent.",
+    "notAvailable": "The contact form is currently unavailable. Please use the e-mail address in the",
+    "notAvailableImprintLink": "imprint",
+    "privacyHint": "The message is sent by e-mail to the operator and is not stored in the app. Details in the",
+    "privacyLinkLabel": "privacy policy",
+    "turnstileLoadFailed": "The security check could not be loaded. Please try again later."
+  },
   "usageRange": {
     "label": "Usage",
     "menuLabel": "Choose usage range",
@@ -1178,7 +1192,10 @@
       "unexpected_error": "An unexpected error occurred on the server. Please try again.",
       "no_health_data": "No worker data is available right now.",
       "health_data_unreadable": "The worker data could not be read.",
-      "legal_document_not_found": "This document is not available."
+      "legal_document_not_found": "This document is not available.",
+      "contact_invalid": "Please check your details.",
+      "contact_captcha_failed": "The security check could not be confirmed. Please try again.",
+      "contact_unavailable": "The contact form is currently unreachable. Please try again later."
     }
   }
 }

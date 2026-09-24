@@ -1161,3 +1161,63 @@ export async function mockSevenTvGql(
     return fulfillJson(route, 200, body);
   });
 }
+
+/** GET /api/contact/config. Defaults to "available", the common case for these specs. */
+export async function mockContactConfig(
+  page: Page,
+  overrides: { available?: boolean; turnstileSiteKey?: string | null } = {},
+): Promise<void> {
+  const available = overrides.available ?? true;
+  await page.route('**/api/contact/config', (route) =>
+    fulfillJson(route, 200, {
+      available,
+      turnstileSiteKey: available ? (overrides.turnstileSiteKey ?? 'e2e-site-key') : null,
+    }),
+  );
+}
+
+/**
+ * POST /api/contact. Pass `outcome: 'error'` with a `status`/`errorCode` to simulate a rejected
+ * submission (captcha failure, unavailable, …); defaults to a successful 204.
+ */
+export async function mockContactSubmit(
+  page: Page,
+  options: { outcome?: 'success' | 'error'; status?: number; errorCode?: string } = {},
+): Promise<void> {
+  const outcome = options.outcome ?? 'success';
+  await page.route('**/api/contact', (route) => {
+    if (route.request().method() !== 'POST') {
+      return route.fallback();
+    }
+    if (outcome === 'error') {
+      return fulfillJson(route, options.status ?? 400, { errorCode: options.errorCode ?? 'contact_invalid' });
+    }
+    return route.fulfill({ status: 204 });
+  });
+}
+
+/**
+ * Intercepts Cloudflare's Turnstile script (`api.js?render=explicit`, loaded only by `ContactPage`,
+ * only once its form renders — see `core/contact/turnstile.ts`) and serves a tiny stub instead of a
+ * real network request. The stub's `render()` calls the caller's `callback` with a fixed fake token
+ * on the next tick, so the submit button's Turnstile-gated disabled state clears the same way it
+ * would after a real visitor solves the real challenge — exercising the app's actual script-loading
+ * code path (unlike `TURNSTILE_LOADER`'s DI override in the Vitest specs, which never touches it).
+ * Call before `page.goto`, same as `installLiveStub`/`mockSevenTvGql`.
+ */
+export async function mockTurnstile(page: Page, { token = 'e2e-fake-token' } = {}): Promise<void> {
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/javascript',
+      body: `window.turnstile = {
+        render: function (container, options) {
+          setTimeout(function () { options.callback(${JSON.stringify(token)}); }, 0);
+          return 'e2e-stub-widget';
+        },
+        remove: function () {},
+        reset: function () {},
+      };`,
+    }),
+  );
+}

@@ -1,0 +1,343 @@
+import { Location, NgOptimizedImage } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  effect,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
+import { rxResource } from '@angular/core/rxjs-interop';
+import { RouterLink } from '@angular/router';
+import { TranslocoPipe } from '@jsverse/transloco';
+import { catchError, of } from 'rxjs';
+
+import { AuthService } from '../../core/auth/auth.service';
+import { ContactConfigResponse } from '../../core/contact/contact.model';
+import { ContactService } from '../../core/contact/contact.service';
+import { TURNSTILE_LOADER, TurnstileApi } from '../../core/contact/turnstile';
+import { apiErrorTranslationKey } from '../../core/i18n/api-error';
+import { LanguageService } from '../../core/i18n/language.service';
+import { NavigationHistoryService } from '../../core/routing/navigation-history.service';
+import { ThemeService } from '../../core/theme/theme.service';
+import { LOGO_SRC } from '../../shared/branding/logo';
+import { AccountMenu } from '../../shared/ui/account-menu';
+import { BackLink } from '../../shared/ui/back-link';
+import { Button } from '../../shared/ui/button';
+import { NoticeBanner } from '../../shared/ui/notice-banner';
+import { resolveLegalBackTarget } from '../legal/legal-back-target';
+
+const NOT_AVAILABLE_CONFIG: ContactConfigResponse = { available: false, turnstileSiteKey: null };
+
+/**
+ * `/contact` (docs/DECISIONS.md 2026-09-24, "contact form"): the electronic contact route § 5 DDG
+ * requires next to the e-mail address in the imprint. Outside the app shell and every auth guard,
+ * reachable before login — same reasoning, same page frame and the same `resolveLegalBackTarget`
+ * back control as `LegalPage` (see its own doc comment for why `Location.back()` is safe here: this
+ * page sits outside the shell's route tree too and is reachable from everywhere in it).
+ *
+ * The Turnstile widget script loads only from here, and only once the form is actually about to be
+ * shown (`available === true`) — never eagerly, and never on any other page (see
+ * `core/contact/turnstile.ts`).
+ */
+@Component({
+  selector: 'app-contact-page',
+  imports: [
+    AccountMenu,
+    BackLink,
+    Button,
+    NgOptimizedImage,
+    NoticeBanner,
+    RouterLink,
+    TranslocoPipe,
+  ],
+  template: `
+    <div class="flex min-h-screen flex-col bg-page text-fg">
+      <header class="flex items-center justify-between px-4 py-3">
+        <a routerLink="/welcome" class="flex items-center gap-2 text-lg font-semibold">
+          <img
+            [ngSrc]="logoSrc"
+            width="24"
+            height="24"
+            disableOptimizedSrcset
+            alt=""
+            class="h-6 w-6"
+          />
+          Emote Purge
+        </a>
+        <app-account-menu />
+      </header>
+
+      <main class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">
+        @if (backTarget(); as target) {
+          @if (target.kind === 'back') {
+            <button
+              type="button"
+              (click)="goBack()"
+              class="inline-flex items-center gap-1 rounded-md border border-accent-selected px-3 py-1.5 text-sm whitespace-nowrap text-accent-fg transition hover:bg-accent-wash"
+            >
+              <span aria-hidden="true">←</span>{{ 'legal.backAction' | transloco }}
+            </button>
+          } @else {
+            <app-back-link [link]="target.link" [label]="target.labelKey | transloco" />
+          }
+        }
+
+        <h1 class="mt-6 text-2xl font-semibold">{{ 'contact.title' | transloco }}</h1>
+
+        @if (configResource.isLoading()) {
+          <div
+            role="status"
+            [attr.aria-label]="'common.loading' | transloco"
+            class="mt-6 flex max-w-lg flex-col gap-3"
+          >
+            <div class="app-skeleton h-10 w-full"></div>
+            <div class="app-skeleton h-10 w-full"></div>
+            <div class="app-skeleton h-24 w-full"></div>
+          </div>
+        } @else if (isAvailable()) {
+          @if (submitted()) {
+            <app-notice-banner variant="info" class="mt-6 block max-w-lg">
+              {{ 'contact.success' | transloco }}
+            </app-notice-banner>
+          } @else {
+            <form class="mt-6 flex max-w-lg flex-col gap-4" (submit)="submit($event)">
+              @if (submitError(); as errorKey) {
+                <app-notice-banner variant="error">{{ errorKey | transloco }}</app-notice-banner>
+              }
+
+              <label class="flex flex-col gap-1 text-sm text-fg-secondary">
+                {{ 'contact.nameLabel' | transloco }}
+                <input
+                  id="contact-name"
+                  type="text"
+                  autocomplete="name"
+                  [value]="name()"
+                  (input)="name.set($any($event.target).value)"
+                  class="app-input"
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-sm text-fg-secondary">
+                {{ 'contact.emailLabel' | transloco }}
+                <input
+                  id="contact-email"
+                  type="email"
+                  autocomplete="email"
+                  required
+                  [value]="email()"
+                  (input)="email.set($any($event.target).value)"
+                  class="app-input"
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-sm text-fg-secondary">
+                {{ 'contact.messageLabel' | transloco }}
+                <textarea
+                  id="contact-message"
+                  rows="6"
+                  required
+                  [value]="message()"
+                  (input)="message.set($any($event.target).value)"
+                  class="app-input"
+                ></textarea>
+              </label>
+
+              <!-- Honeypot: invisible and unreachable by a real visitor, never announced to a
+                   screen reader. A bot filling every field it can find sets this one too, which the
+                   API answers as an unconditional success without doing anything. -->
+              <input
+                type="text"
+                name="website"
+                tabindex="-1"
+                autocomplete="off"
+                aria-hidden="true"
+                [value]="website()"
+                (input)="website.set($any($event.target).value)"
+                class="absolute -left-[9999px] h-px w-px overflow-hidden"
+              />
+
+              <div #turnstileContainer></div>
+              @if (turnstileLoadFailed()) {
+                <app-notice-banner variant="error">{{
+                  'contact.turnstileLoadFailed' | transloco
+                }}</app-notice-banner>
+              }
+
+              @if (!turnstileToken() && !isSending()) {
+                <p id="contact-submit-hint" class="text-xs text-fg-muted">
+                  {{ 'contact.completeChallengeHint' | transloco }}
+                </p>
+              }
+              <button
+                type="submit"
+                appButton="primary"
+                buttonSize="lg"
+                [disabled]="!canSubmit()"
+                [attr.aria-describedby]="
+                  !turnstileToken() && !isSending() ? 'contact-submit-hint' : null
+                "
+                class="self-start"
+              >
+                {{ 'contact.submit' | transloco }}
+              </button>
+
+              <p class="text-xs text-fg-muted">
+                {{ 'contact.privacyHint' | transloco }}
+                <a routerLink="/privacy" class="underline">{{
+                  'contact.privacyLinkLabel' | transloco
+                }}</a>
+              </p>
+            </form>
+          }
+        } @else {
+          <app-notice-banner variant="info" class="mt-6 block max-w-lg">
+            {{ 'contact.notAvailable' | transloco }}
+            <a routerLink="/imprint" class="underline">{{
+              'contact.notAvailableImprintLink' | transloco
+            }}</a>
+          </app-notice-banner>
+        }
+      </main>
+    </div>
+  `,
+})
+export class ContactPage {
+  private readonly authService = inject(AuthService);
+  private readonly contactService = inject(ContactService);
+  private readonly destroyRef = inject(DestroyRef);
+  private readonly languageService = inject(LanguageService);
+  private readonly location = inject(Location);
+  private readonly navigationHistoryService = inject(NavigationHistoryService);
+  private readonly themeService = inject(ThemeService);
+  private readonly turnstileLoader = inject(TURNSTILE_LOADER);
+
+  protected readonly logoSrc = LOGO_SRC;
+
+  protected readonly name = signal('');
+  protected readonly email = signal('');
+  protected readonly message = signal('');
+  protected readonly website = signal('');
+
+  protected readonly isSending = signal(false);
+  protected readonly submitted = signal(false);
+  protected readonly submitError = signal<string | null>(null);
+
+  protected readonly turnstileToken = signal<string | null>(null);
+  protected readonly turnstileLoadFailed = signal(false);
+  private readonly turnstileApi = signal<TurnstileApi | null>(null);
+  private readonly turnstileWidgetId = signal<string | null>(null);
+  private readonly turnstileContainer = viewChild<ElementRef<HTMLDivElement>>('turnstileContainer');
+
+  protected readonly configResource = rxResource({
+    stream: () => this.contactService.getConfig().pipe(catchError(() => of(NOT_AVAILABLE_CONFIG))),
+  });
+
+  protected readonly isAvailable = computed(
+    () => this.configResource.hasValue() && this.configResource.value().available,
+  );
+
+  // Same reasoning as LegalPage.backTarget: a wrong initial guess for one microtask is cheap, and
+  // gating on AuthService.isResolved() would only delay the correct label by that same microtask.
+  protected readonly backTarget = computed(() =>
+    resolveLegalBackTarget(
+      this.navigationHistoryService.hasPreviousPage(),
+      this.authService.currentUser() !== null,
+    ),
+  );
+
+  protected readonly canSubmit = computed(
+    () => !this.isSending() && this.turnstileToken() !== null,
+  );
+
+  constructor() {
+    // Renders the Turnstile widget exactly once, the moment the form becomes available AND its
+    // container exists in the DOM — both conditions this effect itself reads as signals, so it
+    // re-runs the instant either flips. Guarded by turnstileWidgetId() so a later, unrelated signal
+    // change (e.g. re-fetching config) never renders a second widget into the same container.
+    effect(() => {
+      const config = this.configResource.hasValue() ? this.configResource.value() : null;
+      const container = this.turnstileContainer();
+      if (
+        !config?.available ||
+        !config.turnstileSiteKey ||
+        !container ||
+        this.turnstileWidgetId() !== null
+      ) {
+        return;
+      }
+
+      const siteKey = config.turnstileSiteKey;
+      this.turnstileLoader()
+        .then((api) => {
+          this.turnstileApi.set(api);
+          const widgetId = api.render(container.nativeElement, {
+            sitekey: siteKey,
+            theme: this.themeService.resolved(),
+            language: this.languageService.lang(),
+            callback: (token) => this.turnstileToken.set(token),
+            'expired-callback': () => this.turnstileToken.set(null),
+            'error-callback': () => this.turnstileToken.set(null),
+          });
+          this.turnstileWidgetId.set(widgetId);
+        })
+        .catch(() => this.turnstileLoadFailed.set(true));
+    });
+
+    this.destroyRef.onDestroy(() => {
+      const api = this.turnstileApi();
+      const widgetId = this.turnstileWidgetId();
+      if (api && widgetId !== null) {
+        api.remove(widgetId);
+      }
+    });
+  }
+
+  // Only rendered when backTarget() is 'back' — see LegalPage's identical method for why that
+  // makes this safe from leaving the app.
+  protected goBack(): void {
+    this.location.back();
+  }
+
+  protected submit(event: Event): void {
+    event.preventDefault();
+    if (!this.canSubmit()) {
+      return;
+    }
+    const token = this.turnstileToken();
+    if (token === null) {
+      return;
+    }
+
+    this.submitError.set(null);
+    this.isSending.set(true);
+    this.contactService
+      .submit({
+        name: this.name().trim() || undefined,
+        email: this.email().trim(),
+        message: this.message().trim(),
+        turnstileToken: token,
+        website: this.website(),
+      })
+      .subscribe({
+        next: () => {
+          this.isSending.set(false);
+          this.submitted.set(true);
+        },
+        error: (error: HttpErrorResponse) => {
+          this.isSending.set(false);
+          this.submitError.set(apiErrorTranslationKey(error));
+          // A rejected token cannot be resubmitted — force a fresh challenge before the next try.
+          this.turnstileToken.set(null);
+          const api = this.turnstileApi();
+          const widgetId = this.turnstileWidgetId();
+          if (api && widgetId !== null) {
+            api.reset(widgetId);
+          }
+        },
+      });
+  }
+}

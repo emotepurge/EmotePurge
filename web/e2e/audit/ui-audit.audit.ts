@@ -19,10 +19,12 @@ import {
   mockChannelAuditLog,
   mockChannelPermissions,
   mockChannelStatus,
+  mockContactConfig,
   mockEmoteList,
   mockLegalAvailability,
   mockLegalDocument,
   mockSetWarning,
+  mockTurnstile,
   failLive,
   mockLiveQuota,
   mockUsageChannelSeries,
@@ -418,6 +420,19 @@ const SCENARIOS: Scenario[] = [
       };
       await mockLegalDocument(page, 'privacy', 'de', germanDocument);
       await mockLegalDocument(page, 'privacy', 'en', { ...germanDocument, isGermanFallback: true });
+    },
+  },
+  {
+    // Contact form (docs/DECISIONS.md 2026-09-24, "contact form"): reachable without login, outside
+    // the app shell, same reasoning as 'imprint'/'privacy' above. mockTurnstile stubs Cloudflare's
+    // script so the widget actually renders in the screenshot instead of the harness either hanging
+    // on a real network request or leaving an empty container.
+    slug: 'contact',
+    path: '/contact',
+    setup: async (page) => {
+      await mockAuthMe(page, null);
+      await mockContactConfig(page);
+      await mockTurnstile(page);
     },
   },
   {
