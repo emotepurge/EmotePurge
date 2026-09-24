@@ -21,21 +21,31 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 (consumer, T6) · `web/src/app/shared/seven-tv/import-flow.ts` (consumer, T8)
 
 Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
-E5/E19/E20/5.7). Who is allowed to report a change against a 7TV emote set has always been "whoever
-7TV itself lets edit that set" — checked via `IImportTargetOwnershipService.CheckAsync` against the
-**logged-in** Twitch account, not the channel role (admin allowlist, broadcaster, live moderator).
-This matches 7TV's own enforcement: without editor rights on the token account, the mutation itself
-already fails (`LACKING_PRIVILEGES`). **Operator decision, 2026-09-24:** HandOfBlood's mod team
-works with its **own** 7TV editor grants rather than a shared token, so a 403 on a report only
-happens on a genuine, freshly revoked right — not on every mod's report by construction.
+E5/F4/5.7). **Before this plan**, the two channel-bound report routes,
+`POST /api/channels/{channelName}/emotes/sync-deleted` and `.../sync-restored`, were authorized by
+the **channel role** — admin allowlist, broadcaster, live moderator, or a 7TV editor of the channel
+account (`UsageStatsAccessAuthorizationFilter`/`CanViewUsageStatsAsync`). Only the already existing
+set-centric `sync-imported` route (spec-200, section 32/6.7) checked 7TV editing rights instead, via
+`IImportTargetOwnershipService.CheckAsync` against the **logged-in** Twitch account — matching 7TV's
+own enforcement, where a mutation without editor rights on the token account already fails
+(`LACKING_PRIVILEGES`).
+
+**With this plan**, the set-centric routes it adds for deleted/restored (T2) apply that same
+`CheckAsync` rule instead of the channel role — for every set-centric report, not just
+`sync-imported`. The channel role no longer decides who may report a deleted or restored emote.
+**Consequence:** a moderator or admin without their own 7TV editor grant on the set's owner can no
+longer report a change to it, even while still holding the channel role that let them do so before.
+**Operator decision, 2026-09-24 (F4):** uncritical for HandOfBlood, because its mod team already
+works with its **own** 7TV editor grants rather than a shared token — a 403 on a report is therefore
+only a genuine, freshly revoked right, not a systematic loss of anyone's ability to report.
 
 **What this commit adds:** the target list (`GET /api/seventv/me/emote-set-targets`) used to answer
-"can I edit this set" with a weaker question than the report itself asked — it never carried an
+"can I edit this set" with a weaker question than the report itself asks — it never carried an
 owner id at all, so a caller had to attempt the report to find out. The list now carries
 `sevenTvUserId` per account and `ownerSevenTvUserId` plus `editable` per set, with `editable`
 computed by `EmoteSetEditability.IsEditable` — the exact same pure function
 `ImportTargetOwnershipService`'s `OwnershipEvidence.MatchAgainstAllKnownAccounts` now calls instead
-of its own private copy of the rule. A future frontend vorprüfung (T4's `resolveEditableSet`) can
+of its own private copy of the rule. A future frontend pre-check (T4's `resolveEditableSet`) can
 therefore read the same answer the report would give, before spending a report on a set the caller
 cannot write to.
 
@@ -47,7 +57,7 @@ every dialog open to offer the same precision, so it does not: a set without an 
 yes. The list is therefore never looser than the report, only ever stricter — a run can be blocked
 where the report might have succeeded, never the other way around.
 
-**No pre-authorized re-report path.** If a report fails despite the frontend's vorprüfung having
+**No pre-authorized re-report path.** If a report fails despite the frontend's pre-check having
 passed (rights revoked mid-run), there is deliberately no way to resubmit it under the earlier
 authorization: the mod team holds its own rights, a failure at that point is a genuine revocation,
 and a resubmission path would amount to a second authorization next to the one 7TV just withdrew.
