@@ -17,7 +17,7 @@ const DE_TRANSLATIONS = {
     clearSelection: 'Auswahl aufheben',
     foreignChannel: {
       channelLabel: 'Kanalname',
-      placeholder: 'twitch-channel-name',
+      placeholder: 'kanalname',
       invalidChannelName: 'Kein gültiger Twitch-Kanalname.',
       load: 'Set laden',
       reload: 'Neu laden',

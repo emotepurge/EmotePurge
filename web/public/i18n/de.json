@@ -423,7 +423,7 @@
       "title": "Channel-Verwaltung",
       "refresh": "Aktualisieren",
       "refreshTitle": "Channel-Liste neu laden",
-      "joinPlaceholder": "twitch-channel-name",
+      "joinPlaceholder": "kanalname",
       "joinChannel": "Channel hinzufügen",
       "invalidChannelName": "Ungültiger Channel-Name (4–25 Zeichen, Buchstaben/Ziffern/Unterstrich).",
       "empty": "Keine Channels getrackt.",
@@ -1025,7 +1025,7 @@
     "foreignChannel": {
       "title": "Aus einem Kanal importieren",
       "channelLabel": "Kanalname",
-      "placeholder": "twitch-channel-name",
+      "placeholder": "kanalname",
       "invalidChannelName": "Kein gültiger Twitch-Kanalname.",
       "load": "Set laden",
       "reload": "Neu laden",
