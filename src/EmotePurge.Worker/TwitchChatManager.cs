@@ -25,6 +25,7 @@ public class TwitchChatManager(
     IEmoteMatchCache emoteMatchCache,
     IEmoteUsageCounter usageCounter,
     IBotChatterDetector botChatterDetector,
+    IExcludedChatterFilter excludedChatterFilter,
     WorkerStats stats) : ITwitchChatManager
 {
     // Twitch permits 20 joins per 10 seconds on a non-verified connection, and TwitchLib paces them
@@ -999,6 +1000,18 @@ public class TwitchChatManager(
         // Hot path: one indexer assignment, no LINQ and no allocation beyond the dictionary's own
         // first insert per channel.
         _lastMessageByChannelTicks[e.ChatMessage.Channel] = receivedAtTicks;
+
+        // Objection gate (GDPR Art. 21, issue #252): dropped here, immediately after the liveness
+        // bookkeeping above and before anything else touches this message — splice diagnostics,
+        // room/bot classification and emote counting all stay untouched for an excluded id. Matches
+        // only the immutable Twitch user id, never the login (ExcludedChatterFilter never reads
+        // one). The liveness update above is deliberately not skipped: an objecting chatter's
+        // messages still prove the socket is alive, same reasoning as for bot/Shared-Chat traffic
+        // in the class-level comment on this ordering.
+        if (excludedChatterFilter.IsExcluded(e.ChatMessage.UserId))
+        {
+            return Task.CompletedTask;
+        }
 
         // Sentinel for the TwitchLib double-read-loop defect (#114): warn and count, never drop —
         // the line still carries a real message and must be classified and matched like any other.
