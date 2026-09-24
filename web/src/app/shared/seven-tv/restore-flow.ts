@@ -28,9 +28,9 @@ import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
  *   foreign-to-view hint compares this against `emoteSetId` (E21) — a different set of the *same*
  *   channel and a page with no selection both count as foreign.
  *
- * Produced by `resolveEditableSet` plus these two fields today (`MassDeletePanel`'s
- * `openRestoreConfirm`); `FileImportStep` becomes the file-based producer once T5 wires it up (2.5
- * of the plan) — until then `ImportTrigger` builds an interim one from the page's frozen values.
+ * Produced by `resolveEditableSet` plus these two fields, in two places: `FileImportStep` for a
+ * restore file (the set the file names, spec 6.1 — `ImportTrigger` passes it on unchanged) and
+ * `MassDeletePanel`'s `openRestoreConfirm` for the finished delete run (E16).
  */
 export interface ResolvedRestoreTarget {
   emoteSetId: string;

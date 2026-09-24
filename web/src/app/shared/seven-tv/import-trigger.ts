@@ -14,7 +14,7 @@ import { startForeignChannelImportFlow, startLeaderboardImportFlow } from './for
 import { importTriggerDisabled } from './import-trigger-gate';
 import { openImportSourceDialog } from './import-source-dialog';
 import { ImportFlowTarget, startImportFlow } from './import-flow';
-import { ResolvedRestoreTarget, startRestoreFlow } from './restore-flow';
+import { startRestoreFlow } from './restore-flow';
 
 /**
  * The channel's active set as far as this trigger may assume it: an *omitted* input (`undefined` —
@@ -68,7 +68,8 @@ function toImportTarget(
 /**
  * The header button that opens the import path — **all of it** (#91, #147). It freezes
  * `channelName`/`setId` at the moment of the click, opens `ImportSourceDialog`, and hands whatever
- * comes back to the chain that fits: `startRestoreFlow` for a purge-run protocol,
+ * comes back to the chain that fits: `startRestoreFlow` for a restore file (purge-run protocol or
+ * transfer-run file),
  * `startImportFlow` for an emote list or usage export read from a file, and
  * `startForeignChannelImportFlow` for emotes picked out of another channel's 7TV set.
  *
@@ -92,17 +93,15 @@ function toImportTarget(
  * and `!isCoarse()` deliberately do NOT appear here: both are already enforced by the `@if` block
  * this trigger is placed inside on the page, alongside "Übertragen" (plan §1.2 point 3).
  *
- * **All four doors target `setId` itself (spec 8.6, T4.5), restore included since K5 (T5.2/T5.3)**
- * — the page's *selected* set, active or not (`toImportTarget` above for the other three; the
- * interim `ResolvedRestoreTarget` built from the same frozen `setId`/`setName` for restore, spec
- * 6.4/2.5 of the plan). Restore books its un-archive
- * through the set-centric `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call
- * (`SevenTvRestoreService`, spec 6.4), and its confirmation names the set it re-adds into (T5.3, spec 8.8) —
- * restoring from a file is therefore never locked to the active set here either; the interim
- * `FileImportStep.restoreEnabled` gate that used to enforce that (T4.5) was removed once T5.3
- * lifted it for good (K5 fix round, #200 finding F). The protocol *match* check itself (`setId` vs.
- * the file's own `meta.emoteSetId`) was already generic over whichever set it is given — it needed
- * no change to accept a non-active set's own protocol while that set is shown (AK 66).
+ * **The three copy doors target `setId` itself (spec 8.6, T4.5)** — the page's *selected* set,
+ * active or not (`toImportTarget` above). **A restore file targets whatever set it names** (spec
+ * #253, E1): `FileImportStep` reads the set from the file, clears it through the shared pre-check
+ * (`resolveEditableSet`, E19) and hands back a `ResolvedRestoreTarget` that this trigger passes to
+ * `startRestoreFlow` unchanged — it neither builds nor adjusts a restore target itself, and a
+ * blocked check never reaches it (the step keeps the dialog open with its own banner). The page's
+ * frozen `setId` only goes along as the step's `hostSelectedSetId`, for the confirmation's "not the
+ * set on screen" hint (E21). Restore books its un-archive through the set-centric
+ * `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call (`SevenTvRestoreService`, spec 6.4).
  */
 @Component({
   selector: 'app-import-trigger',
@@ -121,18 +120,16 @@ function toImportTarget(
 })
 export class ImportTrigger {
   readonly channelName = input.required<string>();
-  /** The set this trigger's doors target and a purge-run protocol is validated against — the page's
-   *  *selected* set (spec #200, T4.5), active or not. Named `setId`, not `selectedSetId`: every
-   *  caller of this component names its one set the same way (`file-import-step.ts`'s own input is
-   *  the same word), and the only place "selected vs. active" matters is the comparison against
-   *  {@link activeSetId} below. */
+  /** The set this trigger's three copy doors target — the page's *selected* set (spec #200, T4.5),
+   *  active or not. A restore file does not target it (it names its own set); it only travels to
+   *  the file step as `hostSelectedSetId`. Named `setId`, not `selectedSetId`: the only place
+   *  "selected vs. active" matters is the comparison against {@link activeSetId} below. */
   readonly setId = input.required<string>();
   /** The channel's actual active set; `null` when the host knows it has none to offer (unknown —
    *  status failed — or no active set at all); omitted (`undefined`) by a caller with no such
    *  distinction (every caller that predates T4.5, and any test that never sets it), which folds
-   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Feeds
-   *  `restoreIsActiveSet` in `openDialog` below, which only decides which slot-preview source the
-   *  restore confirmation reads — restoring itself is never gated on it (see the class doc). */
+   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Only
+   *  the copy doors read it; a restore file's target says for itself whether it is an active set. */
   readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the import confirm dialog's title when it is not the
    *  active one (spec 8.6) — `null` falls back to the id, same as every other unnamed set there. */
@@ -145,8 +142,8 @@ export class ImportTrigger {
   private readonly dialog = inject(Dialog);
   private readonly emoteAdminService = inject(EmoteAdminService);
   /** `loadImportTarget`'s live-list collaborator for a non-active/untracked target (spec F5) —
-   *  reached from here whenever `setId` names a set other than `activeSetId` (T4.5); the restore
-   *  chain never touches it (see the class doc). */
+   *  reached from here whenever `setId` names a set other than `activeSetId` (T4.5) — and the
+   *  restore flow's slot preview for a target that is not a tracked channel's active set. */
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read
    *  reached from here goes through `emoteAdminService`. */
@@ -170,13 +167,6 @@ export class ImportTrigger {
     const setId = this.setId();
     const activeSetId = this.activeSetId();
     const setName = this.setName();
-    // Restore is set-aware since K5 (T5.2: sync-restored takes { emoteSetId, sevenTvEmoteIds };
-    // T5.3: the confirmation names the set) — no longer locked to the active set. Still computed
-    // once, here, from the same frozen ids the rest of this click uses: `isActiveSet` only
-    // decides which slot-preview source the confirmation reads (`startRestoreFlow`), never
-    // whether the door opens at all.
-    const resolvedActiveSetId = resolveActiveSetId(setId, activeSetId);
-    const restoreIsActiveSet = resolvedActiveSetId !== null && resolvedActiveSetId === setId;
 
     openImportSourceDialog(this.dialog, {
       channelName,
@@ -186,42 +176,21 @@ export class ImportTrigger {
         return;
       }
       if (result.kind === 'restore') {
-        // Interim (spec 6.4/2.5 of the plan): `FileImportStep` does not resolve a target yet
-        // (T5), so this trigger still builds one from the page's own frozen values — but never
-        // without the shared pre-check (E19) having cleared this set first, same as every other
-        // first mutation. A block is silent (no confirmation, no request), matching every other
-        // pre-check caller until T5 gives this door its own banner. The five interim fields (E19's
-        // gap, T5 closes it): `ownerDisplayName` is left blank (nothing here knows a display name
-        // for this set's real owner) and `twitchLogin` falls back to the channel name, same
-        // placeholder convention `toImportTarget` already uses for the other three doors.
-        this.emoteSetService.resolveEditableSet(setId).subscribe((resolution) => {
-          if (resolution.status !== 'editable') {
-            return;
-          }
-          const target: ResolvedRestoreTarget = {
-            emoteSetId: setId,
-            setName: setName ?? setId,
-            ownerDisplayName: '',
-            twitchLogin: channelName,
-            trackedChannelName: channelName,
-            isActiveSet: restoreIsActiveSet,
-            hostChannelName: channelName,
-            hostSelectedSetId: setId,
-          };
-          startRestoreFlow(
-            {
-              dialog: this.dialog,
-              emoteAdminService: this.emoteAdminService,
-              emoteSetService: this.emoteSetService,
-              httpClient: this.httpClient,
-              tokenService: this.tokenService,
-              restoreService: this.restoreService,
-              arbiter: this.arbiter,
-            },
-            target,
-            result.rows,
-          );
-        });
+        // The target is the file's, already resolved and cleared by the file step (spec 6.1,
+        // 4.2) — passed on as it came, host fields included.
+        startRestoreFlow(
+          {
+            dialog: this.dialog,
+            emoteAdminService: this.emoteAdminService,
+            emoteSetService: this.emoteSetService,
+            httpClient: this.httpClient,
+            tokenService: this.tokenService,
+            restoreService: this.restoreService,
+            arbiter: this.arbiter,
+          },
+          result.target,
+          result.rows,
+        );
         return;
       }
       const importDeps = {

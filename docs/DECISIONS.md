@@ -10,6 +10,79 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — The file names a restore's target, and the target list checks it
+
+**Betrifft:** `web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/import-source-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` · `web/public/i18n/{de,en}.json` ·
+`docs/UI-Designsprache.md` (§7.3) ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (consumer, T4: `resolveEditableSet`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`,
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (consumer, T6: `ResolvedRestoreTarget`, the
+set-comparison hint, the panel restore through the same pre-check) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (consumer, T9: the entry without a selected set)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E1/E2/E10/E11/E15/E21/E22, F1/F2/F5/F6, sections 4.1, 4.2 and 6.1). **Before**, both restore
+parsers took the page's channel and its selected set as an expectation and refused anything else:
+a purge-run protocol of another set with `wrongSet`, of another channel with `wrongChannel`, and a
+transfer-run file of an untracked target always with `wrongChannel`, because its
+`meta.targetChannelName` is `null` and equals no page. After the set switch on 2026-10-01 a protocol
+naming the now non-active set becomes the normal case, and an untracked target had no way back at
+all.
+
+**The file names the target.** A purge-run protocol restores into its `meta.emoteSetId`, a
+transfer-run file (either stage) into its `meta.targetEmoteSetId`. The page's channel and selected
+set play no part in whether a file is valid; both parsers return `target: { emoteSetId }` instead of
+comparing anything, and `wrongChannel`/`wrongSet` are gone from the parsers and both locales. The
+transfer-run parser still does not read the envelope's `channelName` — it holds `''` for an
+untracked target (F2); the purge-run parser passes its envelope channel through but never compares
+it, so its case no longer matters either. There are exactly these two classes of restore file: every
+purge-run protocol ever written carries `meta.emoteSetId` (F1), so one without it is `wrongKind`, and
+there is deliberately no fallback to the page's active set — after a set switch that fallback would
+push an old set's protocol into the new one. What a file yields as rows is unchanged (`readProtocolRow`,
+the `planned`/`finished` rules of the 2026-09-23 entry; AK 24).
+
+**The target list checks it, in the file step.** `FileImportStep` runs the shared pre-check
+`SevenTvEmoteSetService.resolveEditableSet` as its third step, after the envelope and the parser —
+the same `editable` verdict the report applies (entry "Who may report is decided by 7TV editing
+rights", not repeated here). Four outcomes: editable ⇒ `picked`; a set whose `kind` is not `NORMAL`
+⇒ `targetNotSelectable` (a personal set is never a restore target, E11); not in any list, or listed
+with `editable: false`, on a complete list ⇒ `targetNotEditable`, worded "not editable **or** no
+longer there" because the 60 s list cache cannot tell the two apart (F5); an incomplete list or a
+failed request (429, 503, no connection) ⇒ `targetCheckUnavailable`, never "not allowed" (F3). A
+blocked check keeps the dialog open with the step's own banner; no confirmation opens and 7TV sees
+no request. `picked` carries the **resolved** target — set name, owner, tracked channel, whether it
+is active, and the set id the confirmation shows (AK 35) all come from the target list, never from
+the file, which is untrusted and becomes a target only here. Because `picked` closes the dialog and
+the check is asynchronous, the file control is locked while it runs (`aria-disabled`, so the caret is
+not dropped to `<body>`), and an answer that arrives after the step is gone is discarded (F6).
+`ImportTrigger` passes the resolved target to `startRestoreFlow` unchanged; its interim target built
+from the page's frozen values is gone.
+
+**The page only supplies the host fields.** The target carries `hostChannelName` (the page's channel,
+for the run's dock binding, E13) and `hostSelectedSetId` (the page's selected set, `null` without
+one). The confirmation's hint that the restore goes somewhere other than the set on screen compares
+`emoteSetId` with `hostSelectedSetId`, never channels (E21) — another set of the same channel gets
+the hint as well. On a page without a selected set the file step reads restore files only; an emote
+list or a usage export is refused with `noTargetSetForCopy` before its parser runs (E22). The
+trigger itself leaving the set gate, and `ImportSourceDialogData.setId` becoming nullable, follow
+with the restore dock's move out of the mass-delete panel.
+
+**What this revises.** The 2026-09-23 entry "Restore reads transfer-run files" matched the channel
+against `meta.targetChannelName` and refused an untracked target's file with `wrongChannel`; that
+check is gone, and with it its reason "there is no restore into an untracked set, because nothing
+there can report it" — since the set-centric report (entry "Delete, restore and a replace's removals
+report per emote set") an untracked target's file restores like any other, reported as paper only.
+What that means for replace into an untracked target is decided in its own entry. The 2026-09-21
+entry for K4 described the purge-run protocol's set match (AK 66) as generic over the set on screen;
+there is no match any more. Where the restore reports and who may report are the subjects of the two
+entries below.
+
+---
+
 ### 2026-09-25 — Delete, restore and a replace's removals report per emote set — report plus resync
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·

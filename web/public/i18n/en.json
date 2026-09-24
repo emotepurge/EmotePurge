@@ -963,10 +963,12 @@
         "transferRun": "That is a transfer run's protocol (recovery file or result protocol), not an emote list to copy from — such files only serve to restore removed emotes.",
         "wrongVersion": "The file comes from a newer EmotePurge version.",
         "noRows": "The file contains no importable emotes.",
-        "wrongChannel": "The protocol belongs to a different channel.",
-        "wrongSet": "The protocol belongs to a different emote set — the channel switched its active set.",
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore.",
-        "transferRunNoRows": "This transfer file contains no removed emotes."
+        "transferRunNoRows": "This transfer file contains no removed emotes.",
+        "targetNotEditable": "The set named in the file is not (or no longer) editable, or it no longer exists.",
+        "targetNotSelectable": "The set named in the file is not a normal emote set and cannot be restored into.",
+        "targetCheckUnavailable": "The target set could not be checked right now — please try again in a moment.",
+        "noTargetSetForCopy": "This page has no set to copy into. From a file, only a restore is possible here."
       }
     },
     "skippedDuplicates": {

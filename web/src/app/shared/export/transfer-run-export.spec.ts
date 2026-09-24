@@ -504,8 +504,6 @@ function replaceRow(source: ImportRow, targetId: string, aliases: string[] = [])
   };
 }
 
-const EXPECTED = { channelName: 'zielkanal', emoteSetId: 'set-1' };
-
 /** The `planned` stage of a run replacing two targets (and adding one plain row), read against the
  *  given live entries — serialized the way the dialog downloads it. */
 function plannedText(
@@ -544,9 +542,10 @@ describe('parseTransferRunForRestore', () => {
       }),
     );
 
-    expect(parseTransferRunForRestore(text, EXPECTED)).toEqual({
+    expect(parseTransferRunForRestore(text)).toEqual({
       ok: true,
       stage: 'planned',
+      target: { emoteSetId: 'set-1' },
       rows: [
         {
           emoteId: null,
@@ -598,7 +597,7 @@ describe('parseTransferRunForRestore', () => {
       }),
     );
 
-    const parsed = parseTransferRunForRestore(text, EXPECTED);
+    const parsed = parseTransferRunForRestore(text);
 
     expect(parsed.ok && parsed.stage).toBe('finished');
     expect(parsed.ok && parsed.rows.map((row) => row.sevenTvEmoteId)).toEqual(['tgt-1', 'tgt-3']);
@@ -616,7 +615,7 @@ describe('parseTransferRunForRestore', () => {
       }),
     );
 
-    const parsed = parseTransferRunForRestore(text, EXPECTED);
+    const parsed = parseTransferRunForRestore(text);
 
     expect(parsed.ok && parsed.rows).toEqual([
       {
@@ -631,32 +630,55 @@ describe('parseTransferRunForRestore', () => {
     ]);
   });
 
-  it("matches the channel against meta's target channel, so an untracked target's file matches no page", () => {
-    const entries = setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) });
-    // The envelope's own channelName names the page, meta's target channel does not.
-    const foreign = JSON.parse(
-      plannedText(entries, { ...TARGET, targetChannelName: 'anderer' }),
-    ) as Record<string, unknown>;
-    const disguised = JSON.stringify({ ...foreign, channelName: 'zielkanal' });
-    const untracked = plannedText(entries, { ...TARGET, targetChannelName: null });
+  // #253 (spec 6.1, E1/F2/E15): the file names its own target, read from meta alone — the envelope's
+  // channelName is never read, so a disguised envelope cannot redirect the target.
+  it.each(['planned', 'finished'] as const)(
+    "returns meta's targetEmoteSetId as the target of a %s file, ignoring the envelope's channelName",
+    (stage) => {
+      const entries = setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) });
+      const text =
+        stage === 'planned'
+          ? plannedText(entries)
+          : transferRunJson(
+              buildTransferRunProtocol({
+                ...TARGET,
+                origin: ORIGIN,
+                startedAt: 0,
+                finishedAt: 1,
+                items: [
+                  item({
+                    transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+                    status: 'done',
+                    completedSteps: 2,
+                  }),
+                ],
+              }),
+            );
+      const disguised = JSON.stringify({
+        ...(JSON.parse(text) as Record<string, unknown>),
+        channelName: 'anderer',
+      });
 
-    expect(parseTransferRunForRestore(disguised, EXPECTED)).toEqual({
-      ok: false,
-      errorKey: 'restore.import.errors.wrongChannel',
-    });
-    expect(parseTransferRunForRestore(untracked, { ...EXPECTED, channelName: '' })).toEqual({
-      ok: false,
-      errorKey: 'restore.import.errors.wrongChannel',
-    });
-  });
+      const parsed = parseTransferRunForRestore(disguised);
 
-  it('refuses a file of another set', () => {
-    const text = plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }));
+      expect(parsed.ok && parsed.target).toEqual({ emoteSetId: 'set-1' });
+      expect(parsed.ok && parsed.stage).toBe(stage);
+    },
+  );
 
-    expect(parseTransferRunForRestore(text, { ...EXPECTED, emoteSetId: 'set-other' })).toEqual({
-      ok: false,
-      errorKey: 'restore.import.errors.wrongSet',
+  // F2: an untracked target's file carries '' as the envelope's channelName and null as meta's
+  // target channel — neither is a reason to refuse it any more.
+  it("reads an untracked target's file (envelope '', meta.targetChannelName null) without an error", () => {
+    const text = plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }), {
+      ...TARGET,
+      targetChannelName: null,
     });
+    expect((JSON.parse(text) as { channelName: string }).channelName).toBe('');
+
+    const parsed = parseTransferRunForRestore(text);
+
+    expect(parsed.ok && parsed.target).toEqual({ emoteSetId: 'set-1' });
+    expect(parsed.ok && parsed.rows.map((row) => row.sevenTvEmoteId)).toEqual(['tgt-1']);
   });
 
   it('refuses a file of another row-shape version', () => {
@@ -665,7 +687,7 @@ describe('parseTransferRunForRestore', () => {
     ) as Record<string, unknown>;
     const text = JSON.stringify({ ...record, formatVersion: TRANSFER_RUN_FORMAT_VERSION + 1 });
 
-    expect(parseTransferRunForRestore(text, EXPECTED)).toEqual({
+    expect(parseTransferRunForRestore(text)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongVersion',
     });
@@ -690,7 +712,7 @@ describe('parseTransferRunForRestore', () => {
       }),
     );
 
-    expect(parseTransferRunForRestore(text, EXPECTED)).toEqual({
+    expect(parseTransferRunForRestore(text)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.transferRunNoRows',
     });

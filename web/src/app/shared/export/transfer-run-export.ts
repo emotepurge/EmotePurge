@@ -6,7 +6,7 @@ import { TransferPlan, TransferRow, TransferRowTarget } from '../../core/seven-t
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
-import { RestoreRow } from './purge-run-export';
+import { RestoreFileTarget, RestoreRow } from './purge-run-export';
 import { readEnvelope } from './read-envelope';
 
 /**
@@ -340,7 +340,7 @@ export function transferRunFilename(
 }
 
 export type TransferRunRestoreParseResult =
-  | { ok: true; rows: RestoreRow[]; stage: TransferRunMeta['stage'] }
+  | { ok: true; rows: RestoreRow[]; stage: TransferRunMeta['stage']; target: RestoreFileTarget }
   /** `errorKey` is a Transloco key (restore.import.errors.*), never finished prose. */
   | { ok: false; errorKey: string };
 
@@ -349,10 +349,12 @@ export type TransferRunRestoreParseResult =
  * of its `replace` rows and nothing else (a source row's ADD is not something a restore undoes).
  *
  * Validated like a purge-run protocol (`parsePurgeRunProtocol`), with the same error keys: the kind,
- * this kind's own `formatVersion`, the channel and the set the caller is restoring into. The channel
- * is matched against `meta.targetChannelName`, not the envelope's `channelName` — the envelope holds
- * `''` for an untracked target, whose file therefore never matches a channel page (there is no
- * restore into an untracked set; `wrongChannel` is the honest answer).
+ * this kind's own `formatVersion`, the `meta` shape and the rows. The target is the file's own
+ * `meta.targetEmoteSetId`, returned as `target` rather than held against the page the file is read
+ * on (spec #253, E1/E15) — whether the caller may write to it is the file step's target check. The
+ * envelope's `channelName` is **not read at all** (F2): it holds `''` for an untracked target, and a
+ * channel name is no part of the target anyway — the channel, the owner and whether the set is
+ * active all come from the target list, never from the file.
  *
  * Which removed targets become rows depends on the stage: `planned` (the back-out file, written
  * before any REMOVE) offers **every** target the run was about to remove — whatever was never
@@ -361,10 +363,7 @@ export type TransferRunRestoreParseResult =
  * row's own final status. One row per target, one alias per entry (`null` for the entry without an
  * alias). A file that yields no row is refused with `transferRunNoRows`.
  */
-export function parseTransferRunForRestore(
-  text: string,
-  expected: { channelName: string; emoteSetId: string },
-): TransferRunRestoreParseResult {
+export function parseTransferRunForRestore(text: string): TransferRunRestoreParseResult {
   const read = readEnvelope(text);
   if (!read.ok) {
     return read;
@@ -382,11 +381,9 @@ export function parseTransferRunForRestore(
   if (!meta || typeof meta !== 'object') {
     return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
   }
-  if (meta.targetChannelName !== expected.channelName) {
-    return { ok: false, errorKey: 'restore.import.errors.wrongChannel' };
-  }
-  if (meta.targetEmoteSetId !== expected.emoteSetId) {
-    return { ok: false, errorKey: 'restore.import.errors.wrongSet' };
+  const targetEmoteSetId = meta.targetEmoteSetId;
+  if (typeof targetEmoteSetId !== 'string' || targetEmoteSetId.length === 0) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
   }
   const stage = meta.stage;
   if ((stage !== 'planned' && stage !== 'finished') || !Array.isArray(envelope.rows)) {
@@ -400,7 +397,7 @@ export function parseTransferRunForRestore(
   if (rows.length === 0) {
     return { ok: false, errorKey: 'restore.import.errors.transferRunNoRows' };
   }
-  return { ok: true, rows, stage };
+  return { ok: true, rows, stage, target: { emoteSetId: targetEmoteSetId } };
 }
 
 /** The restore row for one untrusted file row, or `null` when it names no target to restore: not a

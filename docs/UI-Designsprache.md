@@ -434,8 +434,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 
 ### 7.3 Ingest dialog (#91, since #147 the one import dialog)
 
-- **What applies:** Everything that brings emotes **into** the channel of the page begins in the page
-  header with the trigger `<app-import-trigger>` (§8.7 governs the surface, §4.2 the blocks) and runs through **one**
+- **What applies:** Everything that brings emotes **into** a set from a channel page — into the
+  channel of the page for the copy sources, into the set a restore file names for a restore (#253) —
+  begins in the page header with the trigger `<app-import-trigger>` (§8.7 governs the surface, §4.2 the blocks) and runs through **one**
   dialog: `ImportSourceDialog` (`shared/seven-tv/import-source-dialog.ts`,
   `openImportSourceDialog`). **Its first step is the source selection** — until #147 the
   foreign channel had a header button of its own next to it, which contradicted spec decision E1 ("one source among others
@@ -478,7 +479,17 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   "Load set" — the pane grows around the field, the field does not move.
 - **File branch (`FileImportStep`, `shared/seven-tv/file-import-step.ts`).** It **reads and checks**
   the file — nothing more. Until #147 it was a dialog of its own (`FileImportDialog`); what changed is
-  only its housing, not its behaviour.
+  only its housing, not its behaviour. **A restore file names its own target, and the step checks
+  it** (#253): the set comes from the file (`meta.emoteSetId` of a purge protocol,
+  `meta.targetEmoteSetId` of a transfer protocol), never from the page, and is not held against the
+  page's channel or selected set. The check is the step's third one, after the envelope and the
+  parser: the set must be in the caller's target list, `NORMAL` and editable
+  (`resolveEditableSet`). A blocked check is a banner like any other file error — "not editable or no
+  longer there", "not a normal set", or "cannot be checked right now" — and the dialog stays open;
+  only a cleared target closes it. While the check runs the file control carries `aria-disabled`
+  (not `disabled`: it is where the caret sits after the native file window closes) and takes no
+  second pick. **Without a selected set on the page the branch reads restore files only**; an emote
+  list or a usage export is refused with its own banner (no set to copy into) before it is parsed.
 - **Row order in the file branch (contract):**
   1. The **list of the four permissible kinds of file**, each its own list entry with the addition
      "as JSON": purge protocol (restore) · transfer protocol, recovery file or result protocol
@@ -559,14 +570,15 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   making `DialogShell`'s host a flex column for all twelve dialogs — deliberately not done.
   The numbers hang on an E2E case, because jsdom has no layout.
 - **Result contract:** on success the dialog closes with a discriminated result —
-  "Restore" with the restorable rows of the protocol, "Import" with the `ImportSource` from the
+  "Restore" with the restorable rows of the file and its checked target, "Import" with the `ImportSource` from the
   file or "Foreign" with the rows marked in the grid —, on cancel/Escape/backdrop with
   `undefined`. It starts **no** run, chooses **no** import target and opens **no** further
   dialog. In the error case it stays open and shows the banner; every new attempt resets it, and
   the file input is cleared after every selection so that the same corrected file triggers a
   `change` again.
-- **The target is not asked for, it is fixed:** the channel of the page from whose header the trigger
-  was clicked — the same for **all** sources. Until #147 the foreign-channel path still had
+- **The target is not asked for, it is fixed:** for the copy sources, the channel of the page from
+  whose header the trigger was clicked — the same for all three; for a restore file, the set the file
+  names (see the file branch above), which the page neither chooses nor overrides. Until #147 the foreign-channel path still had
   `ImportTargetDialog` with `forcedScope: 'selection'` in between; with the scope radio group suppressed,
   exactly one question remained there that the page context had already answered. The step is
   deleted without replacement. `forcedScope` itself stays — the dock entry point in §8.7 still uses it.

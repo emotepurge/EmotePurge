@@ -1835,7 +1835,7 @@ test.describe('import dialog: animated emotes in the grid', () => {
 });
 
 test.describe('push flow: rejection', () => {
-  test('a voting export and a foreign purge protocol are both refused with the existing errors', async ({
+  test('a voting export and a purge protocol of a set outside the target list are both refused, each with its own error', async ({
     page,
   }) => {
     await mockAuthMe(page, AUTH_USER);
@@ -1845,6 +1845,18 @@ test.describe('push flow: rejection', () => {
       { channelName: SOURCE_CHANNEL, isBroadcaster: true, isTracked: true },
     ]);
     await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // The caller's target list (spec #253, 4.2): only this channel's own active set — the set the
+    // protocol below names is in no account's list, so it is not a set this caller can restore into.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+    ]);
 
     await gotoUsageStats(page, SOURCE_CHANNEL);
 
@@ -1877,10 +1889,10 @@ test.describe('push flow: rejection', () => {
       'Das ist ein Export einer Abstimmung, kein Purge-Protokoll.',
     );
 
-    // Regression guard for the restore branch (unchanged by #72): a purge protocol from THIS
-    // channel but a DIFFERENT (now inactive) emote set is rejected as wrongSet, not silently routed
-    // through the new import path. Still the SAME dialog — a second failure does not need (and does
-    // not get) a fresh open.
+    // The restore branch (spec #253, AK 3): the file names its own set, and a set the target list
+    // does not offer is refused as targetNotEditable by the file step itself — no restore
+    // confirmation, no 7TV request, and not silently routed through the import path either. Still
+    // the SAME dialog — a second failure does not need (and does not get) a fresh open.
     await fileInput.setInputFiles({
       name: 'emotepurge_sensitron_purge_202608011200.json',
       mimeType: 'application/json',
@@ -1913,7 +1925,7 @@ test.describe('push flow: rejection', () => {
     });
     await expect(page.getByRole('dialog')).toHaveCount(1);
     await expect(dialog.getByRole('alert')).toContainText(
-      'Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.',
+      'Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
     );
   });
 });
@@ -2580,7 +2592,8 @@ test.describe('dock outcomes: announced from a region that outlives the dock (#1
  * T4.5/T4.6, spec 8.6 last point) — this is the same channel's header import button used
  * throughout `push flow: the file path` above, just opened while a non-active set is on screen.
  * Restore is the door K4 did not make set-aware; K5/T5.3 do — a purge-run protocol for the shown
- * non-active set restores into it, with the confirmation naming that set (spec 8.8).
+ * non-active set restores into it, with the confirmation naming that set (spec 8.8). Since #253 a
+ * restore file names its own target (the set on screen here only because the protocol says so).
  */
 test.describe('set view: the import doors follow the selected set (#200, K4/T4.5)', () => {
   const HALLOWEEN_SET_ID = 'set-halloween';
@@ -2682,8 +2695,9 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
 
   // K5/T5.3 (spec 8.8) lifted the old refusal this test used to prove (`file-import-step.ts`'s
   // `restoreEnabled` is unconditionally true since K5): a purge-run protocol for the shown
-  // non-active set now restores into it, and the confirmation names that set — the AK 66 match
-  // check (protocol's `meta.emoteSetId` against the set on screen) is unaffected either way.
+  // non-active set now restores into it, and the confirmation names that set. Since #253 the
+  // protocol's own `meta.emoteSetId` is the target whichever set is on screen; the file step
+  // checks it against the target list instead of against the page.
   test('a purge-run protocol for the shown non-active set opens the restore confirmation, naming that set, instead of the old refusal (K5/T5.3, AK 66/73)', async ({
     page,
   }) => {
@@ -2694,6 +2708,21 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
     await page.addInitScript(() => {
       window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
     });
+    // The file step checks the set the protocol names against the target list (spec #253, 4.2) —
+    // here the channel's own, non-active Halloween set, editable.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [
+          { id: 'set-1', name: 'Hauptset', isActive: true },
+          { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+        ],
+      },
+    ]);
 
     await gotoHalloweenView(page);
 

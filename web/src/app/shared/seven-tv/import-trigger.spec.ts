@@ -19,6 +19,7 @@ import { PurgeRunRow } from '../export/purge-run-export';
 import { FileImportResult } from './file-import-step';
 import { ImportSourceDialogResult } from './import-source-dialog';
 import { ImportTrigger } from './import-trigger';
+import { ResolvedRestoreTarget } from './restore-flow';
 
 /**
  * `ImportTrigger` opens every dialog through the plain `Dialog` it injects, same as
@@ -46,6 +47,29 @@ function rows(): PurgeRunRow[] {
       errorMessage: null,
     },
   ];
+}
+
+/**
+ * What `ImportSourceDialog` closes with for a restore file: the rows plus the target the file step
+ * already resolved and cleared (spec #253, 6.1). Defaults to this page's own active set, as the
+ * target list would describe it; a test overrides whatever its case is about.
+ */
+function restoreResult(target: Partial<ResolvedRestoreTarget> = {}): FileImportResult {
+  return {
+    kind: 'restore',
+    rows: rows(),
+    target: {
+      emoteSetId: CURRENT_SET,
+      setName: 'Hauptset',
+      ownerDisplayName: CURRENT_CHANNEL,
+      twitchLogin: CURRENT_CHANNEL,
+      trackedChannelName: CURRENT_CHANNEL,
+      isActiveSet: true,
+      hostChannelName: CURRENT_CHANNEL,
+      hostSelectedSetId: CURRENT_SET,
+      ...target,
+    },
+  };
 }
 
 function importSource(overrides: Partial<ImportSource> = {}): ImportSource {
@@ -121,12 +145,6 @@ describe('ImportTrigger', () => {
   let startRestore: ReturnType<typeof vi.fn>;
   let startImport: ReturnType<typeof vi.fn>;
   let loadEmoteSetPreview: ReturnType<typeof vi.fn>;
-  /** The interim pre-check `openDialog` runs for a restore result before building its own
-   *  target (spec 6.4/2.5 of the plan) — defaults to `'editable'` so every existing restore test
-   *  below, none of which cares about the block itself, keeps reaching `startRestore` unchanged.
-   *  The `target` half of the answer is never read here: this trigger still builds its own interim
-   *  target from the page's frozen values, not from the pre-check's resolution. */
-  let resolveEditableSet: ReturnType<typeof vi.fn>;
   let hasToken: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
   let dialogOpen: ReturnType<typeof vi.fn>;
@@ -149,7 +167,6 @@ describe('ImportTrigger', () => {
     // the 'trackedActive' fast path (see `resolveActiveSetId`). Only the non-active-set and the
     // unknown-active-set describe blocks below override this.
     loadEmoteSetPreview = vi.fn();
-    resolveEditableSet = vi.fn(() => of({ status: 'editable', target: {} }));
     hasToken = signal(true);
     activeRun = signal<SevenTvRunKind | null>(null);
     dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
@@ -178,10 +195,7 @@ describe('ImportTrigger', () => {
         },
         {
           provide: SevenTvEmoteSetService,
-          useValue: {
-            loadEmoteSetPreview,
-            resolveEditableSet,
-          } as unknown as SevenTvEmoteSetService,
+          useValue: { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService,
         },
         { provide: SevenTvTokenService, useValue: { hasToken } as unknown as SevenTvTokenService },
         { provide: SevenTvRunArbiter, useValue: { activeRun } as unknown as SevenTvRunArbiter },
@@ -273,7 +287,16 @@ describe('ImportTrigger', () => {
       dialog.fixture.componentRef.setInput('setId', 'set-b');
       dialog.detect();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      // The dialog was handed the values of the click, not the ones switched to since.
+      expect(dataAt(0)).toEqual({ channelName: 'channel-a', setId: 'set-a' });
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-a',
+          trackedChannelName: 'channel-a',
+          hostChannelName: 'channel-a',
+          hostSelectedSetId: 'set-a',
+        }),
+      );
       closedAt<boolean>(1).next(true);
 
       // Fourth argument is the #149/T5 duplicate-check skip count — 0 because the fresh 7TV read
@@ -289,30 +312,55 @@ describe('ImportTrigger', () => {
     });
   });
 
-  describe('the interim pre-check before a file-based restore (spec 6.4/2.5 of the plan)', () => {
-    it('checks the set the file names before building a target for it', () => {
-      const dialog = render('achannel', 'aset');
-      dialog.click();
-
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
-
-      expect(resolveEditableSet).toHaveBeenCalledWith('aset');
-      // The chain proceeds exactly as before once the pre-check clears the set — one further
-      // dialog beyond the source dialog, already the restore confirmation.
-      expect(dialogOpen).toHaveBeenCalledTimes(2);
-    });
-
-    it('starts nothing — no confirmation, no token prompt, no run — when the pre-check blocks the set', () => {
-      resolveEditableSet.mockReturnValue(of({ status: 'notEditable' }));
+  describe("a restore file: the file step's resolved target goes to the flow unchanged (spec #253, 6.1)", () => {
+    it("restores into the set the file named, as the step resolved it — not into this page's set", () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: 'besitzerin',
+          sevenTvUserId: null,
+          emoteSetId: 'set-foreign',
+          emoteSetName: 'Fremdes Set',
+          capacity: 1000,
+          totalCount: 10,
+          truncated: false,
+          emotes: [],
+        }),
+      );
       const dialog = render();
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-foreign',
+          setName: 'Fremdes Set',
+          ownerDisplayName: 'Besitzerin',
+          twitchLogin: 'besitzerin',
+          trackedChannelName: null,
+          isActiveSet: false,
+        }),
+      );
 
-      // Only the source dialog, which already closed — no restore confirmation and no token
-      // prompt opened for a set the pre-check just refused.
-      expect(dialogOpen).toHaveBeenCalledTimes(1);
-      expect(startRestore).not.toHaveBeenCalled();
+      // An untracked target: the slot preview reads the account's own set, never this page's
+      // channel status — proof the page's frozen values built no part of the target.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('besitzerin', 'set-foreign');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          setId: 'set-foreign',
+          expectedChannelName: null,
+          resyncChannelName: null,
+          hostChannelName: CURRENT_CHANNEL,
+          setName: 'Fremdes Set',
+          ownerOrChannelLabel: 'Besitzerin',
+        }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+        0,
+        true,
+        0,
+      );
     });
   });
 
@@ -322,7 +370,7 @@ describe('ImportTrigger', () => {
       const dialog = render();
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       // Only the token prompt has opened so far — the restore-specific work (the slot preview
       // read) has not started, proof the confirmation is not up yet.
@@ -352,7 +400,7 @@ describe('ImportTrigger', () => {
       const dialog = render();
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       // One dialog beyond the source dialog, and it is already the confirmation.
       expect(dialogOpen).toHaveBeenCalledTimes(2);
@@ -367,7 +415,7 @@ describe('ImportTrigger', () => {
       hasToken.set(false);
       const dialog = render();
       dialog.click();
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       closedAt<boolean>(1).next(false);
 
@@ -378,7 +426,7 @@ describe('ImportTrigger', () => {
     it('never restores when the confirmation is cancelled', () => {
       const dialog = render();
       dialog.click();
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       closedAt<boolean>(1).next(false);
 
@@ -575,7 +623,8 @@ describe('ImportTrigger', () => {
 
   describe('a non-active set on screen (#200, T4.5): all four doors follow it, restore included since K5', () => {
     // K5/T5.3: restore's own slot preview follows the same active/non-active fork the other three
-    // doors already had (spec 8.3) — the run itself was already set-aware since T5.1/T5.2.
+    // doors already had (spec 8.3) — since #253 decided by the resolved target's own `isActiveSet`,
+    // not by the page's inputs.
     it('restores into the non-active set, reading its slot preview live instead of EmoteSetStatus', () => {
       loadEmoteSetPreview.mockReturnValue(
         of({
@@ -595,7 +644,15 @@ describe('ImportTrigger', () => {
       });
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      // The file names the Halloween set, and the target list says it is not the active one.
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-halloween',
+          setName: 'Halloween',
+          isActiveSet: false,
+          hostSelectedSetId: 'set-halloween',
+        }),
+      );
 
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
       expect(getSetStatus).not.toHaveBeenCalled();

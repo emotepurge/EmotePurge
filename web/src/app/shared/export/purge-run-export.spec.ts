@@ -139,10 +139,8 @@ describe('purgeRunFilename', () => {
 });
 
 describe('parsePurgeRunProtocol', () => {
-  const EXPECTED = { channelName: 'sensitron', emoteSetId: 'set-1' };
-
-  it('accepts a matching protocol and returns only the done rows', () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), EXPECTED);
+  it('accepts a well-formed protocol and returns only the done rows', () => {
+    const result = parsePurgeRunProtocol(purgeRunJson(protocol()));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.rows.map((row) => row.emoteId)).toEqual(['i1']);
@@ -151,7 +149,7 @@ describe('parsePurgeRunProtocol', () => {
   });
 
   it('rejects non-JSON', () => {
-    expect(parsePurgeRunProtocol('nope{', EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol('nope{')).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.notJson',
     });
@@ -159,7 +157,7 @@ describe('parsePurgeRunProtocol', () => {
 
   it('names a voting export instead of calling it "not a protocol"', () => {
     const envelope = (kind: string) => JSON.stringify({ source: 'emotepurge', kind });
-    expect(parsePurgeRunProtocol(envelope('voting'), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(envelope('voting'))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.votingExport',
     });
@@ -167,11 +165,11 @@ describe('parsePurgeRunProtocol', () => {
 
   it('falls back to wrongKind for a foreign file or an unknown kind', () => {
     const unknown = JSON.stringify({ source: 'emotepurge', kind: 'from-the-future' });
-    expect(parsePurgeRunProtocol(unknown, EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(unknown)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
-    expect(parsePurgeRunProtocol(JSON.stringify({ hello: 'world' }), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(JSON.stringify({ hello: 'world' }))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
@@ -183,14 +181,14 @@ describe('parsePurgeRunProtocol', () => {
   // rejection lives in `import-source-parser.ts` instead).
   it('falls back to wrongKind for a transfer-run file rather than naming it', () => {
     const transferRun = JSON.stringify({ source: 'emotepurge', kind: 'transfer-run' });
-    expect(parsePurgeRunProtocol(transferRun, EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(transferRun)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
   });
 
   it('tells the CSV version of an export apart from a corrupt file', () => {
-    expect(parsePurgeRunProtocol(purgeRunCsv(protocol()), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(purgeRunCsv(protocol()))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.csvInsteadOfJson',
     });
@@ -201,7 +199,7 @@ describe('parsePurgeRunProtocol', () => {
       `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
       '"formatVersion": 99',
     );
-    expect(parsePurgeRunProtocol(future, EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(future)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongVersion',
     });
@@ -214,29 +212,42 @@ describe('parsePurgeRunProtocol', () => {
       `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
       '"formatVersion": 1',
     );
-    const result = parsePurgeRunProtocol(legacy, EXPECTED);
+    const result = parsePurgeRunProtocol(legacy);
     expect(result.ok).toBe(true);
   });
 
   it("accepts formatVersion 2, today's row shape", () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), EXPECTED);
+    const result = parsePurgeRunProtocol(purgeRunJson(protocol()));
     expect(result.ok).toBe(true);
   });
 
-  it('rejects a protocol from another channel', () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), {
-      channelName: 'handofblood',
-      emoteSetId: 'set-1',
-    });
-    expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.wrongChannel' });
-  });
+  // #253 (spec 6.1, E1/E15): the file names its own target — the parser no longer holds it against
+  // any page, so a protocol of another channel or another set is read, not refused.
+  it.each([1, PURGE_RUN_FORMAT_VERSION])(
+    "returns the file's own meta.emoteSetId as the target, whatever page reads it (formatVersion %i)",
+    (version) => {
+      const text = purgeRunJson(protocol()).replace(
+        `"formatVersion": ${PURGE_RUN_FORMAT_VERSION}`,
+        `"formatVersion": ${version}`,
+      );
+      const result = parsePurgeRunProtocol(text);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.target).toEqual({ emoteSetId: 'set-1' });
+        expect(result.channelName).toBe('sensitron');
+      }
+    },
+  );
 
-  it('rejects a protocol against a different active set', () => {
-    const result = parsePurgeRunProtocol(purgeRunJson(protocol()), {
-      channelName: 'sensitron',
-      emoteSetId: 'other-set',
+  // F1: every purge-run file ever written carries meta.emoteSetId — one without it is not a
+  // protocol of ours, and there is no fallback that would guess a set for it.
+  it('refuses a protocol without meta.emoteSetId as wrongKind, with no fallback target (F1)', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    delete proto.meta.emoteSetId;
+    expect(parsePurgeRunProtocol(JSON.stringify(proto))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
     });
-    expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.wrongSet' });
   });
 
   it('rejects a protocol without rows array', () => {
@@ -247,7 +258,7 @@ describe('parsePurgeRunProtocol', () => {
       channelName: 'sensitron',
       meta: { emoteSetId: 'set-1' },
     });
-    expect(parsePurgeRunProtocol(broken, EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(broken)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',
     });
@@ -273,7 +284,7 @@ describe('parsePurgeRunProtocol', () => {
         },
       ],
     });
-    const result = parsePurgeRunProtocol(purgeRunJson(proto), EXPECTED);
+    const result = parsePurgeRunProtocol(purgeRunJson(proto));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.rows).toEqual([
@@ -296,7 +307,7 @@ describe('parsePurgeRunProtocol', () => {
     for (const row of old.rows) {
       delete row.aliases;
     }
-    const result = parsePurgeRunProtocol(JSON.stringify(old), EXPECTED);
+    const result = parsePurgeRunProtocol(JSON.stringify(old));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.rows).toEqual([
@@ -315,7 +326,7 @@ describe('parsePurgeRunProtocol', () => {
   it('keeps a row whose aliases field is malformed, restoring it under its name', () => {
     const proto = JSON.parse(purgeRunJson(protocol()));
     proto.rows[0].aliases = ['PogU', 42];
-    const result = parsePurgeRunProtocol(JSON.stringify(proto), EXPECTED);
+    const result = parsePurgeRunProtocol(JSON.stringify(proto));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.rows.map((row) => row.aliases)).toEqual([['PogU']]);
@@ -328,7 +339,7 @@ describe('parsePurgeRunProtocol', () => {
       { ...proto.rows[1] }, // failed — never left the set
       { ...proto.rows[0], sevenTvEmoteId: '' }, // malformed
     ];
-    expect(parsePurgeRunProtocol(purgeRunJson(proto), EXPECTED)).toEqual({
+    expect(parsePurgeRunProtocol(purgeRunJson(proto))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.noRestorableRows',
     });

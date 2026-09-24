@@ -12,7 +12,7 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { SevenTvLeaderboardResponse } from '../../core/seven-tv/leaderboard.model';
 import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
-import { FileImportStep } from './file-import-step';
+import { FileImportResult, FileImportStep } from './file-import-step';
 import { ForeignChannelStep } from './foreign-channel-step';
 import { LeaderboardStep } from './leaderboard-step';
 import { ImportSourceDialog, ImportSourceDialogResult } from './import-source-dialog';
@@ -430,9 +430,23 @@ describe('ImportSourceDialog', () => {
 
       const step = fixture.debugElement.query(By.directive(FileImportStep))
         .componentInstance as FileImportStep;
-      step.picked.emit({ kind: 'restore', rows: [] });
+      const restore: FileImportResult = {
+        kind: 'restore',
+        rows: [],
+        target: {
+          emoteSetId: 'set-other',
+          setName: 'Anderes Set',
+          ownerDisplayName: 'Jemand',
+          twitchLogin: 'jemand',
+          trackedChannelName: null,
+          isActiveSet: false,
+          hostChannelName: 'somechannel',
+          hostSelectedSetId: 'set-current',
+        },
+      };
+      step.picked.emit(restore);
 
-      expect(closed).toEqual([{ kind: 'restore', rows: [] }]);
+      expect(closed).toEqual([restore]);
     });
 
     it('keeps "Weiter" locked until the channel step has something to carry forward', () => {

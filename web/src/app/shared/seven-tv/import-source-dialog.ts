@@ -23,8 +23,9 @@ import { LeaderboardStep } from './leaderboard-step';
 
 /**
  * Frozen at the moment of the triggering click (#91) — never a live signal, so a channel switch or
- * a set change while this dialog is open cannot retarget what a purge-run protocol is validated
- * against, nor where a foreign channel's emotes end up.
+ * a set change while this dialog is open cannot change which page a restore is attributed to, nor
+ * where a foreign channel's emotes end up. A restore file names its own target (spec #253, E1);
+ * `setId` reaches the file step only as the page's selected set (`hostSelectedSetId`).
  */
 export interface ImportSourceDialogData {
   channelName: string;
@@ -160,7 +161,7 @@ const SOURCE_OPTIONS: SourceOption[] = [
         @case ('file') {
           <app-file-import-step
             [channelName]="data.channelName"
-            [setId]="data.setId"
+            [hostSelectedSetId]="data.setId"
             (picked)="dialogRef.close($event)"
           />
         }
