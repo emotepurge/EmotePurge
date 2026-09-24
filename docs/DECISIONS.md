@@ -10,6 +10,31 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — robots.txt stays closed after the legal launch
+
+**Betrifft:** `web/public/robots.txt` · `PRODUCT.md` · `CLAUDE.md`
+
+Imprint and privacy policy (de/en, #247) went live in production today, together with the
+enforced retention job (#244), account/admin deletion, the chatter exclusion list, the channel
+block list, and the contact form (#262) — the legal precondition for opening `robots.txt` is met.
+The operator decided against opening it anyway: `web/public/robots.txt` keeps `Disallow: /`. The
+site stays open and legally sound, but deliberately undiscoverable through search engines — growth
+is meant to run through recommendation, not search traffic (`PRODUCT.md`, Brand Commitment/Product
+Principle 5, "Erklären statt verkaufen"). Two operational limits reinforce the same direction:
+the active-channel cap of 80 (`Channels:MaxActiveChannels`, s. Eintrag 2026-09-23) and Twitch's
+own hard ceiling of 100 simultaneously joined chatrooms make uncontrolled, search-driven growth
+undesirable right now regardless of legal readiness — more sign-ups than the worker can actually
+join would just turn into explicit join rejections (`409 channel_capacity_reached`) for streamers who
+found the site but cannot be served.
+
+This retires "open `robots.txt`" as the last step of the launch checklist (docs/Review-2026-07-29.md,
+S2-20). It is not replaced by a new checklist item: opening the file is now an independent product
+decision, to be made later on its own merits, not a technical follow-up to anything shipped today.
+`CLAUDE.md`'s "Umsetzungsstand" table (row E) and `PRODUCT.md`'s "Explizit unentschieden" list are
+updated accordingly in this same commit.
+
+---
+
 ### 2026-09-24 — Contact form: a second, provider-neutral electronic contact route (§ 5 DDG)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IContactSubmissionService.cs` ·
