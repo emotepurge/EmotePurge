@@ -30,6 +30,13 @@ export const routes: Routes = [
     loadComponent: () => import('./features/legal/legal-page').then((m) => m.LegalPage),
   },
   {
+    // Contact form (docs/DECISIONS.md 2026-09-24, "contact form"): reachable without being logged
+    // in, outside every auth guard and outside the app shell — same reasoning as 'imprint'/'privacy'
+    // above, and the § 5 DDG requirement is explicit that it must be reachable before login.
+    path: 'contact',
+    loadComponent: () => import('./features/contact/contact-page').then((m) => m.ContactPage),
+  },
+  {
     path: '',
     loadComponent: () => import('./features/shell/app-shell').then((m) => m.AppShell),
     children: [

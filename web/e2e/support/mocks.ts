@@ -1161,3 +1161,91 @@ export async function mockSevenTvGql(
     return fulfillJson(route, 200, body);
   });
 }
+
+/** GET /api/contact/config. Defaults to "available", the common case for these specs. */
+export async function mockContactConfig(
+  page: Page,
+  overrides: { available?: boolean; turnstileSiteKey?: string | null } = {},
+): Promise<void> {
+  const available = overrides.available ?? true;
+  await page.route('**/api/contact/config', (route) =>
+    fulfillJson(route, 200, {
+      available,
+      turnstileSiteKey: available ? (overrides.turnstileSiteKey ?? 'e2e-site-key') : null,
+    }),
+  );
+}
+
+/**
+ * POST /api/contact. Pass `outcome: 'error'` with a `status`/`errorCode` to simulate a rejected
+ * submission (captcha failure, unavailable, …); defaults to a successful 204.
+ */
+export async function mockContactSubmit(
+  page: Page,
+  options: { outcome?: 'success' | 'error'; status?: number; errorCode?: string } = {},
+): Promise<void> {
+  const outcome = options.outcome ?? 'success';
+  await page.route('**/api/contact', (route) => {
+    if (route.request().method() !== 'POST') {
+      return route.fallback();
+    }
+    if (outcome === 'error') {
+      return fulfillJson(route, options.status ?? 400, {
+        errorCode: options.errorCode ?? 'contact_invalid',
+      });
+    }
+    return route.fulfill({ status: 204 });
+  });
+}
+
+/**
+ * Intercepts Cloudflare's Turnstile script (`api.js?render=explicit`, loaded only by `ContactPage`,
+ * only once its form renders — see `core/contact/turnstile.ts`) and serves a tiny stub instead of a
+ * real network request. The stub's `render()` calls the caller's `callback` with a fixed fake token
+ * on the next tick, so the submit button's Turnstile-gated disabled state clears the same way it
+ * would after a real visitor solves the real challenge — exercising the app's actual script-loading
+ * code path (unlike `TURNSTILE_LOADER`'s DI override in the Vitest specs, which never touches it).
+ * Call before `page.goto`, same as `installLiveStub`/`mockSevenTvGql`.
+ *
+ * `render()` also inserts a surrogate element into the given container, sized to Cloudflare's
+ * documented "normal" widget footprint — 300×65px (developers.cloudflare.com/turnstile/get-started/
+ * client-side-rendering/widget-configurations/, "Widget size" table, checked 2026-09-24) — with
+ * neutral, inert styling. Before this (Codex P3), the stub called back with a token but never put
+ * anything in the DOM, so the UI audit (`ui-audit.audit.ts`, 'contact' scenario) screenshotted an
+ * empty gap where the real widget's iframe would sit, instead of a representative reserved footprint.
+ * `aria-hidden` and no interactive role: it exists only to occupy layout space for the screenshot,
+ * never as something the audit's own accessibility checks should evaluate as a real control — the
+ * real widget's own iframe carries its own accessible name, which this stub does not attempt to fake.
+ */
+export async function mockTurnstile(page: Page, { token = 'e2e-fake-token' } = {}): Promise<void> {
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/javascript',
+      body: `window.turnstile = (function () {
+        var elements = {};
+        var nextId = 0;
+        return {
+          render: function (container, options) {
+            var el = document.createElement('div');
+            el.setAttribute('aria-hidden', 'true');
+            el.style.cssText =
+              'width:300px;height:65px;border:1px solid #d1d5db;border-radius:4px;' +
+              'background:#f3f4f6;box-sizing:border-box;';
+            container.appendChild(el);
+            var widgetId = 'e2e-stub-widget-' + (nextId++);
+            elements[widgetId] = el;
+            setTimeout(function () { options.callback(${JSON.stringify(token)}); }, 0);
+            return widgetId;
+          },
+          remove: function (widgetId) {
+            var el = elements[widgetId];
+            if (el && el.parentNode) { el.parentNode.removeChild(el); }
+            delete elements[widgetId];
+          },
+          reset: function () {},
+        };
+      })();`,
+    }),
+  );
+}

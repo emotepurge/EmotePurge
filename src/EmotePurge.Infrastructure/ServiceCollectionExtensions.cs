@@ -4,6 +4,7 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Core.Twitch;
 using EmotePurge.Infrastructure.ChatLogArchive;
+using EmotePurge.Infrastructure.Contact;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Redis;
 using EmotePurge.Infrastructure.Services;
@@ -15,6 +16,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
 namespace EmotePurge.Infrastructure;
@@ -269,6 +271,30 @@ public static class ServiceCollectionExtensions
         // requests (see the class comment).
         services.AddSingleton(legalContentOptions);
         services.AddSingleton<ILegalContentService, LegalContentService>();
+
+        // Contact form (docs/DECISIONS.md 2026-09-24, "contact form"). Bound the same way as
+        // LegalContentOptions above — no Validate() that throws, since an unconfigured form is a
+        // supported state (ContactOptions.IsAvailable), not a startup error.
+        var contactOptions = new ContactOptions();
+        configuration.GetSection(ContactOptions.SectionName).Bind(contactOptions);
+        services.AddSingleton(Options.Create(contactOptions));
+
+        // Short timeout on purpose: a caller waiting on POST /api/contact must not be held open by a
+        // slow or unreachable Turnstile for longer than a genuine failure needs to be diagnosed as
+        // one (ContactSubmissionOutcome.Unavailable).
+        services.AddHttpClient<ITurnstileVerifier, TurnstileVerifier>(client =>
+        {
+            client.BaseAddress = new Uri("https://challenges.cloudflare.com/turnstile/v0/");
+            client.Timeout = TimeSpan.FromSeconds(5);
+        });
+
+        services.AddScoped<IContactMailSender, ContactMailSender>();
+
+        // Singleton: the provider-wide ceiling only means anything if every request shares the same
+        // instance — see the class comment for why it sits beside, not inside, the per-IP ASP.NET
+        // Core policy.
+        services.AddSingleton(new ContactSendBudget());
+        services.AddScoped<IContactSubmissionService, ContactSubmissionService>();
 
         return services;
     }

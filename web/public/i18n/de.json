@@ -141,6 +141,26 @@
       "description": "Der Betreiber dieser Instanz hat diesen Text noch nicht hinterlegt."
     }
   },
+  "contact": {
+    "title": "Kontakt",
+    "nameLabel": "Name (optional)",
+    "emailLabel": "E-Mail-Adresse",
+    "messageLabel": "Nachricht",
+    "submit": "Nachricht senden",
+    "completeChallengeHint": "Bitte zuerst die Sicherheitsabfrage oben abschließen.",
+    "nameTooLongHint": "Höchstens 100 Zeichen.",
+    "emailInvalidHint": "Bitte eine gültige E-Mail-Adresse eingeben.",
+    "emailTooLongHint": "Höchstens 254 Zeichen.",
+    "messageTooShortHint": "Mindestens 10 Zeichen.",
+    "messageTooLongHint": "Höchstens 5000 Zeichen.",
+    "messageCounter": "{{ count }} / {{ max }} Zeichen",
+    "success": "Danke — deine Nachricht wurde versendet.",
+    "notAvailable": "Das Kontaktformular ist aktuell nicht verfügbar. Bitte nutze stattdessen die E-Mail-Adresse im",
+    "notAvailableImprintLink": "Impressum",
+    "privacyHint": "Die Nachricht wird per E-Mail an den Betreiber verschickt und nicht in der App gespeichert. Details in der",
+    "privacyLinkLabel": "Datenschutzerklärung",
+    "turnstileLoadFailed": "Die Sicherheitsabfrage konnte nicht geladen werden. Bitte versuch es später erneut."
+  },
   "usageRange": {
     "label": "Nutzung",
     "menuLabel": "Nutzungsbereich wählen",
@@ -1179,7 +1199,10 @@
       "unexpected_error": "Auf dem Server ist ein unerwarteter Fehler aufgetreten. Bitte versuch es erneut.",
       "no_health_data": "Es liegen aktuell keine Worker-Daten vor.",
       "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden.",
-      "legal_document_not_found": "Dieses Dokument ist nicht verfügbar."
+      "legal_document_not_found": "Dieses Dokument ist nicht verfügbar.",
+      "contact_invalid": "Bitte überprüfe deine Angaben.",
+      "contact_captcha_failed": "Die Sicherheitsabfrage konnte nicht bestätigt werden. Bitte versuch es erneut.",
+      "contact_unavailable": "Das Kontaktformular ist gerade nicht erreichbar. Bitte versuch es später erneut."
     }
   }
 }

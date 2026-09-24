@@ -46,6 +46,9 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'no_health_data',
   'health_data_unreadable',
   'legal_document_not_found',
+  'contact_invalid',
+  'contact_captcha_failed',
+  'contact_unavailable',
 ]);
 
 /**

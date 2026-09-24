@@ -74,6 +74,22 @@ internal sealed class RateLimitingOptions
     public FixedWindowPolicy SevenTvLeaderboard { get; set; } = new() { PermitLimit = 20 };
 
     /// <summary>
+    /// <c>POST /api/contact</c> (docs/DECISIONS.md 2026-09-24, "contact form"), per remote IP: a
+    /// token bucket rather than a fixed window because the shared 60-second <see
+    /// cref="RateLimitRejection.Window"/> every fixed-window policy runs on cannot express an hourly
+    /// figure — three tokens, refilling one every 20 minutes, approximate "up to three per hour" with
+    /// a burst allowance for a visitor who mistypes and resubmits right away. The provider-wide
+    /// ceiling this does not cover lives in <c>ContactSendBudget</c> (Infrastructure), not here — see
+    /// <see cref="RateLimitPolicyNames.Contact"/>.
+    /// </summary>
+    public TokenBucketPolicy Contact { get; set; } = new()
+    {
+        TokenLimit = 3,
+        TokensPerPeriod = 1,
+        ReplenishmentPeriodSeconds = 1200,
+    };
+
+    /// <summary>
     /// Throws unless every budget is usable. Called during startup, so a typo in an environment
     /// variable stops the container with a readable message instead of silently handing some policy
     /// a capacity of zero — which is not a lax limiter but a total outage of every route it guards,
@@ -89,6 +105,7 @@ internal sealed class RateLimitingOptions
         PublicLegal.Validate(nameof(PublicLegal));
         ForeignEmoteLookup.Validate(nameof(ForeignEmoteLookup));
         SevenTvLeaderboard.Validate(nameof(SevenTvLeaderboard));
+        Contact.Validate(nameof(Contact));
     }
 
     private static void RequirePositive(string policyName, string valueName, int value)

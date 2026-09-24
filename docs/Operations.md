@@ -107,6 +107,100 @@ not be able to exhaust each other's budget.
 placeholder path with nothing to demonstrate — `Legal:ContentPath` is documented here instead,
 the way `BACKUP_DIR`/`RETENTION_DAYS` above are.
 
+## Contact form
+
+The imprint § 5 DDG requires a second, rapid contact route besides the listed e-mail address —
+`/contact` (docs/DECISIONS.md 2026-09-24, "contact form") is that route: a small form, protected
+by a Cloudflare Turnstile challenge, that e-mails whatever a visitor submits to the operator over
+plain SMTP. Like the legal pages above, the repository is public and self-hostable and ships no
+mailbox or Turnstile credentials of its own — an unconfigured instance shows a notice pointing at
+the imprint's e-mail address instead of a broken form, not an error.
+
+**You are responsible for linking `/contact` from your own imprint text** (`imprint.de.md`/
+`imprint.en.md`, see "Legal pages" above) — the form exists independently of the imprint, but § 5
+DDG's second-route requirement is about the imprint pointing somewhere fast, so add a line such as
+"You can also reach us via our [contact form](https://your-domain/contact)." once you have set the
+form up.
+
+### 1. Create a Turnstile widget
+
+1. In the [Cloudflare dashboard](https://dash.cloudflare.com/), go to **Turnstile** (left sidebar)
+   and **Add widget**.
+2. **Domain:** your instance's public hostname (e.g. `emotepurge.app`) — Turnstile validates the
+   token's origin against this, so a mismatch fails every real submission.
+3. **Widget mode:** Managed is the sensible default; any mode works, `ContactPage` always renders
+   it explicitly (`turnstile.render()`, not the auto-render `data-sitekey` attribute).
+4. Copy the **Site Key** and **Secret Key** it generates — the site key is public by design (it
+   ships to the browser via `GET /api/contact/config`), the secret key never leaves the API and
+   goes only into `TURNSTILE_SECRET_KEY` below.
+
+### 2. Pick an SMTP account
+
+Any account that speaks SMTP works — a dedicated mailbox is recommended so the credentials in
+`.env` are scoped to exactly this one purpose, not a personal inbox. Two examples, in general
+terms (exact steps change on the provider's side over time, so check their current documentation
+rather than following these as a literal walkthrough):
+
+- **A dedicated Gmail account:** enable 2-Step Verification, then create an **App Password**
+  (Google Account → Security → App passwords) — use that, not the account's login password, as
+  `CONTACT_SMTP_PASSWORD`. Host `smtp.gmail.com`, port `587`, security `StartTls`.
+- **A dedicated Proton Mail account (paid plan, SMTP submission requires Proton Mail Bridge or a
+  paid plan's SMTP/IMAP support):** Proton's own documentation covers the current setup; the
+  resulting host/port/security values go into the same three variables below.
+
+Either way, `CONTACT_FROM_ADDRESS` is that mailbox's own address (what recipients see as the
+sender), and `CONTACT_TO_ADDRESS` is wherever submissions should actually land — the same address,
+or a different inbox the account forwards to.
+
+### 3. Fill in `.env`
+
+```
+CONTACT_SMTP_HOST=smtp.example.com
+CONTACT_SMTP_PORT=587
+CONTACT_SMTP_USERNAME=contact@example.com
+CONTACT_SMTP_PASSWORD=<app password, not the account login password>
+CONTACT_SMTP_SECURITY=StartTls
+CONTACT_FROM_ADDRESS=contact@example.com
+CONTACT_TO_ADDRESS=contact@example.com
+TURNSTILE_SITE_KEY=<from step 1>
+TURNSTILE_SECRET_KEY=<from step 1>
+```
+
+`CONTACT_SMTP_SECURITY` is one of `StartTls` (the common case on port 587), `SslOnConnect`
+(implicit TLS, typically port 465), or `Auto` (let MailKit negotiate) — case-insensitive.
+`CONTACT_SMTP_USERNAME`/`_PASSWORD` may stay empty for an SMTP relay that does not require
+authentication (e.g. a local network relay); every other variable is required for the feature to
+report itself available at all (`GET /api/contact/config`, `ContactOptions.IsAvailable`) — a
+partially filled-in set behaves exactly like an empty one, not a startup error. **Since the
+2026-09-24 revision, `CONTACT_FROM_ADDRESS`/`CONTACT_TO_ADDRESS` are also checked for shape**: a
+typo that leaves either one non-blank but unparseable as a mailbox (a stray `user@` with no domain,
+a leading `@example.com` with no local part) reads as "not available" the same way an empty value
+does, rather than the form accepting submissions it would then fail to send. If `/contact` shows the
+"currently unavailable" notice right after filling in `.env`, double-check both addresses for a typo
+before suspecting the SMTP account itself.
+
+Redeploy (`docker compose up -d --build` locally, pull + recreate in Portainer for prod) — no
+database migration, only environment variables. `/contact` and `GET /api/contact/config` pick up
+the new configuration as soon as the container restarts.
+
+### What ships in Development
+
+`appsettings.Development.json` already points Turnstile at Cloudflare's own official,
+publicly-documented always-passing test pair (site key `1x00000000000000000000AA`, secret key
+`1x0000000000000000000000000000000AA` — see
+[developers.cloudflare.com/turnstile/troubleshooting/testing](https://developers.cloudflare.com/turnstile/troubleshooting/testing/))
+and SMTP at `localhost:1025` with no authentication, `Security: "None"`. Nothing sits there by
+default — run a throwaway SMTP catcher to actually see the mail, e.g.
+[Mailpit](https://github.com/axllent/mailpit):
+
+```
+docker run -d --name emotepurge-mailpit -p 127.0.0.1:1025:1025 -p 127.0.0.1:8025:8025 axllent/mailpit
+```
+
+Then open `http://localhost:8025` to watch submissions arrive while running the Api locally
+(`dotnet run --project src/EmotePurge.Api`) or via `docker compose up -d --build`. Remove the
+container (`docker rm -f emotepurge-mailpit`) when done — it holds no state worth keeping.
+
 ## Excluding a chatter (GDPR objection)
 
 The worker processes public chat on a legitimate-interest basis (GDPR Art. 6(1)(f)) to count emote

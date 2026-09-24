@@ -513,6 +513,10 @@ public static class AdminEndpoints
         // ForeignEmoteLookup above: the leaderboard's own window budget across all users is not an
         // ASP.NET policy either and stays out of this list for the same reason.
         RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.SevenTvLeaderboard, options.SevenTvLeaderboard, PerUserPartition),
+        // POST /api/contact's per-IP half (docs/DECISIONS.md 2026-09-24, "contact form"), same split
+        // as ForeignEmoteLookup/SevenTvLeaderboard above: the provider-wide ceiling across all
+        // visitors (ContactSendBudget) is not an ASP.NET policy and stays out of this list.
+        RateLimitPolicyDescriptor.TokenBucket(RateLimitPolicyNames.Contact, options.Contact, "remote-ip"),
     ];
 
     /// <summary>
