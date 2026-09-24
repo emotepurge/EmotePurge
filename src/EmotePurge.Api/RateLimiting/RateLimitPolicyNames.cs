@@ -57,4 +57,13 @@ internal static class RateLimitPolicyNames
     /// an ASP.NET Core rate-limit policy, exactly like <see cref="ForeignEmoteLookup"/>'s split.
     /// </summary>
     internal const string SevenTvLeaderboard = "SevenTvLeaderboard";
+
+    /// <summary>
+    /// <c>POST /api/contact</c> (docs/DECISIONS.md 2026-09-24, "contact form"): anonymous, partitioned
+    /// by remote IP like <see cref="PublicLegal"/> (<c>PartitionPerUser</c> falls back to the IP for
+    /// every caller here). This is only the per-IP half — the provider-wide ceiling across all
+    /// visitors combined is <c>ContactSendBudget</c>, an in-process concern in Infrastructure, not an
+    /// ASP.NET Core policy, same split as <see cref="ForeignEmoteLookup"/>.
+    /// </summary>
+    internal const string Contact = "Contact";
 }

@@ -10,6 +10,111 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — Contact form: a second, provider-neutral electronic contact route (§ 5 DDG)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IContactSubmissionService.cs` ·
+`src/EmotePurge.Core/Services/ITurnstileVerifier.cs` ·
+`src/EmotePurge.Core/Services/IContactMailSender.cs` · `src/EmotePurge.Infrastructure/Contact/*` ·
+`src/EmotePurge.Infrastructure/EmotePurge.Infrastructure.csproj` (MailKit) ·
+`src/EmotePurge.Api/Endpoints/ContactEndpoints.cs` ·
+`src/EmotePurge.Api/Validation/ContactValidation.cs` ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` (+ `RateLimitingOptions.cs`) ·
+`src/EmotePurge.Api/Program.cs` (rate-limit policy registration, CSP) ·
+`src/EmotePurge.Api/appsettings.Development.json` · `docker-compose.yml` · `docker-compose.prod.yml` ·
+`.env.example` · `web/src/app/core/contact/*` · `web/src/app/features/contact/contact-page.ts`
+(+ spec) · `web/src/app/app.routes.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/e2e/contact.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/Operations.md`
+
+The imprint (§ 5 DDG, following EuGH C-298/07) needs a second, rapid contact route besides the
+listed e-mail address; an electronic enquiry form that is answered by e-mail satisfies that. Built
+provider-neutral on purpose: plain SMTP configured entirely through environment variables, so the
+operator can point it at any mailbox (a dedicated Gmail or Proton account, or anything else that
+speaks SMTP) without a code change.
+
+1. **`POST /api/contact` (anonymous, `ContactEndpoints.cs`)** takes `{ name?, email, message,
+   turnstileToken, website? }`. `website` is a hidden honeypot — a non-empty value answers 204
+   without validating, verifying or sending anything, checked before every other step. Shape
+   validation (`ContactValidation.cs`, Api layer, no infrastructure dependency) rejects a message
+   outside 10–5000 trimmed characters, a name over 100 characters, an implausible e-mail over
+   254 characters, and any control character (including CR/LF) in name or e-mail, all under one
+   code, `contact_invalid` (400) — the caller cannot act on which specific check failed any more
+   than on the other grouped codes already in `ApiErrorCodes.cs`.
+2. **`IContactSubmissionService` (Infrastructure: `ContactSubmissionService`)** is the one place that
+   decides what happens next: availability, then the provider-wide send budget
+   (`ContactSendBudget`), then the Turnstile token (`ITurnstileVerifier`/`TurnstileVerifier`, a typed
+   `HttpClient` against `https://challenges.cloudflare.com/turnstile/v0/siteverify`, 5 s timeout),
+   then — only once all three pass — the SMTP send (`IContactMailSender`/`ContactMailSender`, MailKit
+   4.18.0, MIT-licensed and therefore compatible with this project's AGPL-3.0). A rejected token
+   answers `contact_captcha_failed` (400); Turnstile being unreachable, the feature being
+   unconfigured, or the SMTP send itself failing all answer `contact_unavailable` (503) — one code
+   for all three, since the caller cannot act on the difference, same reasoning as
+   `ForeignChannelSevenTvUnavailable`. The Reply-To header is built through MailKit's `MailboxAddress`
+   type, never string-concatenated, so a name or address containing a stray CR/LF cannot fabricate a
+   second header; the subject is a fixed string, never derived from user input. Nothing is persisted,
+   and no log line anywhere in this path carries the message, name or e-mail address — only outcome
+   categories (`ContactSubmissionOutcome`).
+3. **Availability (`ContactOptions.IsAvailable`)** requires all five of SMTP host, from-address,
+   to-address, Turnstile site key and Turnstile secret key — a half-configured instance behaves
+   exactly like an unconfigured one (`GET /api/contact/config` answers `{ available: false,
+   turnstileSiteKey: null }`, `POST` answers 503) rather than 500ing on first use or, worse, accepting
+   messages it cannot verify.
+4. **Two independent rate-limit layers, deliberately not one**, mirroring the
+   `ForeignEmoteLookup`/`SevenTvLeaderboard` split between an ASP.NET Core policy and an in-process
+   budget. The per-IP half (`RateLimitPolicyNames.Contact`) is a **token bucket** — three permits,
+   refilling one every 20 minutes — rather than a fixed window: every existing fixed-window policy
+   shares one hardcoded 60-second window (`RateLimitRejection.Window`), which cannot express "up to
+   three an hour" at all, while a bucket can approximate it with a burst allowance for a visitor who
+   mistypes and resubmits right away. The provider-wide half (`ContactSendBudget`, Infrastructure) is
+   an in-process rolling-window budget — 30 sends per rolling hour, `TryCharge()` before the Turnstile
+   call and before the SMTP send — shaped like `SevenTvLeaderboardRequestBudget`'s sibling budgets: it
+   catches the case the per-IP policy structurally cannot, many different visitors (or one behind a
+   rotating pool of addresses) each staying under their own budget while jointly running the
+   operator's SMTP account into whatever sending limit their provider enforces. Its own 429 reuses the
+   existing `rate_limit_exceeded` code and a fixed `retryAfterSeconds` heuristic (no natural boundary
+   to report, same reasoning as `LiveStreamQuotaExhausted`), shaped like `ChannelResyncCooldown`'s 429
+   rather than the ASP.NET Core limiter's own bare one.
+5. **`GET /api/contact/config` (anonymous)** shares `PublicLegal`'s budget rather than getting one of
+   its own — the same shape of traffic as `GET /api/legal/availability` (a cheap, once-per-page-view
+   read), unlike the POST route, which is the one that can trigger a real Turnstile call and an SMTP
+   send.
+6. **`/contact` (`ContactPage`)** sits outside the app shell and every auth guard, like
+   `/imprint`/`/privacy`, and reuses `NavigationHistoryService`/`resolveLegalBackTarget` for its one
+   navigation control rather than duplicating that decision. The Turnstile widget script
+   (`challenges.cloudflare.com/turnstile/v0/api.js?render=explicit`) loads only from this page, only
+   once the form is actually about to render, through an injectable `TURNSTILE_LOADER` seam
+   (`core/contact/turnstile.ts`) shaped exactly like `EVENT_SOURCE_FACTORY` — real network/DOM work has
+   no place in a Vitest jsdom run, where an external `<script src>` never fires `load`/`error` at all
+   and the real implementation would hang forever. The CSP (`Program.cs`) gained exactly one host on
+   two directives it needed for this: `script-src` (the widget script) and `frame-src` — the first
+   `frame-src` directive this app has ever needed, since the challenge itself renders inside an iframe
+   from that origin.
+7. **Development** points Turnstile at Cloudflare's own official, publicly documented always-passing
+   test pair (site key `1x00000000000000000000AA`, secret key
+   `1x0000000000000000000000000000000AA`, verified against
+   `developers.cloudflare.com/turnstile/troubleshooting/testing/`) and SMTP at a local catcher on
+   `localhost:1025` with no auth, both in `appsettings.Development.json`. Production wires nine new
+   environment variables (`CONTACT_SMTP_HOST`/`_PORT`/`_USERNAME`/`_PASSWORD`/`_SECURITY`,
+   `CONTACT_FROM_ADDRESS`, `CONTACT_TO_ADDRESS`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`) through
+   both compose files, every one empty by default in `.env.example` — an unset value is "not
+   available", not a startup error, so these lines are safe to ship before the operator has filled
+   `.env` in.
+8. **Live-verified 2026-09-24** against three throwaway containers (a Postgres and a Redis on
+   non-default ports, plus a Mailpit SMTP catcher) and the Api run from this worktree on port 5199 —
+   never the shared `emotepurge-dev-*` stack. A real `POST` with Cloudflare's own dummy token
+   (`XXXX.DUMMY.TOKEN.XXXX`) against the real `siteverify` endpoint arrived in Mailpit with From/To =
+   the configured addresses, Reply-To = the visitor's name and address, subject = the fixed string,
+   and the expected body — and the Api's own log carried only "Contact form message sent.", nothing
+   from the request. The honeypot answered 204 without a second mail appearing. Swapping in
+   Cloudflare's "always fails" test secret key (`2x0000000000000000000000000000000AA`) against the
+   same dummy token produced a real `contact_captcha_failed` 400 from the real siteverify round trip.
+   Four requests in one process against the real `Contact` policy produced 204/204/204/429, the 429
+   carrying `Retry-After: 1200` and `{"errorCode":"rate_limit_exceeded","retryAfterSeconds":1200}`.
+   Clearing `Contact:ToAddress` reproduced `{ available: false }` and a 503 `contact_unavailable` on
+   `POST`.
+
+---
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·

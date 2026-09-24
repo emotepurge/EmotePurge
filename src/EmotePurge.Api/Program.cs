@@ -211,6 +211,13 @@ builder.Services.AddRateLimiter(options =>
     // in-process stock guarded by its own window budget and circuit breaker — but its response runs
     // to tens of KB, so it gets its own policy rather than sharing InteractiveRead's.
     AddFixedWindowPolicy(RateLimitPolicyNames.SevenTvLeaderboard, rateLimits.SevenTvLeaderboard);
+
+    // POST /api/contact (docs/DECISIONS.md 2026-09-24, "contact form"): anonymous and IP-partitioned
+    // like PublicLegal above — but its own, far tighter policy, since a spent budget here means a
+    // real Turnstile verification and possibly an SMTP round trip was attempted on the operator's
+    // behalf. This is only the per-IP half; the provider-wide ceiling across all visitors is
+    // ContactSendBudget, an in-process concern in Infrastructure, not a policy here.
+    AddTokenBucketPolicy(RateLimitPolicyNames.Contact, rateLimits.Contact);
 });
 
 var app = builder.Build();
@@ -264,6 +271,13 @@ app.UseForwardedHeaders(forwardedHeadersOptions);
 // purpose, s. CLAUDE.md "Zero-Knowledge für Schreib-Tokens"), img-src covers the 7TV CDN that
 // serves emote preview images embedded via Emote.ImageUrl, plus Twitch's own CDN for the account
 // menu's avatar. Without that second host no picture loads at all, whatever the claim says.
+// script-src and frame-src each carry one more host, https://challenges.cloudflare.com, for the
+// contact form's Turnstile widget (docs/DECISIONS.md 2026-09-24, "contact form"): script-src for
+// the widget script itself (loaded only on /contact, see ContactPage), frame-src because the
+// challenge renders inside an iframe from that origin and there was no frame-src directive at all
+// before — falling back to default-src 'self' would have blocked it outright. The widget's own
+// network calls happen from inside that iframe, on Cloudflare's own origin and subject to its own
+// CSP, so connect-src is unaffected.
 app.Use(async (context, next) =>
 {
     var headers = context.Response.Headers;
@@ -288,11 +302,12 @@ app.Use(async (context, next) =>
     headers["Strict-Transport-Security"] = "max-age=31536000";
     headers["Content-Security-Policy"] =
         "default-src 'self'; " +
-        "script-src 'self'; " +
+        "script-src 'self' https://challenges.cloudflare.com; " +
         "style-src 'self' 'unsafe-inline'; " +
         "img-src 'self' data: https://*.7tv.app https://7tv.io https://static-cdn.jtvnw.net; " +
         "connect-src 'self' https://7tv.io; " +
         "font-src 'self'; " +
+        "frame-src https://challenges.cloudflare.com; " +
         "object-src 'none'; " +
         "base-uri 'self'; " +
         "form-action 'self'; " +
@@ -345,6 +360,7 @@ app.MapAdminEndpoints();
 app.MapLiveEndpoints();
 app.MapSevenTvEndpoints();
 app.MapLegalEndpoints();
+app.MapContactEndpoints();
 
 app.MapFallback("/api/{**rest}", () => Results.NotFound());
 // Needs the options passed separately: the SPA fallback serves index.html through its own endpoint,

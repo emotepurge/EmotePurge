@@ -74,6 +74,19 @@ services:
       # ./legal-content is gitignored and empty by default — an empty/missing ContentPath is a
       # supported "nothing configured" state, not an error, so this line is safe to leave active.
       - Legal__ContentPath=/legal
+      # Contact form (docs/DECISIONS.md 2026-09-24, docs/Operations.md "Contact form"). Every value
+      # defaults to empty in .env.example — an incomplete configuration is a supported "not
+      # available" state (ContactOptions.IsAvailable), not a startup error, so these lines are safe
+      # to leave active before the operator has filled .env in.
+      - Contact__Smtp__Host=${CONTACT_SMTP_HOST}
+      - Contact__Smtp__Port=${CONTACT_SMTP_PORT:-587}
+      - Contact__Smtp__Username=${CONTACT_SMTP_USERNAME}
+      - Contact__Smtp__Password=${CONTACT_SMTP_PASSWORD}
+      - Contact__Smtp__Security=${CONTACT_SMTP_SECURITY:-StartTls}
+      - Contact__FromAddress=${CONTACT_FROM_ADDRESS}
+      - Contact__ToAddress=${CONTACT_TO_ADDRESS}
+      - Contact__Turnstile__SiteKey=${TURNSTILE_SITE_KEY}
+      - Contact__Turnstile__SecretKey=${TURNSTILE_SECRET_KEY}
     volumes:
       - dataprotection-keys:/keys
       - ./legal-content:/legal:ro
