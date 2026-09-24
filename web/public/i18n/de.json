@@ -125,6 +125,7 @@
   },
   "legal": {
     "back": "Startseite",
+    "backAction": "Zurück",
     "onlyGerman": "Dieser Text liegt aktuell nur auf Deutsch vor.",
     "footer": {
       "imprint": "Impressum",

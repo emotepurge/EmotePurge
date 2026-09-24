@@ -10,6 +10,120 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
+
+**Betrifft:** `web/src/app/features/legal/legal-page.ts` ·
+`web/src/app/features/legal/legal-back-target.ts` (+ spec) ·
+`web/src/app/core/routing/navigation-history.service.ts` (+ spec) · `web/src/app/app.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/legal-pages.e2e.spec.ts`
+
+Operator report: `/imprint` and `/privacy` (#247) only ever offered "Zurück zur Startseite", fixed
+to `/welcome`. A logged-in visitor who opened either page from inside the app — e.g. the footer on
+a channel page — landed on the public landing page instead of back where they came from on click.
+
+1. **`NavigationHistoryService` (`core/routing/`, `@Service()`)** tracks the position of the
+   ACTIVE browser-history entry within this app instance's own navigation sequence and exposes
+   `hasPreviousPage()` — true unless the active entry is the very first one. Deliberately not
+   `history.length`: that also counts pages outside this app (an external referrer, an earlier tab
+   session), which would make a `Location.back()` gated on it leave the app. Injected eagerly from
+   `App` (`app.ts`, alongside the existing `ThemeService` eager-injection for the same reason) so it
+   is already listening before the very first `NavigationEnd` of the session — by the time a
+   lazily-loaded page such as `LegalPage` would inject it for itself, that page's own arrival may
+   already be indistinguishable from "no previous page".
+   **Revised same day:** the first version counted completed `NavigationEnd`s over the tab's whole
+   lifetime instead of tracking position, and a Codex review caught the gap (P2): open `/imprint`
+   directly, click the fallback link to `/welcome`, then press the browser's own Back button — the
+   count was 2 ("has a previous page"), but `/imprint` is again this tab's very FIRST history entry,
+   so the resulting `Location.back()` did nothing in a fresh tab or left the app to an external
+   referrer. The service now tracks the position of the active entry instead: it advances by one on
+   an in-app `'imperative'` navigation unless that navigation's own extras report `replaceUrl` or
+   `skipLocationChange`; on a browser `'popstate'`, it looks up the index recorded for
+   `restoredState.navigationId` rather than assuming a fixed step. A guard redirect (e.g.
+   `homeGuard` sending `/` to `/welcome`) needs no special case — the cancelled, superseded first
+   attempt never reaches `NavigationEnd`, and the redirect's own completing navigation carries
+   `replaceUrl: false` and performs a genuine `pushState` (verified against a `RouterTestingHarness`
+   probe of Angular 22's actual event/entries sequence), so it still advances the index by exactly
+   one, matching the one real history entry it leaves behind.
+2. **`resolveLegalBackTarget(hasPreviousPage, isLoggedIn)` (`legal-back-target.ts`)** is the pure
+   decision: a previous in-app page always wins and yields a literal "Zurück"/"Back", regardless of
+   login state, because `hasPreviousPage()` already guarantees the target is inside the app. With no
+   previous page (fresh tab, reload, external link — the legal page was the session's own entry
+   point) it falls back to a fixed destination as before: the visitor's own overview (`/`, which
+   `homeGuard` resolves) if logged in, `/welcome` otherwise.
+3. **`LegalPage` renders `Location.back()` for the "back" case, `app-back-link` unchanged for the
+   fallback case.** `Location.back()` over re-navigating to a recorded URL: it is real browser-back
+   (no forward-breaking history entry, scroll position restores through the app's own
+   `withInMemoryScrolling` config) and is safe from leaving the app only because it is gated on
+   `NavigationHistoryService`, never on raw history depth. This is a deliberate, narrow exception to
+   `BackLink`'s own contract ("never `history.back()`", see its doc comment) — every other consumer
+   of that primitive is a fixed hierarchical parent in the route tree, while `LegalPage` sits
+   outside the whole app-shell route tree and is reachable from everywhere in it, so a fixed parent
+   does not exist for it to point at.
+
+New translation key `legal.backAction` ("Zurück"/"Back") in both locales; `legal.back` and
+`nav.overview` are reused unchanged for the two fallback cases.
+
+Verified live and in `legal-pages.e2e.spec.ts`: arriving via the footer from the overview shows
+"Zurück" and returns to the overview on click; opening `/imprint` directly falls back to
+`/welcome` (anonymous) or `/` (logged in); the Codex-flagged sequence (direct load, fallback
+click, browser Back) shows the fallback link again rather than a dead-end "Zurück".
+
+### 2026-09-24 — Footer placement: sticky-footer layout instead of an unpinned block, plus a shell/dock clearance contract
+
+**Betrifft:** `web/src/app/features/shell/app-shell.ts` · `web/src/app/features/login/login-page.ts` ·
+`web/src/app/features/landing/landing-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/core/layout/dock-clearance.service.ts` (+ spec) ·
+`web/e2e/footer-placement.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts`
+
+Operator feedback (with screenshots) on #247's legal footer: on a short page (e.g. "Meine
+Channels"/"Meine Abstimmungen" with a handful of rows) the footer sat right under the content,
+stranded mid-screen with a lot of empty page below it, and read as a heavy block relative to how
+rarely it is used.
+
+1. **Sticky-footer layout, not a fixed block.** `AppShell`, `LoginPage` and `LandingPage` each wrap
+   their page in `flex min-h-dvh flex-col`, with the routed `<main>`/content area as `flex-1`. On a
+   page shorter than the viewport the footer now sits at the viewport's bottom edge; on a longer
+   page it follows the content in normal document flow, exactly as before. `dvh` rather than `vh`:
+   `100vh` on a mobile browser is the height with the address bar hidden, which would strand the
+   footer below the fold on first paint. No inner scroll container is introduced — the page still
+   scrolls as one document (`docs/UI-Designsprache.md` §8.5).
+2. **Much less height.** The footer's own padding dropped from `py-4`/`text-sm` to `py-2`/`text-xs`
+   on all three pages (`AppShell`, `LoginPage`, `LandingPage` — content unchanged). Link hit targets
+   are untouched: `LegalFooterLinks` keeps its own `px-1 py-2` per anchor, so the row's own padding
+   shrinking does not shrink what is clickable (audit's `smallTargetsUnder24` gate).
+3. **`DockClearanceService` (`core/layout/`) — a new, small contract between a page's own
+   `position: fixed` bottom bar and the shell's footer.** A `position: fixed` element is anchored to
+   the viewport, not the document, so it renders in the same strip regardless of scroll position.
+   Once the footer could reach the viewport's bottom edge (point 1), that is exactly where the
+   usage-stats action dock (`.app-dock`, `z-30`, fixed to `bottom: 0`) also renders — on a short
+   page, or at the bottom of a long one once scrolled all the way down, the dock would sit directly
+   on top of the footer's link row. `usage-stats-page.html` already reserves `pb-40` inside its own
+   content while `dockVisible()` (`actionDockHasContent`), but that padding sits before the footer
+   and does nothing for it. `DockClearanceService` is the generic form of the same guard: any page
+   with a fixed bottom bar calls `reserve(px)`/`release()` (mirrored from its own visibility signal
+   via an `effect()`, released in `DestroyRef.onDestroy`) and `AppShell` reads the resulting signal
+   to add matching `padding-bottom` to the footer element. State-driven, not route-driven — the
+   reservation appears and disappears with the dock itself, so this does not reintroduce the
+   per-route layout variation §8.4a rules out. `usage-stats-page.ts` originally reserved a fixed
+   160px (`DOCK_CLEARANCE_PX`), matched by the same number in its own `pb-40` contract — a
+   worst-case guess, not a pixel-tracked one. A Codex review (2026-09-24) found that guess too
+   small once a delete/import/restore run's failed-row list or rate-limit notice grows the dock's
+   scrollable inner container towards its `max-h-[70vh]` cap: both guards now read a `ResizeObserver`
+   measurement of the rendered `.app-dock` element (`dockHeightPx()`) instead of a constant, so the
+   reserved space always equals the dock's actual current height. Measuring the element rather than
+   re-deriving visibility also closes a related P3: the dock's own `@if` additionally hides it under
+   `isCoarse()`, and the old code mirrored `dockVisible()` alone, so a coarse pointer left the
+   footer padded for a bar that the template never actually mounted — measuring the DOM directly
+   cannot drift from what is actually rendered.
+
+Verified live: the usage-stats action dock and the footer no longer overlap at the bottom of a
+short page nor at the bottom of a long one scrolled all the way down (both cases pinned in
+`footer-placement.e2e.spec.ts`); UI audit harness run for the affected scenarios (`overview-*`,
+`my-votings-*`, `login`, and a new `usage-stats-dock` scenario) found zero horizontal overflow, zero
+`serious`/`critical` contrast violations, and no new `smallTargetsUnder24` entries beyond the
+pre-existing "show details" atlas-cell affordance.
+
 ### 2026-09-24 — Per-chatter GDPR objection: a config-driven exclusion gate ahead of counting and bot detection (#252)
 
 **Betrifft:** `src/EmotePurge.Worker/IExcludedChatterFilter.cs` ·

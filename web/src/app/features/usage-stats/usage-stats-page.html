@@ -2,7 +2,10 @@
      its area on chrome, and at ~900 emotes that chrome was 18.000 px of scrolling. Here the sprite
      IS the cell, weight is carried by order, band and a hairline fill bar, and the labels that used
      to be printed 900 times over live once in the inspector line under the toolbar. -->
-<div [class]="'flex flex-col gap-5 ' + (dockVisible() ? 'pb-40' : '')">
+<div
+  class="flex flex-col gap-5"
+  [style.paddingBottom.px]="dockHeightPx() > 0 ? dockHeightPx() : null"
+>
   <!-- A name collision silently folds all chat usage of the name onto one of the emotes, so the
        usage numbers below undercount the others. Fixing it happens on 7TV (rename or remove one
        copy), which the channel's 7TV editors can do too — hence gated on this whole page's
@@ -879,10 +882,11 @@
      surface above it to be nothing but emotes. Kept mounted through a settled run as well, because
      the run summary carries the protocol download and that file is the only durable record.
      dockVisible() mirrors the two inner gates below (actionDockHasContent), so a selection made
-     while the set status is missing no longer mounts an empty bar — and the pb-40 on the page body
-     above hangs off the same signal, so it cannot reserve space for a bar that has nothing in it. -->
+     while the set status is missing no longer mounts an empty bar — and the pb-40-equivalent
+     padding on the page body above is measured off this very element (#dock, see dockHeightPx()
+     in usage-stats-page.ts), so it cannot reserve space for a bar that has nothing in it. -->
 @if (dockVisible() && !isCoarse()) {
-  <div class="app-dock">
+  <div class="app-dock" #dock>
     <div class="mx-auto flex max-w-7xl flex-col gap-2 overflow-y-auto px-4 py-3 max-h-[70vh]">
       <!-- The marking half of the dock acts on THIS channel's set, so it needs one. The import
            section below does not (see its own comment), which is why the set gate sits here and

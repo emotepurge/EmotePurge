@@ -1,22 +1,46 @@
+import { Location } from '@angular/common';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideLocationMocks } from '@angular/common/testing';
+import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
+import { RouterTestingHarness } from '@angular/router/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { AuthUser } from '../../core/auth/auth.model';
 import { LanguageService } from '../../core/i18n/language.service';
+import { NavigationHistoryService } from '../../core/routing/navigation-history.service';
 import { LegalPage } from './legal-page';
+
+// Two arbitrary routed pages, only to give the router something to navigate BETWEEN — their own
+// templates are never rendered in this suite (see `arriveViaInAppNavigation` below).
+@Component({ template: '' })
+class DummyPageA {}
+
+@Component({ template: '' })
+class DummyPageB {}
+
+const USER: AuthUser = {
+  twitchUserId: '1',
+  login: 'sensitron',
+  displayName: 'Sensitron',
+  tokenExpiresAtUtc: '2026-07-28T00:00:00Z',
+  isGlobalAdmin: false,
+  profileImageUrl: null,
+};
 
 // Only the keys LegalPage's own template and its two embedded primitives (BackLink, AccountMenu)
 // translate. AccountMenu's own decision logic already has its full coverage in
 // account-menu.spec.ts — this file only needs enough of its vocabulary for it to render without
 // throwing, never for its own sake.
 const DE_TRANSLATIONS = {
-  nav: { backTo: 'Zurück zu {{target}}' },
+  nav: { backTo: 'Zurück zu {{target}}', overview: 'Übersicht' },
   legal: {
     back: 'Startseite',
+    backAction: 'Zurück',
     onlyGerman: 'Dieser Text liegt aktuell nur auf Deutsch vor.',
     imprint: { notConfiguredTitle: 'Kein Impressum hinterlegt' },
     privacy: { notConfiguredTitle: 'Keine Datenschutzerklärung hinterlegt' },
@@ -66,7 +90,15 @@ describe('LegalPage', () => {
           translocoConfig: { availableLangs: ['de', 'en'], defaultLang: 'de' },
         }),
       ],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([
+          { path: 'a', component: DummyPageA },
+          { path: 'b', component: DummyPageB },
+        ]),
+        provideLocationMocks(),
+      ],
     }).compileComponents();
 
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
@@ -79,15 +111,32 @@ describe('LegalPage', () => {
     httpMock.verify();
   });
 
+  /** Mirrors what `App` does in production (see `NavigationHistoryService`'s own doc comment): the
+   *  service has to be listening BEFORE the navigations it is meant to observe. Performs two
+   *  in-app navigations on real routes unrelated to LegalPage itself — LegalPage is never routed
+   *  to in this suite, it is always mounted directly via `TestBed.createComponent`, exactly like
+   *  `NavigationHistoryService` only cares that SOME previous completed navigation happened. */
+  async function arriveViaInAppNavigation(): Promise<void> {
+    TestBed.inject(NavigationHistoryService);
+    const harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/a', DummyPageA);
+    await harness.navigateByUrl('/b', DummyPageB);
+  }
+
   /** Renders with the given kind and drains the two requests every render fires that this suite
    *  is not about: AccountMenu's /api/auth/me and LegalService's /api/legal/availability (LegalPage
-   *  injects LegalService for getDocument(), which fires its availability GET on construction). */
-  function render(kind: 'imprint' | 'privacy'): ComponentFixture<LegalPage> {
+   *  injects LegalService for getDocument(), which fires its availability GET on construction).
+   *  `user` flushes /api/auth/me as either an anonymous (`null`, the default) or a signed-in
+   *  response — the input the fallback branch of `resolveLegalBackTarget` needs. */
+  function render(
+    kind: 'imprint' | 'privacy',
+    { user = null }: { user?: AuthUser | null } = {},
+  ): ComponentFixture<LegalPage> {
     const fixture = TestBed.createComponent(LegalPage);
     fixture.componentRef.setInput('kind', kind);
     fixture.detectChanges();
 
-    httpMock.expectOne('/api/auth/me').flush(null);
+    httpMock.expectOne('/api/auth/me').flush(user);
     httpMock
       .expectOne('/api/legal/availability')
       .flush({ imprintAvailable: false, privacyAvailable: false });
@@ -119,6 +168,69 @@ describe('LegalPage', () => {
       (el) => `${el.getAttribute('aria-label') ?? ''} ${el.textContent?.trim() ?? ''}`,
     );
   }
+
+  /** The document request every `render()` also fires, flushed with a fixed, throwaway body —
+   *  these tests are about the back control in the header, not the document area below it. */
+  function flushDocumentRequest(kind: string): void {
+    httpMock
+      .expectOne(`/api/legal/${kind}/de`)
+      .flush({ html: '<h1>x</h1>', isGermanFallback: false });
+  }
+
+  describe('back navigation control', () => {
+    // Scoped to `main`: the header's own logo link also points at /welcome, and AccountMenu
+    // always renders its own trigger `<button>` regardless of this control's state — an
+    // unscoped `querySelector('a')`/`querySelector('button')` would match those instead.
+
+    it('shows a fixed link to the landing page for an anonymous visitor with no previous page', async () => {
+      const fixture = render('imprint');
+      flushDocumentRequest('imprint');
+      await settle(fixture);
+
+      const link: HTMLAnchorElement | null =
+        fixture.nativeElement.querySelector('main a[href="/welcome"]');
+      expect(link?.textContent?.trim()).toBe('←Startseite');
+      expect(fixture.nativeElement.querySelector('main button')).toBeNull();
+    });
+
+    it('shows a fixed link to the overview for a signed-in visitor with no previous page', async () => {
+      const fixture = render('imprint', { user: USER });
+      flushDocumentRequest('imprint');
+      await settle(fixture);
+
+      const link: HTMLAnchorElement | null =
+        fixture.nativeElement.querySelector('main a[href="/"]');
+      expect(link?.textContent?.trim()).toBe('←Übersicht');
+      expect(fixture.nativeElement.querySelector('main a[href="/welcome"]')).toBeNull();
+    });
+
+    it('shows a literal "Back" button instead of a fixed link once a previous in-app page exists, regardless of login', async () => {
+      await arriveViaInAppNavigation();
+
+      const fixture = render('imprint');
+      flushDocumentRequest('imprint');
+      await settle(fixture);
+
+      const backButton: HTMLButtonElement | null =
+        fixture.nativeElement.querySelector('main button');
+      expect(backButton?.textContent?.trim()).toBe('←Zurück');
+      expect(fixture.nativeElement.querySelector('main a[href="/welcome"]')).toBeNull();
+      expect(fixture.nativeElement.querySelector('main a[href="/"]')).toBeNull();
+    });
+
+    it('navigates back through Location on click, rather than to a fixed destination', async () => {
+      await arriveViaInAppNavigation();
+      const backSpy = vi.spyOn(TestBed.inject(Location), 'back');
+
+      const fixture = render('imprint');
+      flushDocumentRequest('imprint');
+      await settle(fixture);
+
+      fixture.nativeElement.querySelector('main button').click();
+
+      expect(backSpy).toHaveBeenCalledOnce();
+    });
+  });
 
   it('shows a loading state before the document request settles', async () => {
     const fixture = render('imprint');
