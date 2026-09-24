@@ -216,11 +216,14 @@ public class TwitchChatManager(
         // resurrect as a stale timestamp if the channel is ever rejoined.
         _lastMessageByChannelTicks.TryRemove(channelName, out _);
 
+        // The leave-path lines name the channel only at Debug (fourth Codex review of the block
+        // list): a channel whose Twitch id is on the excluded-channel list is parted right after the
+        // identity reconcile deactivates it, and naming it here would tie the block to it. Every
+        // leave comes from an audited write, so the name is on record there.
         if (!IsConnected)
         {
-            logger.LogWarning(
-                "Leave für {Channel} übersprungen — TwitchClient ist derzeit nicht verbunden.",
-                channelName);
+            logger.LogWarning("Leave for a channel skipped — the TwitchClient is not connected right now.");
+            logger.LogDebug("Leave skipped for {Channel}.", channelName);
             return;
         }
 
@@ -230,7 +233,8 @@ public class TwitchChatManager(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Leave fehlgeschlagen für {Channel}.", channelName);
+            logger.LogWarning(ex, "Leave failed for a channel.");
+            logger.LogDebug("Leave failed for {Channel}.", channelName);
         }
     }
 
@@ -965,7 +969,9 @@ public class TwitchChatManager(
 
     private Task OnLeftChannel(OnLeftChannelArgs e)
     {
-        logger.LogInformation("Channel {Channel} verlassen.", e.Channel);
+        // Named only at Debug, like the rest of the leave path (see LeaveChannelAsync).
+        logger.LogInformation("Left a channel.");
+        logger.LogDebug("Left {Channel}.", e.Channel);
         return Task.CompletedTask;
     }
 

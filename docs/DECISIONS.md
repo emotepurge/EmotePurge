@@ -24,6 +24,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` (second revision) ·
 `src/EmotePurge.Worker/Worker.cs` (fourth revision) ·
 `src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` (fourth revision) ·
+`src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` ·
+`src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` (all fourth revision, leave-path logs only) ·
 `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
 `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
@@ -285,6 +287,18 @@ channel in connection with the block — and then fixed what failed.
   (`ChannelDeactivation.DeactivateAsync(forExclusion: true)`); an entry naming the channel would have
   told every admin reading the audit log which channel the objection concerns. A user's own leave
   still names its channel.
+- **The worker names a channel it leaves only at Debug.** The inventory's last finding sat on the
+  worker side: when the reconcile deactivates a blocked row the worker is still in (the id-less case,
+  which boot recovery could not recognise), it publishes a LEAVE, and every line on the leave path —
+  the command handler's "verlasse {Channel}", the roster prune's line, `TwitchChatManager`'s
+  skipped/failed/left lines, and TwitchLib's own "Leaving channel: {channel}" — named that channel
+  right after the reconcile's anonymous deactivation line. All of them now log the event at their
+  old level without the login and repeat the login only at Debug; TwitchLib's line goes through the
+  existing `RedactingTwitchClientLoggerFactory` (#246), matched by event name `LogLeavingChannel`
+  like the two redactions already there, with its login withheld. This applies to every leave, not
+  only blocked ones — a leave-path line cannot know why it runs, and every LEAVE comes from an audited
+  write (a user's leave, a purge, a rename or merge handover) that keeps the name on record. Join-path
+  lines are untouched: they name a channel before anything about a block is known.
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 

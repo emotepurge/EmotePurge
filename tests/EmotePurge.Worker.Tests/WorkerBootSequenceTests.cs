@@ -3,6 +3,7 @@ using EmotePurge.Core.Services;
 using EmotePurge.Worker.SevenTv;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -186,6 +187,51 @@ public class WorkerBootSequenceTests
         }
     }
 
+    // Fourth Codex review of the block list: the identity reconcile publishes a LEAVE for a channel
+    // it deactivates because its Twitch id is on the excluded-channel list, and the handler's line
+    // used to name that channel right after the reconcile's own anonymous one.
+    [Fact]
+    public async Task Worker_NamesTheChannelOfALeaveCommandOnlyAtDebug()
+    {
+        var gate = new BootRecoveryGate();
+        var channelService = Substitute.For<IChannelService>();
+        channelService.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>()).Returns(new List<string>());
+        var chatManager = Substitute.For<ITwitchChatManager>();
+        Func<string, string, Task>? capturedHandler = null;
+        var subscriber = Substitute.For<IRedisSubscriber>();
+        subscriber.When(x => x.SubscribeAsync(Arg.Any<string>(), Arg.Any<Func<string, string, Task>>(), Arg.Any<CancellationToken>()))
+            .Do(callInfo => capturedHandler = callInfo.Arg<Func<string, string, Task>>());
+        var logger = new RecordingLogger<WorkerService>();
+
+        var worker = new WorkerService(
+            logger,
+            chatManager,
+            subscriber,
+            Substitute.For<IRedisPublisher>(),
+            Substitute.For<IEmoteMatchCache>(),
+            gate,
+            Substitute.For<ISevenTvEventClient>(),
+            CreateScopeFactory(channelService),
+            new ConfigurationBuilder().Build());
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await gate.CommandChannelSubscribed.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotNull(capturedHandler);
+            await capturedHandler!(BotCommands.Channel, "LEAVE:leftchannel_test");
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        await chatManager.Received(1).LeaveChannelAsync("leftchannel_test");
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("leaving a channel"));
+        Assert.DoesNotContain(
+            logger.Entries, e => e.Level > LogLevel.Debug && e.Message.Contains("leftchannel_test", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task TwitchIdentityReconcileWorker_DoesNotRunItsFirstPassOnBootRecoveryAlone()
     {
@@ -235,6 +281,34 @@ public class WorkerBootSequenceTests
         // Returns null for every channel, so SyncSevenTvAsync stops right after the call.
         services.AddSingleton(syncService ?? Substitute.For<ISevenTvSyncService>());
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries
+        {
+            get
+            {
+                lock (_entries)
+                {
+                    return [.. _entries];
+                }
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            lock (_entries)
+            {
+                _entries.Add((logLevel, formatter(state, exception)));
+            }
+        }
     }
 
     private static IServiceScopeFactory CreateScopeFactory(IChannelIdentityService identityService)

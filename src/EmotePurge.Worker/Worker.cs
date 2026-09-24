@@ -58,7 +58,13 @@ public class Worker(
             else if (message.StartsWith(BotCommands.LeavePrefix, StringComparison.Ordinal))
             {
                 var channelName = message[BotCommands.LeavePrefix.Length..];
-                logger.LogInformation("Redis-Kommando: verlasse {Channel}.", channelName);
+                // The login only at Debug (fourth Codex review of the block list): the identity
+                // reconcile publishes a LEAVE for a channel it deactivates because its Twitch id is
+                // on the excluded-channel list, and a line naming it next to the reconcile's own
+                // anonymous line would tie the block to that channel. Every LEAVE comes from an
+                // audited write (leave, purge, rename or merge handover), so the name is on record.
+                logger.LogInformation("Redis command: leaving a channel.");
+                logger.LogDebug("Redis command: leaving {Channel}.", channelName);
                 emoteMatchCache.RemoveChannel(channelName);
                 sevenTvEventClient.Unsubscribe(channelName);
                 await twitchChatManager.LeaveChannelAsync(channelName);
