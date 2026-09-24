@@ -82,6 +82,27 @@ the id to `EXCLUDED_CHANNEL_IDS`, recreate `api`/`worker` so both pick it up, *t
 channel in the admin area — in that order, so the channel cannot be rejoined in the gap between the
 purge and the block taking effect.
 
+**Revised 2026-09-24 (Codex P1/P2 review of this branch):** the two guards above had gaps of their
+own.
+
+- `ChannelService.JoinAsync` checked only the identity Helix resolved *this* call, so (a) a join
+  during a Helix outage (`Unavailable`) never reached the check at all, even when the existing row
+  it was about to reactivate carried a known, blocked `TwitchChannelId`, and (b) a non-excluded
+  identity that resolved to a login already held by a stale occupant row (the ordinary
+  rename-collision case `ResolveChannelByIdentityAsync` already handles) could reactivate that
+  occupant without ever inspecting *its* stored id. Fixed with one additional check, right before
+  `CompleteJoinAsync`, against the `TwitchChannelId` of the row `ResolveJoinTargetAsync` actually
+  picked — not the identity, the row. Refusing is the answer for both cases: a brand-new row can
+  never trip it (its id is either null or the already-checked identity), so this only ever blocks a
+  join that would touch an existing, blocked row.
+- `ChannelIdentityService.MergeAsync`'s exclusion refusal ran *before* `settledChannelIds` could be
+  updated (it returns before either row is even loaded), so a pair where both the id row and its
+  id-less duplicate are active — reached from both ends in the same pass, exactly like the
+  loser-has-emotes refusal already handles — was refused and counted twice per tick, with the
+  warning line repeating too. Fixed by passing the two row ids the callers already have (from their
+  own read-only lookups, no extra query) into `MergeAsync` and settling both the moment the
+  exclusion check itself refuses, mirroring the emote-based refusal exactly.
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·

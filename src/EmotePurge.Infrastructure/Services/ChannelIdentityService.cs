@@ -230,7 +230,7 @@ public class ChannelIdentityService(
 
         // Case 3, mergeable: the id-less row under the new name is the duplicate the rename created
         // — someone joined the channel again under its new name while the old row kept the history.
-        if (await MergeAsync(twitchChannelId, newLogin, counters, settledChannelIds, ct))
+        if (await MergeAsync(twitchChannelId, newLogin, row.Id, occupant.Id, counters, settledChannelIds, ct))
         {
             warningState.Clear(ChannelIdentityWarningState.BlockedKey(row.Id));
         }
@@ -283,7 +283,7 @@ public class ChannelIdentityService(
         // row survives — it holds the emotes and the usage history. It may well be inactive (only
         // active rows are in the snapshot), which is exactly the row a retention purge can be deleting
         // right now — hence the lock MergeAsync takes on it.
-        await MergeAsync(identity.Id, row.ChannelName, counters, settledChannelIds, ct);
+        await MergeAsync(identity.Id, row.ChannelName, holder.Id, row.Id, counters, settledChannelIds, ct);
     }
 
     private async Task BackfillIdAsync(
@@ -358,6 +358,8 @@ public class ChannelIdentityService(
     private async Task<bool> MergeAsync(
         string twitchChannelId,
         string newLogin,
+        string survivorRowId,
+        string loserRowId,
         ReconcileCounters counters,
         HashSet<string> settledChannelIds,
         CancellationToken ct)
@@ -367,13 +369,24 @@ public class ChannelIdentityService(
         // the "reactivation" the join path already refuses for this id. Refused the same way the
         // loser-has-emotes case below is: nothing is written, both rows stay duplicated and
         // unresolved until the operator removes the id from the list. Checked before the transaction
-        // even opens — cheaper, and it keeps a blocked id from taking either row's lock at all.
+        // even opens — cheaper, and it keeps a blocked id from taking either row's lock at all; the
+        // two row ids needed to settle the pair are therefore taken from the caller's own snapshot
+        // (already loaded, read-only, before this call) rather than from a load this branch would
+        // otherwise have to do just to name them.
         if (excludedChannelFilter.IsExcluded(twitchChannelId))
         {
+            counters.MergesRefused++;
+            // Both halves settled (P2 Codex finding, issue #260): without this, the pass visits the
+            // same excluded pair from both ends — the id row wanting the name and the id-less row
+            // holding it — and neither this counter nor the warning line below is deduplicated
+            // against a second visit, exactly like the loserHasEmotes refusal further down handles
+            // it. Deliberately keyed on the row ids the caller already has rather than IDs read
+            // under this method's own (never-taken, for an excluded id) lock.
+            settledChannelIds.Add(survivorRowId);
+            settledChannelIds.Add(loserRowId);
             // Neither the id nor either login is logged here (same restraint as the join path's own
             // rejection): a log line naming which channel this concerns would itself leak the
             // objection the block exists to honour.
-            counters.MergesRefused++;
             logger.LogWarning("Merge refused: the channel is on the excluded-channel list.");
             return false;
         }

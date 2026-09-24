@@ -368,6 +368,79 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.False(stored.IsBotActive);
     }
 
+    // P1 Codex finding (a): the objection gate above only ever inspects the identity Helix just
+    // resolved, which is never reached when Helix is Unavailable — the whole point of that status
+    // being "carry on as before" for everything else. Without a second check against the row this
+    // join would actually reactivate, an outage on our side would let a rejoin of a blocked channel
+    // through on the one path Helix cannot object on.
+    [Fact]
+    public async Task JoinAsync_WhenHelixIsUnavailable_ButTheKnownRowsIdIsExcluded_RejectsTheJoin_AndDoesNotReactivate()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var seeded = await SeedChannelAsync(db, "channelserviceexcludedunavail1", "990010", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("990010").Returns(true);
+        var service = CreateService(
+            db, redisPublisher, IdentityLookup(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable)),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcludedunavail1", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(result.Channel);
+        await using var verify = fixture.CreateDbContext();
+        var stored = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(stored.IsBotActive);
+        Assert.Null(stored.TrackingResumedAt);
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelserviceexcludedunavail1"));
+        await redisPublisher.DidNotReceive().PublishAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // P1 Codex finding (b): a non-excluded identity can still resolve to a login already occupied
+    // by a stale row that itself carries a blocked id — the id-row's own name changed on Twitch
+    // (or the occupant predates the objection), and ResolveJoinTargetAsync hands that occupant back
+    // exactly like the ordinary rename-collision case (JoinAsync_WhenTheNewLoginIsHeldByAnotherRow_
+    // JoinsThatRow_AndLeavesTheMergeToReconciliation). Refusing is the safe answer: joining it would
+    // let Twitch's own bookkeeping resurface a channel this codebase was told to stop observing.
+    [Fact]
+    public async Task JoinAsync_WhenTheResolvedLoginIsHeldByAStaleRowWithAnExcludedId_RejectsTheJoin_AndDoesNotReactivateIt()
+    {
+        await using var db = fixture.CreateDbContext();
+        var redisPublisher = Substitute.For<IRedisPublisher>();
+        var idRow = await SeedChannelAsync(db, "channelserviceexcludedstale1old", "990011");
+        var staleOccupant = await SeedChannelAsync(
+            db, "channelserviceexcludedstale1new", "990012", isBotActive: false);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        // The *resolved* identity is not excluded — only the occupant's own, stale id is.
+        excludedChannelFilter.IsExcluded("990011").Returns(false);
+        excludedChannelFilter.IsExcluded("990012").Returns(true);
+        var service = CreateService(
+            db, redisPublisher, IdentityFound("990011", "channelserviceexcludedstale1new"),
+            excludedChannelFilter: excludedChannelFilter);
+
+        var result = await service.JoinAsync("channelserviceexcludedstale1new", Actor);
+
+        Assert.Equal(ChannelJoinStatus.ChannelExcluded, result.Status);
+        Assert.Null(result.Channel);
+
+        await using var verify = fixture.CreateDbContext();
+        // Untouched on both sides: no rename of the id row, and the stale occupant stays exactly as
+        // it was — in particular, still inactive.
+        Assert.Equal(
+            "channelserviceexcludedstale1old",
+            (await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == idRow.Id)).ChannelName);
+        var untouchedOccupant = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == staleOccupant.Id);
+        Assert.Equal("channelserviceexcludedstale1new", untouchedOccupant.ChannelName);
+        Assert.False(untouchedOccupant.IsBotActive);
+        Assert.Null(untouchedOccupant.TrackingResumedAt);
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelserviceexcludedstale1new"));
+        Assert.Empty(await LoadAuditEntriesAsync(verify, "channelserviceexcludedstale1old"));
+        await redisPublisher.DidNotReceive().PublishAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task JoinAsync_WhenTwitchDoesNotKnowTheLogin_ButWeAlreadyTrackIt_JoinsAnyway()
     {

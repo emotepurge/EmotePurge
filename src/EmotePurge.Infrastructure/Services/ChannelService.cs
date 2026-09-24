@@ -68,6 +68,24 @@ public class ChannelService(
 
         var (channel, isNewRow, renamedFrom) = await ResolveJoinTargetAsync(identity, targetName, actor, cancellationToken);
 
+        // Objection gate, defense in depth (issue #260, P1 Codex finding): the check above only
+        // ever sees the identity Helix resolved *this* call — never reached at all when Helix is
+        // Unavailable, and blind to a stale row that already carries a blocked id from an earlier
+        // resolution (the mirror image of HandleUnknownTwitchLoginAsync's own defense-in-depth
+        // check, for the paths that go through ResolveJoinTargetAsync instead). Checked here
+        // against the row that path actually picked for creation or reactivation — immediately
+        // before CompleteJoinAsync can write to it, and after every branch that could have found an
+        // existing row. Refusing is the only safe answer for a stale occupant carrying a blocked id
+        // (docs/DECISIONS.md, this entry): joining it anyway would let Twitch's own bookkeeping
+        // resurface a channel this codebase was told to stop observing. A brand-new row can never
+        // trip this — its TwitchChannelId is either null (Unavailable) or the identity already
+        // cleared above — so this only ever fires for a row ResolveJoinTargetAsync reused.
+        if (!isNewRow && excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
+        {
+            logger.LogWarning("Join rejected: the target channel is on the excluded-channel list.");
+            return ChannelJoinResult.Failed(ChannelJoinStatus.ChannelExcluded);
+        }
+
         return await CompleteJoinAsync(channel, actor, isNewRow, renamedFrom, isGlobalAdmin, transaction, cancellationToken);
     }
 

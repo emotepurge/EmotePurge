@@ -337,6 +337,47 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.Empty(await verify.AuditLogEntries.AsNoTracking().Where(e => e.ChannelName == "identityexcludednew").ToListAsync());
     }
 
+    // P2 Codex finding (issue #260): when *both* the id-bearing row and its id-less duplicate are
+    // active, the projection carries both, and the pass reaches the pair from each end — the id row
+    // wanting the name (ReconcileKnownIdRowAsync) and the id-less row holding it
+    // (ReconcileIdLessRowAsync). Without deduplication, the second visit refuses the identical
+    // merge again: MergesRefused reports 2 for one blocked pair, and the warning line repeats every
+    // tick instead of once. Mirrors
+    // ReconcileActiveChannelsAsync_WhenTheLoserStillHasEmotes_RefusesTheMergeAndLeavesBothRowsAlone
+    // above, which already gets this right for the emote-based refusal.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheChannelIdIsExcluded_AndBothRowsAreActive_RefusesTheMergeExactlyOnce()
+    {
+        await using var db = fixture.CreateDbContext();
+        var survivor = await SeedChannelAsync(db, "identityexcludedbothold", "10098");
+        var loser = await SeedChannelAsync(db, "identityexcludedbothnew", twitchChannelId: null);
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10098").Returns(true);
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity("10098", "IdentityExcludedBothNew")], excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        // Exactly one, not two — the same "met from both ends, counted once" property the
+        // loser-has-emotes test above pins for the other refusal path.
+        Assert.Equal(1, summary.MergesRefused);
+        Assert.Equal(0, summary.Merged);
+        Assert.Equal(0, summary.Renamed);
+        Assert.Empty(harness.Redis.Messages);
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal(
+            "identityexcludedbothold",
+            (await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == survivor.Id)).ChannelName);
+        var untouchedLoser = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == loser.Id);
+        Assert.Equal("identityexcludedbothnew", untouchedLoser.ChannelName);
+        Assert.True(untouchedLoser.IsBotActive);
+        Assert.Empty(await verify.AuditLogEntries.AsNoTracking().Where(e => e.ChannelName == "identityexcludedbothnew").ToListAsync());
+        // The refusal line itself must not repeat within the same pass either.
+        Assert.Single(harness.Logger.Entries, e => e.Message.Contains("excluded-channel list"));
+    }
+
     [Fact]
     public async Task ReconcileActiveChannelsAsync_WhenAMergeStaysRefused_WarnsOncePerProcessRun()
     {
