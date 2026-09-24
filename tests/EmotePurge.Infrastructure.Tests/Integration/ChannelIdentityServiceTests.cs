@@ -508,6 +508,173 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         Assert.NotNull(channel.DeactivatedAtUtc);
     }
 
+    // P1 Codex finding (issue #260, third review round): the two early returns below (no app token,
+    // Helix unreachable) used to skip the entire pass, including the known-id exclusion gate above —
+    // an active row whose STORED Twitch id is excluded therefore kept being observed for as long as
+    // an outage lasted, exactly the observation the block list exists to stop. Deactivating such a
+    // row needs no Helix answer at all, so it now runs before either early return, and a token
+    // outage can no longer buy an excluded channel continued observation.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WithoutAnAppToken_StillDeactivatesARowWhoseStoredIdIsExcluded()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityexcludednotoken", "10094");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10094").Returns(true);
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity("10094", "IdentityExcludedNoToken")], token: null, excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        // Not the null the plain "no token" case returns (see the test above without an exclusion):
+        // something real was written despite the outage, and that is worth the worker's log line.
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Deactivated);
+        Assert.Equal(0, summary.Renamed);
+        Assert.Equal(0, summary.Merged);
+        await harness.Helix.DidNotReceive().GetUsersAsync(
+            Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.Equal(["channel:bot:commands|LEAVE:identityexcludednotoken"], harness.Redis.Messages);
+
+        await using var verify = fixture.CreateDbContext();
+        var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(channel.IsBotActive);
+        Assert.NotNull(channel.DeactivatedAtUtc);
+    }
+
+    // The Helix-unreachable counterpart of the test above — same gap, the other early return.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenHelixIsUnavailable_StillDeactivatesARowWhoseStoredIdIsExcluded()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityexcludedhelixdown", "10093");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10093").Returns(true);
+        var harness = CreateHarness(db, identities: null, excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Deactivated);
+        Assert.Equal(0, summary.Renamed);
+        Assert.Equal(0, summary.Merged);
+        Assert.Equal(["channel:bot:commands|LEAVE:identityexcludedhelixdown"], harness.Redis.Messages);
+
+        await using var verify = fixture.CreateDbContext();
+        var channel = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == seeded.Id);
+        Assert.False(channel.IsBotActive);
+        Assert.NotNull(channel.DeactivatedAtUtc);
+    }
+
+    // P1 Codex finding (issue #260, third review round): a thrown LEAVE publish inside
+    // ChannelDeactivation.DeactivateAsync used to escape DeactivateExcludedRowAsync uncaught — the
+    // deactivation itself commits before the publish, so nothing here could roll it back, but the
+    // exception nonetheless propagated straight out of ReconcileActiveChannelsAsync, taking every
+    // row behind it in the pass (and the whole tick's summary) down with it. Two independently
+    // excluded rows prove the row after the failing one still gets processed rather than the tick
+    // aborting on the first publish failure.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheExcludedRowsLeavePublishFails_StillDeactivatesEveryExcludedRow()
+    {
+        await using var db = fixture.CreateDbContext();
+        var first = await SeedChannelAsync(db, "idexcludedpubfaila", "10092");
+        var second = await SeedChannelAsync(db, "idexcludedpubfailb", "10091");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10092").Returns(true);
+        excludedChannelFilter.IsExcluded("10091").Returns(true);
+        var harness = CreateHarness(
+            db,
+            [
+                new TwitchUserIdentity("10092", "IdentityExcludedPublishFailA"),
+                new TwitchUserIdentity("10091", "IdentityExcludedPublishFailB")
+            ],
+            excludedChannelFilter: excludedChannelFilter,
+            failPublishes: true);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(2, summary.Deactivated);
+        Assert.Contains(
+            harness.Logger.Entries,
+            e => e.Level == LogLevel.Warning && e.Message.Contains("LEAVE announcement could not be published"));
+        // Neither channel's name leaked into the warning, same restraint as the success log line.
+        Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains("idexcludedpubfaila"));
+        Assert.DoesNotContain(harness.Logger.Entries, e => e.Message.Contains("idexcludedpubfailb"));
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == first.Id)).IsBotActive);
+        Assert.False((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == second.Id)).IsBotActive);
+        Assert.NotNull((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == first.Id)).DeactivatedAtUtc);
+        Assert.NotNull((await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == second.Id)).DeactivatedAtUtc);
+    }
+
+    // P1 Codex finding (issue #260, third review round): DeactivateExcludedRowAsync used to reload
+    // by row.ChannelName, not by the row's own primary key. A concurrent purge of the exact row this
+    // decision was made for, followed by a fresh join under the same login, replaces it with an
+    // unrelated row before the write — a name-based reload would find and deactivate *that* row
+    // instead, silently pulling an active, unexcluded channel back out of observation. Simulated
+    // without real concurrency by piggy-backing on the one call every row makes before its own
+    // deactivation (IExcludedChannelFilter.IsExcluded): the substitute performs the "concurrent"
+    // purge-then-join right there, between the snapshot ReconcileActiveChannelsAsync already took
+    // and the reload DeactivateExcludedRowAsync is about to do for that same row.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheRowIsPurgedAndReplacedUnderTheSameLoginDuringTheTick_SkipsTheReplacementInsteadOfDeactivatingIt()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identitypurgeracereplaced", "10090");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        var raced = false;
+        excludedChannelFilter.IsExcluded(Arg.Any<string?>()).Returns(callInfo =>
+        {
+            var id = (string?)callInfo[0];
+            if (id != "10090" || raced)
+            {
+                return id == "10090";
+            }
+
+            raced = true;
+            // Two round trips, not one batched Remove+Add, so the unique index on ChannelName is
+            // never even momentarily double-claimed.
+            using (var purgeDb = fixture.CreateDbContext())
+            {
+                purgeDb.Channels.Remove(purgeDb.Channels.Single(c => c.Id == seeded.Id));
+                purgeDb.SaveChanges();
+            }
+
+            using (var joinDb = fixture.CreateDbContext())
+            {
+                joinDb.Channels.Add(new Channel
+                {
+                    ChannelName = "identitypurgeracereplaced",
+                    TwitchChannelId = "20099",
+                    IsBotActive = true
+                });
+                joinDb.SaveChanges();
+            }
+
+            return true;
+        });
+        var harness = CreateHarness(
+            db, [new TwitchUserIdentity("10090", "IdentityPurgeRaceReplaced")], excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        // Nothing was deactivated: the original row is gone (purging its data is not this pass's
+        // concern) and the replacement never carried the excluded id, so reloading by primary key
+        // finds nothing left to act on rather than silently deactivating the wrong, unrelated row.
+        Assert.Equal(0, summary.Deactivated);
+        Assert.Empty(harness.Redis.Messages);
+
+        await using var verify = fixture.CreateDbContext();
+        var replacement = await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == "identitypurgeracereplaced");
+        Assert.True(replacement.IsBotActive);
+        Assert.Equal("20099", replacement.TwitchChannelId);
+        Assert.NotEqual(seeded.Id, replacement.Id);
+        Assert.Null(replacement.DeactivatedAtUtc);
+    }
+
     [Fact]
     public async Task ReconcileActiveChannelsAsync_WhenAMergeStaysRefused_WarnsOncePerProcessRun()
     {

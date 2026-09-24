@@ -17,6 +17,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
 `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
 `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` (neu, second revision) ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` (third revision) ·
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
 `src/EmotePurge.Core/Services/IChannelService.cs` ·
 `src/EmotePurge.Core/Services/IChannelIdentityService.cs` (second revision) ·
@@ -144,6 +145,65 @@ of "exactly one, however the pair is reached."
 `docs/Operations.md` revised to say the reconcile now enforces the block list on its own, within one
 reconcile interval of the block taking effect — purging remains the recommended step, but only to
 actually delete the row's data, not to keep the objection enforced.
+
+**Revised 2026-09-24 (third Codex review of this branch):** three more gaps, all in the write the
+second revision above introduced.
+
+1. **P1 — the known-id exclusion pass ran too late.** `ReconcileActiveChannelsAsync` checked the
+   app token, then Helix, before ever looking at the exclusion list — during either outage the whole
+   tick returned early (`null`, "skipped without writing anything") and an active row whose *stored*
+   Twitch id is on the block list kept being observed for as long as the outage lasted, exactly the
+   observation the list exists to stop. Deactivating such a row needs no Twitch answer at all — the
+   id is already on the row — so the known-id gate now runs first, over the whole snapshot, before
+   either early return. Rows it settles are added to `settledChannelIds` so the main loop (reached
+   only once the token and Helix both answer) never re-decides them. The `null` contract is
+   unchanged in spirit but sharpened: it now means "nothing was written", not just "no Helix answer"
+   — an outage that *did* deactivate something returns a `ChannelIdentityReconcileSummary` with only
+   `Deactivated` populated, so the worker's log line still reports it instead of staying silent.
+2. **P1 — a failed LEAVE publish escaped the per-row catch.** `ChannelDeactivation.DeactivateAsync`
+   commits the deactivation before it publishes, exactly like every other write-then-announce path in
+   this class — but unlike `RenameAsync`/`MergeAsync`, which route their own publish through
+   `PublishHandoverAsync`'s own try/catch, `DeactivateExcludedRowAsync` let a thrown publish escape
+   uncaught. The pass's per-row catch only ever matched `DbUpdateException`, so a Redis outage on this
+   one write aborted the rest of the tick and threw the whole summary away — every row behind the
+   failing one stayed unprocessed that tick. Fixed by wrapping the call to
+   `ChannelDeactivation.DeactivateAsync` in `DeactivateExcludedRowAsync` itself: any exception except
+   `OperationCanceledException` or `DbUpdateException` (left to propagate — nothing was written that
+   time, and the per-row catch already retries it next tick) is logged (no id, no login, same
+   restraint as every log line in this write) and counted into `Deactivated` regardless, mirroring how
+   `RenameAsync`/`MergeAsync` already increment their own counters before their publish, not after it.
+   **Not the shared helper's job, on purpose:** `ChannelService.LeaveAsync`'s user-facing leave shares
+   `ChannelDeactivation.DeactivateAsync`, and its contract is unchanged — a failed publish there still
+   propagates and fails the request, exactly as before this fix. Catching it in the shared helper
+   instead would have silently changed that contract too; only the reconcile caller, which already
+   treats a lost publish as self-healing elsewhere in this class, catches it. **The self-healing
+   itself was already covered, not newly added:** `RosterPrunePolicy` (issue #41) is the general
+   convergence net for exactly this shape — a row the database now excludes from
+   `ListActiveChannelNamesAsync` but that the worker never got a LEAVE for. It prunes such a roster
+   entry (drops it from `EmoteMatchCache`, unsubscribes its 7TV EventAPI subscription, leaves the IRC
+   channel) after two consecutive periodic-resync ticks find it inactive, roughly one to two minutes
+   at the default 60s interval — not until a restart.
+3. **P1 — the reload before the write used the row's name, not its id.** `DeactivateExcludedRowAsync`
+   reloaded the row it was about to deactivate by `row.ChannelName`. A concurrent purge of that exact
+   row followed by a fresh join under the same login replaces it with an unrelated row before the
+   write runs, and a name-based reload finds and deactivates *that* row instead — silently pulling an
+   active, unexcluded channel back out of observation for a decision that was never about it. Fixed by
+   reloading via a new `ChannelQueries.LoadChannelByIdAsync` (by primary key) and re-checking, after
+   the reload, that the row still qualifies: still active, and its stored Twitch id (`row`'s own
+   snapshot value — `null` for the id-less path, unchanged) still matches what the decision was made
+   for. A purged-and-replaced row simply has a different `Id`, so the reload finds nothing for the
+   original one and the call is skipped like every other "the row is gone" case — no row lock needed
+   on top of that (unlike `MergeAsync`'s `FOR UPDATE` pair): the narrow window between the reload and
+   the write is already covered by the same per-row `DbUpdateException` catch every single-row write
+   in this class relies on instead of a lock (`RenameAsync`, `BackfillIdAsync`).
+
+All three verified with their own integration test in `ChannelIdentityServiceTests`: a known excluded
+stored id deactivated with no app token and, separately, with Helix unreachable; two independently
+excluded rows both deactivated despite every LEAVE publish throwing; and a purge-then-rejoin under
+the same login, simulated by having the `IExcludedChannelFilter` substitute perform the "concurrent"
+purge and re-join the moment it is asked about the row's id (the one call every row makes before its
+own reload), landing the mutation exactly between the snapshot and the reload — the replacement row
+is left untouched and `Deactivated` stays 0.
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 

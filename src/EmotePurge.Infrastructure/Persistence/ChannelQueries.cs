@@ -59,6 +59,19 @@ internal static class ChannelQueries
     }
 
     /// <summary>
+    /// Loads a channel by its primary key rather than its (possibly since-changed) name — for a
+    /// caller that already resolved the exact row it means and must not risk a name-based reload
+    /// picking up an unrelated row that took over the same name in between (the identity
+    /// reconcile's own exclusion-gate deactivation, issue #260, third Codex review: a concurrent
+    /// purge of the row this call means, followed by a fresh join under the same login, would
+    /// otherwise hand a name-based reload the wrong row to deactivate). Tracked, like
+    /// <see cref="LoadChannelAsync"/> — the one caller mutates what it loads.
+    /// </summary>
+    public static Task<Channel?> LoadChannelByIdAsync(
+        this AppDbContext db, string channelId, CancellationToken cancellationToken) =>
+        db.Channels.SingleOrDefaultAsync(c => c.Id == channelId, cancellationToken);
+
+    /// <summary>
     /// Loads a channel by its Twitch id: once a caller has a Twitch id in hand, it is looking for
     /// the *channel*, not for whatever name it currently answers to, and a rename can leave a
     /// second row under a new name sharing that same id. Tracked, since the callers that need this
