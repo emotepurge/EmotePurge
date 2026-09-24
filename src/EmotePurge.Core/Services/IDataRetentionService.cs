@@ -110,6 +110,10 @@ public sealed record VoteSessionRetentionCounts(int Deleted, int VotesDeleted, i
 /// <param name="VotesDeleted">
 /// Votes in those sessions, not counting votes an account deletion in the same pass already removed.
 /// </param>
+/// <param name="ObservationsDeleted">
+/// Emote-set observation intervals (<c>ChannelEmoteSetObservation</c>, spec section 4.3) of the purged
+/// channels — open or closed, since the cascade takes both.
+/// </param>
 public sealed record ChannelRetentionCounts(
     int Restamped,
     int Purged,
@@ -120,4 +124,5 @@ public sealed record ChannelRetentionCounts(
     int UsageRowsDeleted,
     int LiveDaysDeleted,
     int VoteSessionsDeleted,
-    int VotesDeleted);
+    int VotesDeleted,
+    int ObservationsDeleted);

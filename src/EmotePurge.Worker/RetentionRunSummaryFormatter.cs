@@ -30,6 +30,6 @@ public static class RetentionRunSummaryFormatter
             $"still active: {channels.StillActive}, not found: {channels.NotFound}, failed: {channels.Failed}, " +
             $"emotes deleted: {channels.EmotesDeleted}, usage rows deleted: {channels.UsageRowsDeleted}, " +
             $"live days deleted: {channels.LiveDaysDeleted}, vote sessions deleted: {channels.VoteSessionsDeleted}, " +
-            $"votes deleted: {channels.VotesDeleted}";
+            $"votes deleted: {channels.VotesDeleted}, observation intervals deleted: {channels.ObservationsDeleted}";
     }
 }

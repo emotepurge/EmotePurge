@@ -313,7 +313,8 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
 
         var expected = new ChannelRetentionCounts(
             Restamped: 0, Purged: 1, StillActive: 0, NotFound: 0, Failed: 0,
-            EmotesDeleted: 1, UsageRowsDeleted: 2, LiveDaysDeleted: 1, VoteSessionsDeleted: 1, VotesDeleted: 1);
+            EmotesDeleted: 1, UsageRowsDeleted: 2, LiveDaysDeleted: 1, VoteSessionsDeleted: 1, VotesDeleted: 1,
+            ObservationsDeleted: 1);
         Assert.Equal(expected, dry.Channels);
         Assert.Equal(expected, enforced.Channels);
         await using var db = CreateDbContext();
@@ -416,7 +417,7 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(new AccountRetentionCounts(2, 0, 0, 0, false, 6, 2, 5), enforced.Accounts);
         Assert.Equal(new VoteSessionRetentionCounts(2, 2, 2), enforced.VoteSessions);
         Assert.Equal(2, enforced.AuditEntriesDeleted);
-        Assert.Equal(new ChannelRetentionCounts(0, 1, 0, 0, 0, 2, 3, 2, 2, 3), enforced.Channels);
+        Assert.Equal(new ChannelRetentionCounts(0, 1, 0, 0, 0, 2, 3, 2, 2, 3, 0), enforced.Channels);
         Assert.Equal(1, dry.Channels.Restamped);
 
         // What was reported is exactly what went: every cascade edge, category overlaps included.
@@ -680,8 +681,8 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
 
     /// <summary>
     /// An inactive channel with one row on every cascade edge: an emote with two usage rows, a live day,
-    /// and an open vote session with a ballot row and a vote (open, so the session category never takes
-    /// it first and the channel purge's own count covers it).
+    /// an open vote session with a ballot row and a vote (open, so the session category never takes it
+    /// first and the channel purge's own count covers it), and one closed emote-set observation interval.
     /// </summary>
     private async Task<Channel> SeedChannelWithHistoryAsync(string name, DateTime? deactivatedAtUtc, string? id = null)
     {
@@ -692,7 +693,22 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
         var session = await SeedSessionAsync(channel.Id, isActive: true, endedAt: null);
         await SeedBallotAsync(session, emote);
         await SeedVoteAsync(session, emote, voter.Id);
+        await SeedObservationAsync(channel.Id);
         return channel;
+    }
+
+    private async Task SeedObservationAsync(string channelId)
+    {
+        await using var db = CreateDbContext();
+        db.ChannelEmoteSetObservations.Add(new ChannelEmoteSetObservation
+        {
+            ChannelId = channelId,
+            SevenTvEmoteSetId = "retention-set",
+            ObservedFromUtc = _now.AddDays(-30),
+            ObservedToUtc = _now.AddDays(-1),
+            ClosedBy = ChannelEmoteSetObservationClosedBy.SetSwitch
+        });
+        await db.SaveChangesAsync();
     }
 
     /// <summary>
