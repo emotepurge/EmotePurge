@@ -24,6 +24,7 @@ import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.serv
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { ExportDialogData, FORMAT_EXPORT_OPTIONS, openExportDialog } from '../export/export-dialog';
 import { JSON_MIME } from '../export/export-envelope';
@@ -39,10 +40,26 @@ import { PREVIEW_CAP } from '../ui/name-preview-list';
 import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
 import { resyncNoticeKey } from './dock-outcome-announcer';
+import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { RunProgressPanel } from './run-progress-panel';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
+
+/** Maps the shared pre-check's block reason (spec 6.2, `TargetCheckBlockReason`) to this panel's
+ *  own `restore.errors.*` locale family (Plan-253 §6, Nr. 3) — mirrors the family every other
+ *  pre-check caller uses under its own prefix (`restore.import.errors.*`, `massDelete.errors.*`,
+ *  `import.errors.*`); the wording is provisional (#255), the mapping is the contract. */
+function restoreTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
+  switch (reason) {
+    case 'notEditable':
+      return 'restore.errors.targetNotEditable';
+    case 'notSelectable':
+      return 'restore.errors.targetNotSelectable';
+    case 'unavailable':
+      return 'restore.errors.targetCheckUnavailable';
+  }
+}
 
 /** Per-instance suffix for the lock reason's element id — the panel renders on two pages, and an
  *  `aria-describedby` target has to be unique in the document. */
@@ -70,8 +87,10 @@ const LIVE_ALIAS_READ_TIMEOUT_MS = 20_000;
  *  or the translation key of the reason the delete is blocked. */
 type LiveAliasRead = { entries: SevenTvSetEntries } | { blockedReasonKey: string };
 
-/** A confirmed delete that did not start, and why — shown until the next attempt. `leadKey` says
- *  what happened, `reasonKey` why. */
+/** A confirmed delete, or a restore this panel's own button tried to start, that did not run, and
+ *  why — shown until the next attempt. `leadKey` says what happened, `reasonKey` why. Shared by
+ *  both: the restore entry's pre-check (spec E16, 4.6 point 22) has no banner of its own, and the
+ *  panel's existing abort notice is where the plan puts it (Plan-253 §6, Nr. 3). */
 interface DeleteAbortNotice {
   leadKey: string;
   reasonKey: string;
@@ -627,6 +646,11 @@ export class MassDeletePanel {
     });
   }
 
+  /** The restore entry at the finished delete run (spec E16, 4.6 point 22): the pre-check runs
+   *  first, like every other first mutation (E19) — in the normal case a cache hit, because the
+   *  delete's own report just warmed the target list for this very set. A block shows the panel's
+   *  abort notice with a restore-specific lead line and the `restore.errors.*` reason family
+   *  (Plan-253 §6, Nr. 3); nothing opens, nothing is sent to 7TV. */
   protected openRestoreConfirm(): void {
     const run = this.deleteService.lastRun();
     if (!run || this.arbiter.activeRun() !== null) {
@@ -638,34 +662,50 @@ export class MassDeletePanel {
       return;
     }
 
-    if (!this.tokenService.hasToken()) {
-      openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
-        if (saved) {
-          this.openRestoreConfirmDialog(run.setId, run.channelName, doneItems);
-        }
-      });
-      return;
-    }
-    this.openRestoreConfirmDialog(run.setId, run.channelName, doneItems);
+    this.emoteSetService.resolveEditableSet(run.setId).subscribe((resolution) => {
+      if (resolution.status !== 'editable') {
+        this.abortNotice.set({
+          leadKey: 'restore.nothingRestored',
+          reasonKey: restoreTargetCheckReasonKey(resolution.status),
+        });
+        return;
+      }
+      // The panel's own inputs are the host fields (spec 6.3): the page this restore starts from,
+      // not the delete run's frozen channel — a restore into a non-active or foreign set must
+      // still be attributed to whichever page the button was clicked on (E13, E21).
+      const target: ResolvedRestoreTarget = {
+        ...resolution.target,
+        hostChannelName: this.channelName(),
+        hostSelectedSetId: this.setId(),
+      };
+      if (!this.tokenService.hasToken()) {
+        openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
+          if (saved) {
+            this.openRestoreConfirmDialog(target, doneItems);
+          }
+        });
+        return;
+      }
+      this.openRestoreConfirmDialog(target, doneItems);
+    });
   }
 
-  /** `runSetId`/`runChannelName` are the set and channel the delete run removed from (its frozen
-   *  record, spec #200 7.2/AK 71) — the restore puts the emotes back there, never into whatever
-   *  `setId()`/`channelName()` say by now. Named and slot-previewed against *that* set (spec 8.8),
-   *  which the dropdown may since have moved past (it only locks while the run is still writing). */
+  /** `target` is the resolved target the pre-check produced (spec 6.2) — the restore puts the
+   *  emotes back into `target.emoteSetId`, never into whatever `setId()` says by now. Named and
+   *  slot-previewed against *that* set (spec 8.8), which the dropdown may since have moved past
+   *  (it only locks while the run is still writing). */
   private openRestoreConfirmDialog(
-    runSetId: string,
-    runChannelName: string,
+    target: ResolvedRestoreTarget,
     doneItems: readonly RunQueueItem[],
   ): void {
-    const runIsActiveSet = runSetId === this.effectiveActiveSetId();
     // Live slot view, so the projection line pops in once the check answers (the dialog is
-    // already open by then) — same pattern as the delete confirm's shared-set warning. The active
-    // run's set keeps the cheap, non-7TV-rate-limited status read; any other set reads the live
-    // per-set preview instead (spec 8.3) — `getSetStatus` has no set-scoped form at all.
+    // already open by then) — same pattern as the delete confirm's shared-set warning. Same fork
+    // as `restore-flow.ts`'s `startRestoreFlow` (spec 4.3, point 8): a tracked, active target
+    // keeps the cheap, non-7TV-rate-limited status read; anything else reads the live per-set
+    // preview instead (spec 8.3) — `getSetStatus` has no set-scoped or untracked form at all.
     this.restoreSlots.set(null);
-    if (runIsActiveSet) {
-      this.emoteAdminService.getSetStatus(runChannelName).subscribe({
+    if (target.trackedChannelName !== null && target.isActiveSet) {
+      this.emoteAdminService.getSetStatus(target.trackedChannelName).subscribe({
         next: (status) =>
           this.restoreSlots.set(
             status.capacity === null
@@ -675,15 +715,17 @@ export class MassDeletePanel {
         error: () => this.restoreSlots.set(null),
       });
     } else {
-      this.emoteSetService.loadEmoteSetPreview(runChannelName, runSetId).subscribe({
-        next: (preview) =>
-          this.restoreSlots.set(
-            preview.capacity === null
-              ? null
-              : { occupied: preview.totalCount, capacity: preview.capacity },
-          ),
-        error: () => this.restoreSlots.set(null),
-      });
+      this.emoteSetService
+        .loadEmoteSetPreview(target.trackedChannelName ?? target.twitchLogin, target.emoteSetId)
+        .subscribe({
+          next: (preview) =>
+            this.restoreSlots.set(
+              preview.capacity === null
+                ? null
+                : { occupied: preview.totalCount, capacity: preview.capacity },
+            ),
+          error: () => this.restoreSlots.set(null),
+        });
     }
 
     const data: RestoreConfirmDialogData = {
@@ -692,8 +734,14 @@ export class MassDeletePanel {
       // under and restores once per alias.
       addCount: doneItems.reduce((sum, item) => sum + (item.aliases?.length ?? 1), 0),
       slots: this.restoreSlots.asReadonly(),
-      setName: this.setNames().get(runSetId) ?? runSetId,
-      isActiveSet: runIsActiveSet,
+      setName: target.setName,
+      isActiveSet: target.isActiveSet,
+      emoteSetId: target.emoteSetId,
+      ownerDisplayName: target.ownerDisplayName,
+      trackedChannelName: target.trackedChannelName,
+      // Spec E21: the run's set against the page's *selected* set — a different set of the same
+      // channel, and a page with no selection, both count as foreign.
+      foreignToView: target.emoteSetId !== target.hostSelectedSetId,
     };
     openRestoreConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (!confirmed) {
@@ -714,7 +762,7 @@ export class MassDeletePanel {
       // present only under some of its own aliases re-adds just the missing ones, and an alias
       // another emote now holds is left out rather than sent into a certain name conflict — see
       // `filterAlreadyPresentForRestore`.
-      filterAlreadyPresentForRestore(this.httpClient, runSetId, emotes).subscribe(
+      filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes).subscribe(
         ({ rows: toRestore, skipped, skippedNameTaken, available }) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
@@ -725,18 +773,8 @@ export class MassDeletePanel {
           if (this.arbiter.activeRun() !== null) {
             return;
           }
-          // Interim (spec 6.4): the target comes from the delete run's own values — its set, its
-          // channel, and whether that set is the channel's active one — until the restore entry
-          // derives it from the resolved target instead.
           this.restoreService.startRestore(
-            {
-              setId: runSetId,
-              expectedChannelName: runIsActiveSet ? runChannelName : null,
-              resyncChannelName: runIsActiveSet ? null : runChannelName,
-              hostChannelName: runChannelName,
-              setName: data.setName,
-              ownerOrChannelLabel: runChannelName,
-            },
+            restoreStartTarget(target),
             toRestore,
             skipped,
             available,

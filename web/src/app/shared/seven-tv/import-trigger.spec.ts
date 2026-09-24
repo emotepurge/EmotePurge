@@ -121,6 +121,12 @@ describe('ImportTrigger', () => {
   let startRestore: ReturnType<typeof vi.fn>;
   let startImport: ReturnType<typeof vi.fn>;
   let loadEmoteSetPreview: ReturnType<typeof vi.fn>;
+  /** The interim pre-check `openDialog` runs for a restore result before building its own
+   *  target (spec 6.4/2.5 of the plan) — defaults to `'editable'` so every existing restore test
+   *  below, none of which cares about the block itself, keeps reaching `startRestore` unchanged.
+   *  The `target` half of the answer is never read here: this trigger still builds its own interim
+   *  target from the page's frozen values, not from the pre-check's resolution. */
+  let resolveEditableSet: ReturnType<typeof vi.fn>;
   let hasToken: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
   let dialogOpen: ReturnType<typeof vi.fn>;
@@ -143,6 +149,7 @@ describe('ImportTrigger', () => {
     // the 'trackedActive' fast path (see `resolveActiveSetId`). Only the non-active-set and the
     // unknown-active-set describe blocks below override this.
     loadEmoteSetPreview = vi.fn();
+    resolveEditableSet = vi.fn(() => of({ status: 'editable', target: {} }));
     hasToken = signal(true);
     activeRun = signal<SevenTvRunKind | null>(null);
     dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
@@ -171,7 +178,10 @@ describe('ImportTrigger', () => {
         },
         {
           provide: SevenTvEmoteSetService,
-          useValue: { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService,
+          useValue: {
+            loadEmoteSetPreview,
+            resolveEditableSet,
+          } as unknown as SevenTvEmoteSetService,
         },
         { provide: SevenTvTokenService, useValue: { hasToken } as unknown as SevenTvTokenService },
         { provide: SevenTvRunArbiter, useValue: { activeRun } as unknown as SevenTvRunArbiter },
@@ -276,6 +286,33 @@ describe('ImportTrigger', () => {
         true,
         0,
       );
+    });
+  });
+
+  describe('the interim pre-check before a file-based restore (spec 6.4/2.5 of the plan)', () => {
+    it('checks the set the file names before building a target for it', () => {
+      const dialog = render('achannel', 'aset');
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('aset');
+      // The chain proceeds exactly as before once the pre-check clears the set — one further
+      // dialog beyond the source dialog, already the restore confirmation.
+      expect(dialogOpen).toHaveBeenCalledTimes(2);
+    });
+
+    it('starts nothing — no confirmation, no token prompt, no run — when the pre-check blocks the set', () => {
+      resolveEditableSet.mockReturnValue(of({ status: 'notEditable' }));
+      const dialog = render();
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+
+      // Only the source dialog, which already closed — no restore confirmation and no token
+      // prompt opened for a set the pre-check just refused.
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      expect(startRestore).not.toHaveBeenCalled();
     });
   });
 
