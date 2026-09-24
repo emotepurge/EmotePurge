@@ -68,8 +68,19 @@ public sealed class HarnessRunner(
     /// indeterminate room now moves <see cref="ReplayDayLine.SharedChatCounts"/> instead of
     /// <see cref="ReplayDayLine.HumanCounts"/> or <see cref="ReplayDayLine.BotCounts"/>, so a
     /// "harness-1" file must not be silently resumed under the new rule.
+    /// <para>
+    /// Bumped again to "harness-3" for the objection gate itself (issue #252/#260, P1 Codex
+    /// finding): the counting callback below started dropping excluded chatters' messages before
+    /// <see cref="HarnessRunIdentity"/> carried anything that depended on the exclusion list, so a
+    /// run started before the gate existed could be resumed under it silently — the file's day
+    /// lines would still hold the excluded chatter's counts from before the gate applied, mixed
+    /// into the same report as fresh, gated days from the resumed run.
+    /// <see cref="HarnessRunIdentity.ExcludedChatterIdsDigest"/> (added in the same change) covers
+    /// every *later* change of the list the same way; this version bump is what invalidates
+    /// everything written before either existed at all.
+    /// </para>
     /// </summary>
-    public const string AlgorithmVersion = "harness-2";
+    public const string AlgorithmVersion = "harness-3";
 
     /// <summary>The window covered completely; both final reports were written.</summary>
     public const int ExitSuccess = 0;
@@ -298,6 +309,7 @@ public sealed class HarnessRunner(
             botSplitCutover,
             sharedChatCutover,
             [.. botAccountIds.Order(StringComparer.Ordinal)],
+            ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds),
             AlgorithmVersion,
             HarnessInputHash.Compute(lifetimes, liveRowDtos, botAccountIds, from));
 

@@ -66,6 +66,7 @@ public class HarnessRunnerTests : IDisposable
         _bots.KnownBotAccountIds.Returns(new HashSet<string> { "19264788" });
         _bots.IsBot(Arg.Any<string?>(), Arg.Any<IReadOnlyList<KeyValuePair<string, string>>?>()).Returns(false);
         _excludedChatters.IsExcluded(Arg.Any<string?>()).Returns(false);
+        _excludedChatters.ExcludedChatterIds.Returns(new HashSet<string>());
     }
 
     public void Dispose()
@@ -531,7 +532,7 @@ public class HarnessRunnerTests : IDisposable
         Assert.Contains("\"sharedChatCutover\": \"2026-09-01\"", json);
 
         var jsonl = File.ReadAllText(Assert.Single(Directory.GetFiles(_directory, "*.jsonl")));
-        Assert.Contains("\"algorithmVersion\":\"harness-2\"", jsonl);
+        Assert.Contains("\"algorithmVersion\":\"harness-3\"", jsonl);
         // Day 2's foreign hit lands in the day line's own dictionary, not just the aggregated report.
         Assert.Contains("\"sharedChatCounts\":{\"e1\":1}", jsonl);
         Assert.Contains("\"sharedChatCutover\":\"2026-09-01\"", jsonl);
@@ -657,7 +658,7 @@ public class HarnessRunnerTests : IDisposable
         var staleWindowTo = Day3.AddDays(-1);
         var leftoverIdentity = new HarnessRunIdentity(
             ChannelId, TwitchChannelId, ChannelName, staleWindowFrom, staleWindowTo, new DateOnly(2026, 9, 1),
-            new DateOnly(2026, 9, 1), ["19264788"], "harness-1", new string('a', 64));
+            new DateOnly(2026, 9, 1), ["19264788"], ExcludedChatterIdsDigest.Compute([]), "harness-1", new string('a', 64));
         var leftover = new HarnessReportFile(Path.Combine(_directory, "leftover-harness-1.jsonl"));
         leftover.WriteHeader(new HarnessReportHeader(leftoverIdentity, DateTime.UtcNow));
 
@@ -816,6 +817,48 @@ public class HarnessRunnerTests : IDisposable
         Assert.Equal(2, files.Length);
         Assert.Contains(firstFile, files);
         // And the new run really fetched all three days again rather than inheriting them.
+        Assert.Equal(3, _archive.ReceivedCalls().Count(c => c.GetMethodInfo().Name == nameof(IChatLogArchiveClient.ReadDayAsync)));
+    }
+
+    // GDPR Art. 21 objection gate (issue #252/#260, P1 Codex finding): saved day lines from before
+    // an exclusion-list change must not be reused — the days a run already wrote under the old
+    // policy would otherwise keep an excluded chatter's counts even after the policy changed,
+    // silently mixed into the same report as days counted under the new one. Mirrors
+    // AChangedDataSnapshot_StartsANewFileInsteadOfContinuingTheOldOne, but with an *interrupted*
+    // first run — a completed run always starts its own new file regardless of resume logic, so
+    // only a resume candidate actually exercises FindFrozenWindow/ReadHeader's identity comparison.
+    [Fact]
+    public async Task AChangedExclusionList_DoesNotResumeDaysSavedUnderTheOldOne()
+    {
+        RespondWith(async (day, onMessage) =>
+        {
+            if (day == Day3)
+            {
+                return new ChatLogDayResult(ChatLogDayStatus.RateLimited, 0, null, 0, 0, 0, 429);
+            }
+
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+        Assert.Equal(HarnessRunner.ExitAbortedWithResumePoint, await Run(3));
+        var firstFile = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+
+        // The operator adds an id to Twitch:ExcludedChatterIds between the two invocations.
+        _excludedChatters.ExcludedChatterIds.Returns(new HashSet<string> { "objector-1" });
+        _archive.ClearReceivedCalls();
+        RespondWith(async (day, onMessage) =>
+        {
+            await onMessage(Message(day, "chatter-1", "PogChamp"));
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(HarnessRunner.ExitSuccess, await Run(3));
+
+        var files = Directory.GetFiles(_directory, "*.jsonl");
+        Assert.Equal(2, files.Length);
+        Assert.Contains(firstFile, files);
+        // A resume would have refetched only Day3 (the rate-limited one); a fresh run under the new
+        // identity refetches the whole window instead.
         Assert.Equal(3, _archive.ReceivedCalls().Count(c => c.GetMethodInfo().Name == nameof(IChatLogArchiveClient.ReadDayAsync)));
     }
 

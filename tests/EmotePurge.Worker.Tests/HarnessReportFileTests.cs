@@ -357,6 +357,7 @@ public class HarnessReportFileTests : IDisposable
             new DateOnly(2026, 9, 1),
             new DateOnly(2026, 9, 1),
             ["19264788", "402337290"],
+            ExcludedChatterIdsDigest.Compute([]),
             HarnessRunner.AlgorithmVersion,
             new string('a', 64));
 

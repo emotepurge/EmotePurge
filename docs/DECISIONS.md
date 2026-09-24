@@ -46,6 +46,23 @@ confirmed by its own explicit test.
 without a restart step of its own — it is a one-shot process, so every invocation already reads the
 current `.env`.
 
+**Revised 2026-09-24 (Codex P1 review of this branch):** the gate above changed what the counting
+callback does, but nothing in `HarnessRunIdentity`/`HarnessRunner.AlgorithmVersion` changed with it
+— a run started before this gate existed could be resumed under it silently, its saved day lines
+still holding an excluded chatter's counts from before the gate applied, mixed into the same report
+as fresh, gated days. Fixed two ways: `AlgorithmVersion` bumped to `"harness-3"`, so nothing written
+before this change (or the shared-chat one before it) is ever resumed or recomputed again; and a new
+`HarnessRunIdentity.ExcludedChatterIdsDigest` field covers every *later* change of the exclusion
+list the same way `InputHash` covers the live data snapshot — a SHA-256 over the sorted, normalized
+id list (`ExcludedChatterIdsDigest.Compute`), never the raw ids themselves. Not a secrecy measure —
+the same ids already sit in plaintext in the operator's `.env` on the same host that would read a
+`.jsonl` header — but writing the list itself into a file that outlives the run would be exactly the
+kind of processing the objection asked to stop. An empty list hashes to a fixed value, so a
+no-exclusion run's identity is unaffected by this field's mere existence. `IExcludedChatterFilter`
+gained a matching `ExcludedChatterIds` read-only property (mirroring
+`IBotChatterDetector.KnownBotAccountIds`) so the digest is computed from what the filter actually
+enforces, not a second, independent parse of the same configuration key.
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·

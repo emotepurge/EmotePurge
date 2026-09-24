@@ -144,6 +144,16 @@ above: the harness is a one-shot process, so every invocation already starts fre
 `.env`, unlike the worker's step 3, which only needs an explicit restart because it otherwise keeps
 running.
 
+One consequence worth knowing before changing the list mid-measurement: a 30-day binding run is
+invoked several times (a large channel's window is ~490 MB against the 200 MB per-invocation cap),
+and each invocation resumes the previous one's unfinished `.jsonl` by default. Changing
+`TWITCH_EXCLUDED_CHATTER_IDS` between two such invocations ends that resume — the next invocation
+starts a fresh file and re-fetches the whole window instead of continuing the interrupted one, so an
+exclusion-list change mid-run costs the archive requests already spent on it. This is deliberate
+(a changed policy must not silently keep counts gathered under the old one), but it means: finish a
+binding run before adding an ID if at all possible, and expect a resumed multi-invocation run to
+restart from scratch if the list changes underneath it.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,
