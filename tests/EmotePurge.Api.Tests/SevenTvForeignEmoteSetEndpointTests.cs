@@ -434,6 +434,124 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
         Assert.True(body.GetProperty("sevenTvUnavailable").GetBoolean());
     }
 
+    // AK 29 (spec 2026-09-24 restore-per-set addendum, 5.8/E19): editable, sevenTvUserId and
+    // ownerSevenTvUserId on GET /api/seventv/me/emote-set-targets.
+
+    [Fact]
+    public async Task EmoteSetTargets_SetOwnedByItsOwnListedAccount_IsEditable()
+    {
+        const string ownTwitchId = "7000";
+        const string ownLogin = "owner";
+        const string ownSevenTvId = "01OWN";
+        const string setId = "01SET";
+
+        _factory.EditorService.GetEditorGrantsAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(new HashSet<string>(), new HashSet<string>())));
+        _factory.Channels.GetActiveByTwitchChannelIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+        _factory.EmoteSetList.ListByTwitchIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(
+                null, [new EmoteSetSummary(setId, "Mine", 1000, "NORMAL", false, "Owner", ownSevenTvId)], ownSevenTvId)));
+
+        var response = await SendMeAsync(ownTwitchId, ownLogin);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var account = Assert.Single(body.GetProperty("accounts").EnumerateArray());
+        Assert.Equal(ownSevenTvId, account.GetProperty("sevenTvUserId").GetString());
+        var set = Assert.Single(account.GetProperty("sets").EnumerateArray());
+        Assert.Equal(ownSevenTvId, set.GetProperty("ownerSevenTvUserId").GetString());
+        Assert.True(set.GetProperty("editable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task EmoteSetTargets_SetOwnedByAnEditorOfAccount_IsEditable()
+    {
+        const string ownTwitchId = "7100";
+        const string ownLogin = "owner";
+        const string ownSevenTvId = "01OWN2";
+        const string editedTwitchId = "7101";
+        const string editedLogin = "editedchannel";
+        const string editedSevenTvId = "01EDITED2";
+        const string setId = "01SET2";
+
+        _factory.EditorService.GetEditorGrantsAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(
+                new HashSet<string> { editedLogin }, new HashSet<string> { editedTwitchId },
+                [new SevenTvEditorGrantEntry(editedLogin, editedTwitchId)])));
+        _factory.Channels.GetActiveByTwitchChannelIdAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+        _factory.EmoteSetList.ListByTwitchIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(null, [], ownSevenTvId)));
+        _factory.EmoteSetList.ListByTwitchIdAsync(editedTwitchId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(
+                null, [new EmoteSetSummary(setId, "Theirs", 1000, "NORMAL", false, "Owner", editedSevenTvId)], editedSevenTvId)));
+
+        var response = await SendMeAsync(ownTwitchId, ownLogin);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var editedAccount = body.GetProperty("accounts").EnumerateArray()
+            .Single(a => a.GetProperty("twitchLogin").GetString() == editedLogin);
+        Assert.Equal(editedSevenTvId, editedAccount.GetProperty("sevenTvUserId").GetString());
+        var set = Assert.Single(editedAccount.GetProperty("sets").EnumerateArray());
+        Assert.Equal(editedSevenTvId, set.GetProperty("ownerSevenTvUserId").GetString());
+        Assert.True(set.GetProperty("editable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task EmoteSetTargets_SetOwnedByAForeignAccount_IsNotEditable()
+    {
+        const string ownTwitchId = "7200";
+        const string ownLogin = "owner";
+        const string ownSevenTvId = "01OWN3";
+        const string setId = "01SET3";
+        const string foreignOwnerSevenTvId = "01FOREIGN";
+
+        _factory.EditorService.GetEditorGrantsAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(new HashSet<string>(), new HashSet<string>())));
+        _factory.Channels.GetActiveByTwitchChannelIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+        _factory.EmoteSetList.ListByTwitchIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(
+                null, [new EmoteSetSummary(setId, "Shared", 1000, "NORMAL", false, "Someone else", foreignOwnerSevenTvId)], ownSevenTvId)));
+
+        var response = await SendMeAsync(ownTwitchId, ownLogin);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var account = Assert.Single(body.GetProperty("accounts").EnumerateArray());
+        var set = Assert.Single(account.GetProperty("sets").EnumerateArray());
+        Assert.Equal(foreignOwnerSevenTvId, set.GetProperty("ownerSevenTvUserId").GetString());
+        Assert.False(set.GetProperty("editable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task EmoteSetTargets_SetWithoutAnOwnerId_IsNotEditable()
+    {
+        const string ownTwitchId = "7300";
+        const string ownLogin = "owner";
+        const string ownSevenTvId = "01OWN4";
+        const string setId = "01SET4";
+
+        _factory.EditorService.GetEditorGrantsAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(SevenTvEditorGrantsLookupResult.Ok(new SevenTvEditorGrants(new HashSet<string>(), new HashSet<string>())));
+        _factory.Channels.GetActiveByTwitchChannelIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns((Channel?)null);
+        _factory.EmoteSetList.ListByTwitchIdAsync(ownTwitchId, Arg.Any<CancellationToken>())
+            .Returns(EmoteSetListResult.Ok(new EmoteSetList(
+                null, [new EmoteSetSummary(setId, "No owner", 1000, "NORMAL", false, null, null)], ownSevenTvId)));
+
+        var response = await SendMeAsync(ownTwitchId, ownLogin);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var account = Assert.Single(body.GetProperty("accounts").EnumerateArray());
+        var set = Assert.Single(account.GetProperty("sets").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, set.GetProperty("ownerSevenTvUserId").ValueKind);
+        Assert.False(set.GetProperty("editable").GetBoolean());
+    }
+
     private static string NewUserId() => Guid.NewGuid().ToString("N");
 
     private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage response)

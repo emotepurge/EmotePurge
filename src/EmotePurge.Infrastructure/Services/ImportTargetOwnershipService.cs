@@ -298,11 +298,13 @@ public sealed class ImportTargetOwnershipService(
 
         public SevenTvEmoteSetOwnershipCheckResult? MatchAgainstAllKnownAccounts()
         {
+            // The shared rule (EmoteSetEditability, spec 5.8/AK 30): editable iff the owner id is
+            // one of the readable accounts' ids — _loginByAccountId's keys are exactly that set.
             foreach (var ownerId in _listedOwnerIds)
             {
-                if (_loginByAccountId.TryGetValue(ownerId, out var login))
+                if (EmoteSetEditability.IsEditable(ownerId, _loginByAccountId.Keys))
                 {
-                    return SevenTvEmoteSetOwnershipCheckResult.Owner(ownerId, login);
+                    return SevenTvEmoteSetOwnershipCheckResult.Owner(ownerId, _loginByAccountId[ownerId]);
                 }
             }
 

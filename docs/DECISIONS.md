@@ -10,6 +10,50 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — Who may report is decided by 7TV editing rights — list and report apply the same rule
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetEditability.cs` ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (consumer, T4: `resolveEditableSet`) ·
+`web/src/app/shared/seven-tv/file-import-step.ts` (consumer, T5) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(consumer, T6) · `web/src/app/shared/seven-tv/import-flow.ts` (consumer, T8)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E5/E19/E20/5.7). Who is allowed to report a change against a 7TV emote set has always been "whoever
+7TV itself lets edit that set" — checked via `IImportTargetOwnershipService.CheckAsync` against the
+**logged-in** Twitch account, not the channel role (admin allowlist, broadcaster, live moderator).
+This matches 7TV's own enforcement: without editor rights on the token account, the mutation itself
+already fails (`LACKING_PRIVILEGES`). **Operator decision, 2026-09-24:** HandOfBlood's mod team
+works with its **own** 7TV editor grants rather than a shared token, so a 403 on a report only
+happens on a genuine, freshly revoked right — not on every mod's report by construction.
+
+**What this commit adds:** the target list (`GET /api/seventv/me/emote-set-targets`) used to answer
+"can I edit this set" with a weaker question than the report itself asked — it never carried an
+owner id at all, so a caller had to attempt the report to find out. The list now carries
+`sevenTvUserId` per account and `ownerSevenTvUserId` plus `editable` per set, with `editable`
+computed by `EmoteSetEditability.IsEditable` — the exact same pure function
+`ImportTargetOwnershipService`'s `OwnershipEvidence.MatchAgainstAllKnownAccounts` now calls instead
+of its own private copy of the rule. A future frontend vorprüfung (T4's `resolveEditableSet`) can
+therefore read the same answer the report would give, before spending a report on a set the caller
+cannot write to.
+
+**F16 — one deliberate asymmetry.** The ownership check has a fallback the list cannot afford: a set
+that is in no cached list, or listed without an owner, gets one direct, budgeted 7TV lookup
+(`ImportTargetOwnershipService.CheckAsync`). The list would have to spend that lookup per set on
+every dialog open to offer the same precision, so it does not: a set without an owner id is
+`editable: false` there unconditionally, even in the one case where the live lookup might have said
+yes. The list is therefore never looser than the report, only ever stricter — a run can be blocked
+where the report might have succeeded, never the other way around.
+
+**No pre-authorized re-report path.** If a report fails despite the frontend's vorprüfung having
+passed (rights revoked mid-run), there is deliberately no way to resubmit it under the earlier
+authorization: the mod team holds its own rights, a failure at that point is a genuine revocation,
+and a resubmission path would amount to a second authorization next to the one 7TV just withdrew.
+
+---
+
 ### 2026-09-24 — Every deactivation closes the emote-set observation interval, the objection gate's included
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` ·

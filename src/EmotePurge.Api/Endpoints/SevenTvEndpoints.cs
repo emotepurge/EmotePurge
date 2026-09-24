@@ -182,7 +182,29 @@ public static class SevenTvEndpoints
                 }
             }
 
-            return Results.Ok(new EmoteSetTargetsResponse(accounts, sevenTvUnavailable));
+            // Second pass (spec 5.8/E19/AK 29-30): editable can only be decided once every account
+            // of this response has been resolved — the owner of a set listed under account A may be
+            // a different account B of this same response, and only after B's own list has been read
+            // is B's id known to be readable. EmoteSetEditability is the exact rule
+            // IImportTargetOwnershipService.CheckAsync applies for the same question (F16).
+            var readableAccountSevenTvUserIds = accounts
+                .Where(account => account.SevenTvUserId is not null)
+                .Select(account => account.SevenTvUserId!)
+                .ToHashSet(StringComparer.Ordinal);
+
+            var accountsWithEditability = accounts
+                .Select(account => account with
+                {
+                    Sets = account.Sets
+                        .Select(set => set with
+                        {
+                            Editable = EmoteSetEditability.IsEditable(set.OwnerSevenTvUserId, readableAccountSevenTvUserIds),
+                        })
+                        .ToList(),
+                })
+                .ToList();
+
+            return Results.Ok(new EmoteSetTargetsResponse(accountsWithEditability, sevenTvUnavailable));
         });
 
         // POST /api/seventv/emote-sets/{emoteSetId}/sync-imported (spec 6.7/E22, F7): the set-centric
@@ -330,9 +352,13 @@ public static class SevenTvEndpoints
                 .ThenBy(summary => summary.Name, StringComparer.Ordinal)
                 .ToList();
 
+            // Spec 5.8: the account's own 7TV id, only set when its list was actually read — the
+            // second pass below treats this as "this id may own an editable set". 7TV's answer can
+            // in principle omit it even on a successful list (E7's "always set on a list read from
+            // 7TV" is what 7TV normally does, not a guarantee this code relies on).
             return (new EmoteSetTargetAccount(
                 twitchChannelId, twitchLogin, isOwnAccount, trackedChannel?.ChannelName,
-                activeEmoteSetId, sets, SetsUnavailable: false), false);
+                activeEmoteSetId, sets, SetsUnavailable: false, result.List!.SevenTvUserId), false);
         }
 
         if (result.Status == EmoteSetListStatus.NoSevenTvAccount)
@@ -341,16 +367,22 @@ public static class SevenTvEndpoints
             // has no 7TV account, so an empty set list is correct, not degraded.
             return (new EmoteSetTargetAccount(
                 twitchChannelId, twitchLogin, isOwnAccount, trackedChannel?.ChannelName,
-                activeEmoteSetId, [], SetsUnavailable: false), false);
+                activeEmoteSetId, [], SetsUnavailable: false, SevenTvUserId: null), false);
         }
 
         return (new EmoteSetTargetAccount(
             twitchChannelId, twitchLogin, isOwnAccount, trackedChannel?.ChannelName,
-            activeEmoteSetId, [], SetsUnavailable: true), true);
+            activeEmoteSetId, [], SetsUnavailable: true, SevenTvUserId: null), true);
     }
 
+    /// <summary>
+    /// <c>Editable</c> is a placeholder here (spec 5.8) — the handler's second pass recomputes it
+    /// once every account of the response is known, because a set's owner may be a different
+    /// account of the same response whose list has not been resolved yet at this point.
+    /// </summary>
     private static EmoteSetTargetSummaryDto ToEmoteSetTargetSummary(EmoteSetSummary summary, bool isActive) => new(
-        summary.Id, summary.Name, summary.Capacity, summary.Kind, isActive, summary.IsPersonal, summary.OwnerDisplayName);
+        summary.Id, summary.Name, summary.Capacity, summary.Kind, isActive, summary.IsPersonal, summary.OwnerDisplayName,
+        summary.OwnerSevenTvUserId, Editable: false);
 
     /// <summary>
     /// Assembles the wire response for <c>GET /api/seventv/channels/{channelName}/emote-sets</c>
@@ -410,6 +442,13 @@ internal sealed record EmoteSetTargetsResponse(IReadOnlyList<EmoteSetTargetAccou
 /// Non-null exactly when a <c>Channel</c> row with this Twitch id has <c>IsBotActive = true</c>; the
 /// picker's tracked/untracked grouping reads this field alone (spec 6.2).
 /// </param>
+/// <param name="SevenTvUserId">
+/// <c>userByConnection.id</c> of this account (spec 2026-09-24 restore-per-set addendum, 5.8) — set
+/// only when this account's own set list was read successfully; <c>null</c> for
+/// <c>SetsUnavailable</c> and for an account with no 7TV account at all. The other half of
+/// <c>Editable</c> on each set below: a set is editable when its <c>ownerSevenTvUserId</c> equals
+/// the <c>sevenTvUserId</c> of one readable account of this same response.
+/// </param>
 internal sealed record EmoteSetTargetAccount(
     string TwitchChannelId,
     string TwitchLogin,
@@ -417,14 +456,29 @@ internal sealed record EmoteSetTargetAccount(
     string? TrackedChannelName,
     string? ActiveEmoteSetId,
     IReadOnlyList<EmoteSetTargetSummaryDto> Sets,
-    bool SetsUnavailable);
+    bool SetsUnavailable,
+    string? SevenTvUserId);
 
 /// <summary>
 /// Same shape as <c>EmoteSetSummaryDto</c> (<c>EmoteEndpoints.cs</c>) minus <c>observations</c> —
 /// spec 6.2 carries it without that field, since the target picker never reads per-set history.
 /// </summary>
+/// <param name="OwnerSevenTvUserId">
+/// <c>owner.id</c> of this set (spec 2026-09-24 restore-per-set addendum, 5.8); <c>null</c> when
+/// 7TV reported no owner. On the wire so a test can recompute <see cref="Editable"/>, not so the
+/// frontend rebuilds the rule — the frontend reads <see cref="Editable"/>, it never derives it.
+/// </param>
+/// <param name="Editable">
+/// True exactly when <see cref="OwnerSevenTvUserId"/> is the <c>SevenTvUserId</c> of one account of
+/// this response whose own list was read successfully — computed by
+/// <c>EmoteSetEditability.IsEditable</c>, the same rule
+/// <c>IImportTargetOwnershipService.CheckAsync</c> applies for the set-centric import's owner check
+/// (F16: a set with no owner id is never editable here, even though a live 7TV lookup might find
+/// one for that check).
+/// </param>
 internal sealed record EmoteSetTargetSummaryDto(
-    string Id, string Name, int? Capacity, string Kind, bool IsActive, bool IsPersonal, string? OwnerDisplayName);
+    string Id, string Name, int? Capacity, string Kind, bool IsActive, bool IsPersonal, string? OwnerDisplayName,
+    string? OwnerSevenTvUserId, bool Editable);
 
 /// <summary>
 /// Body of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-imported</c> (spec 6.7) — the same
