@@ -232,4 +232,36 @@ test.describe('legal page back control', () => {
     await expect(page).toHaveURL('/');
     await expect(page.getByRole('heading', { name: 'Meine Channels' })).toBeVisible();
   });
+
+  /**
+   * Codex review finding (P2) on `NavigationHistoryService`: counting completed navigations over
+   * the tab's whole lifetime, rather than tracking the position of the ACTIVE history entry, made
+   * this exact sequence show a literal "Zurück" after the browser's own Back button — which would
+   * either do nothing in a fresh tab or leave the app to whatever opened it. `/imprint` is still
+   * this tab's very first history entry after the round trip, so the fallback link must reappear.
+   */
+  test('opening the imprint directly, following the fallback link, then pressing the browser Back button returns to the fallback — not a "Zurück" that goes nowhere', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, null);
+    await mockLegalAvailability(page, { imprintAvailable: true });
+    await mockLegalDocument(page, 'imprint', 'de', {
+      html: '<h1>Impressum</h1><p>Testinhalt.</p>',
+    });
+
+    await page.goto('/imprint');
+    await expect(page.getByRole('heading', { name: 'Impressum', level: 1 })).toBeVisible();
+
+    const fallback = page.getByRole('link', { name: 'Startseite' });
+    await expect(fallback).toBeVisible();
+    await fallback.click();
+    await expect(page).toHaveURL(/\/welcome$/);
+
+    await page.goBack();
+
+    await expect(page).toHaveURL(/\/imprint$/);
+    await expect(page.getByRole('heading', { name: 'Impressum', level: 1 })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Startseite' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Zurück', exact: true })).toHaveCount(0);
+  });
 });

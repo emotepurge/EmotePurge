@@ -21,15 +21,29 @@ Operator report: `/imprint` and `/privacy` (#247) only ever offered "Zurück zur
 to `/welcome`. A logged-in visitor who opened either page from inside the app — e.g. the footer on
 a channel page — landed on the public landing page instead of back where they came from on click.
 
-1. **`NavigationHistoryService` (`core/routing/`, `@Service()`)** counts completed Angular
-   `Router` navigations for the lifetime of the tab and exposes `hasPreviousPage()` — true from the
-   second completed navigation on. Deliberately not `history.length`: that also counts pages
-   outside this app (an external referrer, an earlier tab session), which would make a
-   `Location.back()` gated on it leave the app. Injected eagerly from `App` (`app.ts`, alongside
-   the existing `ThemeService` eager-injection for the same reason) so it is already listening
-   before the very first `NavigationEnd` of the session — by the time a lazily-loaded page such as
-   `LegalPage` would inject it for itself, that page's own arrival may already be indistinguishable
-   from "no previous page".
+1. **`NavigationHistoryService` (`core/routing/`, `@Service()`)** tracks the position of the
+   ACTIVE browser-history entry within this app instance's own navigation sequence and exposes
+   `hasPreviousPage()` — true unless the active entry is the very first one. Deliberately not
+   `history.length`: that also counts pages outside this app (an external referrer, an earlier tab
+   session), which would make a `Location.back()` gated on it leave the app. Injected eagerly from
+   `App` (`app.ts`, alongside the existing `ThemeService` eager-injection for the same reason) so it
+   is already listening before the very first `NavigationEnd` of the session — by the time a
+   lazily-loaded page such as `LegalPage` would inject it for itself, that page's own arrival may
+   already be indistinguishable from "no previous page".
+   **Revised same day:** the first version counted completed `NavigationEnd`s over the tab's whole
+   lifetime instead of tracking position, and a Codex review caught the gap (P2): open `/imprint`
+   directly, click the fallback link to `/welcome`, then press the browser's own Back button — the
+   count was 2 ("has a previous page"), but `/imprint` is again this tab's very FIRST history entry,
+   so the resulting `Location.back()` did nothing in a fresh tab or left the app to an external
+   referrer. The service now tracks the position of the active entry instead: it advances by one on
+   an in-app `'imperative'` navigation unless that navigation's own extras report `replaceUrl` or
+   `skipLocationChange`; on a browser `'popstate'`, it looks up the index recorded for
+   `restoredState.navigationId` rather than assuming a fixed step. A guard redirect (e.g.
+   `homeGuard` sending `/` to `/welcome`) needs no special case — the cancelled, superseded first
+   attempt never reaches `NavigationEnd`, and the redirect's own completing navigation carries
+   `replaceUrl: false` and performs a genuine `pushState` (verified against a `RouterTestingHarness`
+   probe of Angular 22's actual event/entries sequence), so it still advances the index by exactly
+   one, matching the one real history entry it leaves behind.
 2. **`resolveLegalBackTarget(hasPreviousPage, isLoggedIn)` (`legal-back-target.ts`)** is the pure
    decision: a previous in-app page always wins and yields a literal "Zurück"/"Back", regardless of
    login state, because `hasPreviousPage()` already guarantees the target is inside the app. With no
@@ -51,7 +65,8 @@ New translation key `legal.backAction` ("Zurück"/"Back") in both locales; `lega
 
 Verified live and in `legal-pages.e2e.spec.ts`: arriving via the footer from the overview shows
 "Zurück" and returns to the overview on click; opening `/imprint` directly falls back to
-`/welcome` (anonymous) or `/` (logged in).
+`/welcome` (anonymous) or `/` (logged in); the Codex-flagged sequence (direct load, fallback
+click, browser Back) shows the fallback link again rather than a dead-end "Zurück".
 
 ### 2026-09-24 — Footer placement: sticky-footer layout instead of an unpinned block, plus a shell/dock clearance contract
 
