@@ -584,6 +584,44 @@ public class HarnessRunnerTests : IDisposable
         Assert.DoesNotContain("\"humanCounts\":{\"e1\":2}", jsonl);
     }
 
+    // P2 Codex finding (issue #260, this revision): before the fix, the NoBadgesNoUserIds fallback
+    // keyed off the archive's raw MessageCount, which stayed positive even when every one of that
+    // day's messages was dropped by the exclusion gate above — sawUserId/sawBadges never got set for
+    // a message that never reached the bookkeeping, so the run wrongly concluded the *logs* carried
+    // no badges or user-ids and aborted with ExitUndecidable. Day 1 here is exactly that case: its
+    // only chatter is excluded. Days 2 and 3 carry an ordinary message each, so a passing run proves
+    // both that day 1 became a valid zero-count day and that the fallback still fires correctly once
+    // a later day actually has a gated message to check.
+    [Fact]
+    public async Task ADayWhereEveryMessageIsFromAnExcludedChatter_RecordsAZeroCountDayInsteadOfAborting()
+    {
+        _excludedChatters.IsExcluded("objector-1").Returns(true);
+
+        RespondWith(async (day, onMessage) =>
+        {
+            if (day == Day1)
+            {
+                await onMessage(Message(day, "objector-1", "PogChamp"));
+            }
+            else
+            {
+                await onMessage(Message(day, "chatter-1", "PogChamp"));
+            }
+
+            return CompleteDay(1);
+        });
+
+        Assert.Equal(0, await Run(3));
+
+        var path = Assert.Single(Directory.GetFiles(_directory, "*.jsonl"));
+        var content = new HarnessReportFile(path).ReadDays();
+        Assert.DoesNotContain(content.Events, e => e.Status == "NoBadgesNoUserIds");
+        Assert.Equal(3, content.Days.Count);
+        var day1Line = Assert.Single(content.Days, d => d.Day == Day1);
+        Assert.Equal(ReplayDayStatuses.Complete, day1Line.Status);
+        Assert.Empty(day1Line.HumanCounts);
+    }
+
     [Fact]
     public async Task NoExcludedChatterIds_MessagesAreCountedExactlyAsBefore()
     {

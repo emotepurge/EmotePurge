@@ -48,7 +48,10 @@ namespace EmotePurge.Worker.Harness;
 /// message from an id in <c>Twitch:ExcludedChatterIds</c> is dropped in the counting callback before
 /// <c>sawUserId</c>/<c>sawBadges</c> bookkeeping and before it reaches <see cref="ReplayDayCounter"/>
 /// at all — the same ordering <c>TwitchChatManager.OnMessageReceived</c> uses for the live path, so a
-/// replayed archive cannot resurface what an objecting chatter's live traffic no longer produces.
+/// replayed archive cannot resurface what an objecting chatter's live traffic no longer produces. The
+/// <c>NoBadgesNoUserIds</c> fallback below is keyed off how many messages actually passed that gate,
+/// not the archive's raw <c>MessageCount</c>, so a day made up entirely of an excluded chatter's
+/// traffic still records a valid zero-count day instead of wrongly aborting the run.
 /// </para>
 /// </summary>
 public sealed class HarnessRunner(
@@ -385,6 +388,14 @@ public sealed class HarnessRunner(
             var counter = new ReplayDayCounter(day, emotes, botChatterDetector.IsBot);
             var sawUserId = false;
             var sawBadges = false;
+            // P2 Codex finding (issue #260, this revision): the fallback below used to key off
+            // result.MessageCount, the archive's raw count before the objection gate. A day whose
+            // every message comes from an excluded chatter still has MessageCount > 0 although
+            // nothing of it ever reaches sawUserId/sawBadges — that read as "logs without badges or
+            // user-ids", the format-failure case NoBadgesNoUserIds exists for, and aborted a run
+            // that had nothing wrong with it. Counted separately so the fallback can ask "did any
+            // message that passed the gate carry a signal" instead.
+            var gatedMessageCount = 0;
 
             ChatLogDayResult result;
             try
@@ -405,6 +416,8 @@ public sealed class HarnessRunner(
                         {
                             return ValueTask.CompletedTask;
                         }
+
+                        gatedMessageCount++;
 
                         if (!string.IsNullOrEmpty(message.UserId))
                         {
@@ -455,7 +468,12 @@ public sealed class HarnessRunner(
                     // day and reaches the same verdict instead of quietly building on it. The day was
                     // still read in full, though, so its bytes go on the event line — same as the
                     // `default:` branch below — or a resume would see the cap as untouched.
-                    if (!fallbackChecked && result.MessageCount > 0)
+                    //
+                    // gatedMessageCount, not result.MessageCount (P2 Codex finding, issue #260): a
+                    // day where every message belongs to an excluded chatter must fall through to
+                    // AppendDay below as a legitimate zero-count day, not trip this fallback — the
+                    // archive answered fine, this run simply counted nothing on it.
+                    if (!fallbackChecked && gatedMessageCount > 0)
                     {
                         fallbackChecked = true;
                         if (!sawUserId && !sawBadges)

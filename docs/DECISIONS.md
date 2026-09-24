@@ -63,6 +63,22 @@ gained a matching `ExcludedChatterIds` read-only property (mirroring
 `IBotChatterDetector.KnownBotAccountIds`) so the digest is computed from what the filter actually
 enforces, not a second, independent parse of the same configuration key.
 
+**Revised 2026-09-24 (second Codex review of this branch):** the objection gate above dropped an
+excluded chatter's message before `sawUserId`/`sawBadges` bookkeeping, as documented — but the
+`NoBadgesNoUserIds` fallback a few lines further down still asked `result.MessageCount > 0`, the
+archive's raw count *before* that gate. A day whose every message belongs to an excluded chatter
+therefore still had `result.MessageCount > 0` while `sawUserId`/`sawBadges` stayed `false` — read as
+"these logs carry no badges and no user-ids", the format-failure case that verdict exists for, and
+aborted the run with `ExitUndecidable` although nothing was wrong with the archive; the run had simply
+counted nothing on a day where it was told to count nothing. Fixed by counting separately how many
+messages passed the exclusion gate (`gatedMessageCount` in the per-message callback) and keying the
+fallback's `> 0` check off that instead of `result.MessageCount` — an all-excluded day now falls
+through to `AppendDay` as a legitimate zero-count day, and the fallback still fires correctly the first
+time a later day actually has a gated message to check. Tested in `HarnessRunnerTests`
+(`ADayWhereEveryMessageIsFromAnExcludedChatter_RecordsAZeroCountDayInsteadOfAborting`): day 1's only
+chatter is excluded, days 2 and 3 each carry an ordinary message, and the run succeeds with day 1
+recorded as a valid `Complete`, empty-`HumanCounts` day rather than aborting.
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·
