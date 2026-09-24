@@ -950,6 +950,23 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == "channelserviceroster2")).IsBotActive);
     }
 
+    // Review finding on the emote-set target picker (GET /api/seventv/me/emote-set-targets): this
+    // lookup skipped the objection gate that ListActiveChannelNamesAsync already applies, so an
+    // active row whose stored id was excluded still looked like a valid transfer target.
+    [Fact]
+    public async Task GetActiveByTwitchChannelIdAsync_ReturnsNull_ForAnActiveRowWhoseStoredIdIsExcluded()
+    {
+        await using var db = fixture.CreateDbContext();
+        await SeedChannelAsync(db, "channelserviceactivebyid1", "770201");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("770201").Returns(true);
+        var service = CreateService(db, excludedChannelFilter: excludedChannelFilter);
+
+        var channel = await service.GetActiveByTwitchChannelIdAsync("770201");
+
+        Assert.Null(channel);
+    }
+
     /// <summary>
     /// Builds the service under test. The identity lookup defaults to
     /// <see cref="TwitchUserLookupStatus.Unavailable"/> on purpose: that status is defined as "carry

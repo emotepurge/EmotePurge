@@ -205,10 +205,21 @@ public class ChannelService(
 
     public async Task<Channel?> GetActiveByTwitchChannelIdAsync(string twitchChannelId, CancellationToken cancellationToken = default)
     {
-        return await db.Channels
+        var channel = await db.Channels
             .AsNoTracking()
             .Where(c => c.TwitchChannelId == twitchChannelId && c.IsBotActive)
             .FirstOrDefaultAsync(cancellationToken);
+
+        // Objection gate, same rule as ListActiveChannelNamesAsync: an active row whose stored
+        // Twitch id is excluded is treated as untracked here too. Without this, the target picker
+        // (GET /api/seventv/me/emote-set-targets) surfaced a channel the operator had blocked as a
+        // valid transfer target, because this lookup never went through IExcludedChannelFilter.
+        if (channel is not null && excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
+        {
+            return null;
+        }
+
+        return channel;
     }
 
     public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default)
