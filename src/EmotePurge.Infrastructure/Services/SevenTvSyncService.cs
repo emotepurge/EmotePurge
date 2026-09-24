@@ -254,13 +254,19 @@ public class SevenTvSyncService(
     /// <summary>
     /// What every objection-gate refusal in this class shares: the channel's match-cache entry is
     /// dropped, so the chat of a blocked channel the worker may still sit in counts nothing, and a
-    /// line that names neither the channel nor its id says why the sync stopped — naming it would
-    /// leak the objection the block honours. Nothing is written to the row.
+    /// line that names neither the channel nor its id says why the sync stopped. Nothing is written
+    /// to the row.
+    /// <para>
+    /// Debug, not Information: the line names nothing, but it follows lines of the same call that do
+    /// — boot recovery's or the JOIN handler's "joining {Channel}", the warm-up's "match cache for
+    /// {Channel} warmed" — and next to them it would tie the block to that channel all the same. The
+    /// operator-visible signal is the identity reconcile's count of deactivated rows.
+    /// </para>
     /// </summary>
     private void RefuseExcludedChannel(Channel channel)
     {
         emoteMatchCache.RemoveChannel(channel.ChannelName);
-        logger.LogInformation("7TV sync skipped: the channel is on the excluded-channel list.");
+        logger.LogDebug("7TV sync skipped: the channel is on the excluded-channel list.");
     }
 
     /// <summary>

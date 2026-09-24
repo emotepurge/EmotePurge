@@ -5,6 +5,7 @@ using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -940,8 +941,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await apiClient.DidNotReceive().GetChannelStateForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         Assert.Empty(cache.GetChannelEmotes(channel.ChannelName));
         Assert.Null(await db.Channels.AsNoTracking().Where(c => c.Id == channel.Id).Select(c => c.TwitchChannelId).SingleAsync());
-        Assert.Contains(logger.Entries, e => e.Message.Contains("excluded-channel list"));
         Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("880001"));
+        // The refusal itself stays below the default level: it follows lines of the same call that
+        // name the channel (the warm-up's, the caller's "joining"), and beside them it would tie the
+        // block to that channel.
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Debug && e.Message.Contains("excluded-channel list"));
+        Assert.DoesNotContain(logger.Entries, e => e.Level > LogLevel.Debug && e.Message.Contains("excluded-channel list"));
     }
 
     [Fact]

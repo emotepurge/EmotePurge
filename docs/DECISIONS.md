@@ -250,7 +250,10 @@ channel in connection with the block — and then fixed what failed.
   Helix-independent identity source this codebase has, so it also covers a blocked channel joined as
   a brand-new id-less row during a Helix outage: the worker sits in the IRC channel until the
   reconcile's next pass, but counts nothing and observes no 7TV set, as long as 7TV knows the account
-  (and a channel 7TV does not know has no set to count against).
+  (and a channel 7TV does not know has no set to count against). The refusal logs at Debug only: it
+  names nothing, but it follows lines of the same call that do (boot recovery's or the JOIN handler's
+  "joining {Channel}", the warm-up's line), and beside them it would identify the channel anyway; the
+  operator-visible signal is the reconcile's deactivation count.
 - **A deactivated id-less row keeps the id it resolved to (P1).** The reconcile used to deactivate an
   id-less row whose login resolved to an excluded id but leave `TwitchChannelId = null` ("never
   backfilled"). A later join by that login while Helix answered `Unavailable` or `NotFound` then found
