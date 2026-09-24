@@ -1,7 +1,9 @@
 # Plan #253 — Restore pro Set: Restore ohne Kanalseite, set-zentrische Meldungen, Aufhebung der Replace-Sperre
 
-Erstellt am 2026-09-24 gegen `feat/253-restore-per-set` = `0cf193eb` (auf `chore/200-sync-main`,
-PR #263, das `feat/emote-sets-200` enthält). Quellen:
+Erstellt am 2026-09-24 gegen `feat/253-restore-per-set` = `0cf193eb`; **Fassung 2 vom 2026-09-25**
+steht auf `feat/emote-sets-200` = `dd1e6320` (PR #266 hat `main` mit dem Kontaktformular in den
+Epic-Branch gemergt; Spec-Commits `498a57b9`/`89bcbb20`/`6ec22dc5`, erste Plan-Fassung `b5f4098f`).
+Quellen:
 [die Spec](../superpowers/specs/2026-09-24-restore-pro-set-253-design.md) — zweite Fassung, vom
 Betreiber freigegeben; Abschnitte werden als „Spec N" zitiert, Entscheidungen als E1–E24, Fallen
 als F1–F17, Akzeptanzkriterien als AK n —, Issue #253 (Hauptissue), #224 (wird geschlossen), #256
@@ -19,6 +21,17 @@ Felder Vertrag", Spec 5.3). Findet ein Task eine Abweichung zwischen Spec und Co
 und der Fund wird im Task-Bericht gemeldet, nicht still aufgelöst. Was der Plan über die Spec hinaus
 festlegt, steht gesammelt in Abschnitt 6 — als **Festlegung des Plans mit Betreiber-Veto**, nicht
 als Interpretation im Fließtext.
+
+**Fassung 2 (2026-09-25).** Die erste Fassung (`b5f4098f`) ist um die fünf Befunde des adversarialen
+Codex-Reviews (gpt-6-sol) überarbeitet, alle vom Orchestrator angenommen (Abschnitt 9): das
+400-Fenster zwischen Altform-Umbau und Frontend-Umstellung entfällt (T3 folgt jetzt T7), T7 nimmt
+die direkten Aufrufer der geänderten Dienst-Signaturen mit und bekommt eine volle Typprüfung, T9
+registriert die neue Komponente in beiden Host-Seiten, T5 migriert alle typisierten
+Restore-Fixtures, und T5/T8 laufen seriell. Dazu eine grep-Inventur aller Aufrufer je geänderter
+Signatur (0.6), die über Codex' Stichproben hinaus weitere Stellen fand und in die Dateilisten
+eingegangen ist; Abschnitt 6 ist von „offen" auf „entschieden (Orchestrator, Betreiber-Veto
+möglich)" gestellt; die zwei reinen Spec-Wortlautfehler daraus sind in `6ec22dc5` in der Spec
+korrigiert.
 
 ---
 
@@ -69,13 +82,14 @@ als Interpretation im Fließtext.
 
 ### 0.4 Branch, Worktrees, Commits
 
-- **Branch `feat/253-restore-per-set`**, aufgesetzt auf `chore/200-sync-main` (Kontaktformular-Merge
-  aus `main`, PR #263); der PR geht gegen `feat/emote-sets-200`, sobald #263 dort gemergt ist —
-  ist es das beim Start von T1 noch nicht, ändert das keinen Task (die Merge-Commits berühren keine
-  Datei aus Spec 16).
-- **Zwei Lanes in Welle 1** (Abschnitt 5): Backend (T1 → T2 → T3, sequenziell in einem Worktree)
-  und Frontend (T4, eigener Worktree). Ab Welle 2 sequenziell im Haupt-Arbeitsverzeichnis des
-  Branchs; T5 ∥ T8 in Welle 4 wieder in zwei Worktrees. Worktree-Fallen aus Plan-200 0.4 und dem
+- **Branch `feat/253-restore-per-set`**, seit dem 2026-09-25 auf `feat/emote-sets-200` =
+  `dd1e6320` (PR #266: `main` mit dem Kontaktformular ist im Epic-Branch); der PR geht gegen
+  `feat/emote-sets-200`.
+- **Zwei Lanes in Welle 1** (Abschnitt 5): Backend (T1 → T2, sequenziell in einem Worktree) und
+  Frontend (T4, eigener Worktree); Welle 3 wieder zwei Lanes (T3 Backend ∥ T6 Frontend). Alles
+  andere sequenziell im Haupt-Arbeitsverzeichnis des Branchs — **T5 und T8 seriell**, weil beide
+  `web/e2e/emote-import.e2e.spec.ts` ändern und beide einen DECISIONS-Eintrag an den Anfang von
+  `docs/DECISIONS.md` setzen (Codex-Befund 5). Worktree-Fallen aus Plan-200 0.4 und dem
   Plan-230-Ledger gelten: aus dem Worktree nur bauen, nie `docker compose up`; E2E je Worktree auf
   eigenem Port; eine Worktree-Api verwirft das lokale Cookie — Live-Läufe (T12) aus dem
   Haupt-Checkout.
@@ -83,19 +97,26 @@ als Interpretation im Fließtext.
   Vorschläge stehen je Task. Ein Task, der einen Bestandstest bricht (E2E-Routen, Parser-Fälle,
   Fixtures), repariert ihn **im selben Commit** — es gibt keine rote Zwischenstufe, die auf T10
   wartet.
+- **Aufrufer-Regel (Codex-Befunde 2 und 4):** die Dateiliste jedes Tasks enthält jeden Aufrufer,
+  jede typisierte Fixture und jeden Host-Import der Signaturen, die er ändert — die Inventur steht
+  in 0.6 und ist Teil des Task-Briefs. Jeder Frontend-Task fährt zusätzlich zu seinen gefilterten
+  Specs `npm --prefix web run build` als Typprüfung über Templates und Specs hinweg: `npx vitest`
+  prüft keine Typen, `ng test`/`ng build` schon (Memory). Ein Task, dessen Build rot ist, ist nicht
+  fertig, auch wenn seine Specs grün sind.
 - **Regel 3 — die vier Einträge (Spec 12.1):** Eintrag 3 („Wer melden darf …") in **T1**, weil
   dort die gemeinsame Regel entsteht; Eintrag 2 („… melden set-zentrisch — Meldung + Resync") in
-  **T2**, dem Commit mit den Routen — er beschreibt auch die Altform, die **T3 unmittelbar danach**
-  einlöst (deshalb T2 → T3 ohne Task dazwischen); Eintrag 1 („Die Datei bestimmt das Ziel") in
+  **T2**, dem Commit mit den Routen — **ohne** den Altform-Absatz; den hängt **T3** in seinem
+  eigenen Commit an denselben Eintrag an, weil die Altform erst dort ihren Vertrag ändert. So
+  stimmt der Eintrag zu jedem Commit-Stand (Codex-Befund 1); Eintrag 1 („Die Datei bestimmt das Ziel") in
   **T5**; Eintrag 4 („Die Replace-Sperre fällt") in **T8**. Jeder Eintrag nennt in `Betrifft:` auch
   die Dateien der Tasks, die denselben Vertrag konsumieren — ein Eintrag je Vertrag, nicht je Task.
   Die Hauptsession liest jeden DECISIONS-Diff selbst (Memory: „Grüne Suiten sind keine
   Fertigmeldung").
-- **Zwischenstand zwischen T3 und T7:** nach T3 antwortet die kanalgebundene Route auf den
-  set-scoped Body des noch nicht umgestellten Frontends mit 400 `emote_ids_empty`. Das trifft nur
-  einen Live-Lauf aus dem Branch zwischen den beiden Wellen — die Suiten mocken jede Route, und die
-  Live-Verifikation ist T12. Bewusst so, damit DECISIONS-Eintrag 2 vom ersten Backend-Commit an
-  stimmt (Regel 3 vor Branch-interner Live-Konsistenz).
+- **Kein 400-Fenster (Codex-Befund 1):** die kanalgebundene set-scoped Form bleibt stehen, bis T7
+  ihre drei Frontend-Aufrufer umgestellt hat; erst T3 (Welle 3) entfernt sie. Eine Meldung folgt
+  auf die 7TV-Mutation — ein Live-Lauf aus dem Branch, der in ein 400 liefe, verlöre Buchung und
+  Audit, und das darf es auch Branch-intern nicht geben. Die erste Fassung hatte T3 direkt hinter
+  T2 gesetzt und das Fenster in Kauf genommen; das ist zurückgenommen.
 
 ### 0.5 Vom Plan benannte Bausteine (Namen als Vertrag zwischen Tasks)
 
@@ -118,6 +139,35 @@ steht in der Spec, nicht hier.
 | Abbruchgrund der Vorprüfung | `TargetCheckBlockReason = 'notEditable' \| 'notSelectable' \| 'unavailable'` | `sync-report-outcome.ts` | 4.2, 4.5, 4.6 | T4 | T5, T6, T8 |
 | Restore-Dock | `RestoreProgressSection`, Selector `app-restore-progress-section` | `shared/seven-tv/restore-progress-section.ts` | 6.6, E22 | T9 | Seiten (T9) |
 | Locale-Familien (Wortlaut #255) | Datei-Schritt `restore.import.errors.{targetNotEditable,targetNotSelectable,targetCheckUnavailable,noTargetSetForCopy}` (Spec 6.1) · Panel-Restore `restore.errors.{targetNotEditable,targetNotSelectable,targetCheckUnavailable}` · Delete `massDelete.errors.{…dieselben drei}` · Replace `import.errors.{…dieselben drei}` · Grundzeile `syncReportReason.{forbidden,setNotFound,unavailable,channelMismatch,shortfall,other}` · Quelldialog `import.source.noTargetSet` · Picker `import.target.disabled.notEditable` (neben den bestehenden Disabled-Gründen) · Bestätigung `restore.confirmSetIdLine`, `restore.confirmOwnerLine`, `restore.confirmChannelLine`, `restore.confirmForeignToView` · Dock-Zielzeile `restore.targetLine.channel`, `restore.targetLine.owner` | `web/public/i18n/{de,en}.json` | 6.1, 4.3, 4.4, E23 | der Task, der den Text erstmals zeigt | — |
+
+### 0.6 Aufrufer-Inventur je geänderter Signatur (grep, 2026-09-25)
+
+Codex hat zwei Stichproben gefunden (`mass-delete-panel.ts` ruft `startRestore` direkt,
+`seven-tv-run-arbiter.spec.ts` ruft beide alten Signaturen; `import-trigger.spec.ts` baut
+Restore-Ergebnisse ohne Ziel; die Host-Seiten importieren die neue Komponente nicht). Die
+vollständige Inventur steht hier; jede Zeile ist in die Dateiliste des genannten Tasks
+eingegangen. Zahlen sind Aufrufstellen laut grep, keine Testfälle.
+
+| Signatur / Typ, geändert durch | Aufrufer, typisierte Fixtures, Host-Imports | landet in |
+|---|---|---|
+| `EmoteSetTargetSummary`, `EmoteSetTargetAccount` — drei neue Pflichtfelder (T4) | typisierte Literale in `seven-tv-emote-set.service.spec.ts`, `import-target-dialog.spec.ts` (13 Set-Literale), `import-target-choices.spec.ts` (8); die zwei `disabledReason`-Zweige im Template von `import-target-dialog.ts` (der dritte fehlt); `mockEmoteSetTargets` in `e2e/support/mocks.ts` | T4 |
+| `SyncReportState` — Umzug nach `sync-report-outcome.ts` (T4) | Importe in `seven-tv-delete.service.ts`, `seven-tv-restore.service.ts`, `seven-tv-import.service.ts`, `run-progress-panel.ts`, `run-progress-panel.spec.ts`, `import-progress-section.spec.ts`, `mass-delete-panel.spec.ts` | T4 |
+| `EmoteAdminService.syncDeleted/syncRestored`, `SyncDeletedResult`, `SyncRestoredResult` — entfallen (T7) | `seven-tv-delete.service.ts`, `seven-tv-restore.service.ts`, `seven-tv-import.service.ts`, `emote-admin.service.spec.ts` (vier Fälle), Klassendoku von `import-trigger.ts` (nennt `syncRestored(channelName, …)`) | T7 |
+| `SevenTvRestoreService.startRestore` — erster Parameter `RestoreStartTarget` (T7) | `restore-flow.ts` (ein Aufruf), **`mass-delete-panel.ts` (direkter Aufruf im Panel-Restore)**, `seven-tv-run-arbiter.spec.ts` (zwei), `seven-tv-restore.service.spec.ts` (~45), Stubs in `mass-delete-panel.spec.ts`, `import-trigger.spec.ts`, `restore-flow.spec.ts` | T7 (Aufrufe, Zwischenstand), T6 (Ableitung aus dem Ziel) |
+| `SevenTvDeleteService.startDelete` — vierter Parameter (T7) | `mass-delete-panel.ts` (ein Aufruf), `seven-tv-run-arbiter.spec.ts` (drei), `seven-tv-delete.service.spec.ts` (~20 plus die `resetIfChannelChanged`-Fälle), `seven-tv-restore.service.spec.ts` (ein Aufruf), Stubs in `mass-delete-panel.spec.ts` | T7 |
+| `ResyncTriggerState` — neuer Wert „vom Backend abgeglichen" (T7) | `seven-tv-import.service.ts` (nutzt den Typ für den Import-Resync), `resyncNoticeKey` in `dock-outcome-announcer.ts` (bildet jeden Nicht-`idle`-Wert auf `<family>.resync.<state>` ab — der neue Wert braucht `restore.resync.<state>` in beiden Locales; der Import nimmt ihn nie an), `import-progress-section.ts` | T7 |
+| `RestoreRunInfo.channelName` → `hostChannelName` und E13-Felder (T7) | `resetIfChannelChanged` im Dienst, `channel-workspace-layout.ts` (Aufruf unverändert), `seven-tv-restore.service.spec.ts` | T7 |
+| `startRestoreFlow(deps, target, rows)` (T6) | `import-trigger.ts`; `restore-flow.spec.ts` (26 Aufrufe mit Positionsparametern) | T6 |
+| `RestoreConfirmDialogData` — vier neue Felder (T6) | Builder in `restore-flow.ts` und `mass-delete-panel.ts` (Panel-Restore); `restore-confirm-dialog.spec.ts`; `restore-flow.spec.ts` (liest) | T6 |
+| `parsePurgeRunProtocol(text)`, `parseTransferRunForRestore(text)` — ohne `expected` (T5) | `file-import-step.ts` (zwei Aufrufe); `purge-run-export.spec.ts` (18 Aufrufe mit `EXPECTED`, zwei davon `wrongChannel`/`wrongSet`); `transfer-run-export.spec.ts` (8, zwei davon) | T5 |
+| `FileImportResult` für `'restore'` — Pflichtfeld `target` (T5) | `file-import-step.spec.ts` (4 Literale); **`import-trigger.spec.ts` (6 Literale plus die Assertions auf die `startRestoreFlow`-Argumente)**; `import-source-dialog.spec.ts` (Emit und Erwartung) | T5 |
+| `FileImportStep.setId` → `hostSelectedSetId` (T5), nullbar (T9) | Bindung in `import-source-dialog.ts`; `ImportSourceDialogData` wird nur in `import-trigger.ts` gebaut | T5, T9 |
+| `ResolutionContext`, `targetIsTracked` — entfallen (T8) | `import-confirm-dialog.ts` (Feld, `buildTransferPlan`, `validateResolution`, Aufruf von `collisionStepRows`); `import-conflict-resolution-step.ts` (`collisionStepRows(rows, targetIsTracked, overlays)` verliert den Parameter); `conflict-resolution.spec.ts` (Konstanten `TRACKED`/`UNTRACKED`, ~25 Aufrufe mit drittem Parameter); `import-conflict-resolution-step.spec.ts` (Fall „untracked") | T8 |
+| `RestoreProgressSection` — neu (T9) | `imports`-Arrays in `usage-stats-page.ts` und `vote-session-detail-page.ts` (Codex-Befund 3) | T9 |
+| `IEmoteService` set-scoped Überladungen, `SyncDeletedResultDto`/`SyncRestoredResultDto` — Parameter entfallen (T3) | `EmoteEndpoints.cs` (zwei Handler); `AuthFilterMatrixTests.cs` (zwei DTO-Konstruktoren, einer mit `TargetIsActiveSetOfChannel: false`); `EmoteServiceTests.cs` (vier `TargetIsActiveSetOfChannel`-Assertions in den set-scoped Fällen, die entfallen); Kommentare in `AuditLogQueryService.cs`, `AuditLogQueryServiceTests.cs`, `EmoteEndpoints.cs` (Model-Binder-Hinweis), `UsageStatsAccessAuthorizationFilter.cs` | T3 |
+| `ApiErrorCodes.EmoteSetIdEmpty` — entfällt (T3) | `EmoteEndpoints.cs`, `AuthFilterMatrixTests.cs`, `api-error.ts`, beide Locales | T3 |
+| `EmoteService`-Konstruktor — dritter Parameter (T2) | 22 `new EmoteService(…)` in `EmoteServiceTests.cs`; die DI löst `IExcludedChannelFilter` auf (Singleton registriert) | T2 |
+| `EmoteSetTargetAccount`, `EmoteSetTargetSummaryDto` — neue Record-Parameter (T1) | drei Konstruktoraufrufe in `SevenTvEndpoints.cs`, sonst keine (die Api-Tests lesen JSON) | T1 |
 
 ---
 
@@ -281,8 +331,11 @@ schreiben Audit je Kanal und Papier, veröffentlichen `channel.synced` je geänd
 je Kanal höchstens einen Resync unter dem Cooldown an.
 
 **Vertrag:** Spec 5.1–5.5, E3, E5–E9, E17, E18, F12, F13, F15, AK 9–14, 26–28; DECISIONS-Eintrag 2
-(Spec 12.1, inklusive des Absatzes zum Restrisiko F12/F13 und der Altform-Entscheidung, die T3
-einlöst) in diesem Commit.
+(Spec 12.1) in diesem Commit — Routen, Leiter, Antwortform, erwarteter Kanal, Audit je Kanal und
+Papier, Live-Event, Backend-Resync und der Absatz zum Restrisiko F12/F13; **ohne** den
+Altform-Absatz, den T3 an denselben Eintrag anhängt, wenn die Altform ihren Vertrag ändert (0.4).
+Die kanalgebundenen Routen samt set-scoped Form bleiben in diesem Task **unverändert** — sie haben
+bis T7 drei Frontend-Aufrufer.
 
 **Dateien:** `src/EmotePurge.Core/Services/IEmoteService.cs` (zwei Methoden nach Spec 5.2, die
 DTO-Familie aus 0.5; die set-scoped Kanal-Überladungen bleiben bis T3 stehen);
@@ -344,7 +397,12 @@ Form mit gefundener Zahl; die nie produktive set-scoped Kanalform, ihre Leiterst
 Antwortfeld `targetIsActiveSetOfChannel` und der Fehlercode `emote_set_id_empty` verschwinden.
 
 **Vertrag:** Spec 5.6, E4, E14, E24, F14, AK 22 (Backend-Hälfte), 23; Spec 12.2 (Architectur.md,
-Filter-Kommentar). Kein eigener DECISIONS-Eintrag — Eintrag 2 (T2) beschreibt die Altform bereits.
+Filter-Kommentar). DECISIONS: **kein eigener Eintrag**, sondern der Altform-Absatz (Guid-Form nur
+noch Audit + Resync, `legacyBodyForm`, Antwort nach E24, set-scoped Kanalform entfällt) an
+Eintrag 2 aus T2 — **in diesem Commit**, Regel 3; bis dahin beschreibt der Eintrag nur, was T2
+gebaut hat. **Reihenfolge (Codex-Befund 1):** dieser Task läuft erst, wenn T7 die drei
+Frontend-Aufrufer der set-scoped Kanalform umgestellt hat — eine Meldung folgt auf die
+7TV-Mutation, ein 400 dort kostete Buchung und Audit.
 
 **Dateien:** `src/EmotePurge.Core/Services/IEmoteService.cs` (set-scoped Überladungen entfallen;
 `SyncDeletedResultDto`/`SyncRestoredResultDto` verlieren `TargetIsActiveSetOfChannel` **und** die
@@ -360,7 +418,11 @@ Hilfsmethode; Antwort ohne `targetIsActiveSetOfChannel`); `src/EmotePurge.Api/Va
 (`emote_set_id_empty` entfällt — Regel 7, `api-error-locales.spec.ts` bleibt grün);
 `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` (Leiterfälle 2–4 entfallen; der Fall
 „Guid-Form → 200 und Guid-Überladung erreicht" prüft zusätzlich `TryBeginAsync`/`TriggerResyncAsync`;
-neu: Body `{ emoteSetId, sevenTvEmoteIds }` → 400 `emote_ids_empty`);
+seine zwei DTO-Konstruktoraufrufe — einer mit `TargetIsActiveSetOfChannel: false` — wandern auf die
+zweistellige Form; neu: Body `{ emoteSetId, sevenTvEmoteIds }` → 400 `emote_ids_empty`);
+Kommentare, die die set-scoped Überladung als Normalfall nennen: `src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs`,
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs`, der
+Model-Binder-Hinweis am Ende von `EmoteEndpoints.cs` (0.6);
 `tests/EmotePurge.Infrastructure.Tests/Integration/EmoteServiceTests.cs` (die set-scoped Fälle
 entfallen — ihre Aussagen leben seit T2 in den `…InSetAsync`-Fällen; die Altform-Fälle kehren um:
 Zeilen unverändert, Zähler = gefundene, Audit mit `legacyBodyForm: true`); `docs/Architectur.md`
@@ -380,10 +442,12 @@ wird ignoriert (die Leiterstufe 2 ist weg; Abschnitt 6, Nr. 6).
 Audit-Detailschlüssel des aktiven Zweigs (Spec 5.5) und die Audit-Ansicht, keinen Wire-Vertrag;
 `grep -rn "emote_set_id_empty\|EmoteSetIdEmpty"` leer. **AK 22 (Backend), 23.**
 
-**Gates:** wie T2, zusätzlich `npm --prefix web test -- --watch=false --include='src/app/core/i18n/api-error-locales.spec.ts'`.
+**Gates:** wie T2, zusätzlich `npm --prefix web test -- --watch=false --include='src/app/core/i18n/api-error-locales.spec.ts'`
+und `npm --prefix web run build` (der Task fasst `api-error.ts` an).
 
 **Commit:** `refactor(emotes): keep the channel-scoped legacy report as audit plus resync only`.
-**Abhängigkeiten:** T2 (Hilfsmethode Stufe 7, DTO-Familie). **Modell:** `sonnet`.
+**Abhängigkeiten:** T2 (Hilfsmethode Stufe 7, DTO-Familie), **T7** (kein Frontend-Aufrufer der
+set-scoped Kanalform mehr — vorher darf sie nicht fallen). **Modell:** `sonnet`.
 
 ### T4 — Frontend-Client: Modell, Vorprüfung mit 60-s-Kopie, zwei Meldeaufrufe, eine Klassifikation
 
@@ -410,6 +474,11 @@ diesem Grund — `notNormalKind` bleibt vorrangig, wenn beides zutrifft); `impor
 `web/public/i18n/{de,en}.json` (`import.target.disabled.notEditable` oder der bestehende Ort der
 Disabled-Gründe — der Task übernimmt die vorhandene Familie); `web/e2e/support/mocks.ts`
 (`mockEmoteSetTargets`: `sevenTvUserId`, `ownerSevenTvUserId`, `editable` mit **Default `true`**, F9).
+**Aufrufer und Fixtures (0.6):** die typisierten Ziellisten-Literale in
+`seven-tv-emote-set.service.spec.ts`, `import-target-dialog.spec.ts` (13 Set-Literale) und
+`import-target-choices.spec.ts` (8) bekommen die drei Felder; das Template von
+`import-target-dialog.ts` bekommt den dritten `disabledReason`-Zweig neben `isSourceSet` und
+`notNormalKind`; die sieben Importe von `SyncReportState` zeigen auf `sync-report-outcome.ts`.
 
 **Grenzfälle (Spec 4.2, 6.2):** Set gefunden, `kind !== 'NORMAL'` ⇒ `notSelectable`, auch wenn
 `editable` wahr wäre · Set gefunden, `editable: true`, aber `sevenTvUnavailable` ⇒ `editable`
@@ -434,6 +503,7 @@ kommen in T7, die Vorprüfungen in T5/T6/T8; `grep -n "archivedCount >= \|restor
 unverändert (T7 räumt es ab). **AK 3–6 (Client), 15 (Klassifikation), 29 (Picker).**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/core/seven-tv/**/*.spec.ts' --include='src/app/shared/seven-tv/import-target-*.spec.ts'`;
+`npm --prefix web run build` (Typprüfung über alle Fixtures, die das Modell bauen);
 `npm --prefix web run lint`; `npm --prefix web run format`.
 
 **Commit:** `feat(seventv): resolve set editability client-side and classify set-centric reports`.
@@ -465,7 +535,10 @@ Antwort nach Zerstörung oder Abbruch ändert nichts — F6; `hostSelectedSetId 
 + `.spec.ts`; `web/src/app/shared/seven-tv/import-source-dialog.ts` (Bindung `[hostSelectedSetId]="data.setId"`
 — `data.setId` bleibt in diesem Task `string`, T9 macht es nullbar); `web/src/app/shared/seven-tv/import-trigger.ts`
 (reicht das aufgelöste Ziel des Schritts an `startRestoreFlow` — ersetzt den Zwischenstand aus T6,
-Naht 2.5); `web/public/i18n/{de,en}.json` (`restore.import.errors.targetNotEditable`,
+Naht 2.5; die Klassendoku, die `syncRestored(channelName, …)` als Meldeweg nennt, zieht mit)
++ `.spec.ts` (**Codex-Befund 4:** sechs `kind: 'restore'`-Fixtures ohne Ziel und die Assertions
+auf die `startRestoreFlow`-Argumente wandern auf das aufgelöste Ziel); `web/src/app/shared/seven-tv/import-source-dialog.spec.ts`
+(das `picked`-Fixture und seine Erwartung); `web/public/i18n/{de,en}.json` (`restore.import.errors.targetNotEditable`,
 `targetNotSelectable`, `targetCheckUnavailable`, `noTargetSetForCopy`; `wrongChannel`, `wrongSet`
 entfallen); `web/e2e/emote-import.e2e.spec.ts` (der Fall „fremdes Purge-Protokoll" in
 `push flow: rejection` erwartet `targetNotEditable` mit einer Zielliste ohne dieses Set —
@@ -488,19 +561,21 @@ je Formatversion; `readProtocolRow`-Fälle **0 geändert** — AK 24). `transfer
 (**−2 / +2**: beide Stufen liefern `target.emoteSetId`, Envelope `''` stört nicht).
 `file-import-step.spec.ts` **+8** (vier Ausgänge im Banner; gesperrter Knopf; späte Antwort ohne
 Wirkung; `hostSelectedSetId: null` mit Rückweg-Datei und mit Emote-Liste; `picked` trägt exakt das
-Ergebnis von `resolveEditableSet` plus `host*` — AK 3–5, 35). `import-trigger.spec.ts` **±1**
-(reicht das Ziel durch). E2E: der angepasste Rejection-Fall.
+Ergebnis von `resolveEditableSet` plus `host*` — AK 3–5, 35). `import-trigger.spec.ts` **±6 / +1**
+(die sechs Fixtures tragen ein Ziel; reicht das Ziel durch). `import-source-dialog.spec.ts` **±1**.
+E2E: der angepasste Rejection-Fall.
 
 **Abnahme:** `grep -rn "wrongChannel\|wrongSet" web/src web/public` leer; kein Parser liest
 `expected`; kein Aufrufer gibt `setId` an den Schritt. **AK 1–5 (Schritt), 22 (Parser), 24, 35.**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/export/*.spec.ts' --include='src/app/shared/seven-tv/file-import-step.spec.ts' --include='src/app/shared/seven-tv/import-trigger.spec.ts'`;
-`npm --prefix web run e2e -- e2e/emote-import.e2e.spec.ts` (nur ohne Api auf `:5151`); Lint,
-Format.
+`npm --prefix web run build` (Typprüfung über alle Fixtures, die `FileImportResult` bauen —
+Codex-Befund 4); `npm --prefix web run e2e -- e2e/emote-import.e2e.spec.ts` (nur ohne Api auf
+`:5151`); Lint, Format.
 
 **Commit:** `feat(restore): let the file name the target set and verify it against the target list`.
 **Abhängigkeiten:** T4 (`resolveEditableSet`, `TargetCheckBlockReason`), T6 (`ResolvedRestoreTarget`,
-neue Flow-Signatur). **Modell:** `opus` — die Datei ist nicht vertrauenswürdig, und dieser Schritt
+neue Flow-Signatur); läuft **vor** T8, seriell (Codex-Befund 5). **Modell:** `opus` — die Datei ist nicht vertrauenswürdig, und dieser Schritt
 ist die eine Stelle, an der aus ihr ein Ziel wird; dazu ein asynchroner Zustand in einem Dialog,
 der mit `picked` schließt (F6).
 
@@ -541,7 +616,8 @@ Vorprüfung am Panel-Einstieg scheitert ⇒ keine Bestätigung, Abbruchnotiz, ke
 Token fehlt ⇒ Prompt **vor** der Bestätigung (Reihenfolge bleibt, Spec 4.3 Punkt 8) · Arbiter
 belegt ⇒ still (unverändert).
 
-**Tests:** `restore-flow.spec.ts` **+6** (Ziel statt Positionsparameter; Slot-Vorschau-Gabel für
+**Tests:** `restore-flow.spec.ts` **±26 / +6** (die 26 Aufrufe mit Positionsparametern wandern auf
+das Ziel — 0.6; Slot-Vorschau-Gabel für
 getrackt-aktiv / getrackt-nicht-aktiv / ungetrackt; `foreignToView` in den drei Fällen aus Spec
 9.3; Ableitung `expectedChannelName`/`resyncChannelName` — AK 19, 35). `restore-confirm-dialog.spec.ts`
 **+4** (Zeilen je Zielklasse — Vertrag der Reihenfolge, nicht des Wortlauts). `mass-delete-panel.spec.ts`
@@ -552,7 +628,7 @@ getrackt-aktiv / getrackt-nicht-aktiv / ungetrackt; `foreignToView` in den drei 
 Punkt 22.**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/restore-*.spec.ts' --include='src/app/shared/seven-tv/mass-delete-panel.spec.ts' --include='src/app/shared/seven-tv/import-trigger.spec.ts'`;
-Lint, Format.
+`npm --prefix web run build`; Lint, Format.
 
 **Commit:** `feat(restore): confirm a restore against the resolved target set instead of the page`.
 **Abhängigkeiten:** T4 (`resolveEditableSet`), T7 (`startRestore` mit `RestoreStartTarget`).
@@ -589,7 +665,15 @@ der `syncReportFailed`-Notiz, Familie `syncReportReason.*`) + `.spec.ts`;
 `web/src/app/shared/seven-tv/import-progress-section.ts` (Grundzeile unter der Removal-Report-Notiz)
 + `.spec.ts`; `web/src/app/shared/seven-tv/mass-delete-panel.ts` (Aufrufer von `startDelete` gibt
 `expectedChannelName` = `channelName()`, wenn `setId === effectiveActiveSetId()`, sonst `null`;
-bindet `[syncReportReason]` am Restore-Panel — bis T9 den Block umzieht); `web/src/app/shared/seven-tv/restore-flow.ts`
+**der direkte `restoreService.startRestore`-Aufruf im Panel-Restore** baut `RestoreStartTarget`
+aus den Laufwerten des Delete-Laufs — Zwischenstand, den T6 durch die Ableitung aus dem
+aufgelösten Ziel ersetzt (Codex-Befund 2); bindet `[syncReportReason]` am Restore-Panel — bis T9
+den Block umzieht) + `.spec.ts` (Stubs beider Signaturen, Importpfad von `SyncReportState`);
+`web/src/app/core/seven-tv/seven-tv-run-arbiter.spec.ts` (**fünf Aufrufe der alten Signaturen**
+von `startDelete`/`startRestore` — Codex-Befund 2); `web/src/app/shared/seven-tv/dock-outcome-announcer.ts`
+(`resyncNoticeKey` bildet jeden Nicht-`idle`-Wert auf `<family>.resync.<state>` ab — der neue
+`ResyncTriggerState`-Wert braucht `restore.resync.<state>` in beiden Locales, und der Import-Zweig
+nimmt ihn nie an); `web/src/app/shared/seven-tv/restore-flow.ts`
 (nur der eine `startRestore`-Aufruf: baut `RestoreStartTarget` aus den bis T6 vorhandenen Werten —
 Naht 2.5, Zwischenstand von wenigen Zeilen); `web/public/i18n/{de,en}.json` (`syncReportReason.*`,
 ein Restore-Resync-Text für „wird vom Backend abgeglichen"); `web/e2e/vote-ballot.e2e.spec.ts`
@@ -611,19 +695,21 @@ laufender bleibt (AK 20) · Delete auf nicht-aktives Set ⇒ `expectedChannelNam
 überspringt einen genannten Kanal; ohne Replace läuft der Import-Resync wie heute · IDs bleiben
 dedupliziert (eine je Emote auch bei zwei Aliasen — AK 7, heutiges Verhalten).
 
-**Tests:** `seven-tv-restore.service.spec.ts` **+9**, `seven-tv-delete.service.spec.ts` **+5**,
-`seven-tv-import.service.spec.ts` **+5** (die Fälle oben; jeder Bestandsfall, der
+**Tests:** `seven-tv-restore.service.spec.ts` **±45 / +9**, `seven-tv-delete.service.spec.ts`
+**±20 / +5**, `seven-tv-run-arbiter.spec.ts` **±5**, `seven-tv-import.service.spec.ts` **+5** (die
+Fälle oben; jeder Bestandsaufruf wandert auf die neue Signatur, jeder Bestandsfall, der
 `emoteAdminService.syncDeleted/syncRestored` stubbt, wechselt auf `reportDeletedInSet/
-reportRestoredInSet` — Zählung im Bericht). `emote-admin.service.spec.ts` **−2**.
+reportRestoredInSet` — Zählung im Bericht). `emote-admin.service.spec.ts` **−4**.
 `run-progress-panel.spec.ts` **+1** (Grundzeile je `syncReportReason`, Struktur).
 `import-progress-section.spec.ts` **+1**. E2E: die angepassten Fälle (AK 8).
 
 **Abnahme:** `grep -rn "emotes/sync-deleted\|emotes/sync-restored" web/src` leer; kein Dienst
 rechnet `archivedCount >= …` selbst. **AK 7, 8, 15 (Dienste), 20, 21, 27 (Client).**
 
-**Gates:** `npm --prefix web test -- --watch=false --include='src/app/core/**/*.spec.ts' --include='src/app/shared/seven-tv/run-progress-panel.spec.ts' --include='src/app/shared/seven-tv/import-progress-section.spec.ts' --include='src/app/shared/seven-tv/mass-delete-panel.spec.ts'`;
-`npm --prefix web run e2e -- e2e/vote-ballot.e2e.spec.ts e2e/emote-import.e2e.spec.ts` (nur ohne
-Api auf `:5151`); Lint, Format.
+**Gates (Codex-Befund 2 — Checkpoint mit voller Typprüfung):** `npm --prefix web run build`;
+`npm --prefix web test -- --watch=false` **voll** (drei Dienste, sieben Spec-Dateien mit
+Signaturänderungen — ein Filter übersähe den Rest); `npm --prefix web run e2e --
+e2e/vote-ballot.e2e.spec.ts e2e/emote-import.e2e.spec.ts` (nur ohne Api auf `:5151`); Lint, Format.
 
 **Commit:** `feat(seventv): report deletes, restores and replace removals per set with the expected channel`.
 **Abhängigkeiten:** T4. **Modell:** `opus` — drei Dienste, eine Meldungslogik, die entscheidet, ob
@@ -644,9 +730,13 @@ diesem Commit.
 **Dateien:** `web/src/app/shared/seven-tv/conflict-resolution.ts` (Regel 7, `ruleReplaceNeedsTrackedTarget`,
 Union-Wert `replaceNeedsTrackedTarget`, `ResolutionContext` entfallen ganz — `validateResolution`
 und `buildTransferPlan` verlieren den dritten Parameter, Abschnitt 6, Nr. 8; Doku zählt sechs
-Regeln) + `.spec.ts`; `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts`
-(Disabled-Grund-Zuordnung für Replace entfällt) + `.spec.ts`; `web/src/app/shared/seven-tv/import-confirm-dialog.ts`
-(`targetIsTracked` entfällt; Replace-Option für ungetracktes Ziel wählbar; die Pflicht-Rückweg-Datei
+Regeln) + `.spec.ts` (Konstanten `TRACKED`/`UNTRACKED` und ~25 Aufrufe mit drittem Parameter —
+0.6); `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts`
+(`collisionStepRows(rows, targetIsTracked, overlays)` verliert den Parameter und die
+Replace-Zuordnung; die Aufrufstelle in `import-confirm-dialog.ts` zieht mit) + `.spec.ts` (Fall
+„untracked"); `web/src/app/shared/seven-tv/import-confirm-dialog.ts`
+(`resolutionContext`-Feld, die Aufrufe von `buildTransferPlan`, `validateResolution` und
+`collisionStepRows` verlieren den Kontext; Replace-Option für ungetracktes Ziel wählbar; die Pflicht-Rückweg-Datei
 bleibt, Dateiname mit Set-ID bei ungetracktem Ziel — Spec 4.5 Punkt 18) + `.spec.ts`;
 `web/src/app/core/seven-tv/seven-tv-import.service.ts` (Wächter entfällt; Signal für den
 Vorprüfungs-Abbruch an der transienten Notiz-Mechanik — 0.2) + `.spec.ts`; `web/src/app/shared/seven-tv/import-flow.ts`
@@ -690,12 +780,13 @@ leer; `startImport` wirft nicht mehr für einen Replace gegen `channelName === n
 (Client), 22 (Regel 7), 31, 32.**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/**/*.spec.ts' --include='src/app/core/seven-tv/seven-tv-import.service.spec.ts'`;
-`npm --prefix web run e2e -- e2e/emote-import.e2e.spec.ts e2e/vote-ballot.e2e.spec.ts` (nur ohne
-Api auf `:5151`); Lint, Format.
+`npm --prefix web run build`; `npm --prefix web run e2e -- e2e/emote-import.e2e.spec.ts e2e/vote-ballot.e2e.spec.ts`
+(nur ohne Api auf `:5151`); Lint, Format.
 
 **Commit:** `feat(import): offer replace for untracked targets and check editability before every first mutation`.
 **Abhängigkeiten:** T4, T7 (set-zentrische Löschmeldung, sonst liefe ein Replace ins Ungetrackte
-ohne Meldung). **Modell:** `sonnet`.
+ohne Meldung), **T5** (seriell davor — beide ändern `emote-import.e2e.spec.ts` und setzen einen
+DECISIONS-Eintrag an den Anfang, Codex-Befund 5). **Modell:** `sonnet`.
 
 ### T9 — Einstieg ohne gewähltes Set und das Restore-Dock als eigene Section
 
@@ -711,7 +802,11 @@ Set).
 eigenen `@if (!isCoarse())`, `[setId]="selectedEmoteSetId()"`; der Kopier-Knopf bleibt im Set-Gate;
 `<app-restore-progress-section />` neben `app-import-progress-section` außerhalb des Set-Gates) +
 `usage-stats-page.spec.ts` (Trigger ohne Set sichtbar, Kopier-Knopf nicht — AK 33–34;
-`dockVisible()` unverändert); `web/src/app/shared/seven-tv/import-trigger.ts` (`setId: string | null`;
+`dockVisible()` unverändert); **`web/src/app/features/usage-stats/usage-stats-page.ts` und
+`web/src/app/features/voting/vote-session-detail-page.ts`** (`RestoreProgressSection` im
+jeweiligen `imports`-Array neben `ImportProgressSection` bzw. `MassDeletePanel` — Codex-Befund 3;
+ohne den Eintrag kennt die Standalone-Seite das Element nicht, und der Build bricht);
+`web/src/app/shared/seven-tv/import-trigger.ts` (`setId: string | null`;
 ohne Set kein `startImportFlow`-Zweig — der Schritt liefert dann nur `'restore'`) + `.spec.ts`;
 `web/src/app/shared/seven-tv/import-source-dialog.ts` (`ImportSourceDialogData.setId: string | null`;
 Türen „Kanal" und „Bestenliste" bei `null` deaktiviert mit `import.source.noTargetSet` — sichtbar,
@@ -744,6 +839,7 @@ nur noch den Einstieg (Knopf, Sperre, Vorprüfung), keine Anzeige; kein neuer Bu
 **AK 33, 34; 4.4 Punkte 12–13.**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/**/*.spec.ts' --include='src/app/features/usage-stats/usage-stats-page.spec.ts' --include='src/app/features/voting/*.spec.ts'`;
+`npm --prefix web run build` (beide Host-Seiten kompilieren mit der neuen Komponente);
 `npm --prefix web run e2e` (voll, nur ohne Api auf `:5151` — der Umzug berührt jede Seite, die das
 Dock zeigt); Lint, Format.
 
@@ -894,61 +990,71 @@ T5, T8 · 12.2 → T1 (Spec-200-Nachtrag), T3 (Architectur.md, Filter-Kommentar)
 ## 5. Reihenfolge und Abhängigkeiten
 
 ```
-Welle 1   Backend-Lane: T1 ──► T2 ──► T3        Frontend-Lane: T4
-                                 │                              │
-Welle 2                          │                              ▼
-                                 │                             T7
-Welle 3                          │                              ▼
-                                 │                             T6
-Welle 4                          │                         ┌────┴────┐
-                                 │                        T5        T8
-Welle 5                          │                         ▼
-                                 │                        T9
-Welle 6                          └──────────────────────► T10
-Welle 7                                                    T11
-Welle 8                                                    T12
+Welle 1   Backend-Lane: T1 ──► T2              Frontend-Lane: T4
+                               │                              │
+Welle 2                        │                              ▼
+                               │                             T7
+Welle 3                        ▼                              ▼
+                              T3                             T6
+Welle 4                        │                              ▼
+                               │                             T5
+                               │                              ▼
+                               │                             T8
+Welle 5                        │                              ▼
+                               │                             T9
+Welle 6                        └──────────────────────────► T10
+Welle 7                                                      T11
+Welle 8                                                      T12
 ```
 
-- **Welle 1 (parallel, zwei Worktrees):** Backend-Lane T1 → T2 → T3 sequenziell (T2 braucht T1s
-  Worktree, nicht sein Symbol; T3 folgt T2 unmittelbar wegen DECISIONS-Eintrag 2, 0.4) ∥
-  Frontend-Lane T4 (gegen Spec 5.3/5.8, Naht 2.1). Preflight vor dem Merge der Welle: Feldnamen
-  T2 ↔ T4.
-- **Welle 2:** T7 (nach T4; die Routen aus T2 werden gemockt).
-- **Welle 3:** T6 (nach T7 — `startRestore` mit `RestoreStartTarget`; nach T4).
-- **Welle 4 (parallel, zwei Worktrees):** T5 (nach T6, T4) ∥ T8 (nach T7, T4). Gemeinsame
-  Dateien: `de.json`/`en.json` (Textkonflikt, trivial), `seven-tv-import.service.ts` nur in T8,
-  `import-trigger.ts` nur in T5. Preflight: Locale-Familien nach 0.5.
+- **Welle 1 (parallel, zwei Worktrees):** Backend-Lane T1 → T2 sequenziell (T2 braucht T1s
+  Worktree, nicht sein Symbol) ∥ Frontend-Lane T4 (gegen Spec 5.3/5.8, Naht 2.1). Preflight vor
+  dem Merge der Welle: Feldnamen T2 ↔ T4.
+- **Welle 2:** T7 (nach T4; die Routen aus T2 werden gemockt). Checkpoint mit voller Typprüfung
+  und voller Vitest-Suite (Codex-Befund 2).
+- **Welle 3 (parallel, zwei Worktrees):** T3 (Backend, nach T2 **und T7** — die set-scoped
+  Kanalform fällt erst, wenn kein Frontend-Aufrufer mehr auf ihr steht, Codex-Befund 1) ∥ T6
+  (Frontend, nach T7 — `startRestore` mit `RestoreStartTarget`; nach T4). Gemeinsame Dateien nur
+  `de.json`/`en.json` (T3 entfernt einen `apiError`-Schlüssel, T6 fügt Bestätigungszeilen hinzu —
+  Textkonflikt, trivial).
+- **Welle 4 (seriell, Codex-Befund 5):** T5 (nach T6, T4), danach T8 (nach T7, T4, T5). Beide
+  ändern `web/e2e/emote-import.e2e.spec.ts` und setzen je einen DECISIONS-Eintrag an den Anfang
+  von `docs/DECISIONS.md`; parallel liefe das auf zwei Konflikte, deren Auflösung Review-Arbeit
+  ohne Erkenntnis wäre. Preflight: Locale-Familien nach 0.5.
 - **Welle 5:** T9 (nach T5, T7).
 - **Welle 6:** T10 (nach allem).
 - **Welle 7:** T11. **Welle 8:** T12.
 
-**Grüne Zwischenstände:** zwischen T2 und T3 ist der Build grün (die set-scoped Überladungen stehen
-noch); zwischen T7 und T6 ist der Build grün (T7 passt den einen `startRestore`-Aufruf in
-`restore-flow.ts` an, Naht 2.5); zwischen T6 und T5 ebenso (Zwischenstand im `ImportTrigger`). Die
-einzige Branch-interne Unstimmigkeit ist die Live-Lage zwischen T3 und T7 (0.4) — sie ist bewusst
-und berührt keine Suite.
+**Grüne Zwischenstände:** zwischen T2 und T7 stehen beide Meldeformen nebeneinander — die
+kanalgebundene set-scoped Form hat weiter ihre drei Aufrufer, die set-zentrische noch keinen;
+zwischen T7 und T6 ist der Build grün (T7 passt den einen `startRestore`-Aufruf in
+`restore-flow.ts` und den direkten im `MassDeletePanel` an, Naht 2.5); zwischen T6 und T5 ebenso
+(Zwischenstand im `ImportTrigger`). Es gibt keine Branch-interne Unstimmigkeit mehr: die
+set-scoped Kanalform lebt, bis T7 ihre Aufrufer umgestellt hat, und fällt erst in T3 (Welle 3).
 
 ---
 
-## 6. Festlegungen des Plans, wo die Spec schweigt oder unscharf ist — Betreiber-Veto möglich
+## 6. Festlegungen des Plans, wo die Spec schweigt oder unscharf ist — entschieden (Orchestrator, 2026-09-25), Betreiber-Veto möglich
 
-Nichts hier ist still aufgelöst: jede Zeile nennt die Stelle, die Wahl des Plans und die
-Empfehlung. Ein Veto ändert genau den genannten Task.
+Nichts hier ist still aufgelöst: jede Zeile nennt die Stelle, den Befund, die Festlegung des Plans
+und ihren Stand. Der Orchestrator hat alle Punkte am 2026-09-25 angenommen; der Betreiber sieht sie
+parallel und kann widersprechen — ein Veto ändert genau den genannten Task. Die zwei reinen
+Spec-Wortlautfehler (Nr. 1, Nr. 6) sind in `6ec22dc5` direkt in der Spec korrigiert.
 
-| # | Stelle | Befund | Festlegung des Plans | Empfehlung / Task |
+| # | Stelle | Befund | Festlegung des Plans | Stand / Task |
 |---|---|---|---|---|
-| 1 | Spec E10, Klammer „(core → shared ist erlaubt)" | Die Richtung ist vertauscht: `shared/` darf aus `core/` importieren, nicht umgekehrt (CLAUDE.md Schichtentreue). Die Aussage selbst — der Schritt in `shared/` injiziert `SevenTvEmoteSetService` aus `core/` — ist richtig | Der Plan liest es als `shared → core` | Spec-Wortlaut bei Gelegenheit drehen; kein Task betroffen |
-| 2 | Spec 4.2 Tabelle vs. 6.2 | Zeile 4 der Tabelle („Set nicht bearbeitbar gefunden **und** … oder der Request scheitert") ist grammatisch mehrdeutig; 6.2 ist eindeutig: `editable` gewinnt, wenn das Set bearbeitbar gefunden wurde, auch bei degradierter Liste; `unavailable` gilt für jeden nicht-bearbeitbaren Befund bei unvollständiger Liste | T4 implementiert 6.2 in dieser Reihenfolge: `notSelectable` → `editable` → `unavailable` (Liste unvollständig oder Request gescheitert) → `notEditable` | Bestätigen; T4 |
-| 3 | Spec E16, 4.6 Punkt 22 | Die Spec verlangt die Vorprüfung auch am Panel-Einstieg, sagt aber nicht, **wo** ein Scheitern angezeigt wird — der Flow hat keinen Banner, der Datei-Schritt schon | T6 nutzt die bestehende Abbruchnotiz des Panels (`abortNotice`) mit einer Restore-Leadzeile und der Familie `restore.errors.*` | Bestätigen; T6 |
-| 4 | Spec 4.5 Punkt 17, 4.6 Punkt 20 | Die Gründe für Delete- und Replace-Abbruch sind benannt (`targetNotEditable`/`targetCheckUnavailable`), ihre Locale-Schlüssel nicht; 6.1 legt nur die Familie des Datei-Schritts fest | Je Anzeigeort die bestehende Fehlerfamilie des Laufs (`massDelete.errors.*`, `import.errors.*`), je drei Gründe (auch `notSelectable`, obwohl im Normalfall unerreichbar) | Bestätigen; T8 (Wortlaut #255) |
-| 5 | Spec E23, 6.5 | `syncReportReason` ist Vertrag, der Ort der Texte nicht | Eine gemeinsame Familie `syncReportReason.*` — der Grund hängt nicht an der Laufart | Bestätigen; T7 |
-| 6 | Spec 5.6, „Was entfällt" | Die Spec streicht `TargetIsActiveSetOfChannel` aus den Legacy-DTOs, schweigt zu `NewlyArchivedCount`/`NewlyRestoredCount` — die nach E4 immer 0 sind und keinen Leser mehr haben (kein Live-Event) | T3 streicht beide mit; die Spec-200-Folge-Issue 1 räumt die Route später ganz ab | Bestätigen; T3 |
-| 7 | Spec 5.6 Punkt 1 und 4 | Bei fehlender Kanalzeile „kein Eintrag" — ob Stufe 7 (Resync) dann läuft, sagt die Spec nicht | T3 lässt Stufe 7 nach jeder 200-Antwort laufen; `TriggerResyncAsync` antwortet `NotFound`, der Cooldown wird freigegeben — dasselbe Verhalten wie `POST /resync` für einen unbekannten Kanal | Bestätigen; T3 |
-| 8 | Spec 4.5 Punkt 15 | „`ResolutionContext` … bleibt als leeres Objekt oder fällt, das entscheidet der Plan" | Fällt ganz: `validateResolution` und `buildTransferPlan` verlieren den dritten Parameter — kein Aufrufer reicht einen Kontext ohne Bedeutung weiter | Bestätigen; T8 |
-| 9 | Spec 6.6, letzter Satz | Die Vote-Session-Seite „bindet die neue Section ebenso ein" — ihr Panel steht hinter `results() && canSelectForDelete() && !isCoarse() && massDeletePanelSetId()`; wo die Section steht, ist offen | Neben dem Panel, nur hinter `!isCoarse()`, weil die Section sich selbst auf den Lauf gated und ein laufender Restore die Ergebnisse überleben muss | Bestätigen; T9 |
-| 10 | Spec 6.2, AK 6 | „Der Picker liest dieselbe Kopie" ist eine Verhaltensänderung: der Picker kann bis zu 60 s alte Listen zeigen (heute lädt er je Öffnen frisch); `reload` umgeht sie | Übernommen wie in der Spec; im Task-Bericht von T4 ausdrücklich genannt | Zur Kenntnis; T4 |
-| 11 | Spec 9.1 | „Substitut `IRedisPublisher`" — `ApiFactory` substituiert heute `IConnectionMultiplexer`; ob `IRedisPublisher` darüber schon testbar ist, entscheidet der Blick in die Fabrik | T2 prüft und ergänzt das Substitut nur, wenn nötig | Kein Veto nötig; T2 |
-| 12 | Spec 0.4 dieses Plans | Zwischen T3 und T7 antwortet die kanalgebundene Route dem noch nicht umgestellten Frontend mit 400 — nur live, nur im Branch | Bewusst, wegen Regel 3 (DECISIONS 2 im ersten Backend-Commit) | Alternative: T3 hinter T7 in Welle 5; dann stünde Eintrag 2 zwei Wellen lang vor seiner Einlösung |
+| 1 | Spec E10, Klammer „(core → shared ist erlaubt)" | Die Richtung war vertauscht: `shared/` darf aus `core/` importieren, nicht umgekehrt (CLAUDE.md Schichtentreue). Die Aussage selbst — der Schritt in `shared/` injiziert `SevenTvEmoteSetService` aus `core/` — ist richtig | Der Plan liest es als `shared → core` | **Erledigt:** Spec-Wortlaut in `6ec22dc5` korrigiert; kein Task betroffen |
+| 2 | Spec 4.2 Tabelle vs. 6.2 | Zeile 4 der Tabelle („Set nicht bearbeitbar gefunden **und** … oder der Request scheitert") ist grammatisch mehrdeutig; 6.2 ist eindeutig: `editable` gewinnt, wenn das Set bearbeitbar gefunden wurde, auch bei degradierter Liste; `unavailable` gilt für jeden nicht-bearbeitbaren Befund bei unvollständiger Liste | T4 implementiert 6.2 in dieser Reihenfolge: `notSelectable` → `editable` → `unavailable` (Liste unvollständig oder Request gescheitert) → `notEditable` | **Entschieden** (Orchestrator), Veto möglich; T4 |
+| 3 | Spec E16, 4.6 Punkt 22 | Die Spec verlangt die Vorprüfung auch am Panel-Einstieg, sagt aber nicht, **wo** ein Scheitern angezeigt wird — der Flow hat keinen Banner, der Datei-Schritt schon | T6 nutzt die bestehende Abbruchnotiz des Panels (`abortNotice`) mit einer Restore-Leadzeile und der Familie `restore.errors.*` | **Entschieden**, Veto möglich; T6 |
+| 4 | Spec 4.5 Punkt 17, 4.6 Punkt 20 | Die Gründe für Delete- und Replace-Abbruch sind benannt (`targetNotEditable`/`targetCheckUnavailable`), ihre Locale-Schlüssel nicht; 6.1 legt nur die Familie des Datei-Schritts fest | Je Anzeigeort die bestehende Fehlerfamilie des Laufs (`massDelete.errors.*`, `import.errors.*`), je drei Gründe (auch `notSelectable`, obwohl im Normalfall unerreichbar) | **Entschieden**, Veto möglich; T8 (Wortlaut #255) |
+| 5 | Spec E23, 6.5 | `syncReportReason` ist Vertrag, der Ort der Texte nicht | Eine gemeinsame Familie `syncReportReason.*` — der Grund hängt nicht an der Laufart | **Entschieden**, Veto möglich; T7 |
+| 6 | Spec 5.6, „Was entfällt" | Die Spec strich `TargetIsActiveSetOfChannel` aus den Legacy-DTOs, schwieg zu `NewlyArchivedCount`/`NewlyRestoredCount` — die nach E4 immer 0 sind und keinen Leser mehr haben (kein Live-Event) | T3 streicht beide mit; die Spec-200-Folge-Issue 1 räumt die Route später ganz ab | **Erledigt:** Spec 5.6 in `6ec22dc5` ergänzt; T3 |
+| 7 | Spec 5.6 Punkt 1 und 4 | Bei fehlender Kanalzeile „kein Eintrag" — ob Stufe 7 (Resync) dann läuft, sagt die Spec nicht | T3 lässt Stufe 7 nach jeder 200-Antwort laufen; `TriggerResyncAsync` antwortet `NotFound`, der Cooldown wird freigegeben — dasselbe Verhalten wie `POST /resync` für einen unbekannten Kanal | **Entschieden**, Veto möglich; T3 |
+| 8 | Spec 4.5 Punkt 15 | „`ResolutionContext` … bleibt als leeres Objekt oder fällt, das entscheidet der Plan" | Fällt ganz: `validateResolution`, `buildTransferPlan` und `collisionStepRows` verlieren den Parameter — kein Aufrufer reicht einen Kontext ohne Bedeutung weiter | **Entschieden**, Veto möglich; T8 |
+| 9 | Spec 6.6, letzter Satz | Die Vote-Session-Seite „bindet die neue Section ebenso ein" — ihr Panel steht hinter `results() && canSelectForDelete() && !isCoarse() && massDeletePanelSetId()`; wo die Section steht, ist offen | Neben dem Panel, nur hinter `!isCoarse()`, weil die Section sich selbst auf den Lauf gated und ein laufender Restore die Ergebnisse überleben muss; dazu der `imports`-Eintrag in beiden Host-Seiten (Codex-Befund 3) | **Entschieden**, Veto möglich; T9 |
+| 10 | Spec 6.2, AK 6 | „Der Picker liest dieselbe Kopie" ist eine Verhaltensänderung: der Picker kann bis zu 60 s alte Listen zeigen (heute lädt er je Öffnen frisch); `reload` umgeht sie | Übernommen wie in der Spec; im Task-Bericht von T4 ausdrücklich genannt | **Entschieden** (Orchestrator, ausdrücklich inklusive dieses Punkts), Veto möglich; T4 |
+| 11 | Spec 9.1 | „Substitut `IRedisPublisher`" — `ApiFactory` substituiert heute `IConnectionMultiplexer`; ob `IRedisPublisher` darüber schon testbar ist, entscheidet der Blick in die Fabrik | T2 prüft und ergänzt das Substitut nur, wenn nötig | **Entschieden**; T2 |
+| 12 | Plan 0.4 der ersten Fassung | Die erste Fassung setzte T3 direkt hinter T2 und nahm ein 400-Fenster für die set-scoped Kanalform bis T7 in Kauf | **Zurückgenommen (Codex-Befund 1):** T3 läuft nach T7 (Welle 3); DECISIONS-Eintrag 2 entsteht in T2 ohne den Altform-Absatz, T3 hängt ihn im eigenen Commit an — der Eintrag stimmt zu jedem Commit-Stand | **Entschieden**; T2, T3, Abschnitt 5 |
 | 13 | Spec 15 (E24, E22, F16) | Die drei Veto-Stellen der Spec | Der Plan baut die Spec-Fassung; jede Alternative trifft genau einen Task (E24 → T3, E22 → T9, F16 → T1) | Kein Veto vor Beginn nötig |
 
 ---
@@ -972,3 +1078,22 @@ Papier-Einträge ohne Kanal und Einträge mit `legacyBodyForm`/`unresolved*` ble
 liegt im Worktree). Je Welle: Preflight der Nähte aus Abschnitt 2, Dispatch mit BASE-SHA und Modell,
 Bericht, Review, Rulings mit „cost if wrong", Merge-SHA. Die Codex-Zweitmeinung (T11) und die
 Live-Befunde (T12) landen ebenfalls dort, bevor sie in den PR-Text wandern.
+
+---
+
+## 9. Nachtrag: Codex-Adversarial-Review über die erste Fassung (gpt-6-sol, 2026-09-25)
+
+Fünf Befunde über `b5f4098f`, alle vom Orchestrator angenommen und in dieser Fassung eingearbeitet.
+Codex hat Stichproben genannt, keine vollständige Liste — die vollständige Aufrufer-Inventur, die
+daraus folgte, steht in 0.6 und hat weitere Stellen gefunden (Ziellisten-Fixtures in drei
+Spec-Dateien, die sieben Importe von `SyncReportState`, den `resyncNoticeKey`-Abgleich für den
+neuen `ResyncTriggerState`-Wert, zwei DTO-Konstruktoren in `AuthFilterMatrixTests`, die
+`collisionStepRows`-Signatur und ~25 Aufrufe mit `ResolutionContext`, vier Kommentarstellen).
+
+| # | Schwere | Befund | Lösung | Wo |
+|---|---|---|---|---|
+| 1 | high | Zwischen T3 (Altform-Umbau, set-scoped Kanalform entfernt) und T7 (Frontend-Umstellung) hätte die kanalgebundene Route dem alten Frontend mit 400 geantwortet; die Meldung folgt auf die 7TV-Mutation, ein Live-Lauf verlöre Buchung und Audit | T3 rückt hinter T7 (Welle 3); die set-scoped Kanalform bleibt, bis kein Aufrufer mehr auf ihr steht. DECISIONS-Eintrag 2 entsteht in T2 ohne den Altform-Absatz, T3 hängt ihn im eigenen Commit an | 0.4, T2, T3, Abschnitt 5, Abschnitt 6 Nr. 12 |
+| 2 | high | T7 übersah direkte Aufrufer der geänderten Dienst-Signaturen (`mass-delete-panel.ts` ruft `startRestore` direkt; `seven-tv-run-arbiter.spec.ts` ruft beide alten Signaturen) | Beide in die T7-Dateiliste; T7-Checkpoint mit `npm --prefix web run build` (volle Typprüfung — `npx vitest` prüft keine Typen) und voller Vitest-Suite; Aufrufer-Regel in 0.4, Inventur in 0.6 | 0.4, 0.6, T7 |
+| 3 | high | T9 registrierte `RestoreProgressSection` nicht in den `imports`-Arrays der beiden Host-Seiten | `usage-stats-page.ts` und `vote-session-detail-page.ts` in der T9-Dateiliste; Build-Gate | T9, Abschnitt 6 Nr. 9 |
+| 4 | medium | T5 zählte zu wenige Fixtures: `import-trigger.spec.ts` baut sechs typisierte Restore-Ergebnisse ohne Ziel | Alle Restore-Result-Fixtures (Datei-Schritt, Trigger, Quelldialog) und ihre Assertions in der T5-Dateiliste; Build-Gate | T5, 0.6 |
+| 5 | medium | Welle 4 teilte mehr Dateien, als der Plan sagte: T5 und T8 ändern beide `emote-import.e2e.spec.ts` und setzen je einen DECISIONS-Eintrag an den Anfang | T5 → T8 seriell | Abschnitt 5, T5, T8 |
