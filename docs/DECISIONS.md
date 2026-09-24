@@ -10,6 +10,49 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
+
+**Betrifft:** `web/src/app/features/legal/legal-page.ts` ·
+`web/src/app/features/legal/legal-back-target.ts` (+ spec) ·
+`web/src/app/core/routing/navigation-history.service.ts` (+ spec) · `web/src/app/app.ts` ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` · `web/e2e/legal-pages.e2e.spec.ts`
+
+Operator report: `/imprint` and `/privacy` (#247) only ever offered "Zurück zur Startseite", fixed
+to `/welcome`. A logged-in visitor who opened either page from inside the app — e.g. the footer on
+a channel page — landed on the public landing page instead of back where they came from on click.
+
+1. **`NavigationHistoryService` (`core/routing/`, `@Service()`)** counts completed Angular
+   `Router` navigations for the lifetime of the tab and exposes `hasPreviousPage()` — true from the
+   second completed navigation on. Deliberately not `history.length`: that also counts pages
+   outside this app (an external referrer, an earlier tab session), which would make a
+   `Location.back()` gated on it leave the app. Injected eagerly from `App` (`app.ts`, alongside
+   the existing `ThemeService` eager-injection for the same reason) so it is already listening
+   before the very first `NavigationEnd` of the session — by the time a lazily-loaded page such as
+   `LegalPage` would inject it for itself, that page's own arrival may already be indistinguishable
+   from "no previous page".
+2. **`resolveLegalBackTarget(hasPreviousPage, isLoggedIn)` (`legal-back-target.ts`)** is the pure
+   decision: a previous in-app page always wins and yields a literal "Zurück"/"Back", regardless of
+   login state, because `hasPreviousPage()` already guarantees the target is inside the app. With no
+   previous page (fresh tab, reload, external link — the legal page was the session's own entry
+   point) it falls back to a fixed destination as before: the visitor's own overview (`/`, which
+   `homeGuard` resolves) if logged in, `/welcome` otherwise.
+3. **`LegalPage` renders `Location.back()` for the "back" case, `app-back-link` unchanged for the
+   fallback case.** `Location.back()` over re-navigating to a recorded URL: it is real browser-back
+   (no forward-breaking history entry, scroll position restores through the app's own
+   `withInMemoryScrolling` config) and is safe from leaving the app only because it is gated on
+   `NavigationHistoryService`, never on raw history depth. This is a deliberate, narrow exception to
+   `BackLink`'s own contract ("never `history.back()`", see its doc comment) — every other consumer
+   of that primitive is a fixed hierarchical parent in the route tree, while `LegalPage` sits
+   outside the whole app-shell route tree and is reachable from everywhere in it, so a fixed parent
+   does not exist for it to point at.
+
+New translation key `legal.backAction` ("Zurück"/"Back") in both locales; `legal.back` and
+`nav.overview` are reused unchanged for the two fallback cases.
+
+Verified live and in `legal-pages.e2e.spec.ts`: arriving via the footer from the overview shows
+"Zurück" and returns to the overview on click; opening `/imprint` directly falls back to
+`/welcome` (anonymous) or `/` (logged in).
+
 ### 2026-09-24 — Footer placement: sticky-footer layout instead of an unpinned block, plus a shell/dock clearance contract
 
 **Betrifft:** `web/src/app/features/shell/app-shell.ts` · `web/src/app/features/login/login-page.ts` ·
