@@ -1,7 +1,8 @@
 namespace EmotePurge.Core.Services;
 
 /// <summary>
-/// The write side of the rate-limit telemetry: three counting calls, one per thing worth watching.
+/// The write side of the rate-limit telemetry: three counting calls, one per thing worth watching, and
+/// one call that forgets what a deleted account left behind.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -25,6 +26,25 @@ public interface IRateLimitTelemetry
 
     /// <summary>Records one lookup in one of the server-side caches named in <see cref="RateLimitCacheNames"/>.</summary>
     Task RecordCacheLookupAsync(string cacheName, bool hit, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Forgets the last-rejection slot when it belongs to <paramref name="partition"/> — used by the
+    /// account deletion, since the slot is the one piece of telemetry state that can name a user and
+    /// outlive their deletion request by up to a day.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Matches the partition itself and any sub-partition of it (<c>{partition}:…</c>): the per-user
+    /// policies partition by the bare Twitch user id, the voting policy by <c>{id}:{sessionId}</c>, and
+    /// both name the same user. Counters are never touched — they are keyed by policy, not partition.
+    /// </para>
+    /// <para>
+    /// Fail-open like the rest of this interface: never throws. Returns <c>false</c> only when the store
+    /// could not be reached, so a caller that must know (the deletion retries once) can tell a failure
+    /// apart from "there was nothing of this partition to forget", which is <c>true</c>.
+    /// </para>
+    /// </remarks>
+    Task<bool> ForgetPartitionAsync(string partition, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -37,8 +57,10 @@ public interface IRateLimitTelemetry
 /// </param>
 /// <param name="RouteTemplate">The endpoint's route template, never the raw request path.</param>
 /// <param name="Partition">
-/// A stable description of the partition the request fell into (for example <c>user:42</c>), so an
-/// operator can tell a single noisy caller apart from a broad wave.
+/// A stable description of the partition the request fell into — the limiter's own partition key: the
+/// authenticated Twitch user id (<c>42</c>), for the voting policy that id plus the vote session
+/// (<c>42:7</c>), and the remote IP for anonymous requests — so an operator can tell a single noisy
+/// caller apart from a broad wave.
 /// </param>
 /// <param name="RetryAfterSeconds">The <c>Retry-After</c> handed to the caller; <c>null</c> when accepted.</param>
 public record RateLimitPolicyDecision(

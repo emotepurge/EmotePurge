@@ -507,6 +507,14 @@
         "message": "Alle Sessions von {{name}} widerrufen? Der User wird überall abgemeldet und die gespeicherten Twitch-Tokens werden gelöscht — ein erneuter Login ist jederzeit möglich.",
         "selfHint": "Das ist dein eigener Account: Du wirst damit sofort selbst abgemeldet.",
         "confirm": "Sessions widerrufen"
+      },
+      "delete": {
+        "button": "Account löschen",
+        "title": "Account unwiderruflich löschen",
+        "message": "Der Account von {{name}} wird gelöscht: jede von ihm abgegebene Stimme wird entfernt, und Audit-Log-Einträge, die ihn nennen, werden anonymisiert statt gelöscht.\n\nDas lässt sich nicht rückgängig machen.",
+        "selfHint": "Das ist dein eigener Account: Du wirst damit sofort abgemeldet, weil der Account dahinter nicht mehr existiert.",
+        "inputLabel": "Twitch-Login zur Bestätigung",
+        "confirm": "Endgültig löschen"
       }
     },
     "audit": {
@@ -545,7 +553,8 @@
       "emotesSyncRestored": "Emotes wiederhergestellt",
       "emotesSyncImported": "Emotes importiert",
       "userRevokeSessions": "User-Sessions widerrufen",
-      "userInvalidateRoleCache": "Rollen-Cache geleert"
+      "userInvalidateRoleCache": "Rollen-Cache geleert",
+      "userDelete": "Account gelöscht"
     },
     "details": {
       "emoteCount": "{{count}} Emotes",

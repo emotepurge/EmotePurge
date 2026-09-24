@@ -6,7 +6,9 @@ namespace EmotePurge.Core.Services;
 /// plain metadata columns. The token ciphertexts themselves never leave the query, let alone the
 /// service: there is no admin scenario that needs them, so no DTO shape that could leak them.
 /// <paramref name="SessionsValidFromUtc"/> is the revocation cutoff (null = never revoked), shown so
-/// an admin can see that a forced logout actually took.
+/// an admin can see that a forced logout actually took. <paramref name="LastSeenAtUtc"/> is the
+/// retention timestamp (see User.LastSeenAtUtc); the list keeps sorting by LastLogin, this is
+/// exposed for completeness and is not yet rendered anywhere.
 /// </summary>
 public record AdminUserDto(
     string TwitchUserId,
@@ -14,6 +16,7 @@ public record AdminUserDto(
     string DisplayName,
     DateTime LastLogin,
     DateTime? SessionsValidFromUtc,
+    DateTime? LastSeenAtUtc,
     bool HasRefreshToken,
     DateTime? TwitchAccessTokenExpiresAtUtc,
     string? TwitchTokenScopes);

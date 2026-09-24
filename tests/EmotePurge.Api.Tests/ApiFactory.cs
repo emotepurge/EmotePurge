@@ -105,6 +105,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public ILegalContentService LegalContent { get; } = Substitute.For<ILegalContentService>();
 
+    /// <summary>
+    /// Substituted so the admin account-deletion filter-matrix tests can reach the handler at all
+    /// (the real implementation locks a Postgres row) and drive its outcome directly — the same
+    /// reasoning as <see cref="Emotes"/>.
+    /// </summary>
+    public IAccountDeletionService AccountDeletion { get; } = Substitute.For<IAccountDeletionService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -145,6 +152,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => Emotes);
             services.AddScoped(_ => _migrationGuard);
             services.AddSingleton(_ => LegalContent);
+            services.AddScoped(_ => AccountDeletion);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about

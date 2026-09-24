@@ -29,13 +29,13 @@ public class WorkerServiceRegistrationTests
     }
 
     [Fact]
-    public void AddWorkerHostedServices_RegistersExactlyTheNineOfTheWorker()
+    public void AddWorkerHostedServices_RegistersExactlyTheTenOfTheWorker()
     {
         var services = new ServiceCollection();
         services.AddWorkerCore(Configuration());
         services.AddWorkerHostedServices();
 
-        Assert.Equal(9, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(10, services.Count(d => d.ServiceType == typeof(IHostedService)));
     }
 
     [Fact]

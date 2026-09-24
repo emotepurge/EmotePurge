@@ -22,4 +22,13 @@ public class User
     public string? TwitchAccessToken { get; set; }
     public DateTime? TwitchAccessTokenExpiresAtUtc { get; set; }
     public string? TwitchTokenScopes { get; set; }
+
+    // When this user was last confirmed present, stamped from OnValidatePrincipal at most once
+    // every 24 hours (throttled there, not here). LastLogin alone cannot answer "still around":
+    // the session cookie is 14 days sliding, so a user who visits weekly never logs in again and
+    // would look inactive under a login-only measure. Retention reads both as
+    // max(LastLogin, LastSeenAtUtc). Null means this column predates the user (backfilled to the
+    // migration timestamp for every pre-existing row) or, after that, is unreachable in practice —
+    // a valid session always stamps it on its next request.
+    public DateTime? LastSeenAtUtc { get; set; }
 }

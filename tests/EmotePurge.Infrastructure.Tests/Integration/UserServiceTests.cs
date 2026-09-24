@@ -204,6 +204,122 @@ public class UserServiceTests(PostgresFixture fixture, RedisFixture redisFixture
     }
 
     [Fact]
+    public async Task CheckSession_ForUnknownUser_ReturnsNull()
+    {
+        // The caller (OnValidatePrincipal) must reject the principal rather than read this as
+        // "never revoked" — a deleted account's cookie must stop working on its next request.
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+
+        Assert.Null(await service.CheckSessionAsync("user-checksession-nobody", DateTime.UtcNow));
+    }
+
+    [Fact]
+    public async Task CheckSession_WithACookieIssuedBeforeRevocation_IsInvalid()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        await service.UpsertLoginAsync("user-checksession-cutoff", "usercutoff", "UserCutoff");
+        var issuedAt = DateTime.UtcNow;
+        await service.RevokeSessionsAsync("user-checksession-cutoff", actor: null);
+
+        var result = await service.CheckSessionAsync("user-checksession-cutoff", issuedAt);
+
+        Assert.NotNull(result);
+        Assert.False(result.IsValid);
+    }
+
+    [Fact]
+    public async Task CheckSession_WithACookieIssuedAfterRevocation_IsValid()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        await service.UpsertLoginAsync("user-checksession-postcutoff", "userpostcutoff", "UserPostCutoff");
+        await service.RevokeSessionsAsync("user-checksession-postcutoff", actor: null);
+
+        var result = await service.CheckSessionAsync("user-checksession-postcutoff", DateTime.UtcNow.AddSeconds(1));
+
+        Assert.NotNull(result);
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public async Task CheckSession_WithARevokedCookie_DoesNotStampLastSeenAtUtc()
+    {
+        // The regression this guards: LastSeenAtUtc used to be stamped before the caller
+        // (OnValidatePrincipal) compared the cookie's issue time against the revocation cutoff, so a
+        // client that kept replaying a revoked cookie was rejected on every request yet still moved
+        // the retention clock for an account it no longer had access to.
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        await service.UpsertLoginAsync("user-checksession-revoked-nostamp", "userrevokednostamp", "UserRevokedNoStamp");
+        var issuedAt = DateTime.UtcNow;
+        await service.RevokeSessionsAsync("user-checksession-revoked-nostamp", actor: null);
+
+        var result = await service.CheckSessionAsync("user-checksession-revoked-nostamp", issuedAt);
+
+        Assert.False(result!.IsValid);
+        await using var verifyDb = fixture.CreateDbContext();
+        var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-revoked-nostamp");
+        Assert.Null(row.LastSeenAtUtc);
+    }
+
+    [Fact]
+    public async Task CheckSession_FirstCallForAFreshUser_StampsLastSeenAtUtc()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        // UpsertLoginAsync never touches LastSeenAtUtc, so a freshly logged-in user starts null —
+        // the same state a pre-migration backfill row would not be in, but a genuinely new row is.
+        await service.UpsertLoginAsync("user-checksession-first", "userfirst", "UserFirst");
+
+        var before = DateTime.UtcNow;
+        var result = await service.CheckSessionAsync("user-checksession-first", before);
+
+        Assert.True(result!.IsValid);
+        await using var verifyDb = fixture.CreateDbContext();
+        var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-first");
+        Assert.NotNull(row.LastSeenAtUtc);
+        Assert.True(row.LastSeenAtUtc >= before);
+    }
+
+    [Fact]
+    public async Task CheckSession_WithinThrottleWindow_DoesNotRewriteLastSeenAtUtc()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        await service.UpsertLoginAsync("user-checksession-fresh", "userfresh", "UserFresh");
+        var recentStamp = DateTime.UtcNow.AddHours(-1);
+        await db.Users.Where(u => u.Id == "user-checksession-fresh")
+            .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAtUtc, recentStamp));
+
+        await service.CheckSessionAsync("user-checksession-fresh", DateTime.UtcNow);
+
+        await using var verifyDb = fixture.CreateDbContext();
+        var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-fresh");
+        Assert.Equal(recentStamp, row.LastSeenAtUtc!.Value, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task CheckSession_AfterThrottleWindow_RewritesLastSeenAtUtc()
+    {
+        await using var db = fixture.CreateDbContext();
+        var service = new UserService(db, CreateCipher(), CreateRoleCache());
+        await service.UpsertLoginAsync("user-checksession-stale", "userstale", "UserStale");
+        var staleStamp = DateTime.UtcNow.AddHours(-25);
+        await db.Users.Where(u => u.Id == "user-checksession-stale")
+            .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAtUtc, staleStamp));
+
+        var before = DateTime.UtcNow;
+        await service.CheckSessionAsync("user-checksession-stale", before);
+
+        await using var verifyDb = fixture.CreateDbContext();
+        var row = await verifyDb.Users.AsNoTracking().SingleAsync(u => u.Id == "user-checksession-stale");
+        Assert.NotNull(row.LastSeenAtUtc);
+        Assert.True(row.LastSeenAtUtc >= before);
+    }
+
+    [Fact]
     public async Task InvalidateRoleCache_ForUnknownUser_ReturnsNull_AndTouchesNeitherStore()
     {
         // The unknown-user branch returns before Redis is reached — verified by seeding a key under

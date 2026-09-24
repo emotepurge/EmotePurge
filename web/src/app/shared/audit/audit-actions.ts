@@ -25,6 +25,7 @@ export const ACTION_KEYS: Record<string, string> = {
   'emotes.syncImported': 'audit.actions.emotesSyncImported',
   'user.revokeSessions': 'audit.actions.userRevokeSessions',
   'user.invalidateRoleCache': 'audit.actions.userInvalidateRoleCache',
+  'user.delete': 'audit.actions.userDelete',
 };
 
 /**
@@ -35,6 +36,7 @@ export const ACTION_KEYS: Record<string, string> = {
 export const CHANNELLESS_ACTIONS: ReadonlySet<string> = new Set<AuditAction>([
   'user.revokeSessions',
   'user.invalidateRoleCache',
+  'user.delete',
 ]);
 
 /** The actions a single channel's log can contain — everything except the user-scoped ones. */

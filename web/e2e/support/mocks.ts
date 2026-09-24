@@ -587,6 +587,18 @@ export async function mockRevokeSessions(page: Page, twitchUserId: string): Prom
   );
 }
 
+/** DELETE /api/admin/users/{twitchUserId} — the account-deletion path (#243/#244), answers 204
+ *  like the real endpoint. The exact path (no trailing wildcard) keeps this from also matching the
+ *  revoke-sessions/invalidate-role-cache sub-routes on the same user id. */
+export async function mockDeleteUser(page: Page, twitchUserId: string): Promise<void> {
+  await page.route(`**/api/admin/users/${twitchUserId}`, (route) => {
+    if (route.request().method() !== 'DELETE') {
+      return route.fallback();
+    }
+    return route.fulfill({ status: 204 });
+  });
+}
+
 /** POST /api/admin/users/{twitchUserId}/invalidate-role-cache — answers 200 with the number of
  *  Redis entries that were dropped, which is what the page renders back to the admin. */
 export async function mockInvalidateRoleCache(
