@@ -51,20 +51,26 @@ export interface ViolationMessage {
   rows: string;
 }
 
-/** Row heights in px: the wide layout puts source, target and actions side by side (content maxes
- *  out at 86px there — the three radio options plus a checked "Umbenennen" row and its error line,
- *  each single-line at the width {@link NARROW_BELOW_PX} guarantees), the narrow one stacks them
- *  (source over target over actions, content maxes out at 198px, measured at the 360px floor AK 22
- *  pins). Both add ~16-30px over that measured worst case on top of the row's own 16px vertical
- *  padding (`py-2`), for cross-browser font-metric slack — measured in a real browser (Chromium,
- *  `[data-resolve-index] > div` bounding box) rather than derived from the CSS, because a
- *  virtualized list needs one fixed height per row and every row, however short its own content,
- *  pays for the tallest one any row can reach. The header/caption row and the two reserved
- *  consequence lines (issue #268) were measured the same way after landing and stay well inside
- *  both budgets — worst case (a checked "Umbenennen" row with its typed-alias consequence) came to
- *  62px wide / 162.5px narrow, still short of 86px/198px, so neither constant needed to move. */
-const ROW_WIDE_PX = 120;
-const ROW_NARROW_PX = 232;
+/** Row heights in px: the wide layout puts source, target and actions side by side, the narrow one
+ *  stacks them (source over target over actions). Measured in a real browser (Chromium,
+ *  `[data-resolve-index] > div` scrollHeight, plus the row's own 16px vertical padding — `py-2`,
+ *  border-box) rather than derived from the CSS, because a virtualized list needs one fixed height
+ *  per row and every row, however short its own content, pays for the tallest one any row can
+ *  reach.
+ *
+ *  Re-measured for issue #268's own follow-up review round (a collision row with an aliasless
+ *  target entry, an untracked target so replace carries a bracketed disabled reason, and a checked
+ *  rename whose typed alias collides with another target alias — the longest field error in either
+ *  locale, `fieldError.taken`): content needed 255px narrow (German — its longer bracket/error
+ *  strings) / 231px English, and 126px wide (both locales — the row's own longest-field-error
+ *  combination pushes the actions column into the wrap this component's `NARROW_BELOW_PX` doc
+ *  already anticipated at low `content width`s, even at exactly 760px). That is more than either
+ *  constant below had room for (`232`/`120`), so both moved to the measured worst case plus an
+ *  ~8-16px margin for cross-browser font-metric slack — the alias-mismatch rows (adopt chosen, and
+ *  adopt disabled with its own longest bracketed reason, `adoptBlocked.aliaslessTarget`) stayed
+ *  well inside both at 153px/141px, so they did not drive either number. */
+const ROW_WIDE_PX = 136;
+const ROW_NARROW_PX = 268;
 /** Content width below which the step switches to the stacked layout. Chosen so that, above it,
  *  the actions column still fits the widest row — three radio options, a bracketed disabled
  *  reason, the rename field and its error line — on one line each, comfortably inside
