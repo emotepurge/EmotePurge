@@ -17,7 +17,7 @@ const DE_TRANSLATIONS = {
     clearSelection: 'Auswahl aufheben',
     foreignChannel: {
       channelLabel: 'Kanalname',
-      placeholder: 'z. B. handofblood',
+      placeholder: 'kanalname',
       invalidChannelName: 'Kein gültiger Twitch-Kanalname.',
       load: 'Set laden',
       reload: 'Neu laden',

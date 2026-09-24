@@ -423,7 +423,7 @@
       "title": "Channel management",
       "refresh": "Refresh",
       "refreshTitle": "Reload channel list",
-      "joinPlaceholder": "twitch-channel-name",
+      "joinPlaceholder": "channelname",
       "joinChannel": "Add channel",
       "invalidChannelName": "Invalid channel name (4–25 characters, letters/digits/underscore).",
       "empty": "No channels tracked.",
@@ -1025,7 +1025,7 @@
     "foreignChannel": {
       "title": "Import from a channel",
       "channelLabel": "Channel name",
-      "placeholder": "e.g. handofblood",
+      "placeholder": "channelname",
       "invalidChannelName": "Not a valid Twitch channel name.",
       "load": "Load set",
       "reload": "Reload",
