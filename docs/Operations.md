@@ -160,6 +160,14 @@ exit code 3, which means the file itself cannot be recomputed at all — a forei
 a missing or damaged header, and the like). There is no way to recompute around this: finish a fresh
 run instead, the same advice as above for a list change mid-measurement.
 
+**A report written before this feature existed (`AlgorithmVersion` `"harness-2"`, everything from
+before 2026-09-24/#260) stays recomputable — but only with an empty `TWITCH_EXCLUDED_CHATTER_IDS`.**
+Such a file never honoured any exclusion list at all, so its day lines are a faithful re-evaluation
+only under today's *empty* list; with anything configured, `--report-only` refuses with exit code 7,
+same as a genuinely changed list on a newer file. This is why the binding `"harness-2"` reports of
+2026-10-08 stay recomputable with a later worker image (needed if a formula changes later): recompute
+them before adding any ID to `TWITCH_EXCLUDED_CHATTER_IDS`, or with it temporarily emptied.
+
 ## Data retention
 
 Not to be confused with the backup rotation's `RETENTION_DAYS` above — this is a separate,

@@ -87,6 +87,23 @@ public sealed class HarnessRunner(
     /// </summary>
     public const string AlgorithmVersion = "harness-3";
 
+    /// <summary>
+    /// The one prior version <see cref="RecomputeReportAsync"/> still accepts, and only there —
+    /// <see cref="RunAsync"/>/<see cref="ExecuteAsync"/> never resumes it (see
+    /// <see cref="FindFrozenWindow"/>, which matches on <see cref="AlgorithmVersion"/> alone).
+    /// <para>
+    /// A "harness-2" file's day lines are counted exactly like an empty-list "harness-3" run's would
+    /// be: the objection gate the "harness-3" bump exists for did not exist yet, so nothing in a
+    /// "harness-2" file was ever dropped for being an excluded chatter's message, the same outcome an
+    /// empty <c>Twitch:ExcludedChatterIds</c> gives today. Its day-line *shape* is also unchanged —
+    /// <see cref="ReplayDayLine.SharedChatCounts"/> already existed at "harness-2" (#73) — so
+    /// <see cref="ReplayFidelityCalculator.Compute"/> reads it exactly as it reads a "harness-3" file's.
+    /// The operator runbook needs this: the binding "harness-2" reports of 2026-10-08 must stay
+    /// recomputable with a later image, and this is that path (see docs/DECISIONS.md).
+    /// </para>
+    /// </summary>
+    public const string PriorRecomputableAlgorithmVersion = "harness-2";
+
     /// <summary>The window covered completely; both final reports were written.</summary>
     public const int ExitSuccess = 0;
 
@@ -590,17 +607,23 @@ public sealed class HarnessRunner(
 
         var identity = header.Identity;
 
-        // Refuses a foreign AlgorithmVersion before any DB access (issue #119, second review round):
-        // ReplayDayCounter's day-line shape changed at "harness-2" (SharedChatCounts, #73), and
-        // ReplayFidelityCalculator reads that dictionary unconditionally — recomputing a "harness-1"
-        // file throws (a bare NullReferenceException today) rather than refusing cleanly. There is no
-        // migration path between versions: a version bump means the counting rule itself changed, so
-        // an old file's day lines cannot be reinterpreted under the new one, only refused.
-        if (!string.Equals(identity.AlgorithmVersion, AlgorithmVersion, StringComparison.Ordinal))
+        // Refuses a foreign AlgorithmVersion before any DB access (issue #119, second review round),
+        // with one deliberate exception: "harness-2", accepted here and nowhere else (RunAsync never
+        // resumes it — FindFrozenWindow matches on AlgorithmVersion alone). ReplayDayCounter's
+        // day-line shape changed at "harness-2" (SharedChatCounts, #73) and stayed there through the
+        // "harness-3" bump — that later bump only changed what feeds the counting callback during a
+        // *fetch* (the objection gate), never the shape ReplayFidelityCalculator reads — so a
+        // "harness-2" file's day lines are exactly as readable by today's calculator as a "harness-3"
+        // file's. Every other foreign version (starting with "harness-1", whose day lines predate
+        // SharedChatCounts and would NRE) has no such guarantee and stays refused: there is no
+        // migration path between versions in general, "harness-2" is the one already-proven exception.
+        var isPriorRecomputableVersion = string.Equals(
+            identity.AlgorithmVersion, PriorRecomputableAlgorithmVersion, StringComparison.Ordinal);
+        if (!isPriorRecomputableVersion && !string.Equals(identity.AlgorithmVersion, AlgorithmVersion, StringComparison.Ordinal))
         {
             logger.LogError(
-                "Report-only file '{File}' was written by algorithm version '{FileVersion}', but this build only recomputes '{CurrentVersion}'; there is no migration between versions.",
-                sourceFile.Path, identity.AlgorithmVersion, AlgorithmVersion);
+                "Report-only file '{File}' was written by algorithm version '{FileVersion}', but this build only recomputes '{CurrentVersion}' or '{PriorVersion}'; there is no migration between any other versions.",
+                sourceFile.Path, identity.AlgorithmVersion, AlgorithmVersion, PriorRecomputableAlgorithmVersion);
             return ExitPreconditionViolated;
         }
 
@@ -616,8 +639,20 @@ public sealed class HarnessRunner(
         // to be a faithful re-evaluation of that same run would silently no longer be one. Compared as
         // a digest, never as the raw id list, for the same reason HarnessRunIdentity carries one
         // rather than the ids themselves (see ExcludedChatterIdsDigest's own remarks).
+        //
+        // A "harness-2" file carries no ExcludedChatterIdsDigest at all — the field did not exist yet
+        // — so identity.ExcludedChatterIdsDigest deserializes to null for one and would never equal
+        // any computed digest, including the empty list's. Its day lines are known-safe against
+        // exactly one baseline regardless of what (if anything) is on disk: the empty-list digest,
+        // because "harness-2" never honoured any exclusion list, so its counts already equal what an
+        // empty-list run would have produced. Comparing against that fixed baseline instead of the
+        // file's own (nonexistent) field is what "harness-2 file + empty list → recomputed, harness-2
+        // file + non-empty list → exit 7" means in practice.
+        var expectedDigest = isPriorRecomputableVersion
+            ? ExcludedChatterIdsDigest.Compute([])
+            : identity.ExcludedChatterIdsDigest;
         var currentExclusionDigest = ExcludedChatterIdsDigest.Compute(excludedChatterFilter.ExcludedChatterIds);
-        if (!string.Equals(identity.ExcludedChatterIdsDigest, currentExclusionDigest, StringComparison.Ordinal))
+        if (!string.Equals(expectedDigest, currentExclusionDigest, StringComparison.Ordinal))
         {
             logger.LogError(
                 "Report-only file '{File}' was written under a different chatter exclusion list than is currently configured; recomputing it could issue a binding report built from day lines counted under a policy that no longer holds. Finish a fresh run instead.",

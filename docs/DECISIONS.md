@@ -16,7 +16,9 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs` · `docker-compose.yml` ·
 `docker-compose.prod.yml` · `docs/Operations.md`
 
-**Not to be merged before 2026-10-08 (binding harness run must stay on harness-2).**
+**Not to be merged before the binding harness run of 2026-10-08 has finished and its reports are
+saved (the run starts at 02:00 German time that day; a merge plus deploy that morning would still
+hit it).**
 
 A GDPR review of the privacy policy found the gap the #252 entry below explicitly accepted: it said
 the harness (#69, a second entry point of the same `EmotePurge.Worker` image that replays archived
@@ -102,6 +104,52 @@ a run under the default (empty) exclusion list, recomputed after the configured 
 refuses with the new exit code and touches neither the archive client nor the usage-stat query
 service. `docs/Operations.md`'s note on `--report-only` and the exclusion list is extended with this
 case.
+
+**Revised 2026-09-24 (fourth revision, the operator-runbook gap): the third revision above made every
+`"harness-2"` file unrecomputable, including the pre-registered binding reports of 2026-10-08 — the
+runbook's `--report-only` path (needed if a formula changes later) reads their `AlgorithmVersion`
+before ever reaching the digest check, and `"harness-2" != "harness-3"` refused them outright.**
+Checked first, before changing anything: does anything on this branch change what a `--report-only`
+recompute *computes* for a `"harness-2"` file with an empty exclusion list, as opposed to merely what
+it *refuses*? `ReplayFidelityCalculator`, `ReplayDayCounter` and `ReplayModels` are untouched by this
+branch (not in its diff against `origin/main` at all); the objection gate and its `gatedMessageCount`
+fallback (second revision above) live entirely inside `ExecuteAsync`'s per-message callback, which a
+recompute never runs — `ExecuteRecomputeAsync` only reads already-written day lines off disk and
+calls the same unchanged `Compute`. The check was proved empirically, not just by reading the diff: a
+throwaway `git worktree add --detach` of `origin/main` (commit `52a857a7`) ran the pre-harness-3
+`RecomputeReportAsync` over a three-day fixture (one message a day, empty exclusion list) and its
+`.report.json` was captured, then discarded with the worktree; this branch's own recompute of the
+identical fixture, rewritten to a genuine `"harness-2"` shape (no `ExcludedChatterIdsDigest` property
+at all — `LineOptions`'s `WhenWritingNull` drops it, exactly like a real pre-harness-3 file that never
+had the field), produces a field-identical report — `Run`, `Gate`, `Plausibility` and `Diagnostics` are
+byte-identical, and even `Recomputation.OriginalInputHash`/`CurrentInputHash` match, because
+`HarnessInputHash` and the fixture data are unchanged too. Only `Recomputation.SourceFile` legitimately
+differs (an absolute path under each run's own temp directory). Golden-master test:
+`ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_RecomputesIdenticallyToMain`.
+
+Check clean, so implemented (a) rather than falling back to a documentation-only workaround (pinning
+recomputes of `"harness-2"` files to a specific pre-`"harness-3"` image by its digest): a new constant,
+`HarnessRunner.PriorRecomputableAlgorithmVersion = "harness-2"`, is accepted by
+`ExecuteRecomputeAsync`'s `AlgorithmVersion` guard *in addition to* the current `AlgorithmVersion` —
+and nowhere else; `RunAsync`/`ExecuteAsync` still never resumes one, because `FindFrozenWindow` matches
+candidates on `AlgorithmVersion` alone and only ever looks for the current value. For the exclusion
+digest check right after it: a `"harness-2"` identity's `ExcludedChatterIdsDigest` deserializes to
+`null` (the field never existed), so instead of comparing that field the check now uses
+`ExcludedChatterIdsDigest.Compute([])` — the fixed empty-list digest — as the expected value whenever
+the file is `"harness-2"`, on the reasoning the check above already established: a `"harness-2"` run
+never honoured any exclusion list, so its day lines are only a faithful re-evaluation under today's
+*empty* `Twitch:ExcludedChatterIds`; a currently non-empty list still refuses with
+`ExitExclusionListChanged` (7), the same exit code and the same reasoning a drifted `"harness-3"` list
+already gets. Any other foreign version (`"harness-1"` and anything else) is unaffected and still
+refused with `ExitPreconditionViolated` (3). Tested in `HarnessRunnerTests`:
+`ReportOnly_WithAHarnessTwoFileAndAnEmptyExclusionList_RecomputesIdenticallyToMain` (the golden test
+above), `ReportOnly_WithAHarnessTwoFileAndANonEmptyExclusionList_RefusesWithExclusionListChanged`, and
+`AFileWithTheHarnessTwoAlgorithmVersion_IsNotResumed` (mirrors the existing `"harness-1"`-leftover
+resume-refusal test, proving `RunAsync` still never adopts a `"harness-2"` file's window).
+
+This revision also corrects the merge note above: "must stay on harness-2" was read by an operator as
+"never merge this branch", when the actual constraint is narrower — the binding run must finish and
+its reports must be saved first (see the note's own wording, revised the same day).
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
