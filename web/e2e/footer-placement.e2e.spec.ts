@@ -265,10 +265,30 @@ test.describe('footer placement above the usage-stats action dock', () => {
     // A plain rejection with no `extensions.code` fails every row without aborting the run
     // (see emote-import.e2e.spec.ts's identical case for the same engine) — the whole selection
     // queues up as failed, and RunProgressPanel's failedItems() list is exactly what used to grow
-    // `.app-dock` past the fixed 160px DockClearanceService reservation used to assume.
-    await mockSevenTvGql(page, () => ({
-      errors: [{ message: '7TV had an internal error' }],
-    }));
+    // `.app-dock` past the fixed 160px DockClearanceService reservation used to assume. Only the
+    // RemoveEmote mutation fails: the delete run reads the target set's live entries first and
+    // aborts outright when that read fails, which would leave no per-row failure list at all.
+    await mockSevenTvGql(page, (request) => {
+      if (request.query.includes('mutation RemoveEmote')) {
+        return { errors: [{ message: '7TV had an internal error' }] };
+      }
+      return {
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: emotes.length,
+                pageCount: 1,
+                items: emotes.map((emote) => ({
+                  alias: emote.emoteName,
+                  emote: { id: emote.sevenTvEmoteId },
+                })),
+              },
+            },
+          },
+        },
+      };
+    });
     await page.clock.install();
 
     await page.goto('/channels/sensitron/usage-stats');
