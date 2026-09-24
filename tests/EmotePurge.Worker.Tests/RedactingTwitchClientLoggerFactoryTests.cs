@@ -22,11 +22,17 @@ public class RedactingTwitchClientLoggerFactoryTests
     private static readonly EventId UnaccountedForEventId = new(1006327295, "LogUnaccountedFor");
     private static readonly EventId ReconnectingEventId = new(1646549738, "LogReconnecting");
 
+    // Same generator, same FNV-1a hash of the method name that yields the three ids above.
+    private static readonly EventId LeavingChannelEventId = new(1270440230, "LogLeavingChannel");
+
     private static readonly Action<ILogger, string, Exception?> LogParsingErrorCallback =
         LoggerMessage.Define<string>(LogLevel.Error, ParsingErrorEventId, "Unexpected error during message parsing, message: {message}");
 
     private static readonly Action<ILogger, string, Exception?> LogUnaccountedForCallback =
         LoggerMessage.Define<string>(LogLevel.Warning, UnaccountedForEventId, "Unaccounted for: {ircString} (please create a TwitchLib GitHub issue :P)");
+
+    private static readonly Action<ILogger, string, Exception?> LogLeavingChannelCallback =
+        LoggerMessage.Define<string>(LogLevel.Information, LeavingChannelEventId, "Leaving channel: {channel}");
 
     private static readonly Action<ILogger, Exception?> LogReconnectingCallback =
         LoggerMessage.Define(LogLevel.Information, ReconnectingEventId, "Reconnecting to Twitch");
@@ -68,6 +74,24 @@ public class RedactingTwitchClientLoggerFactoryTests
         Assert.DoesNotContain("444444444", entry.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("secret dm text", entry.Message, StringComparison.Ordinal);
         Assert.Contains("command=WHISPER", entry.Message, StringComparison.Ordinal);
+    }
+
+    // Fourth Codex review of the block list: the worker parts a channel whose Twitch id is on the
+    // excluded-channel list right after the identity reconcile deactivates it, and TwitchLib's own
+    // "Leaving channel" line would name it. The event stays at its level; only the login goes.
+    [Fact]
+    public void LeavingChannel_OnTwitchClientCategory_KeepsTheEventButWithholdsTheChannel()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogLeavingChannelCallback(logger, "blockedchannel_test", null);
+
+        var entry = Assert.Single(provider.Entries);
+        Assert.Equal(LogLevel.Information, entry.Level);
+        Assert.Equal(LeavingChannelEventId, entry.EventId);
+        Assert.Contains("Leaving channel", entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("blockedchannel_test", entry.Message, StringComparison.Ordinal);
     }
 
     [Fact]

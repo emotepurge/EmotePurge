@@ -179,6 +179,13 @@ public static class ChannelEndpoints
                 ChannelJoinStatus.CapacityReached =>
                     Results.Conflict(new { errorCode = ApiErrorCodes.ChannelCapacityReached }),
 
+                // 403: the request is well-formed and the channel exists, but its Twitch id is on the
+                // configured block list (Channels:ExcludedChannelIds, GDPR Art. 21 objection) and
+                // stays refused no matter who asks — unlike CapacityReached, no caller is exempt.
+                ChannelJoinStatus.ChannelExcluded =>
+                    Results.Json(
+                        new { errorCode = ApiErrorCodes.ChannelExcluded }, statusCode: StatusCodes.Status403Forbidden),
+
                 // The stored login, which is always the one that was asked for: LookupByLoginAsync
                 // only reports Found on a normalized name match, so even in the rename case the
                 // caller typed the new name and the row now carries it. Returned anyway rather than

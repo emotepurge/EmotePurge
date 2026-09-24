@@ -10,6 +10,311 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — A channel block list closes the "purge, then rejoin" gap of the GDPR objection (#252)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/IExcludedChannelFilter.cs` ·
+`src/EmotePurge.Infrastructure/Services/ExcludedChannelFilter.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` (neu, second revision) ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs` (third revision) ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Core/Services/IChannelService.cs` ·
+`src/EmotePurge.Core/Services/IChannelIdentityService.cs` (second revision) ·
+`src/EmotePurge.Worker/TwitchIdentityReconcileWorker.cs` (second revision) ·
+`src/EmotePurge.Worker/Worker.cs` (fourth revision) ·
+`src/EmotePurge.Infrastructure/Services/SevenTvSyncService.cs` (fourth revision) ·
+`src/EmotePurge.Worker/SevenTvPeriodicResyncWorker.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` ·
+`src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` (all fourth revision, leave-path logs only) ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`web/src/app/core/i18n/api-error.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ExcludedChannelFilterTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChannelIdentityServiceTests.cs` ·
+`tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Worker.Tests/WorkerBootSequenceTests.cs` (fourth revision) ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SevenTvSyncServiceTests.cs` (fourth revision) · `docker-compose.yml` ·
+`docker-compose.prod.yml` · `.env.example` · `docs/Operations.md`
+
+The second gap the same GDPR review found: `ChannelService.PurgeAsync` deletes a channel's row and
+its whole history, but nothing stopped any moderator or broadcaster from immediately joining it
+again through the ordinary join route — the objection had no lasting effect at the channel level,
+only a momentary one.
+
+Added `Channels:ExcludedChannelIds` (env `EXCLUDED_CHANNEL_IDS`), same accepted shapes as
+`Twitch:ExcludedChatterIds`/`Twitch:AdditionalBotAccountIds` — indexed array keys or one
+comma-separated scalar, scalar wins — read into a new `ExcludedChannelFilter`
+(`IExcludedChannelFilter.IsExcluded`). It lives in `EmotePurge.Infrastructure`, not
+`EmotePurge.Worker` where the per-chatter filter lives: both the Api's join endpoint
+(`ChannelService`) and the Worker's identity reconcile (`ChannelIdentityService`) need it, and both
+already depend on this assembly through `AddEmotePurgeInfrastructure` — a single registration
+covers both hosts without either depending on the other.
+
+**Every path that can create or reactivate a `Channel` row for chat observation is guarded, matched
+on the immutable Twitch broadcaster id and never on the login:**
+
+- `ChannelService.JoinAsync`, the one path both the ordinary join endpoint and an admin's join go
+  through (there is no separate admin-join code path) — checked once the identity lookup resolves a
+  Twitch id, before `ResolveJoinTargetAsync` can create or lock a single row. A new
+  `ChannelJoinStatus.ChannelExcluded` carries the refusal out; unlike `CapacityReached`, **no
+  caller is exempt**, including a global admin — the cap protects Twitch's own connection limit, this
+  gate protects a person's right under Art. 21, and only the operator removing the id undoes it.
+- `HandleUnknownTwitchLoginAsync` (the "Twitch no longer answers for this login, but we already
+  track it" branch) gets the same check against the already-known row's stored `TwitchChannelId`,
+  defense in depth — realistically unreachable in the ordinary objection procedure, because
+  `PurgeAsync` deletes the row a blocked id would otherwise be found under.
+- `ChannelIdentityService.MergeAsync`, the identity reconcile's row consolidation: the only other
+  place a row can go from inactive to active is `survivor.IsBotActive |= loser.IsBotActive`, reached
+  when an id-less duplicate (which a join during a Helix outage can create — the join-path check
+  above has no id to check yet in that case) turns out to belong to a since-blocked id. Refused the
+  same way the existing "loser still has emotes" case already is: nothing is written, both rows stay
+  duplicated and unresolved until the operator clears the id, `ReconcileCounters.MergesRefused` is
+  reused rather than adding a fourth counter. Neither refusal path logs the id or either login —
+  logging which channel this concerns would itself leak the objection the block exists to honour.
+- Boot recovery and the periodic 7TV resync in the Worker deliberately get **no** guard: both only
+  ever continue observing rows the database already marks active (`ListActiveChannelNamesAsync`) —
+  neither creates nor reactivates a row, so there is nothing here for the block list to intercept.
+
+Response contract: `ChannelJoinStatus.ChannelExcluded` maps to **403** with
+`{ errorCode: "channel_excluded" }` (`ApiErrorCodes.ChannelExcluded`) — distinct from the existing
+404 (`ChannelNotOnTwitch`, Twitch does not know the login at all) and 409
+(`CapacityReached`, a transient, admin-overridable cap). The frontend text on both locales is
+deliberately short and neutral — "This channel cannot be added." / "Dieser Kanal kann nicht
+hinzugefügt werden." — and names neither a legal objection nor a reason.
+
+`docs/Operations.md` extends the existing objection procedure: for a streamer's own objection, add
+the id to `EXCLUDED_CHANNEL_IDS`, recreate `api`/`worker` so both pick it up, *then* purge the
+channel in the admin area — in that order, so the channel cannot be rejoined in the gap between the
+purge and the block taking effect.
+
+**Revised 2026-09-24 (Codex P1/P2 review of this branch):** the two guards above had gaps of their
+own.
+
+- `ChannelService.JoinAsync` checked only the identity Helix resolved *this* call, so (a) a join
+  during a Helix outage (`Unavailable`) never reached the check at all, even when the existing row
+  it was about to reactivate carried a known, blocked `TwitchChannelId`, and (b) a non-excluded
+  identity that resolved to a login already held by a stale occupant row (the ordinary
+  rename-collision case `ResolveChannelByIdentityAsync` already handles) could reactivate that
+  occupant without ever inspecting *its* stored id. Fixed with one additional check, right before
+  `CompleteJoinAsync`, against the `TwitchChannelId` of the row `ResolveJoinTargetAsync` actually
+  picked — not the identity, the row. Refusing is the answer for both cases: a brand-new row can
+  never trip it (its id is either null or the already-checked identity), so this only ever blocks a
+  join that would touch an existing, blocked row.
+- `ChannelIdentityService.MergeAsync`'s exclusion refusal ran *before* `settledChannelIds` could be
+  updated (it returns before either row is even loaded), so a pair where both the id row and its
+  id-less duplicate are active — reached from both ends in the same pass, exactly like the
+  loser-has-emotes refusal already handles — was refused and counted twice per tick, with the
+  warning line repeating too. Fixed by passing the two row ids the callers already have (from their
+  own read-only lookups, no extra query) into `MergeAsync` and settling both the moment the
+  exclusion check itself refuses, mirroring the emote-based refusal exactly.
+
+**Revised 2026-09-24 (second Codex review of this branch):** the residual gap the entry above used to
+document for `BackfillIdAsync` was in fact a live end-to-end path, not just a stray unblocked case.
+Concretely: an excluded broadcaster can have an active, id-bearing row under its old login (the
+survivor a merge would target) *and* an active id-less duplicate under its current login (the merge's
+would-be loser). `MergeAsync`'s own exclusion guard correctly refuses that merge, so both rows stay
+active — exactly as designed, at that point. But `docs/Operations.md`'s own recommended next step is
+for the operator to purge the channel after blocking it, and purging the *duplicate* row (the one
+sitting under the channel's current, visible name) frees that name. The next reconcile tick then finds
+the name vacant, and `ReconcileKnownIdRowAsync` did what it always does when a name frees up: called
+`RenameAsync` on the surviving blocked row and published a JOIN — silently undoing the block the
+operator had just gone through the documented procedure to enforce.
+
+Fixed with a general rule rather than another special case: **an active row whose Twitch id — known
+already, or just resolved through the row's login — is excluded is deactivated before any rename,
+merge or backfill decision is made for it**, in both `ReconcileKnownIdRowAsync` (checked first, ahead
+of even consulting Helix's answer for the login) and `ReconcileIdLessRowAsync` (checked immediately
+once the login resolves to an identity, ahead of the existing-holder lookup that feeds both
+`BackfillIdAsync` and `MergeAsync`). Deactivation reuses the exact write `ChannelService.LeaveAsync`
+already does — `IsBotActive = false`, `DeactivatedAtUtc` stamped, a `channel.leave` audit entry under
+`AuditActor.System`, and the LEAVE command published so the worker parts the chat — factored into a
+new `ChannelDeactivation.DeactivateAsync` static helper both services call, rather than
+`ChannelIdentityService` taking a dependency on `IChannelService` (which would be circular:
+`ChannelService` already depends on `IChannelIdentityService` for `LookupByLoginAsync`). A new
+`ChannelIdentityReconcileSummary.Deactivated` counter carries the count into the worker's log line,
+same restraint as every other counter here — never an id or a login.
+
+`MergeAsync`'s own exclusion guard is left in place as defense in depth rather than removed: with both
+callers now gating earlier, it should be unreachable for an excluded id in ordinary operation, but it
+is the one guard specifically against `survivor.IsBotActive |= loser.IsBotActive`, and a second line of
+defense there is worth the one extra `IsExcluded` call. Its own `settledChannelIds`-based
+deduplication (the previous revision above) is untouched and still exists for the merge refusal that
+is *not* about exclusion — the loser-still-has-emotes case.
+
+One consequence worth noting: two rows of the same excluded duplicate pair, both still active, are now
+deactivated **independently** rather than through one refused merge — each detects its own tie to the
+blocked id on its own turn in the pass. That is two real writes, not one event double-counted, so
+`Deactivated` correctly reads 2 for that shape rather than repeating the old `MergesRefused` semantics
+of "exactly one, however the pair is reached."
+
+`docs/Operations.md` revised to say the reconcile now enforces the block list on its own, within one
+reconcile interval of the block taking effect — purging remains the recommended step, but only to
+actually delete the row's data, not to keep the objection enforced.
+
+**Revised 2026-09-24 (third Codex review of this branch):** three more gaps, all in the write the
+second revision above introduced.
+
+1. **P1 — the known-id exclusion pass ran too late.** `ReconcileActiveChannelsAsync` checked the
+   app token, then Helix, before ever looking at the exclusion list — during either outage the whole
+   tick returned early (`null`, "skipped without writing anything") and an active row whose *stored*
+   Twitch id is on the block list kept being observed for as long as the outage lasted, exactly the
+   observation the list exists to stop. Deactivating such a row needs no Twitch answer at all — the
+   id is already on the row — so the known-id gate now runs first, over the whole snapshot, before
+   either early return. Rows it settles are added to `settledChannelIds` so the main loop (reached
+   only once the token and Helix both answer) never re-decides them. The `null` contract is
+   unchanged in spirit but sharpened: it now means "nothing was written", not just "no Helix answer"
+   — an outage that *did* deactivate something returns a `ChannelIdentityReconcileSummary` with only
+   `Deactivated` populated, so the worker's log line still reports it instead of staying silent.
+2. **P1 — a failed LEAVE publish escaped the per-row catch.** `ChannelDeactivation.DeactivateAsync`
+   commits the deactivation before it publishes, exactly like every other write-then-announce path in
+   this class — but unlike `RenameAsync`/`MergeAsync`, which route their own publish through
+   `PublishHandoverAsync`'s own try/catch, `DeactivateExcludedRowAsync` let a thrown publish escape
+   uncaught. The pass's per-row catch only ever matched `DbUpdateException`, so a Redis outage on this
+   one write aborted the rest of the tick and threw the whole summary away — every row behind the
+   failing one stayed unprocessed that tick. Fixed by wrapping the call to
+   `ChannelDeactivation.DeactivateAsync` in `DeactivateExcludedRowAsync` itself: any exception except
+   `OperationCanceledException` or `DbUpdateException` (left to propagate — nothing was written that
+   time, and the per-row catch already retries it next tick) is logged (no id, no login, same
+   restraint as every log line in this write) and counted into `Deactivated` regardless, mirroring how
+   `RenameAsync`/`MergeAsync` already increment their own counters before their publish, not after it.
+   **Not the shared helper's job, on purpose:** `ChannelService.LeaveAsync`'s user-facing leave shares
+   `ChannelDeactivation.DeactivateAsync`, and its contract is unchanged — a failed publish there still
+   propagates and fails the request, exactly as before this fix. Catching it in the shared helper
+   instead would have silently changed that contract too; only the reconcile caller, which already
+   treats a lost publish as self-healing elsewhere in this class, catches it. **The self-healing
+   itself was already covered, not newly added:** `RosterPrunePolicy` (issue #41) is the general
+   convergence net for exactly this shape — a row the database now excludes from
+   `ListActiveChannelNamesAsync` but that the worker never got a LEAVE for. It prunes such a roster
+   entry (drops it from `EmoteMatchCache`, unsubscribes its 7TV EventAPI subscription, leaves the IRC
+   channel) after two consecutive periodic-resync ticks find it inactive, roughly one to two minutes
+   at the default 60s interval — not until a restart.
+3. **P1 — the reload before the write used the row's name, not its id.** `DeactivateExcludedRowAsync`
+   reloaded the row it was about to deactivate by `row.ChannelName`. A concurrent purge of that exact
+   row followed by a fresh join under the same login replaces it with an unrelated row before the
+   write runs, and a name-based reload finds and deactivates *that* row instead — silently pulling an
+   active, unexcluded channel back out of observation for a decision that was never about it. Fixed by
+   reloading via a new `ChannelQueries.LoadChannelByIdAsync` (by primary key) and re-checking, after
+   the reload, that the row still qualifies: still active, and its stored Twitch id (`row`'s own
+   snapshot value — `null` for the id-less path, unchanged) still matches what the decision was made
+   for. A purged-and-replaced row simply has a different `Id`, so the reload finds nothing for the
+   original one and the call is skipped like every other "the row is gone" case — no row lock needed
+   on top of that (unlike `MergeAsync`'s `FOR UPDATE` pair): the narrow window between the reload and
+   the write is already covered by the same per-row `DbUpdateException` catch every single-row write
+   in this class relies on instead of a lock (`RenameAsync`, `BackfillIdAsync`).
+
+All three verified with their own integration test in `ChannelIdentityServiceTests`: a known excluded
+stored id deactivated with no app token and, separately, with Helix unreachable; two independently
+excluded rows both deactivated despite every LEAVE publish throwing; and a purge-then-rejoin under
+the same login, simulated by having the `IExcludedChannelFilter` substitute perform the "concurrent"
+purge and re-join the moment it is asked about the row's id (the one call every row makes before its
+own reload), landing the mutation exactly between the snapshot and the reload — the replacement row
+is left untouched and `Deactivated` stays 0.
+
+**Revised 2026-09-24 (fourth Codex review of this branch):** this round did not stop at the reported
+findings. It first listed every path that joins or observes a channel or reactivates a row, and every
+log line on those paths, against the two properties the list has to hold once an id is on it — (I1)
+no path starts or continues observing that channel's chat or 7TV set, (I2) no log line names the
+channel in connection with the block — and then fixed what failed.
+
+- **The worker's roster source leaves blocked rows out (P1).** The first entry above said boot
+  recovery and the periodic resync needed no guard because they "only ever continue observing rows
+  the database already marks active". That was the gap: after the documented procedure (add the id,
+  recreate `api`/`worker`), boot recovery joined and synced every active row before the identity
+  reconcile — which waits for boot recovery — could deactivate anything.
+  `IChannelService.ListActiveChannelNamesAsync` now leaves out an active row whose **stored**
+  `TwitchChannelId` is excluded, filtered in memory through the same `IsExcluded` the join path uses
+  (the roster is capped far below a hundred rows). Every consumer was checked: boot recovery, the
+  periodic 7TV resync and its roster prune, and the live poll (all worker-side, all must stop
+  observing — which is the point); no admin list or count reads it (`AdminChannelQueryService` has
+  its own query, which keeps showing the row as it is). One change therefore covers boot, the
+  resync, the live poll *and* a lost LEAVE: the roster prune now parts such a channel within two
+  resync ticks even if the LEAVE publish never arrived. The reconcile's deactivation stays the
+  durable, database-side step.
+- **JOIN and RESYNC commands are checked against that same roster.** `Worker` used to follow both
+  blindly, so an Api still running with an older list (between the two recreations of step 3, or if
+  only `worker` was recreated) or an admin RESYNC of a row the reconcile had not deactivated yet made
+  the worker enter a channel its own configuration blocks. Both handlers now ask
+  `ListActiveChannelNamesAsync` first — one definition of "this worker should be in that channel",
+  not a second predicate — and ignore the command otherwise, with a log line that names nothing. On a
+  database error they fail closed; the periodic resync's `EnsureJoinedAsync` is the convergence net
+  that joins a legitimately active channel on its next tick.
+- **The 7TV sync refuses a blocked channel itself.** `SevenTvSyncService` is the one place every
+  7TV-observing path funnels through — boot recovery, the periodic resync, the JOIN/RESYNC handlers
+  and the EventAPI follow-ups — so it now checks the row's stored id after the row gate (no 7TV call,
+  no match-cache warm-up, no result for a caller to subscribe), and `ApplyEmoteSetUpdateAsync`
+  answers a dispatch for such a row with `ChannelUnknown`, which makes the EventAPI client drop the
+  subscription. For an id-less row the sync learns the id from **7TV**, independently of Helix, and
+  refuses right there — before the duplicate warning (which would name the id) and before the
+  backfill — and takes the match-cache entry the warm-up just filled back out. That is the one
+  Helix-independent identity source this codebase has, so it also covers a blocked channel joined as
+  a brand-new id-less row during a Helix outage: the worker sits in the IRC channel until the
+  reconcile's next pass, but counts nothing and observes no 7TV set, as long as 7TV knows the account
+  (and a channel 7TV does not know has no set to count against). The refusal logs at Debug only: it
+  names nothing, but it follows lines of the same call that do (boot recovery's or the JOIN handler's
+  "joining {Channel}", the warm-up's line), and beside them it would identify the channel anyway; the
+  operator-visible signal is the reconcile's deactivation count.
+- **A deactivated id-less row keeps the id it resolved to (P1).** The reconcile used to deactivate an
+  id-less row whose login resolved to an excluded id but leave `TwitchChannelId = null` ("never
+  backfilled"). A later join by that login while Helix answered `Unavailable` or `NotFound` then found
+  the row by name, saw no id to check, and reactivated it. `DeactivateExcludedRowAsync` now writes the
+  resolved id onto the row in the same save as the deactivation — the same backfill any other row
+  gets — so every join path's stored-id check refuses it from then on, whatever Twitch answers. It
+  cannot when another row already holds that id (the unique index): that row carries the block
+  itself, and the duplicate stays id-less. For that duplicate, `HandleUnknownTwitchLoginAsync` now
+  refuses to reactivate **any inactive row without a Twitch id** on a `NotFound` answer, with
+  `ChannelNotOnTwitch` (404) — the ban restraint above rests on the stored id, and without one
+  nothing ties the row to an account Twitch still knows; an active row, or one with an id, is
+  unaffected. Three alternatives were weighed and rejected. Refusing the same rows on `Unavailable`
+  too would have closed the last case, but it breaks an ordinary rejoin of every pre-#44 inactive
+  row during a Helix outage, which the three-state lookup exists to keep working. Deleting the
+  duplicate automatically would destroy history on an operator's typo in the list. And a marker
+  column would need a manual production migration for a case that only arises when a rename
+  duplicate meets an objection. **What stays open, deliberately:** during a Helix outage, a join by
+  login cannot be checked against the list when no row with a stored blocked id answers to that login
+  — a brand-new row (the gap the first entry above already accepted) or the id-less duplicate just
+  described. The 7TV sync's own gate (previous bullet) keeps such a channel uncounted and its set
+  unobserved, and the reconcile's next pass after the outage deactivates it again.
+- **Every exclusion-related failure and side log is anonymous (P2).** The known-id pass's
+  `DbUpdateException` catch logged the row's login and internal id, and a failed deactivation on the
+  id-less path fell through to the main loop's catch, which does the same. `DeactivateExcludedRowAsync`
+  now catches its own failed save: it clears the tracker, logs a line naming nothing and returns
+  without counting, and the still-active row is retried next pass; the named per-row catch is only
+  reached by writes that are not about the block. The inventory found more lines of the same kind,
+  silenced or anonymised the same way: the reconcile's case-3 warning when the row sitting on
+  a channel's new login carries an excluded id (it named both rows, the blocked id and the login
+  the blocked channel last had), and the join path's rename-collision and id-mismatch lines, which
+  named the blocked row's login or stored id right before `JoinAsync` refused the join for exactly
+  that id — and `LookupByLoginAsync`'s two outage lines (no app token, Helix unreachable), which
+  named the login right before a join could be refused on the stored id of the row under it. The
+  audit entry the objection-gate deactivation writes is a `channel.leave` by the system
+  actor — written for nothing else — so it now carries `reason = "excluded"` and **no channel name**
+  (`ChannelDeactivation.DeactivateAsync(forExclusion: true)`); an entry naming the channel would have
+  told every admin reading the audit log which channel the objection concerns. A user's own leave
+  still names its channel.
+- **The worker names a channel it leaves only at Debug.** The inventory's last finding sat on the
+  worker side: when the reconcile deactivates a blocked row the worker is still in (the id-less case,
+  which boot recovery could not recognise), it publishes a LEAVE, and every line on the leave path —
+  the command handler's "verlasse {Channel}", the roster prune's line, `TwitchChatManager`'s
+  skipped/failed/left lines, and TwitchLib's own "Leaving channel: {channel}" — named that channel
+  right after the reconcile's anonymous deactivation line. All of them now log the event at their
+  old level without the login and repeat the login only at Debug; TwitchLib's line goes through the
+  existing `RedactingTwitchClientLoggerFactory` (#246), matched by event name `LogLeavingChannel`
+  like the two redactions already there, with its login withheld. This applies to every leave, not
+  only blocked ones — a leave-path line cannot know why it runs, and every LEAVE comes from an audited
+  write (a user's leave, a purge, a rename or merge handover) that keeps the name on record. Join-path
+  lines are untouched: they name a channel before anything about a block is known.
+- **Left open on purpose, for a separate decision.** The chat-log harness (`harness <channel>`, and
+  its `--report-only` recompute) fetches and replays a channel's archived chat by its Twitch id and
+  has no channel-level gate: run by hand on a blocked channel whose row was not purged yet, it would
+  process that channel's chat. It is frozen for a pre-registered measurement until 2026-10-08, so the
+  guard (refuse before any archive or database access when the row's stored id is excluded, with a
+  line that names nothing) is deferred to after that date rather than slipped into this round. The
+  foreign-channel preview (`ForeignEmoteSetService`) reads any channel's public 7TV set on a user's
+  request — no row, no subscription, no chat — and whether an objection covers that read is a policy
+  question for the operator, not a gap in this gate; answering "yes" would need its own refusal
+  status and error code.
+
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link
 
 **Betrifft:** `web/src/app/features/legal/legal-page.ts` ·

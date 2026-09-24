@@ -29,6 +29,7 @@ public class ChannelIdentityService(
     ITwitchAppTokenProvider appTokenProvider,
     IRedisPublisher redisPublisher,
     ChannelIdentityWarningState warningState,
+    IExcludedChannelFilter excludedChannelFilter,
     ILogger<ChannelIdentityService> logger) : IChannelIdentityService
 {
     public async Task<ChannelIdentityReconcileSummary?> ReconcileActiveChannelsAsync(CancellationToken ct = default)
@@ -45,7 +46,37 @@ public class ChannelIdentityService(
 
         if (rows.Count == 0)
         {
-            return new ChannelIdentityReconcileSummary(0, 0, 0, 0, 0, 0);
+            return new ChannelIdentityReconcileSummary(0, 0, 0, 0, 0, 0, 0);
+        }
+
+        var counters = new ReconcileCounters();
+        // Rows this pass is done with: either merged away (the snapshot still lists them), one half
+        // of a duplicate pair the pass already ruled on, or — since the pass below — a row the
+        // known-id exclusion gate has already deactivated. A duplicate is visible from both ends —
+        // the id row that wants the name and the id-less row that holds it — and without this the
+        // same merge would be attempted, refused and counted twice per tick.
+        var settledChannelIds = new HashSet<string>(StringComparer.Ordinal);
+
+        // Objection gate, unconditional (P1 Codex finding, issue #260, third review): deactivating
+        // a row whose STORED Twitch id is already known to be excluded needs no Helix answer at all
+        // — unlike a newly-*backfilled* id (ReconcileIdLessRowAsync's own gate further down, which
+        // has to resolve the login first). Run here, before the app-token/Helix early returns below,
+        // so a token or Helix outage can no longer leave such a row under observation for as long as
+        // the outage lasts — the early returns used to skip this guard along with the rest of the
+        // tick, which is exactly the gap this closes. Every row it settles is recorded the same way
+        // the rest of the method already tracks settled rows, so the main loop further down (reached
+        // only once the token and Helix both answer) never re-decides the same row a second time.
+        foreach (var row in rows)
+        {
+            if (row.TwitchChannelId is not { } storedTwitchChannelId || !excludedChannelFilter.IsExcluded(storedTwitchChannelId))
+            {
+                continue;
+            }
+
+            // No catch here: DeactivateExcludedRowAsync handles its own failed write, so that its
+            // warning can stay anonymous (see there).
+            await DeactivateExcludedRowAsync(row, storedTwitchChannelId, counters, ct);
+            settledChannelIds.Add(row.Id);
         }
 
         var appToken = await appTokenProvider.GetTokenAsync(ct);
@@ -53,7 +84,13 @@ public class ChannelIdentityService(
         {
             logger.LogInformation(
                 "Kein App-Token verfügbar — Identitätsabgleich für {ChannelCount} Kanäle übersprungen.", rows.Count);
-            return null;
+            // Not necessarily null any more (P1 Codex finding, issue #260, third review): the
+            // exclusion pass above may have written something despite the outage, and that is worth
+            // the worker's log line — null stays reserved for "nothing happened", now genuinely true
+            // only when nothing was deactivated either.
+            return counters.Deactivated > 0
+                ? new ChannelIdentityReconcileSummary(rows.Count, 0, 0, 0, 0, 0, counters.Deactivated)
+                : null;
         }
 
         var ids = rows.Where(r => r.TwitchChannelId is not null).Select(r => r.TwitchChannelId!).ToList();
@@ -66,7 +103,10 @@ public class ChannelIdentityService(
         {
             logger.LogInformation(
                 "Helix nicht erreichbar — Identitätsabgleich für {ChannelCount} Kanäle übersprungen.", rows.Count);
-            return null;
+            // See the app-token early return above for why this is no longer unconditionally null.
+            return counters.Deactivated > 0
+                ? new ChannelIdentityReconcileSummary(rows.Count, 0, 0, 0, 0, 0, counters.Deactivated)
+                : null;
         }
 
         var identitiesById = new Dictionary<string, TwitchUserIdentity>(StringComparer.Ordinal);
@@ -78,13 +118,6 @@ public class ChannelIdentityService(
             identitiesById[identity.Id] = identity;
             identitiesByLogin[ChannelName.Normalize(identity.Login)] = identity;
         }
-
-        var counters = new ReconcileCounters();
-        // Rows this pass is done with: either merged away (the snapshot still lists them) or one
-        // half of a duplicate pair the pass already ruled on. A duplicate is visible from both ends
-        // — the id row that wants the name and the id-less row that holds it — and without this the
-        // same merge would be attempted, refused and counted twice per tick.
-        var settledChannelIds = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var row in rows)
         {
@@ -131,26 +164,30 @@ public class ChannelIdentityService(
             counters.Renamed,
             counters.Merged,
             counters.MergesRefused,
-            counters.LoginsMissing);
+            counters.LoginsMissing,
+            counters.Deactivated);
     }
 
     public async Task<TwitchUserLookup> LookupByLoginAsync(string login, CancellationToken ct = default)
     {
         var normalized = ChannelName.Normalize(login);
 
+        // Both outage lines name no login (fourth Codex review of the block list): a join during
+        // either outage can still be refused for a row whose stored Twitch id is on the
+        // excluded-channel list, and a line naming the login right before that anonymous refusal
+        // would tie the block to it. An outage is diagnosed by the fact that it happens, not by
+        // which login was asked about.
         var appToken = await appTokenProvider.GetTokenAsync(ct);
         if (appToken is null)
         {
-            logger.LogInformation(
-                "Kein App-Token verfügbar — Twitch-Identität für {ChannelName} nicht auflösbar.", normalized);
+            logger.LogInformation("No app token available — a Twitch identity could not be resolved.");
             return TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable);
         }
 
         var identities = await helixClient.GetUsersAsync([], [normalized], appToken, ct);
         if (identities is null)
         {
-            logger.LogInformation(
-                "Helix nicht erreichbar — Twitch-Identität für {ChannelName} nicht auflösbar.", normalized);
+            logger.LogInformation("Helix not reachable — a Twitch identity could not be resolved.");
             return TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable);
         }
 
@@ -172,6 +209,28 @@ public class ChannelIdentityService(
         HashSet<string> settledChannelIds,
         CancellationToken ct)
     {
+        // Objection gate (GDPR Art. 21, issue #260, this revision — supersedes the residual gap the
+        // #252 DECISIONS entry used to document): checked first, before Helix's answer is even
+        // consulted, so a row whose *known* Twitch id is excluded can never reach a rename or a
+        // merge decision below — not "refuse the one write that would reactivate it" (MergeAsync's
+        // own guard, still in place as defense in depth) but "stop observing it at all". Without
+        // this, purging the row's id-less duplicate under its current login (the operator's own
+        // documented cleanup step, Operations.md) freed that name for this row to be renamed onto
+        // and rejoined on the very next tick — the exact P1 Codex finding this closes.
+        //
+        // Realistically unreachable in ordinary operation as of the third review round: the
+        // unconditional exclusion pass at the top of ReconcileActiveChannelsAsync already settles
+        // every row with a *known*, excluded id — this method is only ever reached for a row whose
+        // stored id was NOT excluded at that point — so `settledChannelIds` already skips this
+        // method's caller for such a row before it can even be invoked. Left in place anyway, the
+        // same reasoning MergeAsync's own guard already documents for itself: a second line of
+        // defense costs one extra `IsExcluded` call and is worth it.
+        if (excludedChannelFilter.IsExcluded(twitchChannelId))
+        {
+            await DeactivateExcludedRowAsync(row, twitchChannelId, counters, ct);
+            return;
+        }
+
         if (!identitiesById.TryGetValue(twitchChannelId, out var identity))
         {
             // Case 6: the id resolved to nothing in an otherwise successful response — the account
@@ -207,6 +266,22 @@ public class ChannelIdentityService(
             return;
         }
 
+        if (excludedChannelFilter.IsExcluded(occupant.TwitchChannelId))
+        {
+            // Case 3, blocked by a row on the excluded-channel list (fourth Codex review of the block
+            // list): the same skip as the case below, but the warning names nothing. The row sitting
+            // on the name is the blocked channel's, and naming either row — or the new login, which
+            // is the name the blocked channel last had — would tie the block to a channel. The name
+            // frees up once the operator purges that row, as the objection procedure recommends.
+            if (warningState.ShouldWarn(ChannelIdentityWarningState.BlockedKey(row.Id)))
+            {
+                logger.LogWarning(
+                    "A channel's new login is held by a row on the excluded-channel list — skipped until that row is purged.");
+            }
+
+            return;
+        }
+
         if (occupant.TwitchChannelId is not null)
         {
             // Case 3, blocked: the row sitting on the target name claims a different Twitch id than
@@ -229,7 +304,7 @@ public class ChannelIdentityService(
 
         // Case 3, mergeable: the id-less row under the new name is the duplicate the rename created
         // — someone joined the channel again under its new name while the old row kept the history.
-        if (await MergeAsync(twitchChannelId, newLogin, counters, settledChannelIds, ct))
+        if (await MergeAsync(twitchChannelId, newLogin, row.Id, occupant.Id, counters, settledChannelIds, ct))
         {
             warningState.Clear(ChannelIdentityWarningState.BlockedKey(row.Id));
         }
@@ -260,6 +335,20 @@ public class ChannelIdentityService(
 
         warningState.Clear(ChannelIdentityWarningState.LoginKey(row.ChannelName));
 
+        // Objection gate, the id-less counterpart of the check at the top of
+        // ReconcileKnownIdRowAsync: this row is about to learn (via backfill) or act on
+        // (via the merge below) a Twitch id that turns out to be excluded — "newly backfilled" in
+        // the DECISIONS wording. Checked before either LoadChannelByTwitchIdReadOnlyAsync or
+        // BackfillIdAsync can act on the identity, so this row is deactivated instead of being
+        // brought into observation under that id at all, whether or not another row already holds
+        // it (MergeAsync's own exclusion guard stays in place for that case too, as defense in
+        // depth — see the class remark on MergeAsync).
+        if (excludedChannelFilter.IsExcluded(identity.Id))
+        {
+            await DeactivateExcludedRowAsync(row, identity.Id, counters, ct);
+            return;
+        }
+
         // Read-only, like the occupant in ReconcileKnownIdRowAsync: a merge re-reads it under its lock.
         var holder = await db.LoadChannelByTwitchIdReadOnlyAsync(identity.Id, ct);
         if (holder is null)
@@ -282,7 +371,123 @@ public class ChannelIdentityService(
         // row survives — it holds the emotes and the usage history. It may well be inactive (only
         // active rows are in the snapshot), which is exactly the row a retention purge can be deleting
         // right now — hence the lock MergeAsync takes on it.
-        await MergeAsync(identity.Id, row.ChannelName, counters, settledChannelIds, ct);
+        await MergeAsync(identity.Id, row.ChannelName, holder.Id, row.Id, counters, settledChannelIds, ct);
+    }
+
+    /// <summary>
+    /// The write both objection-gate checks above share: an active row whose (known or about-to-be-
+    /// learned) Twitch id is excluded is deactivated exactly like an operator's own leave — see
+    /// <see cref="ChannelDeactivation.DeactivateAsync"/> — instead of being renamed, merged, or
+    /// backfilled into observation. The row is reloaded tracked here rather than passed in: the
+    /// caller only has the read-only projection snapshot, and this write needs a tracked entity to
+    /// mutate, same as <see cref="RenameAsync"/> and <see cref="BackfillIdAsync"/>.
+    /// </summary>
+    /// <param name="row">The snapshot row a caller has already decided to deactivate.</param>
+    /// <param name="twitchChannelId">
+    /// The Twitch id the caller found excluded — <paramref name="row"/>'s own stored id for
+    /// <see cref="ReconcileKnownIdRowAsync"/>, or the id its login just resolved to for
+    /// <see cref="ReconcileIdLessRowAsync"/>. In the second case it is written onto the row together
+    /// with the deactivation whenever the unique index allows it, so the block survives on the row
+    /// itself (see the comment at the write).
+    /// </param>
+    private async Task DeactivateExcludedRowAsync(
+        ChannelIdentityRow row, string twitchChannelId, ReconcileCounters counters, CancellationToken ct)
+    {
+        // Reloaded by primary key, not by row.ChannelName (P1 Codex finding, issue #260, third
+        // review): a concurrent purge of this exact row followed by a fresh join under the same
+        // login creates an unrelated replacement row under that name before this method gets to run
+        // — a name-based reload used to find and deactivate *that* row instead, silently undoing a
+        // join this objection gate has nothing to do with. The replacement carries a different Id,
+        // so reloading by row.Id simply finds nothing once the original row is gone, and this call
+        // is skipped below like every other "the row is gone" case. No row lock is taken on top of
+        // that (unlike MergeAsync's FOR UPDATE pair): the narrow window between this reload and the
+        // write further down is covered by this method's own DbUpdateException catch, the same way
+        // every other single-row write in this class (RenameAsync, BackfillIdAsync) that reloads
+        // without a lock relies on the per-row catch instead.
+        var channel = await db.LoadChannelByIdAsync(row.Id, ct);
+        if (channel is null
+            || !channel.IsBotActive
+            || !string.Equals(channel.TwitchChannelId, row.TwitchChannelId, StringComparison.Ordinal)
+            || !excludedChannelFilter.IsExcluded(twitchChannelId))
+        {
+            // Gone, already deactivated since the snapshot was taken (a concurrent leave, or this
+            // row's other half already settled it — see the class remark on why a duplicate pair is
+            // reached from both ends), no longer carries the id this decision was made for (a
+            // concurrent rename, backfill or merge settled something else for it first), or no
+            // longer excluded. Either the outcome the block list exists for already holds or this
+            // row now belongs to a decision the next tick makes afresh — nothing to write and
+            // nothing to warn about.
+            return;
+        }
+
+        if (channel.TwitchChannelId is null
+            && !await db.Channels.AnyAsync(c => c.TwitchChannelId == twitchChannelId, ct))
+        {
+            // Fourth Codex review of the block list: a deactivated id-less row used to keep
+            // TwitchChannelId = null, so a later join by its login while Twitch answered Unavailable
+            // or NotFound found the row by name, saw no id to check and reactivated it. Writing the
+            // resolved id down — the same backfill BackfillIdAsync does for any other row, in the
+            // same save as the deactivation — makes every join path's stored-id check refuse it from
+            // then on, whatever Twitch answers. Skipped when another row already holds the id (the
+            // unique index would reject it): that row carries the block itself, and this duplicate
+            // keeps the join path's id-less fallback (ChannelService.HandleUnknownTwitchLoginAsync
+            // refuses an inactive id-less row outright; the Unavailable case is the documented
+            // outage gap, see docs/DECISIONS.md).
+            channel.TwitchChannelId = twitchChannelId;
+        }
+
+        try
+        {
+            await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, AuditActor.System, forExclusion: true, ct);
+        }
+        catch (DbUpdateException ex)
+        {
+            // Caught here rather than by the per-row catch every other write in this pass relies on
+            // (fourth Codex review of the block list): that catch names the row's login and id, and
+            // on this path the row is one whose Twitch id is on the excluded-channel list — naming it
+            // would leak the objection. Nothing was written (the save failed), so nothing is counted;
+            // the row is still active and the next pass retries it. The tracker is cleared for the same
+            // reason the per-row catch clears it: the failed changes would otherwise be re-sent by
+            // the next row's save.
+            db.ChangeTracker.Clear();
+            logger.LogWarning(
+                ex,
+                "Deactivating a channel on the excluded-channel list failed — skipped, the next pass retries it.");
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The write already committed — DeactivateAsync saves before it publishes, same order as
+            // every write-then-announce path in this class (RenameAsync/MergeAsync's own
+            // PublishHandoverAsync). A thrown LEAVE publish must not escape uncaught here (P1 Codex
+            // finding, issue #260, third review): unlike the DbUpdateException above (nothing was
+            // written that time, so the next pass retries the row), retrying a row that DID write
+            // would just find it already inactive and never publish again — this is the one chance
+            // to push the LEAVE to the worker directly. Deliberately not the shared
+            // ChannelDeactivation.DeactivateAsync helper's job to swallow: ChannelService.LeaveAsync's
+            // user-facing leave shares that helper and must keep failing loudly on a publish it could
+            // not deliver — changing the helper would silently change that contract too — so only
+            // this reconcile caller, which already treats a lost publish as self-healing elsewhere
+            // (PublishHandoverAsync), catches it here.
+            //
+            // Not stranded until a restart, either: RosterPrunePolicy (issue #41) is exactly the
+            // convergence net for a lost LEAVE — ListActiveChannelNamesAsync no longer lists this row,
+            // so the worker prunes it from its roster (EmoteMatchCache, the 7TV subscription, the IRC
+            // part) within two consecutive periodic-resync ticks, roughly one to two minutes, not
+            // until the process restarts.
+            counters.Deactivated++;
+            logger.LogWarning(
+                ex,
+                "Channel deactivated, but the LEAVE announcement could not be published — the periodic 7TV resync's roster prune (issue #41) will still stop the worker from observing it within about two minutes.");
+            return;
+        }
+
+        counters.Deactivated++;
+
+        // Neither the id nor the login is logged — same restraint as MergeAsync's own exclusion
+        // refusal: a log line naming which channel this concerns would itself leak the objection the
+        // block exists to honour.
+        logger.LogWarning("Channel deactivated: the channel is on the excluded-channel list.");
     }
 
     private async Task BackfillIdAsync(
@@ -357,10 +562,47 @@ public class ChannelIdentityService(
     private async Task<bool> MergeAsync(
         string twitchChannelId,
         string newLogin,
+        string survivorRowId,
+        string loserRowId,
         ReconcileCounters counters,
         HashSet<string> settledChannelIds,
         CancellationToken ct)
     {
+        // Objection gate (GDPR Art. 21, issue #252): a merge is the one place this pass can flip
+        // an inactive row active again (`survivor.IsBotActive |= loser.IsBotActive` below) — exactly
+        // the "reactivation" the join path already refuses for this id. Refused the same way the
+        // loser-has-emotes case below is: nothing is written, both rows stay duplicated and
+        // unresolved until the operator removes the id from the list. Checked before the transaction
+        // even opens — cheaper, and it keeps a blocked id from taking either row's lock at all; the
+        // two row ids needed to settle the pair are therefore taken from the caller's own snapshot
+        // (already loaded, read-only, before this call) rather than from a load this branch would
+        // otherwise have to do just to name them.
+        //
+        // Defense in depth as of issue #260 (this revision): both callers now check
+        // excludedChannelFilter themselves before they ever decide to call MergeAsync at all — see
+        // the gate at the top of ReconcileKnownIdRowAsync and ReconcileIdLessRowAsync — and
+        // deactivate the row instead, so neither an active survivor nor an active loser can reach
+        // this point carrying an excluded id in ordinary operation any more. Left in place anyway:
+        // it is the guard against `survivor.IsBotActive |= loser.IsBotActive` specifically, and
+        // removing it would trade a second line of defense for saving one `IsExcluded` call.
+        if (excludedChannelFilter.IsExcluded(twitchChannelId))
+        {
+            counters.MergesRefused++;
+            // Both halves settled (P2 Codex finding, issue #260): without this, the pass visits the
+            // same excluded pair from both ends — the id row wanting the name and the id-less row
+            // holding it — and neither this counter nor the warning line below is deduplicated
+            // against a second visit, exactly like the loserHasEmotes refusal further down handles
+            // it. Deliberately keyed on the row ids the caller already has rather than IDs read
+            // under this method's own (never-taken, for an excluded id) lock.
+            settledChannelIds.Add(survivorRowId);
+            settledChannelIds.Add(loserRowId);
+            // Neither the id nor either login is logged here (same restraint as the join path's own
+            // rejection): a log line naming which channel this concerns would itself leak the
+            // objection the block exists to honour.
+            logger.LogWarning("Merge refused: the channel is on the excluded-channel list.");
+            return false;
+        }
+
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
         var survivor = await db.LoadChannelByTwitchIdForUpdateAsync(twitchChannelId, ct);
@@ -581,5 +823,6 @@ public class ChannelIdentityService(
         public int Merged;
         public int MergesRefused;
         public int LoginsMissing;
+        public int Deactivated;
     }
 }

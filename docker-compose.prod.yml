@@ -78,6 +78,11 @@ services:
       # configured yet" state (the endpoints answer 404, the frontend shows no footer link), not a
       # startup error, so this line is safe to ship before the operator has filled the directory in.
       - Legal__ContentPath=/legal
+      # Immutable Twitch broadcaster IDs whose channel may not be (re)joined for chat observation
+      # (GDPR Art. 21 objection, issue #252, see IExcludedChannelFilter) — comma-separated,
+      # checked by the join endpoint before any row is written. No caller, including a global admin,
+      # is exempt; the operator removing an id here is the only way to undo it.
+      - Channels__ExcludedChannelIds=${EXCLUDED_CHANNEL_IDS:-}
     volumes:
       - dataprotection-keys:/keys
       - /opt/emotepurge/legal:/legal:ro
@@ -123,6 +128,10 @@ services:
       # IExcludedChatterFilter) — comma-separated, dropped before any counting or classification.
       # Takes effect on the next worker restart; empty by default changes nothing.
       - Twitch__ExcludedChatterIds=${TWITCH_EXCLUDED_CHATTER_IDS:-}
+      # Same block list as the Api's join endpoint (GDPR Art. 21, issue #252): read by
+      # ChannelIdentityService, which the worker's identity reconcile uses too — a duplicate row for
+      # a blocked id is left unmerged rather than auto-reactivated. See IExcludedChannelFilter.
+      - Channels__ExcludedChannelIds=${EXCLUDED_CHANNEL_IDS:-}
       # Data retention (#243/#244, DataRetentionWorker): false (the default) only counts and warns,
       # true actually deletes. Flip this after watching a dry run's log line, not before — a Stack
       # Update is all it takes, no image rebuild.
