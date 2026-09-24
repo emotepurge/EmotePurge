@@ -54,6 +54,9 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'emote_set_not_found',
   'vote_session_set_ballot_invalid',
   'legal_document_not_found',
+  'contact_invalid',
+  'contact_captcha_failed',
+  'contact_unavailable',
 ]);
 
 /**

@@ -35,6 +35,226 @@ objection, which the gate's log lines deliberately avoid). `LeaveAsync` no longe
 
 ---
 
+### 2026-09-24 — robots.txt stays closed after the legal launch
+
+**Betrifft:** `web/public/robots.txt` · `PRODUCT.md` · `CLAUDE.md`
+
+Imprint and privacy policy (de/en, #247) went live in production today, together with the
+enforced retention job (#244), account/admin deletion, the chatter exclusion list, the channel
+block list, and the contact form (#262) — the legal precondition for opening `robots.txt` is met.
+The operator decided against opening it anyway: `web/public/robots.txt` keeps `Disallow: /`. The
+site stays open and legally sound, but deliberately undiscoverable through search engines — growth
+is meant to run through recommendation, not search traffic (`PRODUCT.md`, Brand Commitment/Product
+Principle 5, "Erklären statt verkaufen"). Two operational limits reinforce the same direction:
+the active-channel cap of 80 (`Channels:MaxActiveChannels`, s. Eintrag 2026-09-23) and Twitch's
+own hard ceiling of 100 simultaneously joined chatrooms make uncontrolled, search-driven growth
+undesirable right now regardless of legal readiness — more sign-ups than the worker can actually
+join would just turn into explicit join rejections (`409 channel_capacity_reached`) for streamers who
+found the site but cannot be served.
+
+This retires "open `robots.txt`" as the last step of the launch checklist (docs/Review-2026-07-29.md,
+S2-20). It is not replaced by a new checklist item: opening the file is now an independent product
+decision, to be made later on its own merits, not a technical follow-up to anything shipped today.
+`CLAUDE.md`'s "Umsetzungsstand" table (row E) and `PRODUCT.md`'s "Explizit unentschieden" list are
+updated accordingly in this same commit.
+
+---
+
+### 2026-09-24 — Contact form: a second, provider-neutral electronic contact route (§ 5 DDG)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IContactSubmissionService.cs` ·
+`src/EmotePurge.Core/Services/ITurnstileVerifier.cs` ·
+`src/EmotePurge.Core/Services/IContactMailSender.cs` · `src/EmotePurge.Infrastructure/Contact/*` ·
+`src/EmotePurge.Infrastructure/EmotePurge.Infrastructure.csproj` (MailKit) ·
+`src/EmotePurge.Api/Endpoints/ContactEndpoints.cs` ·
+`src/EmotePurge.Api/Validation/ContactValidation.cs` ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` (+ `RateLimitingOptions.cs`) ·
+`src/EmotePurge.Api/Program.cs` (rate-limit policy registration, CSP) ·
+`src/EmotePurge.Api/appsettings.Development.json` · `docker-compose.yml` · `docker-compose.prod.yml` ·
+`.env.example` · `web/src/app/core/contact/*` · `web/src/app/features/contact/contact-page.ts`
+(+ spec) · `web/src/app/app.routes.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`web/e2e/contact.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/Operations.md`
+
+The imprint (§ 5 DDG, following EuGH C-298/07) needs a second, rapid contact route besides the
+listed e-mail address; an electronic enquiry form that is answered by e-mail satisfies that. Built
+provider-neutral on purpose: plain SMTP configured entirely through environment variables, so the
+operator can point it at any mailbox (a dedicated Gmail or Proton account, or anything else that
+speaks SMTP) without a code change.
+
+1. **`POST /api/contact` (anonymous, `ContactEndpoints.cs`)** takes `{ name?, email, message,
+   turnstileToken, website? }`. `website` is a hidden honeypot — a non-empty value answers 204
+   without validating, verifying or sending anything, checked before every other step. Shape
+   validation (`ContactValidation.cs`, Api layer, no infrastructure dependency) rejects a message
+   outside 10–5000 trimmed characters, a name over 100 characters, an implausible e-mail over
+   254 characters, and any control character (including CR/LF) in name or e-mail, all under one
+   code, `contact_invalid` (400) — the caller cannot act on which specific check failed any more
+   than on the other grouped codes already in `ApiErrorCodes.cs`.
+2. **`IContactSubmissionService` (Infrastructure: `ContactSubmissionService`)** is the one place that
+   decides what happens next: availability, then the provider-wide send budget
+   (`ContactSendBudget`), then the Turnstile token (`ITurnstileVerifier`/`TurnstileVerifier`, a typed
+   `HttpClient` against `https://challenges.cloudflare.com/turnstile/v0/siteverify`, 5 s timeout),
+   then — only once all three pass — the SMTP send (`IContactMailSender`/`ContactMailSender`, MailKit
+   4.18.0, MIT-licensed and therefore compatible with this project's AGPL-3.0). A rejected token
+   answers `contact_captcha_failed` (400); Turnstile being unreachable, the feature being
+   unconfigured, or the SMTP send itself failing all answer `contact_unavailable` (503) — one code
+   for all three, since the caller cannot act on the difference, same reasoning as
+   `ForeignChannelSevenTvUnavailable`. The Reply-To header is built through MailKit's `MailboxAddress`
+   type, never string-concatenated, so a name or address containing a stray CR/LF cannot fabricate a
+   second header; the subject is a fixed string, never derived from user input. Nothing is persisted,
+   and no log line anywhere in this path carries the message, name or e-mail address — only outcome
+   categories (`ContactSubmissionOutcome`).
+3. **Availability (`ContactOptions.IsAvailable`)** requires all five of SMTP host, from-address,
+   to-address, Turnstile site key and Turnstile secret key — a half-configured instance behaves
+   exactly like an unconfigured one (`GET /api/contact/config` answers `{ available: false,
+   turnstileSiteKey: null }`, `POST` answers 503) rather than 500ing on first use or, worse, accepting
+   messages it cannot verify.
+4. **Two independent rate-limit layers, deliberately not one**, mirroring the
+   `ForeignEmoteLookup`/`SevenTvLeaderboard` split between an ASP.NET Core policy and an in-process
+   budget. The per-IP half (`RateLimitPolicyNames.Contact`) is a **token bucket** — three permits,
+   refilling one every 20 minutes — rather than a fixed window: every existing fixed-window policy
+   shares one hardcoded 60-second window (`RateLimitRejection.Window`), which cannot express "up to
+   three an hour" at all, while a bucket can approximate it with a burst allowance for a visitor who
+   mistypes and resubmits right away. The provider-wide half (`ContactSendBudget`, Infrastructure) is
+   an in-process rolling-window budget — 30 sends per rolling hour, `TryCharge()` before the Turnstile
+   call and before the SMTP send — shaped like `SevenTvLeaderboardRequestBudget`'s sibling budgets: it
+   catches the case the per-IP policy structurally cannot, many different visitors (or one behind a
+   rotating pool of addresses) each staying under their own budget while jointly running the
+   operator's SMTP account into whatever sending limit their provider enforces. Its own 429 reuses the
+   existing `rate_limit_exceeded` code and a fixed `retryAfterSeconds` heuristic (no natural boundary
+   to report, same reasoning as `LiveStreamQuotaExhausted`), shaped like `ChannelResyncCooldown`'s 429
+   rather than the ASP.NET Core limiter's own bare one.
+5. **`GET /api/contact/config` (anonymous)** shares `PublicLegal`'s budget rather than getting one of
+   its own — the same shape of traffic as `GET /api/legal/availability` (a cheap, once-per-page-view
+   read), unlike the POST route, which is the one that can trigger a real Turnstile call and an SMTP
+   send.
+6. **`/contact` (`ContactPage`)** sits outside the app shell and every auth guard, like
+   `/imprint`/`/privacy`, and reuses `NavigationHistoryService`/`resolveLegalBackTarget` for its one
+   navigation control rather than duplicating that decision. The Turnstile widget script
+   (`challenges.cloudflare.com/turnstile/v0/api.js?render=explicit`) loads only from this page, only
+   once the form is actually about to render, through an injectable `TURNSTILE_LOADER` seam
+   (`core/contact/turnstile.ts`) shaped exactly like `EVENT_SOURCE_FACTORY` — real network/DOM work has
+   no place in a Vitest jsdom run, where an external `<script src>` never fires `load`/`error` at all
+   and the real implementation would hang forever. The CSP (`Program.cs`) gained exactly one host on
+   two directives it needed for this: `script-src` (the widget script) and `frame-src` — the first
+   `frame-src` directive this app has ever needed, since the challenge itself renders inside an iframe
+   from that origin.
+7. **Development** points Turnstile at Cloudflare's own official, publicly documented always-passing
+   test pair (site key `1x00000000000000000000AA`, secret key
+   `1x0000000000000000000000000000000AA`, verified against
+   `developers.cloudflare.com/turnstile/troubleshooting/testing/`) and SMTP at a local catcher on
+   `localhost:1025` with no auth, both in `appsettings.Development.json`. Production wires nine new
+   environment variables (`CONTACT_SMTP_HOST`/`_PORT`/`_USERNAME`/`_PASSWORD`/`_SECURITY`,
+   `CONTACT_FROM_ADDRESS`, `CONTACT_TO_ADDRESS`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`) through
+   both compose files, every one empty by default in `.env.example` — an unset value is "not
+   available", not a startup error, so these lines are safe to ship before the operator has filled
+   `.env` in.
+8. **Live-verified 2026-09-24** against three throwaway containers (a Postgres and a Redis on
+   non-default ports, plus a Mailpit SMTP catcher) and the Api run from this worktree on port 5199 —
+   never the shared `emotepurge-dev-*` stack. A real `POST` with Cloudflare's own dummy token
+   (`XXXX.DUMMY.TOKEN.XXXX`) against the real `siteverify` endpoint arrived in Mailpit with From/To =
+   the configured addresses, Reply-To = the visitor's name and address, subject = the fixed string,
+   and the expected body — and the Api's own log carried only "Contact form message sent.", nothing
+   from the request. The honeypot answered 204 without a second mail appearing. Swapping in
+   Cloudflare's "always fails" test secret key (`2x0000000000000000000000000000000AA`) against the
+   same dummy token produced a real `contact_captcha_failed` 400 from the real siteverify round trip.
+   Four requests in one process against the real `Contact` policy produced 204/204/204/429, the 429
+   carrying `Retry-After: 1200` and `{"errorCode":"rate_limit_exceeded","retryAfterSeconds":1200}`.
+   Clearing `Contact:ToAddress` reproduced `{ available: false }` and a 503 `contact_unavailable` on
+   `POST`.
+
+**Revised 2026-09-24** — Codex Sol review of the branch found six findings (one P1, five P2), each
+closed with a test that failed before its fix. Backend first:
+
+1. **(P1) The provider-wide send budget was charged before Turnstile ran**, not after — a burst of
+   thirty shape-valid requests carrying an invalid token, from a rotating pool of IPs, could exhaust
+   the one shared, hour-long budget without ever costing a real verification, locking out every
+   legitimate visitor for up to an hour. `ContactSubmissionService.SubmitAsync` now charges only once
+   Turnstile has actually succeeded, and `ContactSendBudget` gained `Release()` to refund the
+   reservation when the SMTP send then fails — only a delivered mail should count against the ceiling.
+2. **(P2) The `Contact` rate-limit policy partitioned through `RateLimitRejection.PartitionPerUser`**,
+   whose `ResolveUserKey` prefers the authenticated Twitch user id over the remote IP — right for a
+   route that requires login, wrong here, since nothing stops an already-signed-in visitor from
+   submitting the form too. Several signed-in visitors behind one shared IP each got their own
+   three-permit bucket instead of sharing the one the policy exists to enforce. Closed with a new,
+   dedicated `RateLimitRejection.PartitionPerIpTokenBucket`, which never reads the authenticated claim.
+3. **(P2) A disconnect failure after a successful SMTP send was reported as a failed send** — both
+   calls shared one try/catch in `ContactMailSender.SendAsync`, so a dropped connection or the server
+   closing first after accepting the message turned an already-delivered mail into a reported failure,
+   inviting the visitor to retry into a duplicate. The disconnect now runs in its own try/catch that
+   only logs; once `SendAsync` has succeeded, the result is `true` regardless of what happens after.
+   Testing this needed a seam: `ContactMailSender` gained an optional `Func<ISmtpClient>` constructor
+   parameter (MailKit's own public interface, implemented by `SmtpClient`), defaulting to a real
+   client — the same optional-parameter shape as `ContactSendBudget`'s `TimeProvider`.
+4. **(P2) A non-blank but malformed From/To address read as "available"**, then made
+   `ContactMailSender.BuildMessage`'s `MailboxAddress.Parse` throw outside the method's try/catch — a
+   500 instead of the intended `contact_unavailable` 503. `ContactOptions.IsAvailable` now validates
+   both addresses with `MailboxAddress.TryParse` (the same parser `BuildMessage` uses), and message
+   construction moved inside `SendAsync`'s try/catch as defence in depth for any caller that skips the
+   availability gate.
+
+And frontend:
+
+5. **(P2) A failed Turnstile script load left both the cached load promise and the dead `<script>` tag
+   behind**, so a visitor who returned to `/contact` after a transient failure (a network blip, a
+   momentary CDN hiccup) could never get a genuine retry — every future call resolved to the same
+   already-rejected promise. `loadTurnstileScript` now clears both on error before rejecting.
+6. **(P2) The frontend enforced none of the server's shape limits before submitting** — a visitor
+   whose message was too short or too long, whose name exceeded 100 characters, or whose e-mail was
+   obviously malformed only found out after a round trip that came back `contact_invalid`.
+   `ContactPage` gained computed signals mirroring `ContactValidation.cs`'s limits (name ≤ 100, e-mail
+   ≤ 254 with the same permissive pattern, message 10–5000 trimmed characters), each with an inline
+   hint following the §5.3 field-error pattern (`aria-invalid`/`aria-describedby`, touched-gated) plus
+   an always-visible character counter on the message field. `canSubmit` now also requires
+   `isLocallyValid()`; a blocked submit attempt marks every field touched (so every applicable hint
+   surfaces at once) but deliberately never touches the already-completed Turnstile token — only a
+   server-side rejection does that.
+
+**Revised 2026-09-24 (final Codex Sol review before merge, five findings, all closed with a test that
+failed before its fix):**
+
+1. **(P2) `ContactSendBudget.Release()` dropped whichever permit was newest**, on the assumption that
+   a charge and its own release always run back-to-back with nothing interleaved — true for a single
+   request, not once two sends overlap in flight: charge A, charge B, then A's send fails, and the old
+   behaviour refunded B's still-good reservation while A's, the one that actually failed, kept
+   occupying a slot until it aged out on its own. `TryCharge()` now returns an opaque
+   `ContactSendReservation` (wrapping the underlying `LinkedListNode`) and `Release(reservation)` frees
+   exactly that entry, regardless of what else was charged in between; a stale or already-released
+   reservation is a no-op rather than corrupting whatever now occupies its old list position.
+2. **(P2) `TurnstileVerifier` read every non-success `siteverify` answer as "the visitor's token was
+   wrong"**, including Cloudflare's documented operator/configuration codes
+   (developers.cloudflare.com/turnstile/get-started/server-side-validation/, "Error codes" table) —
+   `missing-input-secret`/`invalid-input-secret` (the operator's own secret key), `bad-request` (a
+   malformed request this backend sent) and `internal-error` (Cloudflare's own outage). A misconfigured
+   secret would have shown every visitor "captcha failed" forever instead of surfacing as the
+   `contact_unavailable` 503 it actually is. Now maps only the token-side codes
+   (`invalid-input-response`, `timeout-or-duplicate`, `missing-input-response`) to a captcha failure;
+   every other documented code, and a mixed answer carrying any of them, becomes `Unavailable` and is
+   logged at Warning without the secret or the token.
+3. **(P2) A Turnstile script that fired `load` without ever defining `window.turnstile` left the
+   cached `loadPromise` and the dead `<script>` tag behind**, unlike the sibling `onError` path fixed
+   in the first revision above — the same trap, reachable a different way. `loadTurnstileScript` now
+   clears both from that branch too.
+4. **(P2) `ContactPage`'s Turnstile-render effect read the resolved theme and the active language only
+   inside the `.then()` callback of the widget's async render** — a read inside an async callback runs
+   after the effect has already finished executing, so neither was ever a tracked dependency. Changing
+   either through this page's own `AccountMenu` left the already-rendered widget showing its old
+   theme/language indefinitely. Both are now read unconditionally at the top of the effect; a change to
+   either removes the current widget and renders a fresh one under the new value, clearing the token
+   with it (a completed/expired state belongs to the widget instance that produced it).
+   `turnstileApi`/`turnstileWidgetId` are deliberately read through `untracked()` inside the same
+   effect — tracking them too would make each of the effect's own writes to them reschedule itself,
+   remove-then-render forever.
+5. **(P3) The Playwright Turnstile stub (`mockTurnstile`) never put anything in the DOM**, so the UI
+   audit's 'contact' scenario screenshotted an empty gap where the widget's iframe would sit. `render()`
+   now inserts an inert, `aria-hidden` surrogate sized to Cloudflare's documented "normal" widget
+   footprint (300×65px, developers.cloudflare.com/turnstile/get-started/client-side-rendering/
+   widget-configurations/, "Widget size" table) and `remove()` actually removes it — re-run of the
+   audit filtered to 'contact' (`--grep "contact @"`): 10 scenarios, `horizontalOverflowPx` and
+   `contrastViolations` both 0 throughout.
+
+---
+
 ### 2026-09-24 — A channel block list closes the "purge, then rejoin" gap of the GDPR objection (#252)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/IExcludedChannelFilter.cs` ·

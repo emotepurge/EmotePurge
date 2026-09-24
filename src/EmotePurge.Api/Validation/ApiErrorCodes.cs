@@ -116,4 +116,20 @@ internal static class ApiErrorCodes
     // differently — the availability endpoint is what tells the frontend which links to show at all,
     // so a caller only ever reaches this by an unconfigured deep link or a route typo.
     public const string LegalDocumentNotFound = "legal_document_not_found";
+
+    // POST /api/contact (docs/DECISIONS.md 2026-09-24, "contact form"). One code for every shape
+    // failure (email syntax/length, message length, name length, control characters in name/email) —
+    // the caller cannot act on which specific check failed any more than it can for the other
+    // grouped codes above, and the form re-validates client-side before submitting anyway.
+    public const string ContactInvalid = "contact_invalid";
+    // 400: the Turnstile token itself was rejected by Cloudflare (a real answer, not a timeout — see
+    // TurnstileVerificationResult.Failed). Distinct from ContactUnavailable below, which covers both
+    // "Turnstile could not be reached at all" and "the feature is not configured" — a caller can act
+    // on a rejected token (get a fresh one and retry) in a way it cannot act on either of those.
+    public const string ContactCaptchaFailed = "contact_captcha_failed";
+    // 503: the feature is not fully configured (GET /api/contact/config already said so), Turnstile
+    // could not be reached to verify the token, or the SMTP send itself failed. One code for all
+    // three, same reasoning as ForeignChannelSevenTvUnavailable — "not now" is the only actionable
+    // fact in any of the three cases.
+    public const string ContactUnavailable = "contact_unavailable";
 }
