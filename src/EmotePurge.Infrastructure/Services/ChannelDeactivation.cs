@@ -44,8 +44,9 @@ internal static class ChannelDeactivation
         // "stopped observing this set" land in the same commit. Here rather than at each caller:
         // the objection gate's deactivation is a leave as well (it writes channel.leave), and an
         // interval left open on an inactive row would break the invariant
-        // ChannelEmoteSetObservationService.RecordObservedSetAsync relies on — no open row implies
-        // IsBotActive = false, because both are written in one save.
+        // ChannelEmoteSetObservationService.RecordObservedSetAsync relies on — IsBotActive = false
+        // implies no open row, because both are written in one save. (The converse does not hold: a
+        // freshly active channel that has not synced yet has no open interval either.)
         await emoteSetObservationService.CloseOpenIntervalAsync(
             channel.Id, ChannelEmoteSetObservationClosedBy.Leave, cancellationToken);
 

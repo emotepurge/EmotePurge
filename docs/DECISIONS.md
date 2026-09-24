@@ -22,8 +22,9 @@ interval inside `ChannelService.LeaveAsync` (`ClosedBy.Leave`, spec 4.3); main m
 the deactivation write out into `ChannelDeactivation.DeactivateAsync` and gave it a second caller,
 the identity reconcile's objection-gate deactivation. That second caller never closed the interval,
 so a blocked channel ended up inactive with an interval still open — contradicting the invariant
-`RecordObservedSetAsync` relies on ("no open row implies `IsBotActive = false`, both written in one
-save").
+`RecordObservedSetAsync` relies on ("`IsBotActive = false` implies no open row, both written in one
+save"; the converse does not hold — a channel that just joined and has not synced yet is active with
+no open row of its own).
 
 **Decision:** the close moves into the shared helper, so every deactivation closes the interval in
 the same `SaveChangesAsync` as the flip and the audit entry. The objection gate uses

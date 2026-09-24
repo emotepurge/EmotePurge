@@ -527,8 +527,8 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
 
     // The objection gate's deactivation is a leave (it writes channel.leave), so it closes the open
     // emote-set observation interval in the same save, exactly like ChannelService.LeaveAsync (spec
-    // 4.3). Without it an inactive row kept an open interval, breaking the "no open row implies
-    // inactive" invariant RecordObservedSetAsync relies on.
+    // 4.3). Without it an inactive row kept an open interval, breaking the "inactive implies no open
+    // row" invariant RecordObservedSetAsync relies on.
     [Fact]
     public async Task ReconcileActiveChannelsAsync_WhenTheKnownIdIsExcluded_ClosesTheOpenObservationInterval()
     {
