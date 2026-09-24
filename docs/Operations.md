@@ -96,7 +96,10 @@ An edit to an existing file is picked up on the **next request**, not only on a 
 `LegalContentService` caches each file's rendered HTML keyed by its own last-write time and
 re-renders only when that changes, so there is no cache to flush by hand. Markdown is rendered
 to HTML **server-side** with raw HTML disabled (Markdig `DisableHtml()`), so a literal
-`<script>` typed into the source file cannot execute — it is escaped like any other text. Both
+`<script>` typed into the source file cannot execute — it is escaped like any other text. The same
+pipeline does **not** enable the pipe-table extension, so a Markdown table renders as plain text
+with literal `|` characters instead of an HTML table — write lists instead of tables in these
+files. Both
 `/api/legal/availability` (tells the frontend which links to show) and the document endpoints are
 anonymous and IP-partitioned like `GET /api/health`, but behind their own `PublicLegal` policy
 (`RateLimiting:PublicLegal`, 60/min by default) rather than a share of `PublicHealth`'s — the two

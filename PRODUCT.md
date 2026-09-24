@@ -112,6 +112,12 @@ Audit-Log).
 Session als HttpOnly-Cookie, 14 Tage gleitend, serverseitig sofort invalidierbar. Eine Allowlist
 existiert nur für den Global-Admin.
 
+**Rechtliche Fläche:** Impressum und Datenschutzerklärung (de/en) sind seit 2026-09-24 live (#247)
+— das Impressum nennt Klarnamen und c/o-Adresse, der Zugang zur Seite bleibt offen. `robots.txt`
+sperrt weiterhin bewusst alle Crawler (`Disallow: /`, entschieden 2026-09-24) — Wachstum läuft über
+Empfehlung, nicht über Suchmaschinen (Brand Commitment/Prinzip 5, „Erklären statt verkaufen"); eine
+Öffnung ist damit unabhängig von den Rechtstexten eine eigene, spätere Produktentscheidung.
+
 **Sprache:** de und en, je 537 Schlüssel (`web/public/i18n/`). Deutsch ist die längere Sprache und
 die Referenz für Wortlängen.
 
@@ -133,10 +139,6 @@ Templates. **Diese Disziplin bleibt**, unabhängig von der Barrierefreiheits-Ent
 
 **Explizit unentschieden** (nicht erfinden, nicht stillschweigend beantworten):
 
-- **Rechtstexte (S2-20).** Impressum und Datenschutzerklärung existieren nicht. Die Abwägung
-  (Namen/Adresse veröffentlichen vs. Zugang begrenzen) ist offen.
-- **`robots.txt` sperrt derzeit alles** (`Disallow: /`). Die Landing-Page ist damit öffentlich
-  erreichbar, aber nicht auffindbar. Ob das so bleibt, ist offen.
 - **Der Wert des Votings ist unvalidiert** (s. Users). Es wurde nie unter realen Bedingungen
   geprüft, ob Streamer oder Mods es wollen. Es darf deshalb weder ausgebaut noch abgeschrieben
   werden, bevor jemand es benutzt hat — beides wäre eine Entscheidung ohne Datenlage, und das ist
