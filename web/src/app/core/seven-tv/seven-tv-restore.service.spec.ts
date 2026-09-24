@@ -697,11 +697,41 @@ describe('SevenTvRestoreService', () => {
       expect(service.resyncTrigger()).toBe('succeeded');
     });
 
-    it('sends no resync for the active set of a tracked channel — the backend covers it — and shows no resync line', () => {
+    // Spec 6.4 ("außer der Kanal steht in resyncTriggered"), 4.4 point 11: for the active set the
+    // backend covers the resync, and when its answer names the expected channel the dock says "being
+    // re-synced" — without a request of ours. Compared case-insensitively.
+    it('sends no resync for the active set of a tracked channel and says the backend is on it when the answer names the expected channel', () => {
       runOneRestoreToReport(target({ active: true })).flush(
         restoredAnswer({
           channels: [{ channelName: 'sensitron', restoredCount: 1, notFoundIds: [] }],
+          resyncTriggered: ['Sensitron'],
+        }),
+      );
+
+      httpMock.expectNone(RESYNC_ENDPOINT);
+      expect(service.resyncTrigger()).toBe('backendTriggered');
+    });
+
+    // The same for a stale active set (E18, activeSetDiffers): the backend resyncs the unresolved
+    // expected channel and names it.
+    it('says the backend is on it for an unresolved expected channel it names in resyncTriggered', () => {
+      runOneRestoreToReport(target({ active: true })).flush(
+        restoredAnswer({
+          unresolvedChannel: { channelName: 'sensitron', reason: 'activeSetDiffers' },
           resyncTriggered: ['sensitron'],
+        }),
+      );
+
+      httpMock.expectNone(RESYNC_ENDPOINT);
+      expect(service.resyncTrigger()).toBe('backendTriggered');
+    });
+
+    // Not named (cooldown not acquired, F15, or notTracked): no request of ours, no resync line.
+    it('stays idle without a request for the active set when the answer does not name the expected channel', () => {
+      runOneRestoreToReport(target({ active: true })).flush(
+        restoredAnswer({
+          channels: [{ channelName: 'sensitron', restoredCount: 1, notFoundIds: [] }],
+          resyncTriggered: [],
         }),
       );
 

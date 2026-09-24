@@ -379,18 +379,24 @@ export class SevenTvRestoreService {
       });
   }
 
-  /** E12, F15, AK 21/27: a resync of our own only for a non-active set of a tracked channel
-   *  (`resyncChannelName`), and only when the report's answer does not already name that channel
-   *  in `resyncTriggered` — then the dock says "being re-synced" without a request of ours. No
-   *  `resyncChannelName` (active set: the backend covers it; untracked target: nothing to resync)
-   *  leaves `resyncTrigger` on `'idle'`, and the dock shows no resync line. */
+  /** E12, F15, AK 21/27, spec 6.4 and 4.4 point 11: a resync of our own only for a non-active set
+   *  of a tracked channel (`resyncChannelName`), and only when the report's answer does not already
+   *  name that channel in `resyncTriggered`. Whenever the answer names the channel this run is
+   *  about — `resyncChannelName`, or for an active set its `expectedChannelName` (also when it came
+   *  back unresolved, `activeSetDiffers`) — the dock says "being re-synced" (`'backendTriggered'`)
+   *  without a request of ours. An active set whose channel is not named (the cooldown was not
+   *  acquired, F15, or `notTracked`) and an untracked target (nothing to resync) leave
+   *  `resyncTrigger` on `'idle'`: no request, no resync line. */
   private resyncAfterReport(run: RestoreRunInfo, resyncTriggered: readonly string[]): void {
     const channelName = run.resyncChannelName;
     if (channelName === null) {
+      const expected = run.expectedChannelName;
+      if (expected !== null && includesChannel(resyncTriggered, expected)) {
+        this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
+      }
       return;
     }
-    const normalized = channelName.toLowerCase();
-    if (resyncTriggered.some((triggered) => triggered.toLowerCase() === normalized)) {
+    if (includesChannel(resyncTriggered, channelName)) {
       this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
       return;
     }
@@ -472,6 +478,13 @@ function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
     }
   }
   return { queue: [...rows.values()], aliasByKey };
+}
+
+/** Whether `channelName` is among the channels a report's answer says the backend resynced —
+ *  case-insensitive, since the backend answers with normalized names. */
+function includesChannel(channels: readonly string[], channelName: string): boolean {
+  const normalized = channelName.toLowerCase();
+  return channels.some((channel) => channel.toLowerCase() === normalized);
 }
 
 /** The 7TV ids a restore run finished, read off its `doneKeys` — once each, even when two aliases
