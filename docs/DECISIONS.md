@@ -16,6 +16,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Worker.Tests/HarnessRunnerTests.cs` · `docker-compose.yml` ·
 `docker-compose.prod.yml` · `docs/Operations.md`
 
+**Not to be merged before 2026-10-08 (binding harness run must stay on harness-2).**
+
 A GDPR review of the privacy policy found the gap the #252 entry below explicitly accepted: it said
 the harness (#69, a second entry point of the same `EmotePurge.Worker` image that replays archived
 chat logs through its own `ReplayDayCounter` rather than the live `TwitchChatManager` path) was
