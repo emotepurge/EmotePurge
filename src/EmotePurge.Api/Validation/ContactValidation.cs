@@ -17,8 +17,10 @@ internal static class ContactValidation
     // Deliberately permissive (no full RFC 5322 grammar): one @, something on both sides, no
     // whitespace or control characters. Turnstile plus the mail send itself are the real gate on
     // whether the address is genuine; this only rejects input that cannot be a mailbox at all.
+    // The match timeout bounds the pattern's backtracking on this anonymous endpoint (Sonar S6444);
+    // the 254-character cap already keeps it far below the limit, so a timeout means garbage input.
     private static readonly Regex EmailPattern = new(
-        @"^[^\s@]+@[^\s@]+\.[^\s@]+$", RegexOptions.Compiled);
+        @"^[^\s@]+@[^\s@]+\.[^\s@]+$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
 
     /// <summary>
     /// True if <paramref name="name"/> (trimmed) is within <see cref="MaxNameLength"/> and free of
@@ -41,7 +43,19 @@ internal static class ContactValidation
             return false;
         }
 
-        return !ContainsControlCharacter(email) && EmailPattern.IsMatch(email);
+        if (ContainsControlCharacter(email))
+        {
+            return false;
+        }
+
+        try
+        {
+            return EmailPattern.IsMatch(email);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Length is checked on the trimmed value — leading/trailing whitespace pads neither bound.</summary>
