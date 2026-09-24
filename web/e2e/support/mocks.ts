@@ -1190,7 +1190,9 @@ export async function mockContactSubmit(
       return route.fallback();
     }
     if (outcome === 'error') {
-      return fulfillJson(route, options.status ?? 400, { errorCode: options.errorCode ?? 'contact_invalid' });
+      return fulfillJson(route, options.status ?? 400, {
+        errorCode: options.errorCode ?? 'contact_invalid',
+      });
     }
     return route.fulfill({ status: 204 });
   });

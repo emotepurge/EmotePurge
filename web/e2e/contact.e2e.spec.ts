@@ -48,7 +48,11 @@ test.describe('contact form', () => {
   }) => {
     await mockContactConfig(page);
     await mockTurnstile(page);
-    await mockContactSubmit(page, { outcome: 'error', status: 400, errorCode: 'contact_captcha_failed' });
+    await mockContactSubmit(page, {
+      outcome: 'error',
+      status: 400,
+      errorCode: 'contact_captcha_failed',
+    });
 
     await page.goto('/contact');
 
@@ -60,7 +64,9 @@ test.describe('contact form', () => {
     await submit.click();
 
     await expect(
-      page.getByText('Die Sicherheitsabfrage konnte nicht bestätigt werden. Bitte versuch es erneut.'),
+      page.getByText(
+        'Die Sicherheitsabfrage konnte nicht bestätigt werden. Bitte versuch es erneut.',
+      ),
     ).toBeVisible();
     await expect(page.locator('form')).toBeVisible();
   });
