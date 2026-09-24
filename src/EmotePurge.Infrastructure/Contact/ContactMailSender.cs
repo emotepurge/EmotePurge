@@ -20,29 +20,44 @@ namespace EmotePurge.Infrastructure.Contact;
 /// </remarks>
 public sealed class ContactMailSender(
     IOptions<ContactOptions> options,
-    ILogger<ContactMailSender> logger) : IContactMailSender
+    ILogger<ContactMailSender> logger,
+    Func<ISmtpClient>? smtpClientFactory = null) : IContactMailSender
 {
     // Fixed, never derived from user input (spec requirement) — a subject built from the visitor's
     // name or message would let one construct a subject line indistinguishable from a different kind
     // of notification, or simply an unreadable one.
     private const string Subject = "EmotePurge contact form";
 
+    // Defaults to a real MailKit client; overridable only for ContactMailSenderTests (a substituted
+    // ISmtpClient — MailKit's own public seam for this, implemented by SmtpClient) so the
+    // send-succeeded-but-disconnect-failed path below can be exercised without a real SMTP server.
+    // Same shape as ContactSendBudget's optional TimeProvider: nothing registers a Func<ISmtpClient>,
+    // so DI always falls through to this default.
+    private readonly Func<ISmtpClient> _smtpClientFactory = smtpClientFactory ?? (() => new SmtpClient());
+
     public async Task<bool> SendAsync(string? name, string email, string message, CancellationToken cancellationToken)
     {
         var config = options.Value;
-        var mime = BuildMessage(
-            config.FromAddress ?? throw new InvalidOperationException("Contact:FromAddress ist nicht konfiguriert."),
-            config.ToAddress ?? throw new InvalidOperationException("Contact:ToAddress ist nicht konfiguriert."),
-            name,
-            email,
-            message);
 
-        var smtpHost = config.Smtp.Host
-            ?? throw new InvalidOperationException("Contact:Smtp:Host ist nicht konfiguriert.");
-
-        using var client = new SmtpClient();
+        using var client = _smtpClientFactory();
         try
         {
+            // Message construction (a malformed but non-blank From/To address throws here — MimeKit's
+            // MailboxAddress.Parse — Codex P2, docs/DECISIONS.md 2026-09-24 revision) is deliberately
+            // inside this try: ContactOptions.IsAvailable already rejects an unparseable address before
+            // this method is ever reached in production, but this is the defence-in-depth half of that
+            // fix, so a caller that skips the availability check gets contact_unavailable rather than a
+            // 500.
+            var mime = BuildMessage(
+                config.FromAddress ?? throw new InvalidOperationException("Contact:FromAddress ist nicht konfiguriert."),
+                config.ToAddress ?? throw new InvalidOperationException("Contact:ToAddress ist nicht konfiguriert."),
+                name,
+                email,
+                message);
+
+            var smtpHost = config.Smtp.Host
+                ?? throw new InvalidOperationException("Contact:Smtp:Host ist nicht konfiguriert.");
+
             await client.ConnectAsync(
                 smtpHost, config.Smtp.Port, ResolveSecureSocketOptions(config.Smtp.Security), cancellationToken);
 
@@ -52,8 +67,6 @@ public sealed class ContactMailSender(
             }
 
             await client.SendAsync(mime, cancellationToken);
-            await client.DisconnectAsync(quit: true, cancellationToken);
-            return true;
         }
         catch (Exception ex)
         {
@@ -62,6 +75,22 @@ public sealed class ContactMailSender(
             logger.LogWarning(ex, "Contact form message could not be sent over SMTP.");
             return false;
         }
+
+        // The message has already reached the server at this point — a failure disconnecting
+        // afterwards (a dropped connection, the server closing first) is the server's problem, not
+        // the visitor's, and must not turn an already-successful send into a reported failure that
+        // has the visitor retry into a duplicate mail (Codex P2, docs/DECISIONS.md 2026-09-24
+        // revision). Logged, never rethrown, and never turns `true` back into `false`.
+        try
+        {
+            await client.DisconnectAsync(quit: true, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Contact form message was sent, but disconnecting from the SMTP server afterwards failed.");
+        }
+
+        return true;
     }
 
     /// <summary>

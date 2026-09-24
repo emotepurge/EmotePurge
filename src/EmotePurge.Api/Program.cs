@@ -217,7 +217,15 @@ builder.Services.AddRateLimiter(options =>
     // real Turnstile verification and possibly an SMTP round trip was attempted on the operator's
     // behalf. This is only the per-IP half; the provider-wide ceiling across all visitors is
     // ContactSendBudget, an in-process concern in Infrastructure, not a policy here.
-    AddTokenBucketPolicy(RateLimitPolicyNames.Contact, rateLimits.Contact);
+    //
+    // Deliberately its own partitioner, not AddTokenBucketPolicy/PartitionPerUserTokenBucket: this
+    // route is reachable while logged in too, and PartitionPerUser*'s ResolveUserKey prefers the
+    // authenticated claim over the IP, which would hand each signed-in visitor behind one shared IP
+    // their own three-permit bucket instead of the one shared bucket this policy exists to enforce
+    // (Codex P2, docs/DECISIONS.md 2026-09-24 revision). PartitionPerIpTokenBucket never considers
+    // the authenticated user at all.
+    options.AddPolicy(RateLimitPolicyNames.Contact, httpContext =>
+        RateLimitRejection.PartitionPerIpTokenBucket(httpContext, RateLimitPolicyNames.Contact, rateLimits.Contact));
 });
 
 var app = builder.Build();

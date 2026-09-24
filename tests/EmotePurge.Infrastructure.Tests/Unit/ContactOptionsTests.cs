@@ -68,4 +68,35 @@ public class ContactOptionsTests
 
         Assert.False(options.IsAvailable);
     }
+
+    /// <summary>
+    /// Added 2026-09-24 (Codex P2): a non-blank but malformed From/To address used to read as
+    /// "available" here and then throw once <c>ContactMailSender.BuildMessage</c> parsed the very same
+    /// string with MimeKit — a 500 on every submission instead of the intended <c>contact_unavailable</c>
+    /// 503. Both examples are realistic operator typos in an environment variable (a truncated
+    /// <c>CONTACT_FROM_ADDRESS=user@</c>, a leading <c>CONTACT_TO_ADDRESS=@example.com</c>), not
+    /// contrived strings — <c>MailboxAddress.TryParse</c> rejects both.
+    /// </summary>
+    [Theory]
+    [InlineData("user@")]
+    [InlineData("@example.com")]
+    [InlineData("two spaced words")]
+    public void MalformedFromAddress_MakesItUnavailable(string malformed)
+    {
+        var options = FullyConfigured();
+        options.FromAddress = malformed;
+
+        Assert.False(options.IsAvailable);
+    }
+
+    [Theory]
+    [InlineData("user@")]
+    [InlineData("@example.com")]
+    public void MalformedToAddress_MakesItUnavailable(string malformed)
+    {
+        var options = FullyConfigured();
+        options.ToAddress = malformed;
+
+        Assert.False(options.IsAvailable);
+    }
 }

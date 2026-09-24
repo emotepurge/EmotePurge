@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using EmotePurge.Core.Services;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
@@ -293,6 +294,58 @@ public class ContactEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(
             [HttpStatusCode.NoContent, HttpStatusCode.NoContent, HttpStatusCode.NoContent, HttpStatusCode.TooManyRequests],
             statusCodes);
+    }
+
+    /// <summary>
+    /// Codex Sol review (P2, docs/DECISIONS.md 2026-09-24 revision): the <c>Contact</c> policy used to
+    /// partition through <c>RateLimitRejection.PartitionPerUser</c>, whose <c>ResolveUserKey</c>
+    /// prefers the authenticated Twitch user id over the remote IP — right for a route that requires
+    /// login, wrong here, since this route accepts a submission from an already-signed-in visitor just
+    /// as readily as an anonymous one. Regression: three different authenticated users, all through
+    /// the same <c>TestServer</c> connection (and therefore the same remote IP), against a two-permit
+    /// bucket — a partitioner keyed on the user id would hand each of them their own fresh bucket and
+    /// never reject the third; only a partitioner keyed on the shared IP does.
+    /// </summary>
+    [Fact]
+    public async Task Post_RealContactPolicy_PartitionsByRemoteIp_NotByAuthenticatedUser()
+    {
+        var contact = Substitute.For<IContactSubmissionService>();
+        contact.GetAvailability().Returns(new ContactAvailability(Available: true, TurnstileSiteKey: "test-site-key"));
+        contact.SubmitAsync(Arg.Any<ContactSubmission>(), Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(ContactSubmissionOutcome.Sent);
+
+        using var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            // A budget small enough to spend in two requests, so a third distinct user id is enough
+            // to prove the partition either way — no need to burn through the real 3-permit/20-minute
+            // production budget to make the point.
+            builder.UseSetting("RateLimiting:Contact:TokenLimit", "2");
+            builder.UseSetting("RateLimiting:Contact:TokensPerPeriod", "1");
+            builder.UseSetting("RateLimiting:Contact:ReplenishmentPeriodSeconds", "1200");
+            builder.ConfigureTestServices(services => services.AddScoped(_ => contact));
+        });
+        using var client = factory.CreateClient();
+
+        using var first = await PostAsUserAsync(client, "contact-ip-partition-user-a");
+        using var second = await PostAsUserAsync(client, "contact-ip-partition-user-b");
+        using var third = await PostAsUserAsync(client, "contact-ip-partition-user-c");
+
+        Assert.Equal(HttpStatusCode.NoContent, first.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, second.StatusCode);
+        // A per-user partitioner would still have a fresh two-permit bucket for this third, distinct
+        // user id — only a partitioner keyed on the shared remote IP rejects it.
+        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    private static Task<HttpResponseMessage> PostAsUserAsync(HttpClient client, string userId)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/contact")
+        {
+            Content = JsonContent.Create(ValidBody()),
+        };
+        request.Headers.Add(TestAuthHandler.UserIdHeader, userId);
+        request.Headers.Add(TestAuthHandler.LoginHeader, "someuser");
+        return client.SendAsync(request);
     }
 
     private static object ValidBody() => new

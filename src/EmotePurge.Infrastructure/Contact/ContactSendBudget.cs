@@ -32,7 +32,11 @@ public sealed class ContactSendBudget
     private readonly TimeSpan _window;
     private readonly TimeProvider _timeProvider;
     private readonly Lock _gate = new();
-    private readonly Queue<DateTimeOffset> _granted = new();
+
+    // A LinkedList, not a Queue: TryCharge still only ever trims from the front (oldest first, same
+    // as before), but Release needs to drop the *most recently* granted entry, and a Queue offers no
+    // way to remove from that end. Neither operation is ever more than O(1) either way.
+    private readonly LinkedList<DateTimeOffset> _granted = new();
 
     public ContactSendBudget(int maxSends = DefaultMaxSends, TimeSpan? window = null, TimeProvider? timeProvider = null)
     {
@@ -49,17 +53,20 @@ public sealed class ContactSendBudget
 
     /// <summary>
     /// Takes one permit for one send, without waiting. <see langword="false"/> means the caller must
-    /// not send — and, importantly, must not have spent a Turnstile verification call or an SMTP
-    /// round trip getting here; the caller charges this before either.
+    /// not send. The caller charges this only once a Turnstile verification has already succeeded —
+    /// and, importantly, must not have spent an SMTP round trip getting here — so that a burst of
+    /// shape-valid requests carrying an invalid token can fail Turnstile as many times as it likes
+    /// without ever touching this budget (Codex P1, docs/DECISIONS.md 2026-09-24 revision). See
+    /// <see cref="Release"/> for undoing a charge whose SMTP send then failed anyway.
     /// </summary>
     public bool TryCharge()
     {
         lock (_gate)
         {
             var now = _timeProvider.GetUtcNow();
-            while (_granted.Count > 0 && now - _granted.Peek() >= _window)
+            while (_granted.Count > 0 && now - _granted.First!.Value >= _window)
             {
-                _granted.Dequeue();
+                _granted.RemoveFirst();
             }
 
             if (_granted.Count >= MaxSends)
@@ -67,8 +74,28 @@ public sealed class ContactSendBudget
                 return false;
             }
 
-            _granted.Enqueue(now);
+            _granted.AddLast(now);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Refunds the most recently granted permit — for a caller that charged <see cref="TryCharge"/>
+    /// expecting to send, but whose SMTP send then failed: only a message that actually left for the
+    /// operator's mailbox should count against this budget, not an attempt an unrelated SMTP hiccup
+    /// aborted. Removes the newest entry rather than the oldest so the refund pairs with the charge
+    /// this same call just made — the two always run back-to-back on the same request, never
+    /// interleaved with an unrelated charge under the lock. A no-op with nothing granted (defensive
+    /// only: a caller must never be able to call this without a matching prior <see cref="TryCharge"/>).
+    /// </summary>
+    public void Release()
+    {
+        lock (_gate)
+        {
+            if (_granted.Count > 0)
+            {
+                _granted.RemoveLast();
+            }
         }
     }
 }

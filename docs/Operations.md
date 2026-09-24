@@ -171,7 +171,13 @@ TURNSTILE_SECRET_KEY=<from step 1>
 `CONTACT_SMTP_USERNAME`/`_PASSWORD` may stay empty for an SMTP relay that does not require
 authentication (e.g. a local network relay); every other variable is required for the feature to
 report itself available at all (`GET /api/contact/config`, `ContactOptions.IsAvailable`) — a
-partially filled-in set behaves exactly like an empty one, not a startup error.
+partially filled-in set behaves exactly like an empty one, not a startup error. **Since the
+2026-09-24 revision, `CONTACT_FROM_ADDRESS`/`CONTACT_TO_ADDRESS` are also checked for shape**: a
+typo that leaves either one non-blank but unparseable as a mailbox (a stray `user@` with no domain,
+a leading `@example.com` with no local part) reads as "not available" the same way an empty value
+does, rather than the form accepting submissions it would then fail to send. If `/contact` shows the
+"currently unavailable" notice right after filling in `.env`, double-check both addresses for a typo
+before suspecting the SMTP account itself.
 
 Redeploy (`docker compose up -d --build` locally, pull + recreate in Portainer for prod) — no
 database migration, only environment variables. `/contact` and `GET /api/contact/config` pick up

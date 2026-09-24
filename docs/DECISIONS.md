@@ -113,6 +113,39 @@ speaks SMTP) without a code change.
    Clearing `Contact:ToAddress` reproduced `{ available: false }` and a 503 `contact_unavailable` on
    `POST`.
 
+**Revised 2026-09-24** — Codex Sol review of the branch found six findings (one P1, five P2), each
+closed with a test that failed before its fix. Backend first:
+
+1. **(P1) The provider-wide send budget was charged before Turnstile ran**, not after — a burst of
+   thirty shape-valid requests carrying an invalid token, from a rotating pool of IPs, could exhaust
+   the one shared, hour-long budget without ever costing a real verification, locking out every
+   legitimate visitor for up to an hour. `ContactSubmissionService.SubmitAsync` now charges only once
+   Turnstile has actually succeeded, and `ContactSendBudget` gained `Release()` to refund the
+   reservation when the SMTP send then fails — only a delivered mail should count against the ceiling.
+2. **(P2) The `Contact` rate-limit policy partitioned through `RateLimitRejection.PartitionPerUser`**,
+   whose `ResolveUserKey` prefers the authenticated Twitch user id over the remote IP — right for a
+   route that requires login, wrong here, since nothing stops an already-signed-in visitor from
+   submitting the form too. Several signed-in visitors behind one shared IP each got their own
+   three-permit bucket instead of sharing the one the policy exists to enforce. Closed with a new,
+   dedicated `RateLimitRejection.PartitionPerIpTokenBucket`, which never reads the authenticated claim.
+3. **(P2) A disconnect failure after a successful SMTP send was reported as a failed send** — both
+   calls shared one try/catch in `ContactMailSender.SendAsync`, so a dropped connection or the server
+   closing first after accepting the message turned an already-delivered mail into a reported failure,
+   inviting the visitor to retry into a duplicate. The disconnect now runs in its own try/catch that
+   only logs; once `SendAsync` has succeeded, the result is `true` regardless of what happens after.
+   Testing this needed a seam: `ContactMailSender` gained an optional `Func<ISmtpClient>` constructor
+   parameter (MailKit's own public interface, implemented by `SmtpClient`), defaulting to a real
+   client — the same optional-parameter shape as `ContactSendBudget`'s `TimeProvider`.
+4. **(P2) A non-blank but malformed From/To address read as "available"**, then made
+   `ContactMailSender.BuildMessage`'s `MailboxAddress.Parse` throw outside the method's try/catch — a
+   500 instead of the intended `contact_unavailable` 503. `ContactOptions.IsAvailable` now validates
+   both addresses with `MailboxAddress.TryParse` (the same parser `BuildMessage` uses), and message
+   construction moved inside `SendAsync`'s try/catch as defence in depth for any caller that skips the
+   availability gate.
+
+(Two more findings from the same review — frontend, closed in the following commit — are numbered
+5–6 below.)
+
 ---
 
 ### 2026-09-24 — Legal pages: the back control follows in-app navigation history, not a fixed "Startseite" link

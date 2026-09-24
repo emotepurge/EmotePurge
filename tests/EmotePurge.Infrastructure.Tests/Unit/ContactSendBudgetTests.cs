@@ -86,4 +86,62 @@ public class ContactSendBudgetTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new ContactSendBudget(0, Window, clock));
         Assert.Throws<ArgumentOutOfRangeException>(() => new ContactSendBudget(3, TimeSpan.Zero, clock));
     }
+
+    /// <summary>
+    /// <see cref="ContactSendBudget.Release"/> (added 2026-09-24, Codex P2): a caller whose reserved
+    /// send then failed at the SMTP step gets its permit back, so the next legitimate attempt — the
+    /// visitor retrying, or simply the next caller in the window — is not charged for an e-mail that
+    /// was never actually delivered.
+    /// </summary>
+    [Fact]
+    public void Release_FreesOneSlotForTheNextCharge()
+    {
+        var clock = new HandWoundTimeProvider();
+        var budget = new ContactSendBudget(1, Window, clock);
+        Assert.True(budget.TryCharge());
+        Assert.False(budget.TryCharge());
+
+        budget.Release();
+
+        Assert.True(budget.TryCharge());
+    }
+
+    [Fact]
+    public void Release_WithNothingGranted_IsANoOp()
+    {
+        var clock = new HandWoundTimeProvider();
+        var budget = new ContactSendBudget(1, Window, clock);
+
+        budget.Release();
+
+        Assert.True(budget.TryCharge());
+        Assert.False(budget.TryCharge());
+    }
+
+    /// <summary>
+    /// Release always drops the most recently granted permit, not the oldest — the pairing this needs
+    /// to matter for is one charge immediately followed by its own release (the only sequence
+    /// <c>ContactSubmissionService</c> ever produces), not an arbitrary earlier one.
+    /// </summary>
+    [Fact]
+    public void Release_DropsTheMostRecentlyGrantedPermit_NotTheOldest()
+    {
+        var clock = new HandWoundTimeProvider();
+        var budget = new ContactSendBudget(2, Window, clock);
+        Assert.True(budget.TryCharge()); // permit A, granted at t=0
+        clock.Advance(TimeSpan.FromMinutes(10));
+        Assert.True(budget.TryCharge()); // permit B, granted at t=10m
+
+        budget.Release(); // must drop B (the one just granted), leaving only A behind
+
+        // At t=65m, A (granted at t=0) has aged out of the 60-minute window; B (granted at t=10m),
+        // had it wrongly been kept instead, would still have 5 minutes left. A correct Release leaves
+        // the budget fully empty here, so two charges succeed before a third is refused. A Release
+        // that dropped the *oldest* entry instead would have left B still occupying a slot, and only
+        // one charge would succeed before the second is refused.
+        clock.Advance(TimeSpan.FromMinutes(55));
+        Assert.True(budget.TryCharge());
+        Assert.True(budget.TryCharge());
+        Assert.False(budget.TryCharge());
+    }
 }

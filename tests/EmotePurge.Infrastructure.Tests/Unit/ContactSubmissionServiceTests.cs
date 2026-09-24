@@ -32,10 +32,17 @@ public class ContactSubmissionServiceTests
         await mailSender.DidNotReceive().SendAsync(Arg.Any<string?>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    /// <summary>
+    /// Revised 2026-09-24 (Codex P1): the budget is now charged only after Turnstile succeeds, so an
+    /// exhausted budget can only ever be reached once a real Turnstile verification already passed —
+    /// unlike the earlier ordering, this outcome no longer implies the token was never checked.
+    /// </summary>
     [Fact]
-    public async Task GlobalBudgetExhausted_ReturnsGlobalLimitReached_WithoutCallingTurnstileOrMail()
+    public async Task GlobalBudgetExhausted_ReturnsGlobalLimitReached_AfterTurnstileSucceeds_WithoutSendingMail()
     {
         var turnstile = Substitute.For<ITurnstileVerifier>();
+        turnstile.VerifyAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(TurnstileVerificationResult.Success);
         var mailSender = Substitute.For<IContactMailSender>();
         var service = CreateService(FullyConfigured(), turnstile, mailSender, out var budget, maxSends: 1);
         Assert.True(budget.TryCharge()); // exhaust the one-permit budget before the service ever runs
@@ -43,7 +50,36 @@ public class ContactSubmissionServiceTests
         var outcome = await service.SubmitAsync(Submission, "token", "203.0.113.1", CancellationToken.None);
 
         Assert.Equal(ContactSubmissionOutcome.GlobalLimitReached, outcome);
-        await turnstile.DidNotReceive().VerifyAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+        await turnstile.Received(1).VerifyAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+        await mailSender.DidNotReceive().SendAsync(Arg.Any<string?>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The regression this revision closes (Codex P1): charging the budget before Turnstile ran let a
+    /// burst of shape-valid requests carrying an invalid token exhaust the one shared, provider-wide
+    /// budget for the whole window — locking out every legitimate visitor for up to an hour — without
+    /// ever costing a real Turnstile verification. Thirty failed-captcha attempts against a one-permit
+    /// budget must leave that permit untouched.
+    /// </summary>
+    [Fact]
+    public async Task TurnstileFailsRepeatedly_NeverChargesTheGlobalBudget()
+    {
+        var turnstile = Substitute.For<ITurnstileVerifier>();
+        turnstile.VerifyAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(TurnstileVerificationResult.Failed);
+        var mailSender = Substitute.For<IContactMailSender>();
+        var service = CreateService(FullyConfigured(), turnstile, mailSender, out var budget, maxSends: 1);
+
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            var outcome = await service.SubmitAsync(
+                Submission, "bad-token", $"203.0.113.{attempt}", CancellationToken.None);
+            Assert.Equal(ContactSubmissionOutcome.CaptchaFailed, outcome);
+        }
+
+        // The one-permit budget must still be fully intact — none of the thirty failed-captcha
+        // attempts spent it.
+        Assert.True(budget.TryCharge());
         await mailSender.DidNotReceive().SendAsync(Arg.Any<string?>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -108,6 +144,29 @@ public class ContactSubmissionServiceTests
         var outcome = await service.SubmitAsync(Submission, "token", "203.0.113.1", CancellationToken.None);
 
         Assert.Equal(ContactSubmissionOutcome.Unavailable, outcome);
+    }
+
+    /// <summary>
+    /// The refund half of the same revision (Codex P1): only a message that actually left for the
+    /// operator's mailbox should count against the budget. With a one-permit budget, a failed send
+    /// must give its reservation back — otherwise a single transient SMTP hiccup would cost the next
+    /// hour's worth of legitimate visitors their only permit for nothing.
+    /// </summary>
+    [Fact]
+    public async Task MailSendFails_RefundsTheReservedPermit()
+    {
+        var turnstile = Substitute.For<ITurnstileVerifier>();
+        turnstile.VerifyAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(TurnstileVerificationResult.Success);
+        var mailSender = Substitute.For<IContactMailSender>();
+        mailSender.SendAsync(Arg.Any<string?>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        var service = CreateService(FullyConfigured(), turnstile, mailSender, out var budget, maxSends: 1);
+
+        var outcome = await service.SubmitAsync(Submission, "token", "203.0.113.1", CancellationToken.None);
+
+        Assert.Equal(ContactSubmissionOutcome.Unavailable, outcome);
+        Assert.True(budget.TryCharge());
     }
 
     [Fact]

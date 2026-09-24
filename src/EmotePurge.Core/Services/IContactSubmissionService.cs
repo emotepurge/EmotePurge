@@ -63,9 +63,11 @@ public enum ContactSubmissionOutcome
 
 /// <summary>
 /// Orchestrates one contact-form submission (docs/DECISIONS.md 2026-09-24, "contact form"): checks
-/// availability, spends the provider-wide send budget, verifies the Turnstile token, and — only once
-/// all three pass — sends the e-mail. Nothing here touches the database; the whole feature is
-/// stateless besides the in-process <c>ContactSendBudget</c>.
+/// availability, verifies the Turnstile token, spends the provider-wide send budget, and — only once
+/// all three pass — sends the e-mail. The budget is charged only after Turnstile succeeds (revised
+/// 2026-09-24, Codex P1) — charging it first let shape-valid requests with an invalid token exhaust
+/// the budget without ever verifying anything. Nothing here touches the database; the whole feature
+/// is stateless besides the in-process <c>ContactSendBudget</c>.
 /// </summary>
 public interface IContactSubmissionService
 {
