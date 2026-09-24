@@ -525,6 +525,32 @@ public class ChannelIdentityServiceTests(PostgresFixture fixture)
         await AssertAnonymousExclusionLeaveAsync(verify, "identityexcludedknown");
     }
 
+    // The objection gate's deactivation is a leave (it writes channel.leave), so it closes the open
+    // emote-set observation interval in the same save, exactly like ChannelService.LeaveAsync (spec
+    // 4.3). Without it an inactive row kept an open interval, breaking the "no open row implies
+    // inactive" invariant RecordObservedSetAsync relies on.
+    [Fact]
+    public async Task ReconcileActiveChannelsAsync_WhenTheKnownIdIsExcluded_ClosesTheOpenObservationInterval()
+    {
+        await using var db = fixture.CreateDbContext();
+        var seeded = await SeedChannelAsync(db, "identityexcludedobs1", "10089");
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("10089").Returns(true);
+        var emoteSetObservationService = Substitute.For<IChannelEmoteSetObservationService>();
+        var harness = CreateHarness(
+            db,
+            [new TwitchUserIdentity("10089", "IdentityExcludedObs1")],
+            emoteSetObservationService: emoteSetObservationService,
+            excludedChannelFilter: excludedChannelFilter);
+
+        var summary = await harness.Service.ReconcileActiveChannelsAsync();
+
+        Assert.NotNull(summary);
+        Assert.Equal(1, summary.Deactivated);
+        await emoteSetObservationService.Received(1).CloseOpenIntervalAsync(
+            seeded.Id, ChannelEmoteSetObservationClosedBy.Leave, Arg.Any<CancellationToken>());
+    }
+
     // The BackfillIdAsync residual gap the #252 DECISIONS entry used to document explicitly, closed
     // by this revision: an id-less active row whose login now resolves to an excluded id must not be
     // backfilled into observation under that id — it is deactivated instead, and the id is

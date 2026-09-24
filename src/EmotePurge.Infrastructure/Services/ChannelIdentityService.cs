@@ -439,7 +439,8 @@ public class ChannelIdentityService(
 
         try
         {
-            await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, AuditActor.System, forExclusion: true, ct);
+            await ChannelDeactivation.DeactivateAsync(
+                db, redisPublisher, emoteSetObservationService, channel, AuditActor.System, forExclusion: true, ct);
         }
         catch (DbUpdateException ex)
         {

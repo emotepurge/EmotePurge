@@ -98,12 +98,6 @@ public class ChannelService(
             return false;
         }
 
-        // Closes the open observation interval, if any (spec 4.3) — tracked only, riding the
-        // SaveChangesAsync inside ChannelDeactivation.DeactivateAsync together with the deactivation
-        // and the audit entry, so "left" and "stopped observing this set" land in the same commit.
-        await emoteSetObservationService.CloseOpenIntervalAsync(
-            channel.Id, ChannelEmoteSetObservationClosedBy.Leave, cancellationToken);
-
         // Soft deactivate, not Remove(): the row hangs on four cascade edges (Channel -> Emote,
         // Emote -> UsageStat, Channel -> VoteSession, VoteSession -> Vote, Emote -> Vote), so a
         // hard delete threw away every emote, the entire daily usage history since the bot joined,
@@ -123,7 +117,9 @@ public class ChannelService(
         // a prerequisite. Same is true for JoinAsync below and TriggerResyncAsync via the periodic
         // sync loop itself; only this method needed a new convergence net, since JOIN/RESYNC already
         // had one.
-        await ChannelDeactivation.DeactivateAsync(db, redisPublisher, channel, actor, forExclusion: false, cancellationToken);
+        // The helper also closes the open observation interval (spec 4.3) in the same save.
+        await ChannelDeactivation.DeactivateAsync(
+            db, redisPublisher, emoteSetObservationService, channel, actor, forExclusion: false, cancellationToken);
 
         return true;
     }

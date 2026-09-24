@@ -23,8 +23,9 @@ public class ChannelEmoteSetObservationService(AppDbContext db) : IChannelEmoteS
             // it, since a later rejoin onto the same set just takes the "same set, do nothing" branch
             // below instead of opening a fresh row.
             //
-            // This is not a hopeful TOCTOU check: LeaveAsync (ChannelService.cs) commits the close of
-            // an open interval and the IsBotActive flip in the *same* SaveChangesAsync. That
+            // This is not a hopeful TOCTOU check: every deactivation (ChannelDeactivation.cs, shared by
+            // LeaveAsync and the identity reconcile's objection gate) commits the close of an open
+            // interval and the IsBotActive flip in the *same* SaveChangesAsync. That
             // atomicity is what makes this safe without a lock — any snapshot that already shows "no
             // open row" here necessarily also shows IsBotActive = false, because the two facts are
             // written together and can never become visible one without the other.

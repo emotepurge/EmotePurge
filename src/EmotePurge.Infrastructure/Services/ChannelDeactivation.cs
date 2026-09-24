@@ -6,9 +6,9 @@ using EmotePurge.Infrastructure.Persistence;
 namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>
-/// The write every "stop observing this channel, keep its history" path shares: flip
-/// <c>IsBotActive</c> off, stamp the retention clock, record why, and publish the LEAVE command the
-/// worker needs to actually part the chat. Factored out of <see cref="ChannelService.LeaveAsync"/>
+/// The write every "stop observing this channel, keep its history" path shares: close the open
+/// emote-set observation interval, flip <c>IsBotActive</c> off, stamp the retention clock, record
+/// why, and publish the LEAVE command the worker needs to actually part the chat. Factored out of <see cref="ChannelService.LeaveAsync"/>
 /// so <see cref="ChannelIdentityService"/>'s own objection-gate deactivation (issue #260, the second
 /// Codex review of #252) can reuse exactly the same write rather than a hand-copied one.
 /// <para>
@@ -33,11 +33,22 @@ internal static class ChannelDeactivation
     public static async Task DeactivateAsync(
         AppDbContext db,
         IRedisPublisher redisPublisher,
+        IChannelEmoteSetObservationService emoteSetObservationService,
         Channel channel,
         AuditActor actor,
         bool forExclusion,
         CancellationToken cancellationToken)
     {
+        // Closes the open observation interval, if any (spec 4.3) — tracked only, riding the
+        // SaveChangesAsync below together with the deactivation and the audit entry, so "left" and
+        // "stopped observing this set" land in the same commit. Here rather than at each caller:
+        // the objection gate's deactivation is a leave as well (it writes channel.leave), and an
+        // interval left open on an inactive row would break the invariant
+        // ChannelEmoteSetObservationService.RecordObservedSetAsync relies on — no open row implies
+        // IsBotActive = false, because both are written in one save.
+        await emoteSetObservationService.CloseOpenIntervalAsync(
+            channel.Id, ChannelEmoteSetObservationClosedBy.Leave, cancellationToken);
+
         channel.IsBotActive = false;
         channel.DeactivatedAtUtc = DateTime.UtcNow;
         if (forExclusion)

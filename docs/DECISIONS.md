@@ -10,6 +10,30 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — Every deactivation closes the emote-set observation interval, the objection gate's included
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChannelEmoteSetObservationService.cs`
+
+Found while merging main into the emote-set epic. The epic closed a channel's open observation
+interval inside `ChannelService.LeaveAsync` (`ClosedBy.Leave`, spec 4.3); main meanwhile factored
+the deactivation write out into `ChannelDeactivation.DeactivateAsync` and gave it a second caller,
+the identity reconcile's objection-gate deactivation. That second caller never closed the interval,
+so a blocked channel ended up inactive with an interval still open — contradicting the invariant
+`RecordObservedSetAsync` relies on ("no open row implies `IsBotActive = false`, both written in one
+save").
+
+**Decision:** the close moves into the shared helper, so every deactivation closes the interval in
+the same `SaveChangesAsync` as the flip and the audit entry. The objection gate uses
+`ClosedBy.Leave` as well: it writes a `channel.leave` audit entry, and no separate vocabulary value
+would tell a reader anything the audit log does not already say (and a distinct value would name the
+objection, which the gate's log lines deliberately avoid). `LeaveAsync` no longer calls
+`CloseOpenIntervalAsync` itself.
+
+---
+
 ### 2026-09-24 — A channel block list closes the "purge, then rejoin" gap of the GDPR objection (#252)
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/IExcludedChannelFilter.cs` ·
