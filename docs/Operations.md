@@ -107,6 +107,34 @@ not be able to exhaust each other's budget.
 placeholder path with nothing to demonstrate — `Legal:ContentPath` is documented here instead,
 the way `BACKUP_DIR`/`RETENTION_DAYS` above are.
 
+## Excluding a chatter (GDPR objection)
+
+The worker processes public chat on a legitimate-interest basis (GDPR Art. 6(1)(f)) to count emote
+usage; it stores no message text and no chatter identity, but every message is briefly held in
+memory with the sender's Twitch user ID for bot detection. Anyone relying on that basis must honour
+an objection under Art. 21. Objections are expected to arrive by e-mail and to be rare — there is no
+self-service opt-out (chat command or web form) and none is planned.
+
+1. From the objection, find the chatter's **numeric Twitch user ID** — never the login, which can
+   change. The Twitch API (`GET https://api.twitch.tv/helix/users?login=<login>`, an App Access
+   Token, the same credentials the worker's own Helix calls already use) or a third-party lookup
+   tool both return it.
+2. Add the ID to `TWITCH_EXCLUDED_CHATTER_IDS` in the `.env` next to `docker-compose.prod.yml` on
+   the VPS — comma-separated if the variable already holds other IDs, same shape as
+   `TWITCH_ADDITIONAL_BOT_ACCOUNT_IDS` above it.
+3. Recreate the worker so it picks up the new environment (`docker compose -f
+   docker-compose.prod.yml up -d --no-deps worker` in Portainer's stack directory, or the
+   equivalent redeploy through Portainer's UI). The change takes effect only after this restart —
+   `Twitch:ExcludedChatterIds` is read once, at startup, not polled.
+4. The worker logs how many IDs are configured (`Configured N excluded chatter id(s).`) on the next
+   start — never the IDs themselves, and never a login — so the restart can be confirmed from the
+   container logs without looking at the `.env` again.
+
+From the moment the worker restarts, a message from an excluded ID is dropped before it reaches
+either the emote counters or the bot detector — the sender is no longer processed at all, in any
+category. There is nothing to do retroactively: already aggregated usage counts contain no
+identity, so no per-person removal is possible or necessary against them.
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates
