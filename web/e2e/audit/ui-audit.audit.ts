@@ -426,6 +426,12 @@ const SCENARIOS: Scenario[] = [
     setup: async (page) => {
       await authedShell(page);
       await mockMyChannelsWithFlags(page, TYPICAL_CHANNELS);
+      // Both true (departing from mockLegalAvailability's own "nothing configured" default): this
+      // is one of the pages an operator's real footer-height complaint was reported against — a
+      // handful of rows, shorter than most viewports, with the legal footer actually configured
+      // and therefore visible. Exercises the AppShell sticky-footer layout together with real
+      // content instead of only via the empty-state scenario below.
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
     },
   },
   {
@@ -434,6 +440,8 @@ const SCENARIOS: Scenario[] = [
     setup: async (page) => {
       await authedShell(page);
       await mockMyChannelsWithFlags(page, []);
+      // See 'overview-typical' above — the shortest possible case of the same page.
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
     },
   },
   {
@@ -690,6 +698,8 @@ const SCENARIOS: Scenario[] = [
     setup: async (page) => {
       await authedShell(page);
       await mockMyVotings(page, myVoteSessions(23));
+      // See 'overview-typical' above — the other page the operator's footer-height report named.
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
     },
   },
   {
@@ -698,6 +708,7 @@ const SCENARIOS: Scenario[] = [
     setup: async (page) => {
       await authedShell(page);
       await mockMyVotings(page, []);
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
     },
   },
   {
@@ -710,6 +721,27 @@ const SCENARIOS: Scenario[] = [
       // The sidecar's curve is only visible from lg upwards, so this shows up in the desktop shots
       // and is correctly absent from the mobile ones.
       await mockUsageChannelSeries(page, 'sensitron', usageSeries(), [2, 3, 4, 9, 10, 15, 16]);
+    },
+  },
+  {
+    // The fixed action dock (.app-dock) against the shell's sticky footer at once (fix/footer-
+    // placement): the dock is position: fixed to the viewport bottom regardless of scroll, and the
+    // footer's own sticky-footer layout can put it in that exact strip on a page short enough to
+    // reach the viewport's bottom edge — see DockClearanceService (core/layout/) for the fix. Only
+    // eight emotes rather than the usual 24, so the page itself stays well short of every viewport
+    // in the matrix and the "short page" case this exists to cover is the one actually measured.
+    slug: 'usage-stats-dock',
+    path: '/channels/sensitron/usage-stats',
+    requiresFinePointer: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page);
+      await mockUsageTotals(page, 'sensitron', usageEmotes(8));
+      await mockLegalAvailability(page, { imprintAvailable: true, privacyAvailable: true });
+    },
+    afterLoad: async (page) => {
+      await page.getByRole('button', { name: /^Emote1PogU ·/ }).click();
+      await page.locator('.app-dock').waitFor();
     },
   },
   {

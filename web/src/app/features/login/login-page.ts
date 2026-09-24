@@ -28,7 +28,10 @@ const SCOPES = [
 @Component({
   selector: 'app-login-page',
   template: `
-    <div class="flex min-h-screen flex-col bg-page text-fg">
+    <!-- Sticky-footer layout, consistent with AppShell (app-shell.ts) — see the comment there for
+         why dvh rather than vh. This page already put <main> in a flex column with flex-1 before
+         the footer existed; only the viewport unit and the footer below change. -->
+    <div class="flex min-h-dvh flex-col bg-page text-fg">
       <!-- The login page renders outside the shell, so it brings both display-preference
            controls along itself rather than leaving the visitor without a theme switch. -->
       <header class="flex items-center justify-between px-4 py-3">
@@ -90,10 +93,11 @@ const SCOPES = [
 
       <!-- Same footer shape as app-shell.ts — reachable from here too, since this page renders
            outside the shell and is exactly where a visitor stands right before the Twitch OAuth
-           redirect (issue #247, requirement 3). -->
+           redirect (issue #247, requirement 3). Same reduced padding/type size as app-shell.ts —
+           see the comment there. -->
       @if (hasLegalLinks()) {
-        <footer class="border-t border-border px-4 py-4">
-          <div class="mx-auto flex max-w-7xl flex-wrap gap-5 text-sm text-fg-muted">
+        <footer class="border-t border-border px-4 py-2">
+          <div class="mx-auto flex max-w-7xl flex-wrap gap-5 text-xs text-fg-muted">
             <app-legal-footer-links />
           </div>
         </footer>

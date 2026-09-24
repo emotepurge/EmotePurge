@@ -30,6 +30,7 @@ import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
+import { DockClearanceService } from '../../core/layout/dock-clearance.service';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
 import { dedupeImportRows, ImportRow, ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
@@ -208,6 +209,13 @@ const DISTRIBUTION_BUCKETS = 96;
 // channel-workspace-layout's RESYNC_FEEDBACK_MS and admin-channels-page's own feedback timer.
 const SELECTION_PRUNED_FEEDBACK_MS = 4000;
 
+// Matches the template's own `pb-40` (10rem) that guards this page's content against the dock —
+// the same reservation handed to DockClearanceService so AppShell's footer gets it too. Kept as a
+// plain number rather than read from the DOM: the dock's rendered height varies with its content
+// (a delete queue vs. a bare marked count), but both guards exist to clear a worst case, not to
+// track the bar pixel-for-pixel, and one contract value is what keeps them from drifting apart.
+const DOCK_CLEARANCE_PX = 160;
+
 function sortableLastUsed(lastUsedDate: string | null): number {
   if (!lastUsedDate) {
     return NEVER_USED_SORT_VALUE;
@@ -261,6 +269,7 @@ export class UsageStatsPage {
   private readonly dialog = inject(Dialog);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly dockClearance = inject(DockClearanceService);
 
   /**
    * Capability, not layout: no 7TV write access without a mouse. The write token can only be
@@ -1044,9 +1053,21 @@ export class UsageStatsPage {
       }
     });
 
+    // Mirrors dockVisible() into the shared clearance signal so AppShell's footer reserves the
+    // same space this page's own template already does via pb-40 — see DockClearanceService and
+    // DOCK_CLEARANCE_PX for why a fixed bottom bar needs a guard on both sides of it.
+    effect(() => {
+      this.dockClearance.reserve(this.dockVisible() ? DOCK_CLEARANCE_PX : 0);
+    });
+
     this.destroyRef.onDestroy(() => {
       this.syncPoll?.unsubscribe();
       this.resetSelectionPrunedFeedback();
+      // Leaving the page must give the reservation back immediately — otherwise a switch to a
+      // channel with no active set (dockVisible() never becomes false again on THIS instance,
+      // since the component is destroyed first) would leave the footer needlessly clear on every
+      // later route until a page that sets its own reservation happens to override it.
+      this.dockClearance.release();
     });
 
     // Live refresh after the worker's usage flush and after real emote-inventory changes

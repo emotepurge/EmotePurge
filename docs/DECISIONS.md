@@ -10,6 +10,55 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-24 — Footer placement: sticky-footer layout instead of an unpinned block, plus a shell/dock clearance contract
+
+**Betrifft:** `web/src/app/features/shell/app-shell.ts` · `web/src/app/features/login/login-page.ts` ·
+`web/src/app/features/landing/landing-page.html` ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` ·
+`web/src/app/core/layout/dock-clearance.service.ts` (+ spec) ·
+`web/e2e/footer-placement.e2e.spec.ts` · `web/e2e/audit/ui-audit.audit.ts`
+
+Operator feedback (with screenshots) on #247's legal footer: on a short page (e.g. "Meine
+Channels"/"Meine Abstimmungen" with a handful of rows) the footer sat right under the content,
+stranded mid-screen with a lot of empty page below it, and read as a heavy block relative to how
+rarely it is used.
+
+1. **Sticky-footer layout, not a fixed block.** `AppShell`, `LoginPage` and `LandingPage` each wrap
+   their page in `flex min-h-dvh flex-col`, with the routed `<main>`/content area as `flex-1`. On a
+   page shorter than the viewport the footer now sits at the viewport's bottom edge; on a longer
+   page it follows the content in normal document flow, exactly as before. `dvh` rather than `vh`:
+   `100vh` on a mobile browser is the height with the address bar hidden, which would strand the
+   footer below the fold on first paint. No inner scroll container is introduced — the page still
+   scrolls as one document (`docs/UI-Designsprache.md` §8.5).
+2. **Much less height.** The footer's own padding dropped from `py-4`/`text-sm` to `py-2`/`text-xs`
+   on all three pages (`AppShell`, `LoginPage`, `LandingPage` — content unchanged). Link hit targets
+   are untouched: `LegalFooterLinks` keeps its own `px-1 py-2` per anchor, so the row's own padding
+   shrinking does not shrink what is clickable (audit's `smallTargetsUnder24` gate).
+3. **`DockClearanceService` (`core/layout/`) — a new, small contract between a page's own
+   `position: fixed` bottom bar and the shell's footer.** A `position: fixed` element is anchored to
+   the viewport, not the document, so it renders in the same strip regardless of scroll position.
+   Once the footer could reach the viewport's bottom edge (point 1), that is exactly where the
+   usage-stats action dock (`.app-dock`, `z-30`, fixed to `bottom: 0`) also renders — on a short
+   page, or at the bottom of a long one once scrolled all the way down, the dock would sit directly
+   on top of the footer's link row. `usage-stats-page.html` already reserves `pb-40` inside its own
+   content while `dockVisible()` (`actionDockHasContent`), but that padding sits before the footer
+   and does nothing for it. `DockClearanceService` is the generic form of the same guard: any page
+   with a fixed bottom bar calls `reserve(px)`/`release()` (mirrored from its own visibility signal
+   via an `effect()`, released in `DestroyRef.onDestroy`) and `AppShell` reads the resulting signal
+   to add matching `padding-bottom` to the footer element. State-driven, not route-driven — the
+   reservation appears and disappears with the dock itself, so this does not reintroduce the
+   per-route layout variation §8.4a rules out. `usage-stats-page.ts` reserves the same 160px
+   (`DOCK_CLEARANCE_PX`) as its own `pb-40` contract, kept as one named constant per file rather than
+   measured live, matching the existing guard's own reasoning (a worst-case reservation, not a
+   pixel-tracked one).
+
+Verified live: the usage-stats action dock and the footer no longer overlap at the bottom of a
+short page nor at the bottom of a long one scrolled all the way down (both cases pinned in
+`footer-placement.e2e.spec.ts`); UI audit harness run for the affected scenarios (`overview-*`,
+`my-votings-*`, `login`, and a new `usage-stats-dock` scenario) found zero horizontal overflow, zero
+`serious`/`critical` contrast violations, and no new `smallTargetsUnder24` entries beyond the
+pre-existing "show details" atlas-cell affordance.
+
 ### 2026-09-23 — Codex Sol review of #247: a dedicated rate-limit budget, resilient footer availability, wrapping footers, audit coverage
 
 **Betrifft:** `src/EmotePurge.Api/RateLimiting/RateLimitPolicyNames.cs` ·
