@@ -284,9 +284,14 @@ export function violationMessages(
           class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)] gap-3 px-1 pb-1 text-[11px] font-semibold uppercase tracking-[0.13em] text-fg-muted"
         >
           <span>{{ 'import.resolve.header.source' | transloco }}</span>
-          <span class="flex items-center gap-1">
-            <span>→</span>
-            <span>{{ targetHeaderKey() | transloco: { set: targetSetName() ?? '' } }}</span>
+          <span class="flex min-w-0 items-center gap-1">
+            <span class="text-sm font-normal text-fg-muted">→</span>
+            <span
+              class="min-w-0 truncate"
+              [attr.title]="targetHeaderKey() | transloco: { set: targetSetName() ?? '' }"
+            >
+              {{ targetHeaderKey() | transloco: { set: targetSetName() ?? '' } }}
+            </span>
           </span>
           <span>{{ 'import.resolve.header.action' | transloco }}</span>
         </div>
@@ -343,10 +348,12 @@ export function violationMessages(
                 }
                 <span class="truncate text-sm text-fg">{{ row.sourceName }}</span>
                 <!-- Reserved even when empty (issue #268 AK 3): the row's fixed height must not
-                     change with the chosen action, on either side. -->
+                     change with the chosen action, on either side. min-h-[1lh] pins one line's
+                     worth of height regardless of content — a blockified, content-less span has
+                     no line box of its own to derive it from (found by review after landing). -->
                 <span
                   [id]="'resolve-consequence-' + row.key + '-source'"
-                  class="truncate text-xs text-fg-muted"
+                  class="block min-h-[1lh] truncate text-xs text-fg-muted"
                 >
                   @if (sourceConsequenceOf(row); as consequence) {
                     {{
@@ -370,7 +377,8 @@ export function violationMessages(
                 @if (narrow()) {
                   <span
                     aria-hidden="true"
-                    class="text-[11px] font-semibold uppercase tracking-[0.13em] text-fg-muted"
+                    class="block min-w-0 truncate text-[11px] font-semibold uppercase tracking-[0.13em] text-fg-muted"
+                    [attr.title]="targetHeaderKey() | transloco: { set: targetSetName() ?? '' }"
                   >
                     {{ targetHeaderKey() | transloco: { set: targetSetName() ?? '' } }}
                   </span>
@@ -389,7 +397,13 @@ export function violationMessages(
                     {{ row.targetAliases.join(' · ') }}
                   </span>
                   @if (row.targetHasAliaslessEntry) {
-                    <span class="truncate text-xs text-fg-muted">
+                    <!-- A replace's REMOVE takes every entry of the target id, so this aliasless
+                         entry is struck through together with the named alias above it, not just
+                         the one that happens to carry the collision's name (found by review). -->
+                    <span
+                      class="truncate text-xs text-fg-muted"
+                      [class.line-through]="targetConsequenceOf(row)?.kind === 'removed'"
+                    >
                       {{ 'import.resolve.aliaslessEntry' | transloco }}
                     </span>
                   }
@@ -397,7 +411,7 @@ export function violationMessages(
                 <!-- Reserved even when empty — see the source cell's own consequence line above. -->
                 <span
                   [id]="'resolve-consequence-' + row.key + '-target'"
-                  class="truncate text-xs"
+                  class="block min-h-[1lh] truncate text-xs"
                   [class.text-danger-fg]="targetConsequenceOf(row)?.kind === 'removed'"
                   [class.text-fg-muted]="targetConsequenceOf(row)?.kind !== 'removed'"
                 >
