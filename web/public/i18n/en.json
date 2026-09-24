@@ -1025,7 +1025,7 @@
     "foreignChannel": {
       "title": "Import from a channel",
       "channelLabel": "Channel name",
-      "placeholder": "e.g. handofblood",
+      "placeholder": "twitch-channel-name",
       "invalidChannelName": "Not a valid Twitch channel name.",
       "load": "Load set",
       "reload": "Reload",
