@@ -61,6 +61,11 @@ export interface SevenTvSetEntries {
    *  id. Read by the transfer-run protocol (`shared/export/transfer-run-export.ts`) to name an
    *  aliasless target entry, which otherwise has no name a human would recognise. */
   defaultNameById: Map<string, string>;
+  /** The set's own `totalCount` as of this read — its live occupied-slot count, independent of how
+   *  many pages this read itself collected or whether it came back `complete`. Read by the import
+   *  confirm dialog (spec #255) to keep the slot projection current after a live re-read, rather
+   *  than only ever showing the number the picker loaded the dialog with. */
+  occupiedSlots: number;
   /** `false` when the read stopped at the runaway guard while 7TV still reported more pages, or
    *  when the last page's cumulative item count did not match the query's own `totalCount` — offset
    *  pagination shifting between page fetches can silently drop or duplicate an entry across the
@@ -137,11 +142,18 @@ export function loadSevenTvSetEntries(
             aliasesById,
             aliaslessIds,
             defaultNameById,
+            occupiedSlots: emotes.totalCount,
             complete: collected === emotes.totalCount,
           });
         }
         if (page >= MAX_SET_ENTRY_PAGES) {
-          return of({ aliasesById, aliaslessIds, defaultNameById, complete: false });
+          return of({
+            aliasesById,
+            aliaslessIds,
+            defaultNameById,
+            occupiedSlots: emotes.totalCount,
+            complete: false,
+          });
         }
         return loadPage(page + 1);
       }),

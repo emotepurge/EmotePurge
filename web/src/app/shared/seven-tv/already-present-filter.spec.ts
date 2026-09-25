@@ -194,6 +194,7 @@ describe('filterAlreadyPresent', () => {
           ['7tv-1', ''],
           ['7tv-999', ''],
         ]),
+        occupiedSlots: 2,
         complete: true,
       },
     });
@@ -721,7 +722,13 @@ function setEntries(entries: { id: string; alias: string | null }[]): SevenTvSet
     }
     aliasesById.set(entry.id, aliases);
   }
-  return { aliasesById, aliaslessIds, defaultNameById: new Map(), complete: true };
+  return {
+    aliasesById,
+    aliaslessIds,
+    defaultNameById: new Map(),
+    occupiedSlots: entries.length,
+    complete: true,
+  };
 }
 
 const SOURCE: ImportRow = { sevenTvEmoteId: 'src-1', name: 'Kappa', imageUrl: null };

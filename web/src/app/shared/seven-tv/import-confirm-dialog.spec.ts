@@ -1853,6 +1853,42 @@ describe('ImportConfirmDialog', () => {
       );
     });
 
+    // Spec #255: the slot projection follows the last successful live read, not just the picker's
+    // own load — it stays current after "Rückweg sichern"'s own re-read, and only a reload of the
+    // target (never merely a decision change) puts it back.
+    it('uses the live occupied-slot count from the last successful live read, and a target reload resets it back', async () => {
+      captureDownloads();
+      const source = channelSource([row('src-a', 'Collides')]);
+      const freshTarget = () =>
+        readyTarget({
+          setId: 'set-slots',
+          occupiedSlots: 15,
+          capacity: 1000,
+          emotes: [emote('tgt-a', 'Collides')],
+        });
+      const dialog = render({ source, target: freshTarget() });
+
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      // The replace's own ADD cancels its own REMOVE (net delta 0) — the only thing that can move
+      // the projected number below is the live read's own occupancy, not the plan.
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead([{ id: 'tgt-a', alias: 'Collides' }], 16));
+
+      expect(dialog.text()).toContain('Das Set hätte danach 16 von 1000 Slots belegt.');
+
+      // A reload of the target (a fresh ready()/preview()) resets the live number — the same reset
+      // targetOverlays already gets, and for the same reason: it shows a fresh count of its own.
+      dialog.target.set(freshTarget());
+      dialog.detect();
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+    });
+
     it('releases nothing on a failed or incomplete read, keeping the decision for another try', async () => {
       const downloads = captureDownloads();
       const dialog = render({ source: conflictSource(), target: conflictTarget() });

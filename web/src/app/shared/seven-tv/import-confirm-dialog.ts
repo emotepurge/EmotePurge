@@ -712,6 +712,16 @@ export class ImportConfirmDialog {
     TargetCheckNotice | null
   >({ source: this.preview, computation: () => null });
 
+  /** The target's occupied-slot count as of the last successful live read (`onTargetRead`) — spec
+   *  #255: the picker-time count (`ready().occupiedSlots`) can already be stale by the time a
+   *  replace plan's "Rückweg sichern" reads the target live, and every read after that one is
+   *  fresher still. `null` until the first read answers, same reset as `targetOverlays`: a reload
+   *  of the target already shows a fresh `ready().occupiedSlots` of its own. */
+  private readonly liveOccupiedSlots = linkedSignal<ImportPreview | null, number | null>({
+    source: this.preview,
+    computation: () => null,
+  });
+
   /** The preview with every drifted replace target replaced by its live counterpart, so the plan's
    *  removal count and its verification both work from the target as it now is. */
   private readonly effectivePreview = computed(() => {
@@ -927,7 +937,8 @@ export class ImportConfirmDialog {
   });
 
   // Net change, not the ADD count: a replace frees every entry of its target before it adds one
-  // back (AK 21).
+  // back (AK 21). Occupancy itself prefers the last successful live read (spec #255) over the
+  // picker-time count, once there is one — see `liveOccupiedSlots`'s own doc for why.
   protected readonly projection = computed(() => {
     const target = this.ready();
     const summary = this.summary();
@@ -935,7 +946,7 @@ export class ImportConfirmDialog {
       return null;
     }
     return projectSlots(
-      target.occupiedSlots,
+      this.liveOccupiedSlots() ?? target.occupiedSlots,
       target.capacity,
       summary.addCount - summary.removedEntryCount,
     );
@@ -1250,6 +1261,11 @@ export class ImportConfirmDialog {
   }
 
   private onTargetRead(target: ReadyTarget, plan: TransferPlan, entries: SevenTvSetEntries): void {
+    // Every call here is a successful live read (a failed one never reaches this method, see
+    // `verifyAndSave`'s `error` handler) — the slot projection adopts its occupancy number
+    // unconditionally, before the plan-staleness check below: the target itself has not reloaded,
+    // only the decisions might have, so the number is good regardless of which branch follows.
+    this.liveOccupiedSlots.set(entries.occupiedSlots);
     // The plan changed while the read was running (a reload of the target) — this answer is about
     // a plan that is gone.
     if (this.plan() !== plan) {
