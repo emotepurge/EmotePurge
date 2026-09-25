@@ -948,9 +948,9 @@
     "historyNote": "The usage history stays unchanged.",
     "nothingRestored": "Nothing restored.",
     "errors": {
-      "targetNotEditable": "The set is not (or no longer) editable, or it does not exist.",
+      "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
       "targetNotSelectable": "This set is not a normal emote set.",
-      "targetCheckUnavailable": "Could not be checked right now — try again later."
+      "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment."
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were restored on 7TV, but EmotePurge could not record it. This usually resolves itself within a minute.",
@@ -991,8 +991,8 @@
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore.",
         "transferRunNoRows": "This transfer file contains no removed emotes.",
         "targetNotEditable": "The set named in the file is not (or no longer) editable, or it no longer exists.",
-        "targetNotSelectable": "The set named in the file is not a normal emote set and cannot be restored into.",
-        "targetCheckUnavailable": "The target set could not be checked right now — please try again in a moment.",
+        "targetNotSelectable": "The set named in the file is not a normal emote set.",
+        "targetCheckUnavailable": "The set named in the file could not be checked right now — please try again in a moment.",
         "noTargetSetForCopy": "This page has no set to copy into. From a file, only a restore is possible here."
       }
     },
@@ -1077,9 +1077,9 @@
       "cancelledMidRow": "Cancelled partway — 7TV had already carried out part of it.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }}).",
-      "targetNotEditable": "The set is not (or no longer) editable, or it does not exist.",
+      "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
       "targetNotSelectable": "This set is not a normal emote set.",
-      "targetCheckUnavailable": "Could not be checked right now — try again later."
+      "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment."
     },
     "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
     "setChangedDuringConfirm": "A different set is selected now.",
@@ -1348,7 +1348,7 @@
       "nameTakenNow": "The name has been taken in the target set in the meantime — this row was not applied.",
       "removedButNotAdded": "The target emote was removed, but the new one was not added — the target set is now missing this name. The recovery file restores the target emote.",
       "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied.",
-      "targetNotEditable": "The target set is not (or no longer) editable, or it does not exist.",
+      "targetNotEditable": "The target set is not (or no longer) editable, or it no longer exists.",
       "targetNotSelectable": "The target set is not a normal emote set.",
       "targetCheckUnavailable": "The target set could not be checked right now — please try again in a moment."
     },

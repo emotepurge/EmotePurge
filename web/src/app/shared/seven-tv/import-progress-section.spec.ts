@@ -29,7 +29,7 @@ const DE_TRANSLATIONS = {
     duplicateCheckUnavailable:
       'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
     errors: {
-      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
       targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
       targetCheckUnavailable: 'Das Zielset konnte gerade nicht geprüft werden.',
     },
@@ -719,7 +719,7 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(fixture.nativeElement.textContent).toContain(
-        'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+        'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
       );
     });
 

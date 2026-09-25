@@ -948,9 +948,9 @@
     "historyNote": "Die Nutzungshistorie bleibt unverändert.",
     "nothingRestored": "Nichts wiederhergestellt.",
     "errors": {
-      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
       "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
-      "targetCheckUnavailable": "Konnte gerade nicht geprüft werden — später erneut versuchen."
+      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV wiederhergestellt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
@@ -991,8 +991,8 @@
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
         "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",
         "targetNotEditable": "Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
-        "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set und lässt sich nicht wiederherstellen.",
-        "targetCheckUnavailable": "Das Ziel-Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
+        "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set.",
+        "targetCheckUnavailable": "Das Set aus der Datei konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
         "noTargetSetForCopy": "Diese Seite hat kein Set, in das kopiert werden könnte. Aus einer Datei lässt sich hier nur wiederherstellen."
       }
     },
@@ -1077,9 +1077,9 @@
       "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }}).",
-      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
       "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
-      "targetCheckUnavailable": "Konnte gerade nicht geprüft werden — später erneut versuchen."
+      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
     "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
@@ -1348,7 +1348,7 @@
       "nameTakenNow": "Der Name ist inzwischen im Zielset vergeben — diese Zeile wurde nicht übernommen.",
       "removedButNotAdded": "Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt — im Zielset fehlt jetzt dieser Name. Die Rückweg-Datei stellt das Ziel-Emote wieder her.",
       "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
-      "targetNotEditable": "Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotEditable": "Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
       "targetNotSelectable": "Das Zielset ist kein normales Emote-Set.",
       "targetCheckUnavailable": "Das Zielset konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },

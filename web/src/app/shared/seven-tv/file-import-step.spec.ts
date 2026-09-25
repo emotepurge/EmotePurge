@@ -51,10 +51,9 @@ const DE_TRANSLATIONS = {
         transferRunNoRows: 'Diese Übertragungsdatei enthält keine entfernten Emotes.',
         targetNotEditable:
           'Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
-        targetNotSelectable:
-          'Das Set aus der Datei ist kein normales Emote-Set und lässt sich nicht wiederherstellen.',
+        targetNotSelectable: 'Das Set aus der Datei ist kein normales Emote-Set.',
         targetCheckUnavailable:
-          'Das Ziel-Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.',
+          'Das Set aus der Datei konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.',
         noTargetSetForCopy:
           'Diese Seite hat kein Set, in das kopiert werden könnte. Aus einer Datei lässt sich hier nur wiederherstellen.',
       },

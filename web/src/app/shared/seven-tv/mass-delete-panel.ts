@@ -56,7 +56,8 @@ import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 /** Maps the shared pre-check's block reason (spec 6.2, `TargetCheckBlockReason`) to this panel's
  *  own `restore.errors.*` locale family (Plan-253 §6, Nr. 3) — mirrors the family every other
  *  pre-check caller uses under its own prefix (`restore.import.errors.*`, `massDelete.errors.*`,
- *  `import.errors.*`); the wording is provisional (#255), the mapping is the contract. */
+ *  `import.errors.*`); the wording was finalized in #255 — all four share one sentence core per
+ *  reason, only the set reference (`Das Set`/`Dieses Set` here) varies. */
 function restoreTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
   switch (reason) {
     case 'notEditable':

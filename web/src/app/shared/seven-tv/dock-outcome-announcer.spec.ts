@@ -51,7 +51,7 @@ const DE_TRANSLATIONS = {
   import: {
     duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
     errors: {
-      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
       targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
       targetCheckUnavailable: 'Das Zielset konnte gerade nicht geprüft werden.',
     },
@@ -251,7 +251,9 @@ describe('DockOutcomeAnnouncer', () => {
     fixture.detectChanges();
 
     expect(regions()).toEqual([regionAtRest]);
-    expect(spoken()).toEqual(['Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.']);
+    expect(spoken()).toEqual([
+      'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
+    ]);
   });
 
   it('speaks each duplicate notice only while its pending window is open', () => {
