@@ -8,6 +8,7 @@ import {
   mockAuthMe,
   mockChannelPermissions,
   mockChannelStatus,
+  mockEmoteSetTargets,
   mockLegalAvailability,
   mockMyChannels,
   mockSetWarning,
@@ -260,6 +261,19 @@ test.describe('footer placement above the usage-stats action dock', () => {
     await mockChannelPermissions(page, 'sensitron');
     await mockChannelStatus(page, 'sensitron');
     await mockActiveEmoteSet(page, 'sensitron');
+    // #253 AK 31: the delete confirmation runs the shared pre-check before it opens
+    // (resolveEditableSet) — without this, the request has nothing to answer it and the
+    // confirmation never opens.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'sensitron-1',
+        twitchLogin: 'sensitron',
+        isOwnAccount: true,
+        trackedChannelName: 'sensitron',
+        activeEmoteSetId: 'set-1',
+        sets: [{ id: 'set-1', name: 'Hauptset', isActive: true }],
+      },
+    ]);
     await mockUsageTotals(page, 'sensitron', emotes);
     await mockSetWarning(page, 'sensitron');
     // A plain rejection with no `extensions.code` fails every row without aborting the run
