@@ -62,15 +62,15 @@ function channelCount(
  * Order matters:
  *
  * 1. An `unresolvedChannel` always means `'partial'`/`'channelMismatch'` — even when every channel
- *    that *was* resolved came back complete (spec Grenzfall: "auch bei vollständigen Kanälen").
- *    The expected channel not being hit is itself the problem (E18), independent of how the hit
- *    channels fared.
+ *    that *was* resolved came back complete (spec edge case: "even given fully complete
+ *    channels"). The expected channel not being hit is itself the problem (E18), independent of
+ *    how the hit channels fared.
  * 2. Otherwise, any resolved channel whose count fell short of `reportedCount` makes the whole
  *    report `'partial'`/`'shortfall'` — F8: a shared set can span several channels, and "one of
  *    them was incomplete" is not masked by another that was fine.
  * 3. `channels: []` with no mismatch is `'succeeded'` — the common case for an untracked or
  *    non-active target, where there was never a channel row to touch in the first place (spec
- *    5.2's "kein Treffer ⇒ nur der Papier-Eintrag" is not a failure).
+ *    5.2's "no hit ⇒ just the paper entry" is not a failure).
  */
 export function classifySyncInSetResponse(
   response: SyncDeletedInSetResponse | SyncRestoredInSetResponse,

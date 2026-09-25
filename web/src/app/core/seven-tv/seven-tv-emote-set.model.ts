@@ -107,7 +107,7 @@ export interface EmoteSetTargetsResponse {
 
 /** One channel the client expected the report to touch, but the service could not resolve to a
  *  changed row (spec 5.2 step 3, 5.3, E18/H2) — a missing, inactive or excluded channel
- *  (`'notTracked'`, the sperre kept deliberately vague) or one that is active under a *different*
+ *  (`'notTracked'`, the block kept deliberately vague) or one that is active under a *different*
  *  set right now (`'activeSetDiffers'`, a stale `Channel.ActiveEmoteSetId`, F13). Either reason
  *  keeps the report at `partial` (`sync-report-outcome.ts`'s `channelMismatch`), never `succeeded`,
  *  even when every resolved channel was complete. */
@@ -125,7 +125,7 @@ export interface SyncInSetBody {
   expectedChannelName: string | null;
 }
 
-/** One getrackte channel the deletion report actually touched (spec 5.3). */
+/** One tracked channel the deletion report actually touched (spec 5.3). */
 export interface SyncDeletedInSetChannelResult {
   channelName: string;
   archivedCount: number;
@@ -152,7 +152,7 @@ export interface SyncRestoredInSetChannelResult {
   notFoundIds: string[];
 }
 
-/** `POST /api/seventv/emote-sets/{emoteSetId}/sync-restored` (spec 5.1, 5.3) — spiegelbildlich zu
+/** `POST /api/seventv/emote-sets/{emoteSetId}/sync-restored` (spec 5.1, 5.3) — the mirror of
  *  {@link SyncDeletedInSetResponse}, see its doc for `channels`/`resyncTriggered`. */
 export interface SyncRestoredInSetResponse {
   reportedCount: number;

@@ -2851,11 +2851,12 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       { sevenTvEmoteId: '7tv-3', name: 'PogOld' },
     ]);
 
-    // `Record<string, unknown>`, not a narrower `{ sevenTvEmoteIds?: string[] }` shape: under the
-    // pinned TypeScript version, a `let` that is only ever reassigned inside a route handler
-    // closure and declared with a plain object-literal type narrows to `never` at any later read
-    // — a real compiler quirk (reproduces even for a bare `string | null`), not a contract change.
-    // The field is still read through a typed cast below.
+    // `Record<string, unknown>`, not a narrower `{ sevenTvEmoteIds?: string[] }` shape: standard
+    // control-flow narrowing, not a compiler quirk — TypeScript does not follow an assignment made
+    // inside a callback, so from the narrowing analysis's point of view this `let` is never
+    // assigned at all, and a narrower object-literal type here narrows to `never` at any later
+    // read (reproduces even for a bare `string | null`). The field is still read through a typed
+    // cast below.
     let syncImportedBody: Record<string, unknown> | null = null;
     await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, async (route) => {
       syncImportedBody = route.request().postDataJSON();
@@ -3308,11 +3309,12 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       { sevenTvEmoteId: 'target-b', name: 'KEKW' },
     ]);
 
-    // `Record<string, unknown>`, not a narrower `{ sevenTvEmoteIds?: string[] }` shape: under the
-    // pinned TypeScript version, a `let` that is only ever reassigned inside a route handler
-    // closure and declared with a plain object-literal type narrows to `never` at any later read
-    // — a real compiler quirk (reproduces even for a bare `string | null`), not a contract change.
-    // The field is still read through a typed cast below.
+    // `Record<string, unknown>`, not a narrower `{ sevenTvEmoteIds?: string[] }` shape: standard
+    // control-flow narrowing, not a compiler quirk — TypeScript does not follow an assignment made
+    // inside a callback, so from the narrowing analysis's point of view this `let` is never
+    // assigned at all, and a narrower object-literal type here narrows to `never` at any later
+    // read (reproduces even for a bare `string | null`). The field is read as `unknown` below
+    // instead, compared with `toEqual` rather than through a typed cast.
     let syncImportedBody: Record<string, unknown> | null = null;
     await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, async (route) => {
       syncImportedBody = route.request().postDataJSON();

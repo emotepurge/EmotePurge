@@ -14,10 +14,13 @@ namespace EmotePurge.Api.Auth;
 // call — MarkDeletedAsync/MarkRestoredAsync now only count and audit, never flip IsArchived — so
 // the self-heal this comment used to describe (the periodic resync resetting a wrongly set flag)
 // no longer applies to what this filter guards: there is no flag left for it to reset. What
-// remains at risk is the audit entry and the resync this filter's caller can trigger — a 7TV
-// editor whose only power here is one already backed by 7TV's own permission system. Anything with
-// real management semantics (join/leave, vote sessions, channel config) belongs behind the
-// stricter ChannelManagementAuthorizationFilter instead.
+// remains at risk is the audit entry and the resync this filter's caller can trigger — the filter
+// admits an admin, the channel's broadcaster, a live moderator or a 7TV editor of the channel
+// account, and on these legacy routes every one of them has only that one power: writing the
+// audit entry and triggering the resync, nothing that changes a row. For the 7TV-editor case that
+// power is also already backed directly by 7TV's own permission system. Anything with real
+// management semantics (join/leave, vote sessions, channel config) belongs behind the stricter
+// ChannelManagementAuthorizationFilter instead.
 public class UsageStatsAccessAuthorizationFilter : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)

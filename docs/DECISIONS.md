@@ -32,7 +32,7 @@ E19, sections 4.5, 4.6 and 6.6). **Before**, `validateResolution`'s rule 7
 (`replaceNeedsTrackedTarget`) refused a `replaceTarget` decision whenever the target set belonged
 to an untracked account — the reasoning being that only a tracked channel's own resync could
 restore a deleted entry, so replacing into an untracked target had no way back. Since the entry
-"The file names the target of a restore, and the target list checks it" (2026-09-25, earlier
+"The file names a restore's target, and the target list checks it" (2026-09-25, earlier
 today) an untracked target's restore works like any other — reported as paper only — so that
 reasoning no longer holds for the replace direction either: the restore half of the 2026-09-23
 entry "Restore reads transfer-run files" is what that earlier entry already revised; this entry
@@ -79,7 +79,7 @@ button gains a matching `deleteTargetCheckPending` lock, the same idiom as the e
 into a set the actor cannot write to fails at 7TV itself, and its report is already gated on the
 same right server-side (spec 5.7).
 
-**Locale families, one per first-mutation caller** (spec 6, table under "Fehlergründe und
+**Locale families, one per first-mutation caller** (plan 0.5, the table in 2.6 "Fehlergründe und
 Locale-Familien"): the delete confirmation's own family is `massDelete.errors.*`, the replace
 start's is `import.errors.*` — both carry the same three reasons
 (`targetNotEditable`/`targetNotSelectable`/`targetCheckUnavailable`) the restore file step
@@ -127,11 +127,14 @@ the `planned`/`finished` rules of the 2026-09-23 entry; AK 24).
 **The target list checks it, in the file step.** `FileImportStep` runs the shared pre-check
 `SevenTvEmoteSetService.resolveEditableSet` as its third step, after the envelope and the parser —
 the same `editable` verdict the report applies (entry "Who may report is decided by 7TV editing
-rights", not repeated here). Four outcomes: editable ⇒ `picked`; a set whose `kind` is not `NORMAL`
-⇒ `targetNotSelectable` (a personal set is never a restore target, E11); not in any list, or listed
-with `editable: false`, on a complete list ⇒ `targetNotEditable`, worded "not editable **or** no
-longer there" because the 60 s list cache cannot tell the two apart (F5); an incomplete list or a
-failed request (429, 503, no connection) ⇒ `targetCheckUnavailable`, never "not allowed" (F3). A
+rights", not repeated here). Four outcomes: editable ⇒ `picked` — a found, `NORMAL`, `editable`
+set wins outright, even when the list is also degraded for some *other*, unrelated account (a
+confirmed positive is never downgraded by a degradation elsewhere); a set whose `kind` is not
+`NORMAL` ⇒ `targetNotSelectable` (a personal set is never a restore target, E11); not in any list,
+or listed with `editable: false`, on a complete list ⇒ `targetNotEditable`, worded "not editable
+**or** no longer there" because the 60 s list cache cannot tell the two apart (F5); an incomplete
+list or a failed request, and the set not found editable ⇒ `targetCheckUnavailable`, never "not
+allowed" (F3). A
 blocked check keeps the dialog open with the step's own banner; no confirmation opens and 7TV sees
 no request. `picked` carries the **resolved** target — set name, owner, tracked channel, whether it
 is active, and the set id the confirmation shows (AK 35) all come from the target list, never from
@@ -164,9 +167,10 @@ entries below.
 
 ### 2026-09-25 — Delete, restore and a replace's removals report per emote set — report plus resync
 
-**Betrifft:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+**Betrifft:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (`TryTriggerGuardedResyncAsync`,
+now `internal`) ·
 `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (`PublishChannelSyncedAsync`, now shared; T3: the
-legacy routes' own body/handler, plus `TryTriggerGuardedResyncAsync`, now `internal`) ·
+legacy routes' own body/handler) ·
 `src/EmotePurge.Core/Services/IEmoteService.cs` ·
 `src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`,
@@ -258,8 +262,9 @@ or restore rows of a tracked channel for a few minutes. The reach is the rows of
 channels; the resync this same report triggers reads 7TV and restores the truth within the 60 s
 cooldown, at the latest with the next worker tick. The alternative — letting a report act only after
 a 7TV read of its own — would put an unbudgeted request on every report and undo the reason these
-routes sit on `Bookkeeping` at all. The channel-role check that authorized the channel-bound report
-was weaker still: it did not even know which set was meant. Second rest: for a set shared by two
+routes sit on `Bookkeeping` at all. The channel-role check that still gates the legacy Guid form
+(T3 below) was weaker still, back when it decided whether a row changed: it did not even know
+which set was meant. Second rest: for a set shared by two
 tracked channels the client can only name the channel of its own target account; a **second**
 channel whose stored active set lags stays undetected until its periodic resync picks it up within
 a minute — the same rest a delete run has always had for every second channel. Named here, not
@@ -310,9 +315,14 @@ own enforcement, where a mutation without editor rights on the token account alr
 
 **With this plan**, the set-centric routes it adds for deleted/restored (T2) apply that same
 `CheckAsync` rule instead of the channel role — for every set-centric report, not just
-`sync-imported`. The channel role no longer decides who may report a deleted or restored emote.
+`sync-imported`. The channel role no longer decides who may report a deleted or restored emote —
+except through the legacy Guid form (spec 5.6, E4, "Delete, restore and a replace's removals
+report per emote set" T3), which still runs behind `UsageStatsAccessAuthorizationFilter`, but by
+now only to write the audit entry and trigger the guarded resync; it changes no row any more, so
+the channel role it still checks decides nothing that reaches 7TV.
 **Consequence:** a moderator or admin without their own 7TV editor grant on the set's owner can no
-longer report a change to it, even while still holding the channel role that let them do so before.
+longer report a change to it through a set-centric route, even while still holding the channel role
+that let them do so before.
 **Operator decision, 2026-09-24 (F4):** uncritical for HandOfBlood, because its mod team already
 works with its **own** 7TV editor grants rather than a shared token — a 403 on a report is therefore
 only a genuine, freshly revoked right, not a systematic loss of anyone's ability to report.

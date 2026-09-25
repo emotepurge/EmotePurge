@@ -825,8 +825,6 @@ function preventUnload(event: BeforeUnloadEvent): void {
   event.returnValue = '';
 }
 
-/** Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a
- *  401/403. */
 /** Whether `channelName` is among the channels a report's answer says the backend resynced —
  *  case-insensitive, since the backend answers with normalized names. */
 function includesChannel(channels: readonly string[], channelName: string): boolean {
@@ -834,6 +832,8 @@ function includesChannel(channels: readonly string[], channelName: string): bool
   return channels.some((channel) => channel.toLowerCase() === normalized);
 }
 
+/** Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a
+ *  401/403. */
 function retryTransientSyncFailures<T>() {
   return retry<T>({
     count: MAX_AUTOMATIC_SYNC_RETRIES,

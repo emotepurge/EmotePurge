@@ -12,7 +12,7 @@ import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome'
 /** Translation key for the shared pre-check's block reason on a replace-carrying start (spec 4.5
  *  point 17, AK 32), or `null` while nothing is blocked — shared by this announcer and the visible
  *  (but aria-hidden) notice it speaks for (`ImportProgressSection`), same reason as
- *  {@link resyncNoticeKey} above. `import.errors.*`, this flow's own family (Plan-253 §6, Nr. 3) —
+ *  {@link resyncNoticeKey} above. `import.errors.*`, this flow's own family (Plan-253 §6, Nr. 4) —
  *  never `restore.errors.*`/`massDelete.errors.*`, which name the *other* two first-mutation
  *  pre-checks. Same three key names as those two families (`targetNotEditable`/
  *  `targetNotSelectable`/`targetCheckUnavailable`), not the bare `TargetCheckBlockReason` value. */

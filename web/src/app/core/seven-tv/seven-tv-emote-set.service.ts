@@ -89,15 +89,15 @@ function toEditableSetTarget(
 /**
  * Pure classification behind {@link SevenTvEmoteSetService.resolveEditableSet} (spec 4.2, E19) —
  * kept as a free function so it reads as one decision table instead of being buried in the
- * Observable pipeline. Order matters (spec 4.2's Grenzfälle):
+ * Observable pipeline. Order matters (spec 4.2's edge cases):
  *
  * 1. A found set with `kind !== 'NORMAL'` is `notSelectable` *regardless* of `editable` — a
  *    personal/global/special set is never offered as a target in the first place (E11), so a
- *    stray one reaching here can only be a rückweg-Datei from before that rule, never a case where
- *    "but it's editable" should win.
+ *    stray one reaching here can only be a restore file written before that rule existed, never
+ *    a case where "but it's editable" should win.
  * 2. A found, `NORMAL`, `editable` set is `editable` outright — even when the response also
- *    reports `sevenTvUnavailable` for some *other*, unrelated account (spec 4.2 Grenzfall,
- *    Abschnitt 6 Nr. 2): a confirmed positive is never downgraded by a degradation elsewhere.
+ *    reports `sevenTvUnavailable` for some *other*, unrelated account (spec 4.2 edge case,
+ *    section 6 Nr. 2): a confirmed positive is never downgraded by a degradation elsewhere.
  * 3. Anything else (not found at all, or found but `editable === false`) is `notEditable` unless
  *    the list itself was incomplete (`sevenTvUnavailable`, or some account's own list unreadable) —
  *    then it is `unavailable`, because the true answer might be `editable` and the list simply
@@ -239,7 +239,7 @@ export class SevenTvEmoteSetService {
     );
   }
 
-  /** `POST /api/seventv/emote-sets/{emoteSetId}/sync-restored` (spec 5.1, 6.4) — spiegelbildlich zu
+  /** `POST /api/seventv/emote-sets/{emoteSetId}/sync-restored` (spec 5.1, 6.4) — the mirror of
    *  {@link reportDeletedInSet}; replaces the channel-bound `EmoteAdminService.syncRestored`. */
   reportRestoredInSet(
     emoteSetId: string,
