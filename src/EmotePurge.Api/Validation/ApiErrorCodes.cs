@@ -89,17 +89,16 @@ internal static class ApiErrorCodes
     public const string NoHealthData = "no_health_data";
     public const string HealthDataUnreadable = "health_data_unreadable";
 
-    // Four codes for the emote-set surface (spec 2026-09-20, E13). All four land in this one task
-    // even though only the first is wired to a route yet: the other three belong to routes later
-    // tasks build (sync-deleted/sync-restored's new body form, the set-centric import endpoint, the
-    // vote-session ballot rule), and adding codes piecemeal per task would leave this file,
-    // api-error.ts and the locale files out of step for the stretch between tasks — exactly the drift
-    // Regel 7 exists to prevent (AK 45).
+    // Three codes for the emote-set surface (spec 2026-09-20, E13). All three land in this one
+    // task even though only the first is wired to a route yet: the other two belong to routes
+    // later tasks build (the set-centric import endpoint, the vote-session ballot rule), and
+    // adding codes piecemeal per task would leave this file, api-error.ts and the locale files out
+    // of step for the stretch between tasks — exactly the drift Regel 7 exists to prevent (AK 45).
+    // A fourth code originally landed here too, for sync-deleted/sync-restored's set-scoped body
+    // form — EmoteSetIdEmpty, retired along with that body shape (restore-per-set spec 5.6/E4, T3:
+    // "Delete, restore and a replace's removals report per emote set", DECISIONS 2026-09-25).
     // EmoteSetIdValidationFilter's format check (E14) — the one code this task's routes return.
     public const string InvalidEmoteSetId = "invalid_emote_set_id";
-    // sync-deleted/sync-restored's new body form (6.6, T5.2): sevenTvEmoteIds set but emoteSetId
-    // missing or empty.
-    public const string EmoteSetIdEmpty = "emote_set_id_empty";
     // The set-centric import endpoint only (6.7, T2.4) — 7TV does not know the given set id. Distinct
     // from ForeignChannelNoActiveEmoteSet above, which the query-parameter preview path (6.4) reuses
     // for the very same underlying "unknown set" answer: that path already had a code whose text

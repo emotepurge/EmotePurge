@@ -916,11 +916,21 @@
       "other": "{{ count }} Emotes wieder zum Set hinzufügen?"
     },
     "confirmSetLine": "In das Set „{{ setName }}“.",
+    "confirmSetIdLine": "Set-ID: {{ emoteSetId }}",
+    "confirmOwnerLine": "Besitzer: {{ ownerDisplayName }}",
+    "confirmChannelLine": "Kanal: {{ channelName }}",
     "confirmSetNotActive": "Dieses Set ist gerade nicht aktiv.",
+    "confirmForeignToView": "Diese Ansicht zeigt von diesem Lauf nichts.",
     "confirmExecute": "Wiederherstellen",
     "capacityProjection": "Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.",
     "capacityWarning": "Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.",
     "historyNote": "Die Nutzungshistorie bleibt unverändert.",
+    "nothingRestored": "Nichts wiederhergestellt.",
+    "errors": {
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Konnte gerade nicht geprüft werden — später erneut versuchen."
+    },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV wiederhergestellt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
     "syncRetry": "Erneut melden",
@@ -932,7 +942,12 @@
       "pending": "Synchronisierung wird angestoßen…",
       "succeeded": "Synchronisierung angestoßen — die Liste aktualisiert sich gleich.",
       "cooldown": "Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.",
-      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach."
+      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.",
+      "backendTriggered": "Abgleich läuft bereits — die Liste aktualisiert sich gleich."
+    },
+    "targetLine": {
+      "channel": "Ziel: {{ channel }} · Set {{ setName }}",
+      "owner": "Ziel: Set {{ setName }} von {{ owner }}"
     },
     "import": {
       "trigger": "Importieren",
@@ -952,10 +967,12 @@
         "transferRun": "Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
         "wrongVersion": "Die Datei stammt aus einer neueren EmotePurge-Version.",
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
-        "wrongChannel": "Das Protokoll gehört zu einem anderen Channel.",
-        "wrongSet": "Das Protokoll gehört zu einem anderen Emote-Set — der Channel hat das aktive Set gewechselt.",
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
-        "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes."
+        "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",
+        "targetNotEditable": "Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+        "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set und lässt sich nicht wiederherstellen.",
+        "targetCheckUnavailable": "Das Ziel-Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
+        "noTargetSetForCopy": "Diese Seite hat kein Set, in das kopiert werden könnte. Aus einer Datei lässt sich hier nur wiederherstellen."
       }
     },
     "skippedDuplicates": {
@@ -1038,7 +1055,10 @@
       "rateLimitedGaveUp": "7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.",
       "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
-      "genericStatus": "7TV-Fehler (Status {{ status }})."
+      "genericStatus": "7TV-Fehler (Status {{ status }}).",
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Konnte gerade nicht geprüft werden — später erneut versuchen."
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
     "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
@@ -1060,6 +1080,14 @@
     },
     "anotherRunStarted": "Inzwischen hat ein anderer 7TV-Lauf begonnen."
   },
+  "syncReportReason": {
+    "forbidden": "Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.",
+    "setNotFound": "Grund: Das Set gibt es bei 7TV nicht mehr.",
+    "unavailable": "Grund: EmotePurge oder 7TV war gerade nicht erreichbar.",
+    "channelMismatch": "Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.",
+    "shortfall": "Grund: Nicht alle Emotes waren in EmotePurge vermerkt.",
+    "other": "Grund: Unerwarteter Fehler."
+  },
   "import": {
     "copyButton": "Übertragen",
     "clearSelection": "Auswahl aufheben",
@@ -1079,7 +1107,8 @@
       "leaderboard": {
         "label": "Aus 7TVs Bestenliste",
         "hint": "Die netzwerkweit vorn liegenden Emotes — ohne zu wissen, in welchem Kanal sie stecken"
-      }
+      },
+      "noTargetSet": "Kein Set, in das kopiert werden könnte"
     },
     "dockCopyButton": "Übertragen ({{ count }})",
     "target": {
@@ -1089,6 +1118,7 @@
       "untracked": "nicht getrackt",
       "kindUnavailable": "kein Zielset",
       "isSource": "das ist die Quelle",
+      "notEditable": "nicht bearbeitbar",
       "setsUnavailable": "Sets nicht lesbar",
       "noUsableSets": "Kein nutzbares Set",
       "none": "Kein Set gefunden, in das kopiert werden kann.",
@@ -1263,7 +1293,6 @@
         "replaceTarget": "Ziel ersetzen",
         "adoptSourceName": "Namen übernehmen"
       },
-      "replaceNeedsTracked": "Nur für getrackte Kanäle wiederherstellbar",
       "reloadTargetFirst": "Ziel hat sich geändert — erst neu laden",
       "adoptBlocked": {
         "nameTaken": "Name im Zielset vergeben",
@@ -1282,8 +1311,7 @@
         "invalidTypedAlias": "Name, den 7TV nicht annimmt: {{ rows }}.",
         "duplicateReplaceTarget": "Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.",
         "targetTouchedByReplaceAndAdopt": "Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.",
-        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}.",
-        "replaceNeedsTrackedTarget": "Ziel ersetzen geht nur bei getrackten Kanälen: {{ rows }}."
+        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}."
       },
       "back": "Zurück",
       "apply": "Übernehmen"
@@ -1296,7 +1324,10 @@
     "errors": {
       "nameTakenNow": "Der Name ist inzwischen im Zielset vergeben — diese Zeile wurde nicht übernommen.",
       "removedButNotAdded": "Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt — im Zielset fehlt jetzt dieser Name. Die Rückweg-Datei stellt das Ziel-Emote wieder her.",
-      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen."
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
+      "targetNotEditable": "Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotSelectable": "Das Zielset ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Das Zielset konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
@@ -1411,7 +1442,6 @@
       "no_health_data": "Es liegen aktuell keine Worker-Daten vor.",
       "health_data_unreadable": "Die Worker-Daten konnten nicht gelesen werden.",
       "invalid_emote_set_id": "Ungültige Emote-Set-ID.",
-      "emote_set_id_empty": "Kein Ziel-Set angegeben.",
       "emote_set_not_found": "Dieses 7TV-Emote-Set ist unbekannt.",
       "vote_session_set_ballot_invalid": "Ungültige Stimmzettel-Angabe für diese Abstimmung.",
       "legal_document_not_found": "Dieses Dokument ist nicht verfügbar.",

@@ -4,8 +4,8 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
 import { RunItemStatus, RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { RunProgressPanel } from './run-progress-panel';
 
 // Only the keys this panel itself translates — not the full app translation file. Texts are the
@@ -29,6 +29,15 @@ const DE_TRANSLATIONS = {
     summary: {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
     },
+  },
+  syncReportReason: {
+    forbidden: 'Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.',
+    setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
+    unavailable: 'Grund: EmotePurge oder 7TV war gerade nicht erreichbar.',
+    channelMismatch:
+      'Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.',
+    shortfall: 'Grund: Nicht alle Emotes waren in EmotePurge vermerkt.',
+    other: 'Grund: Unerwarteter Fehler.',
   },
 };
 
@@ -80,6 +89,7 @@ function accessibleName(el: Element): string {
       [isRunning]="isRunning"
       [labelPrefix]="labelPrefix"
       [syncReport]="syncReport"
+      [syncReportReason]="syncReportReason"
       [rateLimitPauseSeconds]="rateLimitPauseSeconds"
       [dismissible]="dismissible"
       (cancelled)="cancelledCount = cancelledCount + 1"
@@ -99,6 +109,7 @@ class HostComponent {
   isRunning = false;
   labelPrefix: 'massDelete' | 'restore' | 'import' = 'massDelete';
   syncReport: SyncReportState = 'idle';
+  syncReportReason: SyncReportReason | null = null;
   rateLimitPauseSeconds: number | null = null;
   dismissible = true;
   projectRunActions = false;
@@ -312,6 +323,72 @@ describe('RunProgressPanel', () => {
         // 'partial' is documented (run-progress-panel.ts) as sharing this exact hint with 'failed' —
         // same title, same body, same retry action, not merely "also something is shown".
         expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+      },
+    );
+
+    // Spec E23: the reason is its own line inside the report notice, one per reason — and no line
+    // at all without one.
+    it.each([
+      ['failed', 'forbidden'],
+      ['failed', 'setNotFound'],
+      ['failed', 'unavailable'],
+      ['failed', 'other'],
+      ['partial', 'channelMismatch'],
+      ['partial', 'shortfall'],
+    ] as const)(
+      "shows the reason line for syncReport '%s' with reason '%s', and none without a reason",
+      (syncReport, syncReportReason) => {
+        const withReason = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport,
+          syncReportReason,
+        });
+        expect(withReason.text()).toContain(DE_TRANSLATIONS.syncReportReason[syncReportReason]);
+
+        const withoutReason = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport,
+          syncReportReason: null,
+        });
+        expect(withoutReason.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+        expect(withoutReason.text()).not.toContain('Grund:');
+      },
+    );
+
+    // addendum N4, AK 40: a channel mismatch keeps its notice but loses the retry action — a
+    // retry would only repeat the same mismatch; failed (any reason) and shortfall keep it.
+    it('offers no retry for partial/channelMismatch, but keeps the notice and its reason', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        syncReport: 'partial',
+        syncReportReason: 'channelMismatch',
+      });
+
+      expect(dialog.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+      expect(dialog.text()).toContain(DE_TRANSLATIONS.syncReportReason.channelMismatch);
+      expect(dialog.button('Erneut melden')).toBeNull();
+    });
+
+    it.each([
+      ['partial', 'shortfall'],
+      ['failed', 'unavailable'],
+      ['failed', 'forbidden'],
+    ] as const)(
+      "offers the retry for syncReport '%s' with reason '%s'",
+      (syncReport, syncReportReason) => {
+        const dialog = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport,
+          syncReportReason,
+        });
+
+        dialog.button('Erneut melden')?.click();
+
+        expect(dialog.host.syncRetryRequestedCount).toBe(1);
       },
     );
 

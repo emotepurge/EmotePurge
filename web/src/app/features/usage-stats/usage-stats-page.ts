@@ -41,6 +41,7 @@ import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.s
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import {
   CreateVoteSessionDialogData,
@@ -131,6 +132,7 @@ import {
 } from '../../shared/seven-tv/import-target-dialog';
 import { ImportTrigger } from '../../shared/seven-tv/import-trigger';
 import { DeletableEmote, MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
+import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
 import { ListSelection } from '../../shared/selection/list-selection';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -276,6 +278,7 @@ function sortableLastUsed(lastUsedDate: string | null): number {
     DockOutcomeAnnouncer,
     ImportProgressSection,
     MassDeletePanel,
+    RestoreProgressSection,
     ImportTrigger,
     SlotBudgetBar,
     DateRangeMenu,
@@ -673,6 +676,10 @@ export class UsageStatsPage {
    * stream above, so only that one request carries `refresh: true` (spec 8.3: the loud reload fetches
    * the list anew; a params-driven load after a set switch may use the Api's cache). A plain field,
    * not a signal: it must never itself retrigger the resource.
+   *
+   * Also the mark a settled run of our own leaves for a non-active target set that is not the chosen
+   * one (restore-per-set spec, addendum N2): the next load of exactly that set bypasses the cache,
+   * and the next load of any other set — or a channel switch — drops the mark.
    */
   private liveMembersRefreshFor: {
     readonly channelName: string;
@@ -787,13 +794,14 @@ export class UsageStatsPage {
   );
 
   /**
-   * Set names by id, for the name-twin marker's tooltip (E24, AK 59) and — since K5/T5.3 — for the
-   * mass-delete panel's `[setNames]` input, which resolves a finished delete run's own frozen set
-   * (possibly not `selectedEmoteSetId()` any more) for the restore confirmation (spec 8.8). A twin
-   * (or a run's set) the list does not (or no longer) name still gets a stable handle: the id's
-   * last six characters, the same short form the audit view uses for a set — that fallback lives
-   * at each reader, not here, so a reader missing from this map is unambiguous (`undefined`, not a
-   * pre-shortened string masquerading as a name).
+   * Set names by id, for the name-twin marker's tooltip (E24, AK 59). Used to also feed the
+   * mass-delete panel's `[setNames]` input (K5/T5.3), which resolved a finished delete run's own
+   * frozen set for the restore confirmation — dead since #253/T9, when that confirmation started
+   * naming the set fresh from the shared pre-check's own target list instead (Plan-253 §6, Nr. 1),
+   * and the input was removed. A twin the list does not (or no longer) name still gets a stable
+   * handle: the id's last six characters, the same short form the audit view uses for a set — that
+   * fallback lives at each reader, not here, so a reader missing from this map is unambiguous
+   * (`undefined`, not a pre-shortened string masquerading as a name).
    */
   protected readonly emoteSetNames = computed(
     () => new Map((this.emoteSetList()?.sets ?? []).map((set) => [set.id, set.name])),
@@ -1807,6 +1815,8 @@ export class UsageStatsPage {
       this.duplicatesExpanded.set(false);
     });
 
+    this.watchOwnRunSettles();
+
     // A selection made in a desktop window would otherwise survive invisibly into the touch mode and
     // reappear on the way back.
     effect(() => {
@@ -2803,6 +2813,70 @@ export class UsageStatsPage {
     if (removedCount > 0) {
       this.showSelectionPrunedFeedback(removedCount);
     }
+  }
+
+  /**
+   * addendum N2 (restore-per-set spec, AK 37): a restore, delete or import run of our own changes
+   * the members of its target set, but a non-active set's member list is read through the Api's
+   * 60-s cache, which neither `channel.synced` nor a resync reach — the view would show the old
+   * members until the cache expired. So when such a run settles with at least one done row, and its
+   * target is not the active set, the page reloads the list loudly (`refresh: true`) if the target
+   * is the chosen set, and otherwise marks it for its next load. The trigger is the settle, not the
+   * report: the 7TV mutations are done by then, and waiting for the report would never reload after
+   * a failed one. Set ids are globally unique, so no channel comparison is needed. A run that had
+   * already settled before this page mounted is not replayed.
+   */
+  private watchOwnRunSettles(): void {
+    this.watchRunSettle(
+      () => this.restoreService.run(),
+      (run) => (run.result === null ? null : { setId: run.targetSetId, result: run.result }),
+    );
+    this.watchRunSettle(
+      () => this.deleteService.lastRun(),
+      (run) => ({ setId: run.setId, result: run.result }),
+    );
+    this.watchRunSettle(
+      () => this.importService.run(),
+      (run) =>
+        run.settlement !== 'settled' || run.result === null
+          ? null
+          : { setId: run.targetSetId, result: run.result },
+    );
+    // A mark belongs to the channel it was left on; a channel switch drops it.
+    effect(() => {
+      this.channelName();
+      this.liveMembersRefreshFor = null;
+    });
+  }
+
+  private watchRunSettle<T extends object>(
+    source: () => T | null,
+    settledTarget: (run: T) => { setId: string; result: RunResult } | null,
+  ): void {
+    let seen = untracked(source);
+    effect(() => {
+      const run = source();
+      if (run === seen) {
+        return;
+      }
+      seen = run;
+      const settled = run === null ? null : settledTarget(run);
+      if (settled !== null && settled.result.doneKeys.length > 0) {
+        untracked(() => this.onOwnRunSettled(settled.setId));
+      }
+    });
+  }
+
+  private onOwnRunSettled(targetSetId: string): void {
+    if (targetSetId === this.activeEmoteSetId()) {
+      // The active set's rows follow `channel.synced` (spec 5.4).
+      return;
+    }
+    if (targetSetId === this.selectedEmoteSetId()) {
+      this.reloadLiveMembers();
+      return;
+    }
+    this.liveMembersRefreshFor = { channelName: this.channelName(), emoteSetId: targetSetId };
   }
 
   /**

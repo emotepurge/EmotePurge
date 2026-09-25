@@ -589,9 +589,9 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task ListAsync_ProjectsTheSyncDeletedTargetEmoteSet_WhenTheSetIsTheActiveSet()
     {
-        // Spec 6.6 (K5/T5.2): EmoteService.MarkDeletedAsync's set-scoped overload writes
-        // "emoteSetId", a different property name than the import ladder's own "targetEmoteSetId"
-        // (6.7) — this pins that ProjectDetail reads it too, on the bare EmoteCount kind.
+        // Restore-per-set spec 5.5: EmoteService.MarkDeletedInSetAsync writes "emoteSetId", a
+        // different property name than the import ladder's own "targetEmoteSetId" (6.7) — this pins
+        // that ProjectDetail reads it too, on the bare EmoteCount kind.
         await using var db = fixture.CreateDbContext();
         var channel = $"{ChannelPrefix}-del-active";
         db.AuditLogEntries.Add(new AuditLogEntry
@@ -646,9 +646,9 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
     [Fact]
     public async Task ListAsync_LeavesTheSyncDeletedTargetEmoteSetNull_ForALegacyBodyRow()
     {
-        // The legacy `{ emoteIds }` body (spec 6.6, E3) never writes emoteSetId at all — this pins
-        // that the set-scoped projection degrades the same way the import ladder's E5 case does,
-        // rather than only being exercised incidentally by an unrelated theory case.
+        // The legacy `{ emoteIds }` body (restore-per-set spec 5.6, E4) never writes emoteSetId at
+        // all — this pins that the set-centric projection degrades the same way the import ladder's
+        // E5 case does, rather than only being exercised incidentally by an unrelated theory case.
         await using var db = fixture.CreateDbContext();
         var channel = $"{ChannelPrefix}-del-legacy";
         db.AuditLogEntries.Add(new AuditLogEntry

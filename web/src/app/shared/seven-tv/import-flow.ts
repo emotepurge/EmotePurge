@@ -305,6 +305,32 @@ export function startImportFlow(
     if (deps.arbiter.activeRun() !== null) {
       return;
     }
+    // Spec 4.5 point 17: a plan with at least one replace row runs the shared pre-check
+    // (`resolveEditableSet`, E19) *before* `recheckTransferPlan` — the picker's own choice already
+    // carried `editable` at pick time (Vorgabe 6.2), but the three side doors (file, foreign
+    // channel, leaderboard) never asked, and even a picked target's right can have lapsed since. A
+    // plan without any replace row skips this: an ADD into a set the actor cannot write to fails at
+    // 7TV itself, and its report is already set-centric and gated on the same right server-side.
+    const hasReplace = outcome.plan.rows.some((row) => row.action === 'replace');
+    if (hasReplace) {
+      deps.emoteSetService.resolveEditableSet(outcome.targetSetId).subscribe({
+        next: (resolution) => {
+          if (resolution.status !== 'editable') {
+            deps.importService.reportTargetCheckBlocked(resolution.status);
+            return;
+          }
+          startAfterCheck(outcome);
+        },
+        // 429, 503 or no connection: "cannot be checked right now", never "not allowed" (F3) — the
+        // same distinction every other pre-check caller makes.
+        error: () => deps.importService.reportTargetCheckBlocked('unavailable'),
+      });
+      return;
+    }
+    startAfterCheck(outcome);
+  };
+
+  const startAfterCheck = (outcome: ImportConfirmOutcome): void => {
     // #149/T5: `outcome.plan` already passed `buildImportPreview`'s filter against the target set's
     // contents as of when the confirm dialog opened — that snapshot can be stale by the time the
     // user actually confirms (another editor, another tab, a long-open dialog). Re-check fresh,

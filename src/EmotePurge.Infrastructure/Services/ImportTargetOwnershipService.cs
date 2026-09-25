@@ -57,7 +57,7 @@ public sealed class ImportTargetOwnershipService(
         var evidence = new OwnershipEvidence(emoteSetId);
 
         var ownList = await emoteSetListService.ListByTwitchIdAsync(actorTwitchUserId, cancellationToken);
-        if (evidence.Inspect(ownList, actorTwitchLogin) is { } ownMatch)
+        if (evidence.Inspect(ownList, actorTwitchLogin, actorTwitchUserId) is { } ownMatch)
         {
             return ownMatch;
         }
@@ -84,9 +84,9 @@ public sealed class ImportTargetOwnershipService(
         switch (lookup.Status)
         {
             case SevenTvEmoteSetOwnerLookupStatus.Ok:
-                if (evidence.LoginOfAccount(lookup.OwnerSevenTvUserId!) is { } ownerLogin)
+                if (evidence.AccountOf(lookup.OwnerSevenTvUserId!) is { } owner)
                 {
-                    return SevenTvEmoteSetOwnershipCheckResult.Owner(lookup.OwnerSevenTvUserId!, ownerLogin);
+                    return SevenTvEmoteSetOwnershipCheckResult.Owner(lookup.OwnerSevenTvUserId!, owner.TwitchLogin, owner.TwitchUserId);
                 }
 
                 return evidence.AnyListUnreadable
@@ -127,7 +127,7 @@ public sealed class ImportTargetOwnershipService(
             }
 
             var list = await emoteSetListService.ListByTwitchIdAsync(entry.TwitchChannelId, cancellationToken);
-            if (evidence.Inspect(list, entry.ChannelLogin) is { } match)
+            if (evidence.Inspect(list, entry.ChannelLogin, entry.TwitchChannelId) is { } match)
             {
                 return match;
             }
@@ -246,12 +246,13 @@ public sealed class ImportTargetOwnershipService(
 
     /// <summary>
     /// What the inspected lists have said about one set so far: which 7TV ids belong to checked
-    /// accounts (with the Twitch login the paper trail records for each), under which owner ids the
-    /// set was listed, and whether any list could not be read.
+    /// accounts (with the Twitch login the paper trail records for each, and the Twitch id the
+    /// owner's tracked channel is resolved by), under which owner ids the set was listed, and whether
+    /// any list could not be read.
     /// </summary>
     private sealed class OwnershipEvidence(string emoteSetId)
     {
-        private readonly Dictionary<string, string> _loginByAccountId = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, CheckedAccount> _accountBySevenTvId = new(StringComparer.Ordinal);
         private readonly List<string> _listedOwnerIds = [];
         private bool _listedWithoutOwner;
 
@@ -262,16 +263,16 @@ public sealed class ImportTargetOwnershipService(
 
         public void MarkUnreadable() => AnyListUnreadable = true;
 
-        public string? LoginOfAccount(string sevenTvUserId) =>
-            _loginByAccountId.GetValueOrDefault(sevenTvUserId);
+        public CheckedAccount? AccountOf(string sevenTvUserId) =>
+            _accountBySevenTvId.GetValueOrDefault(sevenTvUserId);
 
         /// <summary>Records one account's list and answers as soon as the set is admissible.</summary>
-        public SevenTvEmoteSetOwnershipCheckResult? Inspect(EmoteSetListResult result, string accountTwitchLogin)
+        public SevenTvEmoteSetOwnershipCheckResult? Inspect(EmoteSetListResult result, string accountTwitchLogin, string accountTwitchUserId)
         {
             switch (result.Status)
             {
                 case EmoteSetListStatus.Ok when !string.IsNullOrEmpty(result.List!.SevenTvUserId):
-                    _loginByAccountId.TryAdd(result.List.SevenTvUserId, accountTwitchLogin);
+                    _accountBySevenTvId.TryAdd(result.List.SevenTvUserId, new CheckedAccount(accountTwitchLogin, accountTwitchUserId));
                     foreach (var set in result.List.Sets.Where(set => string.Equals(set.Id, emoteSetId, StringComparison.Ordinal)))
                     {
                         if (string.IsNullOrEmpty(set.OwnerSevenTvUserId))
@@ -298,15 +299,21 @@ public sealed class ImportTargetOwnershipService(
 
         public SevenTvEmoteSetOwnershipCheckResult? MatchAgainstAllKnownAccounts()
         {
+            // The shared rule (EmoteSetEditability, spec 5.8/AK 30): editable iff the owner id is
+            // one of the readable accounts' ids — _accountBySevenTvId's keys are exactly that set.
             foreach (var ownerId in _listedOwnerIds)
             {
-                if (_loginByAccountId.TryGetValue(ownerId, out var login))
+                if (EmoteSetEditability.IsEditable(ownerId, _accountBySevenTvId.Keys))
                 {
-                    return SevenTvEmoteSetOwnershipCheckResult.Owner(ownerId, login);
+                    var owner = _accountBySevenTvId[ownerId];
+                    return SevenTvEmoteSetOwnershipCheckResult.Owner(ownerId, owner.TwitchLogin, owner.TwitchUserId);
                 }
             }
 
             return null;
         }
     }
+
+    /// <summary>One checked account's Twitch identity: the actor's own, or an <c>editor_of</c> grant's.</summary>
+    private sealed record CheckedAccount(string TwitchLogin, string TwitchUserId);
 }

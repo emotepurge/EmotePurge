@@ -10,6 +10,7 @@ import {
   output,
   signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { catchError, finalize, map, of, timeout } from 'rxjs';
 
@@ -24,6 +25,7 @@ import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.serv
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { ExportDialogData, FORMAT_EXPORT_OPTIONS, openExportDialog } from '../export/export-dialog';
 import { JSON_MIME } from '../export/export-envelope';
@@ -38,11 +40,45 @@ import { Button } from '../ui/button';
 import { PREVIEW_CAP } from '../ui/name-preview-list';
 import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
-import { resyncNoticeKey } from './dock-outcome-announcer';
+import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
+import { loadRestoreSlotPreview, RestoreSlotPreview } from './restore-slot-preview';
 import { RunProgressPanel } from './run-progress-panel';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
+
+/** Maps the shared pre-check's block reason (spec 6.2, `TargetCheckBlockReason`) to this panel's
+ *  own `restore.errors.*` locale family (Plan-253 §6, Nr. 3) — mirrors the family every other
+ *  pre-check caller uses under its own prefix (`restore.import.errors.*`, `massDelete.errors.*`,
+ *  `import.errors.*`); the wording is provisional (#255), the mapping is the contract. */
+function restoreTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
+  switch (reason) {
+    case 'notEditable':
+      return 'restore.errors.targetNotEditable';
+    case 'notSelectable':
+      return 'restore.errors.targetNotSelectable';
+    case 'unavailable':
+      return 'restore.errors.targetCheckUnavailable';
+  }
+}
+
+/** Same mapping as {@link restoreTargetCheckReasonKey}, for the delete confirmation's own
+ *  pre-check before it opens (spec 4.6 point 20, AK 31) — `massDelete.errors.*`, this panel's own
+ *  family for the delete, never `restore.errors.*` (that one names the *restore* entry at a
+ *  finished run, a different first mutation with its own copy). `notSelectable` cannot actually
+ *  occur in production here — the delete panel is always given a set the host already resolved as
+ *  `NORMAL` — but the mapping stays total rather than assuming that at the type level, the same
+ *  discipline `restoreTargetCheckReasonKey` keeps. */
+function deleteTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
+  switch (reason) {
+    case 'notEditable':
+      return 'massDelete.errors.targetNotEditable';
+    case 'notSelectable':
+      return 'massDelete.errors.targetNotSelectable';
+    case 'unavailable':
+      return 'massDelete.errors.targetCheckUnavailable';
+  }
+}
 
 /** Per-instance suffix for the lock reason's element id — the panel renders on two pages, and an
  *  `aria-describedby` target has to be unique in the document. */
@@ -70,8 +106,10 @@ const LIVE_ALIAS_READ_TIMEOUT_MS = 20_000;
  *  or the translation key of the reason the delete is blocked. */
 type LiveAliasRead = { entries: SevenTvSetEntries } | { blockedReasonKey: string };
 
-/** A confirmed delete that did not start, and why — shown until the next attempt. `leadKey` says
- *  what happened, `reasonKey` why. */
+/** A confirmed delete, or a restore this panel's own button tried to start, that did not run, and
+ *  why — shown until the next attempt. `leadKey` says what happened, `reasonKey` why. Shared by
+ *  both: the restore entry's pre-check (spec E16, 4.6 point 22) has no banner of its own, and the
+ *  panel's existing abort notice is where the plan puts it (Plan-253 §6, Nr. 3). */
 interface DeleteAbortNotice {
   leadKey: string;
   reasonKey: string;
@@ -143,7 +181,8 @@ export interface DeletableEmote {
             deleteLockReasonKey() !== null ||
             deleteService.isRunning() ||
             arbiter.activeRun() !== null ||
-            liveAliasReadPending()
+            liveAliasReadPending() ||
+            deleteTargetCheckPending()
           "
           [attr.aria-describedby]="deleteLockReasonKey() !== null ? deleteLockReasonId : null"
           (click)="openConfirm()"
@@ -198,6 +237,7 @@ export interface DeletableEmote {
           [items]="deleteService.queue()"
           [isRunning]="deleteService.isRunning()"
           [syncReport]="deleteService.syncReport()"
+          [syncReportReason]="deleteService.syncReportReason()"
           [rateLimitPauseSeconds]="deleteService.rateLimitPauseSeconds()"
           (cancelled)="deleteService.cancel()"
           (dismissed)="deleteService.reset()"
@@ -225,65 +265,6 @@ export interface DeletableEmote {
           </ng-container>
         </app-run-progress-panel>
       }
-
-      <!-- #149 P2 (independent review): gated on duplicateNoticePending, not just
-           skippedDuplicates() > 0 — a transient notice (design doc §4.5), not a persistent one, so
-           it never sits attached to a *later*, unrelated run's details with nothing to clear it.
-           See that signal's doc for why it also has to be what keeps the dock (and this panel)
-           mounted for a fully-refused (all-duplicates) restore, which leaves no run/queue behind of
-           its own — including the file-based restore reached via ImportTrigger, which has nothing
-           marked in this channel's grid to keep the dock open otherwise.
-
-           Every notice in this panel is aria-hidden: its announcement comes from the host page's
-           permanently mounted DockOutcomeAnnouncer, not from here. On the usage-stats page this
-           panel lives in the dock, which can mount in the same pass that sets the notice, and a
-           status region created together with its text announces nothing
-           (docs/UI-Designsprache.md §4.5). -->
-      @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
-        <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{
-            restoreSkippedDuplicatesKey() | transloco: { count: restoreService.skippedDuplicates() }
-          }}
-        </p>
-      }
-      <!-- Aliases the same check left out because another emote now holds the name — its own line,
-           so "skipped" is never read as "was already there". -->
-      @if (restoreService.duplicateNoticePending() && restoreService.skippedNameTaken() > 0) {
-        <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{
-            restoreSkippedNameTakenKey() | transloco: { count: restoreService.skippedNameTaken() }
-          }}
-        </p>
-      }
-      <!-- The pre-run duplicate check's fetch failed (already-present-filter.ts) — every row still
-           went through, so a duplicate may have slipped in undetected. A quiet notice, not an
-           alarm: the run is still expected to succeed, this only says the guard could not run. -->
-      @if (restoreService.duplicateNoticePending() && !restoreService.duplicateCheckAvailable()) {
-        <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{ 'restore.duplicateCheckUnavailable' | transloco }}
-        </p>
-      }
-      @if (restoreService.isRunning() || restoreService.queue().length > 0) {
-        <app-run-progress-panel
-          [items]="restoreService.queue()"
-          [isRunning]="restoreService.isRunning()"
-          labelPrefix="restore"
-          [syncReport]="restoreService.syncReport()"
-          [rateLimitPauseSeconds]="restoreService.rateLimitPauseSeconds()"
-          (cancelled)="restoreService.cancel()"
-          (dismissed)="restoreService.reset()"
-          (syncRetryRequested)="restoreService.retrySyncReport()"
-        >
-          <ng-container run-actions>
-            <!-- aria-hidden for the same reason as the duplicate notices above. -->
-            @if (resyncNoticeKey(); as noticeKey) {
-              <span aria-hidden="true" class="text-xs text-fg-muted">
-                {{ noticeKey | transloco }}
-              </span>
-            }
-          </ng-container>
-        </app-run-progress-panel>
-      }
     </div>
   `,
 })
@@ -307,16 +288,12 @@ export class MassDeletePanel {
    *  (spec §9, `massDeletePanelSetId`/`activeEmoteSetId` on that page). */
   readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the delete confirmation (spec #200, 8.8) — falls back to
-   *  the set id itself, same convention as every other unnamed-set reader in this app. */
+   *  the set id itself, same convention as every other unnamed-set reader in this app. The restore
+   *  confirmation used to read a `setNames` map for the same reason (a finished delete run's own
+   *  frozen set could differ from `setId()` by the time Restore was clicked); since T6/T7 that
+   *  confirmation names the set fresh from the shared pre-check's own target list instead
+   *  (`resolveEditableSet`, spec 6.2), so the map became dead and was removed (Plan-253 §6, Nr. 1). */
   readonly setName = input<string | null>(null);
-  /** Set id → display name, for the restore confirmation: a finished delete run's own frozen set
-   *  (`DeleteRunInfo.setId`) can differ from `setId()` above if the dropdown moved on between the
-   *  delete finishing and Restore being clicked (the dropdown only locks while the run is still
-   *  writing). Falls back to the id itself for a set this map does not name, same convention as
-   *  `setName` above. Defaults to an empty map, which folds every lookup onto that same fallback —
-   *  a caller that predates this (every existing one) sees exactly the id it always effectively
-   *  showed. */
-  readonly setNames = input<ReadonlyMap<string, string>>(new Map());
   readonly selectedEmotes = input.required<DeletableEmote[]>();
   /**
    * Translation key of a reason the host page locks the delete button for, or `null` for no such
@@ -466,6 +443,11 @@ export class MassDeletePanel {
    *  `readLiveAliasesFromSet`, see `wantsLiveAliasRead`) — the delete button stays disabled
    *  meanwhile, so a second click cannot open a second confirmation for the same selection. */
   protected readonly liveAliasReadPending = signal(false);
+
+  /** The shared pre-check (spec 4.6 point 20, AK 31) is out for the delete confirmation about to
+   *  open — the delete button stays disabled meanwhile, same idiom as `liveAliasReadPending`, so a
+   *  second click cannot start the check twice or open a second confirmation once it answers. */
+  protected readonly deleteTargetCheckPending = signal(false);
   private destroyed = false;
 
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next
@@ -473,27 +455,7 @@ export class MassDeletePanel {
   protected readonly protocolSaved = signal(false);
 
   /** Live slot view for the restore-confirm dialog, loaded when that dialog opens. */
-  private readonly restoreSlots = signal<{ occupied: number; capacity: number } | null>(null);
-
-  /** Same key the host page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
-  protected readonly resyncNoticeKey = computed(() =>
-    resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),
-  );
-
-  /** #149/T5: wording for how many `ADD`s (aliases, since the 2026-09-22 per-alias rule) the
-   *  pre-run duplicate check (`already-present-filter.ts`) dropped — shown independently of the run-progress panel below, because a run where *every*
-   *  row was already present queues nothing and would otherwise leave that panel hidden (its own
-   *  gate is `isRunning() || queue().length > 0`), silently swallowing the one thing the user needs
-   *  to see in that case. */
-  protected readonly restoreSkippedDuplicatesKey = computed(() =>
-    pluralKey(this.restoreService.skippedDuplicates(), 'restore.skippedDuplicates'),
-  );
-
-  /** Wording for how many aliases the same check dropped because another emote now holds the name
-   *  (`restoreService.skippedNameTaken`) — same reason to live outside the run-progress panel. */
-  protected readonly restoreSkippedNameTakenKey = computed(() =>
-    pluralKey(this.restoreService.skippedNameTaken(), 'restore.skippedNameTaken'),
-  );
+  private readonly restoreSlots = signal<RestoreSlotPreview>(null);
 
   constructor() {
     this.destroyRef.onDestroy(() => (this.destroyed = true));
@@ -625,6 +587,17 @@ export class MassDeletePanel {
     });
   }
 
+  /** The restore entry at the finished delete run (spec E16, 4.6 point 22): the pre-check runs
+   *  first, like every other first mutation (E19) — in the normal case a cache hit, because the
+   *  delete's own report just warmed the target list for this very set. A block shows the panel's
+   *  abort notice with a restore-specific lead line and the `restore.errors.*` reason family
+   *  (Plan-253 §6, Nr. 3); nothing opens, nothing is sent to 7TV.
+   *
+   *  `timeout`/`error` and `takeUntilDestroyed` mirror `openConfirmDialog`'s own pre-check exactly
+   *  (review round 1, finding 4): before this fix the subscription had no `error` branch at all, so
+   *  a failed request (429, 503, no connection — spec F3) surfaced nothing and silently left the
+   *  restore entry inert; a hung one left it inert forever; and a late answer after this panel was
+   *  torn down could still have opened a confirmation nobody could see or answer. */
   protected openRestoreConfirm(): void {
     const run = this.deleteService.lastRun();
     if (!run || this.arbiter.activeRun() !== null) {
@@ -636,53 +609,64 @@ export class MassDeletePanel {
       return;
     }
 
-    if (!this.tokenService.hasToken()) {
-      openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
-        if (saved) {
-          this.openRestoreConfirmDialog(run.setId, run.channelName, doneItems);
-        }
+    this.emoteSetService
+      .resolveEditableSet(run.setId)
+      .pipe(timeout(LIVE_ALIAS_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (resolution) => {
+          if (resolution.status !== 'editable') {
+            this.abortNotice.set({
+              leadKey: 'restore.nothingRestored',
+              reasonKey: restoreTargetCheckReasonKey(resolution.status),
+            });
+            return;
+          }
+          // The panel's own inputs are the host fields (spec 6.3): the page this restore starts
+          // from, not the delete run's frozen channel — a restore into a non-active or foreign set
+          // must still be attributed to whichever page the button was clicked on (E13, E21).
+          const target: ResolvedRestoreTarget = {
+            ...resolution.target,
+            hostChannelName: this.channelName(),
+            hostSelectedSetId: this.setId(),
+          };
+          if (!this.tokenService.hasToken()) {
+            openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
+              if (saved) {
+                this.openRestoreConfirmDialog(target, doneItems);
+              }
+            });
+            return;
+          }
+          this.openRestoreConfirmDialog(target, doneItems);
+        },
+        // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
+        // allowed" (F3) — the same distinction `openConfirmDialog`'s own pre-check makes.
+        error: () => {
+          this.abortNotice.set({
+            leadKey: 'restore.nothingRestored',
+            reasonKey: restoreTargetCheckReasonKey('unavailable'),
+          });
+        },
       });
-      return;
-    }
-    this.openRestoreConfirmDialog(run.setId, run.channelName, doneItems);
   }
 
-  /** `runSetId`/`runChannelName` are the set and channel the delete run removed from (its frozen
-   *  record, spec #200 7.2/AK 71) — the restore puts the emotes back there, never into whatever
-   *  `setId()`/`channelName()` say by now. Named and slot-previewed against *that* set (spec 8.8),
-   *  which the dropdown may since have moved past (it only locks while the run is still writing). */
+  /** `target` is the resolved target the pre-check produced (spec 6.2) — the restore puts the
+   *  emotes back into `target.emoteSetId`, never into whatever `setId()` says by now. Named and
+   *  slot-previewed against *that* set (spec 8.8), which the dropdown may since have moved past
+   *  (it only locks while the run is still writing). */
   private openRestoreConfirmDialog(
-    runSetId: string,
-    runChannelName: string,
+    target: ResolvedRestoreTarget,
     doneItems: readonly RunQueueItem[],
   ): void {
-    const runIsActiveSet = runSetId === this.effectiveActiveSetId();
     // Live slot view, so the projection line pops in once the check answers (the dialog is
-    // already open by then) — same pattern as the delete confirm's shared-set warning. The active
-    // run's set keeps the cheap, non-7TV-rate-limited status read; any other set reads the live
-    // per-set preview instead (spec 8.3) — `getSetStatus` has no set-scoped form at all.
+    // already open by then) — same pattern as the delete confirm's shared-set warning. The read
+    // itself is `loadRestoreSlotPreview`, the fork this shares with `restore-flow.ts`'s
+    // `startRestoreFlow` (spec 4.3, point 8 / spec 8.3, final fix wave A5).
     this.restoreSlots.set(null);
-    if (runIsActiveSet) {
-      this.emoteAdminService.getSetStatus(runChannelName).subscribe({
-        next: (status) =>
-          this.restoreSlots.set(
-            status.capacity === null
-              ? null
-              : { occupied: status.occupiedSlots, capacity: status.capacity },
-          ),
-        error: () => this.restoreSlots.set(null),
-      });
-    } else {
-      this.emoteSetService.loadEmoteSetPreview(runChannelName, runSetId).subscribe({
-        next: (preview) =>
-          this.restoreSlots.set(
-            preview.capacity === null
-              ? null
-              : { occupied: preview.totalCount, capacity: preview.capacity },
-          ),
-        error: () => this.restoreSlots.set(null),
-      });
-    }
+    loadRestoreSlotPreview(
+      { emoteAdminService: this.emoteAdminService, emoteSetService: this.emoteSetService },
+      target,
+    ).subscribe((preview) => this.restoreSlots.set(preview));
 
     const data: RestoreConfirmDialogData = {
       names: doneItems.map((item) => item.name),
@@ -690,8 +674,14 @@ export class MassDeletePanel {
       // under and restores once per alias.
       addCount: doneItems.reduce((sum, item) => sum + (item.aliases?.length ?? 1), 0),
       slots: this.restoreSlots.asReadonly(),
-      setName: this.setNames().get(runSetId) ?? runSetId,
-      isActiveSet: runIsActiveSet,
+      setName: target.setName,
+      isActiveSet: target.isActiveSet,
+      emoteSetId: target.emoteSetId,
+      ownerDisplayName: target.ownerDisplayName,
+      trackedChannelName: target.trackedChannelName,
+      // Spec E21: the run's set against the page's *selected* set — a different set of the same
+      // channel, and a page with no selection, both count as foreign.
+      foreignToView: target.emoteSetId !== target.hostSelectedSetId,
     };
     openRestoreConfirmDialog(this.dialog, data).closed.subscribe((confirmed) => {
       if (!confirmed) {
@@ -712,7 +702,7 @@ export class MassDeletePanel {
       // present only under some of its own aliases re-adds just the missing ones, and an alias
       // another emote now holds is left out rather than sent into a certain name conflict — see
       // `filterAlreadyPresentForRestore`.
-      filterAlreadyPresentForRestore(this.httpClient, runSetId, emotes).subscribe(
+      filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes).subscribe(
         ({ rows: toRestore, skipped, skippedNameTaken, available }) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
@@ -724,8 +714,7 @@ export class MassDeletePanel {
             return;
           }
           this.restoreService.startRestore(
-            runSetId,
-            runChannelName,
+            restoreStartTarget(target),
             toRestore,
             skipped,
             available,
@@ -736,7 +725,68 @@ export class MassDeletePanel {
     });
   }
 
+  /** The shared pre-check (spec 4.2, 6.2, E19), before the delete confirmation ever opens (spec 4.6
+   *  point 20, AK 31) — in the normal case a cache hit, because the page's own set view or the
+   *  target picker already warmed the target list this minute. A block shows the panel's existing
+   *  abort notice (`massDelete.nothingDeleted` + `massDelete.errors.*`); no dialog opens, no
+   *  request reaches 7TV.
+   *
+   *  `checkedSetId` is read once, here, and threaded through to {@link openConfirmDialogAfterCheck}
+   *  rather than that method re-reading the live `setId()` input: the request can take a moment
+   *  (a cache miss), and a set switch landing in that window must not let the confirmation open
+   *  for whatever set happens to be selected once the answer arrives — only for the one the answer
+   *  actually vouches for (review round 1, finding 3a). A genuine switch still surfaces, just later
+   *  and visibly: `abortReasonBeforeStart` already compares the live `setId()` against this same
+   *  frozen value once the dialog itself closes.
+   *
+   *  `timeout` (same budget as the live alias read, `LIVE_ALIAS_READ_TIMEOUT_MS`) keeps a hung
+   *  request from leaving the delete button disabled forever — a timeout lands in the `error`
+   *  branch like any other failed check, i.e. `unavailable` (review round 1, finding 3b).
+   *  `takeUntilDestroyed` drops a late answer once this panel is gone, so a torn-down component
+   *  never opens a dialog nobody can see or answer (review round 1, finding 3c). */
   private openConfirmDialog(): void {
+    const checkedSetId = this.setId();
+    this.deleteTargetCheckPending.set(true);
+    this.emoteSetService
+      .resolveEditableSet(checkedSetId)
+      .pipe(timeout(LIVE_ALIAS_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (resolution) => {
+          this.deleteTargetCheckPending.set(false);
+          if (resolution.status !== 'editable') {
+            this.abortNotice.set({
+              leadKey: 'massDelete.nothingDeleted',
+              reasonKey: deleteTargetCheckReasonKey(resolution.status),
+            });
+            return;
+          }
+          // Codex C3 (final fix wave A6): a set switch that lands while the check was still out
+          // used to be caught only once the dialog closed (`abortReasonBeforeStart`), which left
+          // a confirmation open for a set the host was no longer looking at. Caught here instead,
+          // before the dialog ever opens — same lead/reason pair `abortReasonBeforeStart` already
+          // uses for the settled-switch case it still covers.
+          if (this.setId() !== checkedSetId) {
+            this.abortNotice.set({
+              leadKey: 'massDelete.abortedByLock',
+              reasonKey: 'massDelete.setChangedDuringConfirm',
+            });
+            return;
+          }
+          this.openConfirmDialogAfterCheck(checkedSetId);
+        },
+        // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
+        // allowed" (F3) — the same distinction `FileImportStep`'s own pre-check makes.
+        error: () => {
+          this.deleteTargetCheckPending.set(false);
+          this.abortNotice.set({
+            leadKey: 'massDelete.nothingDeleted',
+            reasonKey: deleteTargetCheckReasonKey('unavailable'),
+          });
+        },
+      });
+  }
+
+  private openConfirmDialogAfterCheck(checkedSetId: string): void {
     this.setWarning.set(null);
     this.warningLoading.set(true);
 
@@ -744,13 +794,18 @@ export class MassDeletePanel {
     // DeleteConfirmDialogData), so the shared-set warning pops in as soon as the check answers.
     this.loadSetWarning();
 
-    // Frozen here, alongside setName/isActiveSet below, not re-read from the live `setId()` input
-    // at confirm time: the dialog outlives the view it was opened on, and a `channel.synced` set
-    // switch can move the host's selected set (and thus this input) while it is still open. Passed
-    // into `startDelete` so it can compare against the live value and abort rather than delete into
-    // whatever set happens to be selected once the dialog closes (#200 K5 finding A).
-    const frozenSetId = this.setId();
-    const frozenIsActiveSet = this.isActiveSet();
+    // `checkedSetId` (the pre-check's own argument, `openConfirmDialog`), not the live `setId()`
+    // input at this later moment: the dialog outlives the view it was opened on, and a
+    // `channel.synced` set switch can move the host's selected set (and thus this input) while it
+    // is still open — or even while the pre-check request itself was still out (review round 1,
+    // finding 3a). Passed into `startDelete` so it can compare against the live value and abort
+    // rather than delete into whatever set happens to be selected once the dialog closes (#200 K5
+    // finding A). `frozenIsActiveSet` follows the same rule — computed against `checkedSetId`
+    // rather than `this.isActiveSet()` (which reads the live `setId()`), so it never claims a
+    // set is active that was not the one actually checked.
+    const frozenSetId = checkedSetId;
+    const activeSetId = this.effectiveActiveSetId();
+    const frozenIsActiveSet = activeSetId !== null && activeSetId === checkedSetId;
     // Same reasoning, same moment, for the run's channel (K5 fix round item 7): the panel's own
     // `deleteService.startDelete` call used to read the live `channelName()` input instead, which
     // just happens to be stable in production (a panel only ever sees one channel across a run's
@@ -1016,7 +1071,11 @@ export class MassDeletePanel {
             : emote.aliases,
       };
     });
-    this.deleteService.startDelete(frozenSetId, frozenChannelName, emotes);
+    // The page's channel is the expected hit only when the run's set is its active one (spec 4.6
+    // point 21); a non-active set's report is paper only and expects no channel.
+    const expectedChannelName =
+      frozenSetId === this.effectiveActiveSetId() ? frozenChannelName : null;
+    this.deleteService.startDelete(frozenSetId, frozenChannelName, emotes, expectedChannelName);
   }
 
   /**

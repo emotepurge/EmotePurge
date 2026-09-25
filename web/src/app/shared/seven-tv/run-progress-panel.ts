@@ -2,7 +2,7 @@ import { Component, computed, inject, input, output } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 
@@ -94,15 +94,24 @@ import { NoticeBanner } from '../ui/notice-banner';
           <span class="flex flex-col gap-1">
             <span class="font-medium">{{ labelPrefix() + '.syncFailedTitle' | transloco }}</span>
             <span>{{ labelPrefix() + '.syncFailed' | transloco }}</span>
+            <!-- Why the report failed or fell short (spec E23) — its own line, because a bare
+                 "failed" does not say whether the right is gone or the server did not answer. -->
+            @if (syncReportReason(); as reason) {
+              <span>{{ 'syncReportReason.' + reason | transloco }}</span>
+            }
           </span>
-          <button
-            notice-action
-            type="button"
-            appButton="outline"
-            (click)="syncRetryRequested.emit()"
-          >
-            {{ labelPrefix() + '.syncRetry' | transloco }}
-          </button>
+          <!-- No retry for a channel mismatch (addendum N4): it is recorded, and the resync that
+               heals it already runs — a retry could only repeat the same mismatch. -->
+          @if (syncRetryOffered()) {
+            <button
+              notice-action
+              type="button"
+              appButton="outline"
+              (click)="syncRetryRequested.emit()"
+            >
+              {{ labelPrefix() + '.syncRetry' | transloco }}
+            </button>
+          }
         </app-notice-banner>
       } @else if (syncReport() === 'succeeded' && !isRunning()) {
         <p class="mt-3 text-sm text-fg-muted">
@@ -120,6 +129,9 @@ export class RunProgressPanel {
   /** State of the run's closing bookkeeping call (sync-deleted / sync-restored). Defaults to the
    *  state that renders nothing; the notice wording follows labelPrefix. */
   readonly syncReport = input<SyncReportState>('idle');
+  /** Why `syncReport` is `'failed'`/`'partial'` (spec E23) — shown as its own line in the report
+   *  notice, `null` (the default) shows none. One wording family for all three runs. */
+  readonly syncReportReason = input<SyncReportReason | null>(null);
   /** Seconds left on a 7TV rate-limit pause, null while running normally. */
   readonly rateLimitPauseSeconds = input<number | null>(null);
   /** Whether Close is offered once the run stops running. A host binds this to its own settlement
@@ -166,6 +178,12 @@ export class RunProgressPanel {
   // from what was actually deleted, and the remedy (retry, or wait for the periodic resync) is the same.
   protected readonly syncReportFailed = computed(
     () => this.syncReport() === 'failed' || this.syncReport() === 'partial',
+  );
+
+  /** "Erneut melden" for `failed` (any reason) and `partial`/`shortfall`, never for
+   *  `partial`/`channelMismatch` (addendum N4, AK 40) — the services refuse that retry as well. */
+  protected readonly syncRetryOffered = computed(
+    () => this.syncReportReason() !== 'channelMismatch',
   );
 
   /** An `unknown` row gets its own wording family rather than its transport error: the point for

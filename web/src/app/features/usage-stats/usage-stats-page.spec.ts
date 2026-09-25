@@ -58,6 +58,11 @@ import {
   EmoteSetSummary,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import {
+  RestoreRunInfo,
+  SevenTvRestoreService,
+} from '../../core/seven-tv/seven-tv-restore.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -1598,6 +1603,124 @@ describe('UsageStatsPage — selection-pruned notice accessibility (#94 follow-u
 });
 
 /**
+ * AK 33–34 (spec #253, E22): the import entry stays visible on a channel page without a selected
+ * set — before its first 7TV sync, or after a replace into the untracked (DECISIONS "the file
+ * determines the target") — while the copy button ("Übertragen") is gone, since it has nothing of
+ * THIS channel's own to copy. Real template, same reasoning as the block above: the actual markup
+ * (which `@if` wraps which element) is what is under test, not signal plumbing — `ImportTrigger`'s
+ * own `disabled()`/`setId()` inputs are `import-trigger.spec.ts`'s job.
+ */
+describe('UsageStatsPage — import entry without a selected set (spec #253, AK 33–34)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Mounts the page on a channel with no active 7TV set — `no_active_emote_set` rather than a
+   *  `null` reason keeps `load()`'s `awaitSync` branch (which polls) from firing, irrelevant to
+   *  what is under test here. */
+  function mountWithoutActiveSet(channelName: string): void {
+    httpMock
+      .expectOne(`/api/channels/${channelName}/permissions`)
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne(`/api/channels/${channelName}/emotes/active-set`).flush(
+      setStatus({
+        activeEmoteSetId: '',
+        trackedSince: '2026-01-01T00:00:00Z',
+        syncFailureReason: 'no_active_emote_set',
+      }),
+    );
+    fixture.detectChanges();
+    flushByPath(httpMock, `/api/channels/${channelName}/usage-stats/totals`, []);
+    flushByPath(httpMock, `/api/channels/${channelName}/usage-stats/series`, {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('shows the import entry even without a selected set', () => {
+    mountWithoutActiveSet('a');
+
+    expect(fixture.nativeElement.querySelector('app-import-trigger')).not.toBeNull();
+  });
+
+  it('shows no copy ("Übertragen") button without a selected set — it has nothing of this channel to copy', () => {
+    mountWithoutActiveSet('a');
+
+    const host: HTMLElement = fixture.nativeElement;
+    const copyButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'import.copyButton',
+    );
+    expect(copyButton).toBeUndefined();
+  });
+
+  // Fix round 1 (Critical, confirmed review finding): before this fix `dockVisible()`
+  // (`actionDockHasContent` via `action-dock.ts`) gated `restoreShown` behind `hasActiveSet`, so a
+  // running restore with nothing to report yet (no skipped/name-taken/unavailable notice —
+  // `duplicateNoticePending` stays false for a clean run, see `showDuplicateNotice`) never mounted
+  // `.app-dock` at all on a page like this one — AK 33's "das Restore-Dock ist sichtbar" failed for
+  // exactly this, the ordinary case. `isRunning` is the real, writable signal `SevenTvRestoreService`
+  // exposes (readonly binding, not a readonly signal — same pattern this file already uses for
+  // `SevenTvDeleteService.lastRun` above); no HTTP round trip needed to drive it, and `run()` stays
+  // null on purpose — this pins dock visibility, not `RestoreProgressSection`'s own target-line
+  // rendering, which is that component's own spec's job.
+  it('shows the dock for a running, notice-free restore even without a selected set (AK 33, fix round 1)', () => {
+    mountWithoutActiveSet('a');
+
+    const restoreService = TestBed.inject(SevenTvRestoreService);
+    expect(restoreService.duplicateNoticePending()).toBe(false);
+    restoreService.isRunning.set(true);
+    fixture.detectChanges();
+
+    const host: HTMLElement = fixture.nativeElement;
+    expect(host.querySelector('.app-dock')).not.toBeNull();
+    expect(host.querySelector('app-restore-progress-section')).not.toBeNull();
+  });
+
+  // The other half of the same fix: marking-only content (nothing running, nothing pending) must
+  // still not conjure a dock out of an active-set-less page — action-dock.spec.ts already pins this
+  // at the unit level; this is the page-level twin using the real template.
+  it('still shows no dock for a page without a selected set and no restore/import activity', () => {
+    mountWithoutActiveSet('a');
+
+    expect(fixture.nativeElement.querySelector('.app-dock')).toBeNull();
+  });
+});
+
+/**
  * `openExport()` (#141): capture, open the dialog, hand the choice to `usage-export-purposes.ts`
  * and — unless it closed with nothing, or the emote-list branch's unreachable null-download case
  * — trigger exactly one download (Regel 12: dialog return values are behaviour worth pinning).
@@ -2952,11 +3075,18 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     totals: EmoteUsageTotalDto[];
     members?: ForeignEmoteSetResponse | 'unavailable';
     observations?: EmoteSetSummary['observations'];
+    extraSets?: EmoteSetSummary[];
+    // addendum N2: a run already settled in the service before the page's constructor ever
+    // runs — `watchRunSettle`'s `seen` captures it as the starting point, so it must not replay.
+    presettledRestoreRun?: RestoreRunInfo;
   }): Promise<void> {
     configure();
     router = TestBed.inject(Router);
     if (options.emoteSetId) {
       await router.navigate([], { queryParams: { emoteSetId: options.emoteSetId } });
+    }
+    if (options.presettledRestoreRun) {
+      TestBed.inject(SevenTvRestoreService)['runState'].set(options.presettledRestoreRun);
     }
 
     fixture = TestBed.createComponent(UsageStatsPage);
@@ -2994,6 +3124,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
           isActive: false,
           observations: options.observations ?? [],
         }),
+        ...(options.extraSets ?? []),
       ]),
     );
     await settle();
@@ -3385,6 +3516,160 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
     expect(component['nameTwinSetNames'](twin)).toBe('Hauptset, nknown');
     expect(component['totalUsage']()).toBe(12);
+  });
+
+  // --- addendum N2 (AK 37): a run's own settle reloads the chosen non-active set's member list ---
+
+  /** A finished run's engine result with `done` rows for the given keys. */
+  function runResult(doneKeys: string[]) {
+    return { doneKeys, items: [], startedAt: 0, finishedAt: 1 };
+  }
+
+  /** Settles a restore run into `setId` the way `SevenTvRestoreService.onRunComplete` does. */
+  function settleRestore(setId: string, doneKeys: string[]): void {
+    const run: RestoreRunInfo = {
+      targetSetId: setId,
+      expectedChannelName: null,
+      resyncChannelName: 'a',
+      hostChannelName: 'a',
+      setName: setId,
+      ownerOrChannelLabel: 'a',
+      result: runResult(doneKeys),
+    };
+    TestBed.inject(SevenTvRestoreService)['runState'].set(run);
+  }
+
+  function settleImport(setId: string, doneKeys: string[]): void {
+    TestBed.inject(SevenTvImportService).run.set({
+      targetSetId: setId,
+      settlement: 'settled',
+      result: runResult(doneKeys),
+    } as unknown as ImportRunInfo);
+  }
+
+  function settleDelete(setId: string, doneKeys: string[]): void {
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId,
+      channelName: 'a',
+      result: runResult(doneKeys),
+    });
+  }
+
+  function liveListRequestsFor(setId: string): TestRequest[] {
+    return liveListRequests().filter((r) => r.request.params.get('emoteSetId') === setId);
+  }
+
+  it.each([
+    ['restore', settleRestore],
+    ['delete', settleDelete],
+    ['import', settleImport],
+  ] as const)(
+    'reloads the chosen non-active set’s members bypassing the cache once a %s run into it settles',
+    async (_kind, settleRun) => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [],
+        members: memberList([member('7tv-x', 'PumpkinX')]),
+      });
+
+      settleRun('set-b', ['7tv-y']);
+      await settle();
+
+      const reloaded = liveListRequests();
+      expect(reloaded).toHaveLength(1);
+      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.params.get('refresh')).toBe('true');
+    },
+  );
+
+  it('sends nothing for a run without a done row, or one into the active set', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+    });
+
+    settleRestore('set-b', []);
+    settleImport('set-a', ['7tv-y']);
+    await settle();
+
+    expect(liveListRequests()).toHaveLength(0);
+  });
+
+  it('marks a non-active target that is not chosen, so exactly its next load bypasses the cache', async () => {
+    await openView({ totals: [] });
+
+    settleRestore('set-b', ['7tv-y']);
+    await settle();
+    expect(liveListRequests()).toHaveLength(0);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    const request = liveListRequestsFor('set-b');
+    expect(request).toHaveLength(1);
+    expect(request[0].request.params.get('refresh')).toBe('true');
+  });
+
+  it('drops the mark on the next load of another set', async () => {
+    await openView({
+      totals: [],
+      extraSets: [emoteSet({ id: 'set-c', name: 'Winter', isActive: false })],
+    });
+
+    settleDelete('set-b', ['7tv-y']);
+    await settle();
+
+    component['onEmoteSetSelected']('set-c');
+    await settle();
+    const other = liveListRequestsFor('set-c');
+    expect(other).toHaveLength(1);
+    expect(other[0].request.params.get('refresh')).toBeNull();
+    other[0].flush(memberList([], { emoteSetId: 'set-c' }));
+    await settle();
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    const target = liveListRequestsFor('set-b');
+    expect(target).toHaveLength(1);
+    expect(target[0].request.params.get('refresh')).toBeNull();
+  });
+
+  it('drops the mark on a channel switch', async () => {
+    await openView({ totals: [] });
+
+    settleRestore('set-b', ['7tv-y']);
+    await settle();
+    // The mark left by the settle above, for channel 'a' — read directly rather than through a
+    // second channel's full bootstrap, which this describe block's other tests do not exercise.
+    expect(component['liveMembersRefreshFor']).toEqual({ channelName: 'a', emoteSetId: 'set-b' });
+
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+
+    expect(component['liveMembersRefreshFor']).toBeNull();
+  });
+
+  it('does not replay a run that had already settled when the page mounted', async () => {
+    // Set before the component's constructor ever runs: watchRunSettle's `seen` captures this as
+    // its starting point, so the settle effect must never fire for it.
+    await openView({
+      totals: [],
+      presettledRestoreRun: {
+        targetSetId: 'set-b',
+        expectedChannelName: null,
+        resyncChannelName: 'a',
+        hostChannelName: 'a',
+        setName: 'set-b',
+        ownerOrChannelLabel: 'a',
+        result: runResult(['7tv-y']),
+      },
+    });
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    const request = liveListRequestsFor('set-b');
+    expect(request).toHaveLength(1);
+    expect(request[0].request.params.get('refresh')).toBeNull();
   });
 
   // --- T4.4: the caption matrix (8.4, AK 60) ----------------------------------------------------

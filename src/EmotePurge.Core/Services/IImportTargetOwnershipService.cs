@@ -15,18 +15,20 @@ public enum SevenTvEmoteSetOwnershipStatus
 }
 
 /// <summary>
-/// The result of <see cref="IImportTargetOwnershipService.CheckAsync"/>. The two identity
+/// The result of <see cref="IImportTargetOwnershipService.CheckAsync"/>. The three identity
 /// properties are non-null if and only if <see cref="Status"/> is
 /// <see cref="SevenTvEmoteSetOwnershipStatus.Owner"/>, built like the other result families in this
 /// namespace (see <see cref="SevenTvEditorGrantsLookupResult"/>).
 /// </summary>
 public sealed class SevenTvEmoteSetOwnershipCheckResult
 {
-    private SevenTvEmoteSetOwnershipCheckResult(SevenTvEmoteSetOwnershipStatus status, string? ownerSevenTvUserId, string? ownerTwitchLogin)
+    private SevenTvEmoteSetOwnershipCheckResult(
+        SevenTvEmoteSetOwnershipStatus status, string? ownerSevenTvUserId, string? ownerTwitchLogin, string? ownerTwitchUserId)
     {
         Status = status;
         OwnerSevenTvUserId = ownerSevenTvUserId;
         OwnerTwitchLogin = ownerTwitchLogin;
+        OwnerTwitchUserId = ownerTwitchUserId;
     }
 
     public SevenTvEmoteSetOwnershipStatus Status { get; }
@@ -43,17 +45,26 @@ public sealed class SevenTvEmoteSetOwnershipCheckResult
     /// </summary>
     public string? OwnerTwitchLogin { get; }
 
-    public static SevenTvEmoteSetOwnershipCheckResult Owner(string ownerSevenTvUserId, string ownerTwitchLogin) =>
-        new(SevenTvEmoteSetOwnershipStatus.Owner, ownerSevenTvUserId, ownerTwitchLogin);
+    /// <summary>
+    /// Non-null exactly when <see cref="Status"/> is <see cref="SevenTvEmoteSetOwnershipStatus.Owner"/> —
+    /// the Twitch id of the same account as <see cref="OwnerTwitchLogin"/>: the actor's own id, or
+    /// the matching grant's <see cref="SevenTvEditorGrantEntry.TwitchChannelId"/>. The set-centric
+    /// delete/restore report resolves the owner's tracked channel from it (restore-per-set spec,
+    /// addendum N3) — by id, not login, because logins move and the id does not.
+    /// </summary>
+    public string? OwnerTwitchUserId { get; }
+
+    public static SevenTvEmoteSetOwnershipCheckResult Owner(string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId) =>
+        new(SevenTvEmoteSetOwnershipStatus.Owner, ownerSevenTvUserId, ownerTwitchLogin, ownerTwitchUserId);
 
     public static SevenTvEmoteSetOwnershipCheckResult SetNotFound() =>
-        new(SevenTvEmoteSetOwnershipStatus.SetNotFound, null, null);
+        new(SevenTvEmoteSetOwnershipStatus.SetNotFound, null, null, null);
 
     public static SevenTvEmoteSetOwnershipCheckResult Forbidden() =>
-        new(SevenTvEmoteSetOwnershipStatus.Forbidden, null, null);
+        new(SevenTvEmoteSetOwnershipStatus.Forbidden, null, null, null);
 
     public static SevenTvEmoteSetOwnershipCheckResult Unavailable() =>
-        new(SevenTvEmoteSetOwnershipStatus.Unavailable, null, null);
+        new(SevenTvEmoteSetOwnershipStatus.Unavailable, null, null, null);
 }
 
 /// <summary>

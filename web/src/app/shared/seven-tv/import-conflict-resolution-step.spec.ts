@@ -47,7 +47,6 @@ const DE_TRANSLATIONS = {
         replaceTarget: 'Ziel ersetzen',
         adoptSourceName: 'Namen übernehmen',
       },
-      replaceNeedsTracked: 'Nur für getrackte Kanäle wiederherstellbar',
       reloadTargetFirst: 'Ziel hat sich geändert — erst neu laden',
       adoptBlocked: {
         nameTaken: 'Name im Zielset vergeben',
@@ -113,7 +112,7 @@ function optionKinds(row: ConflictStepRow): string[] {
 describe('ImportConflictResolutionStep', () => {
   describe('which actions a row offers (AK 6, 8, R5)', () => {
     it('offers skip, rename and replace for a name collision, and skip and adopt for a mismatch', () => {
-      const [collisionRow] = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+      const [collisionRow] = collisionStepRows([collision('a', 'Kappa')], new Map());
       const [mismatchRow] = mismatchStepRows([mismatch('b', 'Pog')], new Map());
 
       expect(optionKinds(collisionRow)).toEqual(['skip', 'renameSource', 'replaceTarget']);
@@ -122,17 +121,19 @@ describe('ImportConflictResolutionStep', () => {
       expect(mismatchRow.options.every((option) => option.disabledReasonKey === null)).toBe(true);
     });
 
-    it('keeps replace listed but disabled with its reason for an untracked target or a target that is gone', () => {
-      const [untracked] = collisionStepRows([collision('a', 'Kappa')], false, new Map());
-      const [gone] = collisionStepRows([collision('a', 'Kappa')], true, new Map([['a', null]]));
+    // #253, spec 4.5 point 15/6.6: the replace lock for an untracked target is gone —
+    // `collisionStepRows` no longer takes a middle "is the target tracked" parameter at all, and
+    // replace is offered exactly the same for every target (AK 16).
+    it('offers replace enabled for an untracked target the same as for a tracked one', () => {
+      const [row] = collisionStepRows([collision('a', 'Kappa')], new Map());
 
-      expect(untracked.options.find((o) => o.kind === 'replaceTarget')?.disabledReasonKey).toBe(
-        'import.resolve.replaceNeedsTracked',
-      );
-      // Rename stays available: it deletes nothing.
-      expect(untracked.options.find((o) => o.kind === 'renameSource')?.disabledReasonKey).toBe(
-        null,
-      );
+      expect(row.options.find((o) => o.kind === 'replaceTarget')?.disabledReasonKey).toBe(null);
+      expect(row.options.find((o) => o.kind === 'renameSource')?.disabledReasonKey).toBe(null);
+    });
+
+    it('keeps replace listed but disabled with its reason for a target that is gone', () => {
+      const [gone] = collisionStepRows([collision('a', 'Kappa')], new Map([['a', null]]));
+
       // The live counterpart laid over the row: gone, so no picture and nothing left to replace.
       expect(gone.targetGone).toBe(true);
       expect(gone.targetImageUrl).toBeNull();
@@ -297,7 +298,7 @@ describe('ImportConflictResolutionStep', () => {
     }
 
     it('names each action group after its row and starts every row on skip (AK 5, 23)', async () => {
-      await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], true, new Map()));
+      await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], new Map()));
 
       expect(radio('Kappa', 'skip').checked).toBe(true);
       expect(radio('Kappa', 'renameSource').checked).toBe(false);
@@ -323,7 +324,7 @@ describe('ImportConflictResolutionStep', () => {
     });
 
     it('opens a prefilled rename field and shows its field error once touched, for an alias 7TV rejects (AK 10)', async () => {
-      const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+      const rows = collisionStepRows([collision('a', 'Kappa')], new Map());
       await render('nameCollision', rows);
 
       radio('Kappa', 'renameSource').click();
@@ -363,7 +364,7 @@ describe('ImportConflictResolutionStep', () => {
 
     describe('field error only once touched (issue #269, §5.3)', () => {
       it('shows no field error and no aria-invalid right after choosing rename, even though the prefilled alias is already taken', async () => {
-        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        const rows = collisionStepRows([collision('a', 'Kappa')], new Map());
         await render('nameCollision', rows);
 
         radio('Kappa', 'renameSource').click();
@@ -385,7 +386,7 @@ describe('ImportConflictResolutionStep', () => {
       });
 
       it('shows the field error once the field is touched by leaving it (blur), still on the same taken alias', async () => {
-        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        const rows = collisionStepRows([collision('a', 'Kappa')], new Map());
         await render('nameCollision', rows);
 
         radio('Kappa', 'renameSource').click();
@@ -411,7 +412,7 @@ describe('ImportConflictResolutionStep', () => {
       });
 
       it('keeps the row touched after switching its action away and back', async () => {
-        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        const rows = collisionStepRows([collision('a', 'Kappa')], new Map());
         await render('nameCollision', rows);
 
         radio('Kappa', 'renameSource').click();
@@ -452,7 +453,6 @@ describe('ImportConflictResolutionStep', () => {
     it('draws the empty plate without a picture for a row without an image url (AK 4)', async () => {
       const rows = collisionStepRows(
         [collision('a', 'Kappa', { row: importRow('a', 'Kappa', null) })],
-        true,
         new Map(),
       );
       await render('nameCollision', rows);
@@ -468,7 +468,7 @@ describe('ImportConflictResolutionStep', () => {
       const many = Array.from({ length: 200 }, (_, index) =>
         collision(`r${index}`, `Emote${index}`),
       );
-      await render('nameCollision', collisionStepRows(many, true, new Map()));
+      await render('nameCollision', collisionStepRows(many, new Map()));
       const viewport = fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
         .componentInstance as CdkVirtualScrollViewport;
       // jsdom has no Element.scrollTo — only the call itself is the subject here.
@@ -494,10 +494,7 @@ describe('ImportConflictResolutionStep', () => {
 
     describe('consequence line (issue #268)', () => {
       it('names the target kept while a row is on skip, and leaves the source line empty', async () => {
-        await render(
-          'nameCollision',
-          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
-        );
+        await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], new Map()));
 
         expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
         expect(consequenceEl('a', 'target').textContent?.trim()).toBe('wird behalten');
@@ -506,7 +503,7 @@ describe('ImportConflictResolutionStep', () => {
       it('leaves both consequence lines empty on skip once the target is already gone — nothing there to keep', async () => {
         await render(
           'nameCollision',
-          collisionStepRows([collision('a', 'Kappa')], true, new Map([['a', null]])),
+          collisionStepRows([collision('a', 'Kappa')], new Map([['a', null]])),
         );
 
         expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
@@ -516,7 +513,7 @@ describe('ImportConflictResolutionStep', () => {
       it('shows the target as removed once replaceTarget is chosen', async () => {
         await render(
           'nameCollision',
-          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+          collisionStepRows([collision('a', 'Kappa')], new Map()),
           new Map([['a', { kind: 'replaceTarget' }]]),
         );
 
@@ -536,7 +533,7 @@ describe('ImportConflictResolutionStep', () => {
       });
 
       it('shows the typed alias under the source once renameSource is chosen, and follows further typing', async () => {
-        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        const rows = collisionStepRows([collision('a', 'Kappa')], new Map());
         await render('nameCollision', rows);
 
         radio('Kappa', 'renameSource').click();
@@ -567,7 +564,7 @@ describe('ImportConflictResolutionStep', () => {
       });
 
       it('shows no consequence line while the typed alias has a field error, and shows it again once valid (issue #269)', async () => {
-        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        const rows = collisionStepRows([collision('a', 'Kappa')], new Map());
         await render(
           'nameCollision',
           rows,
@@ -591,7 +588,7 @@ describe('ImportConflictResolutionStep', () => {
       it("names each row's consequence lines from its radiogroup via aria-describedby", async () => {
         await render(
           'nameCollision',
-          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+          collisionStepRows([collision('a', 'Kappa')], new Map()),
           new Map([['a', { kind: 'replaceTarget' }]]),
         );
 
@@ -614,7 +611,7 @@ describe('ImportConflictResolutionStep', () => {
         // rendering is checked visually instead (docs/plans, live Playwright screenshot).
         await render(
           'nameCollision',
-          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+          collisionStepRows([collision('a', 'Kappa')], new Map()),
           new Map(),
           [],
           'Vault',
@@ -624,10 +621,7 @@ describe('ImportConflictResolutionStep', () => {
       });
 
       it('falls back to the plain "Ziel" caption without a target set name', async () => {
-        await render(
-          'nameCollision',
-          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
-        );
+        await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], new Map()));
 
         const targetCell = rowElements()[0];
         expect(targetCell.textContent).toContain('Ziel');
@@ -662,7 +656,7 @@ describe('ImportConflictResolutionStep', () => {
       it('animates nothing until a row is hovered or focused', async () => {
         await render(
           'nameCollision',
-          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], new Map()),
         );
         await settleInitialFocus();
 
@@ -672,7 +666,7 @@ describe('ImportConflictResolutionStep', () => {
       it('hovering a row animates only that row, both its cells together', async () => {
         await render(
           'nameCollision',
-          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], new Map()),
         );
         await settleInitialFocus();
 
@@ -686,7 +680,7 @@ describe('ImportConflictResolutionStep', () => {
       it('moving the pointer to another row moves the animation with it', async () => {
         await render(
           'nameCollision',
-          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], new Map()),
         );
         await settleInitialFocus();
 
@@ -703,7 +697,7 @@ describe('ImportConflictResolutionStep', () => {
       it('falls back to the focused row once the pointer leaves', async () => {
         await render(
           'nameCollision',
-          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], new Map()),
         );
         await settleInitialFocus();
 

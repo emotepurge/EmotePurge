@@ -19,6 +19,7 @@ import { PurgeRunRow } from '../export/purge-run-export';
 import { FileImportResult } from './file-import-step';
 import { ImportSourceDialogResult } from './import-source-dialog';
 import { ImportTrigger } from './import-trigger';
+import { ResolvedRestoreTarget } from './restore-flow';
 
 /**
  * `ImportTrigger` opens every dialog through the plain `Dialog` it injects, same as
@@ -46,6 +47,29 @@ function rows(): PurgeRunRow[] {
       errorMessage: null,
     },
   ];
+}
+
+/**
+ * What `ImportSourceDialog` closes with for a restore file: the rows plus the target the file step
+ * already resolved and cleared (spec #253, 6.1). Defaults to this page's own active set, as the
+ * target list would describe it; a test overrides whatever its case is about.
+ */
+function restoreResult(target: Partial<ResolvedRestoreTarget> = {}): FileImportResult {
+  return {
+    kind: 'restore',
+    rows: rows(),
+    target: {
+      emoteSetId: CURRENT_SET,
+      setName: 'Hauptset',
+      ownerDisplayName: CURRENT_CHANNEL,
+      twitchLogin: CURRENT_CHANNEL,
+      trackedChannelName: CURRENT_CHANNEL,
+      isActiveSet: true,
+      hostChannelName: CURRENT_CHANNEL,
+      hostSelectedSetId: CURRENT_SET,
+      ...target,
+    },
+  };
 }
 
 function importSource(overrides: Partial<ImportSource> = {}): ImportSource {
@@ -184,7 +208,7 @@ describe('ImportTrigger', () => {
 
   function render(
     channelName = CURRENT_CHANNEL,
-    setId = CURRENT_SET,
+    setId: string | null = CURRENT_SET,
     options: { activeSetId?: string | null; setName?: string | null } = {},
   ): Harness {
     const fixture = TestBed.createComponent(ImportTrigger);
@@ -243,6 +267,42 @@ describe('ImportTrigger', () => {
       });
     });
 
+    // Spec #253, E22: a channel page without a selected set (before its first sync, or after a
+    // replace into the untracked) still has a way in — the trigger opens the dialog with a `null`
+    // target, which `ImportSourceDialog` uses to disable its two copy doors (own spec).
+    it('opens the dialog with setId: null when the page has no selected set', () => {
+      const dialog = render(CURRENT_CHANNEL, null);
+      dialog.click();
+
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      expect(dataAt(0)).toEqual({
+        channelName: CURRENT_CHANNEL,
+        setId: null,
+      });
+    });
+
+    // A restore file names and clears its own target regardless of the page's set (spec 6.1) — the
+    // one result a dialog opened with `setId: null` can actually close with, since its two copy
+    // doors are disabled. `hostSelectedSetId` carries the `null` through unchanged, for the
+    // confirmation's "not the set on screen" hint (E21).
+    it('still starts a restore flow through a dialog opened with setId: null', () => {
+      const dialog = render(CURRENT_CHANNEL, null);
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({ hostChannelName: CURRENT_CHANNEL, hostSelectedSetId: null }),
+      );
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: CURRENT_SET, hostChannelName: CURRENT_CHANNEL }),
+        expect.any(Array),
+        expect.any(Number),
+        expect.any(Boolean),
+        expect.any(Number),
+      );
+    });
+
     it('does nothing further when the import dialog closes with no result (cancel/Escape/backdrop)', () => {
       const dialog = render();
       dialog.click();
@@ -263,15 +323,75 @@ describe('ImportTrigger', () => {
       dialog.fixture.componentRef.setInput('setId', 'set-b');
       dialog.detect();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      // The dialog was handed the values of the click, not the ones switched to since.
+      expect(dataAt(0)).toEqual({ channelName: 'channel-a', setId: 'set-a' });
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-a',
+          trackedChannelName: 'channel-a',
+          hostChannelName: 'channel-a',
+          hostSelectedSetId: 'set-a',
+        }),
+      );
       closedAt<boolean>(1).next(true);
 
       // Fourth argument is the #149/T5 duplicate-check skip count — 0 because the fresh 7TV read
       // (`httpPost`) defaults to an empty target set. Fifth is whether that check actually ran
       // (#149), sixth its name-taken count.
       expect(startRestore).toHaveBeenCalledWith(
-        'set-a',
-        'channel-a',
+        expect.objectContaining({ setId: 'set-a', hostChannelName: 'channel-a' }),
+        [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+        0,
+        true,
+        0,
+      );
+    });
+  });
+
+  describe("a restore file: the file step's resolved target goes to the flow unchanged (spec #253, 6.1)", () => {
+    it("restores into the set the file named, as the step resolved it — not into this page's set", () => {
+      loadEmoteSetPreview.mockReturnValue(
+        of({
+          channelName: 'besitzerin',
+          sevenTvUserId: null,
+          emoteSetId: 'set-foreign',
+          emoteSetName: 'Fremdes Set',
+          capacity: 1000,
+          totalCount: 10,
+          truncated: false,
+          emotes: [],
+        }),
+      );
+      const dialog = render();
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-foreign',
+          setName: 'Fremdes Set',
+          ownerDisplayName: 'Besitzerin',
+          twitchLogin: 'besitzerin',
+          trackedChannelName: null,
+          isActiveSet: false,
+        }),
+      );
+
+      // An untracked target: the slot preview reads the account's own set, never this page's
+      // channel status — proof the page's frozen values built no part of the target.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('besitzerin', 'set-foreign');
+      expect(getSetStatus).not.toHaveBeenCalled();
+
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({
+          setId: 'set-foreign',
+          expectedChannelName: null,
+          resyncChannelName: null,
+          hostChannelName: CURRENT_CHANNEL,
+          setName: 'Fremdes Set',
+          ownerOrChannelLabel: 'Besitzerin',
+        }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
@@ -286,7 +406,7 @@ describe('ImportTrigger', () => {
       const dialog = render();
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       // Only the token prompt has opened so far — the restore-specific work (the slot preview
       // read) has not started, proof the confirmation is not up yet.
@@ -303,8 +423,7 @@ describe('ImportTrigger', () => {
       closedAt<boolean>(2).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        CURRENT_SET,
-        CURRENT_CHANNEL,
+        expect.objectContaining({ setId: CURRENT_SET, hostChannelName: CURRENT_CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
@@ -317,7 +436,7 @@ describe('ImportTrigger', () => {
       const dialog = render();
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       // One dialog beyond the source dialog, and it is already the confirmation.
       expect(dialogOpen).toHaveBeenCalledTimes(2);
@@ -332,7 +451,7 @@ describe('ImportTrigger', () => {
       hasToken.set(false);
       const dialog = render();
       dialog.click();
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       closedAt<boolean>(1).next(false);
 
@@ -343,7 +462,7 @@ describe('ImportTrigger', () => {
     it('never restores when the confirmation is cancelled', () => {
       const dialog = render();
       dialog.click();
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
 
       closedAt<boolean>(1).next(false);
 
@@ -540,7 +659,8 @@ describe('ImportTrigger', () => {
 
   describe('a non-active set on screen (#200, T4.5): all four doors follow it, restore included since K5', () => {
     // K5/T5.3: restore's own slot preview follows the same active/non-active fork the other three
-    // doors already had (spec 8.3) — the run itself was already set-aware since T5.1/T5.2.
+    // doors already had (spec 8.3) — since #253 decided by the resolved target's own `isActiveSet`,
+    // not by the page's inputs.
     it('restores into the non-active set, reading its slot preview live instead of EmoteSetStatus', () => {
       loadEmoteSetPreview.mockReturnValue(
         of({
@@ -560,7 +680,15 @@ describe('ImportTrigger', () => {
       });
       dialog.click();
 
-      closedAt<FileImportResult | undefined>(0).next({ kind: 'restore', rows: rows() });
+      // The file names the Halloween set, and the target list says it is not the active one.
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({
+          emoteSetId: 'set-halloween',
+          setName: 'Halloween',
+          isActiveSet: false,
+          hostSelectedSetId: 'set-halloween',
+        }),
+      );
 
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CURRENT_CHANNEL, 'set-halloween');
       expect(getSetStatus).not.toHaveBeenCalled();
@@ -568,8 +696,7 @@ describe('ImportTrigger', () => {
       closedAt<boolean>(1).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        'set-halloween',
-        CURRENT_CHANNEL,
+        expect.objectContaining({ setId: 'set-halloween', hostChannelName: CURRENT_CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,

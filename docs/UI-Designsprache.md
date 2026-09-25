@@ -112,7 +112,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **The sidecar never loads per cell.** Its day series comes from **one** call per (channel, range) — `GET /usage-stats/series`. A surface that hangs off the mouse pointer must not generate requests; sweeping through a band would otherwise be a load profile.
 - **Animation is earned by dwelling, and only ever for one emote at a time.** Cells draw every emote as its still. `EmoteSpriteAnimated` (sidecar, inspector row, drilldown dialog, ballot, and the hovered cell of the import grid, §7.3) keeps the still and lays the `2x.webp` animation on top only after the pointer or focus has rested for 200 ms; a still emote never gets a second request. **Under `prefers-reduced-motion: reduce` no animation is fetched or played at all** — the still stays, and switching the preference on while an animation shows withdraws it. This is decided inside `EmoteSpriteAnimated` (via `ReducedMotionService`, `core/motion/`), not at the call sites, so no surface can forget it. **Named exception: the import confirm dialog's resolution step (§7.2) animates one ROW at a time, both its cells together** — comparing a source emote against its target needs both sides animated at once, not one after the other, so "one emote" widens to "one row" there without widening any further (every other row still draws plain stills).
 - **`.app-dock` appears only as long as there is something to do or to read:** a selection, or a 7TV run (delete, restore, import) that is running or has just finished — whose summary carries the protocol for download and must survive the last delete. Close itself waits on that survival: `RunProgressPanel` only offers Close once the run has settled (its `dismissible` input, #230) — a run whose engine is done but whose settlement is still pending (an `unknown` row's live re-read, up to 20 s) shows neither Cancel nor Close, so the summary and its protocol cannot be dismissed before either exists. A permanently parked action bar is a control the first visit has to read past. The dock carries, as the only surface of the app, a line in the accent colour — it marks the boundary of a living, reversible state. Which commands may stand in it and which belong in the page header is governed by §8.7.
-- **The active emote set gates only the marking half of the dock, not the dock itself.** The count row, the mass-delete panel and the ballot button are about the set of *this* channel and need one; the import section shows a run into a **foreign** set (§7.2) and is therefore mounted outside this gate. Otherwise a writing run together with its cancel button would disappear on a usage page without an active set while it is still running.
+- **The active emote set gates only the marking half of the dock, not the dock itself.** The count row, the mass-delete panel and the ballot button are about the set of *this* channel and need one; the import section shows a run into a **foreign** set (§7.2) and is therefore mounted outside this gate. Otherwise a writing run together with its cancel button would disappear on a usage page without an active set while it is still running. **The restore run is its own section for the same reason (`RestoreProgressSection`, #253, since T9):** since the import entry stays reachable without a selected set (§7.3), a restore it starts can write into a set the page never had selected — the run therefore lives outside the marking half's gate, exactly like the import section, on both the usage-stats page and the voting-results page (whose mass-delete panel carries the same "Restore" entry at a finished delete run). What stays in the mass-delete panel is only the entry points: the delete button and the "Restore" button at a finished run, each with its own pre-check — never the run's own progress, notices or target line.
 - **Selection, dock and the 20 px history trigger are additionally gated behind `PointerModeService.isCoarse` — no 7TV write access without a mouse.** The 7TV write token can only be copied out of the devtools on 7tv.app, which a phone does not have; the gate is therefore the pointer type, not the width (`(pointer: coarse)`, not `any-pointer` — a desktop with an attached touchscreen keeps everything, because devtools remain). On `coarse` a click on the cell no longer marks anything but opens the drilldown dialog directly (§7.1), the mass-delete panel does not render at all, and in the page header of the usage page the same gate removes the entire `@if` block of the 7TV write paths — the Transfer button **and** the file-ingest trigger (§7.3).
 - **What falls away on `coarse` is not explained — what points into the void on `coarse` is.** The dock, the mass-delete panel and the two 7TV write paths of the page header disappear without comment: visually nothing is missing, so there is nothing to say. A *pointer* to one of these capabilities is the other case — it stays visibly in place and promises something whose target cannot deliver there. The example: the voting list's page header carries a permanent link to the usage-stats atlas, because that is where a ballot is now assembled (2026-09-19) — on coarse it gives way to a sentence (`voting.list.createEntryDesktopOnly`), since the atlas's own marking and dock are themselves `!isCoarse()`-gated and a mod on a phone would have nowhere to land. The manager how-to beneath it (`voting.list.createEntryHint`) no longer names that destination itself — the button already does — and says only what the button cannot: that a ballot is made of emotes the manager marks. It stands inside the page header itself, as its own row beneath the heading/button row — not merely placed after the header in the page's own `gap-8` flex column (that left it visually equidistant from the header above and the list below, and wrong the moment an error banner sat between them, 2026-09-19 correction) and not inside the empty state either — an empty-state-only placement disappeared the moment a session existed, exactly when a returning manager would look for it again (2026-09-19 correction, docs/DECISIONS.md) — and it is hidden the same way, for the same reason: it must not repeat to a coarse reader what the header already said they cannot do here. Purely visual switching of this kind belongs in the variant pair `pointer-coarse:hidden` / `hidden pointer-coarse:inline`, not in `PointerModeService` — the service is for decisions the code makes.
 - **The keyboard is equal, not an afterthought:** roving tabindex across the sheet, arrows move, space marks, Enter opens the history, shift-click transfers the state of the most recently clicked cell to a whole range — so it marks that range, or unmarks it again if the last click removed a mark. A *group* action must not do that: "mark all" stays purely additive, because a second press would otherwise destroy a hand-built selection in one click. The hint text for this is translated and stands visibly at the side — a keyboard operation nobody mentions does not exist for most people.
@@ -451,14 +451,23 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 
 ### 7.3 Ingest dialog (#91, since #147 the one import dialog)
 
-- **What applies:** Everything that brings emotes **into** the channel of the page begins in the page
-  header with the trigger `<app-import-trigger>` (§8.7 governs the surface, §4.2 the blocks) and runs through **one**
+- **What applies:** Everything that brings emotes **into** a set from a channel page — into the
+  channel of the page for the copy sources, into the set a restore file names for a restore (#253) —
+  begins in the page header with the trigger `<app-import-trigger>` (§8.7 governs the surface, §4.2 the blocks) and runs through **one**
   dialog: `ImportSourceDialog` (`shared/seven-tv/import-source-dialog.ts`,
   `openImportSourceDialog`). **Its first step is the source selection** — until #147 the
   foreign channel had a header button of its own next to it, which contradicted spec decision E1 ("one source among others
   in the import dialog, not a page of its own"). A fourth source is a fourth row in
   this step, not another button and explicitly **not** a greyed-out placeholder as long as it
   does not exist.
+- **The trigger stays visible on a channel page without a selected set (#253, since T9).** A
+  restore file names and checks its own target regardless of the page (see the file branch
+  below), so a channel before its first sync, or one that just replaced its way into the
+  untracked, still needs a way in. Only the two copy-source rows — "From a channel" and "From
+  7TV's leaderboard" — are disabled then, each with a reason line beneath its label ("No set to
+  copy into"), the same **shown, not hidden** idiom every other disabled row in this app uses
+  (§10, "Disabled explains itself"; the target picker's own disabled rows, #200 8.6). The file
+  row is never one of the disabled two — see the file branch below.
 - **Step sequence (contract):**
   1. **Source selection** — one ruled row per source with a label and a muted hint line
      beneath it, both part of the accessible name (the same two-line pattern as §7.4). The row
@@ -495,7 +504,17 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   "Load set" — the pane grows around the field, the field does not move.
 - **File branch (`FileImportStep`, `shared/seven-tv/file-import-step.ts`).** It **reads and checks**
   the file — nothing more. Until #147 it was a dialog of its own (`FileImportDialog`); what changed is
-  only its housing, not its behaviour.
+  only its housing, not its behaviour. **A restore file names its own target, and the step checks
+  it** (#253): the set comes from the file (`meta.emoteSetId` of a purge protocol,
+  `meta.targetEmoteSetId` of a transfer protocol), never from the page, and is not held against the
+  page's channel or selected set. The check is the step's third one, after the envelope and the
+  parser: the set must be in the caller's target list, `NORMAL` and editable
+  (`resolveEditableSet`). A blocked check is a banner like any other file error — "not editable or no
+  longer there", "not a normal set", or "cannot be checked right now" — and the dialog stays open;
+  only a cleared target closes it. While the check runs the file control carries `aria-disabled`
+  (not `disabled`: it is where the caret sits after the native file window closes) and takes no
+  second pick. **Without a selected set on the page the branch reads restore files only**; an emote
+  list or a usage export is refused with its own banner (no set to copy into) before it is parsed.
 - **Row order in the file branch (contract):**
   1. The **list of the four permissible kinds of file**, each its own list entry with the addition
      "as JSON": purge protocol (restore) · transfer protocol, recovery file or result protocol
@@ -576,14 +595,15 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   making `DialogShell`'s host a flex column for all twelve dialogs — deliberately not done.
   The numbers hang on an E2E case, because jsdom has no layout.
 - **Result contract:** on success the dialog closes with a discriminated result —
-  "Restore" with the restorable rows of the protocol, "Import" with the `ImportSource` from the
+  "Restore" with the restorable rows of the file and its checked target, "Import" with the `ImportSource` from the
   file or "Foreign" with the rows marked in the grid —, on cancel/Escape/backdrop with
   `undefined`. It starts **no** run, chooses **no** import target and opens **no** further
   dialog. In the error case it stays open and shows the banner; every new attempt resets it, and
   the file input is cleared after every selection so that the same corrected file triggers a
   `change` again.
-- **The target is not asked for, it is fixed:** the channel of the page from whose header the trigger
-  was clicked — the same for **all** sources. Until #147 the foreign-channel path still had
+- **The target is not asked for, it is fixed:** for the copy sources, the channel of the page from
+  whose header the trigger was clicked — the same for all three; for a restore file, the set the file
+  names (see the file branch above), which the page neither chooses nor overrides. Until #147 the foreign-channel path still had
   `ImportTargetDialog` with `forcedScope: 'selection'` in between; with the scope radio group suppressed,
   exactly one question remained there that the page context had already answered. The step is
   deleted without replacement. `forcedScope` itself stays — the dock entry point in §8.7 still uses it.
@@ -629,7 +649,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   tile has only an en dash for it and a screen reader does not pronounce that at all.
 - **Reference:** `web/src/app/shared/seven-tv/import-source-dialog.ts`, `file-import-step.ts`,
   `foreign-channel-step.ts`, `leaderboard-step.ts`, `foreign-emote-grid.ts`, `import-trigger.ts`,
-  `import-trigger-gate.ts`, `restore-flow.ts`; `core/seven-tv/seven-tv-leaderboard.service.ts`,
+  `import-trigger-gate.ts`, `restore-flow.ts`, `restore-progress-section.ts`;
+  `core/seven-tv/seven-tv-leaderboard.service.ts`,
   `leaderboard.model.ts`; parsers `shared/export/read-envelope.ts`, `purge-run-export.ts`,
   `import-source-parser.ts`.
 

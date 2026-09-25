@@ -227,7 +227,9 @@ der Coalescer ebenso (`:95-96`). Vorgabe: Abfrage um `capacity` (und `name`) am 
 (`EmoteEndpoints.cs:24-29`), und `MarkImportedAsync` lädt die Kanalzeile und liefert ohne sie
 `false` (`EmoteService.cs:111-115`), was der Endpunkt als 404 durchreicht (`EmoteEndpoints.cs:206`).
 Für ein Set, dessen Account kein getrackter Kanal ist, gibt es keine Zeile — die Papierspur wäre
-weg. Vorgabe: set-zentrierter Endpunkt ohne Kanalzeile (Abschnitt 6.6).
+weg. Vorgabe: set-zentrierter Endpunkt ohne Kanalzeile (Abschnitt 6.7; **Korrektur, Nachtrag 40:**
+der Verweis stand hier fälschlich auf 6.6 — 6.7 ist der Abschnitt, der `sync-imported` und den
+set-zentrierten Endpunkt beschreibt, 6.6 beschreibt `sync-deleted`/`sync-restored`).
 
 ### F8 — Das Voting sperrt archivierte Zeilen beim Anlegen **und** beim Abstimmen, und die Detailseite leitet die Berechtigung aus Daten ab
 
@@ -3322,3 +3324,36 @@ jetzt gleich.
 
 Details (betroffene Dateien) im Entscheidungslog, Eintrag 2026-09-22 „Target-set picker: one heading
 per account, one radio per set, PERSONAL sets hidden“.
+
+## 40. Nachtrag: Restore pro Set, 2026-09-24
+
+Ab hier übernimmt die eigene Spec
+[2026-09-24-restore-pro-set-253-design.md](2026-09-24-restore-pro-set-253-design.md) (#253) die
+Weiterentwicklung zweier hier beschriebener Verträge. Diese Spec bleibt für beide der Ausgangspunkt
+— nur die **Fortschreibung** liegt jetzt dort, wie es die Nachträge 32–39 für frühere Runden schon
+mit dieser Spec selbst getan haben.
+
+**6.2 `GET /api/seventv/me/emote-set-targets` — erweitert um `editable` und beide 7TV-IDs.** Die
+Antwort trägt seit #253 zusätzlich `sevenTvUserId` je `EmoteSetTargetAccount` und
+`ownerSevenTvUserId` sowie `editable` je `EmoteSetTargetSummaryDto` (253-Spec 5.8, AK 29). `editable`
+ist wahr genau dann, wenn `ownerSevenTvUserId` gesetzt ist und die 7TV-ID eines Accounts **dieser
+Antwort** mit lesbarer Liste trifft — dieselbe Regel, die die set-zentrierte Meldung (6.7, Abschnitt
+32 dieser Spec) für die Besitzprüfung anwendet, jetzt in einer gemeinsamen reinen Funktion
+(`EmoteSetEditability`, `EmotePurge.Core.Services`) statt zweimal geschrieben (253-Spec AK 30). Die
+eine bewusste Asymmetrie — ein Set ohne `owner.id` ist auf der Liste immer `editable: false`, auch wo
+die Besitzprüfung per Direktabfrage vielleicht zugelassen hätte — steht in der 253-Spec als F16.
+Additiv: der bestehende Ziel-Picker (§34, §39) liest die drei neuen Felder nicht und bleibt
+unverändert, bis ein späterer Task sie nutzt.
+
+**6.6 `sync-deleted`/`sync-restored` — Fortschreibung in der #253-Spec.** Der hier beschriebene neue
+Body (`emoteSetId`/`sevenTvEmoteIds` neben der Altform `emoteIds`) und die Zwei-Routen-Leiter waren
+der erste Schritt; #253 baut ihn zu einem eigenen set-zentrierten Endpunktpaar aus
+(`SyncInSetRequest`, `SyncDeletedInSetResponse`/`SyncRestoredInSetResponse`, `UnresolvedChannelResponse`
+— 253-Spec Abschnitt 5, insbesondere 5.1–5.3) und regelt dort auch den Resync-Cooldown je Kanal (253-
+Spec 5.2, F12/F13) und das Ende der kanalgebundenen set-scoped Form. Für den aktuellen Vertrag dieser
+beiden Routen gilt ab #253 jene Spec, nicht mehr dieser Abschnitt.
+
+**F7-Korrektur.** Der Verweis in F7 oben zeigte fälschlich auf Abschnitt 6.6 (der die
+`sync-deleted`/`sync-restored`-Bodyform beschreibt) statt auf 6.7 (der set-zentrierte
+`sync-imported`-Endpunkt, um den es in F7 tatsächlich geht) — die in einem früheren Plan-230-Task
+vorgesehene Korrektur war nie gelandet. Korrigiert direkt an der Stelle.

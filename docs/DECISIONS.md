@@ -10,6 +10,390 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — The replace lock for an untracked target falls, and a shared pre-check comes first
+
+**Betrifft:** `web/src/app/shared/seven-tv/conflict-resolution.ts` (rule 7,
+`ruleReplaceNeedsTrackedTarget`, `ResolutionContext` all gone) ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` (`collisionStepRows` loses its
+`targetIsTracked` parameter) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts` (the same
+field and the three call sites that carried it) · `web/src/app/core/seven-tv/seven-tv-import.service.ts`
+(the guard in `startImport`, and `reportTargetCheckBlocked`/`targetCheckBlockReason`) ·
+`web/src/app/shared/seven-tv/import-flow.ts` (`start`'s pre-check before `recheckTransferPlan`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (the same pre-check before the delete
+confirmation opens) · `web/src/app/shared/seven-tv/import-progress-section.ts`,
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (the block reason's visible and spoken
+notice) · `web/public/i18n/{de,en}.json` (`massDelete.errors.*`, `import.errors.*`, the two
+`import.resolve.*` keys the lock owned are gone) · `web/e2e/emote-import.e2e.spec.ts`,
+`web/e2e/vote-ballot.e2e.spec.ts` (every test that starts a delete or a replace now mocks the
+target list).
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E19, sections 4.5, 4.6 and 6.6). **Before**, `validateResolution`'s rule 7
+(`replaceNeedsTrackedTarget`) refused a `replaceTarget` decision whenever the target set belonged
+to an untracked account — the reasoning being that only a tracked channel's own resync could
+restore a deleted entry, so replacing into an untracked target had no way back. Since the entry
+"The file names a restore's target, and the target list checks it" (2026-09-25, earlier
+today) an untracked target's restore works like any other — reported as paper only — so that
+reasoning no longer holds for the replace direction either: the restore half of the 2026-09-23
+entry "Restore reads transfer-run files" is what that earlier entry already revised; this entry
+revises only the *replace* half of that same day's "The import dialog becomes a deleting
+operation" — the paragraph "Replace is **only offered for a tracked target** — deleting from an
+untracked set would have no way back".
+
+**The lock is gone, not relaxed.** `ViolationRule` loses `replaceNeedsTrackedTarget`,
+`validateResolution` and `buildTransferPlan` lose their third parameter (`ResolutionContext`)
+outright rather than keeping an unused field — a caller that has nothing meaningful left to pass
+should not compile one up. `collisionStepRows` drops the parameter that fed the disabled reason;
+the confirm dialog's own `resolutionContext` field and the three sites that read it are deleted with
+it. Rename, adopt and skip were never affected by rule 7 to begin with (none of them delete
+anything), so nothing about their own behavior changes. The two locale keys the lock owned
+(`import.resolve.replaceNeedsTracked`, `import.resolve.violation.replaceNeedsTrackedTarget`) are
+removed from both locales, not left dangling.
+
+**What still stands.** The pre-run drift check (`import.resolve.reloadTargetFirst`) is a different
+finding — a row whose live counterpart no longer holds the name it collides on — and is untouched.
+The mandatory recovery file before the first REMOVE (2026-09-23, "The safeguard is a file, not a
+typed confirmation") is unconditional and stays exactly as strict for an untracked target as for a
+tracked one; its filename already fell back to the set id for an untracked target
+(`transferPlanFilename(targetChannelName ?? setId, …)`), a branch that simply went unreachable while
+the lock stood. Nothing about `reportRemoved`'s own set-centric reporting (entry "Delete, restore
+and a replace's removals report per emote set") changes here — it already reported without a
+channel branch for every replace, tracked target or not.
+
+**A shared pre-check comes first, everywhere a first mutation can happen.** The lock's removal
+would otherwise let a replace start against a set the actor's right to edit has since lapsed, or
+that 7TV no longer has at all — the picker's own choice carried `editable` at pick time (spec 5.8),
+but that snapshot can be stale by the time the run actually starts, and the three side doors (file,
+foreign channel, leaderboard) never asked in the first place. `resolveEditableSet` (spec 6.2, from
+the earlier "The file names the target" entry) is now the pre-check every first mutation into a
+7TV set runs immediately before it: `import-flow.ts`'s `start` runs it — only when the plan carries
+at least one `replace` row — *before* `recheckTransferPlan`, and `MassDeletePanel` runs it before
+`openDeleteConfirmDialog` ever opens, mirroring the restore entry's own pre-check the same file
+already had (spec E16, 4.6 point 22). A block starts nothing: the delete confirmation never opens,
+the replace-carrying plan never reaches `recheckTransferPlan`, and the reason is shown at the same
+spot a drift abort already used — `SevenTvImportService.duplicateNoticePending`'s transient-notice
+mechanic (`reportTargetCheckBlocked`/`targetCheckBlockReason`), because a blocked pre-check leaves
+no run or queue behind either and the dock still has to mount to say why. The delete panel's own
+button gains a matching `deleteTargetCheckPending` lock, the same idiom as the existing
+`liveAliasReadPending`. A plan without any replace row never runs this pre-check at all — an ADD
+into a set the actor cannot write to fails at 7TV itself, and its report is already gated on the
+same right server-side (spec 5.7).
+
+**Locale families, one per first-mutation caller** (plan 0.5, the table in 2.6 "Fehlergründe und
+Locale-Familien"): the delete confirmation's own family is `massDelete.errors.*`, the replace
+start's is `import.errors.*` — both carry the same three reasons
+(`targetNotEditable`/`targetNotSelectable`/`targetCheckUnavailable`) the restore file step
+(`restore.import.errors.*`) and the panel restore (`restore.errors.*`) already used. Four families,
+one vocabulary, each caller its own copy — the wording is provisional (#255), the family per caller
+is the contract.
+
+---
+
+### 2026-09-25 — The file names a restore's target, and the target list checks it
+
+**Betrifft:** `web/src/app/shared/export/purge-run-export.ts` ·
+`web/src/app/shared/export/transfer-run-export.ts` ·
+`web/src/app/shared/seven-tv/file-import-step.ts` ·
+`web/src/app/shared/seven-tv/import-source-dialog.ts` ·
+`web/src/app/shared/seven-tv/import-trigger.ts` · `web/public/i18n/{de,en}.json` ·
+`docs/UI-Designsprache.md` (§7.3) ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (consumer, T4: `resolveEditableSet`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`,
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (consumer, T6: `ResolvedRestoreTarget`, the
+set-comparison hint, the panel restore through the same pre-check) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (consumer, T9: the entry without a selected set)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E1/E2/E10/E11/E15/E21/E22, F1/F2/F5/F6, sections 4.1, 4.2 and 6.1). **Before**, both restore
+parsers took the page's channel and its selected set as an expectation and refused anything else:
+a purge-run protocol of another set with `wrongSet`, of another channel with `wrongChannel`, and a
+transfer-run file of an untracked target always with `wrongChannel`, because its
+`meta.targetChannelName` is `null` and equals no page. After the set switch on 2026-10-01 a protocol
+naming the now non-active set becomes the normal case, and an untracked target had no way back at
+all.
+
+**The file names the target.** A purge-run protocol restores into its `meta.emoteSetId`, a
+transfer-run file (either stage) into its `meta.targetEmoteSetId`. The page's channel and selected
+set play no part in whether a file is valid; both parsers return `target: { emoteSetId }` instead of
+comparing anything, and `wrongChannel`/`wrongSet` are gone from the parsers and both locales. The
+transfer-run parser still does not read the envelope's `channelName` — it holds `''` for an
+untracked target (F2); the purge-run parser passes its envelope channel through but never compares
+it, so its case no longer matters either. There are exactly these two classes of restore file: every
+purge-run protocol ever written carries `meta.emoteSetId` (F1), so one without it is `wrongKind`, and
+there is deliberately no fallback to the page's active set — after a set switch that fallback would
+push an old set's protocol into the new one. What a file yields as rows is unchanged (`readProtocolRow`,
+the `planned`/`finished` rules of the 2026-09-23 entry; AK 24).
+
+**The target list checks it, in the file step.** `FileImportStep` runs the shared pre-check
+`SevenTvEmoteSetService.resolveEditableSet` as its third step, after the envelope and the parser —
+the same `editable` verdict the report applies (entry "Who may report is decided by 7TV editing
+rights", not repeated here). Four outcomes: editable ⇒ `picked` — a found, `NORMAL`, `editable`
+set wins outright, even when the list is also degraded for some *other*, unrelated account (a
+confirmed positive is never downgraded by a degradation elsewhere); a set whose `kind` is not
+`NORMAL` ⇒ `targetNotSelectable` (a personal set is never a restore target, E11); not in any list,
+or listed with `editable: false`, on a complete list ⇒ `targetNotEditable`, worded "not editable
+**or** no longer there" because the 60 s list cache cannot tell the two apart (F5); an incomplete
+list or a failed request, and the set not found editable ⇒ `targetCheckUnavailable`, never "not
+allowed" (F3). A
+blocked check keeps the dialog open with the step's own banner; no confirmation opens and 7TV sees
+no request. `picked` carries the **resolved** target — set name, owner, tracked channel, whether it
+is active, and the set id the confirmation shows (AK 35) all come from the target list, never from
+the file, which is untrusted and becomes a target only here. Because `picked` closes the dialog and
+the check is asynchronous, the file control is locked while it runs (`aria-disabled`, so the caret is
+not dropped to `<body>`), and an answer that arrives after the step is gone is discarded (F6).
+`ImportTrigger` passes the resolved target to `startRestoreFlow` unchanged; its interim target built
+from the page's frozen values is gone.
+
+**The page only supplies the host fields.** The target carries `hostChannelName` (the page's channel,
+for the run's dock binding, E13) and `hostSelectedSetId` (the page's selected set, `null` without
+one). The confirmation's hint that the restore goes somewhere other than the set on screen compares
+`emoteSetId` with `hostSelectedSetId`, never channels (E21) — another set of the same channel gets
+the hint as well. On a page without a selected set the file step reads restore files only; an emote
+list or a usage export is refused with `noTargetSetForCopy` before its parser runs (E22). The
+trigger itself leaving the set gate, and `ImportSourceDialogData.setId` becoming nullable, follow
+with the restore dock's move out of the mass-delete panel.
+
+**What this revises.** The 2026-09-23 entry "Restore reads transfer-run files" matched the channel
+against `meta.targetChannelName` and refused an untracked target's file with `wrongChannel`; that
+check is gone, and with it its reason "there is no restore into an untracked set, because nothing
+there can report it" — since the set-centric report (entry "Delete, restore and a replace's removals
+report per emote set") an untracked target's file restores like any other, reported as paper only.
+What that means for replace into an untracked target is decided in its own entry. The 2026-09-21
+entry for K4 described the purge-run protocol's set match (AK 66) as generic over the set on screen;
+there is no match any more. Where the restore reports and who may report are the subjects of the two
+entries below.
+
+---
+
+### 2026-09-25 — Delete, restore and a replace's removals report per emote set — report plus resync
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` (`TryTriggerGuardedResyncAsync`,
+now `internal`) ·
+`src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (`PublishChannelSyncedAsync`, now shared; T3: the
+legacy routes' own body/handler) ·
+`src/EmotePurge.Core/Services/IEmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` (`targetIsActiveSetOfChannel`
+derived from the hit list, not hard-coded; the Twitch-id lookup deferred to where the paper entry is
+actually written) ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs`
+(`LoadActiveChannelByTwitchIdReadOnlyAsync`, shared with `ChannelService`),
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs`
+(`GetActiveByTwitchChannelIdAsync` now calls the shared query) ·
+`src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs`,
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` (addendum N3: `OwnerTwitchUserId`) ·
+`src/EmotePurge.Api/Validation/ApiErrorCodes.cs`,
+`src/EmotePurge.Api/Auth/UsageStatsAccessAuthorizationFilter.cs` (T3: the legacy form's own contract,
+`EmoteSetIdEmpty` retired) ·
+`web/src/app/core/i18n/api-error.ts`, `web/public/i18n/{de,en}.json` (T3: `emote_set_id_empty` retired) ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts`,
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts`,
+`web/src/app/core/seven-tv/sync-report-outcome.ts` (consumer, T4: wire model, `reportDeletedInSet`,
+`reportRestoredInSet`, `classifySyncInSetResponse`) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (consumer, T7) ·
+`web/e2e/support/mocks.ts` (consumer, T10)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E3/E9/E17/E18, sections 5.1–5.5). A delete, a restore and the removals of a replace mutate one
+7TV **emote set**; which EmotePurge channels that touches is a consequence, not the address. The
+channel-bound report (`POST /api/channels/{channelName}/emotes/sync-deleted`) could not say so: it
+needed a tracked channel to exist, and its set-scoped variant answered an untracked or non-active
+target with a paper entry that looked like success (#224).
+
+**Two routes.** `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted` and `…/sync-restored`,
+in the `emoteSetGroup` next to `sync-imported`, with the body
+`{ sevenTvEmoteIds: string[], expectedChannelName: string | null }` — no set id in the body, the
+route carries it. Policy `Bookkeeping`, not `ForeignEmoteLookup`: the 7TV mutation already happened,
+and a spent read budget must not cost the paper trail. The ladder, in order: middleware (401,
+429) → `EmoteSetIdValidationFilter` (400 `invalid_emote_set_id`) → body (400 `emote_ids_empty`,
+400 `invalid_channel_name` for a set but invalid `expectedChannelName`, 401 without an actor) →
+the owner check `IImportTargetOwnershipService.CheckAsync` (404 `emote_set_not_found`, 403 bare,
+503 `foreign_channel_seventv_unavailable`; no service call, audit entry, live event or resync on any
+of these) → the service → the live event → the resync → 200. Who passes the owner check is the
+subject of the entry below ("Who may report is decided by 7TV editing rights") and is not repeated
+here.
+
+**What the service writes** (`IEmoteService.MarkDeletedInSetAsync`/`MarkRestoredInSetAsync`). The
+hit channels are every `Channel` with `IsBotActive && ActiveEmoteSetId == emoteSetId`, minus the
+block list (`IExcludedChannelFilter`, now an `EmoteService` dependency — a blocked channel is written
+nowhere and never named). In each hit channel the rows matched by `(ChannelId, SevenTvEmoteId)` are
+archived or restored with the goal-state semantics the channel-bound active branch always had: every
+found row counts, only the ones not yet in the target state are written, and an earlier `ArchivedAt`
+survives. The reported ids are deduplicated ordinally first; `reportedCount` is that number.
+
+**The expected channel (E18).** The client names the channel it expects to hit — the target
+account's tracked channel when the set is its active one, otherwise `null`. If that channel is not
+among the hits, the answer carries `unresolvedChannel: { channelName, reason }`: `activeSetDiffers`
+when it is tracked with another stored active set (`ActiveEmoteSetId` lags a set switch on 7TV), and
+`notTracked` when it is missing, left, or blocked — the block is deliberately not revealed, the same
+way `channel_excluded` exists only at join time. None of that channel's rows is touched or counted.
+Without this, a report that hit nothing would look exactly like a successful paper-only report — the
+class of error #224 was.
+
+**Answer.** `{ reportedCount, channels: [{ channelName, archivedCount | restoredCount, notFoundIds }],
+unresolvedChannel | null, resyncTriggered: string[] }`, channels ordinal by name. `channels` empty
+and `unresolvedChannel` null together mean "paper only". The service's `NewlyChangedCount` per
+channel never goes on the wire; it only decides the live event.
+
+**Audit.** Per hit channel with a goal-state count above 0, one entry with that channel,
+`TargetType = "emoteSet"`, `TargetId = emoteSetId` and the details
+`{ emoteCount, emoteSetId, targetIsActiveSetOfChannel: true }` — the same shape the set-scoped active
+branch writes, so the audit view renders it as before. When no channel entry was written (no hit, or
+every hit found 0 rows) **or** a channel stayed unresolved, one paper entry, plus
+`unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` on a mismatch. Its
+channel is the set owner's tracked channel (addendum N3, amended after the live verification): the
+service resolves it from the owner's Twitch id, which the owner check now returns as
+`SevenTvEmoteSetOwnershipCheckResult.OwnerTwitchUserId` (the actor's own id, or the matching grant's
+`TwitchChannelId`) and the endpoint passes on — by exactly the rule of
+`IChannelService.GetActiveByTwitchChannelIdAsync` (an active row, not on the block list), the same
+rule that gives the target list its `trackedChannelName`. With such a channel the entry is
+`ChannelName = <owner channel>` and `{ emoteCount: reportedCount, emoteSetId,
+targetIsActiveSetOfChannel }`, without the `targetOwner*` fields — the form these flows wrote
+before #253, rendered "(not the active set)" when the flag is `false`, and listed by
+`GET /api/channels/{c}/audit-log`. The flag is not hard-coded: it is `true` exactly when the owner
+channel is itself a hit channel (its stored `ActiveEmoteSetId` is the reported set), `false`
+otherwise; a hit owner channel with zero matched rows still reads `true`, even though it got no
+channel entry of its own (that one is gated on a goal-state count above 0). Only without an owner
+channel (untracked, left or blocked — a blocked channel looks like a left one) is it
+`ChannelName = null` with
+`{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin }` and no
+`targetIsActiveSetOfChannel`, rendered "for <ownerLogin>". An entry carries either a channel and
+`targetIsActiveSetOfChannel` or the `targetOwner*` fields, never both. A mismatch reuses the same
+channel and flag rather than a rule of its own, and `ChannelName` need not equal
+`unresolvedChannelName`: the former is always the owner's channel, the latter whichever channel
+`sync-restored`/`-deleted` expected and missed. When the reporting page belongs to the owner and the
+owner's own channel lags, it is not a hit — `ChannelName` and `unresolvedChannelName` both name it,
+and the flag reads `false`. A set shared with a second tracked channel can instead have the owner's
+channel as a hit (flag `true`) while the second channel's stored active set lags, so
+`unresolvedChannelName` names that second channel while the paper entry still names the owner.
+`notTracked` follows the same owner rule: without a channel when the missed channel is the owner's
+own left or blocked one, with the owner's channel when that still resolves by Twitch id (a renamed
+owner channel, or a page other than the owner's). The first version of this report wrote
+every paper entry with `ChannelName = null`; since the channel audit view filters exactly on
+`ChannelName`, a delete or restore in a non-active set of one's own tracked channel disappeared from
+that view, where it had appeared before #253 — a regression the live verification found, which this
+reverses. Every successful call leaves at least one entry; rows and entries are saved in one
+transaction. A retried report may write a second entry — a duplicate beats a gap.
+
+**Live event and resync, both in the endpoint.** One `channel.synced` per channel whose rows this
+call actually changed, through the same `EmoteEndpoints.PublishChannelSyncedAsync` (now `internal`)
+and its error handling — logged and swallowed, no request token. Then, per hit channel and for an
+`activeSetDiffers` mismatch (never for `notTracked`): `IChannelResyncCooldown.TryBeginAsync`, on
+success `IChannelService.TriggerResyncAsync` under the reporter's own account, and the slot is handed
+back when the trigger answers anything but `Triggered` — the sequence `POST /resync` uses. A held
+cooldown means a resync ran within 60 s and its result is on its way: no error, and the channel is
+not named in `resyncTriggered`, which lists exactly the channels triggered by this call. The client
+reads it to never start a second resync of its own (E12, F15), so a channel is resynced at most once
+per 60 s however many reports touch it. Two choices beyond the spec's wording: the resync steps take
+no request token either, so a client that hangs up after the write cannot skip the resync that is
+meant to check it; and a failure in them is logged and swallowed rather than turned into a 500,
+because the report is committed and a 500 would make the client retry a report that succeeded — the
+worker's periodic resync reaches the channel on its next tick regardless. `sync-imported` stays
+without a backend resync; its frontend resync is unchanged. When the first report of a restore or
+delete run fails for good (any status or a network error, after the automatic retries), the backend
+never reached this stage, so the client triggers `POST /api/channels/{c}/resync` itself — the
+restore for `resyncChannelName ?? expectedChannelName`, the delete for `expectedChannelName`, none
+when that is `null`, never after a manual retry, a 429 read as the cooldown (addendum N1); a
+replace's failed removal report already fell back to the import's own resync.
+
+**Residual risk, accepted (F12, F13).** The report changes rows on the client's word: the server
+checks who reports (cached 7TV rights, up to 10 minutes old in the grants cache), not whether the
+mutation really happened on 7TV. An editor whose right was just revoked can therefore still archive
+or restore rows of a tracked channel for a few minutes. The reach is the rows of that set's
+channels; the resync this same report triggers reads 7TV and restores the truth within the 60 s
+cooldown, at the latest with the next worker tick. The alternative — letting a report act only after
+a 7TV read of its own — would put an unbudgeted request on every report and undo the reason these
+routes sit on `Bookkeeping` at all. The channel-role check that still gates the legacy Guid form
+(T3 below) was weaker still, back when it decided whether a row changed: it did not even know
+which set was meant. Second rest: for a set shared by two
+tracked channels the client can only name the channel of its own target account; a **second**
+channel whose stored active set lags stays undetected until its periodic resync picks it up within
+a minute — the same rest a delete run has always had for every second channel. Named here, not
+closed.
+
+**T3 — the legacy Guid form becomes audit-and-resync only (H4/E4/E24, spec 5.6, AK 22–23).** The
+channel-bound `sync-deleted`/`sync-restored` routes keep their filter chain, `Bookkeeping` policy and
+"legacy body form" log line until the E3 gate of the spec-200 plan (§21, Folge-Issue 1: behind K7, at
+least 14 days after deploy, once the API log shows no more legacy callers) — but
+`EmoteService.MarkDeletedAsync(channelName, emoteIds, actor)`/`MarkRestoredAsync(…)` no longer touch a
+row. A browser tab left open across a 7TV set switch could otherwise archive a row of the *new*
+active set on the strength of a body that only ever meant the old one, since this form carries no set
+of its own. It now only counts how many of the reported Guids are rows of the channel, writes the
+audit entry with `legacyBodyForm: true` whenever that count is above 0, and answers in the old shape
+— `archivedCount`/`restoredCount` is the *found* count, not a changed one (E24), so an old open tab
+still reads its report as succeeded instead of a false `partial`. It then triggers the same guarded
+resync (spec 5.1 stage 7, reused via `SevenTvEndpoints.TryTriggerGuardedResyncAsync`, now `internal`)
+under the per-channel cooldown — that resync, not this call, is what actually reconciles the row
+against 7TV. The endpoint publishes no `channel.synced` of its own for this form any more (nothing
+changed to publish); the resync's own worker tick does, same as before. **The set-scoped
+channel-bound body shape is retired in the same commit:** `{ emoteSetId, sevenTvEmoteIds }`, its own
+ladder steps (`ValidateSyncBookkeepingBody` is back down to a single empty-list check) and
+`ApiErrorCodes.EmoteSetIdEmpty` are gone — that shape never had a production caller (T2's set-centric
+routes above are its replacement), so a body still sending it now falls through to `EmoteIds == null`
+and gets the same 400 `emote_ids_empty` any other empty legacy body gets.
+
+---
+
+### 2026-09-25 — Who may report is decided by 7TV editing rights — list and report apply the same rule
+
+**Betrifft:** `src/EmotePurge.Core/Services/EmoteSetEditability.cs` ·
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` ·
+`src/EmotePurge.Api/Endpoints/SevenTvEndpoints.cs` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.service.ts` (consumer, T4: `resolveEditableSet`) ·
+`web/src/app/shared/seven-tv/file-import-step.ts` (consumer, T5) ·
+`web/src/app/shared/seven-tv/restore-flow.ts`, `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(consumer, T6) · `web/src/app/shared/seven-tv/import-flow.ts` (consumer, T8)
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E5/F4/5.7). **Before this plan**, the two channel-bound report routes,
+`POST /api/channels/{channelName}/emotes/sync-deleted` and `.../sync-restored`, were authorized by
+the **channel role** — admin allowlist, broadcaster, live moderator, or a 7TV editor of the channel
+account (`UsageStatsAccessAuthorizationFilter`/`CanViewUsageStatsAsync`). Only the already existing
+set-centric `sync-imported` route (spec-200, section 32/6.7) checked 7TV editing rights instead, via
+`IImportTargetOwnershipService.CheckAsync` against the **logged-in** Twitch account — matching 7TV's
+own enforcement, where a mutation without editor rights on the token account already fails
+(`LACKING_PRIVILEGES`).
+
+**With this plan**, the set-centric routes it adds for deleted/restored (T2) apply that same
+`CheckAsync` rule instead of the channel role — for every set-centric report, not just
+`sync-imported`. The channel role no longer decides who may report a deleted or restored emote —
+except through the legacy Guid form (spec 5.6, E4, "Delete, restore and a replace's removals
+report per emote set" T3), which still runs behind `UsageStatsAccessAuthorizationFilter`, but by
+now only to write the audit entry and trigger the guarded resync; it changes no row any more, so
+the channel role it still checks decides nothing that reaches 7TV.
+**Consequence:** a moderator or admin without their own 7TV editor grant on the set's owner can no
+longer report a change to it through a set-centric route, even while still holding the channel role
+that let them do so before.
+**Operator decision, 2026-09-24 (F4):** uncritical for HandOfBlood, because its mod team already
+works with its **own** 7TV editor grants rather than a shared token — a 403 on a report is therefore
+only a genuine, freshly revoked right, not a systematic loss of anyone's ability to report.
+
+**What this commit adds:** the target list (`GET /api/seventv/me/emote-set-targets`) used to answer
+"can I edit this set" with a weaker question than the report itself asks — it never carried an
+owner id at all, so a caller had to attempt the report to find out. The list now carries
+`sevenTvUserId` per account and `ownerSevenTvUserId` plus `editable` per set, with `editable`
+computed by `EmoteSetEditability.IsEditable` — the exact same pure function
+`ImportTargetOwnershipService`'s `OwnershipEvidence.MatchAgainstAllKnownAccounts` now calls instead
+of its own private copy of the rule. A future frontend pre-check (T4's `resolveEditableSet`) can
+therefore read the same answer the report would give, before spending a report on a set the caller
+cannot write to.
+
+**F16 — one deliberate asymmetry.** The ownership check has a fallback the list cannot afford: a set
+that is in no cached list, or listed without an owner, gets one direct, budgeted 7TV lookup
+(`ImportTargetOwnershipService.CheckAsync`). The list would have to spend that lookup per set on
+every dialog open to offer the same precision, so it does not: a set without an owner id is
+`editable: false` there unconditionally, even in the one case where the live lookup might have said
+yes. The list is therefore never looser than the report, only ever stricter — a run can be blocked
+where the report might have succeeded, never the other way around.
+
+**No pre-authorized re-report path.** If a report fails despite the frontend's pre-check having
+passed (rights revoked mid-run), there is deliberately no way to resubmit it under the earlier
+authorization: the mod team holds its own rights, a failure at that point is a genuine revocation,
+and a resubmission path would amount to a second authorization next to the one 7TV just withdrew.
+
+---
+
 ### 2026-09-25 — Only the active row animates in the resolution step
 
 **Betrifft:** `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` ·

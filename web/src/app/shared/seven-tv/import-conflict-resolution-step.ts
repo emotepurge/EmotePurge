@@ -101,7 +101,6 @@ const VIOLATION_KEYS: Record<ViolationRule, string> = {
   duplicateReplaceTarget: 'import.resolve.violation.duplicateReplaceTarget',
   targetTouchedByReplaceAndAdopt: 'import.resolve.violation.targetTouchedByReplaceAndAdopt',
   adoptBlocked: 'import.resolve.violation.adoptBlocked',
-  replaceNeedsTrackedTarget: 'import.resolve.violation.replaceNeedsTrackedTarget',
 };
 
 /** The field error a rename row shows under its text field, most specific first. */
@@ -162,14 +161,14 @@ export function rowConsequence(
 
 /**
  * Step rows for the name-collision group: skip, rename and replace (AK 6). Replace stays listed but
- * disabled for an untracked target (a deletion there has no way back yet) and for a row whose
- * target drifted away from the name it collides on — the live counterpart no longer holds it, so a
- * replace would remove an entry the collision is not about. `overlays` carries the live counterpart
- * of every replace row whose target drifted, keyed by the row's source id.
+ * disabled for a row whose target drifted away from the name it collides on — the live counterpart
+ * no longer holds it, so a replace would remove an entry the collision is not about — never for an
+ * untracked target any more (#253, spec 4.5 point 15/6.6: the replace lock for an untracked target
+ * is gone). `overlays` carries the live counterpart of every replace row whose target drifted, keyed
+ * by the row's source id.
  */
 export function collisionStepRows(
   rows: readonly NameCollisionRow[],
-  targetIsTracked: boolean,
   overlays: ReadonlyMap<string, TargetOverlay>,
 ): ConflictStepRow[] {
   return rows.map((collision) => {
@@ -178,11 +177,9 @@ export function collisionStepRows(
     const live = overlays.get(key) ?? null;
     const targetGone = overlaid && live === null;
     const targetAliases = overlaid ? (live?.aliases ?? []) : collision.targetAliases;
-    const replaceReason = !targetIsTracked
-      ? 'import.resolve.replaceNeedsTracked'
-      : !targetAliases.includes(collision.row.name)
-        ? 'import.resolve.reloadTargetFirst'
-        : null;
+    const replaceReason = !targetAliases.includes(collision.row.name)
+      ? 'import.resolve.reloadTargetFirst'
+      : null;
     return {
       key,
       sourceName: collision.row.name,

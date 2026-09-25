@@ -46,6 +46,7 @@ public class ImportTargetOwnershipServiceTests
         Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
         Assert.Equal(ActorSevenTvId, result.OwnerSevenTvUserId);
         Assert.Equal(ActorLogin, result.OwnerTwitchLogin);
+        Assert.Equal(ActorTwitchId, result.OwnerTwitchUserId);
         // The actor's own set needs nothing beyond the actor's own list.
         await editors.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await client.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
@@ -65,6 +66,7 @@ public class ImportTargetOwnershipServiceTests
         Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
         Assert.Equal(EditedSevenTvId, result.OwnerSevenTvUserId);
         Assert.Equal(EditedLogin, result.OwnerTwitchLogin);
+        Assert.Equal(EditedTwitchId, result.OwnerTwitchUserId);
         await client.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
@@ -102,6 +104,7 @@ public class ImportTargetOwnershipServiceTests
 
         Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
         Assert.Equal(EditedLogin, result.OwnerTwitchLogin);
+        Assert.Equal(EditedTwitchId, result.OwnerTwitchUserId);
     }
 
     [Fact]
@@ -141,6 +144,7 @@ public class ImportTargetOwnershipServiceTests
 
         Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
         Assert.Equal(ActorLogin, result.OwnerTwitchLogin);
+        Assert.Equal(ActorTwitchId, result.OwnerTwitchUserId);
     }
 
     [Fact]
@@ -183,6 +187,7 @@ public class ImportTargetOwnershipServiceTests
 
         Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
         Assert.Equal(EditedLogin, result.OwnerTwitchLogin);
+        Assert.Equal(EditedTwitchId, result.OwnerTwitchUserId);
     }
 
     /// <summary>
@@ -251,6 +256,7 @@ public class ImportTargetOwnershipServiceTests
 
         Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
         Assert.Equal(EditedLogin, result.OwnerTwitchLogin);
+        Assert.Equal(EditedTwitchId, result.OwnerTwitchUserId);
         Assert.Equal(1, handler.Requests);
         Assert.Equal(1, requestBudget.Charges);
     }

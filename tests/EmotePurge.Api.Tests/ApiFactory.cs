@@ -52,6 +52,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public IChannelResyncCooldown ResyncCooldown { get; } = Substitute.For<IChannelResyncCooldown>();
 
     /// <summary>
+    /// Substituted so the set-centric sync-deleted/sync-restored tests (restore-per-set spec 5.4,
+    /// AK 14) can read back which <c>channel.synced</c> events the endpoint published. The real
+    /// implementation would only meet the substituted <see cref="IConnectionMultiplexer"/> below and
+    /// fail inside the endpoint's catch-all, which hides whether a publish was attempted at all.
+    /// </summary>
+    public IRedisPublisher RedisPublisher { get; } = Substitute.For<IRedisPublisher>();
+
+    /// <summary>
     /// Substituted so the health tests can put the worker snapshot into any state; the real
     /// implementation reads Redis. Defaults to returning null ("no snapshot"), which is also
     /// what the substituted multiplexer would amount to.
@@ -209,6 +217,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => VoteEligibility);
             services.AddScoped(_ => Channels);
             services.AddSingleton(_ => ResyncCooldown);
+            services.AddSingleton(_ => RedisPublisher);
             services.AddSingleton(_ => WorkerHealth);
             services.AddSingleton(_ => LiveEventStream);
             services.AddScoped(_ => ForeignEmoteSet);

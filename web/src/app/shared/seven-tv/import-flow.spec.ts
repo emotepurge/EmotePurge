@@ -9,6 +9,7 @@ import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
 import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { EditableSetResolution } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -149,6 +150,14 @@ interface Harness {
   /** `loadImportTarget`'s live-list read for a `'chosen'` target (spec F5) — only ever called for
    *  that kind, see the setup() note next to it. */
   loadEmoteSetPreview: ReturnType<typeof vi.fn>;
+  /** The shared pre-check (spec 4.2, 6.2, E19) `start()` runs before `recheckTransferPlan` when
+   *  the confirmed plan carries at least one replace row (spec 4.5 point 17, AK 32) — resolves
+   *  synchronously to `'editable'` by default, so every test that does not care about the
+   *  pre-check itself keeps starting exactly as it did before this check existed. */
+  resolveEditableSet: ReturnType<typeof vi.fn>;
+  /** `SevenTvImportService.reportTargetCheckBlocked` — what a blocked pre-check calls instead of
+   *  starting anything (AK 32). */
+  reportTargetCheckBlocked: ReturnType<typeof vi.fn>;
   startImport: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
@@ -182,7 +191,23 @@ function setup(): Harness {
   // calls this. Default answer is irrelevant to every `'activeSet'` test below; the `'chosen'`
   // describe block sets its own return value per case.
   const loadEmoteSetPreview = vi.fn();
-  const emoteSetService = { loadEmoteSetPreview } as unknown as SevenTvEmoteSetService;
+  const resolveEditableSet = vi.fn(() =>
+    of<EditableSetResolution>({
+      status: 'editable',
+      target: {
+        emoteSetId: 'set-1',
+        setName: 'set-1',
+        ownerDisplayName: 'owner',
+        twitchLogin: 'owner',
+        trackedChannelName: 'target-channel',
+        isActiveSet: true,
+      },
+    }),
+  );
+  const emoteSetService = {
+    loadEmoteSetPreview,
+    resolveEditableSet,
+  } as unknown as SevenTvEmoteSetService;
 
   const httpPost = vi.fn(() => of(emoteSetPage()));
   const httpClient = { post: httpPost } as unknown as HttpClient;
@@ -191,7 +216,11 @@ function setup(): Harness {
   const tokenService = { hasToken } as unknown as SevenTvTokenService;
 
   const startImport = vi.fn();
-  const importService = { startImport } as unknown as SevenTvImportService;
+  const reportTargetCheckBlocked = vi.fn();
+  const importService = {
+    startImport,
+    reportTargetCheckBlocked,
+  } as unknown as SevenTvImportService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
   const arbiter = { activeRun } as unknown as SevenTvRunArbiter;
@@ -215,6 +244,8 @@ function setup(): Harness {
     listEmotes,
     httpPost,
     loadEmoteSetPreview,
+    resolveEditableSet,
+    reportTargetCheckBlocked,
     startImport,
     hasToken,
     activeRun,
@@ -402,6 +433,109 @@ describe('startImportFlow', () => {
       true,
       0,
     );
+  });
+
+  // Spec 4.5 point 17, AK 32: the shared pre-check (`resolveEditableSet`, E19) runs before
+  // `recheckTransferPlan` exactly when the confirmed plan carries at least one replace row — never
+  // for a plan of plain adds/renames/adopts, since an ADD into a set the actor cannot write to
+  // fails at 7TV itself and its report is already gated on the same right server-side.
+  describe('shared pre-check before a replace-carrying start (spec 4.5 point 17, AK 32)', () => {
+    const replaceRow: TransferRow = {
+      action: 'replace',
+      source: { sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null },
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+
+    it('never calls the pre-check for a plan without any replace row', () => {
+      const { deps, dialogOpen, resolveEditableSet, startImport } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+      });
+
+      expect(resolveEditableSet).not.toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks a replace-carrying start when the pre-check finds the target not editable, running neither the re-check nor the import', () => {
+      const {
+        deps,
+        dialogOpen,
+        resolveEditableSet,
+        reportTargetCheckBlocked,
+        httpPost,
+        startImport,
+      } = setup();
+      resolveEditableSet.mockReturnValue(of<EditableSetResolution>({ status: 'notEditable' }));
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-1');
+      expect(reportTargetCheckBlocked).toHaveBeenCalledWith('notEditable');
+      // recheckTransferPlan's own live read (`already-present-filter.ts`) never ran.
+      expect(httpPost).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+    });
+
+    it('blocks a replace-carrying start as unavailable when the pre-check request itself fails, running neither the re-check nor the import', () => {
+      const {
+        deps,
+        dialogOpen,
+        resolveEditableSet,
+        reportTargetCheckBlocked,
+        httpPost,
+        startImport,
+      } = setup();
+      resolveEditableSet.mockReturnValue(throwError(() => new Error('network error')));
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(reportTargetCheckBlocked).toHaveBeenCalledWith('unavailable');
+      expect(httpPost).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+    });
+
+    it('runs the re-check and starts the import once the pre-check finds the target editable', () => {
+      const {
+        deps,
+        dialogOpen,
+        resolveEditableSet,
+        reportTargetCheckBlocked,
+        httpPost,
+        startImport,
+      } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+
+      confirmClosed(dialogOpen).next({
+        targetSetId: 'set-1',
+        targetSetName: 'set-1',
+        plan: { rows: [replaceRow] },
+      });
+
+      expect(resolveEditableSet).toHaveBeenCalledWith('set-1');
+      expect(httpPost).toHaveBeenCalled();
+      expect(startImport).toHaveBeenCalledTimes(1);
+      expect(reportTargetCheckBlocked).not.toHaveBeenCalled();
+    });
   });
 
   // #149/T5: `outcome.plan` already passed `buildImportPreview`'s dialog-open-time filter — this

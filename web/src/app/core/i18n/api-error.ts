@@ -50,7 +50,6 @@ export const KNOWN_API_ERROR_CODES = new Set([
   // and adding codes piecemeal per task would leave this mirror and the locale files out of step
   // for the stretch between tasks (AK 45).
   'invalid_emote_set_id',
-  'emote_set_id_empty',
   'emote_set_not_found',
   'vote_session_set_ballot_invalid',
   'legal_document_not_found',

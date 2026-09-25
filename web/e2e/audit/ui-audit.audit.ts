@@ -812,9 +812,10 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    // The A6/#91 import path in its refusal state: a protocol from another channel renders the
-    // error banner inside the import dialog's file step, under the sort list and the file control
-    // (§1.1's body order) — deterministic (no token prompt, no further dialog).
+    // The A6/#91 import path in its refusal state: a protocol whose set is in none of the caller's
+    // target lists (#253: the file names the target, the target list checks it) renders the error
+    // banner inside the import dialog's file step, under the sort list and the file control (§1.1's
+    // body order) — deterministic (no token prompt, no further dialog).
     slug: 'usage-stats-restore-import-error',
     path: '/channels/sensitron/usage-stats',
     requiresFinePointer: true,
@@ -823,6 +824,9 @@ const SCENARIOS: Scenario[] = [
       await channelWorkspace(page);
       await mockActiveEmoteSet(page, 'sensitron');
       await mockUsageTotals(page, 'sensitron', usageEmotes(8));
+      await mockEmoteSetTargets(page, [
+        { twitchChannelId: 'own-1', twitchLogin: 'sensitron', isOwnAccount: true, sets: [] },
+      ]);
     },
     afterLoad: async (page) => {
       // The file control now lives inside the import dialog (#91, #147), not directly on the page,

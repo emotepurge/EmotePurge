@@ -9,9 +9,11 @@ import {
   mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
+  mockEmoteSetTargets,
   mockForeignEmoteSetPreview,
   mockSetWarning,
   mockSevenTvGql,
+  mockSyncDeletedInSet,
   mockUsageChannelSeries,
   mockUsageTotals,
   mockVoteSessionResults,
@@ -312,7 +314,7 @@ test.describe('vote ballot', () => {
  * `emoteIds` — and the resulting detail page shows the ballot's frozen name/eligibility rather than
  * the live Emote row's. Deleting from that page targets the session's own set (AK 81): the 7TV
  * RemoveEmote mutation names the Halloween set, and the bookkeeping call reports that set with 7TV
- * ids (K5's set-scoped `sync-deleted` body) — never the active set, never local Guids.
+ * ids (the set-centric `sync-deleted` route, spec 4.6) — never the active set, never local Guids.
  */
 test.describe('vote ballot — a set-session created from a non-active (Halloween) set view', () => {
   const CHANNEL = 'sensitron';
@@ -336,6 +338,21 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
         { id: HALLOWEEN_SET_ID, name: 'Halloween' },
       ],
     });
+    // #253 AK 31: the delete confirmation runs the shared pre-check before it opens
+    // (resolveEditableSet) — without this, the request has nothing to answer it.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'sensitron-1',
+        twitchLogin: CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: CHANNEL,
+        activeEmoteSetId: ACTIVE_SET_ID,
+        sets: [
+          { id: ACTIVE_SET_ID, name: 'Hauptset', isActive: true },
+          { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+        ],
+      },
+    ]);
     await mockUsageTotals(page, CHANNEL, [
       {
         emoteId: 'e-pump',
@@ -381,27 +398,8 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
         },
       };
     });
-    let syncDeletedBody: {
-      emoteSetId?: string;
-      sevenTvEmoteIds?: string[];
-      emoteIds?: string[];
-    } | null = null;
-    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) => {
-      syncDeletedBody = route.request().postDataJSON() as {
-        emoteSetId?: string;
-        sevenTvEmoteIds?: string[];
-        emoteIds?: string[];
-      };
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          archivedCount: 0,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: false,
-        }),
-      });
-    });
+    // Set-centric (spec 4.6 point 21): the report is addressed to the session's own set.
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, HALLOWEEN_SET_ID);
 
     await page.goto(`/channels/${CHANNEL}/usage-stats?emoteSetId=${HALLOWEEN_SET_ID}`);
     await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
@@ -509,10 +507,11 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
 
     // The RemoveEmote mutation itself names the Halloween set, not just any GQL call.
     await expect.poll(() => removeSetId).toBe(HALLOWEEN_SET_ID);
-    // The bookkeeping speaks the set and 7TV ids (K5), never local Guids.
-    await expect.poll(() => syncDeletedBody?.emoteSetId).toBe(HALLOWEEN_SET_ID);
-    await expect.poll(() => syncDeletedBody?.sevenTvEmoteIds).toEqual(['7tv-pump']);
-    await expect.poll(() => syncDeletedBody?.emoteIds).toBeUndefined();
+    // The bookkeeping goes to the Halloween set's own set-centric route with 7TV ids, never local
+    // Guids — and, the set not being the channel's active one, expects no channel (AK 8).
+    await expect
+      .poll(() => syncDeletedBodies[0])
+      .toEqual({ sevenTvEmoteIds: ['7tv-pump'], expectedChannelName: null });
   });
 });
 
@@ -540,6 +539,21 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
         { id: HALLOWEEN_SET_ID, name: 'Halloween' },
       ],
     });
+    // #253 AK 31: the delete confirmation runs the shared pre-check before it opens
+    // (resolveEditableSet) — without this, the request has nothing to answer it.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'sensitron-1',
+        twitchLogin: CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [
+          { id: 'set-1', name: 'Hauptset', isActive: true },
+          { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+        ],
+      },
+    ]);
     await mockVoteSessionResults(page, CHANNEL, SESSION, emotes);
     await mockSetWarning(page, CHANNEL);
 
@@ -577,17 +591,7 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
         },
       };
     });
-    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          archivedCount: 1,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: false,
-        }),
-      }),
-    );
+    await mockSyncDeletedInSet(page, HALLOWEEN_SET_ID);
     // The page-level session-set membership check (#227 P2) — without this, the delete button
     // would stay locked forever (nothing here answers that request otherwise) rather than reach
     // the confirm dialog at all. Registered before the navigation, same reasoning as
@@ -647,17 +651,7 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
         },
       };
     });
-    await page.route(`**/api/channels/${CHANNEL}/emotes/sync-deleted`, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          archivedCount: 1,
-          notFoundIds: [],
-          targetIsActiveSetOfChannel: false,
-        }),
-      }),
-    );
+    await mockSyncDeletedInSet(page, HALLOWEEN_SET_ID);
 
     // The session-set membership check (#227): only Pumpkin is still a live member. Registered
     // before the navigation below, same reasoning as mockSevenTvGql above — the page issues this

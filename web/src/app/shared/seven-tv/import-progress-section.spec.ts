@@ -6,7 +6,6 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
 import {
   ImportRunInfo,
   ImportRunItem,
@@ -14,6 +13,11 @@ import {
 } from '../../core/seven-tv/seven-tv-import.service';
 import { ResyncTriggerState } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+} from '../../core/seven-tv/sync-report-outcome';
 import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportProgressSection } from './import-progress-section';
 
@@ -24,6 +28,11 @@ const DE_TRANSLATIONS = {
   import: {
     duplicateCheckUnavailable:
       'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+    errors: {
+      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+      targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
+      targetCheckUnavailable: 'Das Zielset konnte gerade nicht geprüft werden.',
+    },
     skippedDuplicates: {
       one: '{{ count }} Emote war beim Start bereits im Zielset und wurde übersprungen.',
       other: '{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
@@ -71,6 +80,9 @@ const DE_TRANSLATIONS = {
       failed: 'Abgleich konnte nicht angestoßen werden.',
     },
   },
+  syncReportReason: {
+    setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
+  },
 };
 
 function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
@@ -107,12 +119,14 @@ interface FakeImportService {
   run: WritableSignal<ImportRunInfo | null>;
   syncReport: WritableSignal<SyncReportState>;
   removalReport: WritableSignal<SyncReportState>;
+  removalReportReason: WritableSignal<SyncReportReason | null>;
   resyncTrigger: WritableSignal<ResyncTriggerState>;
   abortedForPrivileges: WritableSignal<boolean>;
   skippedDuplicates: WritableSignal<number>;
   replaceSkippedDrift: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
   protocolSaved: WritableSignal<boolean>;
   cancel: ReturnType<typeof vi.fn>;
   reset: ReturnType<typeof vi.fn>;
@@ -130,12 +144,14 @@ function createFakeImportService(): FakeImportService {
     run: signal<ImportRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
     removalReport: signal<SyncReportState>('idle'),
+    removalReportReason: signal<SyncReportReason | null>(null),
     resyncTrigger: signal<ResyncTriggerState>('idle'),
     abortedForPrivileges: signal(false),
     skippedDuplicates: signal(0),
     replaceSkippedDrift: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     protocolSaved: signal(false),
     cancel: vi.fn(),
     reset: vi.fn(),
@@ -689,6 +705,31 @@ describe('ImportProgressSection', () => {
       expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
     });
 
+    // #253, spec 4.5 point 17, AK 32: the shared pre-check blocked a replace-carrying start before
+    // anything ran — same all-blocked-leaves-nothing-queued shape as the drift notice above (no run
+    // object, empty queue), shown for the same `duplicateNoticePending` window.
+    it('shows the shared pre-check block reason even with no run at all — a plan blocked before it started', () => {
+      importService.run.set(null);
+      importService.queue.set([]);
+      importService.targetCheckBlockReason.set('notEditable');
+      importService.duplicateNoticePending.set(true);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+      );
+    });
+
+    it('shows no pre-check block notice once its pending window has elapsed, even while the reason is still set', () => {
+      importService.targetCheckBlockReason.set('unavailable');
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('nicht geprüft werden');
+    });
+
     it('shows a retry banner on a failed removal report and calls retryRemovalReport on click', () => {
       importService.isRunning.set(false);
       importService.queue.set([doneItem()]);
@@ -703,6 +744,27 @@ describe('ImportProgressSection', () => {
       expect(importService.retryRemovalReport).toHaveBeenCalledTimes(1);
     });
 
+    // Spec E23: the removal banner carries the reason as its own line.
+    it('shows the reason line under a failed removal report, and none without a reason', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('failed');
+      importService.removalReportReason.set('setNotFound');
+
+      const withReason = render();
+      expect(withReason.nativeElement.textContent).toContain(
+        'Grund: Das Set gibt es bei 7TV nicht mehr.',
+      );
+
+      importService.removalReportReason.set(null);
+      const withoutReason = render();
+      expect(withoutReason.nativeElement.textContent).toContain(
+        'Entfernungs-Rückmeldung fehlgeschlagen',
+      );
+      expect(withoutReason.nativeElement.textContent).not.toContain('Grund:');
+    });
+
     it('shows the same retry banner for a partial removal report', () => {
       importService.isRunning.set(false);
       importService.queue.set([doneItem()]);
@@ -712,6 +774,33 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
+    });
+
+    // addendum N4, AK 40: the removal notice stays for a channel mismatch, its retry does not.
+    it('offers no removal retry for partial/channelMismatch, but keeps the notice', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('partial');
+      importService.removalReportReason.set('channelMismatch');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
+      expect(findButton(fixture, 'Entfernung erneut melden')).toBeFalsy();
+    });
+
+    it('keeps the removal retry for partial/shortfall', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('partial');
+      importService.removalReportReason.set('shortfall');
+
+      const fixture = render();
+      findButton(fixture, 'Entfernung erneut melden')?.click();
+
+      expect(importService.retryRemovalReport).toHaveBeenCalledTimes(1);
     });
 
     it('shows the succeeded note for a settled, successful removal report, not the retry banner', () => {

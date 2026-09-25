@@ -619,47 +619,63 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.EmoteIdsEmpty, await ReadErrorCodeAsync(response));
     }
 
-    // AK 70 (spec 6.6, T5.2): sync-deleted's validation ladder and both body forms — sync-restored
-    // shares the same ValidateSyncBookkeepingBody helper, so these five cases pin it once rather
-    // than duplicating it per route; SyncRestored_Answers400_WhenTheBodyCarriesNoEmoteIds above
-    // already covers step one for the restore route.
+    // Restore-per-set spec 5.6/E4: sync-deleted's validation and stage 7 — sync-restored shares the
+    // same ValidateSyncBookkeepingBody helper, so SyncRestored_Answers400_WhenTheBodyCarriesNoEmoteIds
+    // above already covers the one remaining ladder step for the restore route.
 
     [Fact]
-    public async Task SyncDeleted_Returns200_ForBothBodyForms_ViaSubstitute()
+    public async Task SyncRestored_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync()
     {
-        // Proves the ladder in ValidateSyncBookkeepingBody lets exactly one shape through — the
-        // legacy Guid form (E3) and the new set-scoped form both reach the handler and are answered.
+        // Mirror of SyncDeleted_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync below —
+        // the 200 path of the legacy Guid form was otherwise untested for the restore route (AK 23).
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Emotes.MarkRestoredAsync(
+                Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new SyncRestoredResultDto(1, []));
+        _factory.Channels.TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelResyncResult.Triggered);
+
+        var legacyBody = """{"emoteIds": ["11111111-1111-1111-1111-111111111111"]}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-restored", NewUserId(), body: legacyBody);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await _factory.Emotes.Received(1).MarkRestoredAsync(
+            Channel,
+            Arg.Is<IReadOnlyList<string>>(ids => ids.SequenceEqual(new[] { "11111111-1111-1111-1111-111111111111" })),
+            Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.ResyncCooldown.Received(1).TryBeginAsync(Channel, Arg.Any<CancellationToken>());
+        await _factory.Channels.Received(1).TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SyncDeleted_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync()
+    {
+        // Proves the Guid form reaches its own overload and that stage 7 (spec 5.1/5.6) claims the
+        // per-channel cooldown and triggers the resync that actually reconciles the row against 7TV
+        // — this call itself no longer changes anything.
         _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
         _factory.Emotes.MarkDeletedAsync(
                 Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
-            .Returns(new SyncDeletedResultDto(1, [], 1));
-        _factory.Emotes.MarkDeletedAsync(
-                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
-            .Returns(new SyncDeletedResultDto(1, [], 0, TargetIsActiveSetOfChannel: false));
+            .Returns(new SyncDeletedResultDto(1, []));
+        _factory.Channels.TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelResyncResult.Triggered);
 
         var legacyBody = """{"emoteIds": ["11111111-1111-1111-1111-111111111111"]}""";
-        var legacyResponse = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: legacyBody);
-        Assert.Equal(HttpStatusCode.OK, legacyResponse.StatusCode);
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: legacyBody);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var newFormBody = """{"emoteSetId": "01GV88A38G0006FW5TVZVMG507", "sevenTvEmoteIds": ["7tv-x1"]}""";
-        var newFormResponse = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: newFormBody);
-        Assert.Equal(HttpStatusCode.OK, newFormResponse.StatusCode);
-
-        // #200 K5 finding F: each body form reaches its own IEmoteService overload — not just "a
-        // 200 came back", which a wrong-overload dispatch could also produce.
         await _factory.Emotes.Received(1).MarkDeletedAsync(
             Channel,
             Arg.Is<IReadOnlyList<string>>(ids => ids.SequenceEqual(new[] { "11111111-1111-1111-1111-111111111111" })),
             Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
-        await _factory.Emotes.Received(1).MarkDeletedAsync(
-            Channel, "01GV88A38G0006FW5TVZVMG507",
-            Arg.Is<IReadOnlyList<string>>(ids => ids.SequenceEqual(new[] { "7tv-x1" })),
-            Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.ResyncCooldown.Received(1).TryBeginAsync(Channel, Arg.Any<CancellationToken>());
+        await _factory.Channels.Received(1).TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task SyncDeleted_Answers400_WhenBothIdListsAreEmpty()
+    public async Task SyncDeleted_Answers400_WhenTheBodyCarriesNoEmoteIds()
     {
         _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
@@ -671,67 +687,19 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task SyncDeleted_Answers400_WhenBothIdListsAreSet()
+    public async Task SyncDeleted_Answers400_ForARetiredSetScopedBody()
     {
-        // A body cannot name both shapes at once — the second ladder step (6.6).
+        // AK 23: the set-scoped shape (emoteSetId/sevenTvEmoteIds) this route used to also accept is
+        // gone — such a body has no emoteIds property of its own and lands on the same empty-body
+        // answer as any other missing EmoteIds.
         _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
 
-        var body = """{"emoteIds": ["11111111-1111-1111-1111-111111111111"], "emoteSetId": "01GV88A38G0006FW5TVZVMG507", "sevenTvEmoteIds": ["7tv-x1"]}""";
+        var body = """{"emoteSetId": "01GV88A38G0006FW5TVZVMG507", "sevenTvEmoteIds": ["7tv-x1"]}""";
         var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: body);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(ApiErrorCodes.EmoteIdsInvalid, await ReadErrorCodeAsync(response));
-        await _factory.Emotes.DidNotReceive().MarkDeletedAsync(
-            Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
-        await _factory.Emotes.DidNotReceive().MarkDeletedAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task SyncDeleted_Answers400_ForTheNewFormWithoutASetId()
-    {
-        // Third ladder step: sevenTvEmoteIds set but emoteSetId missing.
-        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
-            .Returns(true);
-
-        var body = """{"sevenTvEmoteIds": ["7tv-x1"]}""";
-        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: body);
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(ApiErrorCodes.EmoteSetIdEmpty, await ReadErrorCodeAsync(response));
-    }
-
-    [Fact]
-    public async Task SyncDeleted_Answers400_ForAMalformedEmoteSetId()
-    {
-        // Fourth ladder step (E14): checked inline, same as sync-imported's TargetEmoteSetId — this
-        // is a body field, not a query/route value, so EmoteSetIdValidationFilter never sees it.
-        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
-            .Returns(true);
-
-        var body = """{"emoteSetId": "../x", "sevenTvEmoteIds": ["7tv-x1"]}""";
-        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: body);
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
-    }
-
-    [Fact]
-    public async Task SyncDeleted_Answers400_ForALegacyBodyCarryingAMalformedEmoteSetId()
-    {
-        // #200 K5 finding E: the fourth ladder step used to run only alongside sevenTvEmoteIds — a
-        // legacy body has no use for emoteSetId at all, but nothing stopped one from carrying a
-        // malformed value anyway, and that went unchecked. Format is now validated whenever
-        // emoteSetId is present, independent of which body form it rides along with.
-        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
-            .Returns(true);
-
-        var body = """{"emoteIds": ["11111111-1111-1111-1111-111111111111"], "emoteSetId": "../x"}""";
-        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-deleted", NewUserId(), body: body);
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(ApiErrorCodes.InvalidEmoteSetId, await ReadErrorCodeAsync(response));
+        Assert.Equal(ApiErrorCodes.EmoteIdsEmpty, await ReadErrorCodeAsync(response));
         await _factory.Emotes.DidNotReceive().MarkDeletedAsync(
             Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }

@@ -174,7 +174,6 @@
       [setId]="setId"
       [activeSetId]="activeEmoteSetId()"
       [setName]="massDeletePanelSetName()"
-      [setNames]="emoteSetNames()"
       [channelName]="channelName()"
       [selectedEmotes]="selectedForDelete()"
       [readLiveAliasesFromSet]="true"
@@ -183,6 +182,16 @@
       (reloadRequested)="onReloadRequested()"
       (selectionCleared)="selection.clear()"
     />
+  }
+  <!-- The restore dock, since #253/T9 its own section outside the panel's own set gate above (spec
+       6.6, E22) — this page's panel has the identical "Wiederherstellen" button at a finished
+       delete run (E16), so it needs the same section the usage-stats page does. Behind
+       `!isCoarse()` on its own, mirroring the panel's gate one line up rather than being folded
+       into it: a restore already running when the panel itself unmounts (a set-session's own set
+       goes missing, `massDeletePanelSetId()` turns `null`) must not vanish along with the panel
+       that started it. -->
+  @if (!isCoarse()) {
+    <app-restore-progress-section />
   }
 
   @if (errorMessage(); as message) {

@@ -15,7 +15,6 @@ import {
   MAX_AUTOMATIC_SYNC_RETRIES,
   REMOVE_EMOTE_MUTATION,
   SYNC_RETRY_DELAY_MS,
-  SyncReportState,
 } from './seven-tv-delete.service';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { ResyncTriggerState } from './seven-tv-restore.service';
@@ -28,6 +27,13 @@ import {
 } from './seven-tv-run-engine';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+  classifySyncInSetFailure,
+  classifySyncInSetResponse,
+} from './sync-report-outcome';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
@@ -206,9 +212,11 @@ interface ImportRunContext {
  * same `emote_set_change` bucket. Zero-knowledge holds: the write token never leaves the browser.
  *
  * Two things separate it from `SevenTvRestoreService`, both deliberate:
- * - **No `resetIfChannelChanged`.** A restore always writes into the channel whose page you are on;
- *   an import writes into a *different* one on purpose, so resetting the run when the page follows
- *   the user would throw away the very run they started (R9).
+ * - **No `resetIfChannelChanged`.** A restore resets a *finished* run when the page's channel moves
+ *   away from the one it was started on (`hostChannelName`, spec #253 E13) — since #253 that is no
+ *   longer the same as the channel it wrote into (a restore can target any set, tracked or not); an
+ *   import writes into a *different* channel on purpose from the start, so resetting the run when
+ *   the page follows the user would throw away the very run they started (R9).
  * - **The follow-up hangs off `run()`, not off loose fields** — see `ImportRunInfo`.
  *
  * A run executes a `TransferPlan`: one queue row per plan row, and per action the mutations the
@@ -216,7 +224,7 @@ interface ImportRunContext {
  * `replace`, an alias UPDATE for `adoptSourceName`. A plan with a `replace` row is the one run of
  * this service that deletes, and three things follow from it: its rows end `unknown` on a lost
  * answer instead of `failed`, the run is re-read before anything is reported, and the confirmed
- * REMOVEs are reported through the channel-scoped `sync-deleted` next to the `sync-imported` of
+ * REMOVEs are reported through the set-centric `sync-deleted` next to the `sync-imported` of
  * the ADDs. A plan of `add` rows only runs exactly as a plain copy always did.
  *
  * It does not know the `SevenTvRunArbiter`, and does not report to it: the arbiter derives its
@@ -277,6 +285,10 @@ export class SevenTvImportService {
    *  a confirmed REMOVE. */
   readonly removalReport = signal<SyncReportState>('idle');
 
+  /** Why `removalReport` is `'failed'`/`'partial'` (spec E23), `null` otherwise — the dock shows it
+   *  as its own line under the removal-report notice. */
+  readonly removalReportReason = signal<SyncReportReason | null>(null);
+
   readonly resyncTrigger = signal<ResyncTriggerState>('idle');
 
   /** True once a row failed for missing 7TV write privileges and the run gave up because of it —
@@ -315,6 +327,14 @@ export class SevenTvImportService {
    *  no run/queue for a dismiss button to attach to, and a persistent flag would otherwise be able
    *  to sit next to an unrelated *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
+
+  /** Why the shared pre-check (spec 4.2, 6.2, E19) blocked a plan with at least one replace row
+   *  before `import-flow.ts`'s `start()` ever reached `recheckTransferPlan` (spec 4.5 point 17) —
+   *  `null` whenever nothing is currently blocked. Set by {@link reportTargetCheckBlocked}, which
+   *  hangs the abort on `duplicateNoticePending`'s own transient-notice mechanic (0.2 of the plan):
+   *  a blocked pre-check starts no run either, so this is what keeps the dock mounted long enough to
+   *  show the reason. Cleared by the next `startImport()` call, whatever it does, and by `reset()`. */
+  readonly targetCheckBlockReason = signal<TargetCheckBlockReason | null>(null);
 
   /** Whether the shown run's transfer-run protocol was downloaded at least once — the reminder next
    *  to the dock's Close button (`import.summary.protocolNotSaved`), since `reset()` leaves the
@@ -356,10 +376,12 @@ export class SevenTvImportService {
    *  the same call's `available` and defaults to `true` for the same reason. `replaceSkippedDrift`
    *  is the same re-check's count of held-back `replace` rows, default 0.
    *
-   *  Throws, before anything is sent, for a plan with a `replace` row against an untracked target:
-   *  the removal report is channel-scoped, and a run that deletes without being able to report it
-   *  is a programming error, not a state to run through silently (the plan's own validation,
-   *  `replaceNeedsTrackedTarget`, is the first guard; this is the second). */
+   *  No guard against a `replace` row targeting an untracked account any more (#253, spec 4.5
+   *  point 16/6.6, DECISIONS "The replace lock for an untracked target falls"): the removal report
+   *  is set-centric (spec 6.5) regardless of whether the target is tracked, so there is nothing left
+   *  here to refuse it for. The caller's own pre-check (`import-flow.ts`'s `start()`,
+   *  {@link reportTargetCheckBlocked}) already kept an unreadable/inaccessible target from reaching
+   *  this call at all. */
   startImport(
     target: {
       setId: string;
@@ -375,10 +397,8 @@ export class SevenTvImportService {
     replaceSkippedDrift = 0,
   ): void {
     const deletes = plan.rows.some((row) => row.action === 'replace');
-    if (deletes && target.channelName === null) {
-      throw new Error('A transfer plan with a replace row needs a tracked target channel.');
-    }
 
+    this.targetCheckBlockReason.set(null);
     this.skippedDuplicates.set(skippedDuplicates);
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
     this.replaceSkippedDrift.set(replaceSkippedDrift);
@@ -432,6 +452,7 @@ export class SevenTvImportService {
     this.run.set(started);
     this.syncReport.set('idle');
     this.removalReport.set('idle');
+    this.removalReportReason.set(null);
     this.resyncTrigger.set('idle');
     this.abortedForPrivileges.set(false);
     this.protocolSaved.set(false);
@@ -448,13 +469,31 @@ export class SevenTvImportService {
     this.run.set(null);
     this.syncReport.set('idle');
     this.removalReport.set('idle');
+    this.removalReportReason.set(null);
     this.resyncTrigger.set('idle');
     this.abortedForPrivileges.set(false);
     this.skippedDuplicates.set(0);
     this.replaceSkippedDrift.set(0);
     this.duplicateCheckAvailable.set(true);
+    this.targetCheckBlockReason.set(null);
     this.showDuplicateNotice(false);
     this.protocolSaved.set(false);
+  }
+
+  /** Called by `import-flow.ts`'s `start()` when the shared pre-check (spec 4.2, 6.2) blocks a plan
+   *  with at least one replace row, before `recheckTransferPlan` even runs (spec 4.5 point 17) —
+   *  nothing starts, and the reason is shown at the same transient spot a drift abort uses
+   *  (`duplicateNoticePending`, plan 0.2): a blocked pre-check leaves no run/queue behind either.
+   *  Final fix wave A7: also resets `skippedDuplicates`, `duplicateCheckAvailable` and
+   *  `replaceSkippedDrift` to their neutral values, same as `startImport` does on every call —
+   *  without this, a still-shown finished run's counts survived into this call's own notice and
+   *  re-announced "N skipped as duplicate" next to a block reason that has nothing to do with it. */
+  reportTargetCheckBlocked(reason: TargetCheckBlockReason): void {
+    this.targetCheckBlockReason.set(reason);
+    this.skippedDuplicates.set(0);
+    this.duplicateCheckAvailable.set(true);
+    this.replaceSkippedDrift.set(0);
+    this.showDuplicateNotice(true);
   }
 
   /** Manual retry for the closing report — the 7TV adds are long done, so this only re-sends the
@@ -473,11 +512,14 @@ export class SevenTvImportService {
     this.reportImported(current);
   }
 
-  /** Manual retry for the removal report — same rules as `retrySyncReport`, same record. */
+  /** Manual retry for the removal report — same rules as `retrySyncReport`, same record, and none
+   *  for a channel mismatch (addendum N4, AK 40): it is recorded and its resync already runs, so a
+   *  retry could only write the same mismatch again. */
   retryRemovalReport(): void {
     const current = this.run();
     if (
       this.removalReport() === 'pending' ||
+      this.removalReportReason() === 'channelMismatch' ||
       current?.settlement !== 'settled' ||
       removedTargetIds(current).length === 0
     ) {
@@ -612,9 +654,6 @@ export class SevenTvImportService {
     if (imported.length > 0) {
       this.reportImported(run);
     }
-    if (removed.length > 0) {
-      this.reportRemoved(run);
-    }
 
     // The resync is what actually pulls the changed emote rows into the *channel's active* set
     // view — only meaningful for a *tracked target on its active set* (T2.6/8.6 for the channel
@@ -626,13 +665,29 @@ export class SevenTvImportService {
     const adopted = run.result?.items.some(
       (item) => item.status === 'done' && item.transfer.action === 'adoptSourceName',
     );
-    if (imported.length === 0 && removed.length === 0 && !adopted) {
+    const resyncChannel =
+      (imported.length > 0 || removed.length > 0 || adopted === true) && run.targetIsActiveSet
+        ? run.targetChannelName
+        : null;
+
+    if (removed.length > 0) {
+      // With a removal report, the resync waits for its answer (spec 6.5, F15): the backend resyncs
+      // every channel that report touched and names it in `resyncTriggered` — a second resync of
+      // ours would only run into the per-channel cooldown. A failed report names nothing, so the
+      // resync runs as it always did.
+      this.reportRemoved(run, (resyncTriggered) => {
+        if (resyncChannel !== null && !includesChannel(resyncTriggered, resyncChannel)) {
+          this.triggerResync(run, resyncChannel);
+        }
+      });
       return;
     }
-    const channelName = run.targetChannelName;
-    if (channelName === null || !run.targetIsActiveSet) {
-      return;
+    if (resyncChannel !== null) {
+      this.triggerResync(run, resyncChannel);
     }
+  }
+
+  private triggerResync(run: ImportRunInfo, channelName: string): void {
     this.applyIfCurrent(run, () => this.resyncTrigger.set('pending'));
     this.channelService.resync(channelName).subscribe({
       next: () => this.applyIfCurrent(run, () => this.resyncTrigger.set('succeeded')),
@@ -681,31 +736,45 @@ export class SevenTvImportService {
     });
   }
 
-  /** The removal report: the channel-scoped `sync-deleted`, the delete run's own bookkeeping call
-   *  (a non-active set is paper only there, spec #200 6.6). A replace row only exists for a tracked
-   *  target (`startImport` refuses anything else), so there is always a channel to send it to. */
-  private reportRemoved(run: ImportRunInfo): void {
-    const channelName = run.targetChannelName;
-    if (channelName === null) {
-      return;
-    }
-    const sevenTvEmoteIds = removedTargetIds(run);
-    this.applyIfCurrent(run, () => this.removalReport.set('pending'));
+  /** The removal report: the set-centric `sync-deleted` (spec 6.5), the delete run's own
+   *  bookkeeping call — addressed to the set the run wrote into, tracked or not, with the target's
+   *  channel as the expected hit only when that set is the channel's active one (E18).
+   *  `afterReport` (the first report only, never a manual retry) runs once it has settled either
+   *  way, with the answer's `resyncTriggered` or, on failure, an empty list; it runs even for a
+   *  superseded run, only the state written here is guarded (`applyIfCurrent`). */
+  private reportRemoved(
+    run: ImportRunInfo,
+    afterReport?: (resyncTriggered: readonly string[]) => void,
+  ): void {
+    const sevenTvEmoteIds = [...new Set(removedTargetIds(run))];
+    this.applyIfCurrent(run, () => {
+      this.removalReport.set('pending');
+      this.removalReportReason.set(null);
+    });
 
-    this.emoteAdminService
-      .syncDeleted(channelName, { emoteSetId: run.targetSetId, sevenTvEmoteIds })
+    this.emoteSetService
+      .reportDeletedInSet(run.targetSetId, {
+        sevenTvEmoteIds,
+        expectedChannelName: run.targetIsActiveSet ? run.targetChannelName : null,
+      })
       .pipe(retryTransientSyncFailures())
       .subscribe({
-        next: (answer) =>
-          this.applyIfCurrent(run, () =>
-            this.removalReport.set(
-              answer.targetIsActiveSetOfChannel === false ||
-                answer.archivedCount >= sevenTvEmoteIds.length
-                ? 'succeeded'
-                : 'partial',
-            ),
-          ),
-        error: () => this.applyIfCurrent(run, () => this.removalReport.set('failed')),
+        next: (answer) => {
+          const outcome = classifySyncInSetResponse(answer, sevenTvEmoteIds.length);
+          this.applyIfCurrent(run, () => {
+            this.removalReport.set(outcome.state);
+            this.removalReportReason.set(outcome.reason);
+          });
+          afterReport?.(answer.resyncTriggered);
+        },
+        error: (error: HttpErrorResponse) => {
+          const outcome = classifySyncInSetFailure(error.status);
+          this.applyIfCurrent(run, () => {
+            this.removalReport.set(outcome.state);
+            this.removalReportReason.set(outcome.reason);
+          });
+          afterReport?.([]);
+        },
       });
   }
 
@@ -757,6 +826,13 @@ export class SevenTvImportService {
 function preventUnload(event: BeforeUnloadEvent): void {
   event.preventDefault();
   event.returnValue = '';
+}
+
+/** Whether `channelName` is among the channels a report's answer says the backend resynced —
+ *  case-insensitive, since the backend answers with normalized names. */
+function includesChannel(channels: readonly string[], channelName: string): boolean {
+  const normalized = channelName.toLowerCase();
+  return channels.some((channel) => channel.toLowerCase() === normalized);
 }
 
 /** Same policy as the delete's and the restore's report: waiting can fix a 429/5xx, not a

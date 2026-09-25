@@ -13,7 +13,7 @@ import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { PurgeRunRow, RestoreRow } from '../export/purge-run-export';
 import { RestoreConfirmDialogData } from './restore-confirm-dialog';
-import { RestoreFlowDeps, startRestoreFlow } from './restore-flow';
+import { ResolvedRestoreTarget, RestoreFlowDeps, startRestoreFlow } from './restore-flow';
 
 /**
  * `startRestoreFlow` opens dialogs through the plain `Dialog` object it is handed and never
@@ -117,6 +117,22 @@ function readyPreview(overrides: Partial<ForeignEmoteSetResponse> = {}): Foreign
   };
 }
 
+/** A tracked, active target of the frozen `CHANNEL`/`SET_ID`/`SET_NAME` — the shape most tests
+ *  below need, with only the fields a given test cares about overridden (spec 6.1). */
+function target(overrides: Partial<ResolvedRestoreTarget> = {}): ResolvedRestoreTarget {
+  return {
+    emoteSetId: SET_ID,
+    setName: SET_NAME,
+    ownerDisplayName: 'SomeOwner',
+    twitchLogin: CHANNEL,
+    trackedChannelName: CHANNEL,
+    isActiveSet: true,
+    hostChannelName: CHANNEL,
+    hostSelectedSetId: SET_ID,
+    ...overrides,
+  };
+}
+
 interface Harness {
   deps: RestoreFlowDeps;
   dialogOpen: ReturnType<typeof vi.fn>;
@@ -193,7 +209,7 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, getSetStatus, startRestore, hasToken } = setup();
     hasToken.set(false);
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
     expect(getSetStatus).not.toHaveBeenCalled();
@@ -203,7 +219,7 @@ describe('startRestoreFlow', () => {
   it('opens the confirmation with the frozen channel once the token prompt confirms', () => {
     const { deps, dialogOpen, getSetStatus, hasToken } = setup();
     hasToken.set(false);
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
 
     firstClosed<boolean>(dialogOpen).next(true);
 
@@ -214,7 +230,7 @@ describe('startRestoreFlow', () => {
   it('goes straight to the confirmation when a token is already stored', () => {
     const { deps, dialogOpen, getSetStatus } = setup();
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
     expect(getSetStatus).toHaveBeenCalledWith(CHANNEL);
@@ -224,7 +240,7 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, startRestore } = setup();
     const theRows = rows();
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, theRows);
+    startRestoreFlow(deps, target(), theRows);
     firstClosed<boolean>(dialogOpen).next(true);
 
     // Fourth argument is the duplicate check's skip count (#149/T5) — 0 here because the harness's
@@ -232,13 +248,70 @@ describe('startRestoreFlow', () => {
     // whether that check actually ran — true, since the fetch succeeded (#149). Sixth is how many
     // aliases it left out because another emote holds the name — 0, nothing is held.
     expect(startRestore).toHaveBeenCalledWith(
-      SET_ID,
-      CHANNEL,
+      expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
       [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
       0,
       true,
       0,
     );
+  });
+
+  // Spec 6.4, E12, E18 (derivation from the resolved target): a tracked, active target makes its
+  // channel the expected hit and leaves the resync to the backend; a tracked, non-active target
+  // expects no channel and names it for the client's own resync; an untracked target sends
+  // neither and falls back to the owner's display name for the dock's label.
+  describe('restore start target (spec 6.4)', () => {
+    it('expects the tracked channel and resyncs nothing itself for its active set', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, target(), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: CHANNEL,
+        resyncChannelName: null,
+        hostChannelName: CHANNEL,
+        setName: SET_NAME,
+        ownerOrChannelLabel: CHANNEL,
+      });
+    });
+
+    it('expects no channel and names the tracked channel for its own resync for a non-active set', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(deps, target({ isActiveSet: false, setName: SET_ID }), rows());
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: null,
+        resyncChannelName: CHANNEL,
+        hostChannelName: CHANNEL,
+        setName: SET_ID,
+        ownerOrChannelLabel: CHANNEL,
+      });
+    });
+
+    it('expects no channel, resyncs nothing itself, and labels the dock with the owner for an untracked target', () => {
+      const { deps, dialogOpen, startRestore } = setup();
+
+      startRestoreFlow(
+        deps,
+        target({ trackedChannelName: null, isActiveSet: false, ownerDisplayName: 'SomeOwner' }),
+        rows(),
+      );
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore.mock.calls[0][0]).toEqual({
+        setId: SET_ID,
+        expectedChannelName: null,
+        resyncChannelName: null,
+        hostChannelName: CHANNEL,
+        setName: SET_NAME,
+        ownerOrChannelLabel: 'SomeOwner',
+      });
+    });
   });
 
   // #149/T5: restore never had any duplicate protection — these two pin the fix in from the flow
@@ -247,7 +320,7 @@ describe('startRestoreFlow', () => {
     it('checks the target set fresh, right at confirm time, not from an earlier snapshot', () => {
       const { deps, dialogOpen, httpPost } = setup();
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+      startRestoreFlow(deps, target(), rows());
       // The set-status fetch for the slot preview runs on dialog-open — the duplicate check must
       // not have run yet at that point, only once the user actually confirms.
       expect(httpPost).not.toHaveBeenCalled();
@@ -264,10 +337,16 @@ describe('startRestoreFlow', () => {
       const { deps, dialogOpen, httpPost, startRestore } = setup();
       httpPost.mockReturnValue(of(emoteSetPage(['7tv-1'])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+      startRestoreFlow(deps, target(), rows());
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 1, true, 0);
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        1,
+        true,
+        0,
+      );
     });
 
     // A second restore over the exact same protocol rows — e.g. the user runs restore, then runs
@@ -278,10 +357,16 @@ describe('startRestoreFlow', () => {
       const theRows = rows();
       httpPost.mockReturnValue(of(emoteSetPage(theRows.map((row) => row.sevenTvEmoteId))));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, theRows);
+      startRestoreFlow(deps, target(), theRows);
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], theRows.length, true, 0);
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        theRows.length,
+        true,
+        0,
+      );
     });
 
     // #149 P1 (independent review): the first version of this check asked our own database
@@ -298,12 +383,11 @@ describe('startRestoreFlow', () => {
       // succeeded there), even though nothing here asked our database at all any more.
       httpPost.mockReturnValue(of(emoteSetPage([])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+      startRestoreFlow(deps, target(), rows());
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         true,
@@ -318,12 +402,11 @@ describe('startRestoreFlow', () => {
       const { deps, dialogOpen, httpPost, startRestore } = setup();
       httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-1', alias: 'PogU' }])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
+      startRestoreFlow(deps, target(), [duplicateCellRow()]);
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
         1,
         true,
@@ -337,10 +420,16 @@ describe('startRestoreFlow', () => {
       const { deps, dialogOpen, httpPost, startRestore } = setup();
       httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-1', alias: 'Renamed' }])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
+      startRestoreFlow(deps, target(), [duplicateCellRow()]);
       firstClosed<boolean>(dialogOpen).next(true);
 
-      expect(startRestore).toHaveBeenCalledWith(SET_ID, CHANNEL, [], 2, true, 0);
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+        [],
+        2,
+        true,
+        0,
+      );
     });
 
     // A purge-run row whose name another emote took since the purge: left out before the run
@@ -350,12 +439,11 @@ describe('startRestoreFlow', () => {
       const { deps, dialogOpen, httpPost, startRestore } = setup();
       httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-other', alias: 'PogU' }])));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateCellRow()]);
+      startRestoreFlow(deps, target(), [duplicateCellRow()]);
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU2'] }],
         0,
         true,
@@ -371,12 +459,11 @@ describe('startRestoreFlow', () => {
       httpPost.mockReturnValue(throwError(() => new Error('network error')));
       const theRows = rows();
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, theRows);
+      startRestoreFlow(deps, target(), theRows);
       firstClosed<boolean>(dialogOpen).next(true);
 
       expect(startRestore).toHaveBeenCalledWith(
-        SET_ID,
-        CHANNEL,
+        expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
         [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
         0,
         false,
@@ -393,7 +480,7 @@ describe('startRestoreFlow', () => {
     const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
     httpPost.mockReturnValue(fetch);
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
     firstClosed<boolean>(dialogOpen).next(true);
 
     // A delete run starts elsewhere while this restore's own fresh check is still awaiting 7TV.
@@ -407,7 +494,7 @@ describe('startRestoreFlow', () => {
   it('never opens the confirmation and never runs when the token prompt is cancelled', () => {
     const { deps, dialogOpen, getSetStatus, startRestore, hasToken } = setup();
     hasToken.set(false);
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
 
     firstClosed<boolean>(dialogOpen).next(false);
 
@@ -419,7 +506,7 @@ describe('startRestoreFlow', () => {
   it('does not run when the confirmation is cancelled', () => {
     const { deps, dialogOpen, startRestore } = setup();
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
     firstClosed<boolean>(dialogOpen).next(false);
 
     expect(startRestore).not.toHaveBeenCalled();
@@ -429,7 +516,7 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, startRestore, activeRun } = setup();
     activeRun.set('import');
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
     firstClosed<boolean>(dialogOpen).next(true);
 
     expect(startRestore).not.toHaveBeenCalled();
@@ -439,7 +526,7 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, getSetStatus } = setup();
     getSetStatus.mockReturnValue(of(readyStatus({ occupiedSlots: 42, capacity: 600 })));
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(confirmData(dialogOpen).slots()).toEqual({ occupied: 42, capacity: 600 });
   });
@@ -448,7 +535,7 @@ describe('startRestoreFlow', () => {
     const { deps, dialogOpen, getSetStatus } = setup();
     getSetStatus.mockReturnValue(of(readyStatus({ capacity: null })));
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
 
     expect(confirmData(dialogOpen).slots()).toBeNull();
   });
@@ -460,7 +547,7 @@ describe('startRestoreFlow', () => {
     const status$ = new Subject<EmoteSetStatus>();
     getSetStatus.mockReturnValue(status$);
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+    startRestoreFlow(deps, target(), rows());
     status$.next(readyStatus({ occupiedSlots: 42, capacity: 600 }));
     expect(confirmData(dialogOpen).slots()).toEqual({ occupied: 42, capacity: 600 });
 
@@ -469,31 +556,27 @@ describe('startRestoreFlow', () => {
     expect(confirmData(dialogOpen).slots()).toBeNull();
   });
 
-  // spec #200, 8.8 (AK 73): both confirmations name the set the run acts on, with the
-  // "not currently active" addition gated on `isActiveSet` alone.
+  // spec #200, 8.8 (AK 73): the confirmation data carries the resolved target's name and
+  // active-set flag through unchanged.
   describe('naming the set (spec #200, 8.8)', () => {
     it('names the given set in the confirmation and marks it active', () => {
       const { deps, dialogOpen } = setup();
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, rows());
+      startRestoreFlow(deps, target(), rows());
 
       expect(confirmData(dialogOpen).setName).toBe(SET_NAME);
       expect(confirmData(dialogOpen).isActiveSet).toBe(true);
     });
 
-    it('falls back to the set id when the set has no known name, same as every other unnamed set', () => {
-      const { deps, dialogOpen } = setup();
-
-      startRestoreFlow(deps, CHANNEL, SET_ID, null, true, rows());
-
-      expect(confirmData(dialogOpen).setName).toBe(SET_ID);
-    });
+    // The "no known name" fallback itself moved upstream since #253: `target.setName` already
+    // carries it (`EditableSetTarget.setName`, T4's `toEditableSetTarget`) — this flow only ever
+    // passes it through unchanged. Covered there (`seven-tv-emote-set.service.spec.ts`), not here.
 
     it('marks the set not active, and reads its live slot preview instead of EmoteSetStatus, when isActiveSet is false', () => {
       const { deps, dialogOpen, getSetStatus, loadEmoteSetPreview } = setup();
       loadEmoteSetPreview.mockReturnValue(of(readyPreview({ totalCount: 900, capacity: 1000 })));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, false, rows());
+      startRestoreFlow(deps, target({ isActiveSet: false }), rows());
 
       expect(confirmData(dialogOpen).isActiveSet).toBe(false);
       expect(loadEmoteSetPreview).toHaveBeenCalledWith(CHANNEL, SET_ID);
@@ -505,9 +588,72 @@ describe('startRestoreFlow', () => {
       const { deps, dialogOpen, loadEmoteSetPreview } = setup();
       loadEmoteSetPreview.mockReturnValue(of(readyPreview({ capacity: null })));
 
-      startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, false, rows());
+      startRestoreFlow(deps, target({ isActiveSet: false }), rows());
 
       expect(confirmData(dialogOpen).slots()).toBeNull();
+    });
+  });
+
+  // Task brief T6, "+6" (1 of 2): the slot-preview source is chosen per target class (spec 4.3,
+  // point 8 — the same fork `loadImportTarget` already uses), not per `isActiveSet` alone.
+  describe('slot preview fork by target class (spec 4.3, point 8)', () => {
+    it('reads EmoteSetStatus by the tracked channel for a tracked, active target', () => {
+      const { deps, getSetStatus, loadEmoteSetPreview } = setup();
+
+      startRestoreFlow(deps, target({ trackedChannelName: CHANNEL, isActiveSet: true }), rows());
+
+      expect(getSetStatus).toHaveBeenCalledWith(CHANNEL);
+      expect(loadEmoteSetPreview).not.toHaveBeenCalled();
+    });
+
+    it('reads the live preview by the tracked channel for a tracked, non-active target', () => {
+      const { deps, getSetStatus, loadEmoteSetPreview } = setup();
+
+      startRestoreFlow(deps, target({ trackedChannelName: CHANNEL, isActiveSet: false }), rows());
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith(CHANNEL, SET_ID);
+      expect(getSetStatus).not.toHaveBeenCalled();
+    });
+
+    it("reads the live preview by the account's twitchLogin for an untracked target", () => {
+      const { deps, getSetStatus, loadEmoteSetPreview } = setup();
+
+      startRestoreFlow(
+        deps,
+        target({ trackedChannelName: null, isActiveSet: false, twitchLogin: 'sevenTvOwner' }),
+        rows(),
+      );
+
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('sevenTvOwner', SET_ID);
+      expect(getSetStatus).not.toHaveBeenCalled();
+    });
+  });
+
+  // Task brief T6, "+6" (2 of 2); spec E21, AK 19/35, spec 9.3: the foreign-to-view hint compares
+  // the resolved target's set against the page's *selected* set, never a channel.
+  describe('foreignToView (spec E21, AK 19/35)', () => {
+    it("is false when the target is the page's selected set", () => {
+      const { deps, dialogOpen } = setup();
+
+      startRestoreFlow(deps, target({ hostSelectedSetId: SET_ID }), rows());
+
+      expect(confirmData(dialogOpen).foreignToView).toBe(false);
+    });
+
+    it('is true for a different set of the same tracked channel', () => {
+      const { deps, dialogOpen } = setup();
+
+      startRestoreFlow(deps, target({ hostSelectedSetId: 'some-other-set' }), rows());
+
+      expect(confirmData(dialogOpen).foreignToView).toBe(true);
+    });
+
+    it('is true when the page has no selected set at all', () => {
+      const { deps, dialogOpen } = setup();
+
+      startRestoreFlow(deps, target({ hostSelectedSetId: null }), rows());
+
+      expect(confirmData(dialogOpen).foreignToView).toBe(true);
     });
   });
 
@@ -524,7 +670,7 @@ describe('startRestoreFlow', () => {
       errorMessage: null,
     };
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [duplicateRow]);
+    startRestoreFlow(deps, target(), [duplicateRow]);
 
     expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
     expect(confirmData(dialogOpen).addCount).toBe(2);
@@ -542,7 +688,7 @@ describe('startRestoreFlow', () => {
       defaultName: 'KappaDefault',
     };
 
-    startRestoreFlow(deps, CHANNEL, SET_ID, SET_NAME, true, [transferRow, ...rows()]);
+    startRestoreFlow(deps, target(), [transferRow, ...rows()]);
 
     expect(confirmData(dialogOpen).names).toEqual(['KappaDefault', 'PogU']);
     expect(confirmData(dialogOpen).addCount).toBe(2);

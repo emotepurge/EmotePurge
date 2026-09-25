@@ -9,6 +9,7 @@ import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import {
   DockOutcomeAnnouncer,
   hiddenByFilterNoticeKey,
@@ -44,10 +45,16 @@ const DE_TRANSLATIONS = {
       succeeded: 'Synchronisierung angestoßen.',
       cooldown: 'Sync-Cooldown aktiv.',
       failed: 'Synchronisierung fehlgeschlagen.',
+      backendTriggered: 'Wird abgeglichen.',
     },
   },
   import: {
     duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
+    errors: {
+      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+      targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
+      targetCheckUnavailable: 'Das Zielset konnte gerade nicht geprüft werden.',
+    },
     skippedDuplicates: {
       one: '{{ count }} Emote war beim Start bereits im Zielset und wurde übersprungen.',
       other: '{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
@@ -85,6 +92,11 @@ interface FakeOutcomeSource {
   /** Only `SevenTvImportService` actually has this — a restore run never carries a replace row.
    *  Same reasoning as `run` above: shared shape, the restore fake's copy is never read. */
   replaceSkippedDrift: WritableSignal<number>;
+  /** Only `SevenTvImportService` actually has this (spec 4.5 point 17, AK 32) — the shared
+   *  pre-check's block reason on a replace-carrying start has no restore counterpart (the restore
+   *  entry's own pre-check has no notice at all, spec E16, 4.6 point 22). Same reasoning as `run`
+   *  and `replaceSkippedDrift` above: shared shape, the restore fake's copy is never read. */
+  targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
 }
 
 function createFakeSource(): FakeOutcomeSource {
@@ -96,6 +108,7 @@ function createFakeSource(): FakeOutcomeSource {
     duplicateNoticePending: signal(false),
     run: signal<ImportRunInfo | null>(null),
     replaceSkippedDrift: signal(0),
+    targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
   };
 }
 
@@ -121,6 +134,7 @@ const SPOKEN_STATES = {
   succeeded: true,
   cooldown: true,
   failed: true,
+  backendTriggered: true,
 } satisfies Record<Exclude<ResyncTriggerState, 'idle'>, true>;
 
 describe('resyncNoticeKey', () => {
@@ -225,6 +239,19 @@ describe('DockOutcomeAnnouncer', () => {
     expect(spoken()).toEqual([
       '3 Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
     ]);
+  });
+
+  // #253, spec 4.5 point 17, AK 32: the shared pre-check blocked a replace-carrying start before
+  // anything ran — same reachable-with-no-run shape as the drift notice above, same window.
+  it('fills the region that was already standing when the shared pre-check blocks a replace-carrying start', () => {
+    const regionAtRest = regions()[0];
+
+    importService.targetCheckBlockReason.set('notEditable');
+    importService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+
+    expect(regions()).toEqual([regionAtRest]);
+    expect(spoken()).toEqual(['Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.']);
   });
 
   it('speaks each duplicate notice only while its pending window is open', () => {

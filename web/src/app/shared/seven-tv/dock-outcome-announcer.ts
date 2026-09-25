@@ -7,10 +7,35 @@ import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+
+/** Translation key for the shared pre-check's block reason on a replace-carrying start (spec 4.5
+ *  point 17, AK 32), or `null` while nothing is blocked — shared by this announcer and the visible
+ *  (but aria-hidden) notice it speaks for (`ImportProgressSection`), same reason as
+ *  {@link resyncNoticeKey} above. `import.errors.*`, this flow's own family (Plan-253 §6, Nr. 4) —
+ *  never `restore.errors.*`/`massDelete.errors.*`, which name the *other* two first-mutation
+ *  pre-checks. Same three key names as those two families (`targetNotEditable`/
+ *  `targetNotSelectable`/`targetCheckUnavailable`), not the bare `TargetCheckBlockReason` value. */
+export function importTargetCheckBlockedKey(reason: TargetCheckBlockReason | null): string | null {
+  switch (reason) {
+    case null:
+      return null;
+    case 'notEditable':
+      return 'import.errors.targetNotEditable';
+    case 'notSelectable':
+      return 'import.errors.targetNotSelectable';
+    case 'unavailable':
+      return 'import.errors.targetCheckUnavailable';
+  }
+}
 
 /** Translation key for a run's resync acknowledgement, or `null` while there is nothing to say.
- *  Shared by this announcer and the two visible notices it speaks for (`MassDeletePanel`,
- *  `ImportProgressSection`), so the spoken and the shown wording cannot drift apart. */
+ *  Shared by this announcer and the two visible notices it speaks for (`RestoreProgressSection`,
+ *  `ImportProgressSection` — moved out of `MassDeletePanel` in #253/T9), so the spoken and the
+ *  shown wording cannot drift apart. Every
+ *  non-`'idle'` state maps to `<family>.resync.<state>`, so a new `ResyncTriggerState` needs its
+ *  key in both locales — `'backendTriggered'` only under `restore`, since the import never takes
+ *  it (spec 6.4/6.5). */
 export function resyncNoticeKey(
   state: ResyncTriggerState,
   family: 'import' | 'restore',
@@ -155,6 +180,13 @@ export function markedCountNoticeKey(count: number): string {
           }}
         </p>
       }
+      <!-- The shared pre-check blocked a replace-carrying start before anything ran (spec 4.5
+           point 17, AK 32) — shares duplicateNoticePending's window and gate, same reasoning as the
+           drift notice above: a blocked pre-check leaves no run/queue behind either, so this is the
+           only mounted place its reason can be spoken from. -->
+      @if (importTargetCheckBlockedNoticeKey(); as key) {
+        <p>{{ key | transloco }}</p>
+      }
       @if (importCopiedNotActive(); as notActive) {
         <p>{{ 'import.summary.copiedNotActive' | transloco: notActive }}</p>
       } @else if (importResyncKey(); as key) {
@@ -194,6 +226,11 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importReplaceSkippedDriftKey = computed(() =>
     pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),
+  );
+  protected readonly importTargetCheckBlockedNoticeKey = computed(() =>
+    this.importService.duplicateNoticePending()
+      ? importTargetCheckBlockedKey(this.importService.targetCheckBlockReason())
+      : null,
   );
   protected readonly restoreResyncKey = computed(() =>
     resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),

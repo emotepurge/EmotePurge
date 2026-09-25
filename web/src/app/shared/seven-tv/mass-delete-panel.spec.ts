@@ -1,18 +1,24 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { Component, WritableSignal, signal } from '@angular/core';
+import { Component, EnvironmentProviders, Provider, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService, SyncReportState } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import {
+  EditableSetTarget,
+  EmoteSetTargetsResponse,
+} from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { JSON_MIME } from '../export/export-envelope';
 import { DeleteConfirmDialog, DeleteConfirmDialogData } from './delete-confirm-dialog';
@@ -142,6 +148,7 @@ describe('MassDeletePanel row composition', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun: signal(null),
           } as unknown as SevenTvDeleteService,
@@ -152,6 +159,7 @@ describe('MassDeletePanel row composition', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
@@ -293,6 +301,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             lastRun,
           } as unknown as SevenTvDeleteService,
@@ -303,6 +312,7 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             isRunning: signal(false),
             queue: signal([]),
             syncReport: signal('idle'),
+            syncReportReason: signal(null),
             rateLimitPauseSeconds: signal(0),
             resyncTrigger: signal('idle'),
             skippedDuplicates: signal(0),
@@ -391,288 +401,6 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
 });
 
 /**
- * #149: the notice for a pre-run duplicate check that could not run at all
- * (`already-present-filter.ts`'s `available: false`) — distinct from, and independent of, the
- * `skippedDuplicates` notice above it. Mounts `MassDeletePanel` directly so `duplicateCheckAvailable`
- * and `duplicateNoticePending` can be driven straight from the test, same style as the
- * protocol-export block above. The real service always sets both together (`startRestore` calls
- * `showDuplicateNotice` right after setting `duplicateCheckAvailable`) — these tests drive them
- * independently on purpose, to pin the P2 fix (design doc §4.5's transient-notice convention) as its
- * own behaviour rather than assuming the coupling.
- */
-describe('MassDeletePanel — duplicate-check-unavailable notice (#149)', () => {
-  const DUPLICATE_CHECK_TRANSLATIONS = {
-    ...DE_TRANSLATIONS,
-    restore: {
-      duplicateCheckUnavailable:
-        'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-      skippedNameTaken: {
-        one: '{{ count }} Alias übersprungen — der Name gehört inzwischen einem anderen Emote.',
-        other: '{{ count }} Aliase übersprungen — die Namen gehören inzwischen anderen Emotes.',
-      },
-    },
-  };
-
-  let fixture: ComponentFixture<MassDeletePanel>;
-  let duplicateCheckAvailable: WritableSignal<boolean>;
-  let duplicateNoticePending: WritableSignal<boolean>;
-  let skippedNameTaken: WritableSignal<number>;
-
-  beforeEach(async () => {
-    duplicateCheckAvailable = signal(true);
-    duplicateNoticePending = signal(true);
-    skippedNameTaken = signal(0);
-
-    await TestBed.configureTestingModule({
-      imports: [
-        MassDeletePanel,
-        TranslocoTestingModule.forRoot({
-          langs: { de: DUPLICATE_CHECK_TRANSLATIONS },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
-        }),
-      ],
-      providers: [
-        provideHttpClient(),
-        { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
-        {
-          provide: SevenTvDeleteService,
-          useValue: {
-            isRunning: signal(false),
-            queue: signal([]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            lastRun: signal(null),
-          } as unknown as SevenTvDeleteService,
-        },
-        {
-          provide: SevenTvRestoreService,
-          useValue: {
-            isRunning: signal(false),
-            queue: signal([]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            resyncTrigger: signal('idle'),
-            skippedDuplicates: signal(0),
-            skippedNameTaken,
-            duplicateCheckAvailable,
-            duplicateNoticePending,
-          } as unknown as SevenTvRestoreService,
-        },
-        {
-          provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
-        },
-        {
-          provide: SevenTvTokenService,
-          useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
-        },
-        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
-      ],
-    }).compileComponents();
-
-    await TestBed.inject(TranslocoService).load('de');
-
-    fixture = TestBed.createComponent(MassDeletePanel);
-    fixture.componentRef.setInput('setId', 'set-1');
-    fixture.componentRef.setInput('channelName', 'somechannel');
-    fixture.componentRef.setInput('selectedEmotes', []);
-  });
-
-  it('shows nothing while the check is available (the default, and every run that verified fine)', () => {
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
-  });
-
-  it('shows the quiet notice once the check is reported unavailable, stating the consequence', () => {
-    duplicateCheckAvailable.set(false);
-
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).toContain(
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-    );
-  });
-
-  // #149 P2 (independent review): the notice is transient (design doc §4.5), not a persistent flag
-  // — once its window has elapsed (duplicateNoticePending flips back to false, e.g. a later,
-  // unrelated run has since settled), it must not keep showing just because duplicateCheckAvailable
-  // still happens to read false from a stale earlier run.
-  it('hides the notice again once its pending window has elapsed, even while duplicateCheckAvailable still reads false', () => {
-    duplicateCheckAvailable.set(false);
-    duplicateNoticePending.set(false);
-
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
-  });
-
-  // The one visible outcome of a restore whose every alias another emote now holds (the queue stays
-  // empty): shown while the notice window is open and the count is above 0, gone once either stops
-  // holding. The wording only identifies which line appeared.
-  it('shows the name-taken line only while its window is open and aliases were left out', () => {
-    const shown = (): boolean =>
-      (fixture.nativeElement.textContent as string).includes('Aliase übersprungen');
-
-    fixture.detectChanges();
-    expect(shown()).toBe(false);
-
-    skippedNameTaken.set(2);
-    fixture.detectChanges();
-    expect(shown()).toBe(true);
-
-    duplicateNoticePending.set(false);
-    fixture.detectChanges();
-    expect(shown()).toBe(false);
-  });
-});
-
-/**
- * #134: on the usage-stats page this panel lives in the action dock, which can mount in the same
- * change-detection pass that sets a notice — a status region created together with its text
- * announces nothing. So the panel's resync and duplicate-check notices are shown but aria-hidden,
- * and the host page's permanently mounted DockOutcomeAnnouncer speaks them instead
- * (docs/UI-Designsprache.md §4.5). Pinned here: the panel's own status regions (RunProgressPanel is
- * one) never announce these notices, so nothing is spoken twice.
- */
-function announcedByStatusRegions(root: HTMLElement): string {
-  return Array.from(root.querySelectorAll('[role="status"]'))
-    .map((region) => {
-      const copy = region.cloneNode(true) as HTMLElement;
-      copy.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
-      return copy.textContent?.trim() ?? '';
-    })
-    .join(' ')
-    .trim();
-}
-
-describe('MassDeletePanel — resync and duplicate-check notices are shown, not announced (#134)', () => {
-  const STATUS_REGION_TRANSLATIONS = {
-    ...DE_TRANSLATIONS,
-    restore: {
-      duplicateCheckUnavailable:
-        'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
-      resync: {
-        pending: 'Synchronisierung wird angestoßen…',
-        succeeded: 'Synchronisierung angestoßen — die Liste aktualisiert sich gleich.',
-        cooldown:
-          'Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.',
-        failed:
-          'Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.',
-      },
-    },
-  };
-
-  let fixture: ComponentFixture<MassDeletePanel>;
-  let resyncTrigger: WritableSignal<'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed'>;
-  let duplicateCheckAvailable: WritableSignal<boolean>;
-  let duplicateNoticePending: WritableSignal<boolean>;
-
-  beforeEach(async () => {
-    resyncTrigger = signal('idle');
-    duplicateCheckAvailable = signal(true);
-    duplicateNoticePending = signal(false);
-
-    await TestBed.configureTestingModule({
-      imports: [
-        MassDeletePanel,
-        TranslocoTestingModule.forRoot({
-          langs: { de: STATUS_REGION_TRANSLATIONS },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
-        }),
-      ],
-      providers: [
-        provideHttpClient(),
-        { provide: EmoteAdminService, useValue: {} as unknown as EmoteAdminService },
-        {
-          provide: SevenTvDeleteService,
-          useValue: {
-            isRunning: signal(false),
-            queue: signal([]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            lastRun: signal(null),
-          } as unknown as SevenTvDeleteService,
-        },
-        {
-          provide: SevenTvRestoreService,
-          useValue: {
-            isRunning: signal(false),
-            // A non-empty queue, not running: the resync notice sits in the run-actions slot,
-            // which RunProgressPanel only projects once the restore run has settled
-            // (!isRunning() && total() > 0) — matching how resyncTrigger is only ever written from
-            // onRunComplete in the real service.
-            queue: signal([
-              {
-                key: 'a',
-                sevenTvEmoteId: '7tv-a',
-                name: 'A',
-                status: 'done',
-                completedSteps: 1,
-                failedStep: null,
-              },
-            ]),
-            syncReport: signal('idle'),
-            rateLimitPauseSeconds: signal(0),
-            resyncTrigger,
-            skippedDuplicates: signal(0),
-            skippedNameTaken: signal(0),
-            duplicateCheckAvailable,
-            duplicateNoticePending,
-          } as unknown as SevenTvRestoreService,
-        },
-        {
-          provide: SevenTvRunArbiter,
-          useValue: {
-            activeRun: signal<SevenTvRunKind | null>(null),
-          } as unknown as SevenTvRunArbiter,
-        },
-        {
-          provide: SevenTvTokenService,
-          useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
-        },
-        { provide: Dialog, useValue: { open: vi.fn() } as unknown as Dialog },
-      ],
-    }).compileComponents();
-
-    await TestBed.inject(TranslocoService).load('de');
-
-    fixture = TestBed.createComponent(MassDeletePanel);
-    fixture.componentRef.setInput('setId', 'set-1');
-    fixture.componentRef.setInput('channelName', 'somechannel');
-    fixture.componentRef.setInput('selectedEmotes', []);
-  });
-
-  it('shows the resync notice aria-hidden, so no status region of the panel speaks it', () => {
-    resyncTrigger.set('pending');
-    fixture.detectChanges();
-
-    const text = 'Synchronisierung wird angestoßen…';
-    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
-      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
-    ).find((element) => element.textContent?.trim() === text);
-    expect(notice).toBeDefined();
-    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
-  });
-
-  it('shows the duplicate-check-unavailable notice aria-hidden, so no status region of the panel speaks it', () => {
-    duplicateCheckAvailable.set(false);
-    duplicateNoticePending.set(true);
-    fixture.detectChanges();
-
-    const text =
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.';
-    const notice: HTMLElement | undefined = Array.from<HTMLElement>(
-      fixture.nativeElement.querySelectorAll('[aria-hidden="true"]'),
-    ).find((element) => element.textContent?.trim() === text);
-    expect(notice).toBeDefined();
-    expect(announcedByStatusRegions(fixture.nativeElement)).not.toContain(text);
-  });
-});
-
-/**
  * Shared, correctly-typed fakes for the #89 blocks below, replacing repeated ~50-line provider
  * arrays. `Pick`ing straight off the real service classes means every field here is a
  * `WritableSignal<T>` of the exact `T` the real class declares (e.g. `rateLimitPauseSeconds` starts
@@ -688,6 +416,7 @@ type DeleteServiceFake = Pick<
   | 'isRunning'
   | 'queue'
   | 'syncReport'
+  | 'syncReportReason'
   | 'rateLimitPauseSeconds'
   | 'lastRun'
   | 'confirmedRunPending'
@@ -701,6 +430,7 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
     isRunning: signal(false),
     queue: signal<RunQueueItem[]>([]),
     syncReport: signal<SyncReportState>('idle'),
+    syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
     lastRun: signal<{ setId: string; channelName: string; result: RunResult } | null>(null),
     // The dock's claim on a confirmed-but-not-yet-running delete. Spied rather than implemented:
@@ -721,6 +451,7 @@ type RestoreServiceFake = Pick<
   | 'isRunning'
   | 'queue'
   | 'syncReport'
+  | 'syncReportReason'
   | 'rateLimitPauseSeconds'
   | 'resyncTrigger'
   | 'skippedDuplicates'
@@ -734,6 +465,7 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
     isRunning: signal(false),
     queue: signal<RunQueueItem[]>([]),
     syncReport: signal<SyncReportState>('idle'),
+    syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
     resyncTrigger: signal('idle'),
     skippedDuplicates: signal(0),
@@ -754,8 +486,39 @@ function fakeRunArbiter(
   return { activeRun };
 }
 
+/** A resolved target every editable-stub answer carries — irrelevant to the delete confirmation
+ *  itself (spec 4.6 point 20: the pre-check only gates, it never feeds `DeleteConfirmDialogData`),
+ *  so its exact field values are never asserted on by the blocks below. */
+const EDITABLE_STUB_TARGET: EditableSetTarget = {
+  emoteSetId: 'set-1',
+  setName: 'set-1',
+  ownerDisplayName: 'owner',
+  twitchLogin: 'owner',
+  trackedChannelName: 'somechannel',
+  isActiveSet: true,
+};
+
+type EmoteSetServiceFake = Pick<SevenTvEmoteSetService, 'resolveEditableSet'>;
+
+/** #253 AK 31/20: `MassDeletePanel` now runs the shared pre-check (`resolveEditableSet`) before
+ *  every delete confirmation opens. Defaults to an immediate `'editable'` answer so every block
+ *  below that does not itself test the pre-check keeps opening the confirmation synchronously,
+ *  exactly as it did before that pre-check existed — the dedicated pre-check block further down
+ *  overrides this with the real service instead (`panelProviders({ emoteSetService: null })`) to
+ *  drive `HttpTestingController` directly. */
+function fakeEmoteSetService(overrides: Partial<EmoteSetServiceFake> = {}): EmoteSetServiceFake {
+  return {
+    resolveEditableSet: vi
+      .fn()
+      .mockReturnValue(of({ status: 'editable', target: EDITABLE_STUB_TARGET })),
+    ...overrides,
+  };
+}
+
 /** The provider list every #89 block below needs, differing only in which fakes a test wants to
- *  drive — the rest default to an idle/untouched instance. */
+ *  drive — the rest default to an idle/untouched instance. `emoteSetService: null` opts out of the
+ *  default editable stub and leaves `SevenTvEmoteSetService` real, for a block that drives it
+ *  through its own `HttpTestingController` (the restore-confirm-path and delete-pre-check blocks). */
 function panelProviders(
   options: {
     deleteService?: DeleteServiceFake;
@@ -763,9 +526,10 @@ function panelProviders(
     arbiter?: RunArbiterFake;
     dialogOpen?: ReturnType<typeof vi.fn>;
     emoteAdminService?: Partial<EmoteAdminService>;
+    emoteSetService?: EmoteSetServiceFake | null;
   } = {},
 ) {
-  return [
+  const providers: (Provider | EnvironmentProviders)[] = [
     provideHttpClient(),
     {
       provide: EmoteAdminService,
@@ -790,6 +554,14 @@ function panelProviders(
     },
     { provide: Dialog, useValue: { open: options.dialogOpen ?? vi.fn() } as unknown as Dialog },
   ];
+  if (options.emoteSetService !== null) {
+    providers.push({
+      provide: SevenTvEmoteSetService,
+      useValue: (options.emoteSetService ??
+        fakeEmoteSetService()) as unknown as SevenTvEmoteSetService,
+    });
+  }
+  return providers;
 }
 
 /** `Löschen (n)` — the same wording `DELETE_LABEL` pins for n=2, generalised so the lock block can
@@ -1362,6 +1134,13 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
           provide: SevenTvTokenService,
           useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
         },
+        // #253 AK 31/20: the pre-check before the confirmation opens — an immediate `'editable'`
+        // answer, same reasoning as `panelProviders`' own default (this block does not use that
+        // helper, it builds its providers manually).
+        {
+          provide: SevenTvEmoteSetService,
+          useValue: fakeEmoteSetService() as unknown as SevenTvEmoteSetService,
+        },
         { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
         // Only needed once DeleteConfirmDialog itself is instantiated below — resolved lazily via
         // the factory so each test can shape `dialogData` first, same pattern as
@@ -1591,10 +1370,15 @@ describe('MassDeletePanel — the host lock is re-checked at confirm time (#200,
     fixture.componentInstance['openConfirm']();
     closed.next(true);
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
-      { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+        { emoteId: undefined, sevenTvEmoteId: '7tv-live', name: 'LiveOnly', aliases: undefined },
+      ],
+      'somechannel',
+    );
   });
 
   it('starts nothing once the panel itself is gone when the dialog confirms', () => {
@@ -1718,10 +1502,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       ]),
     );
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   // Superseded by #227 P1 (below, "blocks the whole run…"): a cell the live read does not know at
@@ -1745,10 +1534,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
         ]),
       );
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogUOld', 'PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogUOld', 'PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   // The degenerate case: the fallback name happens to already be one of the live aliases — nothing
@@ -1776,9 +1570,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     confirm();
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+    );
   });
 
   it('deletes nothing when the live read fails, and says why', () => {
@@ -1897,10 +1694,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     confirm();
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }, { id: '7tv-2' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   /** The three dock-claim calls of the fake service, typed for the block below. */
@@ -2152,9 +1954,13 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     confirm();
 
     httpMock.expectNone(GQL);
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] },
-    ]);
+    // Spec 4.6 point 21: a delete from a non-active set expects no channel (`null`).
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: undefined, sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU', 'PogU2'] }],
+      null,
+    );
   });
 
   // A caller that leaves this specific input false makes no active-set read regardless of any
@@ -2191,10 +1997,15 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       ]),
     );
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-      { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+        { emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] },
+      ],
+      'somechannel',
+    );
   });
 
   it('does not sweep in an id added to the live selection only after the dialog was confirmed', () => {
@@ -2236,9 +2047,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     fixture.detectChanges();
     closed.next(true);
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+    );
   });
 
   // The same thing on the branch that actually matters, checked against what the dialog itself last
@@ -2261,9 +2075,12 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     closed.next(true);
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [{ emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }],
+      'somechannel',
+    );
   });
 
   // The extreme of the same reload: nothing is left to delete at confirm time. startDelete would
@@ -2404,14 +2221,19 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
     expect(req.request.body.variables.id).toBe('set-halloween');
     req.flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
 
-    expect(startDelete).toHaveBeenCalledWith('set-halloween', 'somechannel', [
-      {
-        emoteId: 'e1',
-        sevenTvEmoteId: '7tv-pump',
-        name: 'PumpkinAtCreation',
-        aliases: ['Pumpkin'],
-      },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-halloween',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin'],
+        },
+      ],
+      null,
+    );
   });
 
   it('records every alias of a #74 duplicate read live from the non-active set', async () => {
@@ -2431,14 +2253,19 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
       ]),
     );
 
-    expect(startDelete).toHaveBeenCalledWith('set-halloween', 'somechannel', [
-      {
-        emoteId: 'e1',
-        sevenTvEmoteId: '7tv-pump',
-        name: 'PumpkinAtCreation',
-        aliases: ['Pumpkin', 'Pumpkin2'],
-      },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-halloween',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin', 'Pumpkin2'],
+        },
+      ],
+      null,
+    );
   });
 
   // The behaviour #227's issue explicitly asks for: a delete must not silently continue under the
@@ -2495,14 +2322,19 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
     confirm();
 
     httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
-    expect(startDelete).toHaveBeenCalledWith('set-1', 'somechannel', [
-      {
-        emoteId: 'e1',
-        sevenTvEmoteId: '7tv-pump',
-        name: 'PumpkinAtCreation',
-        aliases: ['Pumpkin'],
-      },
-    ]);
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-pump',
+          name: 'PumpkinAtCreation',
+          aliases: ['Pumpkin'],
+        },
+      ],
+      'somechannel',
+    );
   });
 
   // Opus review P1 (#227): the exact case the issue describes — Ghost was on the frozen ballot,
@@ -2578,15 +2410,64 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
 // bug finding A fixed for `setId`. Pinned here against a panel whose live `channelName` input
 // disagrees with the run's own, which cannot happen in production today but must not silently
 // resolve to the live value if it ever does.
-describe("MassDeletePanel — the restore-confirm path reads the run's own channelName, not the live input (#200 K5 finding F)", () => {
+/** `resolveEditableSet(setId)` finds `setId` under `trackedChannel`'s account, `kind: 'NORMAL'`
+ *  and `editable: true` — the one account/set pair every test in the block below needs, since
+ *  `SevenTvEmoteSetService` is never mocked at the service level here (real service, real
+ *  `HttpClient`, intercepted by `HttpTestingController` like every other request in this block). */
+function targetsResponse(setId: string, trackedChannel: string): EmoteSetTargetsResponse {
+  return {
+    accounts: [
+      {
+        twitchChannelId: 'tw-1',
+        twitchLogin: trackedChannel,
+        isOwnAccount: true,
+        trackedChannelName: trackedChannel,
+        activeEmoteSetId: setId,
+        sets: [
+          {
+            id: setId,
+            name: setId,
+            capacity: null,
+            kind: 'NORMAL',
+            isActive: true,
+            isPersonal: false,
+            ownerDisplayName: null,
+            ownerSevenTvUserId: 'owner-1',
+            editable: true,
+          },
+        ],
+        setsUnavailable: false,
+        sevenTvUserId: 'owner-1',
+      },
+    ],
+    sevenTvUnavailable: false,
+  };
+}
+
+describe('MassDeletePanel — the restore-confirm path resolves its target fresh and attributes the dock to the live page (#253 spec E13/E16)', () => {
   let fixture: ComponentFixture<MassDeletePanel>;
   let httpMock: HttpTestingController;
   let getSetStatus: ReturnType<typeof vi.fn>;
   let startRestore: ReturnType<typeof vi.fn>;
   let closed: Subject<boolean | undefined>;
 
+  // The tracked channel the fresh pre-check resolves `set-1` to — deliberately equal to the
+  // delete run's own frozen `channelName` (a realistic case: the account that owns the target set
+  // is the same one that ran the delete), and deliberately distinct from `LIVE_CHANNEL` so a test
+  // that asserted the *pre-#253* value would still fail if this leaked in by accident. `LIVE_CHANNEL`
+  // is the panel's current page — since #253 that is `hostChannelName`, no longer the mutation's
+  // expected channel (spec 6.3: `hostChannelName = channelName()`, `expectedChannelName` comes from
+  // the resolved target instead).
   const RUN_CHANNEL = 'runchannel';
   const LIVE_CHANNEL = 'livechannel';
+
+  /** Flushes the one pre-check request every test in this block triggers via `openRestoreConfirm`
+   *  (spec E16, E19) before the rest of the chain can proceed. */
+  function flushTargetsResponse(): void {
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(targetsResponse('set-1', RUN_CHANNEL));
+  }
 
   beforeEach(async () => {
     closed = new Subject<boolean | undefined>();
@@ -2623,6 +2504,10 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
       restoreService,
       dialogOpen: vi.fn().mockReturnValue({ closed }),
       emoteAdminService,
+      // This block drives resolveEditableSet through the real service and HttpTestingController
+      // (targetsResponse() below) — the default editable stub would answer before the test ever
+      // gets to flush its own response.
+      emoteSetService: null,
     });
 
     await TestBed.configureTestingModule({
@@ -2651,27 +2536,42 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
     httpMock.verify();
   });
 
-  it("reads the slot-status check from the run's channelName, not the panel's live one", () => {
+  it("reads the slot-status check from the resolved target's tracked channel, not the live page", () => {
     fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
 
     expect(getSetStatus).toHaveBeenCalledWith(RUN_CHANNEL);
     expect(getSetStatus).not.toHaveBeenCalledWith(LIVE_CHANNEL);
   });
 
-  it("starts the restore against the run's channelName, not the panel's live one", () => {
+  it('starts the restore against the resolved target, attributing the dock to the live page', () => {
     fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
     closed.next(true);
 
     // filterAlreadyPresent's own 7TV read — fails open, same as a network hiccup would.
     httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
 
     expect(startRestore).toHaveBeenCalledTimes(1);
-    expect(startRestore.mock.calls[0][1]).toBe(RUN_CHANNEL);
+    // The mutation target (expectedChannelName/resyncChannelName/ownerOrChannelLabel) comes from
+    // the fresh pre-check (spec 6.2/6.4), never from the panel's live channelName — its set is the
+    // resolved account's active one here, so its channel is the expected hit and there is no
+    // client resync. `hostChannelName` is the live page instead (spec 6.3, E13): the dock belongs
+    // to wherever the button was actually clicked, not to the delete run's frozen channel.
+    expect(startRestore.mock.calls[0][0]).toEqual({
+      setId: 'set-1',
+      expectedChannelName: RUN_CHANNEL,
+      resyncChannelName: null,
+      hostChannelName: LIVE_CHANNEL,
+      setName: 'set-1',
+      ownerOrChannelLabel: RUN_CHANNEL,
+    });
   });
   // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
   // same per-alias check as the file restore — here, the run's one alias is already back.
   it('skips an alias of the run that is already back in the set, counted per alias', () => {
     fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
     closed.next(true);
 
     httpMock.expectOne('https://7tv.io/v4/gql').flush({
@@ -2688,6 +2588,310 @@ describe("MassDeletePanel — the restore-confirm path reads the run's own chann
       },
     });
 
-    expect(startRestore).toHaveBeenCalledWith('set-1', RUN_CHANNEL, [], 1, true, 0);
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: 'set-1', hostChannelName: LIVE_CHANNEL }),
+      [],
+      1,
+      true,
+      0,
+    );
+  });
+
+  // Spec E16, 4.6 point 22; Plan-253 §6, Nr. 3: a blocked pre-check shows the panel's existing
+  // abort notice with a restore-specific lead line and the `restore.errors.*` family — no
+  // confirmation, no slot-status read, no run.
+  it('shows the abort notice and starts nothing when the pre-check finds the set not editable', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: false });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetNotEditable',
+    });
+    expect(getSetStatus).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // restoreTargetCheckReasonKey's "notSelectable" branch (Plan-253 §6, Nr. 4) had no case of its
+  // own here — the delete run's set can only ever have been NORMAL to begin with (the picker never
+  // offers another kind), but the mapping stays total rather than assuming that at the call site.
+  it('shows the abort notice and starts nothing when the pre-check finds the set no longer selectable', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock.expectOne('/api/seventv/me/emote-set-targets').flush({
+      accounts: [
+        {
+          twitchChannelId: 'tw-1',
+          twitchLogin: RUN_CHANNEL,
+          isOwnAccount: true,
+          trackedChannelName: RUN_CHANNEL,
+          activeEmoteSetId: 'set-1',
+          sets: [
+            {
+              id: 'set-1',
+              name: 'set-1',
+              capacity: null,
+              kind: 'GLOBAL',
+              isActive: true,
+              isPersonal: false,
+              ownerDisplayName: null,
+              ownerSevenTvUserId: 'owner-1',
+              editable: true,
+            },
+          ],
+          setsUnavailable: false,
+          sevenTvUserId: 'owner-1',
+        },
+      ],
+      sevenTvUnavailable: false,
+    });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetNotSelectable',
+    });
+    expect(getSetStatus).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: true });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetCheckUnavailable',
+    });
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 4: before this fix the subscription had no `error` branch at all — a
+  // failed request (429, 503, no connection, spec F3) surfaced nothing, leaving the restore entry
+  // silently inert instead of showing the abort notice every other pre-check failure already does.
+  it('shows "check unavailable" when the pre-check request itself fails (network error, not a degraded list)', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock.expectOne('/api/seventv/me/emote-set-targets').error(new ProgressEvent('error'));
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetCheckUnavailable',
+    });
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 4: a hung pre-check request used to leave the restore entry silently
+  // inert forever — same 20 s budget and same treatment as the delete confirmation's own pre-check.
+  it('shows "check unavailable" when the pre-check hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      fixture.componentInstance['openRestoreConfirm']();
+      const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(fixture.componentInstance['abortNotice']()).toEqual({
+        leadKey: 'restore.nothingRestored',
+        reasonKey: 'restore.errors.targetCheckUnavailable',
+      });
+      expect(startRestore).not.toHaveBeenCalled();
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review round 1, finding 4: an answer landing after this panel is torn down must not open a
+  // restore confirmation nobody can see or answer any more.
+  it('cancels the pre-check request once the panel is destroyed', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    expect(req.cancelled).toBeFalsy();
+
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+});
+
+// #253, spec 4.6 point 20, AK 31: the shared pre-check now runs before the delete confirmation
+// itself opens, not only before the panel's own restore entry (the block above). Real
+// `SevenTvEmoteSetService` over `HttpTestingController` (`emoteSetService: null`, same reasoning as
+// the restore-confirm-path block above) so each test can drive the pre-check's own answer.
+describe('MassDeletePanel — the shared pre-check runs before the delete confirmation opens (#253 AK 31)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    dialogOpen = vi.fn().mockReturnValue({ closed: of(undefined) });
+    const providers = panelProviders({
+      dialogOpen,
+      emoteSetService: null,
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', EMOTES);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => httpMock.verify());
+
+  it('locks the delete button and opens no dialog while the pre-check is out, then opens it on an editable answer', () => {
+    fixture.componentInstance['openConfirm']();
+    fixture.detectChanges();
+
+    // Rule 12: the observable contract is the button's own disabled state, not the internal
+    // `deleteTargetCheckPending` signal that happens to drive it.
+    expect(
+      findButtonByLabel(fixture.nativeElement, deleteButtonLabel(EMOTES.length)).disabled,
+    ).toBe(true);
+    expect(dialogOpen).not.toHaveBeenCalled();
+
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(targetsResponse('set-1', 'somechannel'));
+    fixture.detectChanges();
+
+    expect(
+      findButtonByLabel(fixture.nativeElement, deleteButtonLabel(EMOTES.length)).disabled,
+    ).toBe(false);
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
+  });
+
+  it('shows the abort notice and opens no dialog when the pre-check finds the set not editable', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: false });
+
+    expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetNotEditable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: true });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetCheckUnavailable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  it('maps a failed pre-check request (429) to the "check unavailable" reason too', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(null, { status: 429, statusText: 'Too Many Requests' });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetCheckUnavailable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 3b: a hung pre-check request used to leave the delete button disabled
+  // forever, with no way out short of reloading — same 20 s budget and same treatment (a timeout
+  // reads exactly like any other failed check) as the active-set live alias read's own fix.
+  it('unlocks the button and shows "check unavailable" when the pre-check hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      fixture.componentInstance['openConfirm']();
+      const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+      expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(true);
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+      expect(fixture.componentInstance['abortNotice']()).toEqual({
+        leadKey: 'massDelete.nothingDeleted',
+        reasonKey: 'massDelete.errors.targetCheckUnavailable',
+      });
+      expect(dialogOpen).not.toHaveBeenCalled();
+      // `timeout()` unsubscribes the source on expiry — the request is cancelled, not answered.
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review round 1, finding 3c: an answer that lands after this panel was torn down must not open
+  // a confirmation nobody can see or answer any more. `takeUntilDestroyed` unsubscribes the whole
+  // pipe synchronously on destroy, which cancels the still-open request outright — a stronger
+  // guarantee than merely dropping a late answer, and proof the panel never even waits for one.
+  it('cancels the pre-check request and opens no dialog once the panel is destroyed', () => {
+    fixture.componentInstance['openConfirm']();
+    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    expect(req.cancelled).toBeFalsy();
+
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  // Codex C3 / final fix wave A6, superseding review round 1 finding 3a: opening a confirmation
+  // silently for the set the pre-check happened to vouch for — even though the host has since
+  // switched away from it — used to defer the abort until the dialog closed
+  // (`abortReasonBeforeStart`). That left a confirmation open for a set nobody had selected any
+  // more. A switch behind the still-open pre-check now aborts immediately, visibly, instead.
+  it('aborts with setChangedDuringConfirm and opens no dialog when the set switches behind the still-open pre-check', () => {
+    fixture.componentRef.setInput('setName', 'Set A');
+    fixture.detectChanges();
+    fixture.componentInstance['openConfirm']();
+    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    expect(req.request.url).toContain('/api/seventv/me/emote-set-targets');
+
+    // The set switches behind the still-open pre-check.
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.componentRef.setInput('setName', 'Set B');
+    fixture.detectChanges();
+
+    // Answers for the originally checked set ('set-1'), editable — but no longer the one
+    // selected by the time the answer arrives.
+    req.flush(targetsResponse('set-1', 'somechannel'));
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.abortedByLock',
+      reasonKey: 'massDelete.setChangedDuringConfirm',
+    });
   });
 });

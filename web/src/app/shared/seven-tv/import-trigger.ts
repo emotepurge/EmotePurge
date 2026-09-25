@@ -68,7 +68,8 @@ function toImportTarget(
 /**
  * The header button that opens the import path — **all of it** (#91, #147). It freezes
  * `channelName`/`setId` at the moment of the click, opens `ImportSourceDialog`, and hands whatever
- * comes back to the chain that fits: `startRestoreFlow` for a purge-run protocol,
+ * comes back to the chain that fits: `startRestoreFlow` for a restore file (purge-run protocol or
+ * transfer-run file),
  * `startImportFlow` for an emote list or usage export read from a file, and
  * `startForeignChannelImportFlow` for emotes picked out of another channel's 7TV set.
  *
@@ -88,20 +89,24 @@ function toImportTarget(
  * `importScopeCurrent` is an input rather than something computed here from page state, so the
  * lock this button carries stays a pure function of two booleans (`importTriggerDisabled`,
  * testable without a TestBed) — the page computes the boolean itself, the same way it already does
- * for the neighbouring "Übertragen" button (`importScopeIsCurrent`). `atlasOrder().length === 0`
- * and `!isCoarse()` deliberately do NOT appear here: both are already enforced by the `@if` block
- * this trigger is placed inside on the page, alongside "Übertragen" (plan §1.2 point 3).
+ * for the neighbouring "Übertragen" button (`importScopeIsCurrent`). `!isCoarse()` deliberately
+ * does NOT appear here: it is already enforced by the `@if` block this trigger is placed inside on
+ * the page (plan §1.2 point 3). Unlike "Übertragen", that block is `this` trigger's own since
+ * #253/T9 (E22) — it no longer shares the page's set gate, so `atlasOrder().length === 0` does not
+ * apply here either; the trigger stays visible without a set.
  *
- * **All four doors target `setId` itself (spec 8.6, T4.5), restore included since K5 (T5.2/T5.3)**
- * — the page's *selected* set, active or not (`toImportTarget` above for the other three;
- * `startRestoreFlow`'s own `setId`/`setName` parameters for restore). Restore books its un-archive
- * through the set-aware `EmoteAdminService.syncRestored(channelName, { emoteSetId, … })` call
- * (`restore-flow.ts`, T5.2), and its confirmation names the set it re-adds into (T5.3, spec 8.8) —
- * restoring from a file is therefore never locked to the active set here either; the interim
- * `FileImportStep.restoreEnabled` gate that used to enforce that (T4.5) was removed once T5.3
- * lifted it for good (K5 fix round, #200 finding F). The protocol *match* check itself (`setId` vs.
- * the file's own `meta.emoteSetId`) was already generic over whichever set it is given — it needed
- * no change to accept a non-active set's own protocol while that set is shown (AK 66).
+ * **The three copy doors target `setId` itself (spec 8.6, T4.5)** — the page's *selected* set,
+ * active or not (`toImportTarget` above); `null` when the page has none (spec #253, E22), in which
+ * case `ImportSourceDialog` disables all three doors with a reason and only a `'restore'` result
+ * can ever come back. **A restore file targets whatever set it names** (spec #253, E1):
+ * `FileImportStep` reads the set from the file, clears it through the shared pre-check
+ * (`resolveEditableSet`, E19) and hands back a `ResolvedRestoreTarget` that this trigger passes to
+ * `startRestoreFlow` unchanged — it neither builds nor adjusts a restore target itself, and a
+ * blocked check never reaches it (the step keeps the dialog open with its own banner). The page's
+ * frozen `setId` only goes along as the step's `hostSelectedSetId` — `null` included — for the
+ * confirmation's "not the set on screen" hint (E21). Restore books its un-archive through the
+ * set-centric `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call (`SevenTvRestoreService`,
+ * spec 6.4).
  */
 @Component({
   selector: 'app-import-trigger',
@@ -120,18 +125,19 @@ function toImportTarget(
 })
 export class ImportTrigger {
   readonly channelName = input.required<string>();
-  /** The set this trigger's doors target and a purge-run protocol is validated against — the page's
-   *  *selected* set (spec #200, T4.5), active or not. Named `setId`, not `selectedSetId`: every
-   *  caller of this component names its one set the same way (`file-import-step.ts`'s own input is
-   *  the same word), and the only place "selected vs. active" matters is the comparison against
-   *  {@link activeSetId} below. */
-  readonly setId = input.required<string>();
+  /** The set this trigger's three copy doors target — the page's *selected* set (spec #200, T4.5),
+   *  active or not; `null` when the page has none (spec #253, E22) — the copy doors are then
+   *  disabled inside `ImportSourceDialog`, and no `'foreign'`/`'leaderboard'`/`'import'` result can
+   *  come back from a dialog opened with a `null` target (`ImportSourceDialogData.setId`). A
+   *  restore file does not target it either way (it names its own set); it only travels to the file
+   *  step as `hostSelectedSetId`. Named `setId`, not `selectedSetId`: the only place "selected vs.
+   *  active" matters is the comparison against {@link activeSetId} below. */
+  readonly setId = input.required<string | null>();
   /** The channel's actual active set; `null` when the host knows it has none to offer (unknown —
    *  status failed — or no active set at all); omitted (`undefined`) by a caller with no such
    *  distinction (every caller that predates T4.5, and any test that never sets it), which folds
-   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Feeds
-   *  `restoreIsActiveSet` in `openDialog` below, which only decides which slot-preview source the
-   *  restore confirmation reads — restoring itself is never gated on it (see the class doc). */
+   *  back onto `setId` (`resolveActiveSetId`) and keeps that caller byte-identical to before. Only
+   *  the copy doors read it; a restore file's target says for itself whether it is an active set. */
   readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the import confirm dialog's title when it is not the
    *  active one (spec 8.6) — `null` falls back to the id, same as every other unnamed set there. */
@@ -144,8 +150,8 @@ export class ImportTrigger {
   private readonly dialog = inject(Dialog);
   private readonly emoteAdminService = inject(EmoteAdminService);
   /** `loadImportTarget`'s live-list collaborator for a non-active/untracked target (spec F5) —
-   *  reached from here whenever `setId` names a set other than `activeSetId` (T4.5); the restore
-   *  chain never touches it (see the class doc). */
+   *  reached from here whenever `setId` names a set other than `activeSetId` (T4.5) — and the
+   *  restore flow's slot preview for a target that is not a tracked channel's active set. */
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   /** Only for `filterAlreadyPresent`'s direct read against 7TV (#149 P1 fix) — every other read
    *  reached from here goes through `emoteAdminService`. */
@@ -169,13 +175,6 @@ export class ImportTrigger {
     const setId = this.setId();
     const activeSetId = this.activeSetId();
     const setName = this.setName();
-    // Restore is set-aware since K5 (T5.2: sync-restored takes { emoteSetId, sevenTvEmoteIds };
-    // T5.3: the confirmation names the set) — no longer locked to the active set. Still computed
-    // once, here, from the same frozen ids the rest of this click uses: `isActiveSet` only
-    // decides which slot-preview source the confirmation reads (`startRestoreFlow`), never
-    // whether the door opens at all.
-    const resolvedActiveSetId = resolveActiveSetId(setId, activeSetId);
-    const restoreIsActiveSet = resolvedActiveSetId !== null && resolvedActiveSetId === setId;
 
     openImportSourceDialog(this.dialog, {
       channelName,
@@ -185,6 +184,8 @@ export class ImportTrigger {
         return;
       }
       if (result.kind === 'restore') {
+        // The target is the file's, already resolved and cleared by the file step (spec 6.1,
+        // 4.2) — passed on as it came, host fields included.
         startRestoreFlow(
           {
             dialog: this.dialog,
@@ -195,12 +196,17 @@ export class ImportTrigger {
             restoreService: this.restoreService,
             arbiter: this.arbiter,
           },
-          channelName,
-          setId,
-          setName,
-          restoreIsActiveSet,
+          result.target,
           result.rows,
         );
+        return;
+      }
+      // The three copy doors are disabled without a target set (`ImportSourceDialogData.setId:
+      // null`, spec #253, E22) — a dialog opened with one can therefore never close with anything
+      // but a `'restore'` result, already handled above. This narrows `setId` for `toImportTarget`
+      // below rather than asserting it, so a dialog defect that somehow returned a copy result
+      // anyway is refused here instead of silently building a target around `null`.
+      if (setId === null) {
         return;
       }
       const importDeps = {

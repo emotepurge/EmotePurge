@@ -31,11 +31,12 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     private const string TargetIsActiveSetOfChannelProperty = "targetIsActiveSetOfChannel";
     private const string TargetOwnerTwitchLoginProperty = "targetOwnerTwitchLogin";
 
-    // The set-scoped sync-deleted/sync-restored target (spec 6.6, K5/T5.2): EmoteService's
-    // set-scoped MarkDeletedAsync/MarkRestoredAsync overloads write "emoteSetId", not
-    // "targetEmoteSetId" — a different property name than the import ladder above, because the two
-    // write paths shipped independently and each already had its own name before this projection
-    // read both. TargetIsActiveSetOfChannelProperty is shared as-is: both paths spell it the same.
+    // The set-centric sync-deleted/sync-restored target (restore-per-set spec 5.5): EmoteService's
+    // MarkDeletedInSetAsync/MarkRestoredInSetAsync write "emoteSetId", not "targetEmoteSetId" — a
+    // different property name than the import ladder above, because the two write paths shipped
+    // independently and each already had its own name before this projection read both.
+    // TargetIsActiveSetOfChannelProperty is shared as-is: both paths spell it the same. The legacy
+    // Guid-keyed form (spec 5.6, E4) writes neither property — it has no set to name.
     private const string EmoteSetIdProperty = "emoteSetId";
 
     // The closed vocabulary the endpoint accepts for that discriminator (EmoteEndpoints, F5.1/F1).
@@ -154,11 +155,11 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
 
         if (TryReadCount(root, AuditLogDetail.Kinds.EmoteCount, out var emoteCount))
         {
-            // Spec 6.6 (K5/T5.2): a set-scoped sync-deleted/sync-restored call annotates this same
-            // bare-count shape with its target set under "emoteSetId" — read generically here, same
-            // as the import ladder above, so a legacy-body row (no such property) or an unrelated
-            // action that also happens to carry a bare emoteCount projects with TargetEmoteSet null,
-            // exactly as before.
+            // Restore-per-set spec 5.5: a set-centric sync-deleted/sync-restored call annotates this
+            // same bare-count shape with its target set under "emoteSetId" — read generically here,
+            // same as the import ladder above, so a legacy-body row (no such property, spec 5.6) or an
+            // unrelated action that also happens to carry a bare emoteCount projects with
+            // TargetEmoteSet null, exactly as before.
             return new AuditLogDetail(AuditLogDetail.Kinds.EmoteCount, emoteCount, null, ReadTargetEmoteSet(root, EmoteSetIdProperty));
         }
 
@@ -228,11 +229,11 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
 
     /// <summary>
     /// Reads a target set off an already-parsed details payload, under <paramref name="idPropertyName"/>
-    /// — the import ladder's <c>targetEmoteSetId</c> (spec 6.7) or the set-scoped
-    /// sync-deleted/sync-restored's <c>emoteSetId</c> (spec 6.6, K5/T5.2); the two write paths
+    /// — the import ladder's <c>targetEmoteSetId</c> (spec 6.7) or the set-centric
+    /// sync-deleted/sync-restored's <c>emoteSetId</c> (restore-per-set spec 5.5); the two write paths
     /// shipped independently and never agreed on a name. Returns null — not a throw — whenever that
-    /// property is missing, not a non-empty string, or simply absent (a legacy row, or a valid,
-    /// complete import row with no set reported at all, E5).
+    /// property is missing, not a non-empty string, or simply absent (a legacy Guid-keyed row, spec
+    /// 5.6, or a valid, complete import row with no set reported at all, E5).
     /// </summary>
     private static AuditLogTargetEmoteSet? ReadTargetEmoteSet(JsonElement root, string idPropertyName)
     {

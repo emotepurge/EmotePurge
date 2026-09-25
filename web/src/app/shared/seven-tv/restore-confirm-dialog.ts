@@ -30,8 +30,22 @@ export interface RestoreConfirmDialogData {
    *  same convention as the delete confirmation's `setName`. */
   setName: string;
   /** Whether `setName` is the channel's currently active 7TV set — gates the "this set is not
-   *  currently active" addition (spec 8.8). */
+   *  currently active" addition (spec 8.8), together with `trackedChannelName` below: an
+   *  untracked target never shows that line, whatever this says (spec 4.3, point 6). */
   isActiveSet: boolean;
+  /** The set's resolved 7TV id (spec E21) — shown so the confirmation names exactly the set the
+   *  pre-check verified, never a value read straight from an unvalidated file. */
+  emoteSetId: string;
+  /** The set's owner, always shown (spec 4.3, point 6) — already carries its own display fallback
+   *  (never blank), same convention as `EditableSetTarget.ownerDisplayName`. */
+  ownerDisplayName: string;
+  /** The target's tracked channel, or `null` for an untracked target (spec 6.1) — gates both the
+   *  channel line and the "not currently active" line: neither is shown for an untracked target. */
+  trackedChannelName: string | null;
+  /** Whether the target is a different set than the one the host page has selected — including a
+   *  different set of the *same* channel, and any page with no selected set at all (spec E21). Own
+   *  hint line, shown after the "not active" line, before the emote names. */
+  foreignToView: boolean;
 }
 
 /**
@@ -45,13 +59,32 @@ export interface RestoreConfirmDialogData {
   imports: [Button, DialogShell, NamePreviewList, NoticeBanner, TranslocoPipe],
   template: `
     <app-dialog-shell [dialogTitle]="titleKey | transloco: { count: data.names.length }">
+      <!-- Line order is contract (spec 4.3, point 6; task brief): set, set id, owner, channel
+           (tracked only), "not active" (tracked and not active only), foreign-to-view hint, then
+           the emote names/projection/history note below. -->
       <p class="text-sm text-fg-secondary">
         {{ 'restore.confirmSetLine' | transloco: { setName: data.setName } }}
       </p>
-      @if (!data.isActiveSet) {
+      <p class="text-sm text-fg-secondary">
+        {{ 'restore.confirmSetIdLine' | transloco: { emoteSetId: data.emoteSetId } }}
+      </p>
+      <p class="text-sm text-fg-secondary">
+        {{ 'restore.confirmOwnerLine' | transloco: { ownerDisplayName: data.ownerDisplayName } }}
+      </p>
+      @if (data.trackedChannelName !== null) {
+        <p class="text-sm text-fg-secondary">
+          {{ 'restore.confirmChannelLine' | transloco: { channelName: data.trackedChannelName } }}
+        </p>
+      }
+      @if (data.trackedChannelName !== null && !data.isActiveSet) {
         <p class="text-sm text-fg-secondary">
           {{ 'restore.confirmSetNotActive' | transloco }}
         </p>
+      }
+      @if (data.foreignToView) {
+        <app-notice-banner variant="info">
+          {{ 'restore.confirmForeignToView' | transloco }}
+        </app-notice-banner>
       }
       <app-name-preview-list [names]="data.names" />
 
