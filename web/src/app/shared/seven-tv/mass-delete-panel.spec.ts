@@ -2912,6 +2912,55 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
     });
     expect(startRestore).not.toHaveBeenCalled();
   });
+
+  // Review round 1, finding 4: before this fix the subscription had no `error` branch at all — a
+  // failed request (429, 503, no connection, spec F3) surfaced nothing, leaving the restore entry
+  // silently inert instead of showing the abort notice every other pre-check failure already does.
+  it('shows "check unavailable" when the pre-check request itself fails (network error, not a degraded list)', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock.expectOne('/api/seventv/me/emote-set-targets').error(new ProgressEvent('error'));
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetCheckUnavailable',
+    });
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 4: a hung pre-check request used to leave the restore entry silently
+  // inert forever — same 20 s budget and same treatment as the delete confirmation's own pre-check.
+  it('shows "check unavailable" when the pre-check hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      fixture.componentInstance['openRestoreConfirm']();
+      const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(fixture.componentInstance['abortNotice']()).toEqual({
+        leadKey: 'restore.nothingRestored',
+        reasonKey: 'restore.errors.targetCheckUnavailable',
+      });
+      expect(startRestore).not.toHaveBeenCalled();
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review round 1, finding 4: an answer landing after this panel is torn down must not open a
+  // restore confirmation nobody can see or answer any more.
+  it('cancels the pre-check request once the panel is destroyed', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    expect(req.cancelled).toBeFalsy();
+
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(startRestore).not.toHaveBeenCalled();
+  });
 });
 
 // #253, spec 4.6 point 20, AK 31: the shared pre-check now runs before the delete confirmation
@@ -3012,5 +3061,68 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
       reasonKey: 'massDelete.errors.targetCheckUnavailable',
     });
     expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 3b: a hung pre-check request used to leave the delete button disabled
+  // forever, with no way out short of reloading — same 20 s budget and same treatment (a timeout
+  // reads exactly like any other failed check) as the active-set live alias read's own fix.
+  it('unlocks the button and shows "check unavailable" when the pre-check hangs past its timeout', () => {
+    vi.useFakeTimers();
+    try {
+      fixture.componentInstance['openConfirm']();
+      const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+      expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(true);
+      expect(req.cancelled).toBeFalsy();
+
+      vi.advanceTimersByTime(20_000);
+
+      expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+      expect(fixture.componentInstance['abortNotice']()).toEqual({
+        leadKey: 'massDelete.nothingDeleted',
+        reasonKey: 'massDelete.errors.targetCheckUnavailable',
+      });
+      expect(dialogOpen).not.toHaveBeenCalled();
+      // `timeout()` unsubscribes the source on expiry — the request is cancelled, not answered.
+      expect(req.cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Review round 1, finding 3c: an answer that lands after this panel was torn down must not open
+  // a confirmation nobody can see or answer any more. `takeUntilDestroyed` unsubscribes the whole
+  // pipe synchronously on destroy, which cancels the still-open request outright — a stronger
+  // guarantee than merely dropping a late answer, and proof the panel never even waits for one.
+  it('cancels the pre-check request and opens no dialog once the panel is destroyed', () => {
+    fixture.componentInstance['openConfirm']();
+    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    expect(req.cancelled).toBeFalsy();
+
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  // Review round 1, finding 3a: the confirmation must open for the set the pre-check actually
+  // vouched for, not for whatever the host page's `setId()` input has moved on to while an
+  // uncached check was still in flight (a `channel.synced` set switch, for instance).
+  it('opens the confirmation for the checked set, not a set the host switched to while the check was still out', () => {
+    fixture.componentInstance['openConfirm']();
+    const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
+    expect(req.request.url).toContain('/api/seventv/me/emote-set-targets');
+
+    // The set switches behind the still-open pre-check.
+    fixture.componentRef.setInput('setId', 'set-2');
+    fixture.detectChanges();
+
+    // Answers for the originally checked set ('set-1'), not the one now selected.
+    req.flush(targetsResponse('set-1', 'somechannel'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    const data = dialogOpen.mock.calls[0][1].data as { setName: string };
+    // `setName` input was never set, so it falls back to the id the dialog was built for —
+    // proof that the checked id, not the live (now switched) one, is what `frozenSetId` pinned.
+    expect(data.setName).toBe('set-1');
   });
 });
