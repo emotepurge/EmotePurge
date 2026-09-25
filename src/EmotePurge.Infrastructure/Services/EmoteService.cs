@@ -244,13 +244,9 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
             unresolved = new UnresolvedChannelDto(normalizedExpected, reason);
         }
 
-        // Step 3a (addendum N3): the owner's tracked channel, by the owner's Twitch id — exactly the
-        // rule of IChannelService.GetActiveByTwitchChannelIdAsync (active row, not on the block
-        // list), which is also how the target list derives trackedChannelName, so the entry names the
-        // channel the client saw. By id, not login: logins move (#44), the id does not. It only names
-        // the paper entry below; no row of it is touched or counted, and a blocked channel is as
-        // invisible here as in step 3.
-        var ownerChannelName = await ResolveOwnerChannelNameAsync(owner.TwitchUserId, cancellationToken);
+        // Step 3a (addendum N3) is resolved lazily below, right where the paper entry is actually
+        // written (F4) — a report where every row landed in a channel entry and no channel stayed
+        // unresolved never needs it.
 
         // Step 4: the rows of every hit channel, matched by (ChannelId, SevenTvEmoteId) — one query
         // for all hits, split per channel below. The same goal-state semantics as the channel-bound
@@ -299,13 +295,33 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
 
         // Step 5, the paper entry: whenever no channel entry carries the report, or the expected
         // channel was missed — never a successful report without a trail, never a missed channel
-        // without one (#224). With an owner channel it names that channel and says
-        // targetIsActiveSetOfChannel: false (the pre-#253 form, shown in the channel's audit view);
-        // without one it has no channel and the owner identity instead, which the audit view renders
-        // "for <ownerLogin>". Never both groups of fields (spec 5.5 invariant). The unresolved ids
-        // are all reported ids, since none of them was matched in that channel.
+        // without one (#224). With an owner channel it names that channel; targetIsActiveSetOfChannel
+        // reflects what the database stores for it right now (F1 fix, addendum N3 corrected) — true
+        // exactly when the owner channel is itself one of the hit channels from step 2, false
+        // otherwise. A hard-coded false was wrong two ways: a hit owner channel that matched zero
+        // reported rows got no channel entry (step 5 above gates on found.Count > 0) but was in fact
+        // active, and a shared set whose owner channel is a hit while a second tracked channel lags
+        // wrote a channel entry saying true right next to a paper entry — same channel — saying false.
+        // Without an owner channel the entry has no channel and the owner identity instead, which the
+        // audit view renders "for <ownerLogin>". Never both groups of fields (spec 5.5 invariant). The
+        // unresolved ids are all reported ids, since none of them was matched in that channel.
         if (!channelEntryWritten || unresolved is not null)
         {
+            // Step 3a (addendum N3): the owner's tracked channel, by the owner's Twitch id — the same
+            // rule as ChannelService.GetActiveByTwitchChannelIdAsync (active row, not on the block
+            // list), which is also how the target list derives trackedChannelName, so the entry names
+            // the channel the client saw. By id, not login: logins move (#44), the id does not. It
+            // only names the paper entry; no row of the owner channel is touched or counted here, and
+            // a blocked one is as invisible as in step 3.
+            var ownerChannel = await db.Channels
+                .AsNoTracking()
+                .Where(c => c.TwitchChannelId == owner.TwitchUserId && c.IsBotActive)
+                .Select(c => new { c.ChannelName, c.TwitchChannelId })
+                .FirstOrDefaultAsync(cancellationToken);
+            var ownerChannelName = ownerChannel is null || excludedChannelFilter.IsExcluded(ownerChannel.TwitchChannelId)
+                ? null
+                : ownerChannel.ChannelName;
+            var ownerChannelIsActiveHere = ownerChannelName is not null && hits.Exists(hit => hit.TwitchChannelId == ownerChannel!.TwitchChannelId);
             db.AddAuditEntry(
                 actor,
                 action,
@@ -314,26 +330,13 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
                 targetId: emoteSetId,
                 details: ownerChannelName is null
                     ? BuildOwnerPaperDetails(dedupedIds, emoteSetId, owner, unresolved)
-                    : BuildOwnerChannelPaperDetails(dedupedIds, emoteSetId, unresolved));
+                    : BuildOwnerChannelPaperDetails(dedupedIds, emoteSetId, unresolved, ownerChannelIsActiveHere));
         }
 
         // Step 6: rows and audit entries in one transaction.
         await db.SaveChangesAsync(cancellationToken);
 
         return new InSetOutcome(dedupedIds.Count, channels, unresolved);
-    }
-
-    private async Task<string?> ResolveOwnerChannelNameAsync(string ownerTwitchUserId, CancellationToken cancellationToken)
-    {
-        var ownerChannel = await db.Channels
-            .AsNoTracking()
-            .Where(c => c.TwitchChannelId == ownerTwitchUserId && c.IsBotActive)
-            .Select(c => new { c.ChannelName, c.TwitchChannelId })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        return ownerChannel is null || excludedChannelFilter.IsExcluded(ownerChannel.TwitchChannelId)
-            ? null
-            : ownerChannel.ChannelName;
     }
 
     // The paper entry without an owner channel: the owner identity names the target.
@@ -359,21 +362,22 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
             };
 
     // The paper entry with the owner's channel as ChannelName: the channel names the owner, so the
-    // targetOwner* fields stay out.
+    // targetOwner* fields stay out. targetIsActiveSetOfChannel is the caller's own read of whether
+    // that channel is a hit (F1 fix) — never hard-coded here.
     private static object BuildOwnerChannelPaperDetails(
-        IReadOnlyList<string> dedupedIds, string emoteSetId, UnresolvedChannelDto? unresolved) =>
+        IReadOnlyList<string> dedupedIds, string emoteSetId, UnresolvedChannelDto? unresolved, bool targetIsActiveSetOfChannel) =>
         unresolved is null
             ? new
             {
                 emoteCount = dedupedIds.Count,
                 emoteSetId,
-                targetIsActiveSetOfChannel = false,
+                targetIsActiveSetOfChannel,
             }
             : new
             {
                 emoteCount = dedupedIds.Count,
                 emoteSetId,
-                targetIsActiveSetOfChannel = false,
+                targetIsActiveSetOfChannel,
                 unresolvedChannelName = unresolved.ChannelName,
                 unresolvedReason = unresolved.Reason,
                 unresolvedSevenTvEmoteIds = dedupedIds,

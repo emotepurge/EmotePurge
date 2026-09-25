@@ -672,6 +672,64 @@ public class EmoteServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task MarkDeletedInSetAsync_HitOwnerChannelWithoutAnyMatchingRow_PaperEntryHasTheFlagTrue()
+    {
+        // Reviewer F1a (fix of addendum N3's targetIsActiveSetOfChannel): the owner channel is itself
+        // a hit — its ActiveEmoteSetId is the reported set — but matches none of the reported ids, so
+        // step 5 writes no channel entry for it and the paper entry takes over. A hard-coded false
+        // would say the set is not active there while the database says it is.
+        await using var db = fixture.CreateDbContext();
+        SeedChannel(db, "insetdel_hitownerzero", "4430", "set-insetdel-hitownerzero");
+        await db.SaveChangesAsync();
+
+        var result = await CreateService(db).MarkDeletedInSetAsync(
+            "set-insetdel-hitownerzero", OwnerSevenTvUserId, OwnerTwitchLogin, "4430", ["7tv-idhoz1"], null, Actor);
+
+        var hit = Assert.Single(result.Channels);
+        Assert.Equal("insetdel_hitownerzero", hit.ChannelName);
+        Assert.Equal(0, hit.Count);
+
+        var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-hitownerzero"));
+        Assert.Equal("insetdel_hitownerzero", audit.ChannelName);
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-hitownerzero","targetIsActiveSetOfChannel":true}""",
+            audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_OwnerChannelIsHitAndAnotherChannelLags_PaperEntryAgreesWithTheChannelEntry()
+    {
+        // Reviewer F1b: a set shared by the owner's own channel (a hit here) and a second tracked
+        // channel whose stored ActiveEmoteSetId still lags. Before the fix, the channel entry for the
+        // owner said targetIsActiveSetOfChannel: true while the paper entry for that same channel
+        // (written because the lagging channel is unresolved) said false. Both must now agree.
+        await using var db = fixture.CreateDbContext();
+        var owner = SeedChannel(db, "insetdel_ownerhitshared", "4431", "set-insetdel-ownerhitshared");
+        SeedChannel(db, "insetdel_ownerlagshared", "4432", "set-insetdel-ownerhitshared-stale");
+        var ownerEmote = SeedEmote(db, owner, "7tv-idohs1");
+        await db.SaveChangesAsync();
+
+        var result = await CreateService(db).MarkDeletedInSetAsync(
+            "set-insetdel-ownerhitshared", OwnerSevenTvUserId, OwnerTwitchLogin, "4431", ["7tv-idohs1"], "insetdel_ownerlagshared", Actor);
+
+        Assert.Equal("insetdel_ownerhitshared", Assert.Single(result.Channels).ChannelName);
+        Assert.Equal(new UnresolvedChannelDto("insetdel_ownerlagshared", UnresolvedChannelReasons.ActiveSetDiffers), result.UnresolvedChannel);
+        Assert.True(await db.Emotes.Where(e => e.Id == ownerEmote.Id).Select(e => e.IsArchived).SingleAsync());
+
+        var audits = await AuditEntriesForSetAsync(db, "set-insetdel-ownerhitshared");
+        Assert.Equal(2, audits.Count);
+        Assert.All(audits, a => Assert.Equal("insetdel_ownerhitshared", a.ChannelName));
+        var channelEntry = Assert.Single(audits, a => !a.DetailsJson!.Contains("unresolvedChannelName", StringComparison.Ordinal));
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-ownerhitshared","targetIsActiveSetOfChannel":true}""",
+            channelEntry.DetailsJson);
+        var paperEntry = Assert.Single(audits, a => a.DetailsJson!.Contains("unresolvedChannelName", StringComparison.Ordinal));
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-ownerhitshared","targetIsActiveSetOfChannel":true,"unresolvedChannelName":"insetdel_ownerlagshared","unresolvedReason":"activeSetDiffers","unresolvedSevenTvEmoteIds":["7tv-idohs1"]}""",
+            paperEntry.DetailsJson);
+    }
+
+    [Fact]
     public async Task MarkDeletedInSetAsync_AlreadyArchivedRow_CountsAsArchived_AndKeepsItsDate()
     {
         // Today's semantics, per channel: the live sync usually archives first; that earlier, more

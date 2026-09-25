@@ -172,7 +172,9 @@ now `internal`) ·
 `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` (`PublishChannelSyncedAsync`, now shared; T3: the
 legacy routes' own body/handler) ·
 `src/EmotePurge.Core/Services/IEmoteService.cs` ·
-`src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`src/EmotePurge.Infrastructure/Services/EmoteService.cs` (F1 fix wave: `targetIsActiveSetOfChannel`
+derived from the hit list, not hard-coded; the Twitch-id lookup deferred to where the paper entry is
+actually written) ·
 `src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs`,
 `src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` (addendum N3: `OwnerTwitchUserId`) ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`,
@@ -243,14 +245,26 @@ service resolves it from the owner's Twitch id, which the owner check now return
 `IChannelService.GetActiveByTwitchChannelIdAsync` (an active row, not on the block list), the same
 rule that gives the target list its `trackedChannelName`. With such a channel the entry is
 `ChannelName = <owner channel>` and `{ emoteCount: reportedCount, emoteSetId,
-targetIsActiveSetOfChannel: false }`, without the `targetOwner*` fields — the form these flows wrote
-before #253, rendered "(not the active set)" and listed by `GET /api/channels/{c}/audit-log`. Only
-without one (untracked, left or blocked — a blocked channel looks like a left one) is it
-`ChannelName = null` with `{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId,
-targetOwnerTwitchLogin }` and no `targetIsActiveSetOfChannel`, rendered "for <ownerLogin>". An entry
-carries either a channel and `targetIsActiveSetOfChannel` or the `targetOwner*` fields, never both; a
-mismatch follows the same rule (`activeSetDiffers` names the lagging channel, since it is the owner's
-active, unblocked one; `notTracked` stays without a channel). The first version of this report wrote
+targetIsActiveSetOfChannel }`, without the `targetOwner*` fields — the form these flows wrote
+before #253, rendered "(not the active set)" when the flag is `false`, and listed by
+`GET /api/channels/{c}/audit-log`. The flag is not hard-coded (a reviewer finding fixed in the same
+fix wave as this rewrite, F1): it is `true` exactly when the owner channel is itself one of the hit
+channels above (its stored `ActiveEmoteSetId` is the reported set), `false` otherwise — a hit owner
+channel that matched zero reported rows still reads `true`, even though it got no channel entry of
+its own (that one is gated on a goal-state count above 0). Only without an owner channel (untracked,
+left or blocked — a blocked channel looks like a left one) is it `ChannelName = null` with
+`{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin }` and no
+`targetIsActiveSetOfChannel`, rendered "for <ownerLogin>". An entry carries either a channel and
+`targetIsActiveSetOfChannel` or the `targetOwner*` fields, never both. A mismatch reuses the same
+channel and the same flag, not a rule of its own — and the two are not always the same channel:
+`ChannelName` is always the owner's channel, while `unresolvedChannelName` names whichever channel
+`sync-restored`/`-deleted` expected and missed. For `activeSetDiffers` those coincide only when the
+reporting page belongs to the owner itself (the classic case: the owner's own channel lags, so it is
+neither a hit nor named by `ChannelName`, and the flag reads `false`); a set shared with a second
+tracked channel can instead have the owner's channel as a hit (flag `true`) while that second
+channel's stored active set lags and is the one `unresolvedChannelName` names — the paper entry then
+still names the owner, not the lagging channel. `notTracked` stays without a channel either way. The
+first version of this report wrote
 every paper entry with `ChannelName = null`; since the channel audit view filters exactly on
 `ChannelName`, a delete or restore in a non-active set of one's own tracked channel disappeared from
 that view, where it had appeared before #253 — a regression the live verification found, which this

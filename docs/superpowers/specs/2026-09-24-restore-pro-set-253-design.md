@@ -1450,11 +1450,34 @@ Mitgliederliste mit `refresh` neu.
 - Kein neuer Request außerhalb dieser Fälle; die Regel von Spec-200 8.3 („ein lauter Reload
   bezieht die Liste neu, ein stiller nie") bleibt — das Settle eines eigenen Laufs ist ein lauter
   Anlass, weil der Nutzer ihn selbst ausgelöst hat.
+- **Festlegung (Tragweite, F7):** für Delete und Restore ins gewählte nicht-aktive Set lud die
+  Seite schon vor diesem Nachtrag laut neu — `MassDeletePanel` ruft bei einem terminalen `deleted`
+  über `onDeleted()` (Zweig `run.setId !== shownSetId() || isNonActiveView()`) und bei einem
+  gescheiterten Bericht über `onReloadRequested()` jeweils `refresh()` → `reloadLiveMembers()` auf.
+  Die eigentliche Neuerung von N2 ist deshalb nicht der Reload selbst für Delete und Restore,
+  sondern (a) der Import-Pfad, der vorher keinen hatte, und (b) die Vormerkung für ein Ziel-Set,
+  das die Seite beim Settle gerade nicht zeigt.
 
 **Grenzfälle.**
 
 - **Restore aus dem Delete-Dock (E16):** Delete und Restore treffen dasselbe Set; jeder Lauf löst
   beim Settle einen Reload aus — zwei Requests, beide gerechtfertigt.
+- **Delete ins gewählte nicht-aktive Set (F7):** löst dadurch zwei `refresh=true`-GETs auf die
+  Mitgliederroute aus — den bestehenden aus `MassDeletePanel` (`onDeleted`/`onReloadRequested` →
+  `refresh()`) und den neuen aus dem hier beschriebenen Settle-Effekt. Akzeptiert: AK 37 hält beim
+  Settle exakt einen Request für den hier beschriebenen Weg fest, nicht für die Seite insgesamt;
+  der zweite ist redundant, aber harmlos.
+- **Settle während die Mitgliederanfrage des gewählten nicht-aktiven Sets noch läuft (Schiedsspruch
+  zum zurückgestellten N2-Punkt, kein Code geändert):** Auslöser sind ein Aktualisieren-Klick
+  mitten im Lauf, ein später Rückwechsel auf das Set nach mehr als 60 s, eine Rückkehr auf die
+  Seite während eines Laufs oder ein fremdes `channel.synced`. `reloadLiveMembers()` liefert dann
+  `false` (die Anfrage läuft bereits) und die Vormerkung fällt ersatzlos weg — die laufende, vor
+  bzw. während der Mutation gestellte Antwort füllt sowohl die Ansicht als auch beide 60-s-Caches
+  mit einem Stand, der die Mutation noch nicht zeigt. Heilung: der Aktualisieren-Knopf, der
+  Cache-Ablauf, und beim Restore zusätzlich das `channel.synced` des E12-Resync; offen bleibt es
+  damit nur für Delete und Import ins gewählte nicht-aktive Set. AK 37 bleibt wie formuliert
+  stehen. Benannter Rest, bewusst nicht behoben — ein Millisekundenfenster, binnen 60 s vom Nutzer
+  selbst heilbar, s. `usage-stats-page.ts` (`reloadLiveMembers`, Doku-Kommentar dort).
 - **Lauf ohne erfolgreiche Zeile:** nichts hat sich geändert, kein Reload (und keine Meldung).
 - **Ziel ist das aktive Set der Seite:** kein Reload über diesen Weg; das Raster folgt
   `channel.synced` wie bisher.
@@ -1521,10 +1544,10 @@ der Papier-Eintrag dessen Kanal. Nur echte ungetrackte Ziele bleiben ohne Kanal.
    keinen Kanal gibt.
 3. **Was der Papier-Eintrag trägt** (5.5, zwei Zeilen statt einer):
    - **mit Besitzerkanal:** `ChannelName = <Besitzerkanal>`, Details `{ emoteCount, emoteSetId,
-     targetIsActiveSetOfChannel: false, unresolved*? }` — **ohne** `targetOwnerSevenTvUserId`
+     targetIsActiveSetOfChannel, unresolved*? }` — **ohne** `targetOwnerSevenTvUserId`
      und `targetOwnerTwitchLogin`. Der Kanal nennt den Besitzer; die Form ist die der Einträge vor
-     #253, `audit-row.ts` rendert „(nicht das aktive Set)" (`:141-142`), und der Eintrag steht in
-     der Kanal-Ansicht.
+     #253, `audit-row.ts` rendert „(nicht das aktive Set)" (`:141-142`), wenn das Flag `false` ist,
+     und der Eintrag steht in der Kanal-Ansicht.
    - **ohne Besitzerkanal:** unverändert `ChannelName = null`, Details mit beiden
      `targetOwner*`-Feldern, ohne `targetIsActiveSetOfChannel` → „für <ownerLogin>".
    - **Festlegung (Invariante):** ein Eintrag trägt entweder Kanal **und**
@@ -1534,13 +1557,31 @@ der Papier-Eintrag dessen Kanal. Nur echte ungetrackte Ziele bleiben ohne Kanal.
      Aktiv-Flag). Projektion (`ReadTargetEmoteSet`) und Ansicht bleiben **unverändert**; die
      Alternative — beide Feldgruppen schreiben und die Ansicht umsortieren — hätte die Invariante
      gebrochen und #255 vorgegriffen.
-4. **Der Mismatch-Eintrag** folgt derselben Regel, nicht einer eigenen: bei `activeSetDiffers`
-   **ist** der unaufgelöste Kanal der Besitzerkanal (aktiv, ungesperrt, nur mit anderem
-   `ActiveEmoteSetId`), also `ChannelName = <Kanal>`, `targetIsActiveSetOfChannel: false` — was
-   unsere Datenbank in diesem Moment tatsächlich sagt — plus die drei `unresolved*`-Felder; der
-   Eintrag erscheint in der Kanal-Ansicht (Befund c). Bei `notTracked` ist der Besitzerkanal nach
-   derselben Regel nicht auflösbar, der Eintrag bleibt ohne Kanal; `unresolvedChannelName` nennt
-   den Kanal weiterhin (das ist die Eingabe des Clients, kein Geheimnis).
+   - **Festlegung (Flag-Herkunft, Fix-Welle nach diesem Nachtrag, Befund F1).** `targetIsActiveSetOfChannel`
+     ist im Kanal-Zweig nicht hart `false`, sondern spiegelt den gespeicherten Zustand des
+     Besitzerkanals: `true` genau dann, wenn der Besitzerkanal selbst einer der Treffer-Kanäle aus
+     Schritt 2 ist (sein `ActiveEmoteSetId` ist das gemeldete Set), sonst `false`. Ohne diese
+     Ableitung trug ein eigener Kanal-Treffer mit null passenden Zeilen fälschlich `false`, obwohl
+     das Set bei ihm aktiv ist (Schritt 5 schreibt ihm ja keinen Kanal-Eintrag, weil der auf einen
+     Treffer-Zähler über 0 gated ist) — und ein geteiltes Set, dessen Besitzerkanal Treffer ist,
+     während ein zweiter Kanal hinterherhinkt, schrieb einen Kanal-Eintrag mit `true` direkt neben
+     einem Papier-Eintrag desselben Kanals mit `false`.
+4. **Der Mismatch-Eintrag** folgt derselben Regel und demselben Flag, nicht einer eigenen — und der
+   unaufgelöste Kanal ist **nicht immer** der Besitzerkanal (das behauptete die erste Fassung dieses
+   Nachtrags fälschlich): `ChannelName` und `targetIsActiveSetOfChannel` kommen wie in Punkt 3 aus
+   dem Besitzerkanal (Schritt 3a), `unresolvedChannelName` aus dem tatsächlich unaufgelösten Kanal —
+   beide fallen nur zusammen, wenn die meldende Seite die des Besitzers selbst ist. Im klassischen
+   Fall (Befund c) hinkt der eigene Kanal des Besitzers hinterher: er ist dann selbst kein Treffer,
+   `targetIsActiveSetOfChannel` liest `false`, und `ChannelName` = `unresolvedChannelName`. Bei
+   einem geteilten Set, das am Besitzerkanal aktiv ist (ein Treffer, Flag `true`) und an einem
+   zweiten getrackten Kanal X hinterherhinkt (dessen `ActiveEmoteSetId` noch das alte Set zeigt),
+   sendet die Seite von X `expectedChannelName = X`; Schritt 3 löst X nicht auf → `activeSetDiffers`
+   mit `unresolvedChannelName = X`, aber der Papier-Eintrag trägt trotzdem `ChannelName =
+   <Besitzerkanal>` mit `targetIsActiveSetOfChannel: true` — der Eintrag nennt den Besitzer, nicht
+   X, plus die drei `unresolved*`-Felder zu X. Der Eintrag erscheint in der Kanal-Ansicht des
+   Besitzerkanals. Bei `notTracked` ist der Besitzerkanal nach derselben Regel nicht auflösbar, der
+   Eintrag bleibt ohne Kanal; `unresolvedChannelName` nennt den Kanal weiterhin (das ist die Eingabe
+   des Clients, kein Geheimnis).
 5. **Kanal-Einträge (Treffer) und der Auslöser des Papier-Eintrags ändern sich nicht:** der
    Papier-Eintrag entsteht weiterhin genau dann, wenn kein Kanal-Eintrag geschrieben wurde oder
    ein Kanal unaufgelöst blieb. Nur sein `ChannelName` und seine Detailform hängen jetzt vom
@@ -1570,12 +1611,13 @@ der Papier-Eintrag dessen Kanal. Nur echte ungetrackte Ziele bleiben ohne Kanal.
 zwei neue Zeilen), AK 13, 17, 18, 28. **DECISIONS-Eintrag 2 vom 2026-09-25** („Delete, restore and
 a replace's removals report per emote set — report plus resync"): der Absatz **„Audit"** wird
 ergänzt — der Papier-Eintrag trägt den getrackten Kanal des Besitzer-Accounts (aufgelöst über dessen
-Twitch-ID, aktive Zeile, Sperrliste), mit `targetIsActiveSetOfChannel: false` und ohne
-`targetOwner*`; nur ohne Besitzerkanal bleibt er kanallos mit `targetOwner*`; Begründung: die
-erste Fassung hatte die Einträge nicht-aktiver Sets des eigenen Kanals aus der Kanal-Ansicht
-genommen, was vor #253 nicht so war. Den Eintrag schreibt der Implementer im selben Commit wie die
-Service-Änderung (Regel 3). `docs/Architectur.md` und `docs/UI-Designsprache.md` nennen den
-Papier-Eintrag nicht in dieser Tiefe; keine weitere Doku-Stelle.
+Twitch-ID, aktive Zeile, Sperrliste), mit `targetIsActiveSetOfChannel` (Flag-Herkunft: ist dieser
+Kanal selbst ein Treffer, s. o.) und ohne `targetOwner*`; nur ohne Besitzerkanal bleibt er kanallos
+mit `targetOwner*`; Begründung: die erste Fassung hatte die Einträge nicht-aktiver Sets des eigenen
+Kanals aus der Kanal-Ansicht genommen, was vor #253 nicht so war. Den Eintrag schreibt der
+Implementer im selben Commit wie die Service-Änderung (Regel 3). `docs/Architectur.md` und
+`docs/UI-Designsprache.md` nennen den Papier-Eintrag nicht in dieser Tiefe; keine weitere
+Doku-Stelle.
 
 **Tests.** `EmoteServiceTests.cs` (9.2): nicht-aktives Set eines getrackten Kanals ⇒ Papier-Eintrag
 mit `ChannelName` = Kanal, `targetIsActiveSetOfChannel: false`, ohne `targetOwner*`; ungetrackt ⇒
@@ -1585,19 +1627,27 @@ inaktiver Besitzerkanal ⇒ `null`; Mismatch `activeSetDiffers` ⇒ Kanal gesetz
 `OwnerTwitchUserId` auf allen drei Trefferpfaden. `SevenTvEmoteSetSyncInSetEndpointTests` (9.1):
 die Twitch-ID wird an den Service durchgereicht. Ein Integrationstest über
 `AuditLogQueryService.ListAsync` mit `ChannelName`-Filter, der den Papier-Eintrag findet.
+**Fix-Welle (F1):** ein Treffer-Besitzerkanal ohne passende Zeile ⇒ Papier-Eintrag mit
+`targetIsActiveSetOfChannel: true`; ein geteiltes Set mit Treffer-Besitzerkanal und einem zweiten,
+hinterherhinkenden Kanal ⇒ Kanal-Eintrag und Papier-Eintrag desselben Kanals stimmen im Flag
+überein (beide `true`), der Papier-Eintrag trägt zusätzlich die drei `unresolved*`-Felder zum
+zweiten Kanal.
 
-**AK 38.** Für ein nicht-aktives Set, dessen Besitzer-Account einen aktiven, nicht gesperrten
-Kanal hat, entsteht der Papier-Eintrag mit `ChannelName` = diesem Kanal und Details
-`{ emoteCount, emoteSetId, targetIsActiveSetOfChannel: false }` ohne `targetOwner*`-Felder, und
-`GET /api/channels/{kanal}/audit-log` listet ihn; für ein Set ohne solchen Kanal (ungetrackt,
-verlassen oder gesperrt) entsteht er mit `ChannelName = null` und beiden `targetOwner*`-Feldern
-ohne `targetIsActiveSetOfChannel`. Kein Eintrag trägt beide Feldgruppen.
+**AK 38.** Für ein Set, dessen Besitzer-Account einen aktiven, nicht gesperrten Kanal hat, entsteht
+der Papier-Eintrag mit `ChannelName` = diesem Kanal und Details
+`{ emoteCount, emoteSetId, targetIsActiveSetOfChannel }` ohne `targetOwner*`-Felder, und
+`GET /api/channels/{kanal}/audit-log` listet ihn; `targetIsActiveSetOfChannel` ist `true` genau
+dann, wenn der Besitzerkanal selbst ein Treffer aus Schritt 2 ist (sein `ActiveEmoteSetId` ist das
+gemeldete Set — auch ein Treffer ohne eine einzige passende Zeile), sonst `false`. Für ein Set ohne
+solchen Kanal (ungetrackt, verlassen oder gesperrt) entsteht er mit `ChannelName = null` und beiden
+`targetOwner*`-Feldern ohne `targetIsActiveSetOfChannel`. Kein Eintrag trägt beide Feldgruppen.
 
-**AK 39.** Ein Mismatch `activeSetDiffers` schreibt den Papier-Eintrag mit dem unaufgelösten Kanal
-als `ChannelName`, `targetIsActiveSetOfChannel: false` und den drei `unresolved*`-Feldern, sichtbar
-in dessen Kanal-Audit-Ansicht; ein Mismatch `notTracked` schreibt ihn ohne Kanal, mit
-`targetOwner*` und den drei `unresolved*`-Feldern — für einen gesperrten Kanal byte-gleich mit dem
-eines verlassenen.
+**AK 39.** Ein Mismatch `activeSetDiffers` schreibt den Papier-Eintrag mit dem Besitzerkanal als
+`ChannelName` (Schritt 3a) — mit dem unaufgelösten Kanal identisch nur, wenn die meldende Seite die
+des Besitzers ist —, `targetIsActiveSetOfChannel` nach derselben Ableitung wie AK 38, und den drei
+`unresolved*`-Feldern zum tatsächlich unaufgelösten Kanal; sichtbar in der Kanal-Audit-Ansicht des
+Besitzerkanals. Ein Mismatch `notTracked` schreibt ihn ohne Kanal, mit `targetOwner*` und den drei
+`unresolved*`-Feldern — für einen gesperrten Kanal byte-gleich mit dem eines verlassenen.
 
 ### N4 — B3: kein „Erneut melden" bei `channelMismatch`
 
@@ -1654,6 +1704,6 @@ bei `partial`/`shortfall` ist der Knopf vorhanden und löst genau eine erneute M
 |---|---|---|
 | 36 | N1 | Fallback-Resync des Clients bei endgültig gescheiterter erster Meldung (Restore: `resyncChannelName ?? expectedChannelName`, Delete: `expectedChannelName`; Import unverändert) |
 | 37 | N2 | Mitgliederliste des gewählten nicht-aktiven Ziel-Sets lädt beim Settle mit `refresh=true`; nicht gewähltes Ziel: Vormerkung für den nächsten Ladevorgang dieses Sets |
-| 38 | N3 | Papier-Eintrag trägt den Besitzerkanal (aktiv, ungesperrt, über Twitch-ID) mit `targetIsActiveSetOfChannel: false`; sonst kanallos mit `targetOwner*`; nie beides |
+| 38 | N3 | Papier-Eintrag trägt den Besitzerkanal (aktiv, ungesperrt, über Twitch-ID) mit `targetIsActiveSetOfChannel` (Flag = ist der Besitzerkanal selbst Treffer); sonst kanallos mit `targetOwner*`; nie beides |
 | 39 | N3 | Mismatch-Eintrag folgt derselben Regel (`activeSetDiffers` mit Kanal, `notTracked` ohne) |
 | 40 | N4 | Kein „Erneut melden" bei `channelMismatch`, in allen drei Docks und am Dienst |
