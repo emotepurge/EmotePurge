@@ -313,7 +313,7 @@ describe('ImportConflictResolutionStep', () => {
       expect(radio('Pog', 'skip').disabled).toBe(false);
     });
 
-    it('opens a prefilled rename field and shows its field error for an alias 7TV rejects (AK 10)', async () => {
+    it('opens a prefilled rename field and shows its field error once touched, for an alias 7TV rejects (AK 10)', async () => {
       const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
       await render('nameCollision', rows);
 
@@ -330,7 +330,13 @@ describe('ImportConflictResolutionStep', () => {
       ] satisfies Violation[]);
       fixture.detectChanges();
 
-      const field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+      // Editing the field is what touches it — this also drives it to the value under test.
+      let field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+      field!.value = 'Kappa neu';
+      field!.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
       expect(field?.value).toBe('Kappa neu');
       expect(field?.getAttribute('aria-invalid')).toBe('true');
       const errorId = field?.getAttribute('aria-describedby') ?? '';
@@ -343,6 +349,94 @@ describe('ImportConflictResolutionStep', () => {
       expect(decided.at(-1)).toEqual({
         key: 'a',
         decision: { kind: 'renameSource', alias: 'KappaNeu' },
+      });
+    });
+
+    describe('field error only once touched (issue #269, §5.3)', () => {
+      it('shows no field error and no aria-invalid right after choosing rename, even though the prefilled alias is already taken', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render('nameCollision', rows);
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa' }]]),
+        );
+        // The prefilled alias equals the collision's own name — always taken — so a violation
+        // exists from the first render, before the user has done anything with the field.
+        fixture.componentRef.setInput('violations', [
+          { rule: 'aliasHeldByTarget', rowKeys: ['a'] },
+        ] satisfies Violation[]);
+        fixture.detectChanges();
+
+        const field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+        expect(field?.getAttribute('aria-invalid')).toBeNull();
+        expect(field?.getAttribute('aria-describedby')).toBeNull();
+        expect(host.querySelector('#resolve-alias-a-error')).toBeNull();
+      });
+
+      it('shows the field error once the field is touched by leaving it (blur), still on the same taken alias', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render('nameCollision', rows);
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa' }]]),
+        );
+        fixture.componentRef.setInput('violations', [
+          { rule: 'aliasHeldByTarget', rowKeys: ['a'] },
+        ] satisfies Violation[]);
+        fixture.detectChanges();
+
+        host
+          .querySelector<HTMLInputElement>('#resolve-alias-a')!
+          .dispatchEvent(new FocusEvent('blur'));
+        fixture.detectChanges();
+
+        const field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+        expect(field?.getAttribute('aria-invalid')).toBe('true');
+        expect(host.querySelector('#resolve-alias-a-error')?.textContent).toContain(
+          'Dieser Name ist im Zielset schon vergeben.',
+        );
+      });
+
+      it('keeps the row touched after switching its action away and back', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render('nameCollision', rows);
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa' }]]),
+        );
+        fixture.detectChanges();
+        let field = host.querySelector<HTMLInputElement>('#resolve-alias-a')!;
+        field.value = 'Kappa neu';
+        field.dispatchEvent(new Event('input'));
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa neu' }]]),
+        );
+        fixture.componentRef.setInput('violations', [
+          { rule: 'invalidTypedAlias', rowKeys: ['a'] },
+        ] satisfies Violation[]);
+        fixture.detectChanges();
+        expect(field.getAttribute('aria-invalid')).toBe('true');
+
+        radio('Kappa', 'skip').click();
+        fixture.componentRef.setInput('decisions', new Map([['a', { kind: 'skip' }]]));
+        fixture.detectChanges();
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa neu' }]]),
+        );
+        fixture.detectChanges();
+
+        field = host.querySelector<HTMLInputElement>('#resolve-alias-a')!;
+        expect(field.getAttribute('aria-invalid')).toBe('true');
       });
     });
 

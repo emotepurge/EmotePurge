@@ -495,14 +495,17 @@ export function violationMessages(
                     class="app-input-sm min-w-0 w-full flex-1"
                     [id]="'resolve-alias-' + row.key"
                     [value]="alias.value"
-                    [attr.aria-invalid]="fieldErrorKey(row.key) !== null ? 'true' : null"
+                    [attr.aria-invalid]="visibleFieldErrorKey(row.key) !== null ? 'true' : null"
                     [attr.aria-describedby]="
-                      fieldErrorKey(row.key) !== null ? 'resolve-alias-' + row.key + '-error' : null
+                      visibleFieldErrorKey(row.key) !== null
+                        ? 'resolve-alias-' + row.key + '-error'
+                        : null
                     "
                     (input)="rename(row.key, $event)"
+                    (blur)="touch(row.key)"
                   />
                 </div>
-                @if (fieldErrorKey(row.key); as errorKey) {
+                @if (visibleFieldErrorKey(row.key); as errorKey) {
                   <p
                     [id]="'resolve-alias-' + row.key + '-error'"
                     class="text-sm text-danger-fg break-words"
@@ -546,6 +549,12 @@ export class ImportConflictResolutionStep {
   private readonly containerWidth = signal(0);
   /** The alias last typed per row, so switching a row away from rename and back keeps it. */
   private readonly typedAliases = new Map<string, string>();
+  /** Rows whose rename field the user has edited or left (issue #269) — the field error only
+   *  shows once its row is in here, same as §5.3's `control.touched`. A prefilled field (the
+   *  source name, always taken on a collision) would otherwise show red the instant "Umbenennen"
+   *  is chosen, before the user did anything. Keyed like `typedAliases`, for the same reason: it
+   *  must survive switching a row away from rename and back. */
+  private readonly touchedRows = signal<ReadonlySet<string>>(new Set());
 
   protected readonly activeIndex = signal(0);
   protected readonly narrow = computed(() => this.containerWidth() < NARROW_BELOW_PX);
@@ -627,6 +636,14 @@ export class ImportConflictResolutionStep {
     return this.fieldErrors().get(key) ?? null;
   }
 
+  /** The field error, but only once the row has been touched (issue #269, §5.3) — what the
+   *  template shows. `fieldErrorKey` itself stays untouched-aware-free: the consequence lines
+   *  (issue #268) must hide an invalid alias's promise immediately, not only once the field lost
+   *  focus, so they read `fieldErrorKey` directly instead of this method. */
+  protected visibleFieldErrorKey(key: string): string | null {
+    return this.touchedRows().has(key) ? this.fieldErrorKey(key) : null;
+  }
+
   /** The row's consequence, if it names the source side — reads `decisionOf`, which reads the
    *  `decisions` input signal, so a typed alias re-renders this on every keystroke without any
    *  state of its own (rule 14). Reuses `fieldErrorKey` rather than re-checking the violations
@@ -658,7 +675,15 @@ export class ImportConflictResolutionStep {
   protected rename(key: string, event: Event): void {
     const alias = (event.target as HTMLInputElement).value;
     this.typedAliases.set(key, alias);
+    this.touch(key);
     this.decide.emit({ key, decision: { kind: 'renameSource', alias } });
+  }
+
+  /** Marks a row's rename field touched (edit or blur) — see `touchedRows`. */
+  protected touch(key: string): void {
+    if (!this.touchedRows().has(key)) {
+      this.touchedRows.update((rows) => new Set(rows).add(key));
+    }
   }
 
   protected onRowKeydown(event: KeyboardEvent, index: number): void {
