@@ -10,6 +10,58 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — A restore into a non-active target no longer triggers its own resync
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`resyncAfterReport`,
+`ResyncTriggerState` doc, `RestoreStartTarget`/`RestoreRunInfo` doc) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`restoreStartTarget` doc) ·
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (doc only) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.spec.ts` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E12, 6.4, §18 addendum).
+
+Part of task T1 of issue #255, itself a follow-up to the restore-per-set plan (#253). Before this,
+a restore into a **non-active** set of a tracked channel made the client trigger its own resync of
+that channel once the closing `sync-restored` report answered (the former E12 in the design doc,
+`resyncAfterReport` reading `resyncChannelName`) — the one case no backend resync covered, because
+the backend only resyncs a channel's active set. The reasoning at the time was that this at least
+reloaded *something*, but it never reloaded the *right* thing: a channel resync only pulls the
+channel's active-set view current, never a non-active set's member list, which is what the run
+actually changed. The request could succeed while confirming nothing the operator or the user
+watching the dock actually cared about — a resync line and a "being re-synced" state describing a
+list that never moves. The import already drew this conclusion for the identical situation and
+never resyncs a non-active target at all (`seven-tv-import.service.ts:657-671`); the restore now
+matches it.
+
+**What changed.** `SevenTvRestoreService.resyncAfterReport` now returns immediately whenever
+`expectedChannelName` is `null` — i.e. for any target that is not the tracked channel's active set,
+tracked or not — before even looking at the report's `resyncTriggered` answer. No
+`POST /api/channels/{channel}/resync` goes out, `resyncTrigger` stays `'idle'`, and the dock shows
+no resync line for that run. This applies uniformly: a successful report that names the channel in
+`resyncTriggered` no longer flips to `'backendTriggered'` either (there is no client resync left to
+suppress) — it simply stays `'idle'`, same as a report that names nothing. The **N1 fallback**
+(2026-09-25, addendum in the design doc's §18: a report that fails for good gets a client resync
+standing in for the backend's) is now active-set-only as well — it used to fall back to
+`resyncChannelName ?? expectedChannelName`, which is now just `expectedChannelName`, since
+`resyncChannelName` no longer feeds any resync decision.
+
+**What did not change.** The active set of a tracked channel keeps its full pre-#255 behaviour
+unchanged: the backend's own resync (E17) still covers it, `resyncTrigger` still becomes
+`'backendTriggered'` when the answer already names the expected channel (including the stale,
+`activeSetDiffers` case); when the answer names some other channel or none at all, `resyncTrigger`
+simply stays `'idle'` and no request of the client's own goes out — the backend's own resync
+already covers the active set unconditionally there, whatever `resyncTriggered` happens to list.
+The only client resync left for the active set is the N1 fallback, which still fires when the
+report fails for good. An untracked target still gets no client resync either, exactly as before —
+nothing there depended on `resyncChannelName`. `resyncChannelName` itself is not removed from
+`RestoreStartTarget`/
+`RestoreRunInfo`: it still names a non-active tracked target's channel for
+`RestoreProgressSection`'s target line (the "Target: *channel* · set *name*" wording versus the
+untracked "Target: set *name* of *owner*" one), a purely cosmetic use unrelated to resyncing
+anything — only `resyncAfterReport` stopped reading it. No i18n key became unreachable: every
+`restore.resync.*` string is still shown, just only ever from the active-set path now.
+
+---
+
 ### 2026-09-25 — usage-stats becomes a lazy child route to keep the leave guard out of the initial bundle
 
 **Betrifft:** `web/src/app/app.routes.ts` (the `usage-stats` entry: `loadChildren` instead of

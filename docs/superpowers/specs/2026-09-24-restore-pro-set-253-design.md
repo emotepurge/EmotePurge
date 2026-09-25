@@ -179,7 +179,7 @@ der adversarialen Zweitmeinung (Abschnitt 14).
 | E9 | Antwort-DTO der beiden neuen Routen | `{ reportedCount, channels: [{ channelName, archivedCount \| restoredCount, notFoundIds }], unresolvedChannel: { channelName, reason } \| null, resyncTriggered: string[] }` — `channels` leer **und** `unresolvedChannel` null heißt „nur Papier". Vertrag in 5.3 | Bestätigt; um `unresolvedChannel` (H2/E18) und `resyncTriggered` (H1/E17) erweitert, damit das Frontend dreiwertig liest und keinen zweiten Resync auslöst |
 | E10 | Wo läuft die Zielprüfung im Frontend? | Im **`FileImportStep`**, als dritter Prüfschritt nach Envelope und Parser, vor `picked`. Der Schritt zeigt den Fehler in seinem bestehenden Banner; der Dialog schließt erst mit einem geprüften Ziel | Bestätigt (Abschnitt 13, Punkt 7). Der Schritt „liest und prüft die Datei" (UI-Designsprache §7.3) und besitzt den einzigen Fehler-Ort dieser Kette. Er bekommt dafür `SevenTvEmoteSetService` injiziert (`shared/` darf aus `core/` importieren, nicht umgekehrt) und nutzt dessen gemeinsame Vorprüfung (E19) |
 | E11 | Datei mit persönlichem Set als Ziel | **Abgewiesen** (`kind !== 'NORMAL'`), mit eigenem Grund | Bestätigt. Kein Picker und kein Dropdown bietet ein persönliches Set an (Spec-200 §34, §35, §39), also kann EmotePurge nie eine Löschung daraus erzeugt haben |
-| E12 | Resync nach einem Restore (Frontend-Anteil) | Der **Backend-Resync** aus E17 deckt jeden getroffenen Kanal und den unaufgelösten erwarteten Kanal ab. Der Restore-Dienst stößt selbst **nur noch dann** einen Resync an, wenn das Ziel ein **nicht-aktives** Set eines getrackten Kanals ist — der Fall, den kein Backend-Resync trifft, und der, in dem der Resync die Mitgliederliste der nicht-aktiven Ansicht nachlädt (Spec-200 8.3). Kein Resync für ein ungetracktes Ziel. **Ausnahme (Nachtrag N1):** scheitert die Meldung endgültig, hat das Backend keinen Resync ausgelöst, und der Client stößt ersatzweise den des erwarteten bzw. des nicht-aktiven Kanals an | Bestätigt (Abschnitt 13, Punkt 5) und mit E17 zusammengeführt: **höchstens ein Resync je Kanal und Meldung**, weil das Backend den ausgelösten Resync in `resyncTriggered` sichtbar macht und der Client für einen dort genannten Kanal keinen zweiten anstößt |
+| E12 | Resync nach einem Restore (Frontend-Anteil) | Der **Backend-Resync** aus E17 deckt jeden getroffenen Kanal und den unaufgelösten erwarteten Kanal ab. Der Restore-Dienst stößt selbst **nur noch dann** einen Resync an, wenn das Ziel ein **nicht-aktives** Set eines getrackten Kanals ist — der Fall, den kein Backend-Resync trifft, und der, in dem der Resync die Mitgliederliste der nicht-aktiven Ansicht nachlädt (Spec-200 8.3). Kein Resync für ein ungetracktes Ziel. **Ausnahme (Nachtrag N1):** scheitert die Meldung endgültig, hat das Backend keinen Resync ausgelöst, und der Client stößt ersatzweise den des erwarteten bzw. des nicht-aktiven Kanals an (aufgehoben für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25) | Bestätigt (Abschnitt 13, Punkt 5) und mit E17 zusammengeführt: **höchstens ein Resync je Kanal und Meldung**, weil das Backend den ausgelösten Resync in `resyncTriggered` sichtbar macht und der Client für einen dort genannten Kanal keinen zweiten anstößt |
 | E13 | Was `RestoreRunInfo` trägt | `{ targetSetId, expectedChannelName: string \| null, resyncChannelName: string \| null, hostChannelName, result }` plus Anzeigefelder — das Ziel-Set, der erwartete Treffer (E18), der Kanal aus E12, und der Kanal der Seite, auf der der Lauf gestartet wurde | Bestätigt (Abschnitt 13, Punkt 3): `resetIfChannelChanged` vergleicht mit `hostChannelName`, weil das Layout nur den Kanal der Seite kennt (F7) |
 | E14 | Was mit `emote_set_id_empty` geschieht | **Entfällt** aus `ApiErrorCodes`, `api-error.ts` und beiden Locales | Der Code existiert nur für die entfallende Leiter (`EmoteEndpoints.cs:304`, `ApiErrorCodes.cs:102`, `api-error.ts:53`) |
 | E15 | Was mit `wrongChannel` und `wrongSet` geschieht | Beide Fehler und ihre Schlüssel **entfallen** aus beiden Parsern und beiden Locales; der Parser gibt das Ziel zurück statt es zu prüfen | Es gibt nach E1 keinen Weg mehr, der sie erzeugt. Die neuen Schlüssel stehen in 6.1; ihr Wortlaut ist vorläufig und gehört #255 |
@@ -424,10 +424,10 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
 11. Resync: das Backend stößt ihn für jeden getroffenen und für den unaufgelösten erwarteten Kanal
     an (E17/E18) und nennt die Kanäle in `resyncTriggered`. Der Client stößt selbst nur noch für ein
     **nicht-aktives** Set eines getrackten Kanals einen an (E12), und nur, wenn dieser Kanal nicht
-    in `resyncTriggered` steht. Für ein ungetracktes Ziel keiner; das Dock zeigt dann auch keine
-    Resync-Zeile. **Scheitert die Meldung endgültig** (`failed` nach den Retries), gibt es kein
-    `resyncTriggered`, und der Client stößt ersatzweise den Resync des nicht-aktiven bzw. des
-    erwarteten Kanals an (Nachtrag N1).
+    in `resyncTriggered` steht (aufgehoben für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25). Für
+    ein ungetracktes Ziel keiner; das Dock zeigt dann auch keine Resync-Zeile. **Scheitert die
+    Meldung endgültig** (`failed` nach den Retries), gibt es kein `resyncTriggered`, und der Client
+    stößt ersatzweise den Resync des nicht-aktiven bzw. des erwarteten Kanals an (Nachtrag N1).
 12. Die Seite, auf der der Lauf gestartet wurde, ändert sich **nur**, wenn sie ein `channel.synced`
     für ihren eigenen Kanal bekommt (5.4, Resync). Ist das Ziel ein anderes Set, bleibt das Raster
     stehen; das Dock zeigt den Lauf mit einer Zielzeile (Set-Name, Kanal oder Besitzer), analog
@@ -808,7 +808,8 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   sonst `partial` mit `channelMismatch` bzw. `shortfall`; jeder HTTP-Fehler nach den Retries →
   `failed` mit `forbidden` (403), `setNotFound` (404), `unavailable` (429/503/Netz), sonst
   `other`. Ein 404 (Set inzwischen weg) endet damit in `failed`, was #224 im Frontend schließt.
-- Resync (E12): `channelService.resync(resyncChannelName)` nur bei `resyncChannelName !== null`
+- Resync (E12, aufgehoben für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25):
+  `channelService.resync(resyncChannelName)` nur bei `resyncChannelName !== null`
   **und** `!resyncTriggered.includes(resyncChannelName)`; Zustände `succeeded`/`cooldown`/`failed`
   wie heute; sonst bleibt `resyncTrigger` auf `idle`, das Dock zeigt keine Resync-Zeile — außer
   der Kanal steht in `resyncTriggered`, dann zeigt es „wird abgeglichen" ohne eigenen Request.
@@ -980,8 +981,12 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     heute); seine Meldung ist trotzdem gesendet.
 21. Nach einem Restore in ein nicht-aktives Set eines getrackten Kanals löst der Client `POST
     /api/channels/{kanal}/resync` aus, sofern der Kanal nicht in `resyncTriggered` steht; nach einem
-    Restore in ein ungetracktes Set keinen. (Bleibt gültig; was bei endgültig gescheiterter Meldung
-    gilt, steht in AK 36.)
+    Restore in ein ungetracktes Set keinen. (Bleibt gültig für das ungetrackte Ziel; was bei
+    endgültig gescheiterter Meldung galt, stand in AK 36. **Aufgehoben für ein nicht-aktives,
+    getracktes Ziel, s. 18, Nachtrag 2026-09-25:** dort löst der Client seit diesem Nachtrag in
+    keinem Fall mehr einen Resync aus — weder im Erfolgsfall der Meldung noch im AK-36-Fallback
+    nach ihrem endgültigen Scheitern, da `resyncChannelName` seither in keine Resync-Entscheidung
+    mehr einfließt.)
 22. `wrongChannel`, `wrongSet`, `emote_set_id_empty` und beide Regel-7-Schlüssel existieren in
     keiner Locale, keinem Parser und keinem `ApiErrorCodes` mehr; `api-error-locales.spec.ts` bleibt
     grün.
@@ -1702,8 +1707,51 @@ bei `partial`/`shortfall` ist der Knopf vorhanden und löst genau eine erneute M
 
 | AK | Nachtrag | Kern |
 |---|---|---|
-| 36 | N1 | Fallback-Resync des Clients bei endgültig gescheiterter erster Meldung (Restore: `resyncChannelName ?? expectedChannelName`, Delete: `expectedChannelName`; Import unverändert) |
+| 36 | N1 | Fallback-Resync des Clients bei endgültig gescheiterter erster Meldung (Restore: `resyncChannelName ?? expectedChannelName`, Delete: `expectedChannelName`; Import unverändert) — Restore-Glied `resyncChannelName` aufgehoben, s. 18, Nachtrag 2026-09-25: gilt seither nur noch `expectedChannelName` |
 | 37 | N2 | Mitgliederliste des gewählten nicht-aktiven Ziel-Sets lädt beim Settle mit `refresh=true`; nicht gewähltes Ziel: Vormerkung für den nächsten Ladevorgang dieses Sets |
 | 38 | N3 | Papier-Eintrag trägt den Besitzerkanal (aktiv, ungesperrt, über Twitch-ID) mit `targetIsActiveSetOfChannel` (Flag = ist der Besitzerkanal selbst Treffer); sonst kanallos mit `targetOwner*`; nie beides |
 | 39 | N3 | Mismatch-Eintrag folgt derselben Regel (`activeSetDiffers` mit Kanal, `notTracked` ohne) |
 | 40 | N4 | Kein „Erneut melden" bei `channelMismatch`, in allen drei Docks und am Dienst |
+
+### Nachtrag 2026-09-25 — Kein Client-Resync mehr für ein nicht-aktives Restore-Ziel (#255)
+
+**Betreiberentscheidung (2026-09-25, Task T1 aus #255).** Ein Restore in ein **nicht-aktives**,
+getracktes Ziel-Set löst ab sofort **keinen** Client-Resync mehr aus — kein
+`POST /api/channels/{c}/resync`, keine Resync-Zeile im Dock/Announcer. Das Verhalten gleicht damit
+dem Import, der ein nicht-aktives Ziel schon vorher nie resynct hat
+(`seven-tv-import.service.ts:657-671`, dort aus demselben Grund: der Kanal-Resync zieht nur die
+Ansicht des Kanals **aktiven** Sets nach, nie ein anderes — ein Request, der erfolgreich sein
+kann, ohne irgendetwas zu bestätigen, das den Nutzer interessiert). Für das **aktive** Set eines
+getrackten Kanals ändert sich nichts: der Erfolgspfad (E12-Grundregel, `backendTriggered` bei
+genanntem Kanal, sonst bleibt `resyncTrigger` auf `'idle'` — der Backend-Resync deckt das aktive
+Set ohnehin ab, kein eigener Client-Resync) und der **N1-Fallback** bei endgültig gescheiterter
+Meldung (`channelService.resync(expectedChannelName)`) bleiben unverändert in Kraft — der Fallback
+zog vor diesem Nachtrag `resyncChannelName ?? expectedChannelName`; das `resyncChannelName`-Glied
+entfällt zusammen mit dem restlichen nicht-aktiven Pfad.
+
+**Damit aufgehoben:** E12 (Tabelle oben) und 6.4 in dem Teil, der einen Resync für ein
+nicht-aktives Ziel beschreibt — beide sind entsprechend mit einem Verweis auf diesen Absatz
+markiert, nicht umgeschrieben. `resyncChannelName` (`RestoreStartTarget`/`RestoreRunInfo`) bleibt
+im Code erhalten, aber nur noch für `RestoreProgressSection`s Zielzeile (nennt den Kanal statt des
+Besitzers) — `SevenTvRestoreService.resyncAfterReport` liest das Feld nicht mehr.
+
+**Verhältnis zu N2.** N2s Grenzfall-Absatz zum zurückgestellten Settle-während-Request-Fall nennt
+unter „Heilung" für Restore ausdrücklich auch „das `channel.synced` des E12-Resync" — dieser Pfad
+entfällt für ein nicht-aktives Ziel mit diesem Nachtrag. N2s eigentlicher Vertrag (der laute
+`refresh=true`-Reload beim Settle des Laufs, bzw. die Vormerkung für ein nicht gewähltes Ziel-Set)
+ist davon **nicht** betroffen — er hing nie am Resync, sondern am Settle des Restore-Dienstes
+selbst (`restoreService.run()` wechselt auf `result !== null`). Für ein nicht-aktives Ziel bleiben
+damit zwei der drei in N2 genannten Heilungswege bestehen (Aktualisieren-Knopf, Cache-Ablauf); nur
+der dritte (E12-Resync) fällt weg. Der in N2 als „bewusst nicht behoben" benannte Rest (ein
+Millisekundenfenster) wird dadurch für ein nicht-aktives Restore-Ziel geringfügig breiter, bleibt
+aber dieselbe Art Lücke, die N2 schon als hinnehmbar eingestuft hatte.
+
+**Betroffene Abschnitte.** E12, 4.4 Nr. 11, 6.4, AK 21, AK 36 (alle fünf mit Verweis „aufgehoben
+für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25"), N2 (Grenzfälle, Heilungsliste — Lesehinweis,
+kein Textwechsel dort). Neuer DECISIONS-Eintrag vom 2026-09-25, im selben Commit wie die
+Codeänderung.
+
+**Tests.** `seven-tv-restore.service.spec.ts`: ein nicht-aktives, getracktes Ziel löst nach der
+Meldung weder bei Erfolg (mit oder ohne genanntem Kanal in `resyncTriggered`) noch nach endgültig
+gescheiterter Meldung einen `POST /resync` aus — `resyncTrigger` bleibt `idle`. Das aktive Set und
+das ungetrackte Ziel sind unverändert abgedeckt.
