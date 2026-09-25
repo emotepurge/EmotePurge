@@ -3076,11 +3076,17 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     members?: ForeignEmoteSetResponse | 'unavailable';
     observations?: EmoteSetSummary['observations'];
     extraSets?: EmoteSetSummary[];
+    // addendum N2 (F5): a run already settled in the service before the page's constructor ever
+    // runs — `watchRunSettle`'s `seen` captures it as the starting point, so it must not replay.
+    presettledRestoreRun?: RestoreRunInfo;
   }): Promise<void> {
     configure();
     router = TestBed.inject(Router);
     if (options.emoteSetId) {
       await router.navigate([], { queryParams: { emoteSetId: options.emoteSetId } });
+    }
+    if (options.presettledRestoreRun) {
+      TestBed.inject(SevenTvRestoreService)['runState'].set(options.presettledRestoreRun);
     }
 
     fixture = TestBed.createComponent(UsageStatsPage);
@@ -3512,7 +3518,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['totalUsage']()).toBe(12);
   });
 
-  // --- Nachtrag N2 (AK 37): a run's own settle reloads the chosen non-active set's member list ---
+  // --- addendum N2 (AK 37): a run's own settle reloads the chosen non-active set's member list ---
 
   /** A finished run's engine result with `done` rows for the given keys. */
   function runResult(doneKeys: string[]) {
@@ -3626,6 +3632,44 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     const target = liveListRequestsFor('set-b');
     expect(target).toHaveLength(1);
     expect(target[0].request.params.get('refresh')).toBeNull();
+  });
+
+  it('drops the mark on a channel switch (F5)', async () => {
+    await openView({ totals: [] });
+
+    settleRestore('set-b', ['7tv-y']);
+    await settle();
+    // The mark left by the settle above, for channel 'a' — read directly rather than through a
+    // second channel's full bootstrap, which this describe block's other tests do not exercise.
+    expect(component['liveMembersRefreshFor']).toEqual({ channelName: 'a', emoteSetId: 'set-b' });
+
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+
+    expect(component['liveMembersRefreshFor']).toBeNull();
+  });
+
+  it('does not replay a run that had already settled when the page mounted (F5)', async () => {
+    // Set before the component's constructor ever runs: watchRunSettle's `seen` captures this as
+    // its starting point, so the settle effect must never fire for it.
+    await openView({
+      totals: [],
+      presettledRestoreRun: {
+        targetSetId: 'set-b',
+        expectedChannelName: null,
+        resyncChannelName: 'a',
+        hostChannelName: 'a',
+        setName: 'set-b',
+        ownerOrChannelLabel: 'a',
+        result: runResult(['7tv-y']),
+      },
+    });
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    const request = liveListRequestsFor('set-b');
+    expect(request).toHaveLength(1);
+    expect(request[0].request.params.get('refresh')).toBeNull();
   });
 
   // --- T4.4: the caption matrix (8.4, AK 60) ----------------------------------------------------

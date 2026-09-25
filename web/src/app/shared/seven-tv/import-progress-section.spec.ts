@@ -776,7 +776,7 @@ describe('ImportProgressSection', () => {
       expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
     });
 
-    // Nachtrag N4, AK 40: the removal notice stays for a channel mismatch, its retry does not.
+    // addendum N4, AK 40: the removal notice stays for a channel mismatch, its retry does not.
     it('offers no removal retry for partial/channelMismatch, but keeps the notice', () => {
       importService.isRunning.set(false);
       importService.queue.set([doneItem()]);

@@ -678,7 +678,7 @@ export class UsageStatsPage {
    * not a signal: it must never itself retrigger the resource.
    *
    * Also the mark a settled run of our own leaves for a non-active target set that is not the chosen
-   * one (restore-per-set spec, Nachtrag N2): the next load of exactly that set bypasses the cache,
+   * one (restore-per-set spec, addendum N2): the next load of exactly that set bypasses the cache,
    * and the next load of any other set — or a channel switch — drops the mark.
    */
   private liveMembersRefreshFor: {
@@ -2816,7 +2816,7 @@ export class UsageStatsPage {
   }
 
   /**
-   * Nachtrag N2 (restore-per-set spec, AK 37): a restore, delete or import run of our own changes
+   * addendum N2 (restore-per-set spec, AK 37): a restore, delete or import run of our own changes
    * the members of its target set, but a non-active set's member list is read through the Api's
    * 60-s cache, which neither `channel.synced` nor a resync reach — the view would show the old
    * members until the cache expired. So when such a run settles with at least one done row, and its

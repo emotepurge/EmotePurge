@@ -513,7 +513,7 @@ export class SevenTvImportService {
   }
 
   /** Manual retry for the removal report — same rules as `retrySyncReport`, same record, and none
-   *  for a channel mismatch (Nachtrag N4, AK 40): it is recorded and its resync already runs, so a
+   *  for a channel mismatch (addendum N4, AK 40): it is recorded and its resync already runs, so a
    *  retry could only write the same mismatch again. */
   retryRemovalReport(): void {
     const current = this.run();

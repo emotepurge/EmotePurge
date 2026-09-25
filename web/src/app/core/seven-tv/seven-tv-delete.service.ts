@@ -103,7 +103,7 @@ interface DeleteRunInfo {
   /** The tracked channel the report expects to touch (spec 4.6 point 21, E18): the page's channel
    *  when the run's set is its active one, otherwise `null`. Frozen with the run, sent with the
    *  report and every retry, and the channel of the fallback resync after a first report that
-   *  failed for good (Nachtrag N1). */
+   *  failed for good (addendum N1). */
   expectedChannelName: string | null;
   /** The set the run removes from, frozen when it starts (spec #200, 7.2, AK 71): the first
    *  report and every retry name this set, whatever the page's set dropdown shows by then. */
@@ -275,7 +275,7 @@ export class SevenTvDeleteService {
     const current = this.run;
     if (
       this.syncReport() === 'pending' ||
-      // Nachtrag N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
+      // addendum N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
       // could only write the same mismatch again.
       this.syncReportReason() === 'channelMismatch' ||
       !current?.result ||
@@ -308,7 +308,7 @@ export class SevenTvDeleteService {
   /** No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
    *  touched (E17), and the page lives off the resulting `channel.synced`. `afterFailure` runs once
    *  the report has failed for good — only the first report of a run passes one, never a manual
-   *  retry (Nachtrag N1). */
+   *  retry (addendum N1). */
   private reportDeleted(run: DeleteRunInfo, result: RunResult, afterFailure?: () => void): void {
     this.syncReport.set('pending');
     this.syncReportReason.set(null);
@@ -351,7 +351,7 @@ export class SevenTvDeleteService {
       });
   }
 
-  /** Nachtrag N1, AK 36: a report that failed for good (any status, or a network error, after the
+  /** addendum N1, AK 36: a report that failed for good (any status, or a network error, after the
    *  retries) never reached the backend's resync stage, so nothing would pull the page's rows until
    *  the worker's periodic resync. The client stands in for it — for `expectedChannelName` only: a
    *  non-active or untracked set has no channel the backend would have resynced either. No dock line

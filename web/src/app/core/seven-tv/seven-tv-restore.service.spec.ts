@@ -621,7 +621,7 @@ describe('SevenTvRestoreService', () => {
       expect(service.syncReportReason()).toBe('channelMismatch');
     });
 
-    // Nachtrag N4, AK 40: nothing a retry could improve — the service refuses it, no request.
+    // addendum N4, AK 40: nothing a retry could improve — the service refuses it, no request.
     it('refuses a manual retry of a report that ended partial/channelMismatch', () => {
       runOneRestoreToReport(target({ active: true })).flush(
         restoredAnswer({
@@ -753,7 +753,7 @@ describe('SevenTvRestoreService', () => {
       expect(service.resyncTrigger()).toBe('idle');
     });
 
-    // Nachtrag N1, AK 36: a report that fails for good never reached the backend's resync stage, so
+    // addendum N1, AK 36: a report that fails for good never reached the backend's resync stage, so
     // the client stands in with `resyncChannelName ?? expectedChannelName`.
     it('resyncs the expected channel itself when the report for its active set fails for good', () => {
       runOneRestoreToReport(target({ active: true })).flush(null, {

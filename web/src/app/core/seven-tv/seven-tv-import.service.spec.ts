@@ -1016,7 +1016,7 @@ describe('SevenTvImportService', () => {
       httpMock.expectNone(RESYNC_B);
     });
 
-    // Nachtrag N4, AK 40: a channel mismatch is recorded and already being resynced — a retry could
+    // addendum N4, AK 40: a channel mismatch is recorded and already being resynced — a retry could
     // only repeat it, so the service refuses one, no request.
     it('refuses a manual retry of a removal report that ended partial/channelMismatch', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });

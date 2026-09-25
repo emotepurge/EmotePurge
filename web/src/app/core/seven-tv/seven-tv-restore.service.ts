@@ -144,7 +144,7 @@ export interface RestoreRunInfo {
  * tracked channel (E12), and only once the report has answered, so a channel is never resynced
  * twice for one report (F15, AK 27). A first report that fails for good gets a resync of
  * `resyncChannelName ?? expectedChannelName` instead, since the backend never reached its own
- * (Nachtrag N1, AK 36).
+ * (addendum N1, AK 36).
  */
 @Injectable({ providedIn: 'root' })
 export class SevenTvRestoreService {
@@ -304,7 +304,7 @@ export class SevenTvRestoreService {
     const current = this.runState();
     if (
       this.syncReport() === 'pending' ||
-      // Nachtrag N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
+      // addendum N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
       // could only write the same mismatch again.
       this.syncReportReason() === 'channelMismatch' ||
       !current?.result ||
@@ -339,7 +339,7 @@ export class SevenTvRestoreService {
 
   /** `afterReport` runs once the report has settled either way — with the answer's
    *  `resyncTriggered` on success, with `null` once it has failed for good (the backend never
-   *  reached its resync stage then, Nachtrag N1). It runs even for a superseded run: the report and
+   *  reached its resync stage then, addendum N1). It runs even for a superseded run: the report and
    *  the resync are owed to 7TV's state, not to what the dock shows; only the *state* each writes is
    *  guarded (`applyIfCurrent`). */
   private reportRestored(
@@ -394,7 +394,7 @@ export class SevenTvRestoreService {
    *  acquired, F15, or `notTracked`) and an untracked target (nothing to resync) leave
    *  `resyncTrigger` on `'idle'`: no request, no resync line.
    *
-   *  `resyncTriggered === null` is a report that failed for good (Nachtrag N1, AK 36) — any status,
+   *  `resyncTriggered === null` is a report that failed for good (addendum N1, AK 36) — any status,
    *  or a network error, after the retries. The backend never reached its resync stage, so the
    *  client stands in for it with `resyncChannelName ?? expectedChannelName`; the cooldown absorbs a
    *  duplicate. Only after the first report of a run: a manual retry passes no `afterReport`. */

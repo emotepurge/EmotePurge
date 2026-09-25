@@ -118,7 +118,7 @@ describe('SevenTvDeleteService', () => {
   }
 
   /** A first report that failed for good is followed by the client's fallback resync of the
-   *  expected channel (Nachtrag N1) — flushed here where a case is about something else. */
+   *  expected channel (addendum N1) — flushed here where a case is about something else. */
   function flushFallbackResync() {
     httpMock
       .expectOne('/api/channels/sensitron/resync')
@@ -163,7 +163,7 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReportReason()).toBe('channelMismatch');
     });
 
-    // Nachtrag N4, AK 40: nothing a retry could improve — the service refuses it, no request.
+    // addendum N4, AK 40: nothing a retry could improve — the service refuses it, no request.
     it('refuses a manual retry of a report that ended partial/channelMismatch', () => {
       runOneDeleteToSyncRequest().flush(
         deletedAnswer({
@@ -276,7 +276,7 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReport()).toBe('succeeded');
     });
 
-    // Nachtrag N1, AK 36: a report that fails for good never reached the backend's resync stage,
+    // addendum N1, AK 36: a report that fails for good never reached the backend's resync stage,
     // so the client resyncs the expected channel (the page's, for its active set) itself — once,
     // after the first report only, and without a dock line of its own.
     describe('fallback resync after a report that failed for good', () => {

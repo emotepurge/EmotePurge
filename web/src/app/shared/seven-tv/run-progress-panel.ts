@@ -100,7 +100,7 @@ import { NoticeBanner } from '../ui/notice-banner';
               <span>{{ 'syncReportReason.' + reason | transloco }}</span>
             }
           </span>
-          <!-- No retry for a channel mismatch (Nachtrag N4): it is recorded, and the resync that
+          <!-- No retry for a channel mismatch (addendum N4): it is recorded, and the resync that
                heals it already runs — a retry could only repeat the same mismatch. -->
           @if (syncRetryOffered()) {
             <button
@@ -181,7 +181,7 @@ export class RunProgressPanel {
   );
 
   /** "Erneut melden" for `failed` (any reason) and `partial`/`shortfall`, never for
-   *  `partial`/`channelMismatch` (Nachtrag N4, AK 40) — the services refuse that retry as well. */
+   *  `partial`/`channelMismatch` (addendum N4, AK 40) — the services refuse that retry as well. */
   protected readonly syncRetryOffered = computed(
     () => this.syncReportReason() !== 'channelMismatch',
   );

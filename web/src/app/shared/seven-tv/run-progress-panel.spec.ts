@@ -357,7 +357,7 @@ describe('RunProgressPanel', () => {
       },
     );
 
-    // Nachtrag N4, AK 40: a channel mismatch keeps its notice but loses the retry action — a
+    // addendum N4, AK 40: a channel mismatch keeps its notice but loses the retry action — a
     // retry would only repeat the same mismatch; failed (any reason) and shortfall keep it.
     it('offers no retry for partial/channelMismatch, but keeps the notice and its reason', () => {
       const dialog = render({
