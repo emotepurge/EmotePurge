@@ -115,10 +115,12 @@ const CONSEQUENCE_KEYS: Record<RowConsequence['kind'], string> = {
  * What a chosen action visibly does to one side of a row — `null` for `skip`, which changes
  * nothing. A decision only ever affects one side (issue #268's AK 2): `replaceTarget` and
  * `adoptSourceName` describe the target, `renameSource` the source, through its currently typed
- * alias — `null` while that field is empty, so the line shows nothing rather than an empty quote.
- * Pure and independent of the row's other fields on purpose: the whole point is that it is derived
- * from the decision alone, so the rename preview follows every keystroke without any state of its
- * own to fall out of sync (rule 14).
+ * alias — `null` while that field is empty or while it carries a field error (issue #269: an
+ * invalid, taken or duplicated alias is not going to be added under that name, so the line
+ * shows nothing rather than a promise the run cannot keep), so the line shows nothing rather than
+ * an empty quote. Pure and independent of the row's other fields on purpose: the whole point is
+ * that it is derived from the decision alone, so the rename preview follows every keystroke
+ * without any state of its own to fall out of sync (rule 14).
  */
 export interface RowConsequence {
   side: 'source' | 'target';
@@ -128,14 +130,18 @@ export interface RowConsequence {
   name: string;
 }
 
-export function rowConsequence(decision: RowDecision, sourceName: string): RowConsequence | null {
+export function rowConsequence(
+  decision: RowDecision,
+  sourceName: string,
+  hasFieldError = false,
+): RowConsequence | null {
   switch (decision.kind) {
     case 'replaceTarget':
       return { side: 'target', kind: 'removed', name: '' };
     case 'adoptSourceName':
       return { side: 'target', kind: 'becomes', name: sourceName };
     case 'renameSource':
-      return decision.alias === ''
+      return decision.alias === '' || hasFieldError
         ? null
         : { side: 'source', kind: 'addedAs', name: decision.alias };
     case 'skip':
@@ -623,15 +629,25 @@ export class ImportConflictResolutionStep {
 
   /** The row's consequence, if it names the source side — reads `decisionOf`, which reads the
    *  `decisions` input signal, so a typed alias re-renders this on every keystroke without any
-   *  state of its own (rule 14). */
+   *  state of its own (rule 14). Reuses `fieldErrorKey` rather than re-checking the violations
+   *  itself, so a rename with a field error (invalid, taken, duplicated) never promises a name
+   *  7TV would reject (issue #269). */
   protected sourceConsequenceOf(row: ConflictStepRow): RowConsequence | null {
-    const consequence = rowConsequence(this.decisionOf(row.key), row.sourceName);
+    const consequence = rowConsequence(
+      this.decisionOf(row.key),
+      row.sourceName,
+      this.fieldErrorKey(row.key) !== null,
+    );
     return consequence?.side === 'source' ? consequence : null;
   }
 
   /** The row's consequence, if it names the target side — see {@link sourceConsequenceOf}. */
   protected targetConsequenceOf(row: ConflictStepRow): RowConsequence | null {
-    const consequence = rowConsequence(this.decisionOf(row.key), row.sourceName);
+    const consequence = rowConsequence(
+      this.decisionOf(row.key),
+      row.sourceName,
+      this.fieldErrorKey(row.key) !== null,
+    );
     return consequence?.side === 'target' ? consequence : null;
   }
 

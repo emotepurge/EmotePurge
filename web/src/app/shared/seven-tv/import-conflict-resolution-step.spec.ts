@@ -189,6 +189,20 @@ describe('ImportConflictResolutionStep', () => {
       // A field the user has cleared names nothing rather than an empty quote.
       expect(rowConsequence({ kind: 'renameSource', alias: '' }, 'Kappa')).toBeNull();
     });
+
+    it('names nothing for renameSource while the typed alias has a field error, even though it is not empty (issue #269)', () => {
+      expect(
+        rowConsequence({ kind: 'renameSource', alias: 'KappaTaken' }, 'Kappa', true),
+      ).toBeNull();
+      // Once the error is gone, the same alias names the consequence again.
+      expect(rowConsequence({ kind: 'renameSource', alias: 'KappaTaken' }, 'Kappa', false)).toEqual(
+        {
+          side: 'source',
+          kind: 'addedAs',
+          name: 'KappaTaken',
+        } satisfies RowConsequence,
+      );
+    });
   });
 
   describe('rendered', () => {
@@ -437,6 +451,28 @@ describe('ImportConflictResolutionStep', () => {
         fixture.detectChanges();
         // An emptied field names nothing rather than an empty quote.
         expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+      });
+
+      it('shows no consequence line while the typed alias has a field error, and shows it again once valid (issue #269)', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render(
+          'nameCollision',
+          rows,
+          new Map([['a', { kind: 'renameSource', alias: 'Taken' }]]),
+          [{ rule: 'aliasHeldByTarget', rowKeys: ['a'] }],
+        );
+
+        // A taken alias will not actually be added — the reserved line stays empty rather than
+        // promising a name the run cannot keep.
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+
+        // Once the run no longer sees a violation for the row (the user typed a free name), the
+        // same alias names the consequence again.
+        fixture.componentRef.setInput('violations', []);
+        fixture.detectChanges();
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe(
+          'wird als „Taken“ hinzugefügt',
+        );
       });
 
       it("names each row's consequence lines from its radiogroup via aria-describedby", async () => {
