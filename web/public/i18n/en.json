@@ -1242,7 +1242,9 @@
       },
       "sameChannelFile": "This list comes from this channel.",
       "runNotice": "Adding then runs automatically, one emote at a time, with a short delay between each.",
+      "runNoticeRenameOnly": "Renaming then runs automatically, one entry at a time, with a short delay between each.",
       "execute": "Copy",
+      "executeRenameOnly": "Transfer",
       "removals": {
         "one": "{{ count }} emote will be removed from the target set and replaced by the source emote.",
         "other": "{{ count }} emotes will be removed from the target set and replaced by the source emotes."

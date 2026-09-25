@@ -543,7 +543,7 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
           </p>
         }
 
-        <p class="text-xs text-fg-muted">{{ 'import.confirm.runNotice' | transloco }}</p>
+        <p class="text-xs text-fg-muted">{{ runNoticeKey() | transloco }}</p>
       }
 
       <!-- Only the loading and the verifying state still have their own text here: neither has a
@@ -811,6 +811,14 @@ export class ImportConfirmDialog {
     return summary !== null && summary.addCount === 0 && summary.adoptCount > 0;
   });
 
+  // A rename-only plan adds nothing, so the ordinary notice — which claims "Hinzufügen" runs
+  // automatically afterwards — would misdescribe the run entirely (spec #255). Swapped for a
+  // matching sentence about the renames instead; a plan that adds at least one row, mixed with
+  // adopts or not, keeps the original wording unchanged, since it is still literally true there.
+  protected readonly runNoticeKey = computed(() =>
+    this.titleIsRenameOnly() ? 'import.confirm.runNoticeRenameOnly' : 'import.confirm.runNotice',
+  );
+
   // Two base keys, chosen by `targetIsActiveSet` (finding 1, Live-Verifikation K2 2026-09-21) —
   // "nach {channel}" for the active-set target (today's one-click path, unchanged), "in Set
   // '{setName}'" for a non-active tracked target or any untracked one, both of which write into a
@@ -981,8 +989,18 @@ export class ImportConfirmDialog {
 
   protected readonly isVerifying = computed(() => this.actionState().kind === 'verifying');
 
-  // Without a removal the label is today's "Kopieren", unchanged (AK 2, 5).
+  // A rename-only plan (titleIsRenameOnly) copies nothing in, so "Kopieren" would be as wrong on
+  // the button as it would be in the title — this matches the title's own word instead, reusing
+  // the one established main-action verb (docs/DECISIONS.md "Ein Verb für die Übertragung", #92)
+  // rather than a fourth word for a run that, unlike every other plan here, does not add a thing.
+  // A rename-only plan never carries a `replace` row (adoptCount > 0 implies removeCount === 0,
+  // `conflict-resolution.ts`'s `summarizeTransferPlan`), so this check never competes with the
+  // removal branch below. Without a removal the ordinary label is today's "Kopieren", unchanged
+  // (AK 2, 5).
   protected readonly executeLabelKey = computed(() => {
+    if (this.titleIsRenameOnly()) {
+      return 'import.confirm.executeRenameOnly';
+    }
     if (this.removeCount() === 0) {
       return 'import.confirm.execute';
     }

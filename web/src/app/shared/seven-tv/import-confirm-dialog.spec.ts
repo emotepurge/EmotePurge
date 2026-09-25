@@ -117,7 +117,9 @@ const DE_TRANSLATIONS = {
       },
       sameChannelFile: 'Diese Liste stammt aus diesem Kanal.',
       runNotice: 'Das Hinzufügen läuft danach automatisch nacheinander.',
+      runNoticeRenameOnly: 'Das Umbenennen läuft danach automatisch nacheinander.',
       execute: 'Kopieren',
+      executeRenameOnly: 'Übertragen',
       removals: {
         one: '{{ count }} Emote wird aus dem Zielset entfernt.',
         other: '{{ count }} Emotes werden aus dem Zielset entfernt.',
@@ -1622,6 +1624,46 @@ describe('ImportConfirmDialog', () => {
         expect(dialog.text()).toContain('1 Eintrag im Zielset wird umbenannt.');
         // Neutral hint, not a warning: nothing here is lost.
         expect(dialog.element('import-confirm-removals')).toBeNull();
+      });
+
+      // Spec #255: a rename-only plan adds nothing, so the ordinary "Kopieren" button and its
+      // "Hinzufügen läuft danach…" notice would both misdescribe the run — the button reuses the
+      // one established main-action verb ("Übertragen", DECISIONS #92) instead of a fourth word,
+      // and the notice swaps to a matching sentence about the renames.
+      it('shows the "Übertragen" button and a matching run notice for a rename-only plan', async () => {
+        const dialog = render({
+          source: channelSource([row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.hasButton('Übertragen')).toBe(true);
+        expect(dialog.hasButton('Kopieren')).toBe(false);
+        expect(dialog.text()).toContain('Das Umbenennen läuft danach automatisch nacheinander.');
+        expect(dialog.text()).not.toContain(
+          'Das Hinzufügen läuft danach automatisch nacheinander.',
+        );
+      });
+
+      // The same plan, but with an ordinary add row beside the adopt (titleIsRenameOnly is false
+      // once addCount > 0) — the button and the notice both stay exactly as they were before #255.
+      it('keeps the "Kopieren" button and the "Hinzufügen" notice when the plan also adds', async () => {
+        const dialog = render({
+          source: channelSource([row('new-1', 'Kappa'), row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.hasButton(EXECUTE)).toBe(true);
+        expect(dialog.hasButton('Übertragen')).toBe(false);
+        expect(dialog.text()).toContain('Das Hinzufügen läuft danach automatisch nacheinander.');
+        expect(dialog.text()).not.toContain(
+          'Das Umbenennen läuft danach automatisch nacheinander.',
+        );
       });
 
       it('keeps the add-counting title when the plan also adds, but still shows the rename line', async () => {
