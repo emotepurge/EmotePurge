@@ -245,7 +245,7 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         }
 
         // Step 3a (addendum N3) is resolved lazily below, right where the paper entry is actually
-        // written (F4) — a report where every row landed in a channel entry and no channel stayed
+        // written — a report where every row landed in a channel entry and no channel stayed
         // unresolved never needs it.
 
         // Step 4: the rows of every hit channel, matched by (ChannelId, SevenTvEmoteId) — one query
@@ -296,7 +296,7 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         // Step 5, the paper entry: whenever no channel entry carries the report, or the expected
         // channel was missed — never a successful report without a trail, never a missed channel
         // without one (#224). With an owner channel it names that channel; targetIsActiveSetOfChannel
-        // reflects what the database stores for it right now (F1 fix, addendum N3 corrected) — true
+        // reflects what the database stores for it right now (addendum N3 corrected) — true
         // exactly when the owner channel is itself one of the hit channels from step 2, false
         // otherwise. A hard-coded false was wrong two ways: a hit owner channel that matched zero
         // reported rows got no channel entry (step 5 above gates on found.Count > 0) but was in fact
@@ -309,7 +309,7 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         {
             // Step 3a (addendum N3): the owner's tracked channel, by the owner's Twitch id — the same
             // rule as ChannelService.GetActiveByTwitchChannelIdAsync (active row, not on the block
-            // list, F3: now one shared query), which is also how the target list derives
+            // list, now one shared query), which is also how the target list derives
             // trackedChannelName, so the entry names the channel the client saw. By id, not login:
             // logins move (#44), the id does not. It only names the paper entry; no row of the owner
             // channel is touched or counted here, and a blocked one is as invisible as in step 3.
@@ -356,7 +356,7 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
 
     // The paper entry with the owner's channel as ChannelName: the channel names the owner, so the
     // targetOwner* fields stay out. targetIsActiveSetOfChannel is the caller's own read of whether
-    // that channel is a hit (F1 fix) — never hard-coded here.
+    // that channel is a hit — never hard-coded here.
     private static object BuildOwnerChannelPaperDetails(
         IReadOnlyList<string> dedupedIds, string emoteSetId, UnresolvedChannelDto? unresolved, bool targetIsActiveSetOfChannel) =>
         unresolved is null

@@ -3076,7 +3076,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     members?: ForeignEmoteSetResponse | 'unavailable';
     observations?: EmoteSetSummary['observations'];
     extraSets?: EmoteSetSummary[];
-    // addendum N2 (F5): a run already settled in the service before the page's constructor ever
+    // addendum N2: a run already settled in the service before the page's constructor ever
     // runs — `watchRunSettle`'s `seen` captures it as the starting point, so it must not replay.
     presettledRestoreRun?: RestoreRunInfo;
   }): Promise<void> {
@@ -3634,7 +3634,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(target[0].request.params.get('refresh')).toBeNull();
   });
 
-  it('drops the mark on a channel switch (F5)', async () => {
+  it('drops the mark on a channel switch', async () => {
     await openView({ totals: [] });
 
     settleRestore('set-b', ['7tv-y']);
@@ -3649,7 +3649,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     expect(component['liveMembersRefreshFor']).toBeNull();
   });
 
-  it('does not replay a run that had already settled when the page mounted (F5)', async () => {
+  it('does not replay a run that had already settled when the page mounted', async () => {
     // Set before the component's constructor ever runs: watchRunSettle's `seen` captures this as
     // its starting point, so the settle effect must never fire for it.
     await openView({
