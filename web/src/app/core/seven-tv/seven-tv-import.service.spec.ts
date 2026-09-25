@@ -998,7 +998,8 @@ describe('SevenTvImportService', () => {
     });
 
     // AK 15: the removal report reads its answer through the same threeway classification.
-    it('reads an unresolved expected channel in the removal answer as partial/channelMismatch', () => {
+    // #255: kept apart from the notTracked case below — the two read differently to a user.
+    it('reads an unresolved expected channel in the removal answer with reason activeSetDiffers as partial/channelMismatchActiveSetDiffers', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
       answerNext({});
       answerNext({});
@@ -1012,13 +1013,34 @@ describe('SevenTvImportService', () => {
       );
 
       expect(service.removalReport()).toBe('partial');
-      expect(service.removalReportReason()).toBe('channelMismatch');
+      expect(service.removalReportReason()).toBe('channelMismatchActiveSetDiffers');
       httpMock.expectNone(RESYNC_B);
     });
 
-    // addendum N4, AK 40: a channel mismatch is recorded and already being resynced — a retry could
-    // only repeat it, so the service refuses one, no request.
-    it('refuses a manual retry of a removal report that ended partial/channelMismatch', () => {
+    it('reads an unresolved expected channel in the removal answer with reason notTracked as partial/channelMismatchNotTracked', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      answerNext({});
+      answerNext({});
+
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_B).flush(
+        deletedAnswer({
+          unresolvedChannel: { channelName: 'kanal_b', reason: 'notTracked' },
+        }),
+      );
+      // The report's own resyncTriggered is empty here (a notTracked channel is never resynced
+      // server-side), so the client's unconditional fallback (import's own resync, unchanged by
+      // #255) fires the same as it would for any other unacknowledged channel.
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+      expect(service.removalReport()).toBe('partial');
+      expect(service.removalReportReason()).toBe('channelMismatchNotTracked');
+    });
+
+    // addendum N4, AK 40: a channel mismatch is recorded and, for activeSetDiffers, already being
+    // resynced — a retry could only repeat it, so the service refuses one, no request, for either
+    // reason.
+    it('refuses a manual retry of a removal report that ended partial/channelMismatchActiveSetDiffers', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
       answerNext({});
       answerNext({});
@@ -1030,7 +1052,7 @@ describe('SevenTvImportService', () => {
           resyncTriggered: ['kanal_b'],
         }),
       );
-      expect(service.removalReportReason()).toBe('channelMismatch');
+      expect(service.removalReportReason()).toBe('channelMismatchActiveSetDiffers');
 
       service.retryRemovalReport();
 

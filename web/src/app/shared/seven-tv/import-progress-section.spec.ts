@@ -47,6 +47,8 @@ const DE_TRANSLATIONS = {
     syncRetrySucceeded: 'Rückmeldung erfolgreich.',
     removalSyncFailedTitle: 'Entfernungs-Rückmeldung fehlgeschlagen',
     removalSyncFailed: 'Entfernungs-Rückmeldung an EmotePurge fehlgeschlagen.',
+    removalSyncPartialTitle: 'Entfernungs-Rückmeldung unvollständig',
+    removalSyncPartial: 'Entfernungs-Rückmeldung an EmotePurge vermerkt, aber nicht vollständig.',
     removalSyncRetry: 'Entfernung erneut melden',
     removalSyncSucceeded: 'Entfernungs-Rückmeldung erfolgreich.',
     summary: {
@@ -82,6 +84,10 @@ const DE_TRANSLATIONS = {
   },
   syncReportReason: {
     setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
+    channelMismatchNotTracked:
+      'Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.',
+    channelMismatchActiveSetDiffers:
+      'Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.',
   },
 };
 
@@ -767,7 +773,10 @@ describe('ImportProgressSection', () => {
       expect(withoutReason.nativeElement.textContent).not.toContain('Grund:');
     });
 
-    it('shows the same retry banner for a partial removal report', () => {
+    // #255: 'partial' means the removal report did get through, just not completely — its own
+    // title/text, not the 'failed' wording (which reads "fehlgeschlagen", wrong for something
+    // that was in fact recorded).
+    it('shows its own partial banner (not the failed one) for a partial removal report', () => {
       importService.isRunning.set(false);
       importService.queue.set([doneItem()]);
       importService.run.set(runInfo({ settlement: 'settled' }));
@@ -775,22 +784,31 @@ describe('ImportProgressSection', () => {
 
       const fixture = render();
 
-      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung unvollständig');
+      expect(fixture.nativeElement.textContent).not.toContain(
+        'Entfernungs-Rückmeldung fehlgeschlagen',
+      );
     });
 
-    // addendum N4, AK 40: the removal notice stays for a channel mismatch, its retry does not.
-    it('offers no removal retry for partial/channelMismatch, but keeps the notice', () => {
-      importService.isRunning.set(false);
-      importService.queue.set([doneItem()]);
-      importService.run.set(runInfo({ settlement: 'settled' }));
-      importService.removalReport.set('partial');
-      importService.removalReportReason.set('channelMismatch');
+    // addendum N4, AK 40: the removal notice stays for either channel-mismatch reason, its retry
+    // does not.
+    it.each(['channelMismatchNotTracked', 'channelMismatchActiveSetDiffers'] as const)(
+      'offers no removal retry for partial/%s, but keeps the notice',
+      (reason) => {
+        importService.isRunning.set(false);
+        importService.queue.set([doneItem()]);
+        importService.run.set(runInfo({ settlement: 'settled' }));
+        importService.removalReport.set('partial');
+        importService.removalReportReason.set(reason);
 
-      const fixture = render();
+        const fixture = render();
 
-      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
-      expect(findButton(fixture, 'Entfernung erneut melden')).toBeFalsy();
-    });
+        expect(fixture.nativeElement.textContent).toContain(
+          'Entfernungs-Rückmeldung unvollständig',
+        );
+        expect(findButton(fixture, 'Entfernung erneut melden')).toBeFalsy();
+      },
+    );
 
     it('keeps the removal retry for partial/shortfall', () => {
       importService.isRunning.set(false);

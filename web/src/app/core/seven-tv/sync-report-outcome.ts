@@ -14,20 +14,39 @@ import {
  *
  * `'partial'` means the call itself succeeded but the backend's answer does not amount to a full
  * success — either it archived/restored fewer rows than reported (`'shortfall'`) or it could not
- * resolve the channel it was told to expect (`'channelMismatch'`); see {@link SyncReportReason}. */
+ * resolve the channel it was told to expect (`'channelMismatchNotTracked'`/
+ * `'channelMismatchActiveSetDiffers'`); see {@link SyncReportReason}. */
 export type SyncReportState = 'idle' | 'pending' | 'succeeded' | 'partial' | 'failed';
 
 /** Why a `SyncReportState` of `'failed'` or `'partial'` is what it is (spec E23) — shown by the
  *  dock as its own line under the bare state, because a naked `'failed'` does not say whether the
  *  right was revoked mid-run or 7TV simply did not answer (H3). `null` whenever the state is
- *  `'idle'`, `'pending'` or a plain `'succeeded'`. */
+ *  `'idle'`, `'pending'` or a plain `'succeeded'`.
+ *
+ *  The two `channelMismatch*` variants (#255) keep `UnresolvedChannel.reason` (`'notTracked'` vs.
+ *  `'activeSetDiffers'`) apart instead of collapsing both into one `'channelMismatch'` value — the
+ *  two read differently to a user (a channel EmotePurge does not currently track at all, vs. one
+ *  that tracks a *different* set as active right now) and the wording keys need to say which.
+ *  Neither ever offers a retry (addendum N4) — use {@link isChannelMismatch} rather than comparing
+ *  against either literal, so a caller only interested in the retry rule does not have to know
+ *  both exist. */
 export type SyncReportReason =
   | 'forbidden' // 403 — the actor's editor/owner right was revoked between the pre-check and the report (F4).
   | 'setNotFound' // 404 — the set is gone from 7TV's side (#224: this must never read as 'succeeded').
   | 'unavailable' // 429/503, or a network failure, after the automatic retries.
-  | 'channelMismatch' // an `unresolvedChannel` came back — the expected channel was not hit (E18).
+  | 'channelMismatchNotTracked' // an `unresolvedChannel` with reason 'notTracked' — EmotePurge does not currently track the expected channel (missing, inactive or excluded, E18).
+  | 'channelMismatchActiveSetDiffers' // an `unresolvedChannel` with reason 'activeSetDiffers' — the expected channel is tracked, but this set is not its active one right now (E18).
   | 'shortfall' // at least one touched channel's count fell short of `reportedCount` (F8, per channel).
   | 'other'; // any other HTTP failure.
+
+/** Whether `reason` is either channel-mismatch variant — the one thing every N4 caller (the retry
+ *  guard in all three services, the retry button in `RunProgressPanel` and in
+ *  `ImportProgressSection`'s removal notice) actually needs to know: neither variant offers a
+ *  retry, because the mismatch is already recorded and, for `'activeSetDiffers'`, its resync
+ *  already runs. `null` (the state carries no reason) is never a mismatch. */
+export function isChannelMismatch(reason: SyncReportReason | null): boolean {
+  return reason === 'channelMismatchNotTracked' || reason === 'channelMismatchActiveSetDiffers';
+}
 
 /** Why the shared pre-check (`SevenTvEmoteSetService.resolveEditableSet`, spec 6.2) blocked a run
  *  before it could start — the three non-`'editable'` outcomes of `EditableSetResolution`, pulled
@@ -61,8 +80,9 @@ function channelCount(
  *
  * Order matters:
  *
- * 1. An `unresolvedChannel` always means `'partial'`/`'channelMismatch'` — even when every channel
- *    that *was* resolved came back complete (spec edge case: "even given fully complete
+ * 1. An `unresolvedChannel` always means `'partial'`/`'channelMismatchNotTracked'` or
+ *    `'partial'`/`'channelMismatchActiveSetDiffers'` (per its own `reason`) — even when every
+ *    channel that *was* resolved came back complete (spec edge case: "even given fully complete
  *    channels"). The expected channel not being hit is itself the problem (E18), independent of
  *    how the hit channels fared.
  * 2. Otherwise, any resolved channel whose count fell short of `reportedCount` makes the whole
@@ -76,8 +96,15 @@ export function classifySyncInSetResponse(
   response: SyncDeletedInSetResponse | SyncRestoredInSetResponse,
   reportedCount: number,
 ): SyncReportOutcome {
-  if (response.unresolvedChannel !== null) {
-    return { state: 'partial', reason: 'channelMismatch' };
+  const unresolved = response.unresolvedChannel;
+  if (unresolved !== null) {
+    return {
+      state: 'partial',
+      reason:
+        unresolved.reason === 'notTracked'
+          ? 'channelMismatchNotTracked'
+          : 'channelMismatchActiveSetDiffers',
+    };
   }
   const hasShortfall = response.channels.some((channel) => channelCount(channel) < reportedCount);
   if (hasShortfall) {

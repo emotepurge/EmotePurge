@@ -19,6 +19,7 @@ import {
   SyncReportState,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  isChannelMismatch,
 } from './sync-report-outcome';
 
 /** Same shape as the delete's REMOVE, with `addEmote` and the alias to restore under. `alias`
@@ -313,9 +314,10 @@ export class SevenTvRestoreService {
     const current = this.runState();
     if (
       this.syncReport() === 'pending' ||
-      // addendum N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
-      // could only write the same mismatch again.
-      this.syncReportReason() === 'channelMismatch' ||
+      // addendum N4, AK 40: either channel-mismatch reason is recorded and, for
+      // activeSetDiffers, its resync already runs — a retry could only write the same mismatch
+      // again.
+      isChannelMismatch(this.syncReportReason()) ||
       !current?.result ||
       current.result.doneKeys.length === 0
     ) {

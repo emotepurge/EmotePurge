@@ -2,7 +2,11 @@ import { Component, computed, inject, input, output } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
+import {
+  SyncReportReason,
+  SyncReportState,
+  isChannelMismatch,
+} from '../../core/seven-tv/sync-report-outcome';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 
@@ -92,8 +96,8 @@ import { NoticeBanner } from '../ui/notice-banner';
       @if (syncReportFailed()) {
         <app-notice-banner class="mt-3 block" variant="warning">
           <span class="flex flex-col gap-1">
-            <span class="font-medium">{{ labelPrefix() + '.syncFailedTitle' | transloco }}</span>
-            <span>{{ labelPrefix() + '.syncFailed' | transloco }}</span>
+            <span class="font-medium">{{ syncReportTitleKey() | transloco }}</span>
+            <span>{{ syncReportTextKey() | transloco }}</span>
             <!-- Why the report failed or fell short (spec E23) — its own line, because a bare
                  "failed" does not say whether the right is gone or the server did not answer. -->
             @if (syncReportReason(); as reason) {
@@ -191,17 +195,31 @@ export class RunProgressPanel {
       : `${this.labelPrefix()}.summary.counts`,
   );
 
-  // 'partial' shares the notice with 'failed': in both cases the backend's view of the set differs
-  // from what was actually deleted, and the remedy (retry, or wait for the periodic resync) is the same.
+  // 'partial' shares the notice slot with 'failed' — same banner, same reason line, same
+  // (conditional) retry button — but not the same title/text (#255): 'failed' means the report
+  // never got through, 'partial' means it did and the backend recorded *something*, just not
+  // everything (`syncPartialTitle`/`syncPartial` say so — "vermerkt, aber …" — instead of the
+  // 'failed' wording's "fehlgeschlagen … konnte es nicht vermerken", which is simply wrong for a
+  // report that was in fact recorded).
   protected readonly syncReportFailed = computed(
     () => this.syncReport() === 'failed' || this.syncReport() === 'partial',
   );
 
-  /** "Erneut melden" for `failed` (any reason) and `partial`/`shortfall`, never for
-   *  `partial`/`channelMismatch` (addendum N4, AK 40) — the services refuse that retry as well. */
-  protected readonly syncRetryOffered = computed(
-    () => this.syncReportReason() !== 'channelMismatch',
+  /** `.syncPartialTitle` while `syncReport` is `'partial'`, `.syncFailedTitle` otherwise (only
+   *  reached while `syncReportFailed()` is true, i.e. also for `'failed'`). */
+  protected readonly syncReportTitleKey = computed(
+    () =>
+      `${this.labelPrefix()}.${this.syncReport() === 'partial' ? 'syncPartialTitle' : 'syncFailedTitle'}`,
   );
+
+  /** Same split as {@link syncReportTitleKey}, for the notice's body line. */
+  protected readonly syncReportTextKey = computed(
+    () => `${this.labelPrefix()}.${this.syncReport() === 'partial' ? 'syncPartial' : 'syncFailed'}`,
+  );
+
+  /** "Erneut melden" for `failed` (any reason) and `partial`/`shortfall`, never for either
+   *  channel-mismatch reason (addendum N4, AK 40) — the services refuse that retry as well. */
+  protected readonly syncRetryOffered = computed(() => !isChannelMismatch(this.syncReportReason()));
 
   /** An `unknown` row gets its own wording family rather than its transport error: the point for
    *  the user is not *why* 7TV's answer is missing but that the row's outcome has to be checked. */

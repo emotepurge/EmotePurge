@@ -577,7 +577,8 @@ describe('SevenTvRestoreService', () => {
       expect(service.syncReportReason()).toBeNull();
     });
 
-    it('reads an unresolved expected channel as partial/channelMismatch', () => {
+    // #255: kept apart from the notTracked case below — the two read differently to a user.
+    it('reads an unresolved expected channel with reason activeSetDiffers as partial/channelMismatchActiveSetDiffers', () => {
       runOneRestoreToReport(target({ active: true })).flush(
         restoredAnswer({
           unresolvedChannel: { channelName: 'sensitron', reason: 'activeSetDiffers' },
@@ -586,11 +587,22 @@ describe('SevenTvRestoreService', () => {
       );
 
       expect(service.syncReport()).toBe('partial');
-      expect(service.syncReportReason()).toBe('channelMismatch');
+      expect(service.syncReportReason()).toBe('channelMismatchActiveSetDiffers');
+    });
+
+    it('reads an unresolved expected channel with reason notTracked as partial/channelMismatchNotTracked', () => {
+      runOneRestoreToReport(target({ active: true })).flush(
+        restoredAnswer({
+          unresolvedChannel: { channelName: 'sensitron', reason: 'notTracked' },
+        }),
+      );
+
+      expect(service.syncReport()).toBe('partial');
+      expect(service.syncReportReason()).toBe('channelMismatchNotTracked');
     });
 
     // addendum N4, AK 40: nothing a retry could improve — the service refuses it, no request.
-    it('refuses a manual retry of a report that ended partial/channelMismatch', () => {
+    it('refuses a manual retry of a report that ended partial/channelMismatchNotTracked', () => {
       runOneRestoreToReport(target({ active: true })).flush(
         restoredAnswer({
           unresolvedChannel: { channelName: 'sensitron', reason: 'notTracked' },

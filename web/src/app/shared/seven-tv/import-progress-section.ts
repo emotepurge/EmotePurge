@@ -5,6 +5,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { isChannelMismatch } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { ExportDialogData, FORMAT_EXPORT_OPTIONS, openExportDialog } from '../export/export-dialog';
 import { JSON_MIME } from '../export/export-envelope';
@@ -171,17 +172,16 @@ import { RunProgressPanel } from './run-progress-panel';
               ) {
                 <app-notice-banner variant="warning">
                   <span class="flex flex-col gap-1">
-                    <span class="font-medium">{{
-                      'import.removalSyncFailedTitle' | transloco
-                    }}</span>
-                    <span>{{ 'import.removalSyncFailed' | transloco }}</span>
+                    <span class="font-medium">{{ removalSyncTitleKey() | transloco }}</span>
+                    <span>{{ removalSyncTextKey() | transloco }}</span>
                     <!-- Why the removal report failed or fell short (spec E23). -->
                     @if (importService.removalReportReason(); as reason) {
                       <span>{{ 'syncReportReason.' + reason | transloco }}</span>
                     }
                   </span>
-                  <!-- No retry for a channel mismatch (addendum N4), as in RunProgressPanel. -->
-                  @if (importService.removalReportReason() !== 'channelMismatch') {
+                  <!-- No retry for either channel-mismatch reason (addendum N4), as in
+                       RunProgressPanel. -->
+                  @if (!removalReportIsChannelMismatch()) {
                     <button
                       notice-action
                       type="button"
@@ -279,6 +279,29 @@ export class ImportProgressSection {
    *  (`ImportRunInfo.unknownCount`) — never read as `failed` by anything downstream. */
   protected readonly unknownRowsKey = computed(() =>
     pluralKey(this.importService.run()?.unknownCount ?? 0, 'import.summary.unknownRows'),
+  );
+
+  /** The removal report's title/text key — `.removalSyncPartialTitle`/`.removalSyncPartial` while
+   *  `removalReport` is `'partial'` (recorded, just not fully — #255), the plain
+   *  `.removalSyncFailedTitle`/`.removalSyncFailed` for `'failed'`. Same split as
+   *  `RunProgressPanel`'s own `syncReportTitleKey`/`syncReportTextKey`, duplicated rather than
+   *  shared because this notice is not routed through that component (doc comment above the
+   *  block that reads these). */
+  protected readonly removalSyncTitleKey = computed(() =>
+    this.importService.removalReport() === 'partial'
+      ? 'import.removalSyncPartialTitle'
+      : 'import.removalSyncFailedTitle',
+  );
+  protected readonly removalSyncTextKey = computed(() =>
+    this.importService.removalReport() === 'partial'
+      ? 'import.removalSyncPartial'
+      : 'import.removalSyncFailed',
+  );
+
+  /** Whether the removal report's reason is either channel-mismatch variant (addendum N4) — gates
+   *  the retry button, same rule as `RunProgressPanel.syncRetryOffered`. */
+  protected readonly removalReportIsChannelMismatch = computed(() =>
+    isChannelMismatch(this.importService.removalReportReason()),
   );
 
   /** Same key the page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */

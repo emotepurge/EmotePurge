@@ -21,6 +21,7 @@ import {
   SyncReportState,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  isChannelMismatch,
 } from './sync-report-outcome';
 
 /** Kept under its historical name — the engine's constant is the same value. */
@@ -275,9 +276,10 @@ export class SevenTvDeleteService {
     const current = this.run;
     if (
       this.syncReport() === 'pending' ||
-      // addendum N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
-      // could only write the same mismatch again.
-      this.syncReportReason() === 'channelMismatch' ||
+      // addendum N4, AK 40: either channel-mismatch reason is recorded and, for
+      // activeSetDiffers, its resync already runs — a retry could only write the same mismatch
+      // again.
+      isChannelMismatch(this.syncReportReason()) ||
       !current?.result ||
       current.result.doneKeys.length === 0
     ) {
@@ -336,7 +338,8 @@ export class SevenTvDeleteService {
       .subscribe({
         // The threeway reading lives in one place for all three services (F8, E23, AK 15): a
         // channel short of the reported ids is 'partial'/'shortfall', a missed expected channel
-        // 'partial'/'channelMismatch', a paper-only answer (`channels: []`) a plain success.
+        // 'partial'/'channelMismatchNotTracked' or 'partial'/'channelMismatchActiveSetDiffers'
+        // (#255), a paper-only answer (`channels: []`) a plain success.
         next: (answer: SyncDeletedInSetResponse) =>
           this.applyIfCurrent(run, () =>
             this.applyReportOutcome(classifySyncInSetResponse(answer, sevenTvEmoteIds.length)),
