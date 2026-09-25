@@ -636,6 +636,51 @@ describe('SevenTvImportService', () => {
     });
   });
 
+  // Spec 4.5 point 17, AK 32: `import-flow.ts`'s `start()` calls this when the shared pre-check
+  // blocks a replace-carrying plan before `recheckTransferPlan` even runs — nothing starts, and
+  // the reason is shown at the same transient spot the drift/skip notices above use.
+  describe('reportTargetCheckBlocked (spec 4.5 point 17, AK 32)', () => {
+    it('sets the block reason and the shared duplicateNoticePending window together', () => {
+      service.reportTargetCheckBlocked('notEditable');
+
+      expect(service.targetCheckBlockReason()).toBe('notEditable');
+      expect(service.duplicateNoticePending()).toBe(true);
+    });
+
+    it('clears itself after DUPLICATE_NOTICE_MS, the same window as every other transient notice', () => {
+      service.reportTargetCheckBlocked('unavailable');
+
+      vi.advanceTimersByTime(3999);
+      expect(service.duplicateNoticePending()).toBe(true);
+
+      vi.advanceTimersByTime(1);
+      expect(service.duplicateNoticePending()).toBe(false);
+    });
+
+    it('startImport() clears a standing block reason, whatever it goes on to start', () => {
+      service.reportTargetCheckBlocked('notEditable');
+      expect(service.targetCheckBlockReason()).toBe('notEditable');
+
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+
+      expect(service.targetCheckBlockReason()).toBeNull();
+
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('reset() clears the block reason immediately, without waiting out the timer', () => {
+      service.reportTargetCheckBlocked('notSelectable');
+      expect(service.targetCheckBlockReason()).toBe('notSelectable');
+
+      service.reset();
+
+      expect(service.targetCheckBlockReason()).toBeNull();
+      expect(service.duplicateNoticePending()).toBe(false);
+    });
+  });
+
   // R15: the engine sets isRunning false *before* the closing calls go out, so a second run can be
   // started while the first one's follow-up is still in flight. Everything the follow-up needs hangs
   // off the run record it closed over, and a late answer that no longer matches run() is dropped.
