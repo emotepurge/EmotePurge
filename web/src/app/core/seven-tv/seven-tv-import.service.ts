@@ -483,9 +483,16 @@ export class SevenTvImportService {
   /** Called by `import-flow.ts`'s `start()` when the shared pre-check (spec 4.2, 6.2) blocks a plan
    *  with at least one replace row, before `recheckTransferPlan` even runs (spec 4.5 point 17) —
    *  nothing starts, and the reason is shown at the same transient spot a drift abort uses
-   *  (`duplicateNoticePending`, plan 0.2): a blocked pre-check leaves no run/queue behind either. */
+   *  (`duplicateNoticePending`, plan 0.2): a blocked pre-check leaves no run/queue behind either.
+   *  Final fix wave A7: also resets `skippedDuplicates`, `duplicateCheckAvailable` and
+   *  `replaceSkippedDrift` to their neutral values, same as `startImport` does on every call —
+   *  without this, a still-shown finished run's counts survived into this call's own notice and
+   *  re-announced "N skipped as duplicate" next to a block reason that has nothing to do with it. */
   reportTargetCheckBlocked(reason: TargetCheckBlockReason): void {
     this.targetCheckBlockReason.set(reason);
+    this.skippedDuplicates.set(0);
+    this.duplicateCheckAvailable.set(true);
+    this.replaceSkippedDrift.set(0);
     this.showDuplicateNotice(true);
   }
 

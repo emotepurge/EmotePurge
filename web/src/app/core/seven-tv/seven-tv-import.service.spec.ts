@@ -679,6 +679,21 @@ describe('SevenTvImportService', () => {
       expect(service.targetCheckBlockReason()).toBeNull();
       expect(service.duplicateNoticePending()).toBe(false);
     });
+
+    // Final fix wave A7: a finished pre-run's duplicate/drift counts used to survive into a
+    // *later* blocked pre-check — the dock would still show "N skipped as duplicate" next to a
+    // block reason that has nothing to do with that earlier run.
+    it('resets skippedDuplicates, replaceSkippedDrift and duplicateCheckAvailable to their neutral values', () => {
+      service.skippedDuplicates.set(3);
+      service.duplicateCheckAvailable.set(false);
+      service.replaceSkippedDrift.set(2);
+
+      service.reportTargetCheckBlocked('notEditable');
+
+      expect(service.skippedDuplicates()).toBe(0);
+      expect(service.duplicateCheckAvailable()).toBe(true);
+      expect(service.replaceSkippedDrift()).toBe(0);
+    });
   });
 
   // R15: the engine sets isRunning false *before* the closing calls go out, so a second run can be
