@@ -2765,15 +2765,23 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
 
   it('locks the delete button and opens no dialog while the pre-check is out, then opens it on an editable answer', () => {
     fixture.componentInstance['openConfirm']();
+    fixture.detectChanges();
 
-    expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(true);
+    // Rule 12: the observable contract is the button's own disabled state, not the internal
+    // `deleteTargetCheckPending` signal that happens to drive it.
+    expect(
+      findButtonByLabel(fixture.nativeElement, deleteButtonLabel(EMOTES.length)).disabled,
+    ).toBe(true);
     expect(dialogOpen).not.toHaveBeenCalled();
 
     httpMock
       .expectOne('/api/seventv/me/emote-set-targets')
       .flush(targetsResponse('set-1', 'somechannel'));
+    fixture.detectChanges();
 
-    expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+    expect(
+      findButtonByLabel(fixture.nativeElement, deleteButtonLabel(EMOTES.length)).disabled,
+    ).toBe(false);
     expect(dialogOpen).toHaveBeenCalledTimes(1);
     expect(fixture.componentInstance['abortNotice']()).toBeNull();
   });
@@ -2859,25 +2867,31 @@ describe('MassDeletePanel — the shared pre-check runs before the delete confir
     expect(dialogOpen).not.toHaveBeenCalled();
   });
 
-  // Review round 1, finding 3a: the confirmation must open for the set the pre-check actually
-  // vouched for, not for whatever the host page's `setId()` input has moved on to while an
-  // uncached check was still in flight (a `channel.synced` set switch, for instance).
-  it('opens the confirmation for the checked set, not a set the host switched to while the check was still out', () => {
+  // Codex C3 / final fix wave A6, superseding review round 1 finding 3a: opening a confirmation
+  // silently for the set the pre-check happened to vouch for — even though the host has since
+  // switched away from it — used to defer the abort until the dialog closed
+  // (`abortReasonBeforeStart`). That left a confirmation open for a set nobody had selected any
+  // more. A switch behind the still-open pre-check now aborts immediately, visibly, instead.
+  it('aborts with setChangedDuringConfirm and opens no dialog when the set switches behind the still-open pre-check', () => {
+    fixture.componentRef.setInput('setName', 'Set A');
+    fixture.detectChanges();
     fixture.componentInstance['openConfirm']();
     const req = httpMock.expectOne('/api/seventv/me/emote-set-targets');
     expect(req.request.url).toContain('/api/seventv/me/emote-set-targets');
 
     // The set switches behind the still-open pre-check.
     fixture.componentRef.setInput('setId', 'set-2');
+    fixture.componentRef.setInput('setName', 'Set B');
     fixture.detectChanges();
 
-    // Answers for the originally checked set ('set-1'), not the one now selected.
+    // Answers for the originally checked set ('set-1'), editable — but no longer the one
+    // selected by the time the answer arrives.
     req.flush(targetsResponse('set-1', 'somechannel'));
 
-    expect(dialogOpen).toHaveBeenCalledTimes(1);
-    const data = dialogOpen.mock.calls[0][1].data as { setName: string };
-    // `setName` input was never set, so it falls back to the id the dialog was built for —
-    // proof that the checked id, not the live (now switched) one, is what `frozenSetId` pinned.
-    expect(data.setName).toBe('set-1');
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.abortedByLock',
+      reasonKey: 'massDelete.setChangedDuringConfirm',
+    });
   });
 });

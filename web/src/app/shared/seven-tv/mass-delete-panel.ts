@@ -760,6 +760,18 @@ export class MassDeletePanel {
             });
             return;
           }
+          // Codex C3 (final fix wave A6): a set switch that lands while the check was still out
+          // used to be caught only once the dialog closed (`abortReasonBeforeStart`), which left
+          // a confirmation open for a set the host was no longer looking at. Caught here instead,
+          // before the dialog ever opens — same lead/reason pair `abortReasonBeforeStart` already
+          // uses for the settled-switch case it still covers.
+          if (this.setId() !== checkedSetId) {
+            this.abortNotice.set({
+              leadKey: 'massDelete.abortedByLock',
+              reasonKey: 'massDelete.setChangedDuringConfirm',
+            });
+            return;
+          }
           this.openConfirmDialogAfterCheck(checkedSetId);
         },
         // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
