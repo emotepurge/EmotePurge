@@ -208,7 +208,7 @@ describe('ImportTrigger', () => {
 
   function render(
     channelName = CURRENT_CHANNEL,
-    setId = CURRENT_SET,
+    setId: string | null = CURRENT_SET,
     options: { activeSetId?: string | null; setName?: string | null } = {},
   ): Harness {
     const fixture = TestBed.createComponent(ImportTrigger);
@@ -265,6 +265,42 @@ describe('ImportTrigger', () => {
         channelName: 'achannel',
         setId: 'aset',
       });
+    });
+
+    // Spec #253, E22: a channel page without a selected set (before its first sync, or after a
+    // replace into the untracked) still has a way in — the trigger opens the dialog with a `null`
+    // target, which `ImportSourceDialog` uses to disable its two copy doors (own spec).
+    it('opens the dialog with setId: null when the page has no selected set', () => {
+      const dialog = render(CURRENT_CHANNEL, null);
+      dialog.click();
+
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      expect(dataAt(0)).toEqual({
+        channelName: CURRENT_CHANNEL,
+        setId: null,
+      });
+    });
+
+    // A restore file names and clears its own target regardless of the page's set (spec 6.1) — the
+    // one result a dialog opened with `setId: null` can actually close with, since its two copy
+    // doors are disabled. `hostSelectedSetId` carries the `null` through unchanged, for the
+    // confirmation's "not the set on screen" hint (E21).
+    it('still starts a restore flow through a dialog opened with setId: null', () => {
+      const dialog = render(CURRENT_CHANNEL, null);
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next(
+        restoreResult({ hostChannelName: CURRENT_CHANNEL, hostSelectedSetId: null }),
+      );
+      closedAt<boolean>(1).next(true);
+
+      expect(startRestore).toHaveBeenCalledWith(
+        expect.objectContaining({ setId: CURRENT_SET, hostChannelName: CURRENT_CHANNEL }),
+        expect.any(Array),
+        expect.any(Number),
+        expect.any(Boolean),
+        expect.any(Number),
+      );
     });
 
     it('does nothing further when the import dialog closes with no result (cancel/Escape/backdrop)', () => {

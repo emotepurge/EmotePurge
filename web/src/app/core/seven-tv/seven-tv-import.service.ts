@@ -212,9 +212,11 @@ interface ImportRunContext {
  * same `emote_set_change` bucket. Zero-knowledge holds: the write token never leaves the browser.
  *
  * Two things separate it from `SevenTvRestoreService`, both deliberate:
- * - **No `resetIfChannelChanged`.** A restore always writes into the channel whose page you are on;
- *   an import writes into a *different* one on purpose, so resetting the run when the page follows
- *   the user would throw away the very run they started (R9).
+ * - **No `resetIfChannelChanged`.** A restore resets a *finished* run when the page's channel moves
+ *   away from the one it was started on (`hostChannelName`, spec #253 E13) — since #253 that is no
+ *   longer the same as the channel it wrote into (a restore can target any set, tracked or not); an
+ *   import writes into a *different* channel on purpose from the start, so resetting the run when
+ *   the page follows the user would throw away the very run they started (R9).
  * - **The follow-up hangs off `run()`, not off loose fields** — see `ImportRunInfo`.
  *
  * A run executes a `TransferPlan`: one queue row per plan row, and per action the mutations the

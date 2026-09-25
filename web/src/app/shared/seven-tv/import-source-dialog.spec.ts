@@ -41,6 +41,7 @@ const DE_TRANSLATIONS = {
         label: 'Aus 7TVs Bestenliste',
         hint: 'Die netzwerkweit vorn liegenden Emotes',
       },
+      noTargetSet: 'Kein Set, in das kopiert werden könnte',
     },
     leaderboard: {
       title: 'Aus 7TVs Bestenliste importieren',
@@ -537,5 +538,96 @@ describe('ImportSourceDialog', () => {
 
       expect(button('Weiter').disabled).toBe(false);
     });
+  });
+});
+
+/**
+ * A channel page without a selected set (spec #253, E22: before its first sync, or after a replace
+ * into the untracked) — `ImportSourceDialogData.setId: null`. Its own TestBed configuration, not a
+ * case inside the describe above: every other test in this file relies on `data.setId` being the
+ * fixed `'set-current'`.
+ */
+describe('ImportSourceDialog — no target set on the page (spec #253, E22)', () => {
+  let fixture: ComponentFixture<ImportSourceDialog>;
+  let host: HTMLElement;
+  let closed: (ImportSourceDialogResult | undefined)[];
+
+  beforeEach(async () => {
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    closed = [];
+
+    await TestBed.configureTestingModule({
+      imports: [
+        ImportSourceDialog,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: DIALOG_DATA, useValue: { channelName: 'somechannel', setId: null } },
+        {
+          provide: DialogRef,
+          useValue: {
+            close: (result?: ImportSourceDialogResult) => closed.push(result),
+            overlayRef: { addPanelClass: vi.fn(), removePanelClass: vi.fn() },
+          },
+        },
+        {
+          provide: LanguageService,
+          useValue: { lang: signal('de') } as unknown as LanguageService,
+        },
+      ],
+    }).compileComponents();
+    await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
+
+    fixture = TestBed.createComponent(ImportSourceDialog);
+    host = fixture.nativeElement;
+    fixture.detectChanges();
+  });
+
+  function sourceOption(label: string): HTMLButtonElement {
+    const found = Array.from(host.querySelectorAll('button')).find((candidate) =>
+      candidate.textContent?.trim().startsWith(label),
+    );
+    if (!found) {
+      throw new Error(`no source option labelled "${label}"`);
+    }
+    return found;
+  }
+
+  function heading(): string {
+    return host.querySelector('h2')?.textContent?.trim() ?? '';
+  }
+
+  it('disables the channel and leaderboard doors with a reason, and leaves the file door open', () => {
+    const channel = sourceOption('Aus einem Kanal');
+    const leaderboard = sourceOption('Aus 7TVs Bestenliste');
+    const file = sourceOption('Aus einer Datei');
+
+    expect(channel.disabled).toBe(true);
+    expect(channel.textContent).toContain('Kein Set, in das kopiert werden könnte');
+    expect(leaderboard.disabled).toBe(true);
+    expect(leaderboard.textContent).toContain('Kein Set, in das kopiert werden könnte');
+    expect(file.disabled).toBe(false);
+    expect(file.textContent).not.toContain('Kein Set, in das kopiert werden könnte');
+  });
+
+  it('still opens the file branch — a restore file names and checks its own target regardless', () => {
+    sourceOption('Aus einer Datei').click();
+    fixture.detectChanges();
+
+    expect(heading()).toBe('Datei importieren');
+    expect(host.querySelector('input[type="file"]')).not.toBeNull();
+  });
+
+  it('a click on a disabled door does not navigate — the door stays on the choose step', () => {
+    sourceOption('Aus einem Kanal').click();
+    fixture.detectChanges();
+
+    expect(heading()).toBe('Emotes importieren');
+    expect(host.querySelector('app-foreign-channel-step')).toBeNull();
   });
 });

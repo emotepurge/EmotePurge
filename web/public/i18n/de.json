@@ -945,6 +945,10 @@
       "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.",
       "backendTriggered": "Abgleich läuft bereits — die Liste aktualisiert sich gleich."
     },
+    "targetLine": {
+      "channel": "Ziel: {{ channel }} · Set {{ setName }}",
+      "owner": "Ziel: Set {{ setName }} von {{ owner }}"
+    },
     "import": {
       "trigger": "Importieren",
       "title": "Datei importieren",
@@ -1103,7 +1107,8 @@
       "leaderboard": {
         "label": "Aus 7TVs Bestenliste",
         "hint": "Die netzwerkweit vorn liegenden Emotes — ohne zu wissen, in welchem Kanal sie stecken"
-      }
+      },
+      "noTargetSet": "Kein Set, in das kopiert werden könnte"
     },
     "dockCopyButton": "Übertragen ({{ count }})",
     "target": {

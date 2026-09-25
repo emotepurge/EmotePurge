@@ -203,13 +203,14 @@ export class SevenTvRestoreService {
    *  currently be shown — true for `DUPLICATE_NOTICE_MS` after any `startRestore` call that had
    *  something to report (a skip count above 0, or `!duplicateCheckAvailable`), including a refused
    *  (all-duplicates) call. `dockVisible()` (`usage-stats-page.ts`, via `action-dock.ts`) treats this
-   *  exactly like an active restore, which is what lets `MassDeletePanel` mount at all in that
-   *  refused case — without it the panel's own gate (`isRunning() || queue().length > 0`) would
-   *  never fire, since a refused call leaves both false, and the notice that is the run's *only*
-   *  outcome would be unreachable. Self-clearing rather than requiring a manual dismiss for the same
-   *  reason `usage-stats-page`'s `selectionPrunedFeedback` is (design doc §4.5): a refused call has
-   *  no run/queue for a dismiss button to attach to, and a persistent flag would otherwise be able
-   *  to sit next to an unrelated *later* run's details with nothing to clear it. */
+   *  exactly like an active restore, which is what lets `RestoreProgressSection` mount at all in
+   *  that refused case (moved out of `MassDeletePanel` in #253/T9) — without it the section's own
+   *  gate (`isRunning() || queue().length > 0`) would never fire, since a refused call leaves both
+   *  false, and the notice that is the run's *only* outcome would be unreachable. Self-clearing
+   *  rather than requiring a manual dismiss for the same reason `usage-stats-page`'s
+   *  `selectionPrunedFeedback` is (design doc §4.5): a refused call has no run/queue for a dismiss
+   *  button to attach to, and a persistent flag would otherwise be able to sit next to an unrelated
+   *  *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;

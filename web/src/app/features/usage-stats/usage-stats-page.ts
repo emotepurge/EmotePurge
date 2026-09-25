@@ -131,6 +131,7 @@ import {
 } from '../../shared/seven-tv/import-target-dialog';
 import { ImportTrigger } from '../../shared/seven-tv/import-trigger';
 import { DeletableEmote, MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
+import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
 import { ListSelection } from '../../shared/selection/list-selection';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -276,6 +277,7 @@ function sortableLastUsed(lastUsedDate: string | null): number {
     DockOutcomeAnnouncer,
     ImportProgressSection,
     MassDeletePanel,
+    RestoreProgressSection,
     ImportTrigger,
     SlotBudgetBar,
     DateRangeMenu,
@@ -787,13 +789,14 @@ export class UsageStatsPage {
   );
 
   /**
-   * Set names by id, for the name-twin marker's tooltip (E24, AK 59) and — since K5/T5.3 — for the
-   * mass-delete panel's `[setNames]` input, which resolves a finished delete run's own frozen set
-   * (possibly not `selectedEmoteSetId()` any more) for the restore confirmation (spec 8.8). A twin
-   * (or a run's set) the list does not (or no longer) name still gets a stable handle: the id's
-   * last six characters, the same short form the audit view uses for a set — that fallback lives
-   * at each reader, not here, so a reader missing from this map is unambiguous (`undefined`, not a
-   * pre-shortened string masquerading as a name).
+   * Set names by id, for the name-twin marker's tooltip (E24, AK 59). Used to also feed the
+   * mass-delete panel's `[setNames]` input (K5/T5.3), which resolved a finished delete run's own
+   * frozen set for the restore confirmation — dead since #253/T9, when that confirmation started
+   * naming the set fresh from the shared pre-check's own target list instead (Plan-253 §6, Nr. 1),
+   * and the input was removed. A twin the list does not (or no longer) name still gets a stable
+   * handle: the id's last six characters, the same short form the audit view uses for a set — that
+   * fallback lives at each reader, not here, so a reader missing from this map is unambiguous
+   * (`undefined`, not a pre-shortened string masquerading as a name).
    */
   protected readonly emoteSetNames = computed(
     () => new Map((this.emoteSetList()?.sets ?? []).map((set) => [set.id, set.name])),

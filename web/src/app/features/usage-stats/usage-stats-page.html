@@ -84,25 +84,32 @@
       >
         {{ 'export.button' | transloco }}
       </button>
-      <!-- Two 7TV write entry points behind ONE gate, because both act on this channel's active
-           set: the push (#72, K3) copies this channel's emotes into another channel's set, the
-           import (#91, #147) brings emotes INTO this set — from a file (purge protocol to restore,
-           emote list or usage export to copy) or from another channel's 7TV set, the source being
-           the first step of the one dialog it opens. Both are desktop-only like every other 7TV
-           write path (isCoarse — no write token off a phone) and both are gone entirely without an
-           active set: the push would have nothing to copy from, the import no set to write into and
-           none to validate a purge protocol against.
-           Both also carry the same two locks. ANY of the three 7TV-writing runs being active
-           (arbiter.activeRun(), not just the button's own kind) — the same rule the delete trigger
-           already follows, and the running progress in the dock is the only reason given for it
-           (UI-Designsprache.md §4.2/§7). And the set status or the rows still belonging to the
-           PREVIOUS channel: a channel switch inside this route (the import summary's "open target
-           channel" link) moves channelName() at once and leaves both behind until their responses
-           land, so a capture in that window would act on channel A's set under B's name — a wrong
-           7TV write. `importScopeCurrent()`, not `isLoading()`: the new totals can answer before the
-           new set status does, and loading is over by then. See importScopeIsCurrent. The trigger
-           takes that boolean as an input rather than recomputing it, so its lock stays a pure
-           function (import-trigger-gate.ts).
+      <!-- Two 7TV write entry points, desktop-only like every other 7TV write path (isCoarse — no
+           write token off a phone), but no longer behind the same set gate since #253/T9 (E22):
+           the push (#72, K3) copies THIS channel's active set into another channel's set and has
+           nothing to copy from without one, so it stays gated on `selectedEmoteSetId()`. The
+           import entry (`app-import-trigger`, #91/#147) brings emotes INTO a set — from a file
+           (purge protocol/transfer file to restore, emote list or usage export to copy), a foreign
+           channel or the leaderboard — and now stays visible even without a selected set: a restore
+           file names and checks its own target through the shared pre-check
+           (`resolveEditableSet`, spec 6.1/6.2), independent of the page, so a channel with no
+           active set (before its first sync, or after a replace into the untracked) still has a
+           way in. Its `setId` input is therefore `string | null` since #253 — the three copy doors
+           (channel, leaderboard, and the two copy file kinds inside the file branch) are what stays
+           locked without one, shown with a reason rather than hidden
+           (`import.source.noTargetSet`/`restore.import.errors.noTargetSetForCopy`, the same
+           "disabled explains itself" idiom as every other locked control, §10).
+           Both write entry points carry the same two locks. ANY of the three 7TV-writing runs being
+           active (arbiter.activeRun(), not just the button's own kind) — the same rule the delete
+           trigger already follows, and the running progress in the dock is the only reason given
+           for it (UI-Designsprache.md §4.2/§7). And the set status or the rows still belonging to
+           the PREVIOUS channel: a channel switch inside this route (the import summary's "open
+           target channel" link) moves channelName() at once and leaves both behind until their
+           responses land, so a capture in that window would act on channel A's set under B's name —
+           a wrong 7TV write. `importScopeCurrent()`, not `isLoading()`: the new totals can answer
+           before the new set status does, and loading is over by then. See importScopeIsCurrent.
+           The trigger takes that boolean as an input rather than recomputing it, so its lock stays a
+           pure function (import-trigger-gate.ts).
            NOT shared is the empty-scope half of transferButtonDisabled (`atlasOrder().length ===
            0 && selection.selectedItems().length === 0`, Konzept "Auswahl überlebt Suche und
            Filter" nachtrag, 2026-09-19): the push sends either the visible grid or the marked
@@ -110,11 +117,11 @@
            brings its own rows and needs neither a visible row nor a selection to exist.
            Gated on the SELECTED set since spec #200 (8.1): the push copies the rows on screen and
            names their set as the source, so it works from any set's view. Since T4.5 the import
-           trigger's file, foreign-channel and leaderboard doors do too — `setId`/`activeSetId`
-           below let `ImportTrigger` build the right target itself (`toImportTarget`). Only the
-           restore branch stays locked while a non-active set is on screen: a finished restore
-           still books its un-archive through the legacy, set-agnostic `sync-restored` call (K5
-           makes it set-aware) — `activeSetId` also gates that lock, inside the trigger. -->
+           trigger's three copy doors do too — `setId`/`activeSetId` below let `ImportTrigger` build
+           the right target itself (`toImportTarget`) whenever a set is selected. A restore's own
+           target is never built from these two inputs at all (spec #253, E1) — they only travel on
+           as the file step's `hostSelectedSetId`, for the confirmation's "not the set on screen"
+           hint (E21). -->
       @if (!isCoarse() && selectedEmoteSetId(); as selectedSetId) {
         <button
           type="button"
@@ -125,9 +132,11 @@
         >
           {{ 'import.copyButton' | transloco }}
         </button>
+      }
+      @if (!isCoarse()) {
         <app-import-trigger
           [channelName]="channelName()"
-          [setId]="selectedSetId"
+          [setId]="selectedEmoteSetId()"
           [activeSetId]="activeEmoteSetId()"
           [setName]="selectedEmoteSetName()"
           [importScopeCurrent]="importScopeCurrent()"
@@ -1108,7 +1117,6 @@
           [setId]="setId"
           [activeSetId]="activeEmoteSetId()"
           [setName]="selectedEmoteSetName()"
-          [setNames]="emoteSetNames()"
           [channelName]="channelName()"
           [selectedEmotes]="selectedForDelete()"
           [deleteLockReasonKey]="deleteLockReasonKey()"
@@ -1183,6 +1191,13 @@
            hide a still-writing run together with its Cancel button. The component gates its own
            visibility on the run, so it renders nothing between imports. -->
       <app-import-progress-section />
+      <!-- The restore dock, since #253/T9 its own section rather than content inside
+           `app-mass-delete-panel` (spec 6.6, E22): a restore can be started from a page with no
+           selected set at all (`app-import-trigger` reading a restore file, above) or can target a
+           set other than the one on screen (E13/E21), so it sits outside the set gate for the same
+           reason the import section does — a page without an active set must not hide a
+           still-writing restore together with its Cancel button. Renders nothing between restores. -->
+      <app-restore-progress-section />
     </div>
   </div>
 }

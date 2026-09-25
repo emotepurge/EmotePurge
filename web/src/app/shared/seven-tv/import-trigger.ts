@@ -89,19 +89,24 @@ function toImportTarget(
  * `importScopeCurrent` is an input rather than something computed here from page state, so the
  * lock this button carries stays a pure function of two booleans (`importTriggerDisabled`,
  * testable without a TestBed) — the page computes the boolean itself, the same way it already does
- * for the neighbouring "Übertragen" button (`importScopeIsCurrent`). `atlasOrder().length === 0`
- * and `!isCoarse()` deliberately do NOT appear here: both are already enforced by the `@if` block
- * this trigger is placed inside on the page, alongside "Übertragen" (plan §1.2 point 3).
+ * for the neighbouring "Übertragen" button (`importScopeIsCurrent`). `!isCoarse()` deliberately
+ * does NOT appear here: it is already enforced by the `@if` block this trigger is placed inside on
+ * the page (plan §1.2 point 3). Unlike "Übertragen", that block is `this` trigger's own since
+ * #253/T9 (E22) — it no longer shares the page's set gate, so `atlasOrder().length === 0` does not
+ * apply here either; the trigger stays visible without a set.
  *
  * **The three copy doors target `setId` itself (spec 8.6, T4.5)** — the page's *selected* set,
- * active or not (`toImportTarget` above). **A restore file targets whatever set it names** (spec
- * #253, E1): `FileImportStep` reads the set from the file, clears it through the shared pre-check
+ * active or not (`toImportTarget` above); `null` when the page has none (spec #253, E22), in which
+ * case `ImportSourceDialog` disables all three doors with a reason and only a `'restore'` result
+ * can ever come back. **A restore file targets whatever set it names** (spec #253, E1):
+ * `FileImportStep` reads the set from the file, clears it through the shared pre-check
  * (`resolveEditableSet`, E19) and hands back a `ResolvedRestoreTarget` that this trigger passes to
  * `startRestoreFlow` unchanged — it neither builds nor adjusts a restore target itself, and a
  * blocked check never reaches it (the step keeps the dialog open with its own banner). The page's
- * frozen `setId` only goes along as the step's `hostSelectedSetId`, for the confirmation's "not the
- * set on screen" hint (E21). Restore books its un-archive through the set-centric
- * `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call (`SevenTvRestoreService`, spec 6.4).
+ * frozen `setId` only goes along as the step's `hostSelectedSetId` — `null` included — for the
+ * confirmation's "not the set on screen" hint (E21). Restore books its un-archive through the
+ * set-centric `SevenTvEmoteSetService.reportRestoredInSet(setId, …)` call (`SevenTvRestoreService`,
+ * spec 6.4).
  */
 @Component({
   selector: 'app-import-trigger',
@@ -121,10 +126,13 @@ function toImportTarget(
 export class ImportTrigger {
   readonly channelName = input.required<string>();
   /** The set this trigger's three copy doors target — the page's *selected* set (spec #200, T4.5),
-   *  active or not. A restore file does not target it (it names its own set); it only travels to
-   *  the file step as `hostSelectedSetId`. Named `setId`, not `selectedSetId`: the only place
-   *  "selected vs. active" matters is the comparison against {@link activeSetId} below. */
-  readonly setId = input.required<string>();
+   *  active or not; `null` when the page has none (spec #253, E22) — the copy doors are then
+   *  disabled inside `ImportSourceDialog`, and no `'foreign'`/`'leaderboard'`/`'import'` result can
+   *  come back from a dialog opened with a `null` target (`ImportSourceDialogData.setId`). A
+   *  restore file does not target it either way (it names its own set); it only travels to the file
+   *  step as `hostSelectedSetId`. Named `setId`, not `selectedSetId`: the only place "selected vs.
+   *  active" matters is the comparison against {@link activeSetId} below. */
+  readonly setId = input.required<string | null>();
   /** The channel's actual active set; `null` when the host knows it has none to offer (unknown —
    *  status failed — or no active set at all); omitted (`undefined`) by a caller with no such
    *  distinction (every caller that predates T4.5, and any test that never sets it), which folds
@@ -191,6 +199,14 @@ export class ImportTrigger {
           result.target,
           result.rows,
         );
+        return;
+      }
+      // The three copy doors are disabled without a target set (`ImportSourceDialogData.setId:
+      // null`, spec #253, E22) — a dialog opened with one can therefore never close with anything
+      // but a `'restore'` result, already handled above. This narrows `setId` for `toImportTarget`
+      // below rather than asserting it, so a dialog defect that somehow returned a copy result
+      // anyway is refused here instead of silently building a target around `null`.
+      if (setId === null) {
         return;
       }
       const importDeps = {

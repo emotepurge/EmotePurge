@@ -26,10 +26,15 @@ import { LeaderboardStep } from './leaderboard-step';
  * a set change while this dialog is open cannot change which page a restore is attributed to, nor
  * where a foreign channel's emotes end up. A restore file names its own target (spec #253, E1);
  * `setId` reaches the file step only as the page's selected set (`hostSelectedSetId`).
+ *
+ * `setId` is `string | null` since #253 (E22): `null` when the page has no selected set (before a
+ * channel's first sync, or after a replace into the untracked). The "Kanal" and "Bestenliste"
+ * source rows have nothing to copy into then and are disabled with a reason; the "Aus einer Datei"
+ * row stays open — a restore file names and checks its own target regardless (`FileImportStep`).
  */
 export interface ImportSourceDialogData {
   channelName: string;
-  setId: string;
+  setId: string | null;
 }
 
 /**
@@ -52,6 +57,13 @@ interface SourceOption {
   labelKey: string;
   hintKey: string;
 }
+
+/** The two source rows that copy emotes into a set rather than reading a self-describing restore
+ *  file — the ones a page without a selected set has nothing to offer for (spec #253, E22). `file`
+ *  is deliberately absent: `FileImportStep` reads restore files regardless of `data.setId`, and
+ *  refuses only its own two copy envelope kinds with its own banner
+ *  (`restore.import.errors.noTargetSetForCopy`) once the file is actually read. */
+const COPY_SOURCE_STEPS: ReadonlySet<ImportSourceStep> = new Set(['channel', 'leaderboard']);
 
 /** Added on top of `app-dialog-panel` for as long as the emote grid is on screen, removed again
  *  when it is not — see the rule of the same name in `styles.css`. */
@@ -146,14 +158,25 @@ const SOURCE_OPTIONS: SourceOption[] = [
             class="flex flex-col border-t border-border"
           >
             @for (option of sourceOptions; track option.step) {
+              <!-- Disabled shown with a reason, not hidden (docs/UI-Designsprache.md §10, "Disabled
+                   explains itself" — the same idiom the target picker's own disabled rows use,
+                   spec #200 8.6): a page without a selected set has nothing to copy into, but the
+                   row stays visible so its absence is not mistaken for a source that does not
+                   exist. -->
               <button
                 #sourceOption
                 type="button"
-                class="flex min-h-11 flex-col items-start justify-center gap-0.5 border-b border-border px-2 py-3 text-left transition hover:bg-surface-inset"
+                [disabled]="sourceOptionDisabled(option.step)"
+                class="flex min-h-11 flex-col items-start justify-center gap-0.5 border-b border-border px-2 py-3 text-left transition enabled:hover:bg-surface-inset disabled:cursor-not-allowed disabled:opacity-60"
                 (click)="goTo(option.step)"
               >
                 <span class="text-sm font-medium text-fg">{{ option.labelKey | transloco }}</span>
                 <span class="text-xs text-fg-secondary">{{ option.hintKey | transloco }}</span>
+                @if (sourceOptionDisabled(option.step)) {
+                  <span class="text-xs text-fg-muted">{{
+                    'import.source.noTargetSet' | transloco
+                  }}</span>
+                }
               </button>
             }
           </div>
@@ -277,6 +300,13 @@ export class ImportSourceDialog {
         overlayRef.removePanelClass(WIDE_PANEL_CLASS);
       }
     });
+  }
+
+  /** Whether the source row for `step` is disabled — the two copy sources, and only while the page
+   *  has no selected set (spec #253, E22). A disabled row's `disabled` attribute already keeps a
+   *  click from reaching `goTo`, so this is read only by the template. */
+  protected sourceOptionDisabled(step: ImportSourceStep): boolean {
+    return this.data.setId === null && COPY_SOURCE_STEPS.has(step);
   }
 
   protected goTo(step: ImportSourceStep): void {

@@ -40,7 +40,6 @@ import { Button } from '../ui/button';
 import { PREVIEW_CAP } from '../ui/name-preview-list';
 import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
-import { resyncNoticeKey } from './dock-outcome-announcer';
 import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
 import { RunProgressPanel } from './run-progress-panel';
@@ -265,66 +264,6 @@ export interface DeletableEmote {
           </ng-container>
         </app-run-progress-panel>
       }
-
-      <!-- #149 P2 (independent review): gated on duplicateNoticePending, not just
-           skippedDuplicates() > 0 — a transient notice (design doc §4.5), not a persistent one, so
-           it never sits attached to a *later*, unrelated run's details with nothing to clear it.
-           See that signal's doc for why it also has to be what keeps the dock (and this panel)
-           mounted for a fully-refused (all-duplicates) restore, which leaves no run/queue behind of
-           its own — including the file-based restore reached via ImportTrigger, which has nothing
-           marked in this channel's grid to keep the dock open otherwise.
-
-           Every notice in this panel is aria-hidden: its announcement comes from the host page's
-           permanently mounted DockOutcomeAnnouncer, not from here. On the usage-stats page this
-           panel lives in the dock, which can mount in the same pass that sets the notice, and a
-           status region created together with its text announces nothing
-           (docs/UI-Designsprache.md §4.5). -->
-      @if (restoreService.duplicateNoticePending() && restoreService.skippedDuplicates() > 0) {
-        <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{
-            restoreSkippedDuplicatesKey() | transloco: { count: restoreService.skippedDuplicates() }
-          }}
-        </p>
-      }
-      <!-- Aliases the same check left out because another emote now holds the name — its own line,
-           so "skipped" is never read as "was already there". -->
-      @if (restoreService.duplicateNoticePending() && restoreService.skippedNameTaken() > 0) {
-        <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{
-            restoreSkippedNameTakenKey() | transloco: { count: restoreService.skippedNameTaken() }
-          }}
-        </p>
-      }
-      <!-- The pre-run duplicate check's fetch failed (already-present-filter.ts) — every row still
-           went through, so a duplicate may have slipped in undetected. A quiet notice, not an
-           alarm: the run is still expected to succeed, this only says the guard could not run. -->
-      @if (restoreService.duplicateNoticePending() && !restoreService.duplicateCheckAvailable()) {
-        <p aria-hidden="true" class="text-sm text-fg-secondary">
-          {{ 'restore.duplicateCheckUnavailable' | transloco }}
-        </p>
-      }
-      @if (restoreService.isRunning() || restoreService.queue().length > 0) {
-        <app-run-progress-panel
-          [items]="restoreService.queue()"
-          [isRunning]="restoreService.isRunning()"
-          labelPrefix="restore"
-          [syncReport]="restoreService.syncReport()"
-          [syncReportReason]="restoreService.syncReportReason()"
-          [rateLimitPauseSeconds]="restoreService.rateLimitPauseSeconds()"
-          (cancelled)="restoreService.cancel()"
-          (dismissed)="restoreService.reset()"
-          (syncRetryRequested)="restoreService.retrySyncReport()"
-        >
-          <ng-container run-actions>
-            <!-- aria-hidden for the same reason as the duplicate notices above. -->
-            @if (resyncNoticeKey(); as noticeKey) {
-              <span aria-hidden="true" class="text-xs text-fg-muted">
-                {{ noticeKey | transloco }}
-              </span>
-            }
-          </ng-container>
-        </app-run-progress-panel>
-      }
     </div>
   `,
 })
@@ -348,16 +287,12 @@ export class MassDeletePanel {
    *  (spec §9, `massDeletePanelSetId`/`activeEmoteSetId` on that page). */
   readonly activeSetId = input<string | null | undefined>(undefined);
   /** The selected set's display name, for the delete confirmation (spec #200, 8.8) — falls back to
-   *  the set id itself, same convention as every other unnamed-set reader in this app. */
+   *  the set id itself, same convention as every other unnamed-set reader in this app. The restore
+   *  confirmation used to read a `setNames` map for the same reason (a finished delete run's own
+   *  frozen set could differ from `setId()` by the time Restore was clicked); since T6/T7 that
+   *  confirmation names the set fresh from the shared pre-check's own target list instead
+   *  (`resolveEditableSet`, spec 6.2), so the map became dead and was removed (Plan-253 §6, Nr. 1). */
   readonly setName = input<string | null>(null);
-  /** Set id → display name, for the restore confirmation: a finished delete run's own frozen set
-   *  (`DeleteRunInfo.setId`) can differ from `setId()` above if the dropdown moved on between the
-   *  delete finishing and Restore being clicked (the dropdown only locks while the run is still
-   *  writing). Falls back to the id itself for a set this map does not name, same convention as
-   *  `setName` above. Defaults to an empty map, which folds every lookup onto that same fallback —
-   *  a caller that predates this (every existing one) sees exactly the id it always effectively
-   *  showed. */
-  readonly setNames = input<ReadonlyMap<string, string>>(new Map());
   readonly selectedEmotes = input.required<DeletableEmote[]>();
   /**
    * Translation key of a reason the host page locks the delete button for, or `null` for no such
@@ -520,26 +455,6 @@ export class MassDeletePanel {
 
   /** Live slot view for the restore-confirm dialog, loaded when that dialog opens. */
   private readonly restoreSlots = signal<{ occupied: number; capacity: number } | null>(null);
-
-  /** Same key the host page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
-  protected readonly resyncNoticeKey = computed(() =>
-    resyncNoticeKey(this.restoreService.resyncTrigger(), 'restore'),
-  );
-
-  /** #149/T5: wording for how many `ADD`s (aliases, since the 2026-09-22 per-alias rule) the
-   *  pre-run duplicate check (`already-present-filter.ts`) dropped — shown independently of the run-progress panel below, because a run where *every*
-   *  row was already present queues nothing and would otherwise leave that panel hidden (its own
-   *  gate is `isRunning() || queue().length > 0`), silently swallowing the one thing the user needs
-   *  to see in that case. */
-  protected readonly restoreSkippedDuplicatesKey = computed(() =>
-    pluralKey(this.restoreService.skippedDuplicates(), 'restore.skippedDuplicates'),
-  );
-
-  /** Wording for how many aliases the same check dropped because another emote now holds the name
-   *  (`restoreService.skippedNameTaken`) — same reason to live outside the run-progress panel. */
-  protected readonly restoreSkippedNameTakenKey = computed(() =>
-    pluralKey(this.restoreService.skippedNameTaken(), 'restore.skippedNameTaken'),
-  );
 
   constructor() {
     this.destroyRef.onDestroy(() => (this.destroyed = true));

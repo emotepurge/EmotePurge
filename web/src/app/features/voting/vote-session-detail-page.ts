@@ -72,6 +72,7 @@ import {
 import { chunkIntoRows } from '../../shared/grid/grid-columns';
 import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
 import { DeletableEmote, MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
+import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
 import { ListSelection } from '../../shared/selection/list-selection';
 
 /**
@@ -125,6 +126,7 @@ const FILTER_TOOLBAR_MIN_EMOTES = 13;
     EmoteSpriteAnimated,
     DockOutcomeAnnouncer,
     MassDeletePanel,
+    RestoreProgressSection,
     UsageRangeMenu,
     TranslocoPipe,
   ],
@@ -207,7 +209,7 @@ export class VoteSessionDetailPage {
    *  has no set-switching UI of its own to reuse a resource from. `hasValue()` guards `.value()`
    *  deliberately, same reasoning as usage-stats-page's identical guard: a `resource()`'s `.value()`
    *  re-throws the load error once `status()` is `'error'`. A failed load simply leaves the map
-   *  empty — the panel's own `setName`/`setNames` inputs already fall back to the raw id. */
+   *  empty — the panel's own `setName` input already falls back to the raw id. */
   private readonly emoteSetListResource = rxResource({
     params: () => this.channelName(),
     stream: ({ params }) => this.emoteSetService.listChannelEmoteSets(params),

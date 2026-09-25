@@ -945,6 +945,10 @@
       "failed": "Could not trigger a sync — the periodic sync catches up within a minute.",
       "backendTriggered": "Already being re-synced — the list updates shortly."
     },
+    "targetLine": {
+      "channel": "Target: {{ channel }} · set {{ setName }}",
+      "owner": "Target: set {{ setName }} of {{ owner }}"
+    },
     "import": {
       "trigger": "Import",
       "title": "Import file",
@@ -1103,7 +1107,8 @@
       "leaderboard": {
         "label": "From 7TV's leaderboard",
         "hint": "The emotes leading network-wide — without knowing which channel they sit in"
-      }
+      },
+      "noTargetSet": "No set to copy into"
     },
     "dockCopyButton": "Transfer ({{ count }})",
     "target": {

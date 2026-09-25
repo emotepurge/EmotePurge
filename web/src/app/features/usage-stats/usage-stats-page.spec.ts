@@ -1598,6 +1598,92 @@ describe('UsageStatsPage — selection-pruned notice accessibility (#94 follow-u
 });
 
 /**
+ * AK 33–34 (spec #253, E22): the import entry stays visible on a channel page without a selected
+ * set — before its first 7TV sync, or after a replace into the untracked (DECISIONS "the file
+ * determines the target") — while the copy button ("Übertragen") is gone, since it has nothing of
+ * THIS channel's own to copy. Real template, same reasoning as the block above: the actual markup
+ * (which `@if` wraps which element) is what is under test, not signal plumbing — `ImportTrigger`'s
+ * own `disabled()`/`setId()` inputs are `import-trigger.spec.ts`'s job.
+ */
+describe('UsageStatsPage — import entry without a selected set (spec #253, AK 33–34)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Mounts the page on a channel with no active 7TV set — `no_active_emote_set` rather than a
+   *  `null` reason keeps `load()`'s `awaitSync` branch (which polls) from firing, irrelevant to
+   *  what is under test here. */
+  function mountWithoutActiveSet(channelName: string): void {
+    httpMock
+      .expectOne(`/api/channels/${channelName}/permissions`)
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne(`/api/channels/${channelName}/emotes/active-set`).flush(
+      setStatus({
+        activeEmoteSetId: '',
+        trackedSince: '2026-01-01T00:00:00Z',
+        syncFailureReason: 'no_active_emote_set',
+      }),
+    );
+    fixture.detectChanges();
+    flushByPath(httpMock, `/api/channels/${channelName}/usage-stats/totals`, []);
+    flushByPath(httpMock, `/api/channels/${channelName}/usage-stats/series`, {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+  }
+
+  it('shows the import entry even without a selected set', () => {
+    mountWithoutActiveSet('a');
+
+    expect(fixture.nativeElement.querySelector('app-import-trigger')).not.toBeNull();
+  });
+
+  it('shows no copy ("Übertragen") button without a selected set — it has nothing of this channel to copy', () => {
+    mountWithoutActiveSet('a');
+
+    const host: HTMLElement = fixture.nativeElement;
+    const copyButton = Array.from(host.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'import.copyButton',
+    );
+    expect(copyButton).toBeUndefined();
+  });
+});
+
+/**
  * `openExport()` (#141): capture, open the dialog, hand the choice to `usage-export-purposes.ts`
  * and — unless it closed with nothing, or the emote-list branch's unreachable null-download case
  * — trigger exactly one download (Regel 12: dialog return values are behaviour worth pinning).
