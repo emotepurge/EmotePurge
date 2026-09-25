@@ -1,6 +1,6 @@
 # Ersetzung rückgängig: ein geglücktes „Ziel ersetzen" aus seiner Übertragungsdatei vollständig zurücknehmen — Spec
 
-**Datum:** 2026-09-25 · **Status:** Dritte Fassung — die sechs offenen Punkte der ersten Fassung sind vom Betreiber entschieden, jeweils wie empfohlen (Abschnitt 13, 2026-09-25); die parallel getroffene #255-Entscheidung zum Restore-Resync und der Routen-Umbau aus #264 sind eingearbeitet (11.4, F9); die sieben Befunde der adversarialen Zweitmeinung (Codex Sol, gpt-6-sol, 2026-09-25: fünf high, zwei medium) sind eingearbeitet (Abschnitt 16, E19–E24, F13–F17); die zwei Betreiberfragen daraus sind am 2026-09-25 entschieden (Abschnitt 15: Herkunftsnachweis per Kennzeichnung und Bestätigung; **#256 Punkt 1 ist Vorbedingung** — die Settling-Sperre liegt im Arbiter, nicht im Undo, Vertrag in 11.1); gegen den Code auf `feat/254-replace-undo` (= `origin/feat/emote-sets-200` @ `992eef14`, Merge von #270) belegt, Stichprobe der Belege 27/28 korrekt, der eine Pfad korrigiert · **Issue:** #254 · **Epic:** #200 · **Vorgänger:** #230 (PR #251, [Plan-230-Namenskonflikte.md](../../plans/Plan-230-Namenskonflikte.md) §2, §6 Frage 4, §7 Zeile „Untracked-Restore, Replace-Undo", T7, T7b), #253 (PR #270, [2026-09-24-restore-pro-set-253-design.md](2026-09-24-restore-pro-set-253-design.md)) · **Formatvorlage:** die #253-Spec · **Parallel in Arbeit:** #255 (Wortlaute/Zählungen), #256 (Robustheit) — Berührungspunkte in Abschnitt 11 · **Nicht Teil:** Abschnitt 10
+**Datum:** 2026-09-25 · **Status:** Dritte Fassung — die sechs offenen Punkte der ersten Fassung sind vom Betreiber entschieden, jeweils wie empfohlen (Abschnitt 13, 2026-09-25); die parallel getroffene #255-Entscheidung zum Restore-Resync und der Routen-Umbau aus #264 sind eingearbeitet (11.4, F9); die sieben Befunde der adversarialen Zweitmeinung (Codex Sol, gpt-6-sol, 2026-09-25: fünf high, zwei medium) sind eingearbeitet (Abschnitt 16, E19–E24, F13–F17), ebenso die fünf Befunde der **zweiten und letzten** Runde (Abschnitt 16, Runde 2: kein Wiederverwenden eines Reads vor einem REMOVE, Normalisierung der `null`-Einträge vor jeder Zielprüfung, `addOnly` als Reparaturweg neben fremden Ziel-Einträgen, `partial` orthogonal zu `failed`/`unknown`, lauf-gebundener Abschluss im Vertrag an #256 — F18–F20, AK 35–40, keine neue Betreiberfrage); die zwei Betreiberfragen aus Runde 1 sind am 2026-09-25 entschieden (Abschnitt 15: Herkunftsnachweis per Kennzeichnung und Bestätigung; **#256 Punkt 1 ist Vorbedingung** — die Settling-Sperre liegt im Arbiter, nicht im Undo, Vertrag in 11.1); gegen den Code auf `feat/254-replace-undo` (= `origin/feat/emote-sets-200` @ `992eef14`, Merge von #270) belegt, Stichprobe der Belege 27/28 korrekt, der eine Pfad korrigiert · **Issue:** #254 · **Epic:** #200 · **Vorgänger:** #230 (PR #251, [Plan-230-Namenskonflikte.md](../../plans/Plan-230-Namenskonflikte.md) §2, §6 Frage 4, §7 Zeile „Untracked-Restore, Replace-Undo", T7, T7b), #253 (PR #270, [2026-09-24-restore-pro-set-253-design.md](2026-09-24-restore-pro-set-253-design.md)) · **Formatvorlage:** die #253-Spec · **Parallel in Arbeit:** #255 (Wortlaute/Zählungen), #256 (Robustheit) — Berührungspunkte in Abschnitt 11 · **Nicht Teil:** Abschnitt 10
 
 Diese Spec ist ein Denkwerkzeug des Betreibers und deshalb deutsch; Bezeichner, Routen und
 Wire-Felder bleiben englisch. Sie enthält keinen fertigen Code — Verträge, Verhalten, Grenzfälle,
@@ -176,11 +176,11 @@ Nr. …)" — dort steht seit dem 2026-09-25 die getroffene Entscheidung samt ve
 | E16 | Resync und Seite | Wie der Restore **nach der #255-Entscheidung vom 2026-09-25** (11.4): **kein** Client-Resync im Erfolgsfall — für kein Ziel, auch nicht für ein nicht-aktives Set eines getrackten Kanals; der Backend-Resync aus den beiden Meldungen deckt jeden getroffenen Kanal, das Dock zeigt dafür `backendTriggered` („wird abgeglichen"). Einziger Client-Resync: der N1-Fallback für `expectedChannelName` (das aktive Set eines getrackten Kanals), wenn **beide** Meldungen endgültig scheitern. Mitgliederliste des gewählten nicht-aktiven Sets beim Settle mit `refresh`, sonst Vormerkung (N2) | Keine eigene Regel; der Undo ist der vierte Lauf, für den die #253-Regeln in ihrer #255-Fassung gelten. Ein Resync eines nicht-aktiven Sets lädt dessen Mitgliederliste ohnehin nicht nach (N2-Befund) — das erledigt die Seite beim Settle. Der Cooldown fängt Doppelte (F15 dort) |
 | E17 | Slot-Grenze | Projektion im Dialog: `delta = Σ fehlende Einträge − Anzahl full-Zeilen`; Überschreitung ist eine **Warnung** wie im Import-Dialog (`import-confirm-dialog.ts:923-934`), keine Sperre | Eine `full`-Zeile mit einem Eintrag ist netto 0 und kann an der Kapazität nicht scheitern, weil ihr REMOVE zuerst läuft; nur eine Duplikat-Zelle (#74) mit ≥ 2 Einträgen ist netto positiv. 7TV kennt keinen Slot-Fehlercode, den das Frontend heute auswertet; ein gescheitertes ADD ist eine benannte Lücke (E9). Eine Sperre bräuchte eine Kapazitätsquelle, die für ungetrackte Ziele über einen budgetierten Read kommt (Abschnitt 13, Nr. 6) |
 | E18 | Idempotenz | Dieselbe Datei ein zweites Mal: jede Zeile ist `nothingToDo` (Quelle hält den Namen nicht mehr, Ziel-Einträge vorhanden) ⇒ transiente Notiz, kein Dialog, kein Lauf, keine Datei. Nach einem **teilweise** gescheiterten Lauf ist der zweite Lauf derselben Datei der Weg, der die Lücke schließt (`addOnly` für die fehlenden Ziel-Einträge, E9) | Folgt aus E5/E7 ohne Sonderregel: der Live-Check klassifiziert, die Datei behauptet nichts. Dasselbe gilt für eine Übertragungsdatei eines nie gestarteten Laufs (Quelle nie da, Ziel vorhanden) |
-| E19 | **Prüfung vor jedem REMOVE** (Codex-Befund 1) | Unmittelbar vor jedem REMOVE einer `full`-Zeile liest der Dienst das Ziel-Set erneut (`loadSevenTvSetEntries`, tokenlos) und klassifiziert **diese** Zeile neu (4.3); nur bei unveränderter Klassifikation (Modus `full`, dieselbe ADD-Liste, Quelle exakt `{ alias }`, Ziel ohne fremden Eintrag) läuft das REMOVE, sonst wird die Zeile `skippedDrift` und der Lauf geht zur nächsten. **Festlegung (Koaleszierung):** ein Read, der jünger als `UNDO_ROW_RECHECK_MAX_AGE_MS` ist (Vorschlag 5 s), wird für die nächste Zeile wiederverwendet; nach jeder Rate-Limit-Pause der Engine ist der nächste Read immer frisch. Scheitert der Read oder ist er `complete: false`, wird die Zeile `skippedDrift` mit Grund `recheckUnavailable` (fail-closed); nach **drei** aufeinanderfolgenden Read-Fehlern bricht der Dienst die verbleibenden `full`-Zeilen als `cancelled` mit Grund ab, `addOnly`-Zeilen laufen weiter | Der Lauf ist sequentiell, mit 275 ms je Schritt und Rate-Limit-Pausen bis zu Minuten (Abschnitt 1); ein Editor kann einer späteren Quelle in dieser Zeit einen zweiten Alias geben, und das REMOVE nähme ihn mit, ohne dass die Rückweg-Datei ihn kennt (F2). Die Prüfung je Zeile ist der einzige Ort, an dem E5 wirklich gilt. Kosten: ein tokenloser, paginierter Read je `full`-Zeile (bei 900 Emotes zwei Seiten); die Koaleszierung deckelt sie für schnelle Läufe. Das Replace aus #230 hat dasselbe Fenster und **nicht** diese Prüfung — benannte Asymmetrie, kein Teil dieser Spec (Abschnitt 10). Die Engine hat heute keinen Vor-Schritt-Hook (`runRowFrom`, `seven-tv-run-engine.ts:389-406`); wie die Prüfung eingehängt wird, ist Plansache |
-| E20 | **Fremde Einträge auf dem Ziel** (Codex-Befund 3) | Trägt die Ziel-ID im Live-Set einen Eintrag, den `removedTarget.entries` nicht nennt (ein Alias außerhalb von `E`, oder ein aliasloser Eintrag, obwohl `E` kein `null` enthält), ist die Zeile — `full` **und** `addOnly` — übersprungen mit Grund `targetHasForeignEntries` und Live-Gegenstück; nichts wird berührt. Gilt an allen drei Prüfstellen (E14) | Fail-closed und konsistent mit Regel 2 des Restore-Filters (`already-present-filter.ts:210-215`): ein Eintrag, den die Zeile nicht kennt, ist etwas, das ein Mensch seither angelegt hat. Ohne diese Regel liefe eine `full`-Zeile mit fremdem Eintrag `C` an: nach REMOVE S, ADD A und gescheitertem ADD B könnte weder die Undo-Datei die Quelle zurückholen (T hält A) noch die Übertragungsdatei B (Regel 2 wirft die ganze T-Zeile) — die Rückweg-Zusage aus E3/E4 wäre gebrochen (F14). Mit der Regel bleibt der Weg aus E9 (Undo erneut ⇒ `addOnly`) immer offen, weil ein Ziel ohne fremde Einträge Regel 2 nicht auslöst |
-| E21 | **`null`-Einträge bekommen einen expliziten Namen** (Codex-Befund 4) | Ein Ziel-Eintrag `{ alias: null }` wird als `ADD { alias: D }` mit dem **`defaultName` aus der Datei** gesendet, nicht als ADD ohne Alias; Vorhandensein und Namensfreiheit prüft der Klassifikator gegen genau dieses `D`. Fehlt `D` in der Datei (`null` oder leer), ist die Zeile übersprungen mit Grund `targetNameUnverifiable` — bei `full` die ganze Zeile, bei `addOnly` nur dieser Eintrag (`omittedEntries`) | Nach einem geglückten Replace ist das Ziel nicht im Set, der Live-Read kennt also keinen `defaultNameById`-Wert für T (`seven-tv-set-entries.ts:41-71`) — `n = e ?? D` war ohne `D` aus der Datei unbestimmt, und ein ADD ohne Alias landete unter 7TVs **heutigem** Standardnamen, den niemand geprüft hat: ein 409 nach dem REMOVE, eine Lücke. Mit explizitem `D` prüft und schreibt der Undo denselben Namen; das Ergebnis ist identisch mit dem, was ein ADD ohne Alias erzeugt hätte (7TV legt ohnehin nur benannte Einträge an, F5), und es ist der Name, den das Ziel **damals** trug — genau der Zustand vor der Übertragung, auch wenn der Emote-Besitzer den Standardnamen seither geändert hat. Ein Einzel-Emote-Lookup existiert im Client nicht und wäre ein budgetierter Request je Eintrag |
+| E19 | **Prüfung vor jedem REMOVE** (Codex-Befund 1, Runde 2 Befund 1) | Unmittelbar vor **jedem** REMOVE einer `full`-Zeile liest der Dienst das Ziel-Set **neu und vollständig** (`loadSevenTvSetEntries`, tokenlos, `complete: true`) und klassifiziert **diese** Zeile neu (4.3); nur bei unveränderter Klassifikation (Modus `full`, dieselbe ADD-Liste, Quelle exakt `{ alias }`, Ziel ohne fremden Eintrag) läuft das REMOVE, sonst wird die Zeile `skippedDrift` und der Lauf geht zur nächsten. **Kein Wiederverwenden eines früheren Reads** — auch nicht des Frischchecks, auch nicht eines Reads der vorigen Zeile, auch nicht für ein REMOVE, das die Engine nach einer Rate-Limit-Pause wiederholt: jeder REMOVE-Versuch hat seinen eigenen Read. Scheitert der Read oder ist er `complete: false`, wird die Zeile `skippedDrift` mit Grund `recheckUnavailable` (fail-closed); nach **drei** aufeinanderfolgenden Read-Fehlern bricht der Dienst die verbleibenden `full`-Zeilen als `cancelled` mit Grund ab, `addOnly`-Zeilen laufen weiter | Der Lauf ist sequentiell, mit 275 ms je Schritt und Rate-Limit-Pausen bis zu Minuten (Abschnitt 1); ein Editor kann einer späteren Quelle in dieser Zeit einen zweiten Alias geben, und das REMOVE nähme ihn mit, ohne dass die Rückweg-Datei ihn kennt (F2). Die zweite Fassung erlaubte, einen Read bis 5 s wiederzuverwenden — das widersprach AK 26 (die Zeilen liegen 275 ms auseinander, ein Alias, der nach dem ersten REMOVE dazukam, wäre im wiederverwendeten Read unsichtbar; Runde 2 Befund 1). Sicherheit gewinnt: die Koaleszierung entfällt. **Kosten:** ein tokenloser, paginierter Read je REMOVE-Versuch — bei ≤ 500 Einträgen eine Seite, bei HandOfBloods ~900 zwei; für einen Lauf mit N `full`-Zeilen also N bis 2N Requests zusätzlich zu den 2N+ Mutationen, verteilt über ≥ N × 0,55 s Engine-Takt. Das Read-Budget von 7TV für diese tokenlose Abfrage ist **ungemessen** (Abschnitt 10); ein 429 dort ist ein Read-Fehler und fail-closed, die Live-Verifikation (9.5 Nr. 6a) misst den Takt mit. Das Replace aus #230 hat dasselbe Fenster und **nicht** diese Prüfung — benannte Asymmetrie, kein Teil dieser Spec (Abschnitt 10). Die Engine hat heute keinen Vor-Schritt-Hook (`runRowFrom`, `seven-tv-run-engine.ts:389-406`); wie die Prüfung eingehängt wird, ist Plansache |
+| E20 | **Fremde Einträge auf dem Ziel** (Codex-Befund 3, Runde 2 Befund 3) | Trägt die Ziel-ID im Live-Set einen Eintrag, den die **normalisierten** Einträge der Datei (`N`, E21) nicht nennen — ein benannter Alias ∉ `N`, oder ein aliasloser Eintrag, obwohl `E` kein `null` enthält —, gilt: eine **`full`-Zeile ist übersprungen** (`targetHasForeignEntries`, Live-Gegenstück, nichts berührt) an allen drei Prüfstellen (E14); eine **`addOnly`-Zeile läuft trotzdem**, eintragsweise: sie fügt nur die fehlenden Einträge aus `N` hinzu, lässt den fremden Eintrag `C` unangetastet und trägt `targetHasForeignEntries` als **Vermerk** (`notes`) in Dialog, Dock und Protokoll | Fail-closed für die destruktive Zeile: ein Eintrag, den die Datei nicht kennt, ist etwas, das ein Mensch seither angelegt hat, und ein REMOVE darf nicht auf einem Ziel aufsetzen, dessen Zustand die Datei nicht beschreibt (F14). Die nicht-destruktive Zeile muss dagegen laufen dürfen, sonst gibt es keinen ausführbaren Reparaturweg (Runde 2 Befund 3): eine `full`-Zeile kann ihre Prüfung bestehen, REMOVE S und ADD A schaffen, dann bekommt T den fremden Alias `C`, und ADD B scheitert — die Wiederholung aus E9 wäre mit einer `addOnly`-Sperre blockiert, der Restore-Filter wirft die Übertragungszeile (Regel 2, `already-present-filter.ts:210-215`), die Undo-Datei kann S nicht zurückholen (T hält A): drei geschlossene Türen. Ein ADD neben `C` entfernt nichts und ist per Purge umkehrbar; das Live-Gegenstück zeigt `C` im Dialog, der Nutzer entscheidet mit Bildern. Die zweite Fassung sperrte auch `addOnly` „konsistent mit Regel 2" — die Konsistenz war die falsche: Regel 2 schützt eine Zeile, die den Eintrag nicht kennt, vor einem **Re-ADD**; hier kennt die Zeile ihre eigenen Einträge, `C` ist ein Dritter |
+| E21 | **`null`-Einträge bekommen einen expliziten Namen** (Codex-Befund 4, Runde 2 Befund 2) | Ein Ziel-Eintrag `{ alias: null }` wird als `ADD { alias: D }` mit dem **`defaultName` aus der Datei** gesendet, nicht als ADD ohne Alias. **Die Normalisierung ist der erste Schritt der Zielprüfung:** aus `E` entsteht die Namensmenge `N` (benannt ⇒ der Alias, `null` ⇒ `D`), und **jede** weitere Prüfung des Ziels — fremde Einträge, Vorhandensein, Namensfreiheit, Frischcheck, Prüfung vor dem REMOVE, Nachlesen — arbeitet auf `N`, nie auf dem rohen `E`. Ein zurückgeholter `null`-Eintrag steht im Live-Set als benannter Eintrag `D` und ist damit ein **eigener** Eintrag der Zeile, kein fremder. Fehlt `D` in der Datei (`null` oder leer), ist die Zeile übersprungen mit Grund `targetNameUnverifiable` — bei `full` die ganze Zeile, bei `addOnly` nur dieser Eintrag (`omittedEntries`) | Nach einem geglückten Replace ist das Ziel nicht im Set, der Live-Read kennt also keinen `defaultNameById`-Wert für T (`seven-tv-set-entries.ts:41-71`) — `n = e ?? D` war ohne `D` aus der Datei unbestimmt, und ein ADD ohne Alias landete unter 7TVs **heutigem** Standardnamen, den niemand geprüft hat: ein 409 nach dem REMOVE, eine Lücke. Mit explizitem `D` prüft und schreibt der Undo denselben Namen; das Ergebnis ist identisch mit dem, was ein ADD ohne Alias erzeugt hätte (7TV legt ohnehin nur benannte Einträge an, F5), und es ist der Name, den das Ziel **damals** trug — genau der Zustand vor der Übertragung, auch wenn der Emote-Besitzer den Standardnamen seither geändert hat. Ein Einzel-Emote-Lookup existiert im Client nicht und wäre ein budgetierter Request je Eintrag |
 | E22 | **Settling schließt den nächsten Lauf aus** (Codex-Befund 5) | **Über den Arbiter aus #256 Punkt 1, nicht über eine lokale Sperre.** `startUndoFlow` prüft — wie jeder andere Startpunkt — allein den Arbiter, und der antwortet „belegt", solange irgendein Dienst läuft **oder settelt** (Nachlesen läuft, oder eine Meldung hat noch keinen Endzustand `succeeded \| partial \| failed`). Der Undo-Dienst liefert dem Arbiter dafür sein `isRunning` und sein `isSettling` (11.1) und trägt seine destruktiven offenen Läufe in den gemeinsamen Unload-Schutz ein; ein `reset()` oder ein neuer gezeigter Lauf nimmt einen noch meldenden Lauf nicht aus dem Schutz | Der heutige Arbiter sieht nur `isRunning` (`seven-tv-run-arbiter.ts:46-55`); ein zweiter Undo mit reinem `addOnly`-Plan hätte den gezeigten Lauf ersetzt, `destructiveRunActive` wäre dem neuen Plan gefolgt und der Tab ohne Schutz gewesen, während die Meldungen des ersten Laufs noch ausstanden — und seine zweite Mutation hätte verändert, was das Nachlesen des ersten seinem `unknown`-Schritt zuschreibt. **Betreiber 2026-09-25:** #256 Punkt 1 wird vor #254 gebaut und gemergt (Reihenfolge #255 → #256 → #254); eine lokale Doppelsperre hätte keinen Gewinn und müsste wieder raus (Abschnitt 15 B) |
-| E23 | **Teilweise Zeilen sind sichtbar und dauerhaft** (Codex-Befund 6) | Eine `addOnly`-Zeile, die Einträge auslässt (`targetNameTaken`, `targetNameUnverifiable`), endet nicht `done`, sondern `partial` — ein Zeilenstatus, den nur der Undo-Dienst setzt (die Engine kennt ihn nicht: sie meldet `done` für die gesendeten Schritte, der Dienst stuft beim Settle herab); `omittedEntries: { alias, reason }[]` steht in der Protokollzeile beider Stufen, das Dock zählt `partialRows` und `omittedEntryCount` und nennt den Weg (Name freimachen, Undo erneut). Für `full`-Zeilen gibt es keinen teilweisen Plan (E8) | Ein „fertig" ohne den zweiten Alias wäre eine Lücke ohne Papierspur; `gapCount` zählte nur `failed`-Zeilen |
+| E23 | **Teilweise Zeilen sind sichtbar und dauerhaft** (Codex-Befund 6, Runde 2 Befund 4) | `omittedEntries: { alias, reason }[]` (`targetNameTaken`, `targetNameUnverifiable`) ist ein **eigenes Feld** der Zeile, **orthogonal** zum Ausführungsstatus: es steht in der Protokollzeile beider Stufen und im Dock, gleich wie die Zeile endete. Der Status `partial` — den nur der Undo-Dienst setzt, die Engine kennt ihn nicht — ersetzt beim Settle **ausschließlich** ein `done`: eine `addOnly`-Zeile, deren gesendete ADDs alle bestätigt sind und die Einträge ausgelassen hat, wird `partial`. Eine Zeile, die `failed`, `unknown` oder `cancelled` endete, **behält** diesen Status und trägt `omittedEntries` daneben; sie zählt in `failed`/`unknownCount`/`cancelled` **und** in `omittedEntryCount`, nie in `partialRows`. Das Dock zählt `partialRows` und `omittedEntryCount` getrennt und nennt den Weg (Name freimachen, Undo erneut). Für `full`-Zeilen gibt es keinen teilweisen Plan (E8) | Ein „fertig" ohne den zweiten Alias wäre eine Lücke ohne Papierspur; `gapCount` zählte nur `failed`-Zeilen. Die zweite Fassung setzte `partial` „unabhängig vom Engine-Status" — das hätte eine `unknown`-Zeile (ein ADD ohne Antwort, Nachlesen unlesbar) aus `unknownCount` und dem Hinweis „bei 7TV prüfen" genommen und einen `failed`-ADD hinter der Auslassung versteckt (Runde 2 Befund 4, F19) |
 | E24 | **Nachlesen nach Modus und Operation** (Codex-Befund 7) | Das Nachlesen einer `unknown`-Zeile richtet sich nach der **Operation des Schritts**, nicht nach seiner Nummer: `full` ⇒ Schritt 0 ist REMOVE, Schritte ≥ 1 sind ADDs; `addOnly` ⇒ **jeder** Schritt ab 0 ist ein ADD. Tabelle in 4.6 | Die erste Fassung ordnete Schritt 0 pauschal dem REMOVE zu; eine wörtliche Umsetzung hätte bei einer `addOnly`-Zeile eine abwesende Quelle als bestätigtes REMOVE gelesen und die Quell-ID in die Löschmeldung geschrieben |
 
 ---
@@ -310,13 +310,18 @@ Die Engine läuft sequentiell mit 275 ms je Schritt und pausiert bei Rate-Limit 
 mit zwanzig `full`-Zeilen dauert Sekunden, mit einer Pause Minuten; der eine Frischcheck vor dem
 Start bürgt dann für die letzte Zeile so wenig wie der Dialog-Read für die erste. Ein Editor, der
 in dieser Zeit einer späteren Quelle einen zweiten Alias gibt, verlöre ihn mit dem REMOVE, und die
-Rückweg-Datei (aus dem Dialog-Read) kennt ihn nicht. **Vorgabe (E19):** Prüfung je REMOVE gegen
-einen frischen Read, koalesziert über 5 s, immer frisch nach einer Pause; Read-Fehler ⇒ Zeile
-übersprungen; drei Fehler in Folge ⇒ Rest der `full`-Zeilen `cancelled`. **Rest:** die Zeit
-zwischen dem Zeilen-Read und dem REMOVE selbst (Sekundenbruchteile bis 5 s Koaleszierung) bleibt
-offen — dieselbe Klasse wie Plan-230 §2 Nr. 6, nur kleiner. Ein in diesem Rest hinzugefügter
-Alias ist in keiner Datei; das Ergebnisprotokoll trägt die Einträge des letzten Reads je Zeile
-(`removedSource.entries`), damit ein Mensch wenigstens sieht, was der Read zuletzt sah.
+Rückweg-Datei (aus dem Dialog-Read) kennt ihn nicht. **Vorgabe (E19):** Prüfung je REMOVE-Versuch
+gegen einen **eigenen, vollständigen** Read — kein Wiederverwenden, auch nicht binnen Sekunden,
+auch nicht nach einer Rate-Limit-Wiederholung; Read-Fehler ⇒ Zeile übersprungen; drei Fehler in
+Folge ⇒ Rest der `full`-Zeilen `cancelled`. Die zweite Fassung ließ einen Read bis 5 s
+wiederverwenden; bei 275 ms zwischen zwei Zeilen hätte die zweite Zeile fast immer den Read der
+ersten benutzt, und genau den Alias, den AK 26 erkannt sehen will, nicht gesehen (Runde 2
+Befund 1). **Rest:** die Zeit zwischen dem Zeilen-Read und dem REMOVE selbst (die Latenz eines
+Requests) bleibt offen — dieselbe Klasse wie Plan-230 §2 Nr. 6, nur kleiner. Ein in diesem Rest
+hinzugefügter Alias ist in keiner Datei; das Ergebnisprotokoll trägt die Einträge des letzten
+Reads je Zeile (`removedSource.entries`), damit ein Mensch wenigstens sieht, was der Read zuletzt
+sah. **Preis:** N bis 2N tokenlose Reads je Lauf mit N `full`-Zeilen; das 7TV-Budget dieser
+Abfrage ist ungemessen (Abschnitt 10), ein 429 ist fail-closed ein Read-Fehler.
 
 ### F14 — Regel 2 des Restore-Filters macht die Übertragungsdatei bei einem fremden Ziel-Eintrag wertlos (Codex-Befund 3)
 
@@ -325,8 +330,11 @@ die Zeile nicht nennt (`already-present-filter.ts:210-215`). Hat jemand das Ziel
 Übertragung unter einem neuen Namen `C` zurückgeholt, kann ein Restore aus der Übertragungsdatei die
 alten Aliase `A`/`B` von T nie mehr ergänzen. Für den Undo hieße das: läuft eine `full`-Zeile in
 diesem Zustand (REMOVE S, ADD A, ADD B scheitert), gibt es **keine** Datei, die B zurückbringt — und
-die Quelle ist weg. **Vorgabe (E20):** fremde Einträge auf dem Ziel sind ein Sperrgrund an allen
-drei Prüfstellen, für `full` und `addOnly`. **Folge für E9:** der kanonische Weg, eine Lücke nach
+die Quelle ist weg. **Vorgabe (E20):** fremde Einträge auf dem Ziel sind ein Sperrgrund für
+`full`-Zeilen an allen drei Prüfstellen; `addOnly`-Zeilen laufen eintragsweise daneben und lassen
+den fremden Eintrag stehen — sonst gäbe es nach einem Teilerfolg, bei dem `C` **während** der
+Zeile dazukam, keinen ausführbaren Reparaturweg (Runde 2 Befund 3; die zweite Fassung sperrte
+`addOnly` mit). **Folge für E9:** der kanonische Weg, eine Lücke nach
 einem teilweise gescheiterten Undo zu schließen, ist der Undo selbst (zweiter Lauf, `addOnly`),
 nicht der Restore aus der Übertragungsdatei; der Dock-Hinweis sagt das. Ob Regel 2 im
 Restore-Filter für Zeilen aus Übertragungs- und Undo-Dateien zu streng ist, ist eine
@@ -373,6 +381,45 @@ lässt. **Vorgabe (Betreiber 2026-09-25, Abschnitt 15 A):** Kandidaten aus `plan
 tragen `provenance: 'unproven'`; jede unbelegte `full`-Zeile ist im Dialog sichtbar gekennzeichnet,
 und ohne eine ausdrückliche Bestätigung je Datei läuft keine davon (`skippedUnproven`);
 `addOnly`-Zeilen sind nicht betroffen.
+
+### F18 — Ein zurückgeholter `null`-Eintrag sähe für die Zielprüfung wie ein fremder aus (Runde 2 Befund 2)
+
+Die zweite Fassung prüfte fremde Einträge (Schritt 2) gegen das rohe `E` und wandelte `null` erst
+danach (Schritt 3) in `D`. Nach `ADD { alias: D }` steht T im Live-Set unter dem benannten `D`, das
+in `E` nicht als Name vorkommt — der nächste Read hätte die Zeile als `targetHasForeignEntries`
+übersprungen: die Wiederholung (E9, E18) wäre blockiert, und die Prüfung vor dem REMOVE hätte
+eine `full`-Zeile mit `null`-Eintrag nach einem früheren Teilerfolg nie wieder laufen lassen.
+**Vorgabe (E21):** Normalisierung zuerst — jede Zielprüfung arbeitet auf `N`; ein aliasloser
+Live-Eintrag auf T zählt als eigener, wenn `E` ein `null` nennt (F5, Altbestand vor dem
+7TV-Verhalten „keine neuen aliaslosen Einträge"). Die E2E-Erwartung `addEmote(T2, null)` der
+zweiten Fassung war ein Rest der alten Regel und ist auf `addEmote(T2, D)` korrigiert (9.4).
+
+### F19 — `partial` darf `failed` und `unknown` nicht überschreiben (Runde 2 Befund 4)
+
+6.5 der zweiten Fassung ließ den Dienst `partial` „unabhängig vom Engine-Status" setzen. Eine
+`addOnly`-Zeile mit einem ausgelassenen Eintrag und einem ADD, der `unknown` blieb (Nachlesen
+unlesbar), wäre damit `partial` geworden — aus `unknownCount` verschwunden, ohne den Hinweis „bei
+7TV prüfen", obwohl eine Mutation mit unbekanntem Ausgang im Set stehen kann; ein `failed`-ADD
+ebenso hinter der Auslassung versteckt. **Vorgabe (E23):** `omittedEntries` ist ein Feld,
+`partial` ein Status nur für sonst fertige Zeilen; `failed`/`unknown`/`cancelled` bleiben, was sie
+sind, und tragen die Auslassungen daneben.
+
+### F20 — Ein `reset()` während des Laufs lässt heute Settling und Meldungen ausfallen (Runde 2 Befund 5)
+
+`onRunComplete` des Imports kehrt zurück, sobald `this.run() !== started` ist — „only reachable
+via reset() during the run" (`seven-tv-import.service.ts:583-592`): weder Nachlesen noch
+`sendFollowUp` laufen dann; der Satz „`reset()` während des Nachlesens sendet trotzdem" (Plan-230
+§7) gilt nur für ein `reset()`, das **nach** dem Engine-Ende kommt. Delete und Restore haben denselben
+Frühausstieg (`seven-tv-delete.service.ts:292`, `seven-tv-restore.service.ts:321`) und setzen bei
+`reset()` `syncReport` auf `idle` (`:248-253`, `:273-276`); ihre Rückrufe schreiben nur unter
+`applyIfCurrent`. Ein Arbiter, der nur `isSettling`/`destructiveOpen`-Signale liest, könnte den
+Stub-Test aus 11.1 bestehen und trotzdem eine Meldung verlieren oder einen offenen Lauf nie
+schließen — dann bliebe der Arbiter für immer „belegt". **Vorgabe (11.1 Punkt 6):** der Abschluss
+eines Laufs (Nachlesen, beide Meldungen, Endzustand) ist **lauf-gebunden**, nicht an `run()`
+gebunden; `reset()` löst nur die Anzeige, nie den Abschluss; die Rückrufe eines abgelösten Laufs
+schreiben seine Meldungszustände in den Laufdatensatz, nicht in Dienst-Signale, die inzwischen
+einem anderen Lauf gehören. Für den Undo-Dienst gilt das ab dem ersten Commit; für Import, Delete
+und Restore ist es Teil von #256 Punkt 1.
 
 ### F12 — `sync-restored` reaktiviert, was archiviert ist — und nur das
 
@@ -444,7 +491,9 @@ legt die Zeile an. Der Dock-Wortlaut dazu ist #255.
 Aus einem Read `{ aliasesById, aliaslessIds, defaultNameById, complete }` und dem Kandidaten
 `(S = Quell-ID, A = Alias, T = Ziel-ID, E = entries, D = defaultName)`; `held(name)` = die ID, die
 `name` im Live-Set als Alias hält (aus `aliasesById` umgekehrt), `entriesOf(id)` = benannte Aliase
-∪ `{ null }` falls `aliaslessIds.has(id)`.
+∪ `{ null }` falls `aliaslessIds.has(id)`. **Reihenfolge ist Vertrag:** die Normalisierung (Schritt
+2) kommt vor jeder Prüfung des Ziels, weil ein zurückgeholter `null`-Eintrag im Live-Set benannt
+ist (F18).
 
 | Schritt | Prüfung | Ergebnis |
 |---|---|---|
@@ -452,14 +501,14 @@ Aus einem Read `{ aliasesById, aliaslessIds, defaultNameById, complete }` und de
 | 1 Quelle | `entriesOf(S) === { A }` (genau ein benannter Eintrag, ordinal gleich A, kein `null`) | Quellteil **REMOVE** |
 | | `entriesOf(S)` leer | Quellteil **keiner** (Quelle schon weg) |
 | | sonst | **übersprungen**: `sourceUnderOtherName` (A ∉ entriesOf(S)) oder `sourceHasMoreEntries` (A ∈ entriesOf(S), aber weitere) — Live-Gegenstück wird gezeigt; **nichts an dieser Zeile wird berührt**, auch das Ziel nicht |
-| 2 Ziel, fremde Einträge (E20) | `entriesOf(T)` enthält einen benannten Alias ∉ `E`, oder `null`, obwohl `E` kein `null` nennt | **übersprungen** `targetHasForeignEntries` (`full` **und** `addOnly`), Live-Gegenstück wird gezeigt, nichts berührt |
-| 3 Ziel, Namen (E21) | je `e ∈ E` der effektive Name `n`: benannt ⇒ `n = e`; `null` ⇒ `n = D` aus der Datei; fehlt `D` (`null`/leer) ⇒ Eintrag `targetNameUnverifiable` | bei `full` ⇒ ganze Zeile **übersprungen** `targetNameUnverifiable`; bei `addOnly` ⇒ Eintrag ausgelassen (`omittedEntries`) |
-| 4 Ziel, vorhanden | je `e`: vorhanden, wenn `aliasesById.get(T) ∋ n`, oder — nur bei `null` — `aliaslessIds.has(T)` (F5) | vorhandene Einträge entfallen (`alreadyPresent`, gezählt je Eintrag) |
-| 5 Ziel, frei | je fehlendem `e`: `held(n)` ∈ { keiner, S } | Eintrag wird **`ADD { alias: n }`** — immer mit explizitem Alias, auch für `null`-Einträge (E21); bei `held(n) === S` gibt das REMOVE ihn frei |
+| 2 Ziel, Normalisierung (E21, F18) | je `e ∈ E` der effektive Name `n`: benannt ⇒ `n = e`; `null` ⇒ `n = D` aus der Datei. Ergebnis ist die Namensmenge `N` und das Flag `E ∋ null`. Fehlt `D` (`null`/leer) für ein `null`-`e` ⇒ dieser Eintrag ist `targetNameUnverifiable` und **nicht** in `N` | bei `full` ⇒ ganze Zeile **übersprungen** `targetNameUnverifiable`; bei `addOnly` ⇒ Eintrag ausgelassen (`omittedEntries`), Rest läuft |
+| 3 Ziel, fremde Einträge (E20) | `entriesOf(T)` enthält einen benannten Alias ∉ `N`, oder `null`, obwohl `E ∌ null` | bei `full` ⇒ **übersprungen** `targetHasForeignEntries`, Live-Gegenstück wird gezeigt, nichts berührt; bei `addOnly` ⇒ **läuft**, mit Vermerk `targetHasForeignEntries` in `notes` (Dialog zeigt den fremden Eintrag, Dock und Protokoll tragen den Vermerk), der fremde Eintrag bleibt unangetastet |
+| 4 Ziel, vorhanden | je `n ∈ N`: vorhanden, wenn `aliasesById.get(T) ∋ n`, oder — nur für ein `null`-`e` — `aliaslessIds.has(T)` (F5) | vorhandene Einträge entfallen (`alreadyPresent`, gezählt je Eintrag) |
+| 5 Ziel, frei | je fehlendem `n`: `held(n)` ∈ { keiner, S } | Eintrag wird **`ADD { alias: n }`** — immer mit explizitem Alias, auch für `null`-Einträge (E21); bei `held(n) === S` gibt das REMOVE ihn frei |
 | | `held(n)` = dritte ID (E8) | bei `full` ⇒ ganze Zeile **übersprungen** `targetNameTaken`; bei `addOnly` ⇒ Eintrag ausgelassen (`omittedEntries`, Grund `targetNameTaken`) |
 | 6 Zeile | Quellteil REMOVE, alle fehlenden Einträge als ADD | **`full`**, `stepCount = 1 + ADDs`; dazu `provenance` aus der Datei (`confirmed` \| `unproven`, F17) |
 | | Quellteil REMOVE, 0 ADDs | **übersprungen** `inconsistent` (F11: unerreichbar, seit Schritt 5 die Zeile bei jedem belegten Namen ganz überspringt; bleibt als Wächter) |
-| | Quellteil keiner, ≥ 1 ADD | **`addOnly`**, `stepCount = ADDs`; mit `omittedEntries` ggf. **`partial`** am Ende (E23) |
+| | Quellteil keiner, ≥ 1 ADD | **`addOnly`**, `stepCount = ADDs`; mit `omittedEntries` und/oder `notes`; endet `partial` nur, wenn sonst `done` (E23) |
 | | Quellteil keiner, 0 ADDs | **übersprungen** `nothingToDo` |
 
 `complete: false` oder ein Read-Fehler ⇒ **keine** Klassifikation, keine Freigabe (4.2 Nr. 6). Die
@@ -484,11 +533,12 @@ gesetzt hat; ohne sie ist sie `skippedUnproven` — `addOnly`-Zeilen sind davon 
     `addOnly` ⇒ nur die ADDs. Operation mit `transportLossIsUnknown: true` für **alle** Zeilen
     (E10) und `abortOn` bei 401/403/`LACKING_PRIVILEGES` (E13). Engine-Takt, Rate-Limit-Pausen und
     Retries unverändert.
-10a. **Vor jedem REMOVE** (E19): frischer Read (koalesziert ≤ 5 s, nach einer Rate-Limit-Pause immer
-    frisch) und Neuklassifikation dieser Zeile; abweichend ⇒ `skippedDrift`, Read-Fehler ⇒
-    `recheckUnavailable`, drei Read-Fehler in Folge ⇒ verbleibende `full`-Zeilen `cancelled` mit
+10a. **Vor jedem REMOVE-Versuch** (E19): ein **eigener, vollständiger** Read — nie ein
+    wiederverwendeter, auch nicht nach einer Rate-Limit-Wiederholung desselben REMOVE — und
+    Neuklassifikation dieser Zeile; abweichend ⇒ `skippedDrift`, Read-Fehler oder `complete: false`
+    ⇒ `recheckUnavailable`, drei Read-Fehler in Folge ⇒ verbleibende `full`-Zeilen `cancelled` mit
     Grund `recheckUnavailable`, `addOnly`-Zeilen laufen weiter. Die Zeile im Ergebnisprotokoll trägt
-    die Quell-Einträge des **letzten** Reads vor ihrem REMOVE (F13).
+    die Quell-Einträge des Reads unmittelbar vor ihrem REMOVE (F13).
 11. Während des Laufs: Dock-Abschnitt sichtbar (4.7), `beforeunload` scharf (E15), Trigger und
     andere Startpunkte gesperrt (Arbiter). `cancel()`: laufende Zeile endet wie beim Import — mit
     `completedSteps > 0` als `failed` mit `cancelledMidRow`, sonst `cancelled`; ein Abbruch mitten in
@@ -549,8 +599,10 @@ und wird hier für den Undo von Anfang an gezeigt (11.2).
     zusätzlich `removedCount` (bestätigte REMOVEs), `restoredCount` (bestätigte ADDs, je Eintrag),
     `unknownCount`, `gapCount` (Zeilen `failed` mit `completedSteps >= 1` — Quelle weg, Ziel nicht
     vollständig zurück) **mit dem Satz, dass ein erneuter Undo aus derselben Datei sie schließt**
-    (E9), `partialRows` und `omittedEntryCount` (E23) mit dem Hinweis, den Namen freizumachen und
-    den Undo zu wiederholen, die transienten Übersprungen-Zeilen je Grund (`nothingToDo`,
+    (E9), `partialRows` (nur sonst fertige Zeilen mit Auslassungen) und `omittedEntryCount` (über
+    alle Zeilen, auch `failed`/`unknown`, E23) mit dem Hinweis, den Namen freizumachen und den Undo
+    zu wiederholen, `foreignNotedRows` (`addOnly`-Zeilen mit fremdem Ziel-Eintrag, E20) als Hinweis
+    ohne Handlungsaufforderung, die transienten Übersprungen-Zeilen je Grund (`nothingToDo`,
     `sourceUnderOtherName`, `sourceHasMoreEntries`, `targetHasForeignEntries`, `targetNameTaken`,
     `targetNameUnverifiable`, `alreadyPresent`, `skippedDrift`, `recheckUnavailable`,
     `skippedUnproven`, `duplicateInFile`),
@@ -654,15 +706,19 @@ UndoSkippedRow { candidate; reason: 'nothingToDo' | 'sourceUnderOtherName' | 'so
                  | 'targetHasForeignEntries' | 'targetNameTaken' | 'targetNameUnverifiable'
                  | 'inconsistent' | 'duplicateInFile'; live: { sourceEntries, targetEntries } }
 UndoPlanRow      += provenance: 'confirmed' | 'unproven'; omittedEntries: { alias; reason }[]   // omittedEntries nur bei addOnly
+UndoPlanRow      += notes: ('targetHasForeignEntries')[]                                        // nur bei addOnly (E20)
+UndoPlanRow.adds : { alias: string }[]                                                          // immer der normalisierte Name n, nie null (E21)
+normalizeTargetEntries(target): { names: string[]; hadNull: boolean; unverifiable: boolean }     // Schritt 2 aus 4.3, für sich testbar
 classifyUndoRow(candidate, read): UndoPlanRow | UndoSkippedRow                                 // dieselbe Regel für eine Zeile (E19)
 diffUndoPlans(stamped: UndoPlan, fresh: UndoPlan): { runnable: UndoPlanRow[]; drifted: UndoPlanRow[] }
-sameClassification(stamped: UndoPlanRow, fresh: UndoPlanRow | UndoSkippedRow): boolean          // Modus + ADD-Liste (Namen, Reihenfolge)
-summarizeUndoPlan(plan): { removeCount, addCount, slotDelta, omittedEntryCount }
+sameClassification(stamped: UndoPlanRow, fresh: UndoPlanRow | UndoSkippedRow): boolean          // Modus + ADD-Liste (Namen, Reihenfolge); notes zählen nicht
+summarizeUndoPlan(plan): { removeCount, addCount, slotDelta, omittedEntryCount, foreignNotedRows }
 ```
 
 `alreadyPresent` ist ein Zähler je Eintrag am `UndoPlan`; `targetNameTaken` und
-`targetNameUnverifiable` sind bei `full` Zeilengründe, bei `addOnly` Einträge in `omittedEntries`
-(E8, E21, E23). Die Tabelle in 4.3 ist der Vertrag dieser Funktion; jede Zeile der Tabelle ist ein
+`targetNameUnverifiable` sind bei `full` Zeilengründe, bei `addOnly` Einträge in `omittedEntries`;
+`targetHasForeignEntries` ist bei `full` Zeilengrund, bei `addOnly` ein Vermerk in `notes` (E8,
+E20, E21, E23). Die Tabelle in 4.3 ist der Vertrag dieser Funktion; jede Zeile der Tabelle ist ein
 Testfall (9.3).
 
 ### 6.3 Flow und Dialog
@@ -709,8 +765,10 @@ Testfall (9.3).
     restoredTarget: { sevenTvEmoteId; defaultName: string | null;
                       entries: { alias: string | null; added: boolean }[] }      // nur die ADDs dieser Zeile; added = Schritt bestätigt
     provenance: 'confirmed' | 'unproven'                                        // aus der Übertragungsdatei (F17)
-    omittedEntries: { alias: string; reason: 'targetNameTaken' | 'targetNameUnverifiable' }[]  // nur addOnly (E23)
+    omittedEntries: { alias: string; reason: 'targetNameTaken' | 'targetNameUnverifiable' }[]  // nur addOnly (E23), orthogonal zu status
+    notes: ('targetHasForeignEntries')[]                                                        // nur addOnly (E20)
     status: RunItemStatus | 'partial'; failedStep: number | null; completedSteps: number; errorMessage: string | null
+                                                                                                // partial nur statt done; failed/unknown/cancelled bleiben (E23, F19)
     skippedReason: string | null                                                // finished: skippedDrift / recheckUnavailable / duplicateInFile …; sonst null
   }
   ```
@@ -748,8 +806,9 @@ Testfall (9.3).
   pending | succeeded | cooldown | failed`, die drei letzten allein aus dem N1-Fallback.
 - Operation: REMOVE-/ADD-Mutationen wie Delete-/Restore-Dienst (`removeEmote`, `addEmote` — hier
   **immer** mit gesetztem `$alias`, E21), `transportLossIsUnknown: true`, `abortOn` wie der Import;
-  vor jedem REMOVE die Zeilen-Prüfung nach E19 (Read koalesziert ≤ 5 s, Zähler für aufeinanderfolgende
-  Read-Fehler, Abbruch der `full`-Zeilen nach dreien). Wie die Prüfung in die Engine kommt (ein
+  vor jedem REMOVE-Versuch die Zeilen-Prüfung nach E19 (eigener vollständiger Read, kein
+  Wiederverwenden, Zähler für aufeinanderfolgende Read-Fehler, Abbruch der `full`-Zeilen nach
+  dreien). Wie die Prüfung in die Engine kommt (ein
   `beforeStep`-Hook der Operation, oder der Dienst reicht je Zeile eine Vorbedingung mit), ist
   Plansache — die Engine läuft eine Zeile heute in `runRowFrom` ohne Hook
   (`seven-tv-run-engine.ts:389-406`).
@@ -759,8 +818,13 @@ Testfall (9.3).
   `full`-Zeile) als Signale; ein interner Satz „offener Läufe", aus dem ein Lauf erst fällt, wenn
   Settling und beide Meldungen im Endzustand sind oder es für ihn keine Meldung gibt; `reset()` und
   ein neuer Lauf leeren ihn nicht (E22). Keine eigene Start-Sperre im Dienst — der Arbiter ist die
-  einzige. Zeilenstatus `partial` (E23) setzt der Dienst beim Settle für `addOnly`-Zeilen mit
-  `omittedEntries`, unabhängig vom Engine-Status.
+  einzige. **Lauf-gebundener Abschluss (F20, 11.1 Punkt 6):** Nachlesen, beide Meldungen und der
+  Endzustand hängen am Laufdatensatz, nicht an `run()`; ein `reset()` während des Laufs oder des
+  Settlings löst nur die Anzeige, der Lauf läuft in seinem Datensatz zu Ende, seine Meldungen gehen
+  raus, und erst ihr Endzustand nimmt ihn aus dem Satz offener Läufe — nie ein Frühausstieg wie
+  heute in `onRunComplete` des Imports. Zeilenstatus `partial` (E23) setzt der Dienst beim Settle
+  **nur** für `addOnly`-Zeilen, die sonst `done` wären und `omittedEntries` tragen; `failed`,
+  `unknown` und `cancelled` bleiben stehen, `omittedEntries` daneben (F19).
 - Was der Plan als gemeinsamen Baustein aus dem Import-Dienst herauszieht (Settling mit Re-Read,
   `sendFollowUp` mit zwei Meldungen, `destructiveRunActive`, Protokollgatter), ist Plansache; der
   Vertrag ist das Verhalten in Abschnitt 4. Kopieren ist erlaubt, wenn Extrahieren #256 vorgreift —
@@ -807,14 +871,19 @@ Banner), `undo.summary.*` (Zähler, `removed`, `restored`, `gaps`, `gapsHint`, `
 | **Quelle umbenannt** | `sourceUnderOtherName`, übersprungen; das Ziel bleibt fehlend — der Nutzer entscheidet im 7TV-Web oder schließt die Ziel-Lücke per Restore (dort gilt Regel 4 nicht mehr, der Name ist frei) |
 | **Quelle schon von Hand entfernt** | `addOnly`, nur die ADDs; keine Löschung, keine Rückweg-Datei, wenn es die einzige Zeilenart ist (4.2 Nr. 8) |
 | **Ziel-Eintrag inzwischen von Hand unter einem seiner alten Aliase zurückgeholt** | Eintrag `alreadyPresent`; hält die Quelle den kollidierenden Alias noch, bleibt die Zeile `full` mit den übrigen fehlenden Einträgen — F11 garantiert mindestens einen |
-| **Ziel inzwischen von Hand unter einem neuen Namen `C` zurückgeholt** (Codex-Befund 3) | `targetHasForeignEntries` (E20) — `full` wie `addOnly` übersprungen, Live-Gegenstück zeigt `C`; nichts berührt. Ohne die Regel hätte ein teilweise gescheiterter Lauf eine Lücke hinterlassen, die keine Datei schließt (F14) |
+| **Ziel inzwischen von Hand unter einem neuen Namen `C` zurückgeholt, Quelle hält A** (Codex-Befund 3) | `full` ⇒ übersprungen `targetHasForeignEntries` (E20), Live-Gegenstück zeigt `C`, nichts berührt — ein REMOVE setzt nicht auf einem Ziel auf, dessen Zustand die Datei nicht beschreibt (F14) |
+| **Ziel unter `C` zurückgeholt, Quelle schon weg** (Runde 2 Befund 3) | `addOnly` ⇒ **läuft**: ADDs der fehlenden Einträge aus `N` neben `C`, `C` bleibt; Vermerk `targetHasForeignEntries` in Dialog, Dock (`foreignNotedRows`) und Protokoll (`notes`) |
+| **`C` kommt mitten in der `full`-Zeile dazu** (nach REMOVE S und ADD A, vor ADD B; Runde 2 Befund 3) | ADD B scheitert (409, wenn `C = B`) oder gelingt (wenn `C ≠ B`, denn ein ADD prüft keine fremden Einträge). Scheitert er: `failed@2`, Lücke; **Undo erneut** ⇒ Quelle weg ⇒ `addOnly` ⇒ läuft neben `C` (Zeile oben) und holt B, oder lässt B als `targetNameTaken` aus, wenn `C` den Namen B hält (dann `partial`, Name freimachen, erneut). Der Reparaturweg aus E9 bleibt damit in jeder Lage ausführbar |
+| **Zweiter Lauf nach zurückgeholtem `null`-Eintrag** (Runde 2 Befund 2) | T steht unter dem benannten `D`; Normalisierung macht `D` zum eigenen Eintrag (`N ∋ D`) ⇒ `alreadyPresent`, kein `targetHasForeignEntries`; die Zeile ist `nothingToDo` (E18) — oder `addOnly` für andere noch fehlende Einträge |
 | **Duplikat-Zelle (#74): Ziel hatte zwei Aliase und einen aliaslosen Eintrag** | `full` mit drei ADDs, `stepCount` 4; Slot-Delta +2; der aliaslose kommt als `ADD { alias: D }` zurück (E21); `restoredTarget.entries` mit drei `added`-Flags |
 | **Ziel-Alias inzwischen von Dritten belegt, `full`-Zeile** (Codex-Befund 6) | Ganze Zeile übersprungen `targetNameTaken` (E8), Quelle bleibt; Dock nennt den belegten Namen; nach Freimachen des Namens Undo erneut |
-| **Ziel-Alias inzwischen von Dritten belegt, `addOnly`-Zeile** | Zeile läuft ohne den Eintrag, endet `partial`, `omittedEntries` in Datei und Dock (E23); Undo erneut, sobald der Name frei ist |
+| **Ziel-Alias inzwischen von Dritten belegt, `addOnly`-Zeile** | Zeile läuft ohne den Eintrag; sind alle gesendeten ADDs bestätigt, endet sie `partial`, `omittedEntries` in Datei und Dock (E23); Undo erneut, sobald der Name frei ist |
+| **`addOnly`-Zeile mit Auslassung, deren gesendeter ADD `unknown` bleibt** (Runde 2 Befund 4) | Status bleibt `unknown` (in `unknownCount`, Dock-Hinweis „bei 7TV prüfen"), `omittedEntries` daneben (in `omittedEntryCount`), **nicht** in `partialRows` (F19); dasselbe für `failed`: Status `failed`, Auslassung daneben |
 | **`null`-Eintrag ohne `defaultName` in der Datei** (Codex-Befund 4) | `full` ⇒ Zeile übersprungen `targetNameUnverifiable`; `addOnly` ⇒ Eintrag ausgelassen (`omittedEntries`); kein ADD ohne Alias, nie (E21) |
 | **`defaultName` des Ziels hat sich seit dem Replace geändert** | Der Undo schreibt den Namen aus der Datei (den das Ziel damals trug), nicht 7TVs heutigen Standardnamen — der Zustand vor der Übertragung (E21); die Namensfreiheit ist gegen genau diesen Namen geprüft |
 | **Kollidierender Alias = `defaultName` des Ziels** | REMOVE der Quelle gibt den Namen frei, `ADD { alias: D }` landet darunter (E21); die Zeile ist ein gewöhnliches `full` |
-| **Eine spätere Quelle bekommt während des Laufs einen zweiten Alias** (Codex-Befund 1) | Die Zeilen-Prüfung vor ihrem REMOVE (E19) sieht `sourceHasMoreEntries` ⇒ `skippedDrift`, nichts berührt; der Lauf geht weiter. Innerhalb der 5-s-Koaleszierung bleibt das Fenster offen (F13, benannter Rest) |
+| **Eine spätere Quelle bekommt während des Laufs einen zweiten Alias** (Codex-Befund 1, Runde 2 Befund 1) | Die Zeilen-Prüfung vor ihrem REMOVE (E19) liest **neu** — auch 275 ms nach dem vorigen REMOVE — und sieht `sourceHasMoreEntries` ⇒ `skippedDrift`, nichts berührt; der Lauf geht weiter. Offen bleibt nur die Latenz zwischen diesem Read und dem REMOVE (F13, benannter Rest) |
+| **REMOVE nach Rate-Limit-Pause wiederholt** | Vor der Wiederholung ein neuer Read (E19); hat sich die Zeile in der Pause verändert ⇒ `skippedDrift` statt Wiederholung |
 | **Read vor einem REMOVE scheitert** (429, Netz, `complete: false`) | Zeile `skippedDrift`/`recheckUnavailable`, nichts berührt; nach drei Fehlern in Folge verbleibende `full`-Zeilen `cancelled` mit Grund, `addOnly`-Zeilen laufen zu Ende |
 | **`planned`-Datei eines nie gestarteten Laufs, Zustand später von Hand nachgebildet** (Codex-Befund 2) | Live-Form `full`, `provenance: 'unproven'`: Zeile gekennzeichnet, ohne Datei-Bestätigung `skippedUnproven`, mit Bestätigung läuft sie (Betreiberentscheidung Abschnitt 15 A, F17) |
 | **Zweiter Undo, während der erste noch settelt oder meldet** (Codex-Befund 5) | Der Arbiter (#256 Punkt 1, 11.1) meldet „belegt": kein Start, transiente Notiz des Arbiters; `beforeunload` bleibt bis zum Endzustand beider Meldungen des ersten Laufs; dasselbe gegen einen settelnden Import-Lauf, und ein Import, Delete oder Restore startet nicht gegen einen settelnden Undo |
@@ -933,11 +1002,13 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     test` grün ohne neue Endpunkte, Services oder `AuditActions`.
 25. Alle vier Gates des Repos grün (`dotnet test`, Vitest, E2E, `coverage-local`), plus die
     Live-Verifikation aus Abschnitt 9.5 mit Zahlen im PR-Text.
-26. **(Codex 1)** Bekommt die Quelle einer späteren `full`-Zeile während des Laufs einen zweiten
-    Alias (Stub ändert den Set-Stand nach dem REMOVE der ersten Zeile), sieht die Zeilen-Prüfung vor
-    ihrem REMOVE `sourceHasMoreEntries`, sendet für sie **kein** REMOVE und keinen ADD, zählt
-    `skippedDrift` und läuft mit der nächsten Zeile weiter; ein Read jünger als 5 s wird
-    wiederverwendet, nach einer Rate-Limit-Pause geht vor dem nächsten REMOVE ein frischer Read.
+26. **(Codex 1, Runde 2 Befund 1)** Bekommt die Quelle einer späteren `full`-Zeile während des
+    Laufs einen zweiten Alias (Stub ändert den Set-Stand unmittelbar nach dem REMOVE der ersten
+    Zeile, also innerhalb der 275 ms bis zur nächsten), geht vor dem REMOVE der zweiten Zeile ein
+    **neuer** Read (der Stub zählt je REMOVE-Versuch genau einen Set-Read, nie null), die
+    Zeilen-Prüfung sieht `sourceHasMoreEntries`, sendet für sie **kein** REMOVE und keinen ADD,
+    zählt `skippedDrift` und läuft mit der nächsten Zeile weiter; ein REMOVE, das die Engine nach
+    einer Rate-Limit-Pause wiederholt, bekommt vor der Wiederholung ebenfalls einen neuen Read.
 27. **(Codex 1)** Scheitert der Read vor einem REMOVE, läuft die Zeile nicht (`recheckUnavailable`);
     nach drei Read-Fehlern in Folge enden alle verbleibenden `full`-Zeilen `cancelled` mit Grund,
     `addOnly`-Zeilen laufen zu Ende; das Ergebnisprotokoll trägt je `full`-Zeile die Quell-Einträge
@@ -948,11 +1019,14 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     `skippedUnproven`; mit Bestätigung läuft sie. Gegenbeispiel als Test: `planned`-Datei eines nie
     gestarteten Laufs, Live-Stand von Hand nachgebildet (T weg, S unter A) ⇒ ohne Bestätigung kein
     REMOVE. (Betreiberentscheidung Abschnitt 15 A.)
-29. **(Codex 3)** Trägt das Ziel im Live-Set einen Alias außerhalb von `removedTarget.entries` oder
-    einen aliaslosen Eintrag, den die Datei nicht nennt, ist die Zeile `targetHasForeignEntries` —
-    für `full` und `addOnly`, im Dialog, im Frischcheck und vor dem REMOVE; kein Request an 7TV für
-    diese Zeile. Gegenbeispiel als Test: T mit alten Aliasen A/B, von Hand unter C zurückgeholt, S
-    hält A ⇒ übersprungen, S bleibt.
+29. **(Codex 3, Runde 2 Befund 3)** Trägt das Ziel im Live-Set einen Alias außerhalb der
+    normalisierten Namen `N` oder einen aliaslosen Eintrag, den die Datei nicht nennt, ist eine
+    `full`-Zeile `targetHasForeignEntries` — im Dialog, im Frischcheck und vor dem REMOVE; kein
+    Request an 7TV für diese Zeile (Test: T mit alten Aliasen A/B, von Hand unter C zurückgeholt, S
+    hält A ⇒ übersprungen, S bleibt). Eine `addOnly`-Zeile in derselben Lage **läuft** mit genau den
+    fehlenden ADDs aus `N`, sendet kein REMOVE, lässt C stehen und trägt `notes:
+    ['targetHasForeignEntries']` in Protokoll und Dock (Test: S weg, T unter C, A/B fehlen ⇒
+    `addEmote(T, A)`, `addEmote(T, B)`, C danach noch da).
 30. **(Codex 3)** Nach einem Undo-Lauf, dessen `full`-Zeile bei `ADD B` scheiterte (S weg, A da, B
     fehlt), klassifiziert ein zweiter Undo aus derselben Übertragungsdatei die Zeile als `addOnly`
     mit genau `[B]` und schließt die Lücke; ein Restore aus der Undo-Rückweg-Datei überspringt S
@@ -977,6 +1051,32 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
 34. **(Codex 7)** Eine `addOnly`-Zeile, deren erster ADD (Schritt 0) `unknown` bleibt, wird beim
     Nachlesen als ADD geklärt (`n` auf T ⇒ `completedSteps 1`; fehlt ⇒ `failed@0`; unlesbar ⇒
     `unknown`) und erscheint in keiner `sync-deleted`-Meldung — auch wenn die Quelle im Set fehlt.
+35. **(Runde 2 Befund 2)** Nach einem Undo, der einen `null`-Eintrag als `ADD { alias: D }`
+    zurückgeholt hat, klassifiziert ein zweiter Lauf derselben Datei die Zeile **nicht** als
+    `targetHasForeignEntries`: `D` ist `alreadyPresent`, die Zeile `nothingToDo` (oder `addOnly`
+    für andere fehlende Einträge). `normalizeTargetEntries` liefert für `{ alias: null }` mit
+    `defaultName: 'D'` den Namen `D`, für `defaultName: null` `unverifiable`.
+36. **(Runde 2 Befund 3)** Eine `full`-Zeile, die nach REMOVE S und `ADD A` an `ADD B` scheitert,
+    nachdem T den fremden Alias C bekam (Stub fügt C nach ADD A ein), endet `failed@2`; ein zweiter
+    Undo aus derselben Datei klassifiziert sie als `addOnly` mit `notes: ['targetHasForeignEntries']`
+    und sendet genau `addEmote(T, B)` (oder lässt B als `targetNameTaken` aus, wenn C den Namen B
+    hält), C bleibt im Set.
+37. **(Runde 2 Befund 4)** Eine `addOnly`-Zeile mit einem ausgelassenen Eintrag (`targetNameTaken`)
+    und einem gesendeten ADD, der `unknown` bleibt (Stub: HTTP 503, Nachlesen scheitert), endet
+    `unknown`, zählt in `unknownCount` und `omittedEntryCount`, **nicht** in `partialRows`, trägt
+    `omittedEntries` im Protokoll und den Dock-Hinweis „bei 7TV prüfen". Dieselbe Zeile mit einem
+    `failed`-ADD (409) endet `failed` mit `omittedEntries`; nur eine Zeile, deren gesendete ADDs
+    alle bestätigt sind, endet `partial`.
+38. **(Runde 2 Befund 1)** Ein Lauf mit N `full`-Zeilen ohne Rate-Limit-Pause sendet genau N
+    Set-Reads zwischen Start und Ende (einen je REMOVE), zusätzlich zum Frischcheck; der Stub zählt
+    sie, und kein REMOVE geht ohne einen unmittelbar vorausgehenden Read.
+39. **(Runde 2 Befund 5)** Ein `reset()` des Undo-Dienstes während des Laufs, während des
+    Nachlesens oder während eine Meldung unterwegs ist, ändert nur `run()`; der Lauf läuft in seinem
+    Datensatz zu Ende, beide Meldungen werden gesendet (Stub sieht `sync-deleted` und
+    `sync-restored`), ihr Endzustand landet im Laufdatensatz, und erst dann fallen `isSettling` und
+    `destructiveOpen` — der Arbiter wird frei, ohne dass eine Meldung fehlt.
+40. **(Runde 2 Befund 2)** Die E2E-Erwartung für den aliaslosen Ziel-Eintrag ist `addEmote(T2, D)`
+    mit dem `defaultName` aus der Datei; kein `addEmote` des Undo trägt `alias: null`.
 
 ---
 
@@ -1008,9 +1108,11 @@ als Undo-Reihenfolge benannt).
 - `undo-plan.spec.ts` (neu): jede Zeile der Tabelle 4.3 (AK 4), `diffUndoPlans` (gleicher Modus +
   gleiche ADDs ⇒ läuft; Moduswechsel ⇒ Drift; ADD-Liste geändert ⇒ Drift), `summarizeUndoPlan`
   (Slot-Delta für Einzel- und Duplikat-Zelle); die Codex-Gegenbeispiele: fremder Alias `C` auf T
-  (AK 29), `null` ohne `defaultName` und geänderter Standardname (AK 31), A/B mit Dritt-Inhaber für
-  `full` und `addOnly` (AK 33), nie gestartete `planned`-Datei mit nachgebildetem Stand (AK 28),
-  `sameClassification` für jede Kombination.
+  für `full` (übersprungen) und `addOnly` (läuft mit `notes`) (AK 29), `null` ohne `defaultName`
+  und geänderter Standardname (AK 31), A/B mit Dritt-Inhaber für `full` und `addOnly` (AK 33),
+  nie gestartete `planned`-Datei mit nachgebildetem Stand (AK 28), `normalizeTargetEntries` und
+  der zweite Lauf nach zurückgeholtem `D` (AK 35), `sameClassification` für jede Kombination,
+  `notes` ohne Einfluss auf `sameClassification`.
 - `file-import-step.spec.ts` **+4**: Weiche für `transfer-run` beider Stufen, keine Weiche für
   `purge-run` und `transfer-undo`, Vorprüfungsfehler vor der Weiche, `picked.kind` je Wahl (AK 1, 2).
 - `undo-flow.spec.ts` (neu): Reihenfolge Arbiter → Token → Dialog → Arbiter → Frischcheck → Start;
@@ -1022,10 +1124,14 @@ als Undo-Reihenfolge benannt).
   — Verhalten, keine Vorlage (Regel 12).
 - `seven-tv-undo.service.spec.ts` (neu): Schrittfolge je Modus (AK 9), `transportLossIsUnknown`
   und `abortOn` (AK 10), Settling mit Re-Read nach Tabelle 4.6 — je Modus und Operation, inklusive
-  `addOnly` an Schritt 0 (AK 11, 34), Zeilen-Prüfung vor jedem REMOVE mit Drift einer späteren
-  Quelle, Koaleszierung, Frisch-Read nach Rate-Limit-Pause, drei Read-Fehler (AK 26, 27),
-  `isSettling`/`destructiveOpen` über offene Läufe bis zum Endzustand beider Meldungen, auch nach
-  `reset()` (AK 32), `partial` mit `omittedEntries` (AK 33), beide Meldungen in
+  `addOnly` an Schritt 0 (AK 11, 34), Zeilen-Prüfung vor jedem REMOVE-Versuch mit Drift einer
+  späteren Quelle 275 ms nach dem vorigen REMOVE, Read-Zählung je REMOVE, neuer Read vor einer
+  Rate-Limit-Wiederholung, drei Read-Fehler (AK 26, 27, 38), `isSettling`/`destructiveOpen` über
+  offene Läufe bis zum Endzustand beider Meldungen, auch nach `reset()` (AK 32), lauf-gebundener
+  Abschluss: `reset()` während des Laufs, während des Nachlesens und während einer laufenden
+  Meldung ⇒ beide Meldungen gehen trotzdem raus und der Lauf schließt (AK 39), `partial` nur statt
+  `done`; `unknown`/`failed` mit `omittedEntries` bleiben (AK 33, 37), `addOnly` neben fremdem
+  Eintrag nach mittendrin gescheiterter `full`-Zeile (AK 36), beide Meldungen in
   Reihenfolge mit richtigen ID-Mengen (AK 12), Dreiwertigkeit und N4-Retry (AK 13), kein
   Client-Resync im Erfolgsfall (nicht-aktives Ziel ⇒ kein Request, `backendTriggered` aus beiden
   Antworten) und N1-Fallback nur bei zwei endgültig gescheiterten Meldungen (AK 14),
@@ -1048,7 +1154,9 @@ als Undo-Reihenfolge benannt).
   Nutzungsseite → Weiche → „Ersetzungen rückgängig machen" → Token → Dialog zeigt zwei `full`-Zeilen,
   Löschzahl 2, Slot-Delta +1 → „Rückweg sichern" lädt `transfer-undo-plan` → „Starten" → 7TV-Stub
   sieht `removeEmote(S1)`, `addEmote(T1, a)`, `removeEmote(S2)`, `addEmote(T2, a)`, `addEmote(T2, b)`,
-  `addEmote(T2, null)` in dieser Reihenfolge → `sync-deleted` `[S1, S2]`, dann `sync-restored`
+  `addEmote(T2, D)` — `D` der `defaultName` aus der Datei, nie `null` (AK 40) — in dieser
+  Reihenfolge, mit je einem Set-Read unmittelbar vor `removeEmote(S1)` und `removeEmote(S2)`
+  (AK 38) → `sync-deleted` `[S1, S2]`, dann `sync-restored`
   `[T1, T2]` mit `expectedChannelName` → Dock mit beiden Meldungszeilen, Protokoll-Download
   (AK 1, 6, 9, 12, 18). Mocks: `mockEmoteSetTargets` mit `editable: true`, GraphQL-Stub mit
   Set-Stand vor/nach.
@@ -1056,9 +1164,14 @@ als Undo-Reihenfolge benannt).
 - Neu: Stub lässt den zweiten ADD einer Zeile mit 409 scheitern → Dock `gapCount 1` mit Hinweis →
   Undo aus derselben Datei erneut → Dialog zeigt `addOnly [B]` → genau ein `addEmote(T, B)`
   (AK 17, 30).
-- Neu: Stub gibt der zweiten Quelle nach dem ersten REMOVE einen zweiten Alias → zweite Zeile
-  `skippedDrift`, kein zweites REMOVE (AK 26). Neu: `planned`-Datei ohne Bestätigung ⇒ „Rückweg
-  sichern" gesperrt (AK 28). Neu: T unter fremdem `C` ⇒ Zeile übersprungen, kein Request (AK 29).
+- Neu: Stub gibt der zweiten Quelle **unmittelbar** nach dem ersten REMOVE einen zweiten Alias →
+  zweiter Read vor dem zweiten REMOVE, zweite Zeile `skippedDrift`, kein zweites REMOVE (AK 26).
+  Neu: `planned`-Datei ohne Bestätigung ⇒ „Rückweg sichern" gesperrt (AK 28). Neu: T unter fremdem
+  `C`, S hält A ⇒ Zeile übersprungen, kein Request; S weg ⇒ `addOnly` neben `C` (AK 29). Neu: Stub
+  fügt `C` nach `addEmote(T, A)` ein und lässt `addEmote(T, B)` mit 409 scheitern → `failed@2` →
+  zweiter Lauf ⇒ `addOnly` mit `notes`, `addEmote(T, B)` (AK 36). Neu: zweiter Lauf nach
+  zurückgeholtem `D` ⇒ `nothingToDo` (AK 35). Neu: `addOnly` mit Auslassung und 503 auf dem ADD ⇒
+  `unknown`, nicht `partial` (AK 37).
 - Neu: Stub antwortet auf ein REMOVE mit 503 → Re-Read zeigt Quelle weg → `failed@1`, Quelle in
   `sync-deleted` (AK 11).
 - Neu: Weiche → „Lücken schließen" verhält sich wie der bestehende Restore-Test (Regressionsprobe).
@@ -1131,6 +1244,12 @@ PR-Text mit Zahlen:
   Fenster (Plan-230 §2 Nr. 6) und prüft heute nur einmal vor dem Start; dieselbe Prüfung dort
   einzuziehen ist naheliegend, aber eine Änderung am Import-Lauf, die #230 revidiert — ein
   Folge-Issue, hier nur benannt.
+- **Das 7TV-Budget der tokenlosen Set-Abfrage** (E19, F13): `loadSevenTvSetEntries` läuft ohne
+  Token gegen `7tv.io/v4/gql`; ein Limit ist nicht gemessen (die bekannten Messungen betreffen die
+  Suche und die Schreib-Bucket `emote_set_change`). Der Undo verbraucht N bis 2N solcher Reads je
+  Lauf; ein 429 ist fail-closed ein Read-Fehler (`recheckUnavailable`, drei in Folge ⇒ Rest
+  `cancelled`). Messen ist Teil der Live-Verifikation (9.5 Nr. 6a), nicht dieser Spec; fällt das
+  Budget knapp aus, ist die Antwort ein eigener Undo-Takt (langsamer, nicht weniger Reads).
 - **Regel 2 des Restore-Filters für Zeilen aus Übertragungs- und Undo-Dateien** (F14): ob ein
   fremder Eintrag auf dem Ziel die ganze Restore-Zeile werfen soll, ist eine Restore-Frage (11.3).
 - **Backend-Kennzeichnung „Undo" im Audit** — Abschnitt 13, Nr. 5, verworfen.
@@ -1189,15 +1308,52 @@ lesbar ist. „Lauf-Dienst" meint heute `SevenTvDeleteService`, `SevenTvRestoreS
    Logik tragen, die ein vierter Dienst an mehr als einer Stelle erweitern müsste — eine
    Registrierung, ein Union-Wert, fertig. Der Leave-Guard der Nutzungsseite (`canDeactivate`)
    bleibt daneben, weil er nur beim Kanalwechsel fragt und nur `isRunning` braucht.
-5. **Prüfbarkeit.** Ein Test kann einen Dienst-Stub mit `isRunning: false, isSettling: true`
-   registrieren und erwartet, dass jeder Startpunkt abweist; ein Stub mit `destructiveOpen: true`
-   hält den `beforeunload` scharf, auch wenn `run()` des Dienstes `null` ist.
+5. **Prüfbarkeit des Arbiters.** Ein Test kann einen Dienst-Stub mit `isRunning: false,
+   isSettling: true` registrieren und erwartet, dass jeder Startpunkt abweist; ein Stub mit
+   `destructiveOpen: true` hält den `beforeunload` scharf, auch wenn `run()` des Dienstes `null`
+   ist. Dieser Test prüft nur den Arbiter; die Signale selbst müssen wahr sein — dafür Punkt 6.
+6. **Lauf-gebundener Abschluss je Dienst.** Die drei Signale sind nur so viel wert wie die Läufe
+   dahinter. Heute kehrt `onRunComplete` des Imports zurück, sobald `this.run() !== started` ist —
+   „only reachable via reset() during the run" (`seven-tv-import.service.ts:583-592`): ein
+   `reset()` während der Lauf noch läuft, lässt Nachlesen **und** beide Meldungen ausfallen; Delete
+   und Restore haben denselben Frühausstieg (`seven-tv-delete.service.ts:292`,
+   `seven-tv-restore.service.ts:321`), setzen bei `reset()` `syncReport` auf `idle` und schreiben
+   Rückrufe nur unter `applyIfCurrent`, also nur für den gezeigten Lauf. Ein Arbiter, der auf
+   solchen Diensten aufsetzt, meldet entweder „belegt" für einen Lauf, der nie abschließt, oder
+   „frei", während eine Meldung verloren ging. **Anforderung an jeden Lauf-Dienst:**
+   - Ein Lauf ist ein eigener Datensatz mit eigenem Lebenszyklus: `running → settling
+     (Nachlesen) → reporting (Meldungen) → closed`. Nachlesen und Meldungen laufen **auf diesem
+     Datensatz** zu Ende, gleich ob er noch `run()` ist; `reset()`, `resetIfChannelChanged()` und
+     ein neuer Lauf lösen nur die Anzeige. Der Frühausstieg in `onRunComplete` entfällt; an seine
+     Stelle tritt: das Ergebnis wird im Laufdatensatz gespeichert und nur dann zusätzlich in `run()`
+     gespiegelt, wenn der Lauf noch gezeigt wird.
+   - Meldungszustände (`syncReport`, `syncReportReason`, beim Undo je Meldung) leben **am
+     Laufdatensatz**; die Dienst-Signale, die das Dock liest, sind Projektionen des gezeigten Laufs.
+     Ein Rückruf eines abgelösten Laufs schreibt in dessen Datensatz, nicht in eine Projektion,
+     die inzwischen einem anderen Lauf gehört; `applyIfCurrent` schützt die Projektion, nicht den
+     Abschluss.
+   - `isSettling` ist wahr, solange **irgendein** Lauf des Dienstes in `settling` oder `reporting`
+     steht; `destructiveOpen`, solange irgendein Lauf mit destruktiver Zeile nicht `closed` ist.
+     `closed` erreicht ein Lauf, wenn Nachlesen beendet ist und jede seiner Meldungen einen
+     Endzustand hat (`succeeded | partial | failed`) — oder es für ihn keine Meldung gibt. Ein
+     manueller Retry einer Meldung öffnet den Lauf **nicht** wieder (er ist eine neue Meldung am
+     geschlossenen Lauf; der Arbiter bleibt frei, der Unload-Schutz bleibt aus).
+   - **Tests je Dienst (nicht nur am Arbiter):** `reset()` während `running` ⇒ die Engine läuft
+     oder wird sauber abgebrochen, aber jede bis dahin bestätigte Mutation wird gemeldet und der
+     Lauf schließt; `reset()` während `settling` ⇒ Nachlesen endet, Meldungen gehen raus, Lauf
+     schließt; `reset()` während eine Meldung unterwegs ist ⇒ ihre Antwort landet im Laufdatensatz,
+     der Lauf schließt, `isSettling` fällt erst danach; in allen drei Fällen sieht der Stub-Server
+     jede Meldung genau einmal, und der Arbiter ist danach frei. Ein Lauf, dessen Meldung
+     endgültig `failed` ist, ist trotzdem `closed`.
 
 Was #254 davon nutzt: die Registrierung als `'undo'` (Punkt 4) mit `isSettling` = Nachlesen oder
 eine der beiden Meldungen offen, `destructiveOpen` = ein offener Lauf mit `full`-Zeile (6.5); der
-Arbiter-Grund für die Notiz am Startpunkt (Punkt 2); der gemeinsame Unload-Schutz (Punkt 3, E15).
+Arbiter-Grund für die Notiz am Startpunkt (Punkt 2); der gemeinsame Unload-Schutz (Punkt 3, E15);
+den lauf-gebundenen Abschluss (Punkt 6) baut der Undo-Dienst von Anfang an so, ohne den
+Frühausstieg der drei bestehenden Dienste zu kopieren (F20, AK 39).
 Was #254 **nicht** tut: eine eigene Settling-Prüfung im Undo-Flow, eine Spiegelzeile im
-Import-Flow, einen eigenen `beforeunload`.
+Import-Flow, einen eigenen `beforeunload`, und keine Änderung an Import, Delete oder Restore — deren
+Umstellung auf Punkt 6 ist #256.
 
 ### 11.2 #256 Punkt 4 — Dock-Hinweis bei unklärbarem REMOVE
 
@@ -1374,10 +1530,26 @@ waren Betreiberfragen — beide am 2026-09-25 entschieden (Abschnitt 15).
 
 | # | Schwere | Befund | Prüfung am Code | Lösung | Wo |
 |---|---|---|---|---|---|
-| 1 | high | Der Frischcheck altert während des sequentiellen Laufs; ein späteres REMOVE nimmt einen inzwischen vergebenen zweiten Alias mit | Zutreffend: Engine sequentiell mit 275 ms je Schritt und Rate-Limit-Pausen bis zu Minuten (`seven-tv-run-engine.ts:36-46`, `:430-462`); kein Vor-Schritt-Hook (`runRowFrom`, `:389-406`) | Prüfung je REMOVE gegen frischen Read, koalesziert ≤ 5 s, frisch nach jeder Pause; Read-Fehler ⇒ Zeile übersprungen, drei in Folge ⇒ Rest `cancelled`; Restfenster benannt | E14, E19, F13, 4.3, 4.4 Nr. 10a, 6.5, 7, AK 26–27, 9.5 Nr. 6a |
+| 1 | high | Der Frischcheck altert während des sequentiellen Laufs; ein späteres REMOVE nimmt einen inzwischen vergebenen zweiten Alias mit | Zutreffend: Engine sequentiell mit 275 ms je Schritt und Rate-Limit-Pausen bis zu Minuten (`seven-tv-run-engine.ts:36-46`, `:430-462`); kein Vor-Schritt-Hook (`runRowFrom`, `:389-406`) | Prüfung je REMOVE gegen frischen Read — in Runde 1 noch koalesziert ≤ 5 s, **in Runde 2 gestrichen** (eigener Read je REMOVE-Versuch, Befund 1 dort); Read-Fehler ⇒ Zeile übersprungen, drei in Folge ⇒ Rest `cancelled`; Restfenster benannt | E14, E19, F13, 4.3, 4.4 Nr. 10a, 6.5, 7, AK 26–27, 38, 9.5 Nr. 6a |
 | 2 | high | Eine `planned`-Datei beweist nicht, dass ihr Lauf je begann; der Live-Check beweist Zustand, nicht Herkunft | Zutreffend: Rückweg-Datei entsteht vor dem ersten REMOVE (Plan-230 §2), Audit trägt Zählwerte ohne IDs | `provenance` je Kandidat; Kennzeichnung + Datei-Bestätigung, ohne die keine unbelegte `full`-Zeile läuft — **Betreiber: so entschieden** | E2, F17, 4.3, 6.3, 7, AK 28, 9.5 Nr. 6c, **Abschnitt 15 A** |
 | 3 | high | Bei einem fremden Ziel-Eintrag schließt nach einem Teilerfolg keine der beiden Dateien die Lücke (Regel 2 wirft die Restore-Zeile) | Zutreffend: `missingAliases` liefert bei fremdem Alias `[]` (`already-present-filter.ts:210-215`) | Fremde Ziel-Einträge sind Sperrgrund für `full` **und** `addOnly` an allen drei Prüfstellen; der kanonische Lückenschluss ist der Undo selbst (zweiter Lauf ⇒ `addOnly`), nicht der Restore aus der Übertragungsdatei | E9, E18, E20, F14, 4.3 Schritt 2, 4.7, 7, AK 17, 29, 30, 9.5 Nr. 6b, 11.3 |
 | 4 | high | Ein `null`-Eintrag hat nach dem Replace keinen Live-Standardnamen; `defaultName` aus der Datei ist nullbar und kann veraltet sein | Zutreffend: `defaultNameById` nur für IDs im Set (`seven-tv-set-entries.ts:41-71`), `defaultName: string \| null` (`transfer-run-export.ts:49`, Parser `:433`); kein Einzel-Emote-Lookup im Client | Jeder ADD mit explizitem Alias, für `null` der Datei-`defaultName`; Prüfung und Mutation gegen denselben Namen; ohne `defaultName` keine `full`-Zeile bzw. Eintrag ausgelassen | E21, F15, 4.3 Schritt 3/5, 4.4 Nr. 10, 6.4, 6.5, 7, AK 31 |
 | 5 | high | Ein zweiter Lauf während des Settlings ersetzt den gezeigten Lauf und lässt dessen Unload-Schutz und Meldungen fallen | Zutreffend: `activeRun` nur aus `isRunning` (`seven-tv-run-arbiter.ts:46-55`), `destructiveRunActive` folgt `run()` (`seven-tv-import.service.ts:273-277`) | Sperre im Arbiter: #256 Punkt 1 ist **Vorbedingung** (Betreiber, abweichend von der Empfehlung); der Undo registriert sich dort mit `isRunning`/`isSettling`/`destructiveOpen`, der Unload-Schutz spannt über alle offenen destruktiven Läufe bis zum Endzustand beider Meldungen; Vertrag an #256 in 11.1 | E15, E22, F16, 6.3, 6.5, 7, AK 16, 32, 11.1, **Abschnitt 15 B** |
 | 6 | medium | Eine `full`-Zeile mit einem belegten Ziel-Namen lief mit dem Rest und endete `done`, ohne Lücken-Spur | Zutreffend (Spec-Logik der ersten Fassung, E8) | `full` alles-oder-nichts (`targetNameTaken` sperrt die Zeile); `addOnly` läuft mit `omittedEntries`, endet `partial`, Dock und Datei tragen den Vermerk | E8, E23, 4.3 Schritt 5, 4.7, 6.2, 6.4, 6.5, 7, AK 33 |
 | 7 | medium | Das Nachlesen ordnete Schritt 0 pauschal dem REMOVE zu; eine `addOnly`-Zeile hätte eine abwesende Quelle als bestätigtes REMOVE gelesen | Zutreffend (Spec-Logik der ersten Fassung, 4.6) | Nachlesen nach Operation des Schritts je Modus; `addOnly` gerät nie in die Löschmeldung | E24, 4.6, AK 34 |
+
+### Runde 2 (2026-09-25, zweite und letzte Runde)
+
+Urteil erneut „needs-attention", vier Befunde high, einer medium. Jeder gegen Code und Spec
+geprüft; keiner widerlegt, keiner wirft eine neue Betreiberfrage auf — die Entscheidungen aus 13
+und 15 bleiben unverändert. Die Leitplanke „fail-closed" entscheidet Befund 1 gegen die
+Koaleszierung und Befund 3 für `full` gegen, für `addOnly` **für** das Laufen — weil ein ADD nichts
+entfernt und der Reparaturweg sonst nicht existiert.
+
+| # | Schwere | Befund | Prüfung | Lösung | Wo |
+|---|---|---|---|---|---|
+| 1 | high | Ein bis 5 s alter Read darf vor dem nächsten REMOVE wiederverwendet werden; die Zeilen liegen 275 ms auseinander — AK 26 verlangt, was E19 nicht leistet | Zutreffend: Spec-Widerspruch zwischen E19 (Koaleszierung) und AK 26; Engine-Takt `RUN_DELAY_MS = 275` (`seven-tv-run-engine.ts:29`) | Koaleszierung gestrichen: eigener vollständiger Read je REMOVE-Versuch, auch nach Rate-Limit-Wiederholung; Kosten benannt (N–2N Reads, ungemessenes Budget, 429 fail-closed) | E19, F13, 4.4 Nr. 10a, 6.5, 7, 10, AK 26, 38, 9.3, 9.4 |
+| 2 | high | Fremde Einträge werden gegen das rohe `E` geprüft, `null` erst danach zu `D`; ein zurückgeholtes `D` gilt beim nächsten Read als fremd — Idempotenz und Reparatur gebrochen; E2E erwartete `addEmote(T2, null)` | Zutreffend: Spec-Reihenfolge 4.3 der zweiten Fassung; 9.4 trug den alten Wert | Normalisierung als Schritt 2 vor jeder Zielprüfung, `N` statt `E` überall, `normalizeTargetEntries` als eigene reine Funktion; E2E auf `addEmote(T2, D)` | E21, F18, 4.3 (Reihenfolge), 6.2, 7, AK 35, 40, 9.3, 9.4 |
+| 3 | high | `addOnly` war bei fremdem Ziel-Eintrag gesperrt; kommt `C` mitten in einer `full`-Zeile dazu, gibt es nach dem Teilerfolg keinen ausführbaren Reparaturweg (Undo gesperrt, Restore-Regel 2 wirft, Undo-Datei kann S nicht) | Zutreffend: E20 der zweiten Fassung, Regel 2 (`already-present-filter.ts:210-215`) | Sperre nur für `full` (destruktiv); `addOnly` läuft eintragsweise neben `C` mit Vermerk `notes`, `C` bleibt; Reparaturweg E9 in jeder Lage ausführbar | E20, F14, 4.3 Schritt 3, 4.7, 6.2, 6.4, 7 (drei Zeilen), AK 29, 36, 9.3, 9.4 |
+| 4 | high | `partial` wurde „unabhängig vom Engine-Status" gesetzt und hätte `unknown`/`failed` einer ADD hinter einer Auslassung versteckt | Zutreffend: 6.5 der zweiten Fassung | `omittedEntries` orthogonal; `partial` nur statt `done`; `failed`/`unknown`/`cancelled` bleiben und zählen in ihren Zählern und in `omittedEntryCount` | E23, F19, 4.3 Schritt 6, 4.7, 6.4, 6.5, 7, AK 33, 37 |
+| 5 | medium | Der Vertrag an #256 verlangte offene Läufe über `reset()` hinaus, testete aber nur Signal-Stubs; die Dienste steigen heute bei abgelöstem Lauf vor Settling und Meldung aus | Zutreffend: `onRunComplete` kehrt bei `run() !== started` zurück (`seven-tv-import.service.ts:583-592`); Delete/Restore `:292`/`:321`, `reset()` setzt `syncReport` auf `idle` | Punkt 6 im Vertrag: Lauf-Lebenszyklus `running → settling → reporting → closed` am Laufdatensatz, Meldungszustände am Lauf, Dienst-Signale als Projektion, Retry öffnet nicht wieder, Tests je Dienst für `reset()` in allen drei Phasen; der Undo-Dienst baut es so von Anfang an | F20, 6.5, 11.1 Punkt 5–6, AK 39, 9.3 |
