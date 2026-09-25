@@ -13,7 +13,7 @@ import {
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
-import { EmoteSprite } from '../emotes/emote-sprite';
+import { EmoteSpriteAnimated } from '../emotes/emote-sprite-animated';
 import { ResolutionDecisions, RowDecision, Violation, ViolationRule } from './conflict-resolution';
 import { AliasMismatchRow, NameCollisionRow, TargetOverlay } from './import-preview';
 
@@ -272,7 +272,7 @@ export function violationMessages(
  */
 @Component({
   selector: 'app-import-conflict-resolution-step',
-  imports: [EmoteSprite, ScrollingModule, TranslocoPipe],
+  imports: [EmoteSpriteAnimated, ScrollingModule, TranslocoPipe],
   template: `
     <div
       #container
@@ -350,7 +350,7 @@ export function violationMessages(
             <div class="flex min-w-0 items-center gap-2">
               <span class="app-sprite-cell relative block h-10 w-10 shrink-0">
                 @if (row.sourceImageUrl; as url) {
-                  <app-emote-sprite [url]="url" [size]="spritePx" />
+                  <app-emote-sprite-animated [url]="url" [size]="spritePx" />
                 }
               </span>
               <span class="flex min-w-0 flex-col">
@@ -381,12 +381,13 @@ export function violationMessages(
             </div>
 
             <div class="flex min-w-0 items-center gap-2">
-              <span
-                class="app-sprite-cell relative block h-10 w-10 shrink-0"
-                [class.opacity-50]="targetConsequenceOf(row)?.kind === 'removed'"
-              >
+              <span class="app-sprite-cell relative block h-10 w-10 shrink-0">
                 @if (row.targetImageUrl; as url) {
-                  <app-emote-sprite [url]="url" [size]="spritePx" />
+                  <app-emote-sprite-animated
+                    [url]="url"
+                    [size]="spritePx"
+                    [dimmed]="targetConsequenceOf(row)?.kind === 'removed'"
+                  />
                 }
               </span>
               <span class="flex min-w-0 flex-col">
