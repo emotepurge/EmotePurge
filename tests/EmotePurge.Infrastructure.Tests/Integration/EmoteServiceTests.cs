@@ -18,11 +18,17 @@ public class EmoteServiceTests(PostgresFixture fixture)
     private const string OwnerSevenTvUserId = "owner-seven-tv-id";
     private const string OwnerTwitchLogin = "setowner";
 
+    // The owner's Twitch id for every case that does not seed an owner channel: no channel row in
+    // the shared database carries it, so the paper entry has no owner channel (N3) unless a case
+    // passes a seeded channel's id instead.
+    private const string OwnerTwitchUserId = "4499";
+
     // The Twitch ids on the block list of every EmoteService built here (F10/E8): a real
     // ExcludedChannelFilter read from configuration, the way ExcludedChannelFilterTests builds one.
     private const string ExcludedTwitchChannelId = "4490";
     private const string ExcludedExpectedTwitchChannelId = "4491";
     private const string ExcludedRestoreTwitchChannelId = "4492";
+    private const string ExcludedOwnerTwitchChannelId = "4493";
 
     private static readonly AuditActor Actor = new("100", "synctester");
 
@@ -409,7 +415,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-active", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-ida1", "7tv-ida-missing"], null, Actor);
+            "set-insetdel-active", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-ida1", "7tv-ida-missing"], null, Actor);
 
         Assert.Equal(2, result.ReportedCount);
         Assert.Null(result.UnresolvedChannel);
@@ -444,7 +450,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-shared", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-ids1"], null, Actor);
+            "set-insetdel-shared", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-ids1"], null, Actor);
 
         Assert.Equal(["insetdel_shared_a", "insetdel_shared_b"], result.Channels.Select(c => c.ChannelName));
         Assert.All(result.Channels, c => Assert.Equal(1, c.Count));
@@ -466,7 +472,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-blocked", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idb1"], null, Actor);
+            "set-insetdel-blocked", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idb1"], null, Actor);
 
         Assert.Empty(result.Channels);
         Assert.Null(result.UnresolvedChannel);
@@ -486,13 +492,19 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-blockedexp", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idbe1"], "insetdel_blockedexp", Actor);
+            "set-insetdel-blockedexp", OwnerSevenTvUserId, OwnerTwitchLogin, ExcludedExpectedTwitchChannelId, ["7tv-idbe1"], "insetdel_blockedexp", Actor);
 
         Assert.Empty(result.Channels);
         Assert.Equal(new UnresolvedChannelDto("insetdel_blockedexp", UnresolvedChannelReasons.NotTracked), result.UnresolvedChannel);
         Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
+
+        // AK 39 (N3): the blocked channel is the owner's, but step 3a does not resolve it either — the
+        // entry has the same form as the one for a left channel (…_ExpectedChannelThatWasLeft_…).
         var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-blockedexp"));
-        Assert.Contains("\"unresolvedReason\":\"notTracked\"", audit.DetailsJson);
+        Assert.Null(audit.ChannelName);
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-blockedexp","targetOwnerSevenTvUserId":"owner-seven-tv-id","targetOwnerTwitchLogin":"setowner","unresolvedChannelName":"insetdel_blockedexp","unresolvedReason":"notTracked","unresolvedSevenTvEmoteIds":["7tv-idbe1"]}""",
+            audit.DetailsJson);
         Assert.DoesNotContain("exclu", audit.DetailsJson, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -504,7 +516,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-untracked", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idu1", "7tv-idu2"], null, Actor);
+            "set-insetdel-untracked", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idu1", "7tv-idu2"], null, Actor);
 
         Assert.Equal(2, result.ReportedCount);
         Assert.Empty(result.Channels);
@@ -520,22 +532,85 @@ public class EmoteServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task MarkDeletedInSetAsync_NonActiveSetOfATrackedChannel_IsPaperOnly_AndTouchesNoRow()
+    public async Task MarkDeletedInSetAsync_NonActiveSetOfTheOwnersTrackedChannel_IsPaperOnly_WithThatChannel_AndTouchesNoRow()
     {
-        // AK 13: the set belongs to a tracked channel's account, but is not its active set.
+        // AK 13/38 (N3): the set belongs to a tracked channel's account, but is not its active set.
+        // No row is touched; the paper entry carries the owner's channel (resolved by Twitch id) with
+        // targetIsActiveSetOfChannel: false and no targetOwner* fields — the pre-#253 form, so it
+        // shows up in that channel's audit view again.
         await using var db = fixture.CreateDbContext();
         var channel = SeedChannel(db, "insetdel_nonactive", "4404", "set-insetdel-nonactive-active");
         var emote = SeedEmote(db, channel, "7tv-idn1");
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-nonactive-other", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idn1"], null, Actor);
+            "set-insetdel-nonactive-other", OwnerSevenTvUserId, OwnerTwitchLogin, "4404", ["7tv-idn1"], null, Actor);
 
         Assert.Empty(result.Channels);
+        Assert.Null(result.UnresolvedChannel);
         Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
         var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-nonactive-other"));
+        Assert.Equal("insetdel_nonactive", audit.ChannelName);
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-nonactive-other","targetIsActiveSetOfChannel":false}""",
+            audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_NonActiveSetOfABlockedOwnerChannel_WritesThePaperEntryWithoutAChannel()
+    {
+        // AK 38 (N3, 5.2 step 3a): the same rule as GetActiveByTwitchChannelIdAsync — a blocked
+        // owner channel is no owner channel, and the entry looks like the one of an untracked set.
+        await using var db = fixture.CreateDbContext();
+        SeedChannel(db, "insetdel_blockedowner", ExcludedOwnerTwitchChannelId, "set-insetdel-blockedowner-active");
+        await db.SaveChangesAsync();
+
+        await CreateService(db).MarkDeletedInSetAsync(
+            "set-insetdel-blockedowner-other", OwnerSevenTvUserId, OwnerTwitchLogin, ExcludedOwnerTwitchChannelId, ["7tv-idbo1"], null, Actor);
+
+        var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-blockedowner-other"));
         Assert.Null(audit.ChannelName);
-        Assert.Contains("\"targetOwnerTwitchLogin\":\"setowner\"", audit.DetailsJson);
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-blockedowner-other","targetOwnerSevenTvUserId":"owner-seven-tv-id","targetOwnerTwitchLogin":"setowner"}""",
+            audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_NonActiveSetOfAnInactiveOwnerChannel_WritesThePaperEntryWithoutAChannel()
+    {
+        // AK 38: a channel that was left (IsBotActive = false) is no owner channel either.
+        await using var db = fixture.CreateDbContext();
+        SeedChannel(db, "insetdel_inactiveowner", "4414", "set-insetdel-inactiveowner-active", isBotActive: false);
+        await db.SaveChangesAsync();
+
+        await CreateService(db).MarkDeletedInSetAsync(
+            "set-insetdel-inactiveowner-other", OwnerSevenTvUserId, OwnerTwitchLogin, "4414", ["7tv-idio1"], null, Actor);
+
+        var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-inactiveowner-other"));
+        Assert.Null(audit.ChannelName);
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-inactiveowner-other","targetOwnerSevenTvUserId":"owner-seven-tv-id","targetOwnerTwitchLogin":"setowner"}""",
+            audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task MarkDeletedInSetAsync_RenamedOwnerChannel_ExpectedUnderTheOldName_NamesTheNewChannel()
+    {
+        // N3 edge case: step 3 misses the old name (notTracked), step 3a finds the renamed row by its
+        // Twitch id — the entry carries the new name, unresolvedChannelName the old one.
+        await using var db = fixture.CreateDbContext();
+        SeedChannel(db, "insetdel_renamed_new", "4415", "set-insetdel-renamed-stale");
+        await db.SaveChangesAsync();
+
+        var result = await CreateService(db).MarkDeletedInSetAsync(
+            "set-insetdel-renamed", OwnerSevenTvUserId, OwnerTwitchLogin, "4415", ["7tv-idrn1"], "insetdel_renamed_old", Actor);
+
+        Assert.Equal(new UnresolvedChannelDto("insetdel_renamed_old", UnresolvedChannelReasons.NotTracked), result.UnresolvedChannel);
+        var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-renamed"));
+        Assert.Equal("insetdel_renamed_new", audit.ChannelName);
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-renamed","targetIsActiveSetOfChannel":false,"unresolvedChannelName":"insetdel_renamed_old","unresolvedReason":"notTracked","unresolvedSevenTvEmoteIds":["7tv-idrn1"]}""",
+            audit.DetailsJson);
     }
 
     [Fact]
@@ -549,7 +624,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-inactive", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idi1"], null, Actor);
+            "set-insetdel-inactive", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idi1"], null, Actor);
 
         Assert.Empty(result.Channels);
         Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
@@ -565,7 +640,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-dedup", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idd1", "7tv-idd1", "7tv-idd2", "7tv-idd2"], null, Actor);
+            "set-insetdel-dedup", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idd1", "7tv-idd1", "7tv-idd2", "7tv-idd2"], null, Actor);
 
         Assert.Equal(2, result.ReportedCount);
         var hit = Assert.Single(result.Channels);
@@ -583,7 +658,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-norow", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idnr1"], null, Actor);
+            "set-insetdel-norow", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idnr1"], null, Actor);
 
         var hit = Assert.Single(result.Channels);
         Assert.Equal("insetdel_norow", hit.ChannelName);
@@ -608,7 +683,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-already", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idal1"], null, Actor);
+            "set-insetdel-already", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idal1"], null, Actor);
 
         var hit = Assert.Single(result.Channels);
         Assert.Equal(1, hit.Count);
@@ -629,16 +704,19 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-lagging-new", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idl1", "7tv-idl1"], "insetdel_lagging", Actor);
+            "set-insetdel-lagging-new", OwnerSevenTvUserId, OwnerTwitchLogin, "4409", ["7tv-idl1", "7tv-idl1"], "insetdel_lagging", Actor);
 
         Assert.Empty(result.Channels);
         Assert.Equal(new UnresolvedChannelDto("insetdel_lagging", UnresolvedChannelReasons.ActiveSetDiffers), result.UnresolvedChannel);
         Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
 
+        // AK 39 (N3): the lagging channel is the owner's channel (active, unblocked), so the paper
+        // entry names it — with targetIsActiveSetOfChannel: false, which is what our database says
+        // right now — plus the three unresolved* fields, and no targetOwner* fields.
         var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-lagging-new"));
-        Assert.Null(audit.ChannelName);
+        Assert.Equal("insetdel_lagging", audit.ChannelName);
         Assert.Equal(
-            """{"emoteCount":1,"emoteSetId":"set-insetdel-lagging-new","targetOwnerSevenTvUserId":"owner-seven-tv-id","targetOwnerTwitchLogin":"setowner","unresolvedChannelName":"insetdel_lagging","unresolvedReason":"activeSetDiffers","unresolvedSevenTvEmoteIds":["7tv-idl1"]}""",
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-lagging-new","targetIsActiveSetOfChannel":false,"unresolvedChannelName":"insetdel_lagging","unresolvedReason":"activeSetDiffers","unresolvedSevenTvEmoteIds":["7tv-idl1"]}""",
             audit.DetailsJson);
     }
 
@@ -648,7 +726,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-missing", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idm1"], "insetdel_nosuchchannel", Actor);
+            "set-insetdel-missing", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idm1"], "insetdel_nosuchchannel", Actor);
 
         Assert.Empty(result.Channels);
         Assert.Equal(new UnresolvedChannelDto("insetdel_nosuchchannel", UnresolvedChannelReasons.NotTracked), result.UnresolvedChannel);
@@ -666,11 +744,19 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-left", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idle1"], "insetdel_left", Actor);
+            "set-insetdel-left", OwnerSevenTvUserId, OwnerTwitchLogin, "4410", ["7tv-idle1"], "insetdel_left", Actor);
 
         Assert.Empty(result.Channels);
         Assert.Equal(new UnresolvedChannelDto("insetdel_left", UnresolvedChannelReasons.NotTracked), result.UnresolvedChannel);
         Assert.False(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
+
+        // AK 39 (N3): a left owner channel is no owner channel — the entry has no channel, the
+        // targetOwner* fields and the three unresolved* fields.
+        var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetdel-left"));
+        Assert.Null(audit.ChannelName);
+        Assert.Equal(
+            """{"emoteCount":1,"emoteSetId":"set-insetdel-left","targetOwnerSevenTvUserId":"owner-seven-tv-id","targetOwnerTwitchLogin":"setowner","unresolvedChannelName":"insetdel_left","unresolvedReason":"notTracked","unresolvedSevenTvEmoteIds":["7tv-idle1"]}""",
+            audit.DetailsJson);
     }
 
     [Fact]
@@ -683,7 +769,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-expected", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idx1"], " InSetDel_Expected ", Actor);
+            "set-insetdel-expected", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idx1"], " InSetDel_Expected ", Actor);
 
         Assert.Null(result.UnresolvedChannel);
         Assert.Equal("insetdel_expected", Assert.Single(result.Channels).ChannelName);
@@ -703,7 +789,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkDeletedInSetAsync(
-            "set-insetdel-mix", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-idmx1"], "insetdel_mixlag", Actor);
+            "set-insetdel-mix", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-idmx1"], "insetdel_mixlag", Actor);
 
         Assert.Equal("insetdel_mixhit", Assert.Single(result.Channels).ChannelName);
         Assert.Equal(UnresolvedChannelReasons.ActiveSetDiffers, result.UnresolvedChannel?.Reason);
@@ -726,7 +812,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkRestoredInSetAsync(
-            "set-insetres-active", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-ira1", "7tv-ira2", "7tv-ira3"], null, Actor);
+            "set-insetres-active", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-ira1", "7tv-ira2", "7tv-ira3"], null, Actor);
 
         Assert.Equal(3, result.ReportedCount);
         Assert.Null(result.UnresolvedChannel);
@@ -755,7 +841,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkRestoredInSetAsync(
-            "set-insetres-shared", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-irs1"], null, Actor);
+            "set-insetres-shared", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-irs1"], null, Actor);
 
         Assert.Equal(["insetres_shared_a", "insetres_shared_b"], result.Channels.Select(c => c.ChannelName));
         Assert.False(await db.Emotes.Where(e => e.Id == firstEmote.Id).Select(e => e.IsArchived).SingleAsync());
@@ -770,7 +856,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
 
         var result = await CreateService(db).MarkRestoredInSetAsync(
-            "set-insetres-untracked", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-iru1"], null, Actor);
+            "set-insetres-untracked", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-iru1"], null, Actor);
 
         Assert.Empty(result.Channels);
         Assert.Null(result.UnresolvedChannel);
@@ -783,6 +869,33 @@ public class EmoteServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task MarkRestoredInSetAsync_NonActiveSetOfTheOwnersTrackedChannel_IsListedInThatChannelsAuditLog()
+    {
+        // AK 38 (N3, finding B2): the paper entry of a restore into a non-active set of the owner's
+        // own tracked channel is found by the channel-scoped audit query, which filters exactly on
+        // ChannelName — the first version of the report wrote it without a channel, and it vanished
+        // from GET /api/channels/{c}/audit-log.
+        await using var db = fixture.CreateDbContext();
+        var channel = SeedChannel(db, "insetres_nonactive", "4426", "set-insetres-nonactive-active");
+        var emote = SeedEmote(db, channel, "7tv-irn2", isArchived: true, archivedAt: DateTime.UtcNow.AddMinutes(-5));
+        await db.SaveChangesAsync();
+
+        var result = await CreateService(db).MarkRestoredInSetAsync(
+            "set-insetres-nonactive-other", OwnerSevenTvUserId, OwnerTwitchLogin, "4426", ["7tv-irn2", "7tv-irn3"], null, Actor);
+
+        Assert.Empty(result.Channels);
+        Assert.True(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(null, "insetres_nonactive", null));
+        var dto = Assert.Single(page.Items);
+        Assert.Equal(AuditActions.EmotesSyncRestored, dto.Action);
+        Assert.Equal("insetres_nonactive", dto.ChannelName);
+        Assert.Equal(2, dto.Detail!.Count);
+        Assert.Equal(new AuditLogTargetEmoteSet("set-insetres-nonactive-other", false, null), dto.Detail.TargetEmoteSet);
+    }
+
+    [Fact]
     public async Task MarkRestoredInSetAsync_ExpectedChannelWithAnotherActiveSet_IsActiveSetDiffers_WithoutTouchingItsRows()
     {
         await using var db = fixture.CreateDbContext();
@@ -791,12 +904,15 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkRestoredInSetAsync(
-            "set-insetres-lagging-new", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-irl1"], "insetres_lagging", Actor);
+            "set-insetres-lagging-new", OwnerSevenTvUserId, OwnerTwitchLogin, "4424", ["7tv-irl1"], "insetres_lagging", Actor);
 
         Assert.Empty(result.Channels);
         Assert.Equal(new UnresolvedChannelDto("insetres_lagging", UnresolvedChannelReasons.ActiveSetDiffers), result.UnresolvedChannel);
         Assert.True(await db.Emotes.Where(e => e.Id == emote.Id).Select(e => e.IsArchived).SingleAsync());
         var audit = Assert.Single(await AuditEntriesForSetAsync(db, "set-insetres-lagging-new"));
+        Assert.Equal("insetres_lagging", audit.ChannelName);
+        Assert.Contains("\"targetIsActiveSetOfChannel\":false", audit.DetailsJson);
+        Assert.DoesNotContain("targetOwner", audit.DetailsJson);
         Assert.Contains("\"unresolvedReason\":\"activeSetDiffers\"", audit.DetailsJson);
         Assert.Contains("\"unresolvedSevenTvEmoteIds\":[\"7tv-irl1\"]", audit.DetailsJson);
     }
@@ -810,7 +926,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkRestoredInSetAsync(
-            "set-insetres-blocked", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-irb1"], "insetres_blocked", Actor);
+            "set-insetres-blocked", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-irb1"], "insetres_blocked", Actor);
 
         Assert.Empty(result.Channels);
         Assert.Equal(new UnresolvedChannelDto("insetres_blocked", UnresolvedChannelReasons.NotTracked), result.UnresolvedChannel);
@@ -823,7 +939,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
 
         var result = await CreateService(db).MarkRestoredInSetAsync(
-            "set-insetres-dedup", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-ird1", "7tv-ird1"], null, Actor);
+            "set-insetres-dedup", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-ird1", "7tv-ird1"], null, Actor);
 
         Assert.Equal(1, result.ReportedCount);
         Assert.Contains("\"emoteCount\":1", Assert.Single(await AuditEntriesForSetAsync(db, "set-insetres-dedup")).DetailsJson);
@@ -837,7 +953,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
 
         var result = await CreateService(db).MarkRestoredInSetAsync(
-            "set-insetres-norow", OwnerSevenTvUserId, OwnerTwitchLogin, ["7tv-irn1"], null, Actor);
+            "set-insetres-norow", OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ["7tv-irn1"], null, Actor);
 
         var hit = Assert.Single(result.Channels);
         Assert.Equal((0, 0), (hit.Count, hit.NewlyChangedCount));
@@ -851,7 +967,7 @@ public class EmoteServiceTests(PostgresFixture fixture)
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Channels:ExcludedChannelIds"] =
-                    $"{ExcludedTwitchChannelId},{ExcludedExpectedTwitchChannelId},{ExcludedRestoreTwitchChannelId}",
+                    $"{ExcludedTwitchChannelId},{ExcludedExpectedTwitchChannelId},{ExcludedRestoreTwitchChannelId},{ExcludedOwnerTwitchChannelId}",
             })
             .Build();
         var excludedChannelFilter = new ExcludedChannelFilter(configuration, NullLogger<ExcludedChannelFilter>.Instance);

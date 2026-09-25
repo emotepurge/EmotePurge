@@ -303,7 +303,7 @@ public static class SevenTvEndpoints
 
             // Stage 5.
             var result = await emoteService.MarkDeletedInSetAsync(
-                emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, request.SevenTvEmoteIds!,
+                emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, ladder.OwnerTwitchUserId!, request.SevenTvEmoteIds!,
                 ladder.ExpectedChannelName, ladder.Actor!, ct);
             var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
                 result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
@@ -335,7 +335,7 @@ public static class SevenTvEndpoints
 
             // Stage 5.
             var result = await emoteService.MarkRestoredInSetAsync(
-                emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, request.SevenTvEmoteIds!,
+                emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, ladder.OwnerTwitchUserId!, request.SevenTvEmoteIds!,
                 ladder.ExpectedChannelName, ladder.Actor!, ct);
             var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
                 result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
@@ -497,7 +497,7 @@ public static class SevenTvEndpoints
     /// Stages 3-4 of the set-centric <c>sync-deleted</c>/<c>sync-restored</c> ladder (restore-per-set
     /// spec 5.1): the body, then the owner check. A non-null <see cref="SyncInSetLadder.Rejection"/>
     /// is the answer; nothing was reported, audited or resynced on any of those exits. Otherwise the
-    /// actor, the resolved owner identity and the normalized expected channel (Regel 9) are set.
+    /// actor, the resolved owner identity (7TV id, Twitch login and Twitch id) and the normalized expected channel (Regel 9) are set.
     /// </summary>
     private static async Task<SyncInSetLadder> PassSyncInSetLadderAsync(
         string emoteSetId,
@@ -538,7 +538,8 @@ public static class SevenTvEndpoints
         }
 
         var expectedChannelName = request.ExpectedChannelName is null ? null : ChannelName.Normalize(request.ExpectedChannelName);
-        return new SyncInSetLadder(null, actor, ownership.OwnerSevenTvUserId, ownership.OwnerTwitchLogin, expectedChannelName);
+        return new SyncInSetLadder(
+            null, actor, ownership.OwnerSevenTvUserId, ownership.OwnerTwitchLogin, ownership.OwnerTwitchUserId, expectedChannelName);
     }
 
     /// <summary>
@@ -661,9 +662,14 @@ public static class SevenTvEndpoints
     /// everything stage 5 needs — never both.
     /// </summary>
     private sealed record SyncInSetLadder(
-        IResult? Rejection, AuditActor? Actor, string? OwnerSevenTvUserId, string? OwnerTwitchLogin, string? ExpectedChannelName)
+        IResult? Rejection,
+        AuditActor? Actor,
+        string? OwnerSevenTvUserId,
+        string? OwnerTwitchLogin,
+        string? OwnerTwitchUserId,
+        string? ExpectedChannelName)
     {
-        public static SyncInSetLadder Reject(IResult rejection) => new(rejection, null, null, null, null);
+        public static SyncInSetLadder Reject(IResult rejection) => new(rejection, null, null, null, null, null);
     }
 }
 

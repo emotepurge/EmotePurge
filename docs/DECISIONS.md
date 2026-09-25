@@ -173,6 +173,8 @@ now `internal`) ·
 legacy routes' own body/handler) ·
 `src/EmotePurge.Core/Services/IEmoteService.cs` ·
 `src/EmotePurge.Infrastructure/Services/EmoteService.cs` ·
+`src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs`,
+`src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` (addendum N3: `OwnerTwitchUserId`) ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`,
 `src/EmotePurge.Api/Auth/UsageStatsAccessAuthorizationFilter.cs` (T3: the legacy form's own contract,
 `EmoteSetIdEmpty` retired) ·
@@ -232,12 +234,28 @@ channel never goes on the wire; it only decides the live event.
 `TargetType = "emoteSet"`, `TargetId = emoteSetId` and the details
 `{ emoteCount, emoteSetId, targetIsActiveSetOfChannel: true }` — the same shape the set-scoped active
 branch writes, so the audit view renders it as before. When no channel entry was written (no hit, or
-every hit found 0 rows) **or** a channel stayed unresolved, one paper entry with `ChannelName = null`
-and `{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin }`,
-plus `unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` on a mismatch; it
-carries no `targetIsActiveSetOfChannel`, so the view renders it "for <ownerLogin>". Every successful
-call therefore leaves at least one entry; rows and entries are saved in one transaction. A retried
-report may write a second entry — a duplicate beats a gap.
+every hit found 0 rows) **or** a channel stayed unresolved, one paper entry, plus
+`unresolvedChannelName`, `unresolvedReason` and `unresolvedSevenTvEmoteIds` on a mismatch. Its
+channel is the set owner's tracked channel (addendum N3, amended after the live verification): the
+service resolves it from the owner's Twitch id, which the owner check now returns as
+`SevenTvEmoteSetOwnershipCheckResult.OwnerTwitchUserId` (the actor's own id, or the matching grant's
+`TwitchChannelId`) and the endpoint passes on — by exactly the rule of
+`IChannelService.GetActiveByTwitchChannelIdAsync` (an active row, not on the block list), the same
+rule that gives the target list its `trackedChannelName`. With such a channel the entry is
+`ChannelName = <owner channel>` and `{ emoteCount: reportedCount, emoteSetId,
+targetIsActiveSetOfChannel: false }`, without the `targetOwner*` fields — the form these flows wrote
+before #253, rendered "(not the active set)" and listed by `GET /api/channels/{c}/audit-log`. Only
+without one (untracked, left or blocked — a blocked channel looks like a left one) is it
+`ChannelName = null` with `{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId,
+targetOwnerTwitchLogin }` and no `targetIsActiveSetOfChannel`, rendered "for <ownerLogin>". An entry
+carries either a channel and `targetIsActiveSetOfChannel` or the `targetOwner*` fields, never both; a
+mismatch follows the same rule (`activeSetDiffers` names the lagging channel, since it is the owner's
+active, unblocked one; `notTracked` stays without a channel). The first version of this report wrote
+every paper entry with `ChannelName = null`; since the channel audit view filters exactly on
+`ChannelName`, a delete or restore in a non-active set of one's own tracked channel disappeared from
+that view, where it had appeared before #253 — a regression the live verification found, which this
+reverses. Every successful call leaves at least one entry; rows and entries are saved in one
+transaction. A retried report may write a second entry — a duplicate beats a gap.
 
 **Live event and resync, both in the endpoint.** One `channel.synced` per channel whose rows this
 call actually changed, through the same `EmoteEndpoints.PublishChannelSyncedAsync` (now `internal`)

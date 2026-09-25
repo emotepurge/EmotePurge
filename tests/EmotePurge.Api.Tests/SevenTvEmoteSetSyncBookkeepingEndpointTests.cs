@@ -189,6 +189,34 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     [Theory]
     [InlineData(Deleted)]
     [InlineData(Restored)]
+    public async Task ActorOwnsTheSet_ForwardsTheActorsOwnTwitchIdAsTheOwners(string route)
+    {
+        // N3 (5.1 stage 4/5): the owner's Twitch id reaches the service on the own-account path too —
+        // there it is the actor's, since the actor is the owner. The grant path is pinned above.
+        var userId = NewUserId();
+        ArrangeActorWithoutGrants(userId, SetList(ActorSevenTvUserId, (EmoteSetId, ActorSevenTvUserId)));
+        ArrangeReport(route, new InSetOutcome(2, [], null));
+
+        var response = await SendAsync(route, EmoteSetId, userId);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        if (route == Deleted)
+        {
+            await _factory.Emotes.Received(1).MarkDeletedInSetAsync(
+                EmoteSetId, ActorSevenTvUserId, "someuser", userId, Arg.Any<IReadOnlyList<string>>(),
+                null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        }
+        else
+        {
+            await _factory.Emotes.Received(1).MarkRestoredInSetAsync(
+                EmoteSetId, ActorSevenTvUserId, "someuser", userId, Arg.Any<IReadOnlyList<string>>(),
+                null, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        }
+    }
+
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
     public async Task PaperOnlyAnswer_HasEmptyChannels_NullUnresolvedChannel_AndNoLiveEventOrResync(string route)
     {
         var userId = NewUserId();
@@ -358,14 +386,14 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         if (route == Deleted)
         {
             _factory.Emotes.MarkDeletedInSetAsync(
-                    Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
+                    Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
                     Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
                 .Returns(new SyncDeletedInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel));
         }
         else
         {
             _factory.Emotes.MarkRestoredInSetAsync(
-                    Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
+                    Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
                     Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
                 .Returns(new SyncRestoredInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel));
         }
@@ -380,13 +408,13 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         if (route == Deleted)
         {
             await _factory.Emotes.Received(1).MarkDeletedInSetAsync(
-                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, Arg.Is<IReadOnlyList<string>>(ids => ids.Count == 2 && ids[0] == "7tv-x1" && ids[1] == "7tv-x2"),
+                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchId, Arg.Is<IReadOnlyList<string>>(ids => ids.Count == 2 && ids[0] == "7tv-x1" && ids[1] == "7tv-x2"),
                 expectedChannelName, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
         }
         else
         {
             await _factory.Emotes.Received(1).MarkRestoredInSetAsync(
-                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, Arg.Is<IReadOnlyList<string>>(ids => ids.Count == 2 && ids[0] == "7tv-x1" && ids[1] == "7tv-x2"),
+                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchId, Arg.Is<IReadOnlyList<string>>(ids => ids.Count == 2 && ids[0] == "7tv-x1" && ids[1] == "7tv-x2"),
                 expectedChannelName, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
         }
 
@@ -405,10 +433,10 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     private async Task AssertNoReportAsync()
     {
         await _factory.Emotes.DidNotReceive().MarkDeletedInSetAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
             Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
         await _factory.Emotes.DidNotReceive().MarkRestoredInSetAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
             Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
         await _factory.RedisPublisher.DidNotReceive().PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _factory.ResyncCooldown.DidNotReceive().TryBeginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());

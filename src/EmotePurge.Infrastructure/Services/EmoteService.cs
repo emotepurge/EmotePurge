@@ -180,23 +180,25 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
     }
 
     public async Task<SyncDeletedInSetResultDto> MarkDeletedInSetAsync(
-        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
-        string? expectedChannelName, AuditActor actor, CancellationToken cancellationToken = default)
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId,
+        IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor,
+        CancellationToken cancellationToken = default)
     {
         var outcome = await MarkInSetAsync(
-            InSetDirection.Delete, emoteSetId, ownerSevenTvUserId, ownerTwitchLogin, sevenTvEmoteIds, expectedChannelName, actor,
-            cancellationToken);
+            InSetDirection.Delete, emoteSetId, new InSetOwner(ownerSevenTvUserId, ownerTwitchLogin, ownerTwitchUserId),
+            sevenTvEmoteIds, expectedChannelName, actor, cancellationToken);
 
         return new SyncDeletedInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel);
     }
 
     public async Task<SyncRestoredInSetResultDto> MarkRestoredInSetAsync(
-        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
-        string? expectedChannelName, AuditActor actor, CancellationToken cancellationToken = default)
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId,
+        IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor,
+        CancellationToken cancellationToken = default)
     {
         var outcome = await MarkInSetAsync(
-            InSetDirection.Restore, emoteSetId, ownerSevenTvUserId, ownerTwitchLogin, sevenTvEmoteIds, expectedChannelName, actor,
-            cancellationToken);
+            InSetDirection.Restore, emoteSetId, new InSetOwner(ownerSevenTvUserId, ownerTwitchLogin, ownerTwitchUserId),
+            sevenTvEmoteIds, expectedChannelName, actor, cancellationToken);
 
         return new SyncRestoredInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel);
     }
@@ -204,7 +206,7 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
     // Both directions of the set-centric report (restore-per-set spec 5.2), step by step; they differ
     // only in the target state of IsArchived and in the audit action.
     private async Task<InSetOutcome> MarkInSetAsync(
-        InSetDirection direction, string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin,
+        InSetDirection direction, string emoteSetId, InSetOwner owner,
         IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor, CancellationToken cancellationToken)
     {
         // Step 1: ordinal dedup, the same discipline as MarkImportedAsync — a client that reported an
@@ -241,6 +243,14 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
                 : UnresolvedChannelReasons.ActiveSetDiffers;
             unresolved = new UnresolvedChannelDto(normalizedExpected, reason);
         }
+
+        // Step 3a (addendum N3): the owner's tracked channel, by the owner's Twitch id — exactly the
+        // rule of IChannelService.GetActiveByTwitchChannelIdAsync (active row, not on the block
+        // list), which is also how the target list derives trackedChannelName, so the entry names the
+        // channel the client saw. By id, not login: logins move (#44), the id does not. It only names
+        // the paper entry below; no row of it is touched or counted, and a blocked channel is as
+        // invisible here as in step 3.
+        var ownerChannelName = await ResolveOwnerChannelNameAsync(owner.TwitchUserId, cancellationToken);
 
         // Step 4: the rows of every hit channel, matched by (ChannelId, SevenTvEmoteId) — one query
         // for all hits, split per channel below. The same goal-state semantics as the channel-bound
@@ -289,18 +299,22 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
 
         // Step 5, the paper entry: whenever no channel entry carries the report, or the expected
         // channel was missed — never a successful report without a trail, never a missed channel
-        // without one (#224). ChannelName = null and no targetIsActiveSetOfChannel, so the audit view
-        // renders it "for <ownerLogin>"; the unresolved ids are all reported ids, since none of them
-        // was matched in that channel.
+        // without one (#224). With an owner channel it names that channel and says
+        // targetIsActiveSetOfChannel: false (the pre-#253 form, shown in the channel's audit view);
+        // without one it has no channel and the owner identity instead, which the audit view renders
+        // "for <ownerLogin>". Never both groups of fields (spec 5.5 invariant). The unresolved ids
+        // are all reported ids, since none of them was matched in that channel.
         if (!channelEntryWritten || unresolved is not null)
         {
             db.AddAuditEntry(
                 actor,
                 action,
-                channelName: null,
+                channelName: ownerChannelName,
                 targetType: "emoteSet",
                 targetId: emoteSetId,
-                details: BuildPaperDetails(dedupedIds, emoteSetId, ownerSevenTvUserId, ownerTwitchLogin, unresolved));
+                details: ownerChannelName is null
+                    ? BuildOwnerPaperDetails(dedupedIds, emoteSetId, owner, unresolved)
+                    : BuildOwnerChannelPaperDetails(dedupedIds, emoteSetId, unresolved));
         }
 
         // Step 6: rows and audit entries in one transaction.
@@ -309,23 +323,57 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         return new InSetOutcome(dedupedIds.Count, channels, unresolved);
     }
 
-    private static object BuildPaperDetails(
-        IReadOnlyList<string> dedupedIds, string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin,
-        UnresolvedChannelDto? unresolved) =>
+    private async Task<string?> ResolveOwnerChannelNameAsync(string ownerTwitchUserId, CancellationToken cancellationToken)
+    {
+        var ownerChannel = await db.Channels
+            .AsNoTracking()
+            .Where(c => c.TwitchChannelId == ownerTwitchUserId && c.IsBotActive)
+            .Select(c => new { c.ChannelName, c.TwitchChannelId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return ownerChannel is null || excludedChannelFilter.IsExcluded(ownerChannel.TwitchChannelId)
+            ? null
+            : ownerChannel.ChannelName;
+    }
+
+    // The paper entry without an owner channel: the owner identity names the target.
+    private static object BuildOwnerPaperDetails(
+        IReadOnlyList<string> dedupedIds, string emoteSetId, InSetOwner owner, UnresolvedChannelDto? unresolved) =>
         unresolved is null
             ? new
             {
                 emoteCount = dedupedIds.Count,
                 emoteSetId,
-                targetOwnerSevenTvUserId = ownerSevenTvUserId,
-                targetOwnerTwitchLogin = ownerTwitchLogin,
+                targetOwnerSevenTvUserId = owner.SevenTvUserId,
+                targetOwnerTwitchLogin = owner.TwitchLogin,
             }
             : new
             {
                 emoteCount = dedupedIds.Count,
                 emoteSetId,
-                targetOwnerSevenTvUserId = ownerSevenTvUserId,
-                targetOwnerTwitchLogin = ownerTwitchLogin,
+                targetOwnerSevenTvUserId = owner.SevenTvUserId,
+                targetOwnerTwitchLogin = owner.TwitchLogin,
+                unresolvedChannelName = unresolved.ChannelName,
+                unresolvedReason = unresolved.Reason,
+                unresolvedSevenTvEmoteIds = dedupedIds,
+            };
+
+    // The paper entry with the owner's channel as ChannelName: the channel names the owner, so the
+    // targetOwner* fields stay out.
+    private static object BuildOwnerChannelPaperDetails(
+        IReadOnlyList<string> dedupedIds, string emoteSetId, UnresolvedChannelDto? unresolved) =>
+        unresolved is null
+            ? new
+            {
+                emoteCount = dedupedIds.Count,
+                emoteSetId,
+                targetIsActiveSetOfChannel = false,
+            }
+            : new
+            {
+                emoteCount = dedupedIds.Count,
+                emoteSetId,
+                targetIsActiveSetOfChannel = false,
                 unresolvedChannelName = unresolved.ChannelName,
                 unresolvedReason = unresolved.Reason,
                 unresolvedSevenTvEmoteIds = dedupedIds,
@@ -336,6 +384,8 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         Delete,
         Restore,
     }
+
+    private sealed record InSetOwner(string SevenTvUserId, string TwitchLogin, string TwitchUserId);
 
     private sealed record InSetOutcome(int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel);
 }

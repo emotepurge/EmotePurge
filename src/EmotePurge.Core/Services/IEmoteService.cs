@@ -63,24 +63,30 @@ public interface IEmoteService
 
     // The set-centric report (restore-per-set spec 5.2): the reported set, not a channel, is the
     // subject. The caller (the endpoint's owner check, IImportTargetOwnershipService.CheckAsync) has
-    // already resolved ownerSevenTvUserId/ownerTwitchLogin. Every tracked channel whose active set is
+    // already resolved ownerSevenTvUserId/ownerTwitchLogin/ownerTwitchUserId. Every tracked channel whose active set is
     // emoteSetId (IsBotActive, not on the block list) is hit: its rows matched by (ChannelId,
     // SevenTvEmoteId) are archived — only the not-yet-archived ones, so an earlier archive date
     // survives — and one audit entry naming that channel is written when rows were found.
     // expectedChannelName (spec E18) is the channel the client meant to hit; if it is not among the
     // hits it comes back as UnresolvedChannel (notTracked / activeSetDiffers), and none of its rows is
-    // touched. A paper entry (ChannelName = null, owner identity in the details) is written whenever
-    // no channel entry was, or a channel stayed unresolved — so every call leaves at least one audit
-    // entry. Rows and audit entries are saved together, in one SaveChangesAsync.
+    // touched. A paper entry is written whenever no channel entry was, or a channel stayed
+    // unresolved — so every call leaves at least one audit entry. It names the owner's tracked
+    // channel (resolved from ownerTwitchUserId by the rule of
+    // IChannelService.GetActiveByTwitchChannelIdAsync: active row, not on the block list) with
+    // targetIsActiveSetOfChannel: false, or — without such a channel — no channel and the owner
+    // identity in the details (addendum N3). Rows and audit entries are saved together, in one
+    // SaveChangesAsync.
     Task<SyncDeletedInSetResultDto> MarkDeletedInSetAsync(
-        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
-        string? expectedChannelName, AuditActor actor, CancellationToken cancellationToken = default);
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId,
+        IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor,
+        CancellationToken cancellationToken = default);
 
     // Mirror of MarkDeletedInSetAsync, in the restore direction: un-archives (IsArchived = false,
     // ArchivedAt = null) only the rows that are still archived, and audits emotes.syncRestored.
     Task<SyncRestoredInSetResultDto> MarkRestoredInSetAsync(
-        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds,
-        string? expectedChannelName, AuditActor actor, CancellationToken cancellationToken = default);
+        string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId,
+        IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor,
+        CancellationToken cancellationToken = default);
 
     // Unlike MarkDeletedAsync/MarkRestoredAsync, this touches no Emote row at all: an import never
     // creates or un-archives anything here, the target channel's own resync does that afterwards

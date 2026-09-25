@@ -100,6 +100,7 @@ public class SevenTvEditorServiceTests(RedisFixture fixture)
         Assert.Equal(SevenTvEmoteSetOwnershipStatus.Owner, result.Status);
         Assert.Equal(EditedSevenTvId, result.OwnerSevenTvUserId);
         Assert.Equal(EditedLogin, result.OwnerTwitchLogin);
+        Assert.Equal(EditedTwitchId, result.OwnerTwitchUserId);
         await client.DidNotReceive().LookUpEmoteSetOwnerAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await client.Received(1).LookUpEditorGrantsAsync(actorTwitchId, Arg.Any<CancellationToken>());
 
