@@ -36,6 +36,7 @@ const DE_TRANSLATIONS = {
         removed: 'wird entfernt',
         becomes: 'wird zu „{{ name }}“',
         addedAs: 'wird als „{{ name }}“ hinzugefügt',
+        kept: 'wird behalten',
       },
       targetGone: 'nicht mehr im Zielset',
       aliaslessEntry: '+ ein Eintrag ohne Namen',
@@ -160,8 +161,16 @@ describe('ImportConflictResolutionStep', () => {
   });
 
   describe('rowConsequence (issue #268, AK 2)', () => {
-    it('names nothing for skip', () => {
-      expect(rowConsequence({ kind: 'skip' }, 'Kappa')).toBeNull();
+    it('names the target as kept for skip', () => {
+      expect(rowConsequence({ kind: 'skip' }, 'Kappa')).toEqual({
+        side: 'target',
+        kind: 'kept',
+        name: '',
+      } satisfies RowConsequence);
+    });
+
+    it('names nothing for skip once the target is already gone — nothing there to keep', () => {
+      expect(rowConsequence({ kind: 'skip' }, 'Kappa', false, true)).toBeNull();
     });
 
     it('names the target as removed for replaceTarget', () => {
@@ -484,10 +493,20 @@ describe('ImportConflictResolutionStep', () => {
     });
 
     describe('consequence line (issue #268)', () => {
-      it('reserves an empty consequence line on both sides while a row is on skip', async () => {
+      it('names the target kept while a row is on skip, and leaves the source line empty', async () => {
         await render(
           'nameCollision',
           collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+        );
+
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+        expect(consequenceEl('a', 'target').textContent?.trim()).toBe('wird behalten');
+      });
+
+      it('leaves both consequence lines empty on skip once the target is already gone — nothing there to keep', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([collision('a', 'Kappa')], true, new Map([['a', null]])),
         );
 
         expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');

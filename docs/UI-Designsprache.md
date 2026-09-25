@@ -408,7 +408,10 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   rendered so a chosen action never changes the row's fixed height: replace dims and strikes
   through the target sprite/name and reads "will be removed" (`text-danger-fg`); adopt reads
   "becomes '{source name}'" under the target; rename reads "will be added as '{typed alias}'"
-  under the source, following every keystroke; skip leaves both lines empty. Each row's radiogroup
+  under the source, following every keystroke; skip reads "will be kept" under the target (quiet
+  text, not a banner — nothing changes, the line only says which side survives untouched) unless
+  the target is already gone, where skip leaves both lines empty like every other action that
+  touches nothing there. Each row's radiogroup
   points `aria-describedby` at both its source and target consequence line ids, present whether or
   not they currently hold text. "Apply"
   commits the group's decisions; "Back" keeps the committed ones as they were and keeps the edits

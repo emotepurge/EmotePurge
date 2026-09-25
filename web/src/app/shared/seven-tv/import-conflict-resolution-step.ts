@@ -109,24 +109,26 @@ const CONSEQUENCE_KEYS: Record<RowConsequence['kind'], string> = {
   removed: 'import.resolve.consequence.removed',
   becomes: 'import.resolve.consequence.becomes',
   addedAs: 'import.resolve.consequence.addedAs',
+  kept: 'import.resolve.consequence.kept',
 };
 
 /**
- * What a chosen action visibly does to one side of a row — `null` for `skip`, which changes
- * nothing. A decision only ever affects one side (issue #268's AK 2): `replaceTarget` and
- * `adoptSourceName` describe the target, `renameSource` the source, through its currently typed
- * alias — `null` while that field is empty or while it carries a field error (issue #269: an
- * invalid, taken or duplicated alias is not going to be added under that name, so the line
- * shows nothing rather than a promise the run cannot keep), so the line shows nothing rather than
- * an empty quote. Pure and independent of the row's other fields on purpose: the whole point is
- * that it is derived from the decision alone, so the rename preview follows every keystroke
- * without any state of its own to fall out of sync (rule 14).
+ * What a chosen action visibly does to one side of a row. A decision only ever affects one side
+ * (issue #268's AK 2): `replaceTarget` and `adoptSourceName` describe the target, `renameSource`
+ * the source, through its currently typed alias — `null` while that field is empty or while it
+ * carries a field error (issue #269: an invalid, taken or duplicated alias is not going to be
+ * added under that name, so the line shows nothing rather than a promise the run cannot keep).
+ * `skip` names the target `kept` — nothing about the row changes, but the reader still sees which
+ * side of the pair survives untouched — unless the target is already gone (`targetGone`), where
+ * there is nothing left to keep. Pure and independent of the row's other fields on purpose: the
+ * whole point is that it is derived from the decision alone, so the rename preview follows every
+ * keystroke without any state of its own to fall out of sync (rule 14).
  */
 export interface RowConsequence {
   side: 'source' | 'target';
-  kind: 'removed' | 'becomes' | 'addedAs';
+  kind: 'removed' | 'becomes' | 'addedAs' | 'kept';
   /** The name the consequence names — the source name for `becomes`, the typed alias for
-   *  `addedAs`, unused (`''`) for `removed`. */
+   *  `addedAs`, unused (`''`) for `removed`/`kept`. */
   name: string;
 }
 
@@ -134,6 +136,7 @@ export function rowConsequence(
   decision: RowDecision,
   sourceName: string,
   hasFieldError = false,
+  targetGone = false,
 ): RowConsequence | null {
   switch (decision.kind) {
     case 'replaceTarget':
@@ -145,7 +148,7 @@ export function rowConsequence(
         ? null
         : { side: 'source', kind: 'addedAs', name: decision.alias };
     case 'skip':
-      return null;
+      return targetGone ? null : { side: 'target', kind: 'kept', name: '' };
   }
 }
 
@@ -649,12 +652,14 @@ export class ImportConflictResolutionStep {
    *  `decisions` input signal, so a typed alias re-renders this on every keystroke without any
    *  state of its own (rule 14). Reuses `fieldErrorKey` rather than re-checking the violations
    *  itself, so a rename with a field error (invalid, taken, duplicated) never promises a name
-   *  7TV would reject (issue #269). */
+   *  7TV would reject (issue #269). Passes the row's own `targetGone` so a skip names nothing to
+   *  keep once the live target already isn't there. */
   protected sourceConsequenceOf(row: ConflictStepRow): RowConsequence | null {
     const consequence = rowConsequence(
       this.decisionOf(row.key),
       row.sourceName,
       this.fieldErrorKey(row.key) !== null,
+      row.targetGone,
     );
     return consequence?.side === 'source' ? consequence : null;
   }
@@ -665,6 +670,7 @@ export class ImportConflictResolutionStep {
       this.decisionOf(row.key),
       row.sourceName,
       this.fieldErrorKey(row.key) !== null,
+      row.targetGone,
     );
     return consequence?.side === 'target' ? consequence : null;
   }

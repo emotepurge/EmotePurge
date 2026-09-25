@@ -1251,7 +1251,8 @@
       "consequence": {
         "removed": "wird entfernt",
         "becomes": "wird zu „{{ name }}“",
-        "addedAs": "wird als „{{ name }}“ hinzugefügt"
+        "addedAs": "wird als „{{ name }}“ hinzugefügt",
+        "kept": "wird behalten"
       },
       "targetGone": "nicht mehr im Zielset",
       "aliaslessEntry": "+ ein Eintrag ohne Namen",
