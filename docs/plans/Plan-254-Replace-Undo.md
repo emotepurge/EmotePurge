@@ -23,8 +23,20 @@ der Plan als gemeinsamen Baustein herauszieht, ist Plansache"). Findet ein Task 
 zwischen Spec und Code, gilt die Spec, und der Fund wird im Task-Bericht gemeldet, nicht still
 aufgelöst. Was der Plan über die Spec hinaus festlegt, steht gesammelt in Abschnitt 6 als
 **Festlegung des Plans mit Betreiber-Veto**; was er in der Spec als Widerspruch oder Lücke gefunden
-hat, steht in Abschnitt 7 **Klärungsbedarf** mit je einer Empfehlung — dort entscheidet der
-Betreiber, nicht der Plan.
+hat, steht in Abschnitt 7 — in der ersten Fassung als **Klärungsbedarf** mit Empfehlung, seit
+Fassung 2 als **Entscheidung** (K1, K2, K4 vom Betreiber, K3 vom Orchestrator, alle 2026-09-25),
+in die Tasks eingearbeitet und als Nachtrag „Klärungen zum Plan (2026-09-25)" am Ende der Spec
+(Spec 17) festgehalten.
+
+**Fassung 2 (2026-09-25).** Die erste Fassung (`a0946d71`) ist um die drei Befunde des
+adversarialen Codex-Reviews (gpt-6-sol, alle `high`, Abschnitt 10) und die vier Entscheidungen zu
+K1–K4 überarbeitet: die Herkunftssperre wird im Dienst ein zweites Mal geprüft, das Dialog-Ergebnis
+übergibt laufende und übersprungene Zeilen explizit, und eine gemischte `planned`-Datei wird bis in
+den Dienst verfolgt (T4, T5, T6, T8); das `finished`-Format bekommt eine eigene Zeilenart für
+übersprungene Kandidaten, festgelegt **vor** T1 (T1, T4); die Quelle bekommt ihr Bild aus
+`flags.animated` des Live-Reads nach der Backend-Regel, das Ziel einen Platzhalter (T5); der erste
+Read liegt im Flow (T5, T6); T9 ruft den Codex-Companion direkt im Worktree mit
+`--base origin/feat/emote-sets-200`. Eine weitere Codex-Runde auf den Plan gibt es nicht.
 
 ---
 
@@ -52,9 +64,9 @@ Betreiber, nicht der Plan.
 - **Zwei DECISIONS-Einträge** (Spec 14), englisch, je im ersten Commit, der die Konvention
   einführt: Eintrag 2 (Datei-Grundsatz) in **T1**, Eintrag 1 (vierter destruktiver Lauf) in **T4**
   — Zuordnung in 0.4.
-- **Der PR geht gegen `feat/emote-sets-200`**; Zweitmeinung `/codex:review --model gpt-6-sol
-  --scope branch --base feat/emote-sets-200` einmal je Branch (Regel 22, T9). Deploy hinter dem
-  2026-10-08 mit dem Rest von #200.
+- **Der PR geht gegen `feat/emote-sets-200`**; Zweitmeinung über den Codex-Companion direkt im
+  Worktree mit `--scope branch --base origin/feat/emote-sets-200` einmal je Branch (Regel 22,
+  Aufruf in T9). Deploy hinter dem 2026-10-08 mit dem Rest von #200.
 - **Testkonten für die Live-Verifikation** (Spec 9.5, T10): Broadcaster `olaf_olaf_son` mit den
   Sets `tttt` (aktiv) und `test`, Mod `definitiv_nicht_sensitron` ohne 7TV-Editor-Recht. Die Api
   läuft dafür per `dotnet run` **aus dem Worktree** (eine Worktree-Api verwirft ein fremdes Cookie,
@@ -68,7 +80,7 @@ Betreiber, nicht der Plan.
 | **Der Branch hat #264 nicht.** `features/usage-stats/usage-stats.routes.ts` fehlt auf `0591b1a4`; auf `9e380cc4` existiert sie (25 Zeilen, `canDeactivate: [usageStatsLeaveGuard]`), `app.routes.ts` lädt sie per `loadChildren`, `usage-stats.routes.spec.ts` (316 Zeilen) pinnt `leadsToSameRoute` gegen die echte Router-Konfiguration | `git log HEAD..origin/feat/emote-sets-200` = drei Commits (`e2c76f05`, `19f3334d`, `9e380cc4`) | T0 bringt den Branch auf den Epic-Stand, **bevor** T7 den Guard anfasst |
 | **Der Arbiter ist noch der alte.** `SevenTvRunArbiter.activeRun` ist ein `computed` über drei `isRunning`-Signale, injiziert die drei Dienste hart, kennt kein `isSettling`, keinen Grund, keinen Unload-Schutz | `core/seven-tv/seven-tv-run-arbiter.ts` (Union `'delete' \| 'restore' \| 'import'`, drei `inject`) | #256 Punkt 1 ist nicht gemergt; T0 prüft den Vertrag aus Spec 11.1 Punkt für Punkt am dann aktuellen Epic-Stand und hält die **tatsächlichen Namen** der Registrierung, des Grunds und des Schutz-Signals im Ledger fest — T4 und T6 bekommen sie im Brief, nicht die Spec-Platzhalter |
 | **Die Engine hat keinen Vor-Schritt-Hook, und `buildRequest` ist synchron.** `runWithBackoff` ruft `buildRequest` je Versuch (auch je Rate-Limit-Wiederholung) — der Read vor dem REMOVE ist aber asynchron (`loadSevenTvSetEntries`, paginiert) | `seven-tv-run-engine.ts:105-171` (`RunOperation`), `:387-425` (`runRowFrom`), Spec E19 „Plansache" | T3 gibt der Engine einen optionalen asynchronen Hook je Versuch (0.5); ohne Hook bleiben Delete, Restore und Import byte-identisch |
-| **Kein Produzent liefert dem Undo-Dialog eine Bild-URL.** `TransferRunRow` trägt keine `imageUrl`; der Live-Read fragt nur `alias`, `emote.id`, `emote.defaultName` (`GQL_EMOTE_SET_ENTRIES_QUERY`); das Ziel steht nach dem Replace in keinem Set; der Auflösungsschritt bekommt seine URLs aus `ImportRow.imageUrl`/`EmoteListItem.imageUrl` (Postgres bzw. Set-Vorschau), und Plan-230 T1 verbietet die Ableitung aus der ID (`_static`-Befund) | `transfer-run-export.ts:56-72`, `seven-tv-set-entries.ts:16-19`, `import-conflict-resolution-step.ts:186, :215` | **Klärungsbedarf K1** (Abschnitt 7); T5 baut bis zur Entscheidung mit Platzhalter |
+| **Kein Produzent liefert dem Undo-Dialog eine Bild-URL.** `TransferRunRow` trägt keine `imageUrl`; der Live-Read fragt nur `alias`, `emote.id`, `emote.defaultName` (`GQL_EMOTE_SET_ENTRIES_QUERY`); das Ziel steht nach dem Replace in keinem Set; der Auflösungsschritt bekommt seine URLs aus `ImportRow.imageUrl`/`EmoteListItem.imageUrl` (Postgres bzw. Set-Vorschau), und Plan-230 T1 verbietet die Ableitung aus der ID (`_static`-Befund) | `transfer-run-export.ts:56-72`, `seven-tv-set-entries.ts:16-19`, `import-conflict-resolution-step.ts:186, :215` | **K1, entschieden (Betreiber 2026-09-25, Abschnitt 7, Spec 17):** der Live-Read liest `flags { animated }` mit — genau das Feld, das die Vorschau-Query in `SevenTvApiClient.cs:71` liest; `Emote.images` liest sie absichtlich **nicht** (Codex-Befund 3) —, und die Quelle bekommt ihre URL nach der Backend-Regel `BuildForeignImageUrl` (`SevenTvApiClient.cs:1272-1280`: `4x_static.webp` nur bei `animated`, sonst `4x.webp`; fehlendes Flag ⇒ `false`). Das Ziel bekommt den Platzhalter. Im Frontend gibt es heute **keine** Ableitung aus der ID — `emote-url.ts` (`animatedEmoteUrl`, `isAnimatedEmoteUrl`) und `emote-image-loader.ts` schreiben nur gespeicherte URLs um; das Verbot aus Plan-230 T1 galt der Ableitung **ohne** Kenntnis der Animiertheit und bleibt dafür bestehen. T5 legt die Ableitung als reine Funktion neben `animatedEmoteUrl` an (0.5) |
 | **`RunProgressPanel` trägt genau eine Meldung** (`syncReport`, `syncReportReason`, `syncRetryRequested`) und einen dreiwertigen `labelPrefix`; die Import-Section zeigt ihre **zweite** Meldung (`removalReport`) als eigene Zeile neben dem Panel | `run-progress-panel.ts:125-145`, `import-progress-section.ts:124-195` | Festlegung Nr. 3: das Panel trägt die Löschmeldung (die destruktive Tatsache, F8), die Section die Wiederherstellungsmeldung — Spiegel der Import-Section |
 | **`readEnvelope` prüft `kind` nur als String; der Dispatch je Sorte liegt im Datei-Schritt**, `parseImportSource` weist `transfer-run` namentlich mit eigenem Schlüssel ab | `read-envelope.ts:30-33`, `file-import-step.ts:183-219`, `import-source-parser.ts:35-48` | `transfer-undo` bekommt dieselben drei Stellen (F7): Abweisung in T1, Dispatch in T6 |
 | **Die Seite hat einen generischen Settle-Beobachter** (`watchRunSettle(source, settledTarget)`), der je Dienst einmal aufgerufen wird und `result.doneKeys` liest | `usage-stats-page.ts:2829-2870` | T7 = vierter Aufruf; der Laufdatensatz des Undo muss ein `RunResult`-kompatibles `result` tragen |
@@ -131,12 +143,14 @@ ergänzt nur, was die Spec offenlässt. Was ein Name trägt, steht in der Spec.
 | Baustein | Name | Ort | Spec | erzeugt in | konsumiert in |
 |---|---|---|---|---|---|
 | Kandidat aus der Übertragungsdatei, **inklusive `provenance`** (Festlegung Nr. 2) | `UndoCandidate`, `UndoSourceFileInfo`, `parseTransferRunForUndo(text)`, `TransferRunUndoParseResult` | `shared/export/transfer-run-export.ts` (neben `parseTransferRunForRestore`; wie `RestoreRow` in `purge-run-export.ts` beim Parser liegt) | 6.1, E2, F17, AK 3 | T1 | T2, T5, T6 |
-| Die vierte Einlesesorte | `ExportKind += 'transfer-undo'`, `TRANSFER_UNDO_FORMAT_VERSION`, `TransferUndoRow`, `TransferUndoMetaPlanned`/`…Finished`, `TransferUndoPlanRecord`, `TransferUndoProtocol`, `buildTransferUndoPlanRecord`, `buildTransferUndoProtocol`, `transferUndoJson`, `transferUndoCsv`, `transferUndoPlanFilename`, `transferUndoFilename`, `parseTransferUndoForRestore` | `shared/export/export-envelope.ts`, `shared/export/transfer-undo-export.ts` (neu) | 6.4, E3, E12, F6, F7, F13, AK 18, 19 | T1 | T4 (Builder), T5 (`planned`-Datei), T6 (Restore-Parser im Dispatch), T7 (`finished`-Download) |
+| Die vierte Einlesesorte | `ExportKind += 'transfer-undo'`, `TRANSFER_UNDO_FORMAT_VERSION`, `TransferUndoRow = TransferUndoExecutedRow \| TransferUndoSkippedRow` (Diskriminator `kind: 'executed' \| 'skipped'`; die übersprungene Zeilenart nach Spec 17 K4: Quell-ID, `sourceName`, `alias`, Ziel-ID, `provenance`, `skippedReason`, sonst nichts), `TransferUndoMetaPlanned`/`…Finished` (`counts.requested` nur gelaufene, `counts.skipped` dazu; `acknowledgedUnproven`), `TransferUndoPlanRecord`, `TransferUndoProtocol`, `buildTransferUndoPlanRecord`, `buildTransferUndoProtocol`, `transferUndoJson`, `transferUndoCsv`, `transferUndoPlanFilename`, `transferUndoFilename`, `parseTransferUndoForRestore` | `shared/export/export-envelope.ts`, `shared/export/transfer-undo-export.ts` (neu) | 6.4, 17 (K2, K4), E3, E12, F6, F7, F13, AK 18, 19 | T1 | T4 (Builder), T5 (`planned`-Datei), T6 (Restore-Parser im Dispatch), T7 (`finished`-Download) |
+| Animiertheit im Live-Read | `SevenTvSetEntries.animatedById: Map<string, boolean>`; `GQL_EMOTE_SET_ENTRIES_QUERY` += `flags { animated }` (fehlendes Flag ⇒ `false`, wie `BuildForeignImageUrl`) | `core/seven-tv/seven-tv-set-entries.ts` | 17 (K1) | T5 | T5 (Dialog) |
+| Bild-URL aus ID und Flag | `emoteStillUrl(sevenTvEmoteId, animated)` — bytegleich mit `BuildForeignImageUrl` (`SevenTvApiClient.cs:1272-1280`): `4x_static.webp` nur bei `animated`, sonst `4x.webp`; die **einzige** Ableitung aus der ID im Frontend, Doku nennt die Regel, die 404-Messung (Memory 2026-09-09) und Plan-230 T1 | `shared/emotes/emote-url.ts` (neben `animatedEmoteUrl`) | 17 (K1) | T5 | T5 (Dialog: Quelle) |
 | Reine Klassifikation | `classifyUndoRows`, `classifyUndoRow`, `normalizeTargetEntries`, `diffUndoPlans`, `sameClassification`, `summarizeUndoPlan`; Typen `UndoPlan`, `UndoPlanRow` (`adds: { alias: string }[]`, nie `null` — 6.2 letzte Zeile gilt), `UndoSkippedRow`, `UndoSkipReason` | `shared/seven-tv/undo-plan.ts` (neu) | 6.2, 4.3, E5–E8, E20, E21, E23, AK 4, 29–31, 33, 35 | T2 | T4, T5, T6 |
 | Engine-Hook je Versuch (Festlegung Nr. 4) | `RunOperation.beforeStep?(setId, emote, step): Observable<StepGate>`, `StepGate = { kind: 'proceed' } \| { kind: 'skip'; errorMessage: string }` | `core/seven-tv/seven-tv-run-engine.ts` | E19, 4.4 Nr. 10a, F13, AK 26, 27, 38 | T3 | T4 |
-| Der Dienst | `SevenTvUndoService`, `UndoRunTarget` (6.5), `UndoRunInfo`, `UndoRunItem` (Engine-Zeile plus `mode`, `adds`, `provenance`, `omittedEntries`, `notes`, `undoStatus`, `skippedReason`, `sourceEntriesAtRemove`), `UndoRunResult` (`RunResult`-kompatibel, 0.2), `UndoSettlement`, `startUndo(target, plan, acknowledgedUnproven)` (Signatur nach Klärung K2/K4, Abschnitt 7), Signale `run`, `isRunning`, `isSettling`, `destructiveOpen`, `removalReport`/`removalReportReason`, `restoreReport`/`restoreReportReason`, `resyncTrigger`, `protocolSaved`, `noticePending`, Methoden `retryRemovalReport()`, `retryRestoreReport()`, `markProtocolSaved()`, `cancel()`, `reset()`, `resetIfChannelChanged()` | `core/seven-tv/seven-tv-undo.service.ts` (neu) | 6.5, 4.4–4.6, 4.9, E9–E11, E13–E16, E22–E24, F8, F19, F20, AK 9–17, 26, 27, 32, 34, 36–39 | T4 | T6, T7 |
+| Der Dienst | `SevenTvUndoService`, `UndoRunTarget` (6.5), `UndoRunInfo`, `UndoRunItem` (Engine-Zeile plus `mode`, `adds`, `provenance`, `omittedEntries`, `notes`, `undoStatus`, `skippedReason`, `sourceEntriesAtRemove`), `UndoRunResult` (`RunResult`-kompatibel, 0.2), `UndoSettlement`, `startUndo(target, runnable: UndoPlanRow[], skipped: UndoSkippedRow[], acknowledgedUnproven: boolean)` (Spec 17 K2 — 6.3 und 6.5 vereinheitlicht; die Drift-Zeilen des Frischchecks stehen in `skipped` mit `skippedDrift`; der Dienst prüft die Herkunftssperre selbst noch einmal), Signale `run`, `isRunning`, `isSettling`, `destructiveOpen`, `removalReport`/`removalReportReason`, `restoreReport`/`restoreReportReason`, `resyncTrigger`, `protocolSaved`, `noticePending`, Methoden `retryRemovalReport()`, `retryRestoreReport()`, `markProtocolSaved()`, `cancel()`, `reset()`, `resetIfChannelChanged()` | `core/seven-tv/seven-tv-undo.service.ts` (neu) | 6.5, 4.4–4.6, 4.9, E9–E11, E13–E16, E22–E24, F8, F19, F20, AK 9–17, 26, 27, 32, 34, 36–39 | T4 | T6, T7 |
 | Flow | `startUndoFlow(deps: UndoFlowDeps, result)`, `undoRunTarget(target: ResolvedRestoreTarget): UndoRunTarget` | `shared/seven-tv/undo-flow.ts` (neu) | 6.3, 4.2 Nr. 5, E13, E14, E18, E22, AK 5, 8, 21 | T6 | T6 (Trigger) |
-| Bestätigungsdialog | `UndoConfirmDialogData`, `UndoConfirmOutcome`, `openUndoConfirmDialog(dialog, data)` | `shared/seven-tv/undo-confirm-dialog.ts` (neu) | 6.3, 4.2 Nr. 6–9, E14, E17, F17, AK 6, 7, 28 | T5 | T6 |
+| Bestätigungsdialog | `UndoConfirmDialogData` (Kandidaten, Ziel, `sourceFile`, **`initialRead: SevenTvSetEntries \| null`** — `null` = Read des Flows gescheitert ⇒ Fehlerzustand, Spec 17 K3), `UndoConfirmOutcome { runnable: UndoPlanRow[]; skipped: UndoSkippedRow[]; acknowledgedUnproven: boolean; read: SevenTvSetEntries }` (effektiver Plan, explizit — Spec 17 K2), `openUndoConfirmDialog(dialog, data)` | `shared/seven-tv/undo-confirm-dialog.ts` (neu) | 6.3, 4.2 Nr. 6–9, 17 (K1–K3), E14, E17, F17, AK 6, 7, 28 | T5 | T6 |
 | Dock-Abschnitt | `UndoProgressSection`, Selector `app-undo-progress-section`; `RunProgressPanel.labelPrefix += 'undo'` | `shared/seven-tv/undo-progress-section.ts` (neu), `run-progress-panel.ts` | 4.7, 6.6, E9, E23, AK 13, 17, 18 | T7 | Seite (T7) |
 | Dritte Ergebnisart des Datei-Schritts | `FileImportResult` += `{ kind: 'transfer-undo'; candidates; target; sourceFile }` | `shared/seven-tv/file-import-step.ts` | 6.1, 4.1 Nr. 4, AK 1 | T6 | T6 (Trigger), Fixtures |
 | Locale-Familien (Wortlaut #255) | `restore.import.choice.*` (Weiche), `restore.import.sorts.transferUndo`, `restore.import.errors.{transferUndo, transferUndoNoRows}` · `undo.confirm.*` · `undo.summary.*` · `undo.removalSync*`, `undo.restoreSync*`, `undo.resync.*`, `undo.settling`, `undo.progress*`, `undo.leaveWhileRunning.*`, `undo.errors.{removedButNotRestored, cancelledMidRow}` und die Übersprungen-Gründe · geteilt: `syncReportReason.*`, `massDelete.errors.*` (Engine) | `web/public/i18n/{de,en}.json` | 6.7 | der Task, der den Text erstmals zeigt (T1, T4, T5, T6, T7) | — |
@@ -162,14 +176,15 @@ ergänzt nur, was die Spec offenlässt. Was ein Name trägt, steht in der Spec.
 | Vertrag | Spec | legt fest | konsumiert | Plan-Zusatz |
 |---|---|---|---|---|
 | Kandidatenwahl aus beiden Stufen, `provenance` je Stufe, `transferRunNoRows`; Abweisung `transfer-undo` als Undo-Eingabe (`wrongKind`) und als Import-Quelle (namentlich) | 6.1, E2, F7, F17, AK 3, 19, 23 | T1 | T2, T5, T6 | `UndoCandidate.provenance` (Festlegung Nr. 2) |
-| Datei `transfer-undo` in zwei Stufen, Zeilenform, `meta.undoneFile`, Dateinamen, CSV, Restore-Parser (Quellen unter ihrem Alias) | 6.4, 4.8, E3, E12, F6, F13, AK 6 (Dateiinhalt), 18, 19, 20 | T1 | T4, T5, T6, T7 | DECISIONS-Eintrag 2 in T1 |
+| Datei `transfer-undo` in zwei Stufen, Zeilenform, **Zeilenart „übersprungen" im `finished`** (ohne `mode`/`restoredTarget`), `counts.requested` nur gelaufene, `meta.undoneFile`, `acknowledgedUnproven` in `meta`, Dateinamen, CSV, Restore-Parser (Quellen unter ihrem Alias; übersprungene Zeilen ausdrücklich ausgelassen) | 6.4, 4.8, 17 (K2, K4), E3, E12, F6, F13, AK 6 (Dateiinhalt), 18, 19, 20 | T1 | T4, T5, T6, T7 | DECISIONS-Eintrag 2 in T1; K4 vor T1 entschieden (Codex-Befund 2) |
 | Klassifikation nach Tabelle 4.3 (Reihenfolge ist Vertrag), Drift-Vergleich, Zusammenfassung mit Slot-Delta | 4.3, 6.2, E5–E8, E17, E20, E21, E23, AK 4, 29–31, 33, 35 | T2 | T4, T5, T6 | — |
 | Prüfung vor **jedem** REMOVE-Versuch mit eigenem vollständigem Read, Read-Fehler fail-closed, drei in Folge ⇒ Rest `cancelled` | E19, 4.4 Nr. 10a, F13, AK 26, 27, 38 | T3 (Hook), T4 (Read + Entscheidung) | — | Hook je Versuch (Festlegung Nr. 4) |
 | Lauf: Schrittfolge je Modus, `transportLossIsUnknown`, `abortOn`, `cancel()`-Semantik, Settling mit Nachlesen nach Tabelle 4.6, `partial` nur statt `done`, zwei Meldungen in Reihenfolge mit ID-Mengen, N4-Retry, kein Client-Resync, N1-Fallback nur bei zwei endgültigen Fehlschlägen | 4.4–4.6, 4.9, 6.5, E6, E9–E11, E13, E16, E23, E24, F8, F19, AK 9–14, 17, 34, 36, 37 | T4 | T7 | Kopie des Import-Musters mit Verweis (0.2) |
 | Lauf-gebundener Abschluss, `isRunning`/`isSettling`/`destructiveOpen`, Registrierung als `'undo'`, keine eigene Sperre | 6.5, 11.1, E15, E22, F16, F20, AK 15, 16, 32, 39 | T4 | T6 (nur Arbiter), T7 (Guard) | Namen aus T0 |
+| **Herkunftssperre doppelt:** ohne `acknowledgedUnproven` läuft keine `full`-Zeile mit `provenance: 'unproven'` — im Dialog (effektiver Plan) **und** im Dienst (vor dem Queue-Aufbau, Zeile ⇒ `skippedUnproven`, kein Engine-Row, kein REMOVE) | 17 (K2), 6.3, F17, AK 28 | T5 (Dialog), T4 (Dienst) | T6 (reicht durch), T8 (E2E) | Codex-Befund 1: der Test verfolgt eine gemischte `planned`-Datei bis in den Dienst (T6 Unit, T8 E2E) |
 | Weiche im Datei-Schritt nach der Vorprüfung, nur für `transfer-run`; `transfer-undo` ⇒ Restore ohne Weiche; dritte Ergebnisart; Trigger-Verzweigung | 4.1, 6.1, E1, E4, F10, AK 1, 2, 22 | T6 | — | F10-Anpassungen im selben Commit |
-| Flow: Arbiter → Token → Dialog → Arbiter → Frischcheck → Start; alles übersprungen ⇒ Notiz; keine Settling-Prüfung im Flow | 4.2 Nr. 5, 6.3, E13, E14, E18, E22, AK 5, 8, 21, 32 | T6 | — | erster Read im Flow (Klärung K3) |
-| Dialog: Zustandsmaschine, Live-Read, Kennzeichnung/Bestätigung `unproven`, Rückweg-Datei nur mit `full`-Zeile, Slot-Warnung, Zielzeile, Fremd-Hinweis | 4.2 Nr. 6–9, 6.3, E3, E14, E17, F17, AK 6, 7, 28 | T5 | T6 | Bilder nach K1; Aktionszeile nach K2 |
+| Flow: Arbiter → Token → **erster Read + Klassifikation** → (nichts Laufendes ⇒ Notiz, kein Dialog · Read-Fehler ⇒ Dialog im Fehlerzustand · sonst Dialog mit Read) → Arbiter → Frischcheck → Start; keine Settling-Prüfung im Flow | 4.2 Nr. 5, 6.3, 17 (K3), E13, E14, E18, E22, AK 5, 7, 8, 21, 32 | T6 | — | — |
+| Dialog: Zustandsmaschine, Read als Eingabe (neu lesen nur bei „Ziel neu laden"), Kennzeichnung/Bestätigung `unproven` mit effektivem Plan, Rückweg-Datei nur mit `full`-Zeile, Slot-Warnung, Zielzeile, Fremd-Hinweis, Quelle mit Bild aus `flags.animated`, Ziel als Platzhalter | 4.2 Nr. 6–9, 6.3, 17 (K1–K3), E3, E14, E17, F17, AK 6, 7, 28 | T5 | T6 | — |
 | Dock-Abschnitt mit den Zählern aus 4.7, zwei Meldungszeilen, `unknownRecordedIn`, Protokoll-Download ab `settled`; Seite: `dockVisible`, N2, `resetIfChannelChanged`; Guard mit eigener Textfamilie | 4.7, 6.6, 11.2, E9, E15, E23, AK 13, 15, 17, 18 | T7 | — | Panel/Section-Aufteilung (Festlegung Nr. 3) |
 | Kein Import aus eagerly geladenen Dateien; Initial-Bundle < 500 kB | F9, 6.5 letzter Absatz | T4 (Dienst), T7 (Guard) | T9 (Gate) | Bundle-Baseline in T0 |
 | E2E-Fälle aus 9.4 | 9.4, AK 1, 6, 9, 11, 12, 17, 18, 21, 26, 28–30, 35–38, 40 | T8 (neu), T6 (Anpassungen) | — | — |
@@ -218,13 +233,16 @@ Welle 2 die Signal-Liste des Dienstes mit dem Brief für T7.
 
 ### 2.5 Dialog ↔ Flow ↔ Dienst
 
-**Festlegend:** T5 (`UndoConfirmOutcome` = gestempelter Plan plus `acknowledgedUnproven`; Klärung
-K2/K4 bestimmt, ob der gestempelte Plan die übersprungenen Zeilen mitführt). **Konsumierend:** T6
-(Frischcheck vergleicht gegen den gestempelten Plan, ruft `startUndo`). **Prüfung:**
-`undo-flow.spec.ts` (T6) stubbt `openUndoConfirmDialog` mit genau dem Rückgabetyp aus T5;
-`undo-confirm-dialog.spec.ts` (T5) prüft die Rückgabe. Welle 2 baut T5 gegen Spec 6.3, T4 gegen
-Spec 6.5 — die Naht schließt T6 in Welle 3; die Hauptsession prüft vor Welle 3 die beiden
-Signaturen gegeneinander.
+**Festlegend:** T5 (`UndoConfirmOutcome` = `runnable`, `skipped`, `acknowledgedUnproven`, `read`
+— der effektive Plan, explizit, Spec 17 K2) und T4 (`startUndo(target, runnable, skipped,
+acknowledgedUnproven)` mit der zweiten Herkunftssperre). **Konsumierend:** T6 (Frischcheck
+vergleicht `runnable` gegen die frische Klassifikation, faltet Drift-Zeilen als `skippedDrift` in
+`skipped`, ruft `startUndo`). **Prüfung:** `undo-flow.spec.ts` (T6) stubbt `openUndoConfirmDialog`
+mit genau dem Rückgabetyp aus T5 **und** fährt einen Fall mit dem echten Dienst (gemischte
+`planned`-Datei ohne Bestätigung ⇒ kein `removeEmote`); `undo-confirm-dialog.spec.ts` (T5) prüft
+die Rückgabe; `seven-tv-undo.service.spec.ts` (T4) prüft die Sperre am Dienst. Welle 2 baut T5
+gegen Spec 6.3/17, T4 gegen Spec 6.5/17 — die Naht schließt T6 in Welle 3; die Hauptsession prüft
+vor Welle 3 die beiden Signaturen gegeneinander.
 
 ### 2.6 Datei-Grundsatz ↔ Restore
 
@@ -245,8 +263,8 @@ und `npm --prefix web run lint` grün; die vollen Gates aus `CLAUDE.md` fährt T
 Verhalten ja, Vorlage nein — kein Test prüft Tailwind-Ketten oder einen Wortlaut als Selbstzweck;
 ein Übersetzungsschlüssel darf eine Meldung identifizieren. Vitest-Gates laufen über
 `npm --prefix web test -- --watch=false --include='<spec-pfad>'`. Jeder Task-Bericht nennt
-Abweichungen von der Spec ausdrücklich und meldet jede Stelle, an der er eine Klärung aus
-Abschnitt 7 anders als empfohlen hätte lösen müssen.
+Abweichungen von der Spec ausdrücklich und meldet jede Stelle, an der er eine Entscheidung aus
+Abschnitt 7 / Spec 17 nicht wie festgelegt umsetzen konnte.
 
 ### T0 — Vorbedingungen: Epic-Stand, Vertrag 11.1, Bundle-Baseline
 
@@ -301,17 +319,24 @@ Kandidaten aus beiden Stufen; `transfer-undo-export.ts` baut beide Stufen der Un
 CSV, Dateinamen, und liest die Datei für den Restore; `parseImportSource` weist `transfer-undo`
 namentlich ab, der Undo-Parser mit `wrongKind`.
 
-**Vertrag:** Spec 6.1 (Kandidat, Parser), 6.4 (vollständig), 4.8, E2, E3, E12, E21 (Datei-`D`),
-F6, F7, F13 (`removedSource.entries` = letzter Read), F17 (`provenance`), AK 3, 18 (Form), 19, 23;
-DECISIONS-Eintrag 2 (Spec 14) in diesem Commit.
+**Vertrag:** Spec 6.1 (Kandidat, Parser), 6.4 (vollständig), **17 K4** (Zeilenart „übersprungen",
+`counts.requested`, Restore-Parser lässt sie aus) und **17 K2** (`acknowledgedUnproven` in `meta`),
+4.8, E2, E3, E12, E21 (Datei-`D`), F6, F7, F13 (`removedSource.entries` = letzter Read), F17
+(`provenance`), AK 3, 18 (Form), 19, 23; DECISIONS-Eintrag 2 (Spec 14) in diesem Commit. K4 ist
+**vor** diesem Task entschieden (Codex-Befund 2) — der Builder kennt die Zeilenart von Anfang an.
 
 **Dateien:** `web/src/app/shared/export/export-envelope.ts` (`ExportKind`);
 `web/src/app/shared/export/transfer-run-export.ts` (`UndoCandidate` mit `provenance`,
 `UndoSourceFileInfo`, `parseTransferRunForUndo` — dieselbe Leiter wie der Restore-Parser, die
 Kandidatenwahl nach E2; `readEnvelope` bleibt unberührt) + `.spec.ts`;
-`web/src/app/shared/export/transfer-undo-export.ts` (neu, + `.spec.ts`: Typen, beide Builder,
-`transferUndoJson`, `transferUndoCsv` mit den Spalten aus 6.4, beide Dateinamen mit
-`<kanal-oder-setid>`, `parseTransferUndoForRestore`); `web/src/app/shared/export/import-source-parser.ts`
+`web/src/app/shared/export/transfer-undo-export.ts` (neu, + `.spec.ts`: Typen — `TransferUndoRow`
+als Union aus `TransferUndoExecutedRow` (Form aus 6.4, `kind: 'executed'`) und
+`TransferUndoSkippedRow` (Spec 17 K4: `kind: 'skipped'`, Quell-ID, `sourceName`, `alias`, Ziel-ID,
+`provenance`, `skippedReason`, sonst nichts) —, beide Builder (der `finished`-Builder nimmt gelaufene
+Zeilen **und** übersprungene Kandidaten; `counts.requested` = gelaufene, `counts.skipped` =
+übersprungene; `meta.acknowledgedUnproven`), `transferUndoJson`, `transferUndoCsv` mit den Spalten
+aus 6.4 plus `kind` und `skipped_reason`, beide Dateinamen mit `<kanal-oder-setid>`,
+`parseTransferUndoForRestore` — lässt `kind: 'skipped'` ausdrücklich aus); `web/src/app/shared/export/import-source-parser.ts`
 (Abweisung `transfer-undo`, Muster `transfer-run`) + `.spec.ts`; `web/public/i18n/{de,en}.json`
 (`restore.import.sorts.transferUndo`, `restore.import.errors.{transferUndo, transferUndoNoRows}`);
 `docs/DECISIONS.md` (Eintrag 2).
@@ -330,16 +355,27 @@ Lauf (`done`, `partial`, `failed@1`, `unknown`, `cancelled` mit `skippedReason`)
 ungefiltert, `confirmed = completedSteps >= 1` nur bei `full`, `added` je Eintrag aus
 `completedSteps`, `removedSource.entries` = die Quell-Einträge des letzten Reads vor dem REMOVE
 (F13), `omittedEntries`/`notes` orthogonal zum Status (E23), `counts { requested, succeeded,
-failed, cancelled, unknown, removed, added }` · Duplikat-Zelle mit drei Einträgen (zwei Aliase +
-`null` ⇒ `D`) · CSV-Spalten und `|`-Trennung, `null` als leer · Dateinamen getrackt (Kanal) und
-ungetrackt (Set-ID) · `parseTransferUndoForRestore`: `planned` ⇒ jede `full`-Zeile, `finished` ⇒
-nur `removedSource.confirmed`, je Zeile `RestoreRow { emoteId: null, sevenTvEmoteId: S, name:
-sourceName, aliases: [alias], defaultName: null }`; keine Zeile ⇒ `transferUndoNoRows`; falsche
-`formatVersion` ⇒ `wrongVersion` · bestehende `parseTransferRunForRestore`-Fälle **0 geändert**
-(AK 23).
+failed, cancelled, unknown, removed, added, skipped }` · **übersprungene Kandidaten im `finished`
+(Spec 17 K4):** je ein `kind: 'skipped'` mit Grund — `duplicateInFile` (Schritt 0, vor jeder
+Klassifikation), `nothingToDo`, `sourceUnderOtherName`, `targetNameTaken` (Dialog), `skippedDrift`
+(Frischcheck), `skippedUnproven` (Dialog **oder** Dienst) —, ohne `mode`, `restoredTarget`,
+`removedSource`, `status`, `completedSteps`; `counts.requested` zählt sie nicht, `counts.skipped`
+schon; **im Lauf** übersprungene Zeilen (Hook, `skippedDrift`/`recheckUnavailable`) bleiben
+`kind: 'executed'` mit `status: 'cancelled'` und `skippedReason` (6.4 unverändert) · eine Zeile
+ohne `kind` ⇒ `wrongKind` (die Sorte ist neu, es gibt keinen Altbestand) · Duplikat-Zelle mit
+drei Einträgen (zwei Aliase + `null` ⇒ `D`) · CSV-Spalten und `|`-Trennung, `null` als leer;
+`kind`/`skipped_reason` gefüllt, übrige Spalten einer übersprungenen Zeile leer · Dateinamen
+getrackt (Kanal) und ungetrackt (Set-ID) · `parseTransferUndoForRestore`: `planned` ⇒ jede
+`full`-Zeile, `finished` ⇒ nur `removedSource.confirmed`, **`kind: 'skipped'` nie** (auch mit
+manipuliertem `removedSource` daneben), je Zeile `RestoreRow { emoteId: null, sevenTvEmoteId: S,
+name: sourceName, aliases: [alias], defaultName: null }`; keine Zeile ⇒ `transferUndoNoRows`;
+falsche `formatVersion` ⇒ `wrongVersion` · bestehende `parseTransferRunForRestore`-Fälle **0
+geändert** (AK 23).
 
 **Tests:** `transfer-run-export.spec.ts` **+6** (Spec 9.2 nennt +5; dazu `provenance` je Stufe),
-`transfer-undo-export.spec.ts` (neu) **+11** (Spec 9.2 nennt +10; dazu `wrongVersion`),
+`transfer-undo-export.spec.ts` (neu) **+16** (Spec 9.2 nennt +10; dazu `wrongVersion`, die
+übersprungene Zeilenart mit `duplicateInFile` und je einem Dialog-, Frischcheck- und Dienst-Grund,
+`counts.requested`/`counts.skipped`, Restore-Parser lässt sie aus, Zeile ohne `kind`),
 `import-source-parser.spec.ts` **+1**, `export-envelope.spec.ts` **+1**, falls dort die Sortenliste
 geprüft wird (sonst 0 — im Bericht sagen).
 
@@ -465,13 +501,19 @@ nur statt `done`, meldet zuerst `sync-deleted` dann `sync-restored`, stößt kei
 außer dem N1-Fallback, registriert sich beim Arbiter aus #256 als `'undo'`, schließt jeden Lauf
 lauf-gebunden, und bietet dem Dock und der Seite alle Zähler aus 4.7.
 
-**Vertrag:** Spec 4.4–4.6, 4.9 Nr. 23–24, 6.5, 11.1 (Nutzungshälfte), E6, E9–E11, E13–E16, E19,
-E22–E24, F8, F13, F19, F20, AK 9–17, 26, 27, 32, 34, 36–39; DECISIONS-Eintrag 1 (Spec 14) in
-diesem Commit.
+**Vertrag:** Spec 4.4–4.6, 4.9 Nr. 23–24, 6.5, **17 K2** (Signatur; zweite Herkunftssperre im
+Dienst) und **17 K4** (übersprungene Kandidaten im Laufdatensatz für das Protokoll), 11.1
+(Nutzungshälfte), E6, E9–E11, E13–E16, E19, E22–E24, F8, F13, F19, F20, AK 9–17, 26, 27, 28
+(Diensthälfte), 32, 34, 36–39; DECISIONS-Eintrag 1 (Spec 14) in diesem Commit.
 
 **Dateien:** `web/src/app/core/seven-tv/seven-tv-undo.service.ts` (neu, + `.spec.ts`; Bausteine
-aus 0.5: `UndoRunTarget` ohne `resyncChannelName`, `UndoRunInfo`, `UndoRunItem`, `UndoRunResult`;
-Operation mit `stepCount` je Modus, `buildRequest` mit `REMOVE_EMOTE_MUTATION` aus dem Delete-Dienst
+aus 0.5: `UndoRunTarget` ohne `resyncChannelName`, `UndoRunInfo` (trägt `skipped` und
+`acknowledgedUnproven` für das Protokoll), `UndoRunItem`, `UndoRunResult`;
+`startUndo(target, runnable, skipped, acknowledgedUnproven)`; **zweite Herkunftssperre (Spec 17
+K2, Codex-Befund 1):** vor dem Aufbau der Queue fällt jede `full`-Zeile mit `provenance:
+'unproven'` heraus, wenn `acknowledgedUnproven` falsch ist — sie wandert als `skippedUnproven` in
+`skipped` des Laufdatensatzes, es entsteht kein Engine-Row und kein REMOVE, gleich was der Dialog
+geliefert hat; Operation mit `stepCount` je Modus, `buildRequest` mit `REMOVE_EMOTE_MUTATION` aus dem Delete-Dienst
 und `ADD_EMOTE_MUTATION` **immer** mit `$alias` (E21), `transportLossIsUnknown: true`, `abortOn`
 wie der Import, `beforeStep` aus T3 für Schritt 0 jeder `full`-Zeile: `loadSevenTvSetEntries`
 (tokenlos, kein Wiederverwenden, kein Cache), `classifyUndoRow` + `sameClassification` gegen die
@@ -491,7 +533,12 @@ und `resetIfChannelChanged()` lösen nur die Anzeige; transiente Notiz nach dem 
 Übersprungen-Gründe für `skip`-Texte, `undo.settling`); `docs/DECISIONS.md` (Eintrag 1).
 
 **Grenzfälle (alle als Spec-Fall):** Schrittfolge `full` ⇒ REMOVE, ADD…; `addOnly` ⇒ ADD…; nie ein
-ADD vor dem REMOVE derselben Zeile (AK 9) · HTTP 0 / 503 ⇒ `unknown`; 401/403/`LACKING_PRIVILEGES`
+ADD vor dem REMOVE derselben Zeile (AK 9) · **gemischter Plan** (eine `full`-Zeile mit
+`provenance: 'unproven'`, eine `addOnly`-Zeile) mit `acknowledgedUnproven: false` ⇒ genau die ADDs
+der `addOnly`-Zeile, **kein** `removeEmote`, die `full`-Zeile im Laufdatensatz als
+`skippedUnproven`, das Protokoll führt sie als `kind: 'skipped'`; dieselbe Eingabe mit `true` ⇒
+REMOVE läuft; eine `full`-Zeile mit `provenance: 'confirmed'` läuft ohne Häkchen (AK 28,
+Diensthälfte) · HTTP 0 / 503 ⇒ `unknown`; 401/403/`LACKING_PRIVILEGES`
 ⇒ Abbruch, Token gelöscht, Rest `cancelled`; GraphQL-Ablehnung (409) ⇒ `failed` (AK 10) · ein Read
 je REMOVE-Versuch, gezählt am `query`-Text; Drift der zweiten Quelle 275 ms nach dem ersten REMOVE
 ⇒ zweiter Read, `skippedDrift`, kein REMOVE, kein ADD, dritte Zeile läuft (AK 26); 429 auf dem REMOVE
@@ -522,15 +569,17 @@ laufender bleibt, offene Meldungen laufen weiter · ungetracktes Ziel ⇒ beide 
 `expectedChannelName: null`, keine Resync-Zeile (AK 22, Diensthälfte) · Arbiter: Undo läuft ⇒
 belegt; Undo settelt ⇒ belegt; Import settelt ⇒ Undo-Start abgewiesen (AK 16, 32).
 
-**Tests:** `seven-tv-undo.service.spec.ts` (neu) **≥ 45 Fälle** nach Spec 9.3 (die Liste oben;
-Muster 0.2: `HttpTestingController`, `vi.useFakeTimers()`, `advanceTimersByTime(RUN_DELAY_MS)`);
-`seven-tv-run-arbiter.spec.ts` **+3**.
+**Tests:** `seven-tv-undo.service.spec.ts` (neu) **≥ 48 Fälle** nach Spec 9.3 (die Liste oben,
+die drei Herkunftssperre-Fälle eingeschlossen; Muster 0.2: `HttpTestingController`,
+`vi.useFakeTimers()`, `advanceTimersByTime(RUN_DELAY_MS)`); `seven-tv-run-arbiter.spec.ts` **+3**.
 
 **Abnahme:** `grep -n "this.run() !== started" seven-tv-undo.service.ts` leer (F20); `grep -rn
 "seven-tv-undo.service" web/src/app --include=*.ts -l` nennt nur `core/seven-tv/` und Specs (T6/T7
 kommen später, F9); jeder `addEmote`-Aufruf im Spec trägt einen nicht-leeren `alias` (AK 31,
-Diensthälfte); DECISIONS-Eintrag 1 steht oben und nennt in `Betrifft:` die Dateien aus T5–T7.
-**AK 9–17, 26, 27, 32, 34, 36–39; Diensthälften von AK 22, 31.**
+Diensthälfte); die Herkunftssperre steht im Dienst, nicht nur im Dialog (`grep -n "unproven"
+seven-tv-undo.service.ts` trifft vor dem Queue-Aufbau); DECISIONS-Eintrag 1 steht oben und nennt in
+`Betrifft:` die Dateien aus T5–T7. **AK 9–17, 26, 27, 32, 34, 36–39; Diensthälften von AK 22, 28,
+31.**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/core/seven-tv/**/*.spec.ts'`;
 `npm --prefix web run build`; Lint, Format.
@@ -541,55 +590,79 @@ der Dienst entscheidet, was gelöscht und was gemeldet wird; jeder Fehler ist st
 
 ### T5 — `UndoConfirmDialog`: Live-Read, Klassifikation sichtbar, Rückweg-Datei, Herkunfts-Bestätigung
 
-**Ziel:** Der Bestätigungsdialog zeigt je Kandidat Quelle und Ziel nebeneinander mit
-Klassifikation, Aliasen und Live-Gegenstück, die Zusammenfassung mit Löschzahl und Slot-Warnung,
-die Zielzeile und den Fremd-Hinweis; hält die Zustandsmaschine `idle → verifying → saved`; lädt die
-Rückweg-Datei aus dem Read; sperrt ohne Datei; kennzeichnet unbelegte `full`-Zeilen und verlangt die
-Datei-Bestätigung; gibt den gestempelten Plan zurück.
+**Ziel:** Der Bestätigungsdialog zeigt je Kandidat Quelle (mit Bild) und Ziel (Platzhalter mit
+Name und Aliasen) nebeneinander mit Klassifikation und Live-Gegenstück, die Zusammenfassung mit
+Löschzahl und Slot-Warnung, die Zielzeile und den Fremd-Hinweis; hält die Zustandsmaschine `idle
+→ verifying → saved` auf dem Read, den der Flow mitgibt, und liest nur bei „Ziel neu laden" neu;
+lädt die Rückweg-Datei aus dem Read; sperrt ohne Datei; kennzeichnet unbelegte `full`-Zeilen und
+verlangt die Datei-Bestätigung, wobei die Aktionszeile dem effektiven Plan folgt; gibt laufende
+und übersprungene Zeilen explizit zurück.
 
-**Vertrag:** Spec 4.2 Nr. 6–9, 6.3, E3, E14 (Dialog-Read), E17, F17, AK 6, 7, 28 (Dialoghälfte);
-#253 4.3 Nr. 8 (Slot-Gabel), 4.2 Nr. 7 (Zielzeile, „nicht aktiv", Fremd-Hinweis nach #253 E21);
-Klärungen K1 (Bilder), K2 (Aktionszeile bei unbestätigter `planned`-Datei), K3 (erster Read).
+**Vertrag:** Spec 4.2 Nr. 6–9, 6.3, **17 K1** (Bilder), **17 K2** (effektiver Plan, explizites
+Ergebnis), **17 K3** (Read als Eingabe), E3, E14 (Dialog-Read = der Read des Flows), E17, F17,
+AK 6, 7, 28 (Dialoghälfte); #253 4.3 Nr. 8 (Slot-Gabel), 4.2 Nr. 7 (Zielzeile, „nicht aktiv",
+Fremd-Hinweis nach #253 E21).
 
 **Dateien:** `web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (neu, + `.spec.ts`;
-`app-dialog-panel-wide` wie der Auflösungsschritt; Zustandsmaschine nach dem Muster
-`import-confirm-dialog.ts:139-154, :977-992, :1204-1279` — R15-Disziplin: nur der neueste Read
-zählt; „Ziel neu laden" liest neu und setzt auf `idle`; Klassifikation über `classifyUndoRows`;
-„Rückweg sichern" nur bei ≥ 1 `full`-Zeile, baut `buildTransferUndoPlanRecord` aus dem Read und
-lädt per `downloadFile`; Download-Fehler ⇒ `idle` mit Notiz; ohne `full`-Zeile direkt „Starten";
-Kennzeichnung und Checkbox für `provenance: 'unproven'`; Slot-Vorschau über
-`loadRestoreSlotPreview` mit `projectSlots`, Überschreitung als Warnung; Bilder nach K1); die
-Zustandsmaschine wird **nicht** aus dem Import-Dialog extrahiert (11.3: #256 Punkt 5 ist nicht
-gelandet — minimal eigen, mit Verweis auf `import-confirm-dialog.ts` und #256 in der Klassendoku);
-`web/public/i18n/{de,en}.json` (`undo.confirm.*`).
+`app-dialog-panel-wide` wie der Auflösungsschritt; `UndoConfirmDialogData.initialRead` — `null`
+⇒ Fehlerzustand mit Banner „Ziel neu laden", sonst sofort klassifiziert (K3); Zustandsmaschine nach
+dem Muster `import-confirm-dialog.ts:139-154, :977-992, :1204-1279` — R15-Disziplin: nur der
+neueste Read zählt; „Ziel neu laden" liest neu und setzt auf `idle`; Klassifikation über
+`classifyUndoRows`; **effektiver Plan (K2):** ohne Häkchen sind unbelegte `full`-Zeilen
+`skippedUnproven` (sichtbar, mit Grund), die Aktionszeile folgt dem Rest; „Rückweg sichern" nur bei
+≥ 1 effektiver `full`-Zeile, baut `buildTransferUndoPlanRecord` aus dem Read und lädt per
+`downloadFile`; Download-Fehler ⇒ `idle` mit Notiz; ohne effektive `full`-Zeile direkt „Starten";
+keine laufende Zeile ⇒ Aktionszeile gesperrt mit Grund; Rückgabe `{ runnable, skipped,
+acknowledgedUnproven, read }`; Slot-Vorschau über `loadRestoreSlotPreview` mit `projectSlots`,
+Überschreitung als Warnung; **Bilder (K1):** Quelle über `emoteStillUrl(S, read.animatedById.get(S)
+?? false)`, Ziel als Platzhalter des Auflösungsschritts (`targetImageUrl: null`-Idiom) mit Name
+und Aliasen, keine weitere 7TV-Anfrage); die Zustandsmaschine wird **nicht** aus dem Import-Dialog
+extrahiert (11.3: #256 Punkt 5 ist nicht gelandet — minimal eigen, mit Verweis auf
+`import-confirm-dialog.ts` und #256 in der Klassendoku);
+`web/src/app/core/seven-tv/seven-tv-set-entries.ts` (`GQL_EMOTE_SET_ENTRIES_QUERY` += `flags {
+animated }` — das Feld der Vorschau-Query in `SevenTvApiClient.cs:71`; `animatedById`; fehlendes
+Flag ⇒ `false`) + `.spec.ts`; `web/src/app/shared/emotes/emote-url.ts` (`emoteStillUrl` — bytegleich
+mit `BuildForeignImageUrl`, `SevenTvApiClient.cs:1272-1280`; die Doku nennt die Regel, die
+404-Messung vom 2026-09-09 und dass das Verbot aus Plan-230 T1 der Ableitung ohne Flag galt) +
+`.spec.ts`; `web/public/i18n/{de,en}.json` (`undo.confirm.*`).
 
-**Grenzfälle (alle als Spec-Fall, Verhalten statt Vorlage):** Read ausstehend ⇒ Aktionszeile
-gesperrt mit Grund (`aria-describedby`) · Read-Fehler / `complete: false` ⇒ Banner mit „Ziel neu
-laden", nichts freigegeben (AK 7) · Read ok, ≥ 1 `full` ⇒ „Rückweg sichern"; Klick ⇒ Download mit
-genau den laufenden Zeilen, `removedSource.entries` aus dem Read; danach „Starten" (AK 6) · Neuladen
-nach `saved` ⇒ `idle` (AK 6) · nur `addOnly` ⇒ direkt „Starten", keine Datei (AK 6) · Download
-wirft ⇒ `idle` mit Notiz · `planned`-Datei mit `full`-Zeilen ⇒ Kennzeichnung je Zeile, Checkbox;
-ohne Häkchen kein „Rückweg sichern" für die unbelegten Zeilen — Aktionszeile nach K2; mit Häkchen
-⇒ wie `finished` (AK 28) · `finished`-Datei ⇒ weder Kennzeichnung noch Checkbox · Löschzahl =
-Anzahl `full`; ADD-Zahl; Slot-Delta für Einzel- und Duplikat-Zelle; Überschreitung ⇒ Warnung, kein
-Sperren (E17) · Zielzeile: getrackt-aktiv / getrackt-nicht-aktiv („nicht aktiv"-Zeile) / ungetrackt
-(Besitzer, Slot über `twitchLogin`) · `foreignToView` bei `target.emoteSetId !==
-hostSelectedSetId` · Rückgabe = gestempelter Plan des Reads, aus dem die Datei entstand, plus
-`acknowledgedUnproven`; „Abbrechen" ⇒ `null` · Zeilenreihenfolge im Dialog (übersprungen mit Grund
-sichtbar, nicht ausgeblendet — §10 „Disabled explains itself").
+**Grenzfälle (alle als Spec-Fall, Verhalten statt Vorlage):** `initialRead` gesetzt ⇒ sofort
+klassifiziert, kein eigener Request (K3) · `initialRead: null` ⇒ Banner mit „Ziel neu laden",
+nichts freigegeben (AK 7); Neuladen ⇒ genau ein `loadSevenTvSetEntries` · Neuladen scheitert /
+`complete: false` ⇒ Banner, nichts frei · Read ok, ≥ 1 `full` ⇒ „Rückweg sichern"; Klick ⇒
+Download mit genau den laufenden Zeilen, `removedSource.entries` aus dem Read; danach „Starten"
+(AK 6) · Neuladen nach `saved` ⇒ `idle` (AK 6) · nur `addOnly` ⇒ direkt „Starten", keine Datei
+(AK 6) · Download wirft ⇒ `idle` mit Notiz · **`planned`-Datei, gemischt (K2):** unbelegte
+`full`-Zeilen gekennzeichnet, Checkbox; ohne Häkchen sind sie `skippedUnproven` und die
+Aktionszeile zeigt „Starten" für die `addOnly`-Zeilen; ohne Häkchen und ohne `addOnly` ⇒
+Aktionszeile gesperrt mit Grund; mit Häkchen ⇒ `full`, „Rückweg sichern" (AK 28) ·
+`finished`-Datei ⇒ weder Kennzeichnung noch Checkbox, `acknowledgedUnproven: false` in der
+Rückgabe ohne Wirkung · Löschzahl = Anzahl effektiver `full`; ADD-Zahl; Slot-Delta für Einzel- und
+Duplikat-Zelle; Überschreitung ⇒ Warnung, kein Sperren (E17) · **Bilder (K1):** statische Quelle
+⇒ `…/4x.webp`, animierte Quelle ⇒ `…/4x_static.webp`, Quelle ohne Flag im Read ⇒ `4x.webp`; Ziel
+⇒ Platzhalter mit Name und Aliasen, nie eine URL · Zielzeile: getrackt-aktiv /
+getrackt-nicht-aktiv („nicht aktiv"-Zeile) / ungetrackt (Besitzer, Slot über `twitchLogin`) ·
+`foreignToView` bei `target.emoteSetId !== hostSelectedSetId` · Rückgabe = `runnable` und
+`skipped` des Reads, aus dem die Datei entstand, plus `acknowledgedUnproven` und `read`; „Abbrechen"
+⇒ `null` · Zeilenreihenfolge im Dialog (übersprungen mit Grund sichtbar, nicht ausgeblendet — §10
+„Disabled explains itself").
 
-**Tests:** `undo-confirm-dialog.spec.ts` (neu) **≥ 14 Fälle** (Spec 9.3; Zustandsübergänge,
-Sperrgründe, Rückgaben, Accessibility-Bezüge — Regel 12).
+**Tests:** `undo-confirm-dialog.spec.ts` (neu) **≥ 18 Fälle** (Spec 9.3; Zustandsübergänge,
+Sperrgründe, Rückgaben, effektiver Plan in beiden Häkchen-Zuständen, Bilder statisch/animiert,
+Accessibility-Bezüge — Regel 12); `seven-tv-set-entries.spec.ts` **+2** (`animatedById` aus dem
+Flag; fehlendes Flag ⇒ `false`); `emote-url.spec.ts` **+2** (`emoteStillUrl` statisch/animiert,
+bytegleich mit den zwei Formen, die `SevenTvEmoteJsonMapper` speichert).
 
-**Abnahme:** der Dialog macht keinen Request außer `loadSevenTvSetEntries` (Neuladen) und der
-Slot-Vorschau; `grep -n "cdn.7tv.app\|_static" undo-confirm-dialog.ts` leer (keine URL-Ableitung,
-K1). **AK 6, 7, 28 (Dialog).**
+**Abnahme:** der Dialog macht keinen Request außer `loadSevenTvSetEntries` (nur beim Neuladen) und
+der Slot-Vorschau; `grep -n "cdn.7tv.app\|_static" undo-confirm-dialog.ts` leer — die Ableitung
+liegt allein in `emote-url.ts`; `grep -rn "emoteStillUrl" web/src/app` trifft nur den Dialog und
+die Specs. **AK 6, 7, 28 (Dialog).**
 
-**Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/undo-confirm-dialog.spec.ts'`;
+**Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/undo-confirm-dialog.spec.ts' --include='src/app/core/seven-tv/seven-tv-set-entries.spec.ts' --include='src/app/shared/emotes/emote-url.spec.ts'`;
 `npm --prefix web run build`; Lint, Format.
 
 **Commit:** `feat(undo): confirm an undo against a live read and save the recovery file first`.
-**Abhängigkeiten:** T1 (Datei-Builder), T2 (Klassifikation); K1–K3 entschieden. **Modell:**
+**Abhängigkeiten:** T1 (Datei-Builder), T2 (Klassifikation); Spec 17. **Modell:**
 `opus` — ein asynchroner Dialog mit Zustandsmaschine, der eine Löschung freigibt; Plan-253 hat den
 Datei-Schritt aus demselben Grund auf `opus` gesetzt.
 
@@ -600,8 +673,10 @@ schließen" bleibt der heutige Restore, „Ersetzungen rückgängig machen" füh
 (Arbiter → Token → Dialog → Arbiter → Frischcheck → `startUndo`); eine `transfer-undo`-Datei geht
 ohne Weiche in den Restore; Purge-Protokolle bleiben unberührt.
 
-**Vertrag:** Spec 4.1, 4.2 Nr. 5, 6.1, 6.3, E1, E4, E13, E14 (Frischcheck), E18, E22, F9, F10, AK 1,
-2, 5, 8, 20, 21, 22 (Weiche), 32 (Flow-Hälfte); UI-Designsprache §7.3 kommt in T8.
+**Vertrag:** Spec 4.1, 4.2 Nr. 5, 6.1, 6.3, **17 K2** (Ergebnis durchreichen, gemischte Datei bis
+in den Dienst) und **17 K3** (erster Read im Flow), E1, E4, E13, E14 (Frischcheck), E18, E22, F9,
+F10, AK 1, 2, 5, 7 (Fehlerzustand), 8, 20, 21, 22 (Weiche), 28 (Flow-Hälfte), 32 (Flow-Hälfte);
+UI-Designsprache §7.3 kommt in T8.
 
 **Dateien:** `web/src/app/shared/seven-tv/file-import-step.ts` (Dispatch: `transfer-run` ⇒ beide
 Parser ⇒ Vorprüfung ⇒ Weiche ⇒ `picked` je Wahl; `transfer-undo` ⇒ `parseTransferUndoForRestore`
@@ -613,9 +688,13 @@ Parser ⇒ Vorprüfung ⇒ Weiche ⇒ `picked` je Wahl; `transfer-undo` ⇒ `par
 Lazy-Chunk der Nutzungsseite, F9) + `.spec.ts`; `web/src/app/shared/seven-tv/undo-flow.ts` (neu,
 + `.spec.ts`: `UndoFlowDeps` nach dem Muster `RestoreFlowDeps`; `undoRunTarget()` aus
 `ResolvedRestoreTarget` — `expectedChannelName` wie `restoreStartTarget`, kein
-`resyncChannelName`; erster Read nach K3; alles übersprungen ⇒ transiente Notiz des Dienstes, kein
-Dialog; Frischcheck = Read + `classifyUndoRows` + `diffUndoPlans`; `available: false`/`complete:
-false` ⇒ keine `full`-Zeile, `addOnly` läuft; Arbiter-Grund als Notiz nach T0); `web/src/app/shared/seven-tv/restore-flow.spec.ts`
+`resyncChannelName`; **erster Read und erste Klassifikation im Flow (K3):** nichts Laufendes ⇒
+transiente Notiz des Dienstes, kein Dialog; Read-Fehler/`complete: false` ⇒ Dialog mit
+`initialRead: null`; sonst Dialog mit Read; Frischcheck = Read + `classifyUndoRows` +
+`diffUndoPlans` gegen `runnable`, Drift-Zeilen als `skippedDrift` nach `skipped`; `available:
+false`/`complete: false` ⇒ keine `full`-Zeile, `addOnly` läuft; `startUndo(target, runnable,
+skipped, acknowledgedUnproven)` — das Flag wird durchgereicht, nie hier neu entschieden;
+Arbiter-Grund als Notiz nach T0); `web/src/app/shared/seven-tv/restore-flow.spec.ts`
 (+2, AK 20: Undo-Datei nach geglücktem Undo ⇒ Regel 4 „Name belegt", kein `startRestore` mit
 Zeilen; nach gescheiterter `full`-Zeile ⇒ genau der ADD der Quelle — der Filter ist unverändert,
 `already-present-filter.spec.ts` bleibt 0 geändert); `web/public/i18n/{de,en}.json`
@@ -636,14 +715,21 @@ laufende Zeile ⇒ Notiz, kein Dialog, kein zweiter Request (AK 5, 21) · kein `
 Flow (AK 32) · ungetracktes Ziel läuft durch die Weiche wie ein getracktes (AK 22).
 
 **Tests:** `file-import-step.spec.ts` **+4 / ±4** (AK 1, 2; F10), `import-trigger.spec.ts` **+2**
-(Verzweigung; Deps vollständig), `undo-flow.spec.ts` (neu) **≥ 9** (Spec 9.3), `restore-flow.spec.ts`
-**+2** (AK 20), `import-source-dialog.spec.ts` **±1**, falls die Union sie berührt. E2E: die vier
-angepassten Fälle.
+(Verzweigung; Deps vollständig), `undo-flow.spec.ts` (neu) **≥ 12** (Spec 9.3; dazu die drei
+K3-Ausgänge des ersten Reads, und — **Codex-Befund 1, Spec 17 K2** — ein Fall mit dem **echten**
+`SevenTvUndoService` hinter `HttpTestingController`: gemischte `planned`-Datei, Dialog-Stub gibt
+`runnable = [addOnly]`, `skipped = [full unproven]`, `acknowledgedUnproven: false` ⇒ nach „Starten"
+genau die ADDs der `addOnly`-Zeile, **kein** `removeEmote`; und die Gegenprobe: Dialog-Stub
+liefert die unbelegte `full`-Zeile fälschlich in `runnable` bei `acknowledgedUnproven: false` ⇒ der
+Dienst sendet trotzdem kein REMOVE), `restore-flow.spec.ts` **+2** (AK 20),
+`import-source-dialog.spec.ts` **±1**, falls die Union sie berührt. E2E: die vier angepassten
+Fälle.
 
 **Abnahme:** `grep -rn "seven-tv-undo.service\|undo-flow" web/src/app/app.routes.ts
 web/src/app/app.config.ts web/src/app/core/channels web/src/app/shared/ui` leer (F9);
-`grep -n "settlement\|isSettling" undo-flow.ts import-flow.ts` leer (AK 32); `npm --prefix web run
-build` meldet „Initial total" ≤ Baseline aus T0 + 1 kB. **AK 1, 2, 5, 8, 20, 21, 22 (Weiche), 32
+`grep -n "settlement\|isSettling" undo-flow.ts import-flow.ts` leer (AK 32); `grep -n "unproven"
+undo-flow.ts` trifft nur das Durchreichen, keine Entscheidung; `npm --prefix web run build` meldet
+„Initial total" ≤ Baseline aus T0 + 1 kB. **AK 1, 2, 5, 7, 8, 20, 21, 22 (Weiche), 28 (Flow), 32
 (Flow).**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/**/*.spec.ts'`;
@@ -733,7 +819,7 @@ Einlesesorte); `docs/Feature-Ideen-2026-08-01.md` nur prüfen (kein Treffer erwa
 `sevenTvGqlRequestKind`), `web/e2e/audit/ui-audit.audit.ts` (prüfen, ob ein Szenario die
 Datei-Tür ohne Weiche erwartet), `docs/UI-Designsprache.md` (§7.3).
 
-**E2E (+11, jeder Fall nach Spec 9.4 mit `mockEmoteSetTargets` `editable: true` und
+**E2E (+12, jeder Fall nach Spec 9.4 und 17 mit `mockEmoteSetTargets` `editable: true` und
 `mockSyncDeletedInSet`/`mockSyncRestoredInSet`):** (1) Hauptweg: zwei `done`-Replace-Zeilen, eine
 Duplikat-Zelle ⇒ Weiche ⇒ Undo ⇒ Token ⇒ Dialog (zwei `full`, Löschzahl 2, Slot +1) ⇒ Datei ⇒
 Starten ⇒ Stub-Reihenfolge `setRead, removeEmote(S1), addEmote(T1,a), setRead, removeEmote(S2),
@@ -748,7 +834,13 @@ erneut ⇒ Notiz, kein Dialog (AK 21). (3) 409 auf dem zweiten ADD ⇒ `gapCount
 `nothingToDo` (AK 35). (9) `addOnly` mit Auslassung, 503 auf dem ADD ⇒ `unknown`, nicht `partial`
 (AK 37). (10) 503 auf einem REMOVE ⇒ Re-Read zeigt Quelle weg ⇒ `failed@1`, Quelle in
 `sync-deleted` (AK 11). (11) Weiche → „Lücken schließen" ⇒ wie der bestehende Restore-Fall.
-`page.clock` vor `goto`, `runFor` statt `fastForward`, `pauseAt` vor einer Phase, in der Echtzeit
+(12) **Gemischte `planned`-Datei ohne Häkchen (Codex-Befund 1, Spec 17 K2/K4):** zwei
+Replace-Zeilen, Stub-Set: Quelle 1 hält ihren Namen (⇒ `full`, unbelegt), Quelle 2 ist weg (⇒
+`addOnly`) ⇒ Dialog zeigt die erste als `skippedUnproven` gekennzeichnet, die zweite als `addOnly`,
+Aktionszeile „Starten" ohne „Rückweg sichern" ⇒ Starten ⇒ Stub sieht genau `addEmote(T2, …)` und
+**kein** `removeEmote`, kein `sync-deleted`, `sync-restored [T2]` ⇒ Ergebnisprotokoll führt die
+erste Zeile als `kind: 'skipped'` mit `skippedUnproven`, `counts.requested 1`, `counts.skipped 1`
+(AK 28). `page.clock` vor `goto`, `runFor` statt `fastForward`, `pauseAt` vor einer Phase, in der Echtzeit
 keinen Timer auslösen darf (CLAUDE.md Tests). Zählung der Suite im Bericht (heute 181 `test(`).
 
 **Abnahme:** volle E2E-Suite grün ohne Api auf `:5151`; jeder Undo-Fall belegt, dass **kein**
@@ -776,8 +868,10 @@ enthält `seven-tv-undo.service`, `undo-flow`, `undo-confirm-dialog`, `undo-prog
 (F9). (3) `node scripts/coverage-local.mjs` — Näherung, in beide Richtungen unscharf (Memory: misst
 nur Committetes; von den Sonar-Ausschlüssen abgedriftet); bei < 80 % nachsehen, ob es
 `undo-confirm-dialog.ts` oder `undo-progress-section.ts` sind (neue Dateien messen nah an Sonar).
-(4) `/codex:review --model gpt-6-sol --scope branch --base feat/emote-sets-200` — von der
-Hauptsession gestartet, ohne Rückfrage (Memory), einmal je Branch, Ergebnis unverändert dem
+(4) Die Zweitmeinung über den Codex-Companion **direkt im Worktree**, damit der Lauf gegen den
+richtigen Checkout und die richtige Basis geht (Memory: `/codex:review` läuft im Session-CWD;
+`--scope branch` erzwingen): `node ~/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs review "--wait --model gpt-6-sol --scope branch --base origin/feat/emote-sets-200"`
+— von der Hauptsession gestartet, ohne Rückfrage, einmal je Branch, Ergebnis unverändert dem
 Betreiber vorlegen (Regel 22); Widersprüche zu Opus-Review ⇒ Fable als Schiedsrichter (global).
 (5) Ergebnisse ins Ledger.
 
@@ -838,7 +932,7 @@ Befunde in den PR-Text. **Kein Commit**, außer ein Fund verlangt einen `fix(…
 | 15 | `beforeunload` genau solange ein `full`-Lauf offen ist; Guard bei laufendem Undo | T4 (`destructiveOpen`), T7 (Guard), T10 (9) |
 | 16 | Arbiter kennt `'undo'`; gegenseitige Sperre inkl. Settling | T0 (Vertrag), T4, T10 (6d) |
 | 17 | Lücke ⇒ `gapCount` + Hinweis; zweiter Lauf ⇒ `addOnly` mit genau den fehlenden ADDs | T4, T7, T8 (3), T10 (6b) |
-| 18 | `finished`-Protokoll ab `settled`, Felder, `meta.undoneFile`, `protocolNotSaved` | T1 (Form), T4, T7, T8 (1) |
+| 18 | `finished`-Protokoll ab `settled`, Felder, übersprungene Kandidaten als eigene Zeilenart, `meta.undoneFile`, `protocolNotSaved` | T1 (Form, `kind: 'skipped'`), T4, T7, T8 (1, 12) |
 | 19 | Abweisungen `transfer-undo`; Restore-Parser der Undo-Datei | T1 |
 | 20 | Restore aus Undo-Datei: „Name belegt" bzw. genau der Quell-ADD | T6, T10 (4) |
 | 21 | Dieselbe Datei zweimal ⇒ `nothingToDo`, Notiz | T6, T8 (2), T10 (3) |
@@ -848,7 +942,7 @@ Befunde in den PR-Text. **Kein Commit**, außer ein Fund verlangt einen `fix(…
 | 25 | Vier Gates + Live-Verifikation | T9, T10 |
 | 26 | Neuer Read je REMOVE-Versuch, auch nach Rate-Limit; Drift ⇒ `skippedDrift` | T3, T4, T8 (4), T10 (6a) |
 | 27 | Read-Fehler ⇒ Zeile läuft nicht; drei ⇒ Rest `cancelled`; Protokoll trägt letzten Read | T3, T4, T1 (Form) |
-| 28 | `provenance`; Kennzeichnung + Bestätigung; ohne sie `skippedUnproven` | T1, T2, T5, T8 (5), T10 (6c) |
+| 28 | `provenance`; Kennzeichnung + Bestätigung; ohne sie `skippedUnproven` — im Dialog **und** im Dienst; gemischte Datei sendet kein REMOVE | T1, T2, T5 (Dialog), T4 (Dienst), T6 (Unit bis in den Dienst), T8 (5, 12), T10 (6c) |
 | 29 | Fremde Ziel-Einträge: `full` gesperrt an drei Stellen, `addOnly` läuft mit `notes` | T2, T4, T8 (6) |
 | 30 | Zweiter Lauf nach `ADD B`-Fehlschlag ⇒ `addOnly [B]`; Restore aus Undo-Datei ⇒ „Name belegt" | T2, T8 (3), T10 (6b) |
 | 31 | Jeder ADD mit Alias; `null` ⇒ `D`; ohne `D` `targetNameUnverifiable`/`omittedEntries` | T1, T2, T4 |
@@ -930,11 +1024,14 @@ eine halbe Aktion erreichen könnte.
 
 ---
 
-## 7. Klärungsbedarf — Widersprüche und Lücken der Spec, mit Empfehlung
+## 7. Klärungen K1–K4 — entschieden (Betreiber: K1, K2, K4 · Orchestrator: K3 · 2026-09-25)
 
-Nichts hiervon ist still aufgelöst. Jede Zeile nennt die Stellen, den Befund und eine Empfehlung;
-der betroffene Task steht in Klammern. Bis zur Entscheidung baut der Task die Empfehlung und
-markiert sie im Bericht.
+Die erste Fassung hatte hier vier Widersprüche bzw. Lücken der Spec mit je einer Empfehlung. Alle
+vier sind am 2026-09-25 entschieden — nach dem adversarialen Codex-Review des Plans (Abschnitt
+10), der K1, K2 und K4 je um einen Punkt geschärft hat —, in die Tasks eingearbeitet und als
+Nachtrag „Klärungen zum Plan (2026-09-25)" am Ende der Spec festgehalten (Spec 17). Der Befund
+bleibt je Punkt stehen, damit die Entscheidung lesbar bleibt; was gilt, steht unter
+*Entscheidung*.
 
 **K1 — Bilder im Bestätigungsdialog haben keine Quelle (Spec 4.2 Nr. 7, 6.3 vs. Plan-230 T1 und
 Memory „7TVs `_static` nur bei animierten Emotes").** Die Spec verlangt „Quelle und Ziel
@@ -945,15 +1042,19 @@ T1 verbietet die Ableitung aus der ID ausdrücklich (statische Emotes 404en unte
 Übertragungsdatei trägt keine URL (`TransferRunRow`), der Live-Read liest nur `alias`, `emote.id`,
 `emote.defaultName`, und das **Ziel** steht nach einem geglückten Replace in keinem Set — keine
 Vorschau kennt es. Ein Einzel-Emote-Lookup existiert im Client nicht (Spec E21 sagt es selbst).
-*Empfehlung:* die **Quelle** bekommt ihr Bild aus dem Live-Read, indem `GQL_EMOTE_SET_ENTRIES_QUERY`
-um das Bildfeld erweitert wird, das `SevenTvApiClient.cs`' Vorschau-Query bereits liest (derselbe
-Request, kein Budget, alle Leser des Reads bekommen das Feld mit — Payload je Eintrag wächst um
-eine URL); das **Ziel** bekommt den Platzhalter aus dem Auflösungsschritt (`targetGone` ⇒
-`targetImageUrl: null`, das dort schon existierende Idiom) mit Namen und Aliasen daneben. Beide
-Seiten als Platzhalter wäre die kleinste Änderung, verlöre aber genau das Bild, das den Nutzer vor
-einer Löschung des falschen Emotes schützt (Spec 15 A: „der Nutzer sieht Bilder und Namen"). (T5;
-die Query-Erweiterung gehört dann als kleiner Zusatz zu T5 mit einem Fall in
-`seven-tv-set-entries.spec.ts`.)
+*Entscheidung (Betreiber, nach Codex-Befund 3):* die **Quelle** zeigt ihr echtes Bild, das
+**Ziel** einen Platzhalter. Die Quelle bekommt ihr Bild aus dem Live-Read — erweitert **nicht** um
+ein Bildfeld (die erste Empfehlung war falsch: die Vorschau-Query in `SevenTvApiClient.cs:71`
+liest `flags { animated }` und baut die URL getrennt; `Emote.images` liest sie absichtlich nicht),
+sondern um `flags { animated }`. Die URL entsteht nach derselben Regel wie im Backend
+(`BuildForeignImageUrl`, `SevenTvApiClient.cs:1272-1280`): `4x_static.webp` nur bei `animated`,
+sonst `4x.webp`, fehlendes Flag ⇒ `4x.webp` — statische Emotes 404en unter `_static` (Memory
+2026-09-09, DECISIONS zu `d42a242`). Im Frontend gibt es heute keine Ableitung aus der ID
+(`emote-url.ts` und `emote-image-loader.ts` schreiben nur gespeicherte URLs um); `emoteStillUrl`
+(0.5) wird die erste und einzige, bytegleich mit dem Backend. Das Verbot aus Plan-230 T1 galt der
+Ableitung **ohne** Kenntnis der Animiertheit und bleibt dafür bestehen. Das Ziel bekommt den
+Platzhalter aus dem Auflösungsschritt (`targetImageUrl: null`) mit Name und Aliasen daneben;
+keine neue 7TV-Anfrage. Tests für statisches und animiertes Quell-Emote. (T5; Spec 17 K1.)
 
 **K2 — Aktionszeile einer unbestätigten `planned`-Datei, die auch `addOnly`-Zeilen hat (Spec 6.3
 vs. 4.2 Nr. 8, AK 28).** 6.3: „ohne gesetzte Bestätigung bleibt „Rückweg sichern" gesperrt mit
@@ -963,38 +1064,52 @@ Grund, und `full`-Zeilen laufen nicht (`skippedUnproven`); `addOnly`-Zeilen sind
 „Starten" erscheinen und die `addOnly`-Zeilen laufen; nach 6.3 bleibt aber „Rückweg sichern"
 gesperrt, und nichts läuft, auch nicht die unberührten `addOnly`-Zeilen. Dazu nennt 6.3
 `startUndo(target, runnable, drifted, counts, acknowledgedUnproven)` und 6.5 `startUndo(target,
-rows, drifted, counts)` — eine Arität mit, eine ohne das Flag. *Empfehlung:* die Lesart
-„effektiver Plan": ohne Häkchen sind unbelegte `full`-Zeilen im Dialog als `skippedUnproven`
-übersprungen (sichtbar, mit Grund), die Aktionszeile folgt dem effektiven Plan (nur `addOnly` ⇒
-„Starten"; nichts ⇒ Aktionszeile gesperrt mit Grund „Bestätigung fehlt"); mit Häkchen sind sie
-`full`, und „Rückweg sichern" erscheint. `acknowledgedUnproven` wandert als Wahrheitswert in den
-Laufdatensatz und in `meta` beider Undo-Datei-Stufen (Papierspur, F6), die `startUndo`-Signatur ist
-die aus 6.3. So bleibt jede Zeile in 4.2 Nr. 8, 6.3 und AK 28 wahr. (T5, T4, T6.)
+rows, drifted, counts)` — eine Arität mit, eine ohne das Flag. *Entscheidung (Betreiber, nach Codex-Befund 1):* Lückenzeilen laufen, **doppelt gesichert** — die
+Lesart „effektiver Plan" plus die Codex-Forderung. Ohne Häkchen sind unbelegte `full`-Zeilen im
+Dialog als `skippedUnproven` übersprungen (sichtbar, mit Grund), die Aktionszeile folgt dem
+effektiven Plan (nur `addOnly` ⇒ „Starten"; nichts ⇒ Aktionszeile gesperrt mit Grund); mit
+Häkchen sind sie `full`, und „Rückweg sichern" erscheint. Das Dialog-Ergebnis übergibt die
+laufenden und die übersprungenen Zeilen **explizit** (`runnable`, `skipped`,
+`acknowledgedUnproven`, `read`). Der Dienst prüft die Herkunftssperre **selbst noch einmal**: ohne
+`acknowledgedUnproven` läuft keine `full`-Zeile mit `provenance: 'unproven'`, gleich was er
+bekommt — so steht es im Vertrag (Spec 17 K2), und T4 testet es. Ein Test verfolgt eine gemischte
+`planned`-Datei über „Starten" bis in den Dienst und belegt, dass kein REMOVE gesendet wird — als
+Unit-Test mit dem echten Dienst (T6) und als E2E (T8, Fall 12). Die Signatur ist vereinheitlicht:
+`startUndo(target, runnable, skipped, acknowledgedUnproven)` in 6.3 **und** 6.5.
+`acknowledgedUnproven` steht im Laufdatensatz und in `meta` beider Undo-Datei-Stufen (Papierspur,
+F6). (T4, T5, T6, T8; Spec 17 K2.)
 
 **K3 — Wer macht den ersten Read: Flow oder Dialog (Spec 4.2 Nr. 6 vs. E18, 4.2 Nr. 7, AK 5).**
 4.2 Nr. 6: „Der Bestätigungsdialog liest beim Öffnen das Ziel-Set live". E18/4.2 Nr. 7/AK 5: „Ein
 Dialog ohne eine einzige laufende Zeile öffnet **nicht** … transiente Notiz … kein Request an 7TV
 außer dem einen Read." Ob eine Zeile läuft, weiß man erst nach dem Read — liest der Dialog beim
 Öffnen, ist er schon offen, wenn es nichts zu tun gibt; liest der Flow vorher, ist „beim Öffnen"
-ein zweiter Read (zwei Requests, gegen AK 5). *Empfehlung:* der **Flow** macht den ersten Read und
-die erste Klassifikation; nichts Laufendes ⇒ Notiz, kein Dialog; Read-Fehler oder `complete: false`
-⇒ der Dialog öffnet **im Fehlerzustand** mit „Ziel neu laden" (AK 7 bleibt wahr); Erfolg ⇒ der
-Dialog öffnet mit Read und Plan als Eingabe und liest **nur** bei „Ziel neu laden" neu. E14s „ein
-Read beim Öffnen des Dialogs" ist dann der Read des Flows; die drei Prüfstellen bleiben drei. (T5,
-T6.)
+ein zweiter Read (zwei Requests, gegen AK 5). *Entscheidung (Orchestrator, wie empfohlen):* der **Flow** macht den ersten Read und die erste
+Klassifikation; nichts Laufendes ⇒ Notiz, kein Dialog; Read-Fehler oder `complete: false` ⇒ der
+Dialog öffnet **im Fehlerzustand** mit „Ziel neu laden" (`initialRead: null`, AK 7 bleibt wahr);
+Erfolg ⇒ der Dialog öffnet mit Read und Plan als Eingabe und liest **nur** bei „Ziel neu laden"
+neu. E14s „ein Read beim Öffnen des Dialogs" ist dann der Read des Flows; die drei Prüfstellen
+bleiben drei. (T5, T6; Spec 17 K3.)
 
 **K4 — Im Dialog übersprungene Zeilen im Ergebnisprotokoll (Spec 6.4 vs. 6.3/6.5).** 6.4 sagt für
 `finished`: „alle Zeilen ungefiltert" und nennt als `skippedReason` auch `duplicateInFile` — einen
 Grund, der nur im Dialog entsteht, nie im Lauf. `startUndo` bekommt nach 6.3/6.5 aber nur
 `runnable`, `drifted` und `counts` — die im Dialog übersprungenen Zeilen (`nothingToDo`,
 `sourceUnderOtherName`, `targetNameTaken`, `duplicateInFile`, `skippedUnproven`, …) erreichen den
-Dienst nur als Zähler und können nicht in der Datei stehen. *Empfehlung:* der Dienst bekommt den
-**gestempelten Plan ganz** (`rows` und `skipped`, dazu die `drifted` des Frischchecks); das
-Ergebnisprotokoll führt jede Kandidatenzeile — gelaufene mit ihrem Status, im Dialog oder
-Frischcheck übersprungene als `status: 'cancelled'`, `completedSteps: 0`, `skippedReason` — und
-`counts.requested` zählt nur die gelaufenen. Das ist „ein Mensch kann die Kette lesen" (F6) ohne
-zweite Datei; die Rückweg-Datei (`planned`) bleibt bei den laufenden Zeilen (6.4: „übersprungene
-stehen nicht in der Rückweg-Datei"). (T4, T5, T6, T1 für die Form.)
+Dienst nur als Zähler und können nicht in der Datei stehen. *Entscheidung (Betreiber, nach Codex-Befund 2):* übersprungene Kandidaten bekommen eine **eigene
+Zeilenart**. Die erste Empfehlung („als `cancelled` mit `skippedReason`") ließ sich in der
+freigegebenen Zeilenform nicht abbilden — `TransferUndoRow` verlangt `mode` und `restoredTarget`,
+ein vor der Klassifikation übersprungener Kandidat hat beides nicht. Das `finished`-Format bekommt
+deshalb `kind: 'skipped'`: Quell-ID, `sourceName`, `alias`, Ziel-ID, `provenance`,
+`skippedReason`, **ohne** `mode`, `restoredTarget`, `removedSource`, `status`, `completedSteps`;
+gelaufene Zeilen sind `kind: 'executed'` in der Form aus 6.4 (Zeilen, die erst im Lauf über den
+Hook übersprungen werden, bleiben `executed` mit `status: 'cancelled'` und `skippedReason`). Der
+Restore-Parser der `transfer-undo`-Datei überspringt `kind: 'skipped'` ausdrücklich.
+`counts.requested` zählt nur Zeilen, die tatsächlich gelaufen sind; `counts.skipped` kommt dazu.
+Der Dienst bekommt dafür `runnable` **und** `skipped` (K2). Die Festlegung steht **vor** T1 in
+dessen Vertrag, mit Tests für `duplicateInFile` und je einen Dialog-, Frischcheck- und
+Dienst-Grund. Die Rückweg-Datei (`planned`) bleibt bei den laufenden Zeilen. (T1, T4, T5, T6;
+Spec 17 K4.)
 
 ---
 
@@ -1015,5 +1130,19 @@ zwischen einem Undo-Lauf und dem Restore aus seiner Datei. Die Weiche verschwind
 `.superpowers/sdd/Plan-254-Replace-Undo/progress.md` (gitignoriert wie bei Plan-230 und Plan-253).
 Je Welle: Preflight der Nähte aus Abschnitt 2, Dispatch mit BASE-SHA und Modell, Bericht, Review,
 Rulings mit „cost if wrong", Merge-SHA. Der T0-Bericht (Arbiter-Namen, Baseline) steht dort zuerst
-und ist Teil jedes Briefs ab T4; die Entscheidungen zu K1–K4 landen dort, bevor T5 startet; die
-Codex-Zweitmeinung (T9) und die Live-Befunde (T10) ebenfalls, bevor sie in den PR-Text wandern.
+und ist Teil jedes Briefs ab T4; die Entscheidungen zu K1–K4 stehen in Spec 17 und in Abschnitt 7;
+die Codex-Zweitmeinung (T9) und die Live-Befunde (T10) landen dort, bevor sie in den PR-Text
+wandern.
+
+---
+
+## 10. Nachtrag: Codex-Adversarial-Review über die erste Fassung (gpt-6-sol, 2026-09-25)
+
+Urteil „needs-attention", drei Befunde `high`, alle gegen den Code geprüft, keiner widerlegt, alle
+in Fassung 2 eingearbeitet. Eine weitere Codex-Runde auf den Plan gibt es nicht (Betreiber).
+
+| # | Schwere | Befund | Prüfung | Lösung | Wo |
+|---|---|---|---|---|---|
+| 1 | high | Über den Mischdatei-Pfad kann eine unbelegte `planned`-Löschung durchrutschen: K2 ließ `addOnly` ohne Häkchen starten, T5 gab nur „Plan plus Flag" zurück, weder T6 noch T4 verlangten das Herausfiltern unbelegter `full`-Zeilen an der Grenze, T8 prüfte nur den gesperrten Download | Zutreffend: die erste Fassung hatte die Sperre nur im Dialog und keinen Test über die Naht Dialog → Flow → Dienst | Dialog-Ergebnis mit expliziten `runnable`/`skipped`; zweite Herkunftssperre im Dienst vor dem Queue-Aufbau; Unit-Test mit dem echten Dienst (T6) und E2E (T8, Fall 12) verfolgen eine gemischte `planned`-Datei über „Starten" und belegen null REMOVEs — **Betreiber: K2 so entschieden** | 0.5, 1, 2.5, T4, T5, T6, T8, Abschnitt 7 K2, Spec 17 K2 |
+| 2 | high | K4 lässt sich in der freigegebenen Zeilenform nicht abbilden: `TransferUndoRow` verlangt `mode` und `restoredTarget`, ein vor der Klassifikation übersprungener Kandidat hat beides nicht; T1 hätte den Builder vor der Entscheidung gebaut | Zutreffend: 6.4 kennt nur gelaufene Zeilen; `duplicateInFile` entsteht in Schritt 0 vor jedem Modus | Eigene Zeilenart `kind: 'skipped'` (ohne `mode`/`restoredTarget`), Restore-Parser lässt sie aus, `counts.requested` nur gelaufene; **vor T1** festgelegt, mit Tests für `duplicateInFile` und je einen Dialog-, Frischcheck- und Dienst-Grund — **Betreiber: K4 so entschieden** | 0.5, 1, T1, T4, Abschnitt 7 K4, Spec 17 K4 |
+| 3 | high | K1 schlug ein Bildfeld vor, das die Vorschau-Query nicht liest: `SevenTvApiClient.cs` liest `flags.animated` und baut die URL getrennt, `Emote.images` absichtlich nicht; ein falsches GraphQL-Feld bräche jeden Set-Read; T5 verbot die Ableitung und gab dem Ziel nur einen Platzhalter | Zutreffend: `SevenTvApiClient.cs:71` (`flags { animated }`), `:1272-1280` (`BuildForeignImageUrl`), `emote-url.ts` (keine Ableitung aus der ID im Frontend) | Live-Read += `flags { animated }`; Quelle über `emoteStillUrl(id, animated)` nach der Backend-Regel (`4x_static.webp` nur bei `animated`, sonst `4x.webp`); Ziel Platzhalter mit Name und Aliasen; Tests für statisch und animiert — **Betreiber: K1 so entschieden** | 0.2, 0.5, T5, Abschnitt 7 K1, Spec 17 K1 |
