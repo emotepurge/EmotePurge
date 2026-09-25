@@ -1,13 +1,14 @@
 # Ersetzung rückgängig: ein geglücktes „Ziel ersetzen" aus seiner Übertragungsdatei vollständig zurücknehmen — Spec
 
-**Datum:** 2026-09-25 · **Status:** Dritte Fassung — die sechs offenen Punkte der ersten Fassung sind vom Betreiber entschieden, jeweils wie empfohlen (Abschnitt 13, 2026-09-25); die parallel getroffene #255-Entscheidung zum Restore-Resync und der Routen-Umbau aus #264 sind eingearbeitet (11.4, F9); die sieben Befunde der adversarialen Zweitmeinung (Codex Sol, gpt-6-sol, 2026-09-25: fünf high, zwei medium) sind eingearbeitet (Abschnitt 16, E19–E24, F13–F17) — **zwei davon werfen echte Betreiberfragen auf, die in Abschnitt 15 offen stehen**; gegen den Code auf `feat/254-replace-undo` (= `origin/feat/emote-sets-200` @ `992eef14`, Merge von #270) belegt, Stichprobe der Belege 27/28 korrekt, der eine Pfad korrigiert · **Issue:** #254 · **Epic:** #200 · **Vorgänger:** #230 (PR #251, [Plan-230-Namenskonflikte.md](../../plans/Plan-230-Namenskonflikte.md) §2, §6 Frage 4, §7 Zeile „Untracked-Restore, Replace-Undo", T7, T7b), #253 (PR #270, [2026-09-24-restore-pro-set-253-design.md](2026-09-24-restore-pro-set-253-design.md)) · **Formatvorlage:** die #253-Spec · **Parallel in Arbeit:** #255 (Wortlaute/Zählungen), #256 (Robustheit) — Berührungspunkte in Abschnitt 11 · **Nicht Teil:** Abschnitt 10
+**Datum:** 2026-09-25 · **Status:** Dritte Fassung — die sechs offenen Punkte der ersten Fassung sind vom Betreiber entschieden, jeweils wie empfohlen (Abschnitt 13, 2026-09-25); die parallel getroffene #255-Entscheidung zum Restore-Resync und der Routen-Umbau aus #264 sind eingearbeitet (11.4, F9); die sieben Befunde der adversarialen Zweitmeinung (Codex Sol, gpt-6-sol, 2026-09-25: fünf high, zwei medium) sind eingearbeitet (Abschnitt 16, E19–E24, F13–F17); die zwei Betreiberfragen daraus sind am 2026-09-25 entschieden (Abschnitt 15: Herkunftsnachweis per Kennzeichnung und Bestätigung; **#256 Punkt 1 ist Vorbedingung** — die Settling-Sperre liegt im Arbiter, nicht im Undo, Vertrag in 11.1); gegen den Code auf `feat/254-replace-undo` (= `origin/feat/emote-sets-200` @ `992eef14`, Merge von #270) belegt, Stichprobe der Belege 27/28 korrekt, der eine Pfad korrigiert · **Issue:** #254 · **Epic:** #200 · **Vorgänger:** #230 (PR #251, [Plan-230-Namenskonflikte.md](../../plans/Plan-230-Namenskonflikte.md) §2, §6 Frage 4, §7 Zeile „Untracked-Restore, Replace-Undo", T7, T7b), #253 (PR #270, [2026-09-24-restore-pro-set-253-design.md](2026-09-24-restore-pro-set-253-design.md)) · **Formatvorlage:** die #253-Spec · **Parallel in Arbeit:** #255 (Wortlaute/Zählungen), #256 (Robustheit) — Berührungspunkte in Abschnitt 11 · **Nicht Teil:** Abschnitt 10
 
 Diese Spec ist ein Denkwerkzeug des Betreibers und deshalb deutsch; Bezeichner, Routen und
 Wire-Felder bleiben englisch. Sie enthält keinen fertigen Code — Verträge, Verhalten, Grenzfälle,
 Fallen und prüfbare Akzeptanzkriterien. Zeilenangaben sind am 2026-09-25 gegen den Branch
 nachgeprüft (Pfade ohne Präfix liegen unter `web/src/app/`). Kleine, eindeutige Präzisierungen
 sind als **Festlegung** markiert und einzeln kippbar; die Betreiberentscheidungen stehen in
-Abschnitt 13 mit den verworfenen Alternativen.
+Abschnitt 13 und 15 mit den verworfenen Alternativen. **Vorbedingung:** #256 Punkt 1 (Arbiter
+kennt „läuft oder settelt noch") ist vor der Umsetzung gemergt; sein Vertrag steht in 11.1.
 
 ---
 
@@ -138,7 +139,9 @@ typed confirmation"; #253-Spec 4.5 Nr. 18).
 **Der Arbiter.** `SevenTvRunArbiter.activeRun: 'delete' | 'restore' | 'import' | null`, abgeleitet aus
 den `isRunning`-Signalen der drei Dienste; kein Lock; jeder Startpunkt prüft zweimal
 (`core/seven-tv/seven-tv-run-arbiter.ts:8-57`, `import-flow.ts:305, :350`, `restore-flow.ts:122,
-:152`). Das Settling-Fenster ist nicht abgedeckt — das ist #256 Punkt 1.
+:152`). Das Settling-Fenster ist nicht abgedeckt — das ist #256 Punkt 1, und seit der
+Betreiberentscheidung vom 2026-09-25 (Abschnitt 15 B) **Vorbedingung** dieser Spec: der Undo
+baut auf dem Arbiter auf, den #256 liefert (Vertrag in 11.1), nicht auf dem heutigen.
 
 **7TV: kein neuer aliasloser Eintrag.** Ein `addEmote` mit `alias: null` landet unter dem
 Standardnamen; ein Re-Read liefert `alias: "<defaultName>"`, nicht `null` (live gemessen am
@@ -156,7 +159,7 @@ Nr. …)" — dort steht seit dem 2026-09-25 die getroffene Entscheidung samt ve
 | # | Frage | Entscheidung | Begründung / Beleg |
 |---|---|---|---|
 | E1 | Modus von „Restore" oder eigener Einstieg? | **Dieselbe Tür, eine Weiche, eine eigene Aktion.** Der Datei-Schritt erkennt eine `transfer-run`-Datei (beide Stufen) und endet — statt mit `picked` — mit einer Wahl: „Lücken schließen" (Restore, wie heute) oder „Ersetzungen rückgängig machen" (neu). Dahinter ein eigener Flow (`undo-flow.ts`), Dienst (`SevenTvUndoService`), Bestätigungsdialog, Dock-Abschnitt, Protokoll (`transfer-undo`) und Arbiter-Zustand `'undo'` | Der Restore erreicht den Fall nicht (Regel 4 sortiert alles aus, kein Dialog), und seine Operation trägt keine der Sicherungen, die eine Löschung braucht (Abschnitt 1). Kein neuer Dauer-Control auf der Seite: die Wahl lebt im Dialog und erscheint nur für Übertragungsdateien; Purge-Protokolle laufen wie heute ohne Weiche (Abschnitt 13, Nr. 3) |
-| E2 | Was ist eine „Zeile" des Undo? | Je Replace-Zeile der Datei ein **Undo-Paar** `(Quell-ID, Alias) ↔ (Ziel-ID, entries)`. Kandidaten: `planned` ⇒ **jede** Replace-Zeile, aber als **unbelegt** markiert (`provenance: 'unproven'`, F17, Abschnitt 15 A); `finished` ⇒ nur `removedTarget.confirmed === true` (`provenance: 'confirmed'`) — dieselbe Auswahl wie der Restore-Parser | Eine `finished`-Zeile ohne bestätigten REMOVE hat kein ADD gesehen (Schritt 1 läuft nur nach Schritt 0), es gibt dort nichts zurückzunehmen; für `planned` entscheidet der Live-Check (E5), was übrig ist — aber er beweist nur den **Zustand**, nicht die **Herkunft**: eine `planned`-Datei eines nie gestarteten Laufs kann später zufällig die `full`-Form treffen (Codex-Befund 2, F17). Rows mit `status: 'done'` sind der Normalfall, `failed@1` und `unknown` bleiben Kandidaten |
+| E2 | Was ist eine „Zeile" des Undo? | Je Replace-Zeile der Datei ein **Undo-Paar** `(Quell-ID, Alias) ↔ (Ziel-ID, entries)`. Kandidaten: `planned` ⇒ **jede** Replace-Zeile, aber als **unbelegt** markiert (`provenance: 'unproven'`, F17, Abschnitt 15 A — entschieden: Kennzeichnung und Datei-Bestätigung); `finished` ⇒ nur `removedTarget.confirmed === true` (`provenance: 'confirmed'`) — dieselbe Auswahl wie der Restore-Parser | Eine `finished`-Zeile ohne bestätigten REMOVE hat kein ADD gesehen (Schritt 1 läuft nur nach Schritt 0), es gibt dort nichts zurückzunehmen; für `planned` entscheidet der Live-Check (E5), was übrig ist — aber er beweist nur den **Zustand**, nicht die **Herkunft**: eine `planned`-Datei eines nie gestarteten Laufs kann später zufällig die `full`-Form treffen (Codex-Befund 2, F17). Rows mit `status: 'done'` sind der Normalfall, `failed@1` und `unknown` bleiben Kandidaten |
 | E3 | **#230-Entscheidung 4 (Pflicht-Rückweg-Datei vor dem ersten REMOVE) — neu bewertet** | **Übernommen, gespiegelt:** der Undo lädt vor seinem ersten REMOVE eine eigene Rückweg-Datei (`transfer-undo`, Stufe `planned`) aus dem Live-Read herunter; ohne Download kein Start. Sie ist über den Restore-Weg einlesbar und holt die **entfernten Quell-Emotes** zurück (E12). Das Ergebnisprotokoll (`finished`) folgt nach dem Lauf, zweiten Rangs (Abschnitt 13, Nr. 1 und 2) | Nicht still übernommen, sondern geprüft: Die Übertragungsdatei liegt beim Undo bereits auf der Platte und nennt jede Quelle mit Alias — als **Papier** reicht sie. Als **Rückweg** reicht sie nicht: der Import weist `transfer-run` namentlich ab (Plan-230 T7 „Import-Verbot, Restore erlaubt"), der Restore liest nur `removedTarget`; ein entferntes Quell-Emote käme nur „im 7TV-Web von Hand" zurück — genau der Handgriff, den der Betreiber am 2026-09-23 als Regelweg abgelehnt hat. Der Grundsatz „the safeguard is a file" verlangt eine Datei, die **das** wiederherstellt, was **dieser** Lauf entfernt; das ist beim Undo die Quelle, nicht das Ziel. Kosten: ein Klick mehr, eine neue Einlesesorte |
 | E4 | **#230-Entscheidung 6 (Replace-Sperre für ungetrackte Ziele) — neu bewertet** | **Kommt nicht zurück.** Der Undo ist für ein ungetracktes Ziel-Set genauso erlaubt wie für ein getracktes; die Vorprüfung `resolveEditableSet` läuft im Datei-Schritt wie beim Restore, die Meldungen sind set-zentrisch, ohne Kanal nur Papier | Die Sperre hatte einen einzigen Grund: „keine Löschung ohne Restore-Weg", und der Restore war kanalgebunden (Plan-230 §9 Fassung 5). Seit #253 hat jedes Set einen Restore und eine Papierspur — am Code verifiziert (Abschnitt 1). Der Undo fügt eine zweite Löschung hinzu, aber mit demselben Rückweg (E3, E12): die Undo-Rückweg-Datei ist per Restore einlesbar, set-zentrisch, ohne Kanalseite. Die Bedingung, die die Sperre trug, ist für den Undo ebenso erfüllt wie für das Replace; eine Sperre ohne ihren Grund wäre eine zweite Wahrheit |
 | E5 | Was heißt „hält noch exakt den Alias"? | **Gleiche 7TV-Emote-ID UND die Eintragsmenge dieser ID im Live-Set ist genau `{ alias }`:** ein benannter Eintrag mit ordinal gleichem Alias (`===`, Groß-/Kleinschreibung zählt), kein zweiter Alias, kein aliasloser Eintrag. Jede Abweichung ist Drift mit Grund (4.3) | Ein REMOVE nimmt **alle** Einträge der ID (`seven-tv-delete.service.ts:44-47`): hält die Quelle inzwischen einen zweiten Alias, den jemand nach dem Lauf vergeben hat, nähme der Undo ihn mit — Kollateralschaden, den keine Datei kennt. Der Zustand nach einem geglückten Replace ist exakt ein Eintrag (Abschnitt 1); alles andere hat ein Mensch seither verändert, und das entscheidet ein Mensch. `heldNames`/`aliasesById` vergleichen heute ordinal (`already-present-filter.ts:165`), das bleibt |
@@ -169,14 +172,14 @@ Nr. …)" — dort steht seit dem 2026-09-25 die getroffene Entscheidung samt ve
 | E12 | Was ein Restore aus einer `transfer-undo`-Datei wiederherstellt | Die **entfernten Quell-Emotes** unter ihrem Alias: `planned` ⇒ jede `full`-Zeile, `finished` ⇒ nur `removedSource.confirmed === true`. Der Restore-Filter (Regeln 1–4) entscheidet, was davon fehlt; nach einem geglückten Undo hält das Ziel den Namen ⇒ „Name belegt", nichts passiert (Abschnitt 13, Nr. 2) | Ein Grundsatz für alle Rückweg-Dateien: **jede Datei stellt wieder her, was ihr Lauf entfernt hat** — Purge ⇒ gelöschte Emotes, Übertragung ⇒ entfernte Ziele, Undo ⇒ entfernte Quellen. Die Ziel-Lücke eines gescheiterten Undo schließt die Übertragungsdatei (E9); die Quell-Lücke schließt die Undo-Datei. Zwei Dateien, zwei Richtungen, keine Datei mit zwei Bedeutungen |
 | E13 | Vorprüfung, Token, Rechte | `resolveEditableSet(meta.targetEmoteSetId)` im Datei-Schritt **vor** der Weiche (wie heute, `file-import-step.ts:228-256`); Token-Prompt **vor** dem Bestätigungsdialog (Restore-Muster, `restore-flow.ts:167-175`); `abortOn` bei 401/403/`LACKING_PRIVILEGES` mit Token-Löschung (Import-Muster) | Die Vorprüfung ist seit #253 die eine Entscheidung für Liste und Meldung (E19 dort). Token vor dem Dialog, damit zwischen Download der Rückweg-Datei und „Starten" kein Prompt liegt — das Drift-Fenster wird kleiner; der Frischcheck vor dem Lauf bleibt trotzdem (E14). `abortOn` wie beim Import, weil ein Lauf ohne Recht nach der ersten Ablehnung nichts mehr Sinnvolles tut |
 | E14 | Drift zwischen Vorschau und Lauf | **Drei** Prüfstellen: ein Read beim Öffnen des Dialogs (Klassifikation, Anzeige, Rückweg-Datei), ein Read **unmittelbar vor dem Start** (Frischcheck, alle Zeilen), und **vor jedem einzelnen REMOVE** eine erneute Prüfung genau dieser Zeile gegen einen frischen Read (E19). Eine Zeile, deren Klassifikation sich seit dem gestempelten Plan geändert hat, fällt aus dem Lauf, gezählt als `skippedDrift`; ein unvollständiger oder gescheiterter Read lässt **keine** `full`-Zeile laufen | Das Muster aus Plan-230 §2 Nr. 2–5 und `recheckTransferPlan`, um die Prüfung je REMOVE erweitert: bei sequentiellem Lauf mit Rate-Limit-Pausen von bis zu Minuten (`seven-tv-run-engine.ts:36-46`) ist ein einmaliger Frischcheck für die zehnte Zeile so alt wie der Dialog-Read für die erste (Codex-Befund 1). Das Restfenster schrumpft damit auf die Zeit zwischen dem Zeilen-Read und dem REMOVE selbst (F13); ganz zu schließen ist es ohne atomare 7TV-Operation nicht (Plan-230 §2 Nr. 6) |
-| E15 | Unload-Schutz und Arbiter | `beforeunload`, solange ein Undo-Lauf mit mindestens einer `full`-Zeile läuft, `settlement === 'pending'` ist **oder eine seiner beiden Meldungen noch keinen Endzustand hat** (`destructiveRunActive`, über **alle** noch nicht abgeschlossenen Läufe des Dienstes, nicht nur den gezeigten — E22); der `canDeactivate`-Guard der Nutzungsseite deckt zusätzlich `undoService.isRunning()`; der Arbiter bekommt den Zustand `'undo'`, jeder Startpunkt (auch Delete, Restore, Import) sieht ihn; **kein Undo startet, solange ein Undo oder ein Import-Lauf noch settelt** (E22) | Dieselbe Begründung wie Plan-230 §2 („ein Tab, der mitten zwischen REMOVE und ADD stirbt, hinterlässt eine Lücke ohne Ergebnisprotokoll"). Codex-Befund 5: ein zweiter Lauf während des Settlings ersetzte den gezeigten Lauf und ließ den Schutz des ersten fallen — die Sperre sitzt deshalb schon im Undo selbst, nicht erst in #256 Punkt 1 (Abschnitt 15 B) |
+| E15 | Unload-Schutz und Arbiter | Der Undo registriert sich als vierter Lauf-Typ `'undo'` beim Arbiter, den **#256 Punkt 1 liefert** (Vorbedingung, Vertrag in 11.1): der Arbiter kennt je Dienst „läuft" **und** „settelt noch" (Nachlesen oder Meldungen ohne Endzustand), und jeder Startpunkt — Delete, Restore, Import, Undo — startet nur, wenn **kein** Dienst in einem dieser Zustände ist. Der Unload-Schutz (`beforeunload`) ist die Vereinigung der destruktiven offenen Läufe aller Dienste: ein Undo-Lauf mit mindestens einer `full`-Zeile zählt, solange er läuft, settelt oder eine seiner beiden Meldungen keinen Endzustand hat — auch nach `reset()` oder wenn ein neuer Lauf gezeigt wird (E22). Der `canDeactivate`-Guard der Nutzungsseite deckt zusätzlich `undoService.isRunning()` | Dieselbe Begründung wie Plan-230 §2 („ein Tab, der mitten zwischen REMOVE und ADD stirbt, hinterlässt eine Lücke ohne Ergebnisprotokoll"). Codex-Befund 5: ein zweiter Lauf während des Settlings ersetzte den gezeigten Lauf und ließ den Schutz des ersten fallen. **Betreiber 2026-09-25 (Abschnitt 15 B):** die Sperre liegt im Arbiter, den #256 vor #254 baut — keine lokale Doppelsperre im Undo |
 | E16 | Resync und Seite | Wie der Restore **nach der #255-Entscheidung vom 2026-09-25** (11.4): **kein** Client-Resync im Erfolgsfall — für kein Ziel, auch nicht für ein nicht-aktives Set eines getrackten Kanals; der Backend-Resync aus den beiden Meldungen deckt jeden getroffenen Kanal, das Dock zeigt dafür `backendTriggered` („wird abgeglichen"). Einziger Client-Resync: der N1-Fallback für `expectedChannelName` (das aktive Set eines getrackten Kanals), wenn **beide** Meldungen endgültig scheitern. Mitgliederliste des gewählten nicht-aktiven Sets beim Settle mit `refresh`, sonst Vormerkung (N2) | Keine eigene Regel; der Undo ist der vierte Lauf, für den die #253-Regeln in ihrer #255-Fassung gelten. Ein Resync eines nicht-aktiven Sets lädt dessen Mitgliederliste ohnehin nicht nach (N2-Befund) — das erledigt die Seite beim Settle. Der Cooldown fängt Doppelte (F15 dort) |
 | E17 | Slot-Grenze | Projektion im Dialog: `delta = Σ fehlende Einträge − Anzahl full-Zeilen`; Überschreitung ist eine **Warnung** wie im Import-Dialog (`import-confirm-dialog.ts:923-934`), keine Sperre | Eine `full`-Zeile mit einem Eintrag ist netto 0 und kann an der Kapazität nicht scheitern, weil ihr REMOVE zuerst läuft; nur eine Duplikat-Zelle (#74) mit ≥ 2 Einträgen ist netto positiv. 7TV kennt keinen Slot-Fehlercode, den das Frontend heute auswertet; ein gescheitertes ADD ist eine benannte Lücke (E9). Eine Sperre bräuchte eine Kapazitätsquelle, die für ungetrackte Ziele über einen budgetierten Read kommt (Abschnitt 13, Nr. 6) |
 | E18 | Idempotenz | Dieselbe Datei ein zweites Mal: jede Zeile ist `nothingToDo` (Quelle hält den Namen nicht mehr, Ziel-Einträge vorhanden) ⇒ transiente Notiz, kein Dialog, kein Lauf, keine Datei. Nach einem **teilweise** gescheiterten Lauf ist der zweite Lauf derselben Datei der Weg, der die Lücke schließt (`addOnly` für die fehlenden Ziel-Einträge, E9) | Folgt aus E5/E7 ohne Sonderregel: der Live-Check klassifiziert, die Datei behauptet nichts. Dasselbe gilt für eine Übertragungsdatei eines nie gestarteten Laufs (Quelle nie da, Ziel vorhanden) |
 | E19 | **Prüfung vor jedem REMOVE** (Codex-Befund 1) | Unmittelbar vor jedem REMOVE einer `full`-Zeile liest der Dienst das Ziel-Set erneut (`loadSevenTvSetEntries`, tokenlos) und klassifiziert **diese** Zeile neu (4.3); nur bei unveränderter Klassifikation (Modus `full`, dieselbe ADD-Liste, Quelle exakt `{ alias }`, Ziel ohne fremden Eintrag) läuft das REMOVE, sonst wird die Zeile `skippedDrift` und der Lauf geht zur nächsten. **Festlegung (Koaleszierung):** ein Read, der jünger als `UNDO_ROW_RECHECK_MAX_AGE_MS` ist (Vorschlag 5 s), wird für die nächste Zeile wiederverwendet; nach jeder Rate-Limit-Pause der Engine ist der nächste Read immer frisch. Scheitert der Read oder ist er `complete: false`, wird die Zeile `skippedDrift` mit Grund `recheckUnavailable` (fail-closed); nach **drei** aufeinanderfolgenden Read-Fehlern bricht der Dienst die verbleibenden `full`-Zeilen als `cancelled` mit Grund ab, `addOnly`-Zeilen laufen weiter | Der Lauf ist sequentiell, mit 275 ms je Schritt und Rate-Limit-Pausen bis zu Minuten (Abschnitt 1); ein Editor kann einer späteren Quelle in dieser Zeit einen zweiten Alias geben, und das REMOVE nähme ihn mit, ohne dass die Rückweg-Datei ihn kennt (F2). Die Prüfung je Zeile ist der einzige Ort, an dem E5 wirklich gilt. Kosten: ein tokenloser, paginierter Read je `full`-Zeile (bei 900 Emotes zwei Seiten); die Koaleszierung deckelt sie für schnelle Läufe. Das Replace aus #230 hat dasselbe Fenster und **nicht** diese Prüfung — benannte Asymmetrie, kein Teil dieser Spec (Abschnitt 10). Die Engine hat heute keinen Vor-Schritt-Hook (`runRowFrom`, `seven-tv-run-engine.ts:389-406`); wie die Prüfung eingehängt wird, ist Plansache |
 | E20 | **Fremde Einträge auf dem Ziel** (Codex-Befund 3) | Trägt die Ziel-ID im Live-Set einen Eintrag, den `removedTarget.entries` nicht nennt (ein Alias außerhalb von `E`, oder ein aliasloser Eintrag, obwohl `E` kein `null` enthält), ist die Zeile — `full` **und** `addOnly` — übersprungen mit Grund `targetHasForeignEntries` und Live-Gegenstück; nichts wird berührt. Gilt an allen drei Prüfstellen (E14) | Fail-closed und konsistent mit Regel 2 des Restore-Filters (`already-present-filter.ts:210-215`): ein Eintrag, den die Zeile nicht kennt, ist etwas, das ein Mensch seither angelegt hat. Ohne diese Regel liefe eine `full`-Zeile mit fremdem Eintrag `C` an: nach REMOVE S, ADD A und gescheitertem ADD B könnte weder die Undo-Datei die Quelle zurückholen (T hält A) noch die Übertragungsdatei B (Regel 2 wirft die ganze T-Zeile) — die Rückweg-Zusage aus E3/E4 wäre gebrochen (F14). Mit der Regel bleibt der Weg aus E9 (Undo erneut ⇒ `addOnly`) immer offen, weil ein Ziel ohne fremde Einträge Regel 2 nicht auslöst |
 | E21 | **`null`-Einträge bekommen einen expliziten Namen** (Codex-Befund 4) | Ein Ziel-Eintrag `{ alias: null }` wird als `ADD { alias: D }` mit dem **`defaultName` aus der Datei** gesendet, nicht als ADD ohne Alias; Vorhandensein und Namensfreiheit prüft der Klassifikator gegen genau dieses `D`. Fehlt `D` in der Datei (`null` oder leer), ist die Zeile übersprungen mit Grund `targetNameUnverifiable` — bei `full` die ganze Zeile, bei `addOnly` nur dieser Eintrag (`omittedEntries`) | Nach einem geglückten Replace ist das Ziel nicht im Set, der Live-Read kennt also keinen `defaultNameById`-Wert für T (`seven-tv-set-entries.ts:41-71`) — `n = e ?? D` war ohne `D` aus der Datei unbestimmt, und ein ADD ohne Alias landete unter 7TVs **heutigem** Standardnamen, den niemand geprüft hat: ein 409 nach dem REMOVE, eine Lücke. Mit explizitem `D` prüft und schreibt der Undo denselben Namen; das Ergebnis ist identisch mit dem, was ein ADD ohne Alias erzeugt hätte (7TV legt ohnehin nur benannte Einträge an, F5), und es ist der Name, den das Ziel **damals** trug — genau der Zustand vor der Übertragung, auch wenn der Emote-Besitzer den Standardnamen seither geändert hat. Ein Einzel-Emote-Lookup existiert im Client nicht und wäre ein budgetierter Request je Eintrag |
-| E22 | **Settling schließt den nächsten Lauf aus** (Codex-Befund 5) | `startUndoFlow` startet nicht, solange `undoService.settlement() === 'pending'` **oder** `importService.run()?.settlement === 'pending'` ist (die zwei Dienste mit Nachlesen); `import-flow.ts` bekommt symmetrisch die Prüfung gegen den settelnden Undo. `destructiveRunActive` des Undo-Dienstes gilt über **jeden** Lauf, der noch settelt oder dessen Meldungen noch keinen Endzustand haben (`succeeded | partial | failed`), nicht nur über den gezeigten; ein `reset()` löst den Schutz eines noch meldenden Laufs nicht | Der Arbiter sieht nur `isRunning` (`seven-tv-run-arbiter.ts:46-55`); ein zweiter Undo mit reinem `addOnly`-Plan hätte den gezeigten Lauf ersetzt, `destructiveRunActive` wäre dem neuen Plan gefolgt und der Tab ohne Schutz gewesen, während die Meldungen des ersten Laufs noch ausstanden — und seine zweite Mutation hätte verändert, was das Nachlesen des ersten seinem `unknown`-Schritt zuschreibt. Die Sperre lokal im Undo (und spiegelbildlich im Import-Flow) zu setzen, macht #256 Punkt 1 **nicht** zur Vorbedingung; ob #256 sie später in den Arbiter zieht, ist dort zu entscheiden (Abschnitt 15 B) |
+| E22 | **Settling schließt den nächsten Lauf aus** (Codex-Befund 5) | **Über den Arbiter aus #256 Punkt 1, nicht über eine lokale Sperre.** `startUndoFlow` prüft — wie jeder andere Startpunkt — allein den Arbiter, und der antwortet „belegt", solange irgendein Dienst läuft **oder settelt** (Nachlesen läuft, oder eine Meldung hat noch keinen Endzustand `succeeded \| partial \| failed`). Der Undo-Dienst liefert dem Arbiter dafür sein `isRunning` und sein `isSettling` (11.1) und trägt seine destruktiven offenen Läufe in den gemeinsamen Unload-Schutz ein; ein `reset()` oder ein neuer gezeigter Lauf nimmt einen noch meldenden Lauf nicht aus dem Schutz | Der heutige Arbiter sieht nur `isRunning` (`seven-tv-run-arbiter.ts:46-55`); ein zweiter Undo mit reinem `addOnly`-Plan hätte den gezeigten Lauf ersetzt, `destructiveRunActive` wäre dem neuen Plan gefolgt und der Tab ohne Schutz gewesen, während die Meldungen des ersten Laufs noch ausstanden — und seine zweite Mutation hätte verändert, was das Nachlesen des ersten seinem `unknown`-Schritt zuschreibt. **Betreiber 2026-09-25:** #256 Punkt 1 wird vor #254 gebaut und gemergt (Reihenfolge #255 → #256 → #254); eine lokale Doppelsperre hätte keinen Gewinn und müsste wieder raus (Abschnitt 15 B) |
 | E23 | **Teilweise Zeilen sind sichtbar und dauerhaft** (Codex-Befund 6) | Eine `addOnly`-Zeile, die Einträge auslässt (`targetNameTaken`, `targetNameUnverifiable`), endet nicht `done`, sondern `partial` — ein Zeilenstatus, den nur der Undo-Dienst setzt (die Engine kennt ihn nicht: sie meldet `done` für die gesendeten Schritte, der Dienst stuft beim Settle herab); `omittedEntries: { alias, reason }[]` steht in der Protokollzeile beider Stufen, das Dock zählt `partialRows` und `omittedEntryCount` und nennt den Weg (Name freimachen, Undo erneut). Für `full`-Zeilen gibt es keinen teilweisen Plan (E8) | Ein „fertig" ohne den zweiten Alias wäre eine Lücke ohne Papierspur; `gapCount` zählte nur `failed`-Zeilen |
 | E24 | **Nachlesen nach Modus und Operation** (Codex-Befund 7) | Das Nachlesen einer `unknown`-Zeile richtet sich nach der **Operation des Schritts**, nicht nach seiner Nummer: `full` ⇒ Schritt 0 ist REMOVE, Schritte ≥ 1 sind ADDs; `addOnly` ⇒ **jeder** Schritt ab 0 ist ein ADD. Tabelle in 4.6 | Die erste Fassung ordnete Schritt 0 pauschal dem REMOVE zu; eine wörtliche Umsetzung hätte bei einer `addOnly`-Zeile eine abwesende Quelle als bestätigtes REMOVE gelesen und die Quell-ID in die Löschmeldung geschrieben |
 
@@ -350,10 +353,11 @@ außerhalb. `destructiveRunActive` des Imports folgt `run()` — dem **gezeigten
 Schutz folgte dem neuen Plan (keine `full`-Zeile ⇒ `false`), und ein Tab-Schließen in diesem
 Fenster verlöre Meldung und Ergebnisprotokoll des ersten Laufs. Dazu verfälschte die zweite
 Mutation, was das Nachlesen des ersten Laufs seinem `unknown`-Schritt zuschreibt. **Vorgabe
-(E22):** Settling-Sperre im Undo-Flow (eigener Dienst **und** Import), Spiegel im Import-Flow,
-`destructiveRunActive` über alle unabgeschlossenen Läufe bis zum Endzustand beider Meldungen.
-#256 Punkt 1 verlegt dieselbe Sperre später in den Arbiter — ob das eine Vorbedingung sein soll,
-steht in Abschnitt 15 B.
+(E22, Betreiber 2026-09-25):** die Sperre liegt im Arbiter — #256 Punkt 1 ist **Vorbedingung**
+dieser Spec und liefert einen Arbiter, der „läuft oder settelt noch" über alle Lauf-Dienste kennt
+und den Unload-Schutz über alle offenen destruktiven Läufe bis zum Endzustand von Settling und
+Meldungen spannt. Der Undo registriert sich dort als vierter Lauf-Typ; der Vertrag, den #256
+dafür erfüllen muss, steht in 11.1 (Abschnitt 15 B).
 
 ### F17 — Eine `planned`-Datei beweist nicht, dass ihr Lauf je begann (Codex-Befund 2)
 
@@ -365,10 +369,10 @@ entfernte ein von Hand hinzugefügtes Emote. Der Klassifikator beweist den **Zus
 belegt die **Herkunft** nur bei `finished`/`confirmed`. Das Audit hilft nicht: es trägt Zählwerte,
 keine IDs (Plan-230 §2). Ein Sonderfall zweiter Ordnung (nie gestarteter Lauf **und** manuelle
 Nachbildung desselben Zustands), aber einer, der eine Löschung autorisiert, die sich nicht beweisen
-lässt. **Vorgabe:** Kandidaten aus `planned`-Dateien tragen `provenance: 'unproven'`; was das für
-die Freigabe bedeutet, entscheidet der Betreiber (Abschnitt 15 A); bis dahin legt die Spec die dort
-empfohlene Option zugrunde: sichtbare Kennzeichnung je Zeile plus eine ausdrückliche Bestätigung
-je Datei, ohne die keine `full`-Zeile aus einer `planned`-Datei läuft.
+lässt. **Vorgabe (Betreiber 2026-09-25, Abschnitt 15 A):** Kandidaten aus `planned`-Dateien
+tragen `provenance: 'unproven'`; jede unbelegte `full`-Zeile ist im Dialog sichtbar gekennzeichnet,
+und ohne eine ausdrückliche Bestätigung je Datei läuft keine davon (`skippedUnproven`);
+`addOnly`-Zeilen sind nicht betroffen.
 
 ### F12 — `sync-restored` reaktiviert, was archiviert ist — und nur das
 
@@ -404,8 +408,8 @@ legt die Zeile an. Der Dock-Wortlaut dazu ist #255.
 
 ### 4.2 Token, Arbiter, Dialog
 
-5. Reihenfolge: **Vorprüfung (im Schritt) → Weiche → Arbiter (`activeRun() === null`) →
-   Token-Prompt → Bestätigungsdialog → Arbiter → Frischcheck → Lauf.** Token vor dem Dialog (E13);
+5. Reihenfolge: **Vorprüfung (im Schritt) → Weiche → Arbiter (frei: kein Dienst läuft oder
+   settelt, 11.1) → Token-Prompt → Bestätigungsdialog → Arbiter → Frischcheck → Lauf.** Token vor dem Dialog (E13);
    der Prompt-Titel spricht vom Löschen — richtig für den Undo, bekannt falsch für Restore/Kopieren
    (#255).
 6. Der Bestätigungsdialog (`UndoConfirmDialog`, `app-dialog-panel-wide` wie der Auflösungsschritt)
@@ -467,7 +471,7 @@ im Dock gezählt und genannt, im Ergebnisprotokoll als `cancelled` mit Grund (`s
 `available: false` oder `complete: false` ⇒ keine `full`-Zeile läuft (`recheckUnavailable`);
 `addOnly`-Zeilen laufen nach dem Frischcheck auch dann — die nicht-destruktive Hälfte darf, wie der
 Restore, fail-open sein (Festlegung; der Restore-Filter ist ebenso fail-open,
-`already-present-filter.ts:186`). **Herkunft (F17, Abschnitt 15 A, vorläufig):** eine `full`-Zeile
+`already-present-filter.ts:186`). **Herkunft (F17, Abschnitt 15 A, entschieden):** eine `full`-Zeile
 mit `provenance: 'unproven'` läuft nur, wenn der Nutzer im Dialog die Datei-weite Bestätigung
 gesetzt hat; ohne sie ist sie `skippedUnproven` — `addOnly`-Zeilen sind davon nicht betroffen.
 
@@ -663,21 +667,20 @@ Testfall (9.3).
 
 ### 6.3 Flow und Dialog
 
-- `startUndoFlow(deps, result: FileImportResult<'transfer-undo'>)`: Arbiter **und Settling-Sperre**
-  (`activeRun() === null && undoService.settlement() !== 'pending' && importService.run()?.settlement
-  !== 'pending'`, E22; bei Sperre transiente Notiz `undo.blockedWhileSettling`) → Token
-  (`openSevenTvTokenPromptDialog`) → `openUndoConfirmDialog(data)` → Arbiter + Settling-Sperre →
-  Frischcheck (`loadSevenTvSetEntries` + `classifyUndoRows` + `diffUndoPlans`) →
+- `startUndoFlow(deps, result: FileImportResult<'transfer-undo'>)`: Arbiter (frei nach 11.1 —
+  kein Dienst läuft oder settelt; bei Belegung die transiente Notiz, die der Arbiter aus #256 für
+  jeden Startpunkt vorsieht) → Token (`openSevenTvTokenPromptDialog`) → `openUndoConfirmDialog(data)`
+  → Arbiter → Frischcheck (`loadSevenTvSetEntries` + `classifyUndoRows` + `diffUndoPlans`) →
   `undoService.startUndo(target, runnable, drifted, counts, acknowledgedUnproven)`. Alles übersprungen
   und keine laufende Zeile ⇒ transiente Notiz über den Undo-Dienst (Mechanik `showDuplicateNotice`),
-  kein Dialog. `import-flow.ts`' `start` bekommt spiegelbildlich die Prüfung
-  `undoService.settlement() !== 'pending'` (eine Zeile neben der bestehenden Arbiter-Prüfung, `:305`).
+  kein Dialog. **Keine** lokale Settling-Prüfung im Undo-Flow und **keine** Spiegelzeile im
+  `import-flow.ts` — beides leistet der Arbiter (E22, Betreiber 2026-09-25).
 - `UndoConfirmDialogData { candidates, target (ResolvedRestoreTarget), sourceFile }`; Rückgabe
   `{ plan: UndoPlan; acknowledgedUnproven: boolean } | null` (der gestempelte Plan). Zustandsmaschine
   `idle → verifying → saved` (4.2 Nr. 8); „Ziel neu laden" setzt auf `idle`. Bilder über dieselbe
   Bild-URL-Ableitung wie der Auflösungsschritt (Plan-230 T1). Slot-Vorschau über
   `loadRestoreSlotPreview` (Gabel nach #253 4.3 Nr. 8). **Herkunft (F17, Abschnitt 15 A,
-  vorläufig):** stammt die Datei aus der Stufe `planned`, zeigt der Dialog je `full`-Zeile die
+  entschieden):** stammt die Datei aus der Stufe `planned`, zeigt der Dialog je `full`-Zeile die
   Kennzeichnung „unbelegt" und über der Aktionszeile eine Bestätigung (Checkbox, Wortlaut #255:
   „Diese Rückweg-Datei belegt nicht, dass die Übertragung gelaufen ist; ich habe geprüft, dass die
   gezeigten Quell-Emotes aus ihr stammen"); ohne gesetzte Bestätigung bleibt „Rückweg sichern"
@@ -750,20 +753,22 @@ Testfall (9.3).
   `beforeStep`-Hook der Operation, oder der Dienst reicht je Zeile eine Vorbedingung mit), ist
   Plansache — die Engine läuft eine Zeile heute in `runRowFrom` ohne Hook
   (`seven-tv-run-engine.ts:389-406`).
-- `settlement()` als Signal nach außen (wie `run()?.settlement` beim Import), `destructiveRunActive`
-  über **alle** Läufe, die noch settlen oder deren Meldungen keinen Endzustand haben (E22): ein
-  interner Satz „offener Läufe", aus dem ein Lauf erst fällt, wenn beide Meldungen `succeeded |
-  partial | failed` sind oder es für ihn keine Meldung gibt; `reset()` und ein neuer Lauf leeren ihn
-  nicht. `startUndo` weist einen Start ab, solange der eigene Dienst settelt (Doppelboden zur
-  Flow-Sperre). Zeilenstatus `partial` (E23) setzt der Dienst beim Settle für `addOnly`-Zeilen mit
+- Registrierung beim Arbiter aus #256 Punkt 1 (11.1): der Dienst exponiert `isRunning`,
+  `isSettling` (Nachlesen läuft **oder** eine der beiden Meldungen hat noch keinen Endzustand
+  `succeeded | partial | failed`) und `destructiveOpen` (mindestens ein offener Lauf mit
+  `full`-Zeile) als Signale; ein interner Satz „offener Läufe", aus dem ein Lauf erst fällt, wenn
+  Settling und beide Meldungen im Endzustand sind oder es für ihn keine Meldung gibt; `reset()` und
+  ein neuer Lauf leeren ihn nicht (E22). Keine eigene Start-Sperre im Dienst — der Arbiter ist die
+  einzige. Zeilenstatus `partial` (E23) setzt der Dienst beim Settle für `addOnly`-Zeilen mit
   `omittedEntries`, unabhängig vom Engine-Status.
 - Was der Plan als gemeinsamen Baustein aus dem Import-Dienst herauszieht (Settling mit Re-Read,
   `sendFollowUp` mit zwei Meldungen, `destructiveRunActive`, Protokollgatter), ist Plansache; der
   Vertrag ist das Verhalten in Abschnitt 4. Kopieren ist erlaubt, wenn Extrahieren #256 vorgreift —
   dann mit Verweis, damit #256 beide Stellen sieht.
-- Arbiter: `activeRun` += `'undo'`; `usageStatsLeaveGuard` fragt `importService.isRunning() ||
-  undoService.isRunning()` mit eigener Textfamilie `undo.leaveWhileRunning.*`; `ImportTrigger`
-  sperrt bei `activeRun() !== null` (unverändert, sieht jetzt vier Zustände). Der Guard hängt nach
+- Arbiter: der Undo ist der vierte Lauf-Typ (`'undo'`) des Arbiters aus #256 Punkt 1 (11.1);
+  `usageStatsLeaveGuard` fragt `importService.isRunning() || undoService.isRunning()` mit eigener
+  Textfamilie `undo.leaveWhileRunning.*`; `ImportTrigger` sperrt, solange der Arbiter belegt ist
+  (unverändert in der Form, sieht jetzt vier Dienste in zwei Zuständen). Der Guard hängt nach
   #264 an `canDeactivate` in `features/usage-stats/usage-stats.routes.ts` und wird **nur** dort
   referenziert — so gerät `SevenTvUndoService` wie der Import-Dienst nicht ins Initial-Bundle (F9);
   der Undo-Dienst wird aus keiner eagerly geladenen Datei importiert.
@@ -811,8 +816,8 @@ Banner), `undo.summary.*` (Zähler, `removed`, `restored`, `gaps`, `gapsHint`, `
 | **Kollidierender Alias = `defaultName` des Ziels** | REMOVE der Quelle gibt den Namen frei, `ADD { alias: D }` landet darunter (E21); die Zeile ist ein gewöhnliches `full` |
 | **Eine spätere Quelle bekommt während des Laufs einen zweiten Alias** (Codex-Befund 1) | Die Zeilen-Prüfung vor ihrem REMOVE (E19) sieht `sourceHasMoreEntries` ⇒ `skippedDrift`, nichts berührt; der Lauf geht weiter. Innerhalb der 5-s-Koaleszierung bleibt das Fenster offen (F13, benannter Rest) |
 | **Read vor einem REMOVE scheitert** (429, Netz, `complete: false`) | Zeile `skippedDrift`/`recheckUnavailable`, nichts berührt; nach drei Fehlern in Folge verbleibende `full`-Zeilen `cancelled` mit Grund, `addOnly`-Zeilen laufen zu Ende |
-| **`planned`-Datei eines nie gestarteten Laufs, Zustand später von Hand nachgebildet** (Codex-Befund 2) | Live-Form `full`, `provenance: 'unproven'`: Zeile gekennzeichnet, ohne Datei-Bestätigung `skippedUnproven`, mit Bestätigung läuft sie — vorläufig, Betreiberentscheidung in Abschnitt 15 A (F17) |
-| **Zweiter Undo, während der erste noch settelt oder meldet** (Codex-Befund 5) | Startet nicht (`undo.blockedWhileSettling`, E22); `beforeunload` bleibt bis zum Endzustand beider Meldungen des ersten Laufs; dasselbe gegen einen settelnden Import-Lauf, und ein Import startet nicht gegen einen settelnden Undo |
+| **`planned`-Datei eines nie gestarteten Laufs, Zustand später von Hand nachgebildet** (Codex-Befund 2) | Live-Form `full`, `provenance: 'unproven'`: Zeile gekennzeichnet, ohne Datei-Bestätigung `skippedUnproven`, mit Bestätigung läuft sie (Betreiberentscheidung Abschnitt 15 A, F17) |
+| **Zweiter Undo, während der erste noch settelt oder meldet** (Codex-Befund 5) | Der Arbiter (#256 Punkt 1, 11.1) meldet „belegt": kein Start, transiente Notiz des Arbiters; `beforeunload` bleibt bis zum Endzustand beider Meldungen des ersten Laufs; dasselbe gegen einen settelnden Import-Lauf, und ein Import, Delete oder Restore startet nicht gegen einen settelnden Undo |
 | **`addOnly`-Zeile, erster ADD `unknown`** (Codex-Befund 7) | Nachlesen prüft den ADD (`n` auf T vorhanden?) — nie ein REMOVE; die Quelle gerät in keine Löschmeldung (E24) |
 | **REMOVE ok, ADD scheitert (409, Slot, Netz)** | `failed@1`, `completedSteps 1`, Quelle in `sync-deleted`, Ziel nicht in `sync-restored`; Dock `gapCount` + Hinweis; **derselbe Undo erneut** schließt die Lücke als `addOnly` (E9, E18); der Restore aus der Übertragungsdatei täte es nur ohne fremde Ziel-Einträge (F14) |
 | **REMOVE `unknown`, Nachlesen: Quelle weg** | `failed@1` mit `removedButNotRestored`; Quelle gemeldet; Lücke wie oben |
@@ -825,7 +830,7 @@ Banner), `undo.summary.*` (Zähler, `removed`, `restored`, `gaps`, `gapsHint`, `
 | **Ungetracktes Ziel** (olafs `test`) | Erlaubt (E4); beide Meldungen Papier ohne Kanal (N3), kein Resync, keine Resync-Zeile, auch kein Fallback (`expectedChannelName: null`); Slot-Vorschau über `twitchLogin` |
 | **Nicht-aktives Set eines getrackten Kanals** (olafs `test`, wenn `tttt` aktiv) | Papier-Einträge mit Besitzerkanal (N3); **kein** Client-Resync und keine Resync-Zeile (E16, #255-Regel); Mitgliederliste per N2 beim Settle bzw. Vormerkung |
 | **Aktives Set des Seitenkanals** | Kanal-Einträge, `channel.synced`, Backend-Resync unter Cooldown (Dock `backendTriggered`), Raster folgt; scheitern beide Meldungen endgültig ⇒ N1-Fallback des Kanals |
-| **Zwei Läufe gleichzeitig** | Arbiter (`'undo'`) blockt vor Dialog und vor Start; ein Delete/Restore/Import während eines Undo startet nicht (F9) |
+| **Zwei Läufe gleichzeitig** | Arbiter (`'undo'`, 11.1) blockt vor Dialog und vor Start; ein Delete/Restore/Import während eines laufenden **oder settelnden** Undo startet nicht (F9, F16) |
 | **Kanalwechsel während des Laufs** | Guard fragt (E15); fertiger Lauf verschwindet aus dem Dock beim Wechsel wie bei den anderen |
 | **Rate-Limit der Vorprüfung** | `targetCheckUnavailable` im Datei-Schritt, keine Weiche (#253 F3) |
 | **Datei mit zwei Zeilen auf dieselbe Quell- oder Ziel-ID** (manipuliert) | beide `duplicateInFile` (4.3 Schritt 4) |
@@ -894,11 +899,14 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     Kanal in `resyncTriggered`, zeigt das Dock `backendTriggered`. Scheitern **beide** Meldungen
     endgültig, läuft genau ein N1-Fallback für `expectedChannelName`; ist er `null` (nicht-aktives
     oder ungetracktes Ziel), keiner; scheitert nur eine Meldung, keiner.
-15. `beforeunload` ist registriert genau, solange der Undo läuft oder `settlement === 'pending'` ist
-    **und** der Plan mindestens eine `full`-Zeile hat; für einen reinen `addOnly`-Lauf nie; nach
-    `settled` nie. Der `canDeactivate`-Guard der Nutzungsseite fragt bei laufendem Undo.
-16. `SevenTvRunArbiter.activeRun()` liefert `'undo'` während eines Undo-Laufs; Delete, Restore,
-    Import und ein zweiter Undo starten währenddessen nicht; der Import-Trigger ist gesperrt.
+15. `beforeunload` ist registriert genau, solange ein Undo-Lauf mit mindestens einer `full`-Zeile
+    läuft, settelt oder eine seiner beiden Meldungen keinen Endzustand hat; für einen reinen
+    `addOnly`-Lauf nie; danach nie. Der `canDeactivate`-Guard der Nutzungsseite fragt bei laufendem
+    Undo.
+16. Der Arbiter aus #256 Punkt 1 kennt den Undo als vierten Lauf-Typ (`'undo'`): während ein Undo
+    läuft oder settelt, starten Delete, Restore, Import und ein zweiter Undo nicht, und der
+    Import-Trigger ist gesperrt; umgekehrt startet kein Undo, während ein anderer Dienst läuft
+    oder settelt.
 17. Eine `full`-Zeile mit `completedSteps >= 1` und `status: 'failed'` zählt als Lücke; das Dock zeigt
     `gapCount` mit dem Hinweis, den Undo aus derselben Datei zu wiederholen; der zweite Lauf
     klassifiziert die Zeile als `addOnly` und sendet genau die ADDs der fehlenden Ziel-Einträge —
@@ -939,7 +947,7 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     die Datei-Bestätigung ist „Rückweg sichern" gesperrt und jede unbelegte `full`-Zeile
     `skippedUnproven`; mit Bestätigung läuft sie. Gegenbeispiel als Test: `planned`-Datei eines nie
     gestarteten Laufs, Live-Stand von Hand nachgebildet (T weg, S unter A) ⇒ ohne Bestätigung kein
-    REMOVE. (Vorläufig, Abschnitt 15 A.)
+    REMOVE. (Betreiberentscheidung Abschnitt 15 A.)
 29. **(Codex 3)** Trägt das Ziel im Live-Set einen Alias außerhalb von `removedTarget.entries` oder
     einen aliaslosen Eintrag, den die Datei nicht nennt, ist die Zeile `targetHasForeignEntries` —
     für `full` und `addOnly`, im Dialog, im Frischcheck und vor dem REMOVE; kein Request an 7TV für
@@ -954,10 +962,14 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     ein `null`-Eintrag ohne `defaultName` macht eine `full`-Zeile zu `targetNameUnverifiable` und
     fällt bei `addOnly` in `omittedEntries`; ein Ziel, dessen 7TV-Standardname sich seit der Datei
     geändert hat, kommt unter dem Namen der Datei zurück.
-32. **(Codex 5)** Während `undoService.settlement() === 'pending'` oder während ein Import-Lauf
-    settelt, startet kein Undo (Notiz, kein Dialog, kein Request); während ein Undo settelt, startet
-    kein Import; `beforeunload` bleibt registriert, bis beide Meldungen des Undo-Laufs einen
-    Endzustand haben — auch wenn inzwischen `reset()` gerufen oder ein neuer Lauf gezeigt wurde.
+32. **(Codex 5)** Der Arbiter aus #256 Punkt 1 meldet „belegt", solange der Undo-Dienst
+    `isSettling` liefert (Nachlesen oder Meldungen ohne Endzustand), und solange ein anderer
+    Dienst settelt: in beiden Fällen startet kein Undo (Notiz, kein Dialog, kein Request), und kein
+    Import, Delete oder Restore startet gegen einen settelnden Undo; `beforeunload` bleibt
+    registriert, bis beide Meldungen des Undo-Laufs einen Endzustand haben — auch wenn inzwischen
+    `reset()` gerufen oder ein neuer Lauf gezeigt wurde. Der Undo-Flow und der Import-Flow
+    enthalten **keine** eigene Settling-Prüfung (`grep` findet keine `settlement`-Abfrage außerhalb
+    des Arbiters).
 33. **(Codex 6)** Eine `full`-Zeile, deren Ziel-Einträge A und B sind, S hält A, ein Dritter hält
     B ⇒ ganze Zeile `targetNameTaken`, S bleibt, kein Request. Eine `addOnly`-Zeile in derselben Lage
     ⇒ `ADD A`, Ende `partial`, `omittedEntries: [{ B, targetNameTaken }]` im Ergebnisprotokoll, Dock
@@ -1012,15 +1024,16 @@ als Undo-Reihenfolge benannt).
   und `abortOn` (AK 10), Settling mit Re-Read nach Tabelle 4.6 — je Modus und Operation, inklusive
   `addOnly` an Schritt 0 (AK 11, 34), Zeilen-Prüfung vor jedem REMOVE mit Drift einer späteren
   Quelle, Koaleszierung, Frisch-Read nach Rate-Limit-Pause, drei Read-Fehler (AK 26, 27),
-  Settling-Sperre und `destructiveRunActive` über offene Läufe bis zum Endzustand beider Meldungen
-  (AK 32), `partial` mit `omittedEntries` (AK 33), beide Meldungen in
+  `isSettling`/`destructiveOpen` über offene Läufe bis zum Endzustand beider Meldungen, auch nach
+  `reset()` (AK 32), `partial` mit `omittedEntries` (AK 33), beide Meldungen in
   Reihenfolge mit richtigen ID-Mengen (AK 12), Dreiwertigkeit und N4-Retry (AK 13), kein
   Client-Resync im Erfolgsfall (nicht-aktives Ziel ⇒ kein Request, `backendTriggered` aus beiden
   Antworten) und N1-Fallback nur bei zwei endgültig gescheiterten Meldungen (AK 14),
   `destructiveRunActive`/`beforeunload` (AK 15), `resetIfChannelChanged`,
   `reset()` während des Nachlesens sendet trotzdem (Plan-230 §7).
-- `seven-tv-run-arbiter.spec.ts` **+2**, `usage-stats-leave.guard.spec.ts` **+1**,
-  `import-trigger.spec.ts` (Fixtures um die dritte Art) (AK 16); der Router-Spec aus #264
+- `seven-tv-run-arbiter.spec.ts` **+3** (auf dem Arbiter aus #256: Undo läuft ⇒ belegt; Undo
+  settelt ⇒ belegt; Import settelt ⇒ Undo-Start abgewiesen), `usage-stats-leave.guard.spec.ts` **+1**,
+  `import-trigger.spec.ts` (Fixtures um die dritte Art) (AK 16, 32); der Router-Spec aus #264
   (`leadsToSameRoute`) bleibt unverändert grün — der Undo fügt keine Route hinzu, und `ng build
   --stats-json` zeigt das Initial-Bundle ohne `seven-tv-undo.service` (F9).
 - `undo-progress-section.spec.ts` (neu): Zähler, `gapCount` mit Hinweis, `unknownRecordedIn`,
@@ -1089,7 +1102,11 @@ PR-Text mit Zahlen:
    zeigt die Zeile als `addOnly [B]` → ein ADD → Lücke zu.
 6c. **`planned`-Datei:** die Rückweg-Datei der Übertragung (Stufe `planned`) einlesen → jede
    `full`-Zeile „unbelegt", „Rückweg sichern" gesperrt, bis die Bestätigung gesetzt ist; mit
-   Bestätigung läuft der Undo wie aus dem Ergebnisprotokoll (vorläufig, Abschnitt 15 A).
+   Bestätigung läuft der Undo wie aus dem Ergebnisprotokoll (Abschnitt 15 A).
+6d. **Settling-Sperre:** Undo mit einer Zeile starten, deren REMOVE der Stub (oder ein
+   Netzwerk-Throttle) mit 503 beantwortet, sodass das Nachlesen läuft → währenddessen „Importieren"
+   öffnen → Trigger gesperrt, Arbiter-Notiz; Tab-Schließen zeigt den Browser-Dialog bis beide
+   Meldungen durch sind.
 7. **Audit (Kanal- und globale Ansicht):** je Undo ein `syncDeleted`- und ein `syncRestored`-Eintrag
    mit Besitzerkanal (nicht-aktives Set) bzw. ohne Kanal „für olaf_olaf_son" (ungetrackt), plus
    `channel.resync`, falls ausgelöst.
@@ -1130,19 +1147,57 @@ PR-Text mit Zahlen:
 
 ## 11. Berührungspunkte mit #255 und #256
 
-### 11.1 #256 Punkt 1 — Arbiter und Settling-Fenster
+### 11.1 #256 Punkt 1 — Arbiter und Settling-Fenster: **Vorbedingung** dieser Spec
 
 Der Undo hat dasselbe Settling-Fenster wie der Import (Re-Read bis 20 s, Meldungen danach) und
 hätte dieselbe Lücke gehabt: `activeRun` fällt mit `isRunning`, ein zweiter Start wäre möglich, und
 `destructiveRunActive` hinge am gezeigten Lauf. Die erste Fassung wollte damit ausliefern („der
-Rest fällt sicher"); Codex-Befund 5 hat gezeigt, dass er **nicht** sicher fällt (F16). **Vorgabe
-(E22):** der Undo schließt das Fenster **selbst** — Settling-Sperre im eigenen Flow gegen den
-eigenen Dienst und gegen den settelnden Import, Spiegel im Import-Flow, `destructiveRunActive`
-über alle offenen Läufe bis zum Endzustand der Meldungen. Damit ist #256 Punkt 1 keine
-Vorbedingung: landet #256 zuerst und verlegt die Sperre in den Arbiter, ersetzt der Undo seine
-lokale Prüfung durch die des Arbiters; landet der Undo zuerst, hat #256 vier Dienste und ein
-fertiges Muster. Ob der Betreiber #256 Punkt 1 trotzdem zur Vorbedingung machen will, steht in
-Abschnitt 15 B.
+Rest fällt sicher"); Codex-Befund 5 hat gezeigt, dass er **nicht** sicher fällt (F16). Die zweite
+Fassung wollte die Sperre lokal im Undo setzen. **Betreiber 2026-09-25 (Abschnitt 15 B):** #256
+Punkt 1 wird vor #254 gebaut und gemergt (Reihenfolge #255 → #256 → Plan und Umsetzung von #254);
+der Undo hängt sich in den Arbiter ein, den #256 liefert, und enthält keine eigene Sperre.
+
+#### Vertrag, den #256 Punkt 1 für #254 erfüllen muss
+
+Dieser Unterabschnitt ist so geschrieben, dass er als Anforderung an #256 ohne die übrige Spec
+lesbar ist. „Lauf-Dienst" meint heute `SevenTvDeleteService`, `SevenTvRestoreService` und
+`SevenTvImportService`; #254 fügt `SevenTvUndoService` hinzu.
+
+1. **Zustände je Lauf-Dienst.** Jeder Lauf-Dienst liefert dem Arbiter zwei Signale:
+   `isRunning` (die Engine arbeitet eine Queue ab — heute schon vorhanden) und `isSettling`
+   (die Engine ist fertig, aber der Lauf ist noch nicht abgeschlossen: ein Nachlesen nach
+   `unknown`-Zeilen läuft, **oder** eine Meldung an das Backend hat noch keinen Endzustand
+   `succeeded | partial | failed`). Für einen Dienst ohne Nachlesen und ohne Meldung ist
+   `isSettling` konstant `false`. Der Import settelt heute schon (`settlement: 'pending'`), meldet
+   danach aber außerhalb jedes Zustands — `isSettling` muss beides umfassen.
+2. **Was der Arbiter daraus macht.** `activeRun` (oder ein Nachfolger) liefert den Dienst, der
+   läuft **oder settelt**, sonst `null`; ein Startpunkt darf nur bei `null` starten. Die Prüfung
+   sitzt weiterhin an jedem Startpunkt (vor dem Dialog und unmittelbar vor dem Start), aber sie
+   fragt nur den Arbiter — kein Startpunkt fragt einen fremden Dienst direkt. Der Arbiter kennt
+   dafür einen Grund, den ein Startpunkt als transiente Notiz zeigen kann (mindestens
+   `running | settling`, je Dienst), damit der Nutzer erfährt, warum nichts startet.
+3. **Unload-Schutz.** Der `beforeunload`-Schutz (heute nur im Import, an dessen
+   `destructiveRunActive`) wird die **Vereinigung** über alle Lauf-Dienste: ein Dienst liefert
+   `destructiveOpen` (mindestens ein Lauf mit destruktiver Zeile ist offen — läuft, settelt oder
+   meldet noch), und der Schutz ist scharf, solange irgendein Dienst `destructiveOpen` liefert.
+   „Offen" hängt **nicht** am gezeigten Lauf: ein `reset()`, ein Kanalwechsel oder ein neuer Lauf
+   nehmen einen Lauf, dessen Meldungen noch ausstehen, nicht aus dem Schutz. Der Import muss dafür
+   seinen Schutz von `run()` (dem gezeigten Lauf) auf einen Satz offener Läufe umstellen.
+4. **Vierter Lauf-Typ.** Ein neuer Dienst registriert sich beim Arbiter, indem er die drei
+   Signale (`isRunning`, `isSettling`, `destructiveOpen`) liefert und einen Namen im
+   `SevenTvRunKind`-Union bekommt (`'undo'`); der Arbiter darf keine Dienstliste hart in seiner
+   Logik tragen, die ein vierter Dienst an mehr als einer Stelle erweitern müsste — eine
+   Registrierung, ein Union-Wert, fertig. Der Leave-Guard der Nutzungsseite (`canDeactivate`)
+   bleibt daneben, weil er nur beim Kanalwechsel fragt und nur `isRunning` braucht.
+5. **Prüfbarkeit.** Ein Test kann einen Dienst-Stub mit `isRunning: false, isSettling: true`
+   registrieren und erwartet, dass jeder Startpunkt abweist; ein Stub mit `destructiveOpen: true`
+   hält den `beforeunload` scharf, auch wenn `run()` des Dienstes `null` ist.
+
+Was #254 davon nutzt: die Registrierung als `'undo'` (Punkt 4) mit `isSettling` = Nachlesen oder
+eine der beiden Meldungen offen, `destructiveOpen` = ein offener Lauf mit `full`-Zeile (6.5); der
+Arbiter-Grund für die Notiz am Startpunkt (Punkt 2); der gemeinsame Unload-Schutz (Punkt 3, E15).
+Was #254 **nicht** tut: eine eigene Settling-Prüfung im Undo-Flow, eine Spiegelzeile im
+Import-Flow, einen eigenen `beforeunload`.
 
 ### 11.2 #256 Punkt 4 — Dock-Hinweis bei unklärbarem REMOVE
 
@@ -1254,8 +1309,9 @@ Ein gescheitertes ADD ist eine benannte Lücke; nur Duplikat-Zellen sind netto p
 **Frontend (geändert):** `shared/export/export-envelope.ts` (`ExportKind`), `transfer-run-export.ts`
 (`parseTransferRunForUndo`), `import-source-parser.ts` (Abweisung), `purge-run-export.ts` (nur Typen) ·
 `shared/seven-tv/file-import-step.ts` (Weiche, dritte Ergebnisart), `import-trigger.ts` (Verzweigung),
-`import-source-dialog.ts` (Bindung) · `import-flow.ts` (Settling-Sperre gegen den Undo, E22) ·
-`core/seven-tv/seven-tv-run-arbiter.ts` (`'undo'`) · `core/seven-tv/seven-tv-run-engine.ts` (nur,
+`import-source-dialog.ts` (Bindung) · `core/seven-tv/seven-tv-run-arbiter.ts` (Registrierung
+`'undo'` auf dem Arbiter aus #256, 11.1 — `import-flow.ts` bleibt unberührt) ·
+`core/seven-tv/seven-tv-run-engine.ts` (nur,
 falls der Plan die Zeilen-Prüfung als Hook einhängt, E19) ·
 `features/usage-stats/usage-stats-leave.guard.ts` (Undo-Dienst; nach #264 nur aus
 `usage-stats.routes.ts` referenziert, F9), `usage-stats-page.html`/`.ts` (Section, N2) ·
@@ -1275,43 +1331,38 @@ Zeile; #256 erhält den Hinweis auf 11.1/11.3, F5 (a) und F14; #255 den auf 11.4
 
 ---
 
-## 15. Neue offene Entscheidungen nach Codex-Review
+## 15. Betreiberentscheidungen nach Codex-Review (2026-09-25)
 
-Zwei Befunde der Zweitmeinung lassen sich nicht innerhalb der sechs getroffenen Entscheidungen
-(Abschnitt 13) auflösen, ohne eine Produkt- oder Risikofrage zu beantworten. Die Spec legt bis zur
-Entscheidung jeweils die empfohlene Option zugrunde und markiert die Stellen mit „vorläufig".
+Zwei Befunde der Zweitmeinung warfen Fragen auf, die sich nicht innerhalb der sechs Entscheidungen
+aus Abschnitt 13 beantworten ließen. Beide sind am 2026-09-25 entschieden; je Punkt die
+Entscheidung mit Begründung, die verworfenen Alternativen in einer Zeile, die Stelle in Klammern.
 
-**A. Herkunftsnachweis bei Dateien der Stufe `planned` (Codex-Befund 2, F17).** Eine
-Rückweg-Datei entsteht vor dem ersten REMOVE und beweist nicht, dass der Lauf je begann; der
-Live-Check beweist nur den Zustand. Ein nie gestarteter Lauf plus eine manuelle Nachbildung
-desselben Zustands ließe den Undo ein von Hand hinzugefügtes Emote entfernen.
-- (a) **`planned`-Dateien bleiben Undo-fähig, aber mit sichtbarer Kennzeichnung je `full`-Zeile und
-  einer ausdrücklichen Bestätigung je Datei**, ohne die keine `full`-Zeile läuft; `addOnly`-Zeilen
-  unberührt. *Empfehlung.* Erhält den Tab-Tod-Fall (nur die `planned`-Datei existiert, die
-  gelaufenen Replace-Zeilen sind ohne Undo nicht zurückzunehmen) und legt die Beweislast dorthin,
-  wo sie hingehört — der Nutzer sieht Bilder und Namen und bestätigt, dass er die Herkunft geprüft
-  hat. Der Restfall ist ein Zufall zweiter Ordnung, gegen den die Bestätigung ein bewusster
-  Handgriff ist, keine Formalie.
-- (b) `planned`-Dateien sind nur für `addOnly`-Zeilen (Lücken schließen) Undo-fähig; `full`-Zeilen
-  sind `skippedUnproven` ohne Ausnahme. Am strengsten, aber der Tab-Tod-Fall verliert seinen
-  einzigen In-App-Rückweg — die Zeilen, die vor dem Tab-Tod glückten, ließen sich nur noch im
-  7TV-Web von Hand zurücknehmen, der abgelehnte Handgriff.
-- (c) `planned`-Dateien wie `finished` behandeln (erste Fassung). Einfachste Regel, aber sie
-  autorisiert im Restfall eine Löschung, die sich nicht beweisen lässt — gegen die Leitplanke
-  „im Zweifel fail-closed".
+**A. Herkunftsnachweis bei Dateien der Stufe `planned` (Codex-Befund 2, F17) — entschieden:
+`planned`-Dateien bleiben Undo-fähig, mit sichtbarer Kennzeichnung je `full`-Zeile und einer
+ausdrücklichen Bestätigung je Datei**, ohne die keine `full`-Zeile läuft; `addOnly`-Zeilen
+unberührt (E2, F17, 4.3, 6.3, AK 28, 9.5 Nr. 6c) — wie empfohlen. Erhält den Tab-Tod-Fall (nur
+die `planned`-Datei existiert, die gelaufenen Replace-Zeilen sind ohne Undo nicht zurückzunehmen)
+und legt die Beweislast dorthin, wo sie hingehört — der Nutzer sieht Bilder und Namen und
+bestätigt, dass er die Herkunft geprüft hat. Der Restfall ist ein Zufall zweiter Ordnung, gegen
+den die Bestätigung ein bewusster Handgriff ist, keine Formalie.
+- Verworfen: `planned`-Dateien nur für `addOnly`-Zeilen zulassen, weil der Tab-Tod-Fall damit
+  seinen einzigen In-App-Rückweg verlöre — die vor dem Tab-Tod geglückten Zeilen ließen sich nur
+  noch im 7TV-Web von Hand zurücknehmen, der abgelehnte Handgriff.
+- Verworfen: `planned` wie `finished` behandeln (erste Fassung), weil das im Restfall eine Löschung
+  autorisiert, die sich nicht beweisen lässt — gegen die Leitplanke „im Zweifel fail-closed".
 
-**B. Arbiter-Settling als Vorbedingung (Codex-Befund 5, F16, 11.1).** Der Undo schließt das
-Settling-Fenster mit einer lokalen Sperre (E22: eigener Dienst und settelnder Import, Spiegel im
-Import-Flow). #256 Punkt 1 will dieselbe Sperre in den Arbiter verlegen.
-- (a) **Lokale Sperre jetzt, #256 Punkt 1 konsolidiert später.** *Empfehlung.* Der Undo liefert
-  fail-closed ohne Wartepflicht; die spätere Verlagerung in den Arbiter ersetzt zwei lokale Prüfungen
-  durch eine und hat mit dem Undo ein viertes Beispiel. Kosten: eine Zeile im `import-flow.ts`, die
-  #256 wieder entfernt.
-- (b) #256 Punkt 1 wird Vorbedingung von #254; der Undo hängt sich nur in den Arbiter ein. Sauberer
-  Endzustand, aber eine Reihenfolge-Abhängigkeit zwischen zwei parallel laufenden Issues und ein
-  Undo, der auf ein Refactoring wartet, das er nicht braucht.
-- (c) Weder noch — ausliefern wie in der ersten Fassung („der Rest fällt sicher"). Widerlegt durch
-  F16: er fällt nicht sicher.
+**B. Arbiter-Settling als Vorbedingung (Codex-Befund 5, F16, 11.1) — entschieden: #256 Punkt 1
+wird Vorbedingung von #254**; der Undo hängt sich in den Arbiter ein, den #256 liefert, und
+enthält keine eigene Settling-Sperre (E15, E22, F16, 6.3, 6.5, AK 16, 32, 11.1) — **abweichend
+von der Empfehlung** der zweiten Fassung. Grund: #256 wird in dieser Session ohnehin vor der
+Umsetzung von #254 gebaut und gemergt (Reihenfolge #255 → #256 → Plan und Umsetzung von #254);
+die lokale Doppelsperre hätte keinen Gewinn und müsste wieder raus. Der Vertrag, den #256 Punkt 1
+dafür erfüllen muss, steht in 11.1 und gilt zugleich als Anforderung an #256.
+- Verworfen: lokale Sperre im Undo-Flow plus Spiegelzeile im Import-Flow, später von #256
+  konsolidiert (die Empfehlung), weil die Reihenfolge der Issues die Wartezeit, die sie vermeiden
+  sollte, gar nicht erzeugt — und der Code zweimal geschrieben und einmal gelöscht würde.
+- Verworfen: ausliefern wie in der ersten Fassung („der Rest fällt sicher"), weil F16 gezeigt hat,
+  dass er nicht sicher fällt.
 
 ---
 
@@ -1319,14 +1370,14 @@ Import-Flow). #256 Punkt 1 will dieselbe Sperre in den Arbiter verlegen.
 
 Urteil „needs-attention", fünf Befunde high, zwei medium. Jeder Befund wurde gegen den Code und
 die Spec geprüft; keiner ist widerlegt, einer (Befund 2) und die Vorbedingungsfrage aus Befund 5
-sind Betreiberfragen (Abschnitt 15).
+waren Betreiberfragen — beide am 2026-09-25 entschieden (Abschnitt 15).
 
 | # | Schwere | Befund | Prüfung am Code | Lösung | Wo |
 |---|---|---|---|---|---|
 | 1 | high | Der Frischcheck altert während des sequentiellen Laufs; ein späteres REMOVE nimmt einen inzwischen vergebenen zweiten Alias mit | Zutreffend: Engine sequentiell mit 275 ms je Schritt und Rate-Limit-Pausen bis zu Minuten (`seven-tv-run-engine.ts:36-46`, `:430-462`); kein Vor-Schritt-Hook (`runRowFrom`, `:389-406`) | Prüfung je REMOVE gegen frischen Read, koalesziert ≤ 5 s, frisch nach jeder Pause; Read-Fehler ⇒ Zeile übersprungen, drei in Folge ⇒ Rest `cancelled`; Restfenster benannt | E14, E19, F13, 4.3, 4.4 Nr. 10a, 6.5, 7, AK 26–27, 9.5 Nr. 6a |
-| 2 | high | Eine `planned`-Datei beweist nicht, dass ihr Lauf je begann; der Live-Check beweist Zustand, nicht Herkunft | Zutreffend: Rückweg-Datei entsteht vor dem ersten REMOVE (Plan-230 §2), Audit trägt Zählwerte ohne IDs | `provenance` je Kandidat; vorläufig Kennzeichnung + Datei-Bestätigung, ohne die keine unbelegte `full`-Zeile läuft; **Betreiberfrage** | E2, F17, 4.3, 6.3, 7, AK 28, 9.5 Nr. 6c, **Abschnitt 15 A** |
+| 2 | high | Eine `planned`-Datei beweist nicht, dass ihr Lauf je begann; der Live-Check beweist Zustand, nicht Herkunft | Zutreffend: Rückweg-Datei entsteht vor dem ersten REMOVE (Plan-230 §2), Audit trägt Zählwerte ohne IDs | `provenance` je Kandidat; Kennzeichnung + Datei-Bestätigung, ohne die keine unbelegte `full`-Zeile läuft — **Betreiber: so entschieden** | E2, F17, 4.3, 6.3, 7, AK 28, 9.5 Nr. 6c, **Abschnitt 15 A** |
 | 3 | high | Bei einem fremden Ziel-Eintrag schließt nach einem Teilerfolg keine der beiden Dateien die Lücke (Regel 2 wirft die Restore-Zeile) | Zutreffend: `missingAliases` liefert bei fremdem Alias `[]` (`already-present-filter.ts:210-215`) | Fremde Ziel-Einträge sind Sperrgrund für `full` **und** `addOnly` an allen drei Prüfstellen; der kanonische Lückenschluss ist der Undo selbst (zweiter Lauf ⇒ `addOnly`), nicht der Restore aus der Übertragungsdatei | E9, E18, E20, F14, 4.3 Schritt 2, 4.7, 7, AK 17, 29, 30, 9.5 Nr. 6b, 11.3 |
 | 4 | high | Ein `null`-Eintrag hat nach dem Replace keinen Live-Standardnamen; `defaultName` aus der Datei ist nullbar und kann veraltet sein | Zutreffend: `defaultNameById` nur für IDs im Set (`seven-tv-set-entries.ts:41-71`), `defaultName: string \| null` (`transfer-run-export.ts:49`, Parser `:433`); kein Einzel-Emote-Lookup im Client | Jeder ADD mit explizitem Alias, für `null` der Datei-`defaultName`; Prüfung und Mutation gegen denselben Namen; ohne `defaultName` keine `full`-Zeile bzw. Eintrag ausgelassen | E21, F15, 4.3 Schritt 3/5, 4.4 Nr. 10, 6.4, 6.5, 7, AK 31 |
-| 5 | high | Ein zweiter Lauf während des Settlings ersetzt den gezeigten Lauf und lässt dessen Unload-Schutz und Meldungen fallen | Zutreffend: `activeRun` nur aus `isRunning` (`seven-tv-run-arbiter.ts:46-55`), `destructiveRunActive` folgt `run()` (`seven-tv-import.service.ts:273-277`) | Settling-Sperre im Undo-Flow (eigener Dienst + Import), Spiegel im Import-Flow; `destructiveRunActive` über alle offenen Läufe bis zum Endzustand beider Meldungen; keine Vorbedingung auf #256 Punkt 1 — **Betreiberfrage**, ob doch | E15, E22, F16, 6.3, 6.5, 7, AK 32, 11.1, **Abschnitt 15 B** |
+| 5 | high | Ein zweiter Lauf während des Settlings ersetzt den gezeigten Lauf und lässt dessen Unload-Schutz und Meldungen fallen | Zutreffend: `activeRun` nur aus `isRunning` (`seven-tv-run-arbiter.ts:46-55`), `destructiveRunActive` folgt `run()` (`seven-tv-import.service.ts:273-277`) | Sperre im Arbiter: #256 Punkt 1 ist **Vorbedingung** (Betreiber, abweichend von der Empfehlung); der Undo registriert sich dort mit `isRunning`/`isSettling`/`destructiveOpen`, der Unload-Schutz spannt über alle offenen destruktiven Läufe bis zum Endzustand beider Meldungen; Vertrag an #256 in 11.1 | E15, E22, F16, 6.3, 6.5, 7, AK 16, 32, 11.1, **Abschnitt 15 B** |
 | 6 | medium | Eine `full`-Zeile mit einem belegten Ziel-Namen lief mit dem Rest und endete `done`, ohne Lücken-Spur | Zutreffend (Spec-Logik der ersten Fassung, E8) | `full` alles-oder-nichts (`targetNameTaken` sperrt die Zeile); `addOnly` läuft mit `omittedEntries`, endet `partial`, Dock und Datei tragen den Vermerk | E8, E23, 4.3 Schritt 5, 4.7, 6.2, 6.4, 6.5, 7, AK 33 |
 | 7 | medium | Das Nachlesen ordnete Schritt 0 pauschal dem REMOVE zu; eine `addOnly`-Zeile hätte eine abwesende Quelle als bestätigtes REMOVE gelesen | Zutreffend (Spec-Logik der ersten Fassung, 4.6) | Nachlesen nach Operation des Schritts je Modus; `addOnly` gerät nie in die Löschmeldung | E24, 4.6, AK 34 |
