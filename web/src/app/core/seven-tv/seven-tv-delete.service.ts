@@ -3,6 +3,7 @@ import { inject, Injectable, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { retry, throwError, timer } from 'rxjs';
 
+import { ChannelService } from '../channels/channel.service';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
@@ -101,7 +102,8 @@ interface DeleteRunInfo {
   channelName: string;
   /** The tracked channel the report expects to touch (spec 4.6 point 21, E18): the page's channel
    *  when the run's set is its active one, otherwise `null`. Frozen with the run, sent with the
-   *  report and every retry. */
+   *  report and every retry, and the channel of the fallback resync after a first report that
+   *  failed for good (Nachtrag N1). */
   expectedChannelName: string | null;
   /** The set the run removes from, frozen when it starts (spec #200, 7.2, AK 71): the first
    *  report and every retry name this set, whatever the page's set dropdown shows by then. */
@@ -112,6 +114,7 @@ interface DeleteRunInfo {
 
 @Injectable({ providedIn: 'root' })
 export class SevenTvDeleteService {
+  private readonly channelService = inject(ChannelService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
 
   /** Own engine instance (not a shared singleton), so `isRunning` can never mean "the *other*
@@ -295,13 +298,15 @@ export class SevenTvDeleteService {
     this.lastRun.set({ setId: finished.setId, channelName: finished.channelName, result });
 
     if (result.doneKeys.length > 0) {
-      this.reportDeleted(finished, result);
+      this.reportDeleted(finished, result, () => this.fallbackResync(finished));
     }
   }
 
-  /** No resync of its own (spec 6.5): the delete never had one, the backend resyncs every channel
-   *  the report touched (E17), and the page lives off the resulting `channel.synced`. */
-  private reportDeleted(run: DeleteRunInfo, result: RunResult): void {
+  /** No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
+   *  touched (E17), and the page lives off the resulting `channel.synced`. `afterFailure` runs once
+   *  the report has failed for good — only the first report of a run passes one, never a manual
+   *  retry (Nachtrag N1). */
+  private reportDeleted(run: DeleteRunInfo, result: RunResult, afterFailure?: () => void): void {
     this.syncReport.set('pending');
     this.syncReportReason.set(null);
     // A delete run's keys are its 7TV ids (see toDeleteQueue) — one per cell, unique in the run.
@@ -334,11 +339,28 @@ export class SevenTvDeleteService {
             this.applyReportOutcome(classifySyncInSetResponse(answer, sevenTvEmoteIds.length)),
           ),
         // A 404 (the set is gone) ends in 'failed'/'setNotFound' — never in 'succeeded' (#224).
-        error: (error: HttpErrorResponse) =>
+        error: (error: HttpErrorResponse) => {
           this.applyIfCurrent(run, () =>
             this.applyReportOutcome(classifySyncInSetFailure(error.status)),
-          ),
+          );
+          afterFailure?.();
+        },
       });
+  }
+
+  /** Nachtrag N1, AK 36: a report that failed for good (any status, or a network error, after the
+   *  retries) never reached the backend's resync stage, so nothing would pull the page's rows until
+   *  the worker's periodic resync. The client stands in for it — for `expectedChannelName` only: a
+   *  non-active or untracked set has no channel the backend would have resynced either. No dock line
+   *  (the delete never had one; the `syncFailed` notice is already up, and the visible effect is the
+   *  resync's `channel.synced`), so its outcome — a 429 cooldown included — is deliberately
+   *  swallowed. Runs for a superseded run too, like the restore's: it is owed to 7TV's state. */
+  private fallbackResync(run: DeleteRunInfo): void {
+    const channelName = run.expectedChannelName;
+    if (channelName === null) {
+      return;
+    }
+    this.channelService.resync(channelName).subscribe({ error: () => undefined });
   }
 
   private applyReportOutcome(outcome: SyncReportOutcome): void {

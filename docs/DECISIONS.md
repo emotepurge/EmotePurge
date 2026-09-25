@@ -271,7 +271,12 @@ no request token either, so a client that hangs up after the write cannot skip t
 meant to check it; and a failure in them is logged and swallowed rather than turned into a 500,
 because the report is committed and a 500 would make the client retry a report that succeeded — the
 worker's periodic resync reaches the channel on its next tick regardless. `sync-imported` stays
-without a backend resync; its frontend resync is unchanged.
+without a backend resync; its frontend resync is unchanged. When the first report of a restore or
+delete run fails for good (any status or a network error, after the automatic retries), the backend
+never reached this stage, so the client triggers `POST /api/channels/{c}/resync` itself — the
+restore for `resyncChannelName ?? expectedChannelName`, the delete for `expectedChannelName`, none
+when that is `null`, never after a manual retry, a 429 read as the cooldown (addendum N1); a
+replace's failed removal report already fell back to the import's own resync.
 
 **Residual risk, accepted (F12, F13).** The report changes rows on the client's word: the server
 checks who reports (cached 7TV rights, up to 10 minutes old in the grants cache), not whether the

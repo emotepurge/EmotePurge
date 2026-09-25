@@ -739,6 +739,65 @@ describe('SevenTvRestoreService', () => {
       expect(service.resyncTrigger()).toBe('idle');
     });
 
+    // Nachtrag N1, AK 36: a report that fails for good never reached the backend's resync stage, so
+    // the client stands in with `resyncChannelName ?? expectedChannelName`.
+    it('resyncs the expected channel itself when the report for its active set fails for good', () => {
+      runOneRestoreToReport(target({ active: true })).flush(null, {
+        status: 503,
+        statusText: 'Unavailable',
+      });
+      vi.advanceTimersByTime(2000);
+      httpMock
+        .expectOne(SYNC_RESTORED_ENDPOINT)
+        .flush(null, { status: 503, statusText: 'Unavailable' });
+      httpMock.expectNone(RESYNC_ENDPOINT);
+      vi.advanceTimersByTime(4000);
+      httpMock
+        .expectOne(SYNC_RESTORED_ENDPOINT)
+        .flush(null, { status: 503, statusText: 'Unavailable' });
+
+      expect(service.syncReport()).toBe('failed');
+      const resync = httpMock.expectOne(RESYNC_ENDPOINT);
+      expect(service.resyncTrigger()).toBe('pending');
+      resync.flush(null, { status: 202, statusText: 'Accepted' });
+      expect(service.resyncTrigger()).toBe('succeeded');
+    });
+
+    it('resyncs the non-active set’s channel after a failed report, as before', () => {
+      runOneRestoreToReport(target()).flush(null, { status: 403, statusText: 'Forbidden' });
+
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+      expect(service.resyncTrigger()).toBe('succeeded');
+    });
+
+    it('reads a 429 on the fallback resync as cooldown, not as a failure', () => {
+      runOneRestoreToReport(target({ active: true })).flush(null, {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+
+      httpMock
+        .expectOne(RESYNC_ENDPOINT)
+        .flush({ errorCode: 'resync_cooldown_active' }, { status: 429, statusText: 'Too Many' });
+      expect(service.resyncTrigger()).toBe('cooldown');
+    });
+
+    it('sends no second fallback resync for a manual retry that fails again', () => {
+      runOneRestoreToReport(target({ active: true })).flush(null, {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+
+      service.retrySyncReport();
+      httpMock
+        .expectOne(SYNC_RESTORED_ENDPOINT)
+        .flush(null, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.syncReport()).toBe('failed');
+      httpMock.expectNone((request) => request.url.endsWith('/resync'));
+    });
+
     it('sends no resync for an untracked target, not even after a failed report', () => {
       runOneRestoreToReport(target({ untracked: true })).flush(null, {
         status: 403,

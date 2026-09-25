@@ -117,6 +117,14 @@ describe('SevenTvDeleteService', () => {
     return httpMock.expectOne(SYNC_ENDPOINT);
   }
 
+  /** A first report that failed for good is followed by the client's fallback resync of the
+   *  expected channel (Nachtrag N1) — flushed here where a case is about something else. */
+  function flushFallbackResync() {
+    httpMock
+      .expectOne('/api/channels/sensitron/resync')
+      .flush(null, { status: 202, statusText: 'Accepted' });
+  }
+
   describe('sync report', () => {
     it('reports success only when the backend archived everything', () => {
       runOneDeleteToSyncRequest().flush(
@@ -158,6 +166,7 @@ describe('SevenTvDeleteService', () => {
     // AK 15: a revoked right is final — no automatic retry, failed/forbidden.
     it('reads a 403 as failed/forbidden without retrying', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
 
       expect(service.syncReport()).toBe('failed');
       expect(service.syncReportReason()).toBe('forbidden');
@@ -172,6 +181,7 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 404, statusText: 'Not Found' });
       vi.advanceTimersByTime(4000);
       httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 404, statusText: 'Not Found' });
+      flushFallbackResync();
 
       expect(service.syncReport()).toBe('failed');
       expect(service.syncReportReason()).toBe('setNotFound');
@@ -183,6 +193,7 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 429, statusText: 'Too Many' });
       vi.advanceTimersByTime(4000);
       httpMock.expectOne(SYNC_ENDPOINT).error(new ProgressEvent('error'));
+      flushFallbackResync();
 
       expect(service.syncReport()).toBe('failed');
       expect(service.syncReportReason()).toBe('unavailable');
@@ -206,12 +217,14 @@ describe('SevenTvDeleteService', () => {
 
       vi.advanceTimersByTime(4000);
       httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 500, statusText: 'Server Error' });
+      flushFallbackResync();
 
       expect(service.syncReport()).toBe('failed');
     });
 
     it('does not retry a 401 — an expired session cannot be fixed by waiting', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
+      flushFallbackResync();
 
       expect(service.syncReport()).toBe('failed');
       vi.advanceTimersByTime(10_000);
@@ -220,6 +233,7 @@ describe('SevenTvDeleteService', () => {
 
     it('retrySyncReport() re-sends the same ids after a failure', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
+      flushFallbackResync();
 
       service.retrySyncReport();
 
@@ -233,8 +247,69 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReport()).toBe('succeeded');
     });
 
+    // Nachtrag N1, AK 36: a report that fails for good never reached the backend's resync stage,
+    // so the client resyncs the expected channel (the page's, for its active set) itself — once,
+    // after the first report only, and without a dock line of its own.
+    describe('fallback resync after a report that failed for good', () => {
+      const RESYNC_ENDPOINT = '/api/channels/sensitron/resync';
+
+      it('resyncs the expected channel once the report has failed after its retries', () => {
+        runOneDeleteToSyncRequest().flush(null, { status: 503, statusText: 'Unavailable' });
+        vi.advanceTimersByTime(2000);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 503, statusText: 'Unavailable' });
+        httpMock.expectNone(RESYNC_ENDPOINT);
+        vi.advanceTimersByTime(4000);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 503, statusText: 'Unavailable' });
+
+        expect(service.syncReport()).toBe('failed');
+        httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+      });
+
+      it('sends no resync for a set without an expected channel', () => {
+        service.startDelete('set-1', 'sensitron', [EMOTES[0]], null);
+        httpMock.expectOne(GQL_ENDPOINT).flush({});
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 403, statusText: 'Forbidden' });
+
+        expect(service.syncReport()).toBe('failed');
+        httpMock.expectNone((request) => request.url.endsWith('/resync'));
+      });
+
+      it('sends no resync after a report that answered', () => {
+        runOneDeleteToSyncRequest().flush(
+          deletedAnswer({
+            unresolvedChannel: { channelName: 'sensitron', reason: 'activeSetDiffers' },
+          }),
+        );
+
+        httpMock.expectNone((request) => request.url.endsWith('/resync'));
+      });
+
+      it('sends no second resync for a manual retry that fails again', () => {
+        runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+        httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
+
+        service.retrySyncReport();
+        httpMock.expectOne(SYNC_ENDPOINT).flush(null, { status: 403, statusText: 'Forbidden' });
+
+        expect(service.syncReport()).toBe('failed');
+        httpMock.expectNone((request) => request.url.endsWith('/resync'));
+      });
+
+      it('keeps a cooldown answer to itself — the delete dock has no resync line', () => {
+        runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+        httpMock
+          .expectOne(RESYNC_ENDPOINT)
+          .flush({ errorCode: 'resync_cooldown_active' }, { status: 429, statusText: 'Too Many' });
+
+        expect(service.syncReport()).toBe('failed');
+        expect(service.syncReportReason()).toBe('forbidden');
+      });
+    });
+
     it('reset() clears the sync report and its reason as well', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
+      flushFallbackResync();
       expect(service.syncReportReason()).toBe('other');
 
       service.reset();
@@ -511,6 +586,7 @@ describe('SevenTvDeleteService', () => {
 
   it('reset() also drops the retry state — retrySyncReport() afterwards sends nothing', () => {
     runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
+    flushFallbackResync();
 
     service.reset();
     service.retrySyncReport();
@@ -627,6 +703,7 @@ describe('SevenTvDeleteService', () => {
     const firstReport = httpMock.expectOne(SYNC_ENDPOINT);
     httpMock.expectNone(SYNC_ENDPOINT_SET_2);
     firstReport.flush(null, { status: 401, statusText: 'Unauthorized' });
+    flushFallbackResync();
     expect(service.lastRun()?.setId).toBe('set-1');
 
     service.retrySyncReport();

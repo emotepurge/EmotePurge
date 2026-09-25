@@ -142,7 +142,9 @@ export interface RestoreRunInfo {
  * target, tracked or not. The backend resyncs every channel it touched (E17) and says so in
  * `resyncTriggered`; this service only follows up with its own resync for a non-active set of a
  * tracked channel (E12), and only once the report has answered, so a channel is never resynced
- * twice for one report (F15, AK 27).
+ * twice for one report (F15, AK 27). A first report that fails for good gets a resync of
+ * `resyncChannelName ?? expectedChannelName` instead, since the backend never reached its own
+ * (Nachtrag N1, AK 36).
  */
 @Injectable({ providedIn: 'root' })
 export class SevenTvRestoreService {
@@ -333,14 +335,14 @@ export class SevenTvRestoreService {
   }
 
   /** `afterReport` runs once the report has settled either way — with the answer's
-   *  `resyncTriggered` on success, with an empty list on failure (the backend may or may not have
-   *  resynced; a resync of ours is then the safe side, the cooldown absorbs a duplicate). It runs
-   *  even for a superseded run: the report and the resync are owed to 7TV's state, not to what the
-   *  dock shows; only the *state* each writes is guarded (`applyIfCurrent`). */
+   *  `resyncTriggered` on success, with `null` once it has failed for good (the backend never
+   *  reached its resync stage then, Nachtrag N1). It runs even for a superseded run: the report and
+   *  the resync are owed to 7TV's state, not to what the dock shows; only the *state* each writes is
+   *  guarded (`applyIfCurrent`). */
   private reportRestored(
     run: RestoreRunInfo,
     result: RunResult,
-    afterReport?: (resyncTriggered: readonly string[]) => void,
+    afterReport?: (resyncTriggered: readonly string[] | null) => void,
   ): void {
     this.syncReport.set('pending');
     this.syncReportReason.set(null);
@@ -375,7 +377,7 @@ export class SevenTvRestoreService {
           this.applyIfCurrent(run, () =>
             this.applyReportOutcome(classifySyncInSetFailure(error.status)),
           );
-          afterReport?.([]);
+          afterReport?.(null);
         },
       });
   }
@@ -387,8 +389,20 @@ export class SevenTvRestoreService {
    *  back unresolved, `activeSetDiffers`) — the dock says "being re-synced" (`'backendTriggered'`)
    *  without a request of ours. An active set whose channel is not named (the cooldown was not
    *  acquired, F15, or `notTracked`) and an untracked target (nothing to resync) leave
-   *  `resyncTrigger` on `'idle'`: no request, no resync line. */
-  private resyncAfterReport(run: RestoreRunInfo, resyncTriggered: readonly string[]): void {
+   *  `resyncTrigger` on `'idle'`: no request, no resync line.
+   *
+   *  `resyncTriggered === null` is a report that failed for good (Nachtrag N1, AK 36) — any status,
+   *  or a network error, after the retries. The backend never reached its resync stage, so the
+   *  client stands in for it with `resyncChannelName ?? expectedChannelName`; the cooldown absorbs a
+   *  duplicate. Only after the first report of a run: a manual retry passes no `afterReport`. */
+  private resyncAfterReport(run: RestoreRunInfo, resyncTriggered: readonly string[] | null): void {
+    if (resyncTriggered === null) {
+      const fallbackChannel = run.resyncChannelName ?? run.expectedChannelName;
+      if (fallbackChannel !== null) {
+        this.triggerResync(run, fallbackChannel);
+      }
+      return;
+    }
     const channelName = run.resyncChannelName;
     if (channelName === null) {
       const expected = run.expectedChannelName;
@@ -401,6 +415,10 @@ export class SevenTvRestoreService {
       this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
       return;
     }
+    this.triggerResync(run, channelName);
+  }
+
+  private triggerResync(run: RestoreRunInfo, channelName: string): void {
     this.applyIfCurrent(run, () => this.resyncTrigger.set('pending'));
     this.channelService.resync(channelName).subscribe({
       next: () => this.applyIfCurrent(run, () => this.resyncTrigger.set('succeeded')),
