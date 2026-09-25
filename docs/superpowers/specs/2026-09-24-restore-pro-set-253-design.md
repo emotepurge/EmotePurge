@@ -173,13 +173,13 @@ der adversarialen Zweitmeinung (Abschnitt 14).
 | E3 | Wohin melden Delete, Restore und die Replace-Löschung? | An die **set-zentrischen** Routen `POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted` und `…/sync-restored`. **Alle** Aufrufer wechseln; die kanalgebundene set-scoped Form `{ emoteSetId, sevenTvEmoteIds }` samt Überladung `(channelName, emoteSetId, …)` und Antwortfeld `targetIsActiveSetOfChannel` **entfällt** | Sie existiert nur auf dem Epic-Branch (Abschnitt 1), hat nach dem Wechsel keinen Aufrufer, und #224 sitzt genau in ihr |
 | E4 | Bleibt die kanalgebundene Altform `{ emoteIds }` (Guid)? | **Ja, bis zum E3-Tor der Spec-200** (§21, Folge-Issue 1: hinter K7, ≥ 14 Tage, keine Altform-Log-Zeile) — aber **nur noch als Audit + Resync**: sie ändert **keine Zeile mehr** (H4). Route, Filter, Policy und Log-Zeile bleiben; die Guid-Überladung schreibt den Audit-Eintrag mit `legacyBodyForm: true`, stößt den Resync des Kanals unter dem Cooldown an und antwortet in der alten Form (5.6) | Aufruferprüfung (5.6): nach dem Wechsel gibt es in `web/src` **keinen** Code-Aufrufer der kanalgebundenen Routen mehr — der einzige verbleibende Aufrufer sind **Browser-Tabs mit dem Produktions-Frontend** über K7 hinweg; ihre Meldung kommt **nach** der 7TV-Mutation, ein 404 dort kostete die Papierspur. Aber ein solcher Tab weiß nichts vom Set: nach einem Set-Wechsel archivierte er eine Zeile, deren Emote im neuen aktiven Set liegt (H4). Der Resync stellt in beiden Richtungen den 7TV-Stand her; die Papierspur bleibt |
 | E5 | Wer darf melden? | Wer das Set laut 7TV **bearbeiten** darf — Besitzer oder `editor_of` des Besitzers, geprüft über `IImportTargetOwnershipService.CheckAsync` mit dem **eingeloggten** Twitch-Konto. Die Kanalrolle (Admin-Allowlist, Broadcaster, Live-Moderator) entscheidet nicht mehr | Deckt sich mit 7TV: ohne Editor-Recht des Token-Kontos scheitert schon die Mutation (`LACKING_PRIVILEGES`, `abortsForMissingPrivileges` im Engine). **Betreiber, 2026-09-24:** HandOfBloods Mod-Team arbeitet mit **eigenen** 7TV-Editor-Rechten, nicht mit geteiltem Token — ein 403 bei der Meldung gibt es damit nur bei echtem Rechteentzug (F4) |
-| E6 | Audit für ungetrackte und nicht-aktive Ziele | Ein Set-Eintrag **ohne Kanal** (`ChannelName = null`, `TargetType = "emoteSet"`, `TargetId = emoteSetId`) wie heute `MarkImportedToSetAsync`; sichtbar in der globalen Admin-Ansicht, nicht in einem Kanal-Feed (bewusster Rest, Spec-200 6.7) | Kein Schema-Wechsel — `AuditLogEntry.ChannelName` ist nullable (`AuditLogEntry.cs:72`), `AuditActions.EmotesSyncDeleted/-Restored` existieren (`:17-18`) |
-| E7 | Signaturen der neuen Service-Methoden | `IEmoteService.MarkDeletedInSetAsync(emoteSetId, ownerSevenTvUserId, ownerTwitchLogin, sevenTvEmoteIds, expectedChannelName, actor, ct)` und `MarkRestoredInSetAsync(…)` mit identischer Parameterliste | Bestätigt (Abschnitt 13, Punkt 2); `expectedChannelName` kommt mit H2 dazu (E18). Die Besitzer-Felder braucht der Papier-Eintrag, um in der Audit-Ansicht „für <ownerLogin>" zu rendern (`audit-row.ts:136-141`) — dieselbe Signaturform wie `MarkImportedToSetAsync` (`IEmoteService.cs:85-88`) |
+| E6 | Audit für ungetrackte und nicht-aktive Ziele | Ein Set-Eintrag `TargetType = "emoteSet"`, `TargetId = emoteSetId`. **Ohne Kanal** (`ChannelName = null`, wie heute `MarkImportedToSetAsync`) nur für ein **ungetracktes** Ziel — sichtbar in der globalen Admin-Ansicht, nicht in einem Kanal-Feed. Hat der Besitzer-Account des Sets einen getrackten Kanal, trägt der Eintrag **dessen Kanal** und steht damit auch in der Kanal-Audit-Ansicht (Nachtrag N3; die erste Fassung schrieb hier immer `null`, was gegenüber dem Stand vor #253 eine Regression war) | Kein Schema-Wechsel — `AuditLogEntry.ChannelName` ist nullable (`AuditLogEntry.cs:72`), `AuditActions.EmotesSyncDeleted/-Restored` existieren (`:17-18`) |
+| E7 | Signaturen der neuen Service-Methoden | `IEmoteService.MarkDeletedInSetAsync(emoteSetId, ownerSevenTvUserId, ownerTwitchLogin, ownerTwitchUserId, sevenTvEmoteIds, expectedChannelName, actor, ct)` und `MarkRestoredInSetAsync(…)` mit identischer Parameterliste (`ownerTwitchUserId` seit Nachtrag N3) | Bestätigt (Abschnitt 13, Punkt 2); `expectedChannelName` kommt mit H2 dazu (E18). Die Besitzer-Felder braucht der Papier-Eintrag, um in der Audit-Ansicht „für <ownerLogin>" zu rendern (`audit-row.ts:136-141`) — dieselbe Signaturform wie `MarkImportedToSetAsync` (`IEmoteService.cs:85-88`); die Twitch-ID des Besitzers löst seinen getrackten Kanal auf (N3) |
 | E8 | Woher weiß der Service, welche Kanäle betroffen sind? | Aus `Channels` mit `ActiveEmoteSetId == emoteSetId && IsBotActive`, danach in-memory `!IExcludedChannelFilter.IsExcluded(TwitchChannelId)` — dasselbe Muster wie `ListActiveChannelNamesAsync` (`ChannelService.cs:225-248`). `EmoteService` bekommt `IExcludedChannelFilter` als Konstruktorabhängigkeit | Ein gesperrter Kanal (#252) wird nirgends mehr beschrieben; die Prüfung sitzt im Service, nicht im Endpunkt, damit sie in `Infrastructure.Tests` ohne Api-Pipeline geprüft wird |
 | E9 | Antwort-DTO der beiden neuen Routen | `{ reportedCount, channels: [{ channelName, archivedCount \| restoredCount, notFoundIds }], unresolvedChannel: { channelName, reason } \| null, resyncTriggered: string[] }` — `channels` leer **und** `unresolvedChannel` null heißt „nur Papier". Vertrag in 5.3 | Bestätigt; um `unresolvedChannel` (H2/E18) und `resyncTriggered` (H1/E17) erweitert, damit das Frontend dreiwertig liest und keinen zweiten Resync auslöst |
 | E10 | Wo läuft die Zielprüfung im Frontend? | Im **`FileImportStep`**, als dritter Prüfschritt nach Envelope und Parser, vor `picked`. Der Schritt zeigt den Fehler in seinem bestehenden Banner; der Dialog schließt erst mit einem geprüften Ziel | Bestätigt (Abschnitt 13, Punkt 7). Der Schritt „liest und prüft die Datei" (UI-Designsprache §7.3) und besitzt den einzigen Fehler-Ort dieser Kette. Er bekommt dafür `SevenTvEmoteSetService` injiziert (`shared/` darf aus `core/` importieren, nicht umgekehrt) und nutzt dessen gemeinsame Vorprüfung (E19) |
 | E11 | Datei mit persönlichem Set als Ziel | **Abgewiesen** (`kind !== 'NORMAL'`), mit eigenem Grund | Bestätigt. Kein Picker und kein Dropdown bietet ein persönliches Set an (Spec-200 §34, §35, §39), also kann EmotePurge nie eine Löschung daraus erzeugt haben |
-| E12 | Resync nach einem Restore (Frontend-Anteil) | Der **Backend-Resync** aus E17 deckt jeden getroffenen Kanal und den unaufgelösten erwarteten Kanal ab. Der Restore-Dienst stößt selbst **nur noch dann** einen Resync an, wenn das Ziel ein **nicht-aktives** Set eines getrackten Kanals ist — der Fall, den kein Backend-Resync trifft, und der, in dem der Resync die Mitgliederliste der nicht-aktiven Ansicht nachlädt (Spec-200 8.3). Kein Resync für ein ungetracktes Ziel | Bestätigt (Abschnitt 13, Punkt 5) und mit E17 zusammengeführt: **höchstens ein Resync je Kanal und Meldung**, weil das Backend den ausgelösten Resync in `resyncTriggered` sichtbar macht und der Client für einen dort genannten Kanal keinen zweiten anstößt |
+| E12 | Resync nach einem Restore (Frontend-Anteil) | Der **Backend-Resync** aus E17 deckt jeden getroffenen Kanal und den unaufgelösten erwarteten Kanal ab. Der Restore-Dienst stößt selbst **nur noch dann** einen Resync an, wenn das Ziel ein **nicht-aktives** Set eines getrackten Kanals ist — der Fall, den kein Backend-Resync trifft, und der, in dem der Resync die Mitgliederliste der nicht-aktiven Ansicht nachlädt (Spec-200 8.3). Kein Resync für ein ungetracktes Ziel. **Ausnahme (Nachtrag N1):** scheitert die Meldung endgültig, hat das Backend keinen Resync ausgelöst, und der Client stößt ersatzweise den des erwarteten bzw. des nicht-aktiven Kanals an | Bestätigt (Abschnitt 13, Punkt 5) und mit E17 zusammengeführt: **höchstens ein Resync je Kanal und Meldung**, weil das Backend den ausgelösten Resync in `resyncTriggered` sichtbar macht und der Client für einen dort genannten Kanal keinen zweiten anstößt |
 | E13 | Was `RestoreRunInfo` trägt | `{ targetSetId, expectedChannelName: string \| null, resyncChannelName: string \| null, hostChannelName, result }` plus Anzeigefelder — das Ziel-Set, der erwartete Treffer (E18), der Kanal aus E12, und der Kanal der Seite, auf der der Lauf gestartet wurde | Bestätigt (Abschnitt 13, Punkt 3): `resetIfChannelChanged` vergleicht mit `hostChannelName`, weil das Layout nur den Kanal der Seite kennt (F7) |
 | E14 | Was mit `emote_set_id_empty` geschieht | **Entfällt** aus `ApiErrorCodes`, `api-error.ts` und beiden Locales | Der Code existiert nur für die entfallende Leiter (`EmoteEndpoints.cs:304`, `ApiErrorCodes.cs:102`, `api-error.ts:53`) |
 | E15 | Was mit `wrongChannel` und `wrongSet` geschieht | Beide Fehler und ihre Schlüssel **entfallen** aus beiden Parsern und beiden Locales; der Parser gibt das Ziel zurück statt es zu prüfen | Es gibt nach E1 keinen Weg mehr, der sie erzeugt. Die neuen Schlüssel stehen in 6.1; ihr Wortlaut ist vorläufig und gehört #255 |
@@ -190,7 +190,7 @@ der adversarialen Zweitmeinung (Abschnitt 14).
 | E20 | **H3 — kein vorautorisierter Nachmeldeweg** | Scheitert die Meldung trotz Vorprüfung (Rechteentzug mitten im Lauf), zeigt das Dock den Grund (`syncReportReason`, E23); es gibt **keinen** Weg, die Meldung unter einer früheren Autorisierung nachzureichen | Bewusst ausgelassen (Betreiber): das Mod-Team hat eigene Rechte, der Fall ist ein echter Entzug, und ein Nachmeldeweg wäre eine zweite Autorisierung neben der, die 7TV gerade zurückgenommen hat |
 | E21 | **M5 — Hinweis „Ziel ≠ Seite"** | Der Flow bekommt die **gewählte Set-ID der Seite** (`hostSelectedSetId: string \| null`). Der Hinweis entsteht beim Vergleich `target.emoteSetId !== hostSelectedSetId`, nie beim Kanalvergleich; die Bestätigung zeigt neben dem Set-Namen die **aufgelöste Set-ID** | Ein anderes Set desselben Kanals erzeugte sonst keinen Hinweis, und die Datei ist nicht vertrauenswürdig — die ID aus der Zielliste ist die geprüfte |
 | E22 | **M6 — Einstieg ohne gewähltes Set** | `ImportTrigger` verlässt das Gate `selectedEmoteSetId()` und steht nur noch hinter `!isCoarse()`; sein `setId` wird `string \| null`. Ohne Set sind im Quellschritt die drei Kopier-Türen mit Grund deaktiviert, der Datei-Zweig bleibt offen und liest nur Rückweg-Dateien. Das Restore-Dock zieht aus dem `MassDeletePanel` in eine eigene `RestoreProgressSection` **außerhalb** des Set-Gates, nach dem Muster von `ImportProgressSection` | Ein Host-Kanal ohne aktives Set (z. B. nach einem Replace ins Ungetrackte, oder ein Kanal vor dem ersten Sync) hätte sonst keinen Einstieg und kein Dock. Kein neuer Button: derselbe Einstieg bleibt sichtbar („keine neuen Dauer-Controls") |
-| E23 | Grund am Meldungszustand | `SyncReportState` bleibt; daneben `syncReportReason: 'forbidden' \| 'setNotFound' \| 'unavailable' \| 'channelMismatch' \| 'shortfall' \| 'other' \| null`, gesetzt bei `failed`/`partial`, vom Dock als eigene Zeile gezeigt | Ein nacktes `failed` sagt nicht, ob die Rechte weg sind oder 7TV nicht antwortet; H3 verlangt einen klaren Grund. Wortlaut #255 |
+| E23 | Grund am Meldungszustand | `SyncReportState` bleibt; daneben `syncReportReason: 'forbidden' \| 'setNotFound' \| 'unavailable' \| 'channelMismatch' \| 'shortfall' \| 'other' \| null`, gesetzt bei `failed`/`partial`, vom Dock als eigene Zeile gezeigt. Bei `channelMismatch` bietet das Dock **kein** „Erneut melden" an (Nachtrag N4) | Ein nacktes `failed` sagt nicht, ob die Rechte weg sind oder 7TV nicht antwortet; H3 verlangt einen klaren Grund. Wortlaut #255 |
 | E24 | Antwort der Guid-Altform | `archivedCount`/`restoredCount` = Zahl der gemeldeten Guids, die als Zeile des Kanals **existieren** (unverändert gelassen), `notFoundIds` = Rest; kein `channel.synced` aus dem Endpunkt (nichts geändert), der Resync veröffentlicht es | **Festlegung** zu H4: das alte Frontend liest `archivedCount >= emoteIds.length` als `succeeded` und würde bei `0` fälschlich `partial` zeigen; die gefundene Zahl ist die ehrlichste, die die alte Antwortform tragen kann. Was der Audit-Eintrag dann behauptet, steht in 5.6 |
 
 ---
@@ -425,7 +425,9 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
     an (E17/E18) und nennt die Kanäle in `resyncTriggered`. Der Client stößt selbst nur noch für ein
     **nicht-aktives** Set eines getrackten Kanals einen an (E12), und nur, wenn dieser Kanal nicht
     in `resyncTriggered` steht. Für ein ungetracktes Ziel keiner; das Dock zeigt dann auch keine
-    Resync-Zeile.
+    Resync-Zeile. **Scheitert die Meldung endgültig** (`failed` nach den Retries), gibt es kein
+    `resyncTriggered`, und der Client stößt ersatzweise den Resync des nicht-aktiven bzw. des
+    erwarteten Kanals an (Nachtrag N1).
 12. Die Seite, auf der der Lauf gestartet wurde, ändert sich **nur**, wenn sie ein `channel.synced`
     für ihren eigenen Kanal bekommt (5.4, Resync). Ist das Ziel ein anderes Set, bleibt das Raster
     stehen; das Dock zeigt den Lauf mit einer Zielzeile (Set-Name, Kanal oder Besitzer), analog
@@ -437,7 +439,8 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
     hängen. Das Dock steht außerhalb des Set-Gates, also auch auf einer Seite ohne gewähltes Set.
 14. Der Meldungszustand im Dock trägt bei `failed`/`partial` einen Grund (E23): `forbidden`
     (403), `setNotFound` (404), `unavailable` (503/429/Netz nach den Retries), `channelMismatch`
-    (`unresolvedChannel`), `shortfall` (ein Kanal mit `notFoundIds`), `other`. Wortlaut #255.
+    (`unresolvedChannel`), `shortfall` (ein Kanal mit `notFoundIds`), `other`. Wortlaut #255. Bei
+    `channelMismatch` zeigt das Dock **keinen** „Erneut melden"-Knopf (Nachtrag N4).
 
 ### 4.5 Die Sperre fällt, die Vorprüfung kommt
 
@@ -481,9 +484,12 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
 
 23. Löschung und Wiederherstellung erscheinen im Audit-Log auch für ungetrackte Sets — als
     Set-Eintrag ohne Kanal (E6). Für getrackte Kanäle, deren aktives Set das Ziel ist, erscheint je
-    Kanal ein Eintrag **mit** Kanal, wie heute der aktive Zweig (5.5). Ein unaufgelöster erwarteter
-    Kanal steht mit den IDs im Papier-Eintrag (5.5). Die Audit-Ansicht braucht **keine** neue
-    Projektion für das Rendern: `emoteSetId` und `targetOwnerTwitchLogin` werden generisch gelesen
+    Kanal ein Eintrag **mit** Kanal, wie heute der aktive Zweig (5.5). Ein Papier-Eintrag für ein
+    **nicht-aktives** Set trägt den getrackten Kanal des Besitzer-Accounts, sofern es einen gibt,
+    und steht damit in dessen Kanal-Audit-Ansicht (Nachtrag N3); nur ein ungetracktes Ziel bleibt
+    ohne Kanal. Ein unaufgelöster erwarteter Kanal steht mit den IDs im Papier-Eintrag (5.5). Die
+    Audit-Ansicht braucht **keine** neue Projektion für das Rendern: `emoteSetId`,
+    `targetIsActiveSetOfChannel` und `targetOwnerTwitchLogin` werden generisch gelesen
     (`AuditLogQueryService.cs:153-162`, `:237-263`); die neuen Detailfelder liegen im JSON und
     werden erst mit #255 angezeigt.
 
@@ -526,8 +532,8 @@ erwartet (E18), oder `null`, wenn er keinen erwartet.
 | 1 Middleware | nicht eingeloggt → 401; `Bookkeeping`-Budget (120/min je Nutzer, `RateLimitingOptions.cs:41`) → 429 |
 | 2 `EmoteSetIdValidationFilter` (Gruppe) | ungültiger Routenwert → 400 `invalid_emote_set_id` |
 | 3 Body | `sevenTvEmoteIds` fehlt oder leer → 400 `emote_ids_empty`; `expectedChannelName` gesetzt, aber nicht `ChannelNameValidation.IsValid` → 400 `invalid_channel_name`; kein Actor-Principal → 401 (wie `sync-imported`, `:220-224`) |
-| 4 Besitzprüfung | `IImportTargetOwnershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId)`: `SetNotFound` → 404 `emote_set_not_found`; `Forbidden` → 403 **bare** (`Results.Forbid()`); `Unavailable` → 503 `foreign_channel_seventv_unavailable`. **Kein Audit-Eintrag** auf diesen drei Ausgängen, kein Service-Aufruf, kein Resync |
-| 5 Service | `MarkDeletedInSetAsync` bzw. `MarkRestoredInSetAsync` (5.2) |
+| 4 Besitzprüfung | `IImportTargetOwnershipService.CheckAsync(actor.TwitchUserId, actor.Login, emoteSetId)`: `SetNotFound` → 404 `emote_set_not_found`; `Forbidden` → 403 **bare** (`Results.Forbid()`); `Unavailable` → 503 `foreign_channel_seventv_unavailable`. **Kein Audit-Eintrag** auf diesen drei Ausgängen, kein Service-Aufruf, kein Resync. Bei `Owner` trägt das Ergebnis neben `OwnerSevenTvUserId`/`OwnerTwitchLogin` auch `OwnerTwitchUserId` (Nachtrag N3) |
+| 5 Service | `MarkDeletedInSetAsync` bzw. `MarkRestoredInSetAsync` (5.2), mit den drei Besitzer-Werten aus Stufe 4 |
 | 6 Live-Event | je Kanal der Antwort mit `NewlyChangedCount > 0` ein `channel.synced` (5.4) |
 | 7 Resync | je getroffenem Kanal und für einen `unresolvedChannel` mit `reason: 'activeSetDiffers'`: `IChannelResyncCooldown.TryBeginAsync`, bei Erfolg `TriggerResyncAsync(channel, actor)`; nicht erworben ⇒ kein Resync, kein Fehler; `TriggerResyncAsync` ≠ `Triggered` ⇒ Cooldown freigeben (wie `ChannelEndpoints.cs:238-252`). Die Kanäle mit `Triggered` bilden `resyncTriggered` |
 | 8 Antwort | 200 (5.3) |
@@ -544,9 +550,12 @@ neue Autorität. `IImportTargetOwnershipService` wird **nicht umbenannt**.
 ### 5.2 Service
 
 ```
-Task<SyncDeletedInSetResultDto>  MarkDeletedInSetAsync (string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor, CancellationToken ct)
-Task<SyncRestoredInSetResultDto> MarkRestoredInSetAsync(string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor, CancellationToken ct)
+Task<SyncDeletedInSetResultDto>  MarkDeletedInSetAsync (string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId, IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor, CancellationToken ct)
+Task<SyncRestoredInSetResultDto> MarkRestoredInSetAsync(string emoteSetId, string ownerSevenTvUserId, string ownerTwitchLogin, string ownerTwitchUserId, IReadOnlyList<string> sevenTvEmoteIds, string? expectedChannelName, AuditActor actor, CancellationToken ct)
 ```
+
+(`ownerTwitchUserId` seit Nachtrag N3 — die Twitch-ID des Accounts, dem das Set gehört; die
+Besitzprüfung kennt sie ohne weiteren 7TV-Request, s. N3.)
 
 Verhalten, für beide Richtungen spiegelbildlich:
 
@@ -560,6 +569,13 @@ Verhalten, für beide Richtungen spiegelbildlich:
    **nicht** verraten — derselbe Grund wie `notTracked`, wie `channel_excluded` nur beim Join
    existiert); ist sie aktiv mit anderem `ActiveEmoteSetId` ⇒ `reason: 'activeSetDiffers'`. In
    keinem Fall wird eine Zeile dieses Kanals berührt oder gezählt.
+3a. **Besitzerkanal auflösen (Nachtrag N3):** die Kanalzeile mit `TwitchChannelId ==
+   ownerTwitchUserId && IsBotActive`, die nicht auf der Sperrliste steht — dieselbe Regel wie
+   `IChannelService.GetActiveByTwitchChannelIdAsync` und damit dieselbe, nach der die Zielliste
+   `trackedChannelName` bestimmt. Fehlt sie, ist sie inaktiv oder gesperrt ⇒ kein Besitzerkanal
+   (`null`). Sie dient **nur** dem `ChannelName` des Papier-Eintrags (5.5); keine Zeile dieses
+   Kanals wird deshalb berührt oder gezählt, und ein gesperrter Kanal wird so wenig verraten wie in
+   Schritt 3.
 4. Je betroffenem Kanal: `Emotes` mit `ChannelId == channel.Id && SevenTvEmoteId ∈ ids` laden;
    archivieren (`IsArchived = true`, `ArchivedAt = now`, `LastSyncedAt = now`, **nur** für noch
    nicht archivierte — Datum eines bereits archivierten bleibt) bzw. zurückholen (`IsArchived =
@@ -612,12 +628,19 @@ unter dem Reload-Debounce der Seite.
 | Fall | Einträge |
 |---|---|
 | Getroffener Kanal mit Zielzustands-Zähler > 0 | je Kanal **ein** Eintrag: `Action = emotes.syncDeleted`/`syncRestored`, `ChannelName = <Kanal>`, `TargetType = "emoteSet"`, `TargetId = emoteSetId`, Details `{ emoteCount: <Zähler dieses Kanals>, emoteSetId, targetIsActiveSetOfChannel: true }` — byte-gleich mit dem heutigen aktiven Zweig (`EmoteService.cs:162-171`), damit `audit-row` ihn wie bisher rendert |
-| Kein Kanal-Eintrag geschrieben (kein Treffer, oder jeder Treffer mit Zähler 0), **oder** ein `unresolvedChannel` | **ein** Papier-Eintrag: `ChannelName = null`, `TargetType = "emoteSet"`, `TargetId = emoteSetId`, Details `{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin, unresolvedChannelName?, unresolvedReason?, unresolvedSevenTvEmoteIds? }` — die drei `unresolved*`-Felder nur bei einem Mismatch (die IDs sind die gemeldeten, weil in diesem Kanal keine getroffen wurde); ohne `targetIsActiveSetOfChannel`, damit die Ansicht „für <ownerLogin>" wählt (`audit-row.ts:136-141`) |
+| Kein Kanal-Eintrag geschrieben (kein Treffer, oder jeder Treffer mit Zähler 0), **oder** ein `unresolvedChannel` — **Besitzerkanal aufgelöst** (5.2 Schritt 3a; Nachtrag N3) | **ein** Papier-Eintrag: `ChannelName = <Besitzerkanal>`, `TargetType = "emoteSet"`, `TargetId = emoteSetId`, Details `{ emoteCount: reportedCount, emoteSetId, targetIsActiveSetOfChannel: false, unresolvedChannelName?, unresolvedReason?, unresolvedSevenTvEmoteIds? }` — **ohne** die beiden `targetOwner*`-Felder (der Kanal nennt den Besitzer), mit `targetIsActiveSetOfChannel: false`, damit die Ansicht „(nicht das aktive Set)" wählt wie für die Einträge vor #253 (`audit-row.ts:141-142`). Der Eintrag steht in der Kanal-Audit-Ansicht dieses Kanals, weil `AuditLogQueryService.ApplyFilter` exakt auf `ChannelName` filtert (`:109-115`) |
+| Kein Kanal-Eintrag geschrieben, **oder** ein `unresolvedChannel` — **kein Besitzerkanal** (ungetrackt, verlassen oder gesperrt) | **ein** Papier-Eintrag: `ChannelName = null`, `TargetType = "emoteSet"`, `TargetId = emoteSetId`, Details `{ emoteCount: reportedCount, emoteSetId, targetOwnerSevenTvUserId, targetOwnerTwitchLogin, unresolvedChannelName?, unresolvedReason?, unresolvedSevenTvEmoteIds? }` — die drei `unresolved*`-Felder nur bei einem Mismatch (die IDs sind die gemeldeten, weil in diesem Kanal keine getroffen wurde); ohne `targetIsActiveSetOfChannel`, damit die Ansicht „für <ownerLogin>" wählt (`audit-row.ts:136-141`) |
 | Resync ausgelöst (Stufe 7) | je Kanal der `channel.resync`-Eintrag, den `TriggerResyncAsync` selbst schreibt (`ChannelService.cs:269`) — unverändert, unter dem Konto des Meldenden |
 
 Es gibt **immer mindestens einen** Eintrag je erfolgreichem Aufruf. Das ist die Antwort auf #224:
 kein Erfolg ohne Papierspur, und kein verfehlter Kanal ohne Spur. Ein wiederholter Bericht (Retry)
 darf einen zweiten Eintrag schreiben — „ein Duplikat schlägt eine Lücke" (`EmoteService.cs:44-48`).
+
+**Invariante der Detailfelder (Nachtrag N3):** ein Eintrag trägt entweder einen Kanal **und**
+`targetIsActiveSetOfChannel` (Kanal-Eintrag `true`, Papier-Eintrag mit Besitzerkanal `false`), oder
+keinen Kanal **und** die beiden `targetOwner*`-Felder — nie beides. Das ist genau die Zweiteilung,
+die `AuditLogTargetEmoteSet` dokumentiert und nach der `audit-row.ts` rendert; Projektion und
+Ansicht bleiben unverändert.
 
 ### 5.6 Die Guid-Altform — nur noch Audit + Resync (E4, H4) — und das Ergebnis der Aufruferprüfung
 
@@ -789,6 +812,14 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   **und** `!resyncTriggered.includes(resyncChannelName)`; Zustände `succeeded`/`cooldown`/`failed`
   wie heute; sonst bleibt `resyncTrigger` auf `idle`, das Dock zeigt keine Resync-Zeile — außer
   der Kanal steht in `resyncTriggered`, dann zeigt es „wird abgeglichen" ohne eigenen Request.
+  **Fallback bei endgültig gescheiterter Meldung (Nachtrag N1):** endet die erste Meldung nach den
+  Retries in `failed` (jeder Grund), gilt `resyncTriggered` als leer, und der Dienst stößt
+  `channelService.resync(resyncChannelName ?? expectedChannelName)` an, sofern der Wert nicht
+  `null` ist — mit denselben Zuständen im Dock; für ein ungetracktes Ziel (beide `null`) weiterhin
+  keiner. Ein manueller Retry löst keinen zweiten Fallback aus.
+- „Erneut melden" (`retrySyncReport`) gibt es bei `failed` (jeder Grund) und bei
+  `partial`/`shortfall`, **nicht** bei `partial`/`channelMismatch` (Nachtrag N4): das Dock zeigt den
+  Knopf dort nicht, und der Dienst weist den Aufruf ab.
 - `resetIfChannelChanged(pageChannelName)` vergleicht mit `run.hostChannelName` (E13).
 - Die Dock-Zielzeile (4.4, Punkt 12) liest `setName` und `ownerOrChannelLabel` aus dem
   Laufdatensatz (Anzeigefelder, nie verglichen).
@@ -799,16 +830,24 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   Parameter ist `channelName`, wenn `setId === activeSetId` der Seite, sonst `null`;
   `DeleteRunInfo` trägt ihn. `reportDeleted` → `reportDeletedInSet(run.setId, { sevenTvEmoteIds,
   expectedChannelName })`; `syncReport`/`syncReportReason` nach derselben Dreiwertigkeit wie 6.4;
-  kein eigener Resync (der Delete hat heute keinen, die Seite lebt vom `channel.synced`).
+  kein eigener Resync im Erfolgsfall (der Delete hat heute keinen, die Seite lebt vom
+  `channel.synced`). **Fallback (Nachtrag N1):** endet die erste Meldung nach den Retries in
+  `failed`, stößt der Dienst `channelService.resync(expectedChannelName)` an, sofern nicht `null`
+  — der Delete kennt keinen `resyncChannelName`, für ein nicht-aktives oder ungetracktes Set also
+  keiner. Das Delete-Dock zeigt dafür keine eigene Resync-Zeile (N1, Festlegung).
   `DeleteRunInfo.channelName` **bleibt** — Kanal der Seite, Envelope-`channelName` des
   Purge-Protokolls und Dateiname (`mass-delete-panel.ts:592-618`), nur nicht mehr Adressat der
-  Meldung.
+  Meldung. Die Retry-Regel aus 6.4 (kein „Erneut melden" bei `channelMismatch`, N4) gilt auch hier.
 - `SevenTvImportService.reportRemoved` → `reportDeletedInSet(run.targetSetId, { sevenTvEmoteIds,
   expectedChannelName: run.targetIsActiveSet ? run.targetChannelName : null })`; `removalReport`
   nach derselben Dreiwertigkeit; der `channelName === null`-Frühausstieg (`:688-691`) entfällt.
   Der Import-Resync (`:619-646`) bleibt, wie er ist, aber er läuft **nach** der Löschmeldung und
-  überspringt den Kanal, wenn er in deren `resyncTriggered` steht (F15); `reportImported` bleibt
+  überspringt den Kanal, wenn er in deren `resyncTriggered` steht (F15); scheitert die Löschmeldung
+  endgültig, gilt `resyncTriggered` als leer und der Import-Resync läuft wie ohne Löschmeldung
+  (Nachtrag N1 — hier keine Lücke, nur ausdrücklich gemacht); `reportImported` bleibt
   unverändert (kanalgebunden für getrackte, set-zentrisch für ungetrackte Ziele — Spec-200 6.7).
+  Die Retry-Regel aus 6.4 (kein „Erneut melden" bei `channelMismatch`, N4) gilt auch für
+  `retryRemovalReport` und die Notiz der Löschmeldung im Import-Dock.
 - `EmoteAdminService.syncDeleted/syncRestored`, `SyncBookkeepingBody`, `SyncDeletedResult`,
   `SyncRestoredResult` entfallen; die neuen Antworttypen leben bei `SevenTvEmoteSetService`.
 - `RunProgressPanel` bekommt `syncReportReason` als Input und zeigt die Grundzeile unter der
@@ -833,6 +872,10 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   (`usage-stats-page.ts:1494-1503`) und bleibt. Der „Wiederherstellen"-Knopf am fertigen
   Delete-Lauf bleibt im Panel. Die Vote-Session-Detailseite bindet die neue Section ebenso ein,
   weil ihr Panel denselben Restore-Knopf hat.
+- `usage-stats-page.ts` (Nachtrag N2): beim Settle eines Restore-, Delete- oder Import-Laufs mit
+  mindestens einer erfolgreichen Zeile, dessen Ziel-Set das gewählte nicht-aktive Set ist, ruft die
+  Seite `reloadLiveMembers()` (`refresh: true`); ist das Ziel-Set nicht-aktiv, aber nicht gewählt,
+  merkt sie es in `liveMembersRefreshFor` für den nächsten Ladevorgang genau dieses Sets vor.
 
 ---
 
@@ -840,17 +883,21 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
 
 | Fall | Verhalten |
 |---|---|
-| **Set gelöscht zwischen Zielprüfung und Lauf** | Die ADDs scheitern bei 7TV (Zeilen `failed`); ohne `doneKeys` keine Meldung (`onRunComplete`, `:250-252`). Gelingt ein ADD trotzdem (7TV-Race), antwortet die Meldung 404 → `failed`/`setNotFound`, Retry-Knopf; kein Audit. Kein stiller Erfolg (#224) |
+| **Set gelöscht zwischen Zielprüfung und Lauf** | Die ADDs scheitern bei 7TV (Zeilen `failed`); ohne `doneKeys` keine Meldung (`onRunComplete`, `:250-252`). Gelingt ein ADD trotzdem (7TV-Race), antwortet die Meldung 404 → `failed`/`setNotFound`, Retry-Knopf; kein Audit; Fallback-Resync des erwarteten bzw. nicht-aktiven Kanals (Nachtrag N1). Kein stiller Erfolg (#224) |
+| **Meldung scheitert endgültig** (403, 404, 503, 429, Netz nach den Retries) (Nachtrag N1) | Das Backend hat Stufe 7 nie erreicht, kein Backend-Resync. Restore: Client-Resync von `resyncChannelName ?? expectedChannelName`; Delete: von `expectedChannelName`; Replace-Löschmeldung: der Import-Resync läuft wie ohne Löschmeldung. Ein ungetracktes Ziel: keiner. Läuft der Resync in den Cooldown (429), zeigt das Dock „kommt ohnehin" (F15); ein 403 des Resync (Kanalrolle fehlt) ist `failed` in der Resync-Zeile, die Zeilen heilt der periodische Resync |
 | **Recht entzogen vor dem Lauf** (älter als der Listen-/Grants-Cache) | Vorprüfung blockt: kein Delete-Dialog, kein Replace-Start, kein Restore — `targetNotEditable` (E19) |
 | **Recht entzogen mitten im Lauf** (jünger als der Cache) | Mutation scheitert mit `LACKING_PRIVILEGES` → Engine bricht ab, Token wird gelöscht (bestehendes Verhalten). Gelingt sie noch (7TV-Cache), und die Meldung bekommt 403 → `failed`/`forbidden` im Dock, kein Nachmeldeweg (E20). Passiert auch die Meldung noch (Grants-Cache, F12) → Zeilen geändert, Resync stellt den 7TV-Stand binnen 60 s wieder her |
-| **Veralteter aktiver Set-Stand** (7TV-Set-Wechsel, `ActiveEmoteSetId` hinkt) | Kein Treffer, aber `expectedChannelName` gesetzt → `unresolvedChannel: { …, 'activeSetDiffers' }`, `partial`/`channelMismatch`, Papier-Eintrag nennt Kanal und IDs, Resync des Kanals ausgelöst; nach dessen `channel.synced` stimmt die Seite wieder |
-| **Erwarteter Kanal inzwischen verlassen oder gesperrt** | `unresolvedChannel: { …, 'notTracked' }`, `partial`, kein Resync (nichts zu synchronisieren, und die Sperre wird nicht verraten) |
+| **Veralteter aktiver Set-Stand** (7TV-Set-Wechsel, `ActiveEmoteSetId` hinkt) | Kein Treffer, aber `expectedChannelName` gesetzt → `unresolvedChannel: { …, 'activeSetDiffers' }`, `partial`/`channelMismatch`, Papier-Eintrag **mit** dem Kanal als `ChannelName` (er ist der aktive, ungesperrte Besitzerkanal, Nachtrag N3) und den `unresolved*`-Feldern, Resync des Kanals ausgelöst; nach dessen `channel.synced` stimmt die Seite wieder. Kein „Erneut melden" (N4) |
+| **Erwarteter Kanal inzwischen verlassen oder gesperrt** | `unresolvedChannel: { …, 'notTracked' }`, `partial`, kein Resync (nichts zu synchronisieren, und die Sperre wird nicht verraten); der Papier-Eintrag bleibt **ohne** Kanal, weil der Besitzerkanal nach derselben Regel nicht auflösbar ist (N3). Kein „Erneut melden" (N4) |
 | **Geteiltes Set** (zwei getrackte Kanäle mit demselben aktiven Set) | Beide in `channels`, beide Zeilen geändert, je Kanal ein Audit-Eintrag, je Kanal `channel.synced` und Resync (`resyncTriggered` beide); `succeeded` nur, wenn beide vollständig |
 | **Geteiltes Set, ein Kanal hinkt** | Der Kanal des Ziel-Accounts wird über `expectedChannelName` erkannt (Mismatch, s. o.); ein **zweiter** Kanal mit veraltetem Stand bleibt unentdeckt bis zu seinem periodischen Resync (F13, benannter Rest) |
 | **Ziel ist das gewählte Set der Seite** (aktives Set des Seitenkanals) | Wie heute erlebbar: Zeilen im Seitenkanal geändert, `channel.synced` für die Seite, lauter Reload; Dialog ohne Fremd-Hinweis; Audit mit Kanal; Backend-Resync des Kanals (Cooldown) |
-| **Ziel ist ein anderes, nicht-aktives Set des Seitenkanals** | Nur Papier (`channels` leer, `expectedChannelName: null`), Dialog mit „nicht aktiv"-Zeile **und** Fremd-Hinweis (E21: anderes Set als das gewählte), Frontend-Resync des Seitenkanals (E12) → `channel.synced` → Mitgliederliste lädt neu, wenn der Nutzer dieses Set wählt |
+| **Ziel ist ein anderes, nicht-aktives Set des Seitenkanals** | Nur Papier (`channels` leer, `expectedChannelName: null`), Papier-Eintrag **mit** dem Seitenkanal (N3), Dialog mit „nicht aktiv"-Zeile **und** Fremd-Hinweis (E21: anderes Set als das gewählte), Frontend-Resync des Seitenkanals (E12). **Die Mitgliederliste des Ziel-Sets lädt nicht über `channel.synced` neu** — das erreicht nur die Zeilen des aktiven Sets und umgeht den 60-s-Cache der Mitgliederroute nicht (Befund F1 der Live-Verifikation). Stattdessen: ist das Ziel-Set das gewählte Set der Seite, lädt die Seite die Liste beim Settle des Laufs mit `refresh` neu; sonst trägt der nächste Ladevorgang genau dieses Sets `refresh` (Nachtrag N2) |
+| **Ziel ist das gewählte, nicht-aktive Set der Seite** (Nachtrag N2) | Wie die Zeile darüber, ohne Fremd-Hinweis; beim Settle des Laufs (Restore, Delete oder Import) lädt die Seite die Mitgliederliste mit `refresh=true` neu, sodass der Nutzer den neuen Stand sieht, ohne auf den Cache-Ablauf zu warten |
 | **Ziel ist ein getrackter Fremdkanal** | Zeilen dort geändert, `channel.synced` und Resync dort (unter dem Konto des Meldenden); die Seite des Nutzers bleibt stehen, Dock mit Zielzeile |
-| **Ungetracktes Ziel** | Vorprüfung über `editable`; nur Papier mit Besitzer; `expectedChannelName: null`; kein Resync, keine Resync-Zeile; Slot-Vorschau über `loadEmoteSetPreview(twitchLogin, setId)` |
+| **Ungetracktes Ziel** | Vorprüfung über `editable`; nur Papier mit Besitzer und **ohne** Kanal (N3: kein Besitzerkanal); `expectedChannelName: null`; kein Resync, keine Resync-Zeile, auch nicht als Fallback (N1); Slot-Vorschau über `loadEmoteSetPreview(twitchLogin, setId)` |
+| **Geteiltes Set, Besitzerkanal nicht getroffen** (Set des Accounts A ist aktives Set des getrackten Kanals X, nicht des getrackten Kanals A) (Nachtrag N3) | Kanal-Eintrag für X; **kein** Papier-Eintrag (ein Kanal-Eintrag wurde geschrieben, kein Mismatch), also nichts in der Kanal-Ansicht von A. Benannter Rest derselben Klasse wie F13, nicht geschlossen |
+| **Besitzerkanal umbenannt, `expectedChannelName` trägt den alten Namen** (N3) | Die Namensauflösung in Schritt 3 verfehlt ihn (`notTracked`), die ID-Auflösung in Schritt 3a findet die umbenannte Zeile: Papier-Eintrag mit dem **neuen** Kanalnamen, `unresolvedChannelName` = der alte. Heilt sich mit der nächsten Zielliste (60 s) |
 | **Seite ohne gewähltes Set** (kein aktives Set, Kanal vor dem ersten Sync) | `ImportTrigger` sichtbar (E22); Kopier-Türen deaktiviert mit Grund; Rückweg-Datei lesbar; Bestätigung mit Fremd-Hinweis (`hostSelectedSetId === null`); Dock in `RestoreProgressSection` sichtbar |
 | **Zwei Restore-Läufe gleichzeitig** | Unmöglich: `SevenTvRunArbiter.activeRun()` wird vor der Bestätigung **und** nach dem Filter-Read geprüft (`restore-flow.ts:112`, `:142`), auch am Panel-Einstieg (`mass-delete-panel.ts:630`). Ein zweiter Pick während eines Laufs endet still. Die Vorprüfung kostet höchstens ein Permit je Minute |
 | **Persönliches Set als Ziel** | `targetNotSelectable` (E11), kein Lauf |
@@ -903,8 +950,10 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     und nicht genannt, auch wenn sein aktives Set das Ziel ist; als erwarteter Kanal ergibt er
     `reason: 'notTracked'`, nie einen Hinweis auf die Sperre.
 13. Für ein ungetracktes Set und für ein nicht-aktives Set eines getrackten Kanals wird keine Zeile
-    berührt; genau ein Papier-Eintrag mit `ChannelName = null`, `TargetType = "emoteSet"`,
-    `TargetId = setId`, `targetOwnerTwitchLogin` entsteht; `channels` ist leer.
+    berührt; genau ein Papier-Eintrag mit `TargetType = "emoteSet"`, `TargetId = setId` entsteht;
+    `channels` ist leer. Für das ungetrackte Set trägt er `ChannelName = null` und
+    `targetOwnerTwitchLogin`; für das nicht-aktive Set des getrackten Kanals trägt er dessen
+    `ChannelName` und `targetIsActiveSetOfChannel: false` (Nachtrag N3, AK 38).
 14. Je Kanal mit tatsächlich geänderten Zeilen wird genau ein `channel.synced` aus dem Endpunkt
     veröffentlicht; ohne Änderung keines.
 15. Der Delete-, der Restore- und der Import-Dienst lesen `channels: []` ohne `unresolvedChannel`
@@ -917,9 +966,13 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     mehr für einen Replace gegen `channelName === null`.
 17. Ein Replace-Lauf in ein ungetracktes Set verlangt weiterhin die Rückweg-Datei vor dem Start und
     meldet seine bestätigten REMOVEs set-zentrisch; das Audit (globale Ansicht) zeigt danach einen
-    `syncImported`- und einen `syncDeleted`-Eintrag ohne Kanal, beide „für <ownerLogin>".
+    `syncImported`- und einen `syncDeleted`-Eintrag ohne Kanal, beide „für <ownerLogin>". Ist das
+    Ziel ein nicht-aktives Set eines **getrackten** Kanals, trägt der `syncDeleted`-Eintrag statt
+    dessen diesen Kanal (Nachtrag N3, AK 38) — wie der `syncImported`-Eintrag, den `reportImported`
+    dort kanalgebunden schreibt.
 18. Nach einem Restore dieser Datei auf einer anderen Kanalseite zeigt das Audit zusätzlich einen
-    `syncRestored`-Eintrag ohne Kanal.
+    `syncRestored`-Eintrag — ohne Kanal für das ungetrackte, mit dem Besitzerkanal für das
+    getrackte nicht-aktive Set (N3).
 19. Die Bestätigung eines Restore, dessen Ziel nicht das **gewählte Set** der Seite ist — auch ein
     anderes Set desselben Kanals, auch eine Seite ohne gewähltes Set — zeigt den Fremd-Hinweis; für
     das gewählte Set nicht.
@@ -927,7 +980,8 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     heute); seine Meldung ist trotzdem gesendet.
 21. Nach einem Restore in ein nicht-aktives Set eines getrackten Kanals löst der Client `POST
     /api/channels/{kanal}/resync` aus, sofern der Kanal nicht in `resyncTriggered` steht; nach einem
-    Restore in ein ungetracktes Set keinen.
+    Restore in ein ungetracktes Set keinen. (Bleibt gültig; was bei endgültig gescheiterter Meldung
+    gilt, steht in AK 36.)
 22. `wrongChannel`, `wrongSet`, `emote_set_id_empty` und beide Regel-7-Schlüssel existieren in
     keiner Locale, keinem Parser und keinem `ApiErrorCodes` mehr; `api-error-locales.spec.ts` bleibt
     grün.
@@ -945,12 +999,14 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     genau die Kanäle mit `Triggered` in `resyncTriggered`; ein nicht erworbener Cooldown erzeugt
     weder Fehler noch Eintrag in `resyncTriggered`.
 27. Zwei Meldungen auf denselben Kanal binnen 60 s lösen genau einen Resync aus; der Client stößt
-    für einen Kanal in `resyncTriggered` nie einen eigenen an.
+    für einen Kanal in `resyncTriggered` nie einen eigenen an. (Bleibt gültig; der Fallback aus
+    AK 36 läuft nur ohne Antwort, also ohne `resyncTriggered`, und der Cooldown fängt Doppelte.)
 28. Ein `expectedChannelName`, dessen Kanal aktiv ist, aber ein anderes `ActiveEmoteSetId` trägt,
     ergibt `unresolvedChannel: { channelName, reason: 'activeSetDiffers' }`, keine geänderte Zeile,
-    einen Papier-Eintrag mit `unresolvedChannelName`, `unresolvedReason`, `unresolvedSevenTvEmoteIds`,
+    einen Papier-Eintrag mit `unresolvedChannelName`, `unresolvedReason`, `unresolvedSevenTvEmoteIds`
+    (und, weil dieser Kanal der Besitzerkanal ist, mit ihm als `ChannelName` — N3, AK 39),
     und einen Resync dieses Kanals; ein fehlender, inaktiver oder gesperrter Kanal ergibt
-    `'notTracked'` ohne Resync.
+    `'notTracked'` ohne Resync und einen Papier-Eintrag ohne Kanal.
 29. `GET /api/seventv/me/emote-set-targets` liefert je Account `sevenTvUserId` und je Set
     `ownerSevenTvUserId` und `editable`; `editable` ist genau dann wahr, wenn der Besitzer die 7TV-ID
     eines Accounts derselben Antwort mit lesbarer Liste ist; ein Set ohne Besitzer-ID ist
@@ -1124,7 +1180,10 @@ Zu belegen im PR-Text mit Zahlen:
    Kanals, Heilung binnen Cooldown/Tick, Altform war schwächer; F13: zweiter Kanal eines geteilten
    Sets bleibt bis zum periodischen Resync unentdeckt); die kanalgebundene set-scoped Form entfällt
    (nie in Produktion); die Guid-Altform bleibt bis zum E3-Tor, aber nur als Audit + Resync; #224
-   damit geschlossen.
+   damit geschlossen. **Ergänzung nach der Live-Verifikation (Nachtrag N1, N3):** der Absatz
+   „Audit" erhält die Besitzerkanal-Regel für den Papier-Eintrag, der Absatz „Live event and
+   resync" den Client-Fallback bei endgültig gescheiterter Meldung — im selben Commit wie die
+   jeweilige Umsetzung, s. N1/N3.
 3. **„Wer melden darf, entscheidet die 7TV-Bearbeitungsberechtigung — in Liste und Meldung
    dieselbe Regel"** — E5/E19/E20/5.7: Mod-Team mit eigenen Rechten (Betreiber), 403 nur bei
    echtem Entzug; `editable` aus derselben reinen Funktion; F16 als bewusste Asymmetrie; kein
@@ -1144,8 +1203,10 @@ Alle vier englisch (Projektsprache seit #152).
 - `docs/UI-Designsprache.md` §7.3 (Datei-Zweig, Zielprüfung, Einstieg ohne Set, vierte
   Einlesesorte bleibt) und der Dock-Abschnitt (Restore-Dock als eigene Section).
 - `docs/superpowers/specs/2026-09-20-emote-sets-200-spec.md`: **kein** Umbau; ein Nachtrag am Ende
-  („Restore pro Set, 2026-09-24"), der 6.2 (Zielliste um `editable`/IDs erweitert) und 6.6 auf
-  diese Spec zeigt, wie es die Nachträge 32–39 für frühere Runden tun. F7 dort verweist noch auf 6.6
+  („Restore pro Set, 2026-09-24"), der 6.2 (Zielliste um `editable`/IDs erweitert), 6.6 und 8.3
+  (der laute Reload der Mitgliederliste hat seit Nachtrag N2 einen dritten Anlass: das Settle eines
+  eigenen Laufs in das gewählte nicht-aktive Set) auf diese Spec zeigt, wie es die Nachträge 32–39
+  für frühere Runden tun. F7 dort verweist noch auf 6.6
   (die in Plan-230 T9 vorgesehene Korrektur auf 6.7 ist nicht gelandet, `:230`); der Nachtrag setzt
   den Verweis auf 6.7 und auf diese Spec.
 - `docs/Feature-Ideen-2026-08-01.md`: keine Idee betroffen.
@@ -1252,3 +1313,347 @@ ignoriert unbekannte Detailfelder. Eine heruntergeladene Rückweg-Datei eines Re
 ungetracktes Set bleibt nach einem Revert als JSON lesbar, aber **nicht mehr einlesbar** (der
 revertierte Parser weist sie mit `wrongChannel` ab); wer revertiert, revertiert deshalb nicht
 zwischen einem solchen Replace und seinem Restore — dieselbe Regel wie in Plan-230 §8.
+
+---
+
+## 18. Nachtrag nach der Live-Verifikation (2026-09-26)
+
+Die Live-Verifikation vom 2026-09-25 (T12, Konto `olaf_olaf_son`, Branch @ `d4148057`, PR #270)
+bestand die Punkte 1, 2, 4, 5, 7, 8 und 9 und brachte drei Befunde (F1, B2, B3); dazu kommt der
+Codex-Befund C1 aus dem Review, den der Schiedsspruch als echte Lücke in 6.4 eingeordnet hatte. Der
+Betreiber hat alle vier am 2026-09-26 entschieden; dieser Nachtrag bringt die Entscheidungen in die
+Spec. Die betroffenen Stellen oben tragen den Verweis „(Nachtrag N…)". Was hier als **Festlegung**
+markiert ist, ist eine Präzisierung dieses Nachtrags, keine Betreiber-Entscheidung, und kann
+einzeln zurückgenommen werden.
+
+### N1 — C1: Fallback-Resync bei endgültig gescheiterter Meldung
+
+**Befund.** Codex C1 (P2): ein Restore in das **aktive** Set eines getrackten Kanals, dessen
+`sync-restored` endgültig scheitert (z. B. 503 an der Besitzprüfung), löst **keinen** Resync aus —
+das Backend erreicht Stufe 7 nicht, und der Client überspringt seinen eigenen, weil
+`resyncChannelName` für ein aktives Set `null` ist (`seven-tv-restore.service.ts`,
+`resyncAfterReport`). Die Zeilen blieben bis zum periodischen Resync (≤ 60 s) oder einem manuellen
+Retry, wie sie sind. 6.4 setzte den Backend-Resync stillschweigend voraus.
+
+**Entscheidung (Betreiber).** Scheitert die Meldung endgültig — nach den Retries, mit 403, 404, 503,
+429 oder Netzfehler, also jeder Ausgang `failed` — gilt der Backend-Resync als **nicht** ausgelöst.
+Der Client stößt dann selbst `resync(resyncChannelName ?? expectedChannelName)` an, sofern einer
+der beiden Werte gesetzt ist; Doppelte fängt der 60-s-Cooldown (F15). AK 21 und AK 27 bleiben
+gültig — sie beschreiben den Erfolgsfall mit Antwort.
+
+**Prüfung an Delete und Import.**
+
+| Dienst | Lücke? | Befund am Code |
+|---|---|---|
+| Restore | **ja** | `resyncAfterReport` kehrt bei `resyncChannelName === null` ohne Request zurück; auf dem Fehlerpfad kommt es mit leerer Liste dort an (`:391-398`) |
+| Delete | **ja** | `SevenTvDeleteService` hat keinen Resync-Pfad (`reportDeleted`, „No resync of its own"); für das aktive Set der Seite (`expectedChannelName` gesetzt) bleibt bei gescheiterter Meldung nichts, was die Zeilen zieht |
+| Import (Replace-Löschmeldung) | **nein** | `sendFollowUp` ruft `reportRemoved` mit `afterReport`, das auf dem Fehlerpfad mit leerer Liste läuft, und `triggerResync` feuert dann für ein getracktes aktives Ziel wie ohne Löschmeldung (`seven-tv-import.service.ts:671-681`). Die Präzisierung wird in 6.5 nur ausdrücklich gemacht |
+
+**Vertrag.**
+
+- **Restore (6.4):** endet die **erste** Meldung eines Laufs nach den Retries in `failed`, läuft
+  `channelService.resync(resyncChannelName ?? expectedChannelName)`, wenn der Wert nicht `null`
+  ist. `resyncTrigger` durchläuft `pending` → `succeeded` | `cooldown` (429) | `failed`, die
+  Resync-Zeile im Dock wie heute. Für ein ungetracktes Ziel (beide `null`) weiterhin kein Request
+  und keine Zeile. Der Erfolgsfall (Antwort mit `resyncTriggered`) bleibt exakt E12.
+- **Delete (6.5):** unter derselben Bedingung `channelService.resync(expectedChannelName)`, wenn
+  nicht `null`; der Delete kennt keinen `resyncChannelName`, für ein nicht-aktives oder
+  ungetracktes Set also kein Fallback (dort hätte auch das Backend nichts resynct). **Festlegung:**
+  das Delete-Dock zeigt dafür keine eigene Resync-Zeile — es hatte nie eine, die
+  `syncFailed`-Notiz steht bereits, und die sichtbare Wirkung ist das `channel.synced` des Resync
+  auf dem Raster. Ein 429 oder ein Fehler des Fallbacks bleibt damit unsichtbar; das ist bewusst,
+  weil der periodische Resync denselben Kanal binnen einer Minute ohnehin zieht.
+- **Import (6.5):** keine Verhaltensänderung; 6.5 sagt jetzt ausdrücklich, dass eine endgültig
+  gescheiterte Löschmeldung als „`resyncTriggered` leer" gilt.
+- **Festlegung:** der Fallback läuft nur nach der **ersten** Meldung eines Laufs, nie nach einem
+  manuellen „Erneut melden" — dasselbe Muster wie `afterReport` heute („the first report only,
+  never a manual retry"). Ein Retry, der gelingt, bringt sein eigenes `resyncTriggered` mit; ein
+  Retry, der wieder scheitert, liegt mit hoher Wahrscheinlichkeit jenseits des nächsten
+  Worker-Ticks.
+- Nicht betroffen: `partial` (`channelMismatch`, `shortfall`) — das Backend wurde erreicht und
+  Stufe 7 ist gelaufen.
+
+**Grenzfälle.**
+
+- **403 (`forbidden`):** der Fallback-Resync läuft unter demselben Konto gegen `POST
+  /api/channels/{c}/resync` (`UsageStatsAccessAuthorizationFilter`, 7TV-Editor eingeschlossen).
+  Fehlt dem Konto auch die Kanalrolle, antwortet der Resync 403 → `resyncTrigger: 'failed'`; die
+  Zeilen heilt der periodische Resync. Kein Nachmeldeweg (E20).
+- **404 (`setNotFound`):** das Set ist bei 7TV weg; der Resync des Kanals ist trotzdem richtig,
+  weil der Kanal dann ein anderes aktives Set hat oder keines.
+- **Cooldown:** lief binnen 60 s ein Resync (Import-Resync desselben Laufs, Altform-Tab,
+  Vorgänger-Lauf), antwortet der Fallback 429 → `cooldown`, „kommt ohnehin" (F15). Kein zweiter
+  Versuch.
+- **Superseded run:** wie `afterReport` heute läuft der Fallback auch für einen Lauf, den `reset`
+  inzwischen abgelöst hat; nur der Zustand wird über `applyIfCurrent` geschützt.
+
+**Betroffene Abschnitte.** E12, 4.4 Nr. 11, 6.4, 6.5, 7 (neue Zeile „Meldung scheitert
+endgültig"), AK 21/27 (Klammerzusatz), DECISIONS-Eintrag 2 vom 2026-09-25 (Absatz „Live event and
+resync", ein Satz zum Client-Fallback — schreibt der Implementer im selben Commit).
+
+**Tests.** `seven-tv-restore.service.spec.ts`: 503 nach den Retries mit `expectedChannelName`
+gesetzt ⇒ genau ein `POST /api/channels/{c}/resync`; mit `resyncChannelName` gesetzt ⇒ Resync
+dieses Kanals (wie heute); beide `null` ⇒ keiner; manueller Retry nach `failed` ⇒ kein zweiter.
+`seven-tv-delete.service.spec.ts`: dasselbe für `expectedChannelName`. `seven-tv-import.service.spec.ts`:
+der bestehende Fall „Löschmeldung scheitert ⇒ Resync läuft" bleibt.
+
+**AK 36.** Scheitert die erste Meldung eines Restore- oder Delete-Laufs nach den automatischen
+Retries mit einem HTTP-Status oder Netzfehler (`syncReport === 'failed'`, jeder Grund), löst der
+Dienst genau einen `POST /api/channels/{kanal}/resync` aus — beim Restore für
+`resyncChannelName ?? expectedChannelName`, beim Delete für `expectedChannelName` — und keinen,
+wenn der jeweilige Wert `null` ist; ein 429 darauf endet als `cooldown`, nicht als Fehler; ein
+manuelles „Erneut melden" löst keinen weiteren aus. Die Replace-Löschmeldung des Imports verhält
+sich bei endgültigem Scheitern so, als wäre `resyncTriggered` leer (der Import-Resync läuft).
+
+### N2 — F1: Mitgliederliste eines nicht-aktiven Sets nach einem Lauf
+
+**Befund (T12, Punkt 4).** Nach einem Restore in das nicht-aktive Set `tttt` (Seite olaf, Ansicht
+`test`) zeigte die Ansicht von `tttt` 33 s später 78 statt 79 Emotes; erst nach Ablauf bzw.
+„Aktualisieren" stimmte sie. Ursache: die Ansicht eines nicht-aktiven Sets liest
+`GET /api/seventv/channels/{c}/emotes?emoteSetId=…` ohne `refresh`, also aus dem 60-s-Cache des
+Hardening-Decorators, und genau diese Route hatte die Slot-Vorschau der Restore-Bestätigung (4.3
+Nr. 8) kurz vorher befüllt. Weder der Client-Resync noch `channel.synced` umgehen diesen Cache: die
+Seite setzt `refresh: true` nur in `reloadLiveMembers()`, und das nur für das **gerade gewählte**
+Set beim Eintreffen von `channel.synced` (`usage-stats-page.ts:651-682`, `:2817-2826`). Die Zeile
+in Abschnitt 7 („Mitgliederliste lädt neu, wenn der Nutzer dieses Set wählt") war damit falsch —
+sie ist oben korrigiert. Dasselbe gilt für Delete und Import in ein nicht-aktives Set.
+
+**Entscheidung (Betreiber).** Nach einem abgeschlossenen Lauf (Restore oder Delete, gegebenenfalls
+Replace) in ein nicht-aktives Set, das die Seite gerade als gewähltes Set hat, lädt die Seite die
+Mitgliederliste mit `refresh` neu.
+
+**Vertrag.**
+
+- **Auslöser ist das Settle des Laufs** im jeweiligen Dienst, nicht die Meldung und nicht ein
+  Resync: Restore — `restoreService.run()` wechselt auf einen Datensatz mit `result !== null`;
+  Delete — `deleteService.lastRun()` wird gesetzt; Import — `importService.run()` wechselt auf
+  `settlement === 'settled'`. Die 7TV-Mutationen sind zu diesem Zeitpunkt abgeschlossen; auf die
+  Meldung zu warten hieße, bei gescheiterter Meldung nie zu laden.
+- **Bedingung:** der Lauf hat mindestens eine erfolgreiche Zeile (`doneKeys.length > 0` bzw. eine
+  `done`-Zeile), und sein Ziel-Set (`targetSetId` / `setId`) ist das gewählte Set der Seite
+  (`selectedEmoteSetId()`) **und** nicht ihr aktives (`activeEmoteSetId()`). Dann ruft die Seite
+  `reloadLiveMembers()` — den bestehenden lauten Reload mit `refresh: true`. Für das aktive Set
+  bleibt der Weg `channel.synced` (5.4), für ein Set, das die Seite nicht zeigt, geschieht beim
+  Settle nichts Sichtbares.
+- **Festlegung (Vormerkung):** ist das Ziel-Set nicht-aktiv, aber gerade **nicht** gewählt — der
+  Fall, den T12 tatsächlich beobachtet hat (Ansicht `test`, Ziel `tttt`, Wechsel 33 s später) —
+  merkt sich die Seite die Ziel-Set-ID, und der **nächste** Ladevorgang der Mitgliederliste genau
+  dieses Sets trägt `refresh: true`. Die Vormerkung wird vom nächsten Ladevorgang irgendeines Sets
+  und von einem Kanalwechsel verworfen (sie lebt in `liveMembersRefreshFor`, das der Stream heute
+  schon liest und leert; eine Set-ID ist global eindeutig, ein Kanalvergleich ist nicht nötig).
+  Ohne diese Vormerkung bliebe der beobachtete Fall F1 offen, obwohl die Zeile in Abschnitt 7 ihn
+  verspricht; mit ihr wird die korrigierte Zeile in beiden Lesarten wahr.
+- **Festlegung (Import):** der Auslöser gilt für **jeden** Import-Lauf mit mindestens einer
+  `done`-Zeile, nicht nur für einen mit Replace-Zeilen — ein ADD verändert die Mitgliederliste
+  ebenso wie ein REMOVE, und eine Ausnahme für Add-only-Läufe wäre eine Sonderregel ohne Nutzen.
+  Betrifft den Seed-Fall aus T12 (Import aus einem Kanal in das gewählte nicht-aktive Set).
+- Kein neuer Request außerhalb dieser Fälle; die Regel von Spec-200 8.3 („ein lauter Reload
+  bezieht die Liste neu, ein stiller nie") bleibt — das Settle eines eigenen Laufs ist ein lauter
+  Anlass, weil der Nutzer ihn selbst ausgelöst hat.
+
+**Grenzfälle.**
+
+- **Restore aus dem Delete-Dock (E16):** Delete und Restore treffen dasselbe Set; jeder Lauf löst
+  beim Settle einen Reload aus — zwei Requests, beide gerechtfertigt.
+- **Lauf ohne erfolgreiche Zeile:** nichts hat sich geändert, kein Reload (und keine Meldung).
+- **Ziel ist das aktive Set der Seite:** kein Reload über diesen Weg; das Raster folgt
+  `channel.synced` wie bisher.
+- **Set-Wechsel während des Laufs:** die Bedingung wird beim Settle gegen den dann gewählten Wert
+  geprüft; wer während des Laufs auf das Ziel-Set gewechselt hat, bekommt den Reload; wer davon
+  weg gewechselt hat, die Vormerkung.
+- **7TVs eigener REST-Cache** (SevenTV#81) kann auch mit `refresh=true` kurz veraltet sein; das
+  ist die bekannte Grenze der Mitgliederroute und nicht Teil dieses Nachtrags.
+
+**Betroffene Abschnitte.** Abschnitt 7 (Zeile „anderes, nicht-aktives Set des Seitenkanals"
+korrigiert; neue Zeile „gewähltes, nicht-aktives Set"), 6.6 (Seite), Spec-200 8.3 (nur im
+Nachtrag dort erwähnt, s. 12.2). Kein eigener DECISIONS-Eintrag: es ist eine Korrektur des
+Seitenverhaltens innerhalb des bestehenden Reload-Vertrags, keine neue Konvention.
+
+**Tests.** `usage-stats-page.spec.ts`: Settle eines Restore-/Delete-/Import-Laufs mit dem gewählten
+nicht-aktiven Set als Ziel ⇒ genau ein Request mit `refresh=true` auf die Mitgliederroute; Ziel
+nicht gewählt ⇒ kein Request beim Settle, der nächste Ladevorgang dieses Sets trägt `refresh=true`,
+der eines anderen Sets nicht; Ziel = aktives Set ⇒ kein Request; Lauf ohne `done`-Zeile ⇒ keiner.
+
+**AK 37.** Settelt ein Restore-, Delete- oder Import-Lauf mit mindestens einer erfolgreichen Zeile,
+dessen Ziel-Set das gewählte, nicht-aktive Set der Seite ist, geht genau ein
+`GET /api/seventv/channels/{kanal}/emotes?emoteSetId=<ziel>&refresh=true`, und die Ansicht zeigt
+danach den neuen Stand ohne Warten auf den Cache-Ablauf. Ist das Ziel-Set nicht-aktiv, aber nicht
+gewählt, geht beim Settle kein Request, und der nächste Ladevorgang genau dieses Sets trägt
+`refresh=true`; ein Ladevorgang eines anderen Sets nicht. Ist das Ziel das aktive Set, geht über
+diesen Weg kein Request.
+
+### N3 — B2: Kanal im Papier-Eintrag
+
+**Befund (T12, Punkt 3 und B2).** Die set-zentrische Meldung schreibt den Papier-Eintrag immer mit
+`ChannelName = null` (5.5, erste Fassung). Er steht dann nur in der globalen Admin-Ansicht und fehlt
+in `GET /api/channels/{c}/audit-log`, weil `AuditLogQueryService.ApplyFilter` exakt auf
+`ChannelName` filtert (`:109-115`). Folgen: (a) Delete und Restore in einem nicht-aktiven Set des
+**eigenen getrackten** Kanals verschwinden für Broadcaster und Mods aus der Kanal-Ansicht — vor #253
+trugen dieselben Flows den Kanal (Einträge 126/128/129 vom 23.09. mit
+`targetIsActiveSetOfChannel: false`), das ist eine Regression; (b) in einem Replace-Lauf steht
+`syncImported` (kanalgebunden) in der Kanal-Ansicht, das zugehörige `syncDeleted` nur global; (c) der
+Mismatch-Eintrag 153 nennt `unresolvedChannelName: olaf_olaf_son`, erscheint in dessen Kanal-Ansicht
+aber nicht.
+
+**Entscheidung (Betreiber).** Hat der Ziel-Account (Besitzer des Sets) einen getrackten Kanal, trägt
+der Papier-Eintrag dessen Kanal. Nur echte ungetrackte Ziele bleiben ohne Kanal.
+
+**Vertrag.**
+
+1. **„Getrackt" bestimmt der Service über die Twitch-ID des Besitzers** (5.2 Schritt 3a): die
+   Kanalzeile mit `TwitchChannelId == ownerTwitchUserId && IsBotActive`, deren `TwitchChannelId`
+   nicht auf `Channels:ExcludedChannelIds` steht. Das ist wörtlich die Regel von
+   `IChannelService.GetActiveByTwitchChannelIdAsync` (`ChannelService.cs:206-223`) und damit
+   dieselbe, nach der die Zielliste `trackedChannelName` liefert (4.2 Nr. 5): was der Client als
+   Kanal des Ziels gesehen hat, steht nachher im Eintrag. Über die ID, nicht den Login, weil Logins
+   wandern (#44) und die ID unveränderlich ist. Fehlt die Zeile, ist sie `IsBotActive == false` oder
+   gesperrt ⇒ kein Besitzerkanal, `ChannelName = null` — ein gesperrter Kanal wird so wenig
+   offengelegt wie in Schritt 3 (`notTracked`), weil ein verlassener Kanal genauso aussieht.
+2. **Die Twitch-ID des Besitzers liefert die Besitzprüfung**, ohne neuen 7TV-Request:
+   `SevenTvEmoteSetOwnershipCheckResult` bekommt `OwnerTwitchUserId` (non-null genau bei `Owner`,
+   wie die beiden anderen Felder). Beide Trefferpfade kennen sie schon — das eigene Konto ist
+   `actor.TwitchUserId`, ein Grant trägt `SevenTvEditorGrantEntry.TwitchChannelId`; der
+   F16-Lookup-Pfad ordnet den gefundenen Besitzer ohnehin einem dieser Accounts zu
+   (`evidence.LoginOfAccount`). Die Leiter (5.1 Stufe 4/5) reicht sie an
+   `MarkDeletedInSetAsync`/`MarkRestoredInSetAsync` durch (E7, 5.2). `sync-imported`
+   (`MarkImportedToSetAsync`) ist **nicht** betroffen: es wird nur für ungetrackte Ziele
+   aufgerufen (`reportImported`, 6.5), sein Eintrag ist also ohnehin nur dann kanallos, wenn es
+   keinen Kanal gibt.
+3. **Was der Papier-Eintrag trägt** (5.5, zwei Zeilen statt einer):
+   - **mit Besitzerkanal:** `ChannelName = <Besitzerkanal>`, Details `{ emoteCount, emoteSetId,
+     targetIsActiveSetOfChannel: false, unresolved*? }` — **ohne** `targetOwnerSevenTvUserId`
+     und `targetOwnerTwitchLogin`. Der Kanal nennt den Besitzer; die Form ist die der Einträge vor
+     #253, `audit-row.ts` rendert „(nicht das aktive Set)" (`:141-142`), und der Eintrag steht in
+     der Kanal-Ansicht.
+   - **ohne Besitzerkanal:** unverändert `ChannelName = null`, Details mit beiden
+     `targetOwner*`-Feldern, ohne `targetIsActiveSetOfChannel` → „für <ownerLogin>".
+   - **Festlegung (Invariante):** ein Eintrag trägt entweder Kanal **und**
+     `targetIsActiveSetOfChannel`, oder keinen Kanal **und** die `targetOwner*`-Felder — nie
+     beides. Das ist genau die Zweiteilung, die `AuditLogTargetEmoteSet` dokumentiert
+     (`IAuditLogQueryService.cs:18-30`) und nach der `audit-row.ts` die Zeile wählt (Besitzer vor
+     Aktiv-Flag). Projektion (`ReadTargetEmoteSet`) und Ansicht bleiben **unverändert**; die
+     Alternative — beide Feldgruppen schreiben und die Ansicht umsortieren — hätte die Invariante
+     gebrochen und #255 vorgegriffen.
+4. **Der Mismatch-Eintrag** folgt derselben Regel, nicht einer eigenen: bei `activeSetDiffers`
+   **ist** der unaufgelöste Kanal der Besitzerkanal (aktiv, ungesperrt, nur mit anderem
+   `ActiveEmoteSetId`), also `ChannelName = <Kanal>`, `targetIsActiveSetOfChannel: false` — was
+   unsere Datenbank in diesem Moment tatsächlich sagt — plus die drei `unresolved*`-Felder; der
+   Eintrag erscheint in der Kanal-Ansicht (Befund c). Bei `notTracked` ist der Besitzerkanal nach
+   derselben Regel nicht auflösbar, der Eintrag bleibt ohne Kanal; `unresolvedChannelName` nennt
+   den Kanal weiterhin (das ist die Eingabe des Clients, kein Geheimnis).
+5. **Kanal-Einträge (Treffer) und der Auslöser des Papier-Eintrags ändern sich nicht:** der
+   Papier-Eintrag entsteht weiterhin genau dann, wenn kein Kanal-Eintrag geschrieben wurde oder
+   ein Kanal unaufgelöst blieb. Nur sein `ChannelName` und seine Detailform hängen jetzt vom
+   Besitzerkanal ab.
+
+**Grenzfälle.**
+
+- **Nicht-aktives Set des eigenen getrackten Kanals** (T12 Punkte 1, 2, 4, 9): Eintrag mit
+  Kanal, in der Kanal-Ansicht sichtbar — die Regression (a) ist damit zurückgenommen, und in
+  einem Replace-Lauf stehen `syncImported` und `syncDeleted` wieder nebeneinander (b).
+- **Ungetracktes Ziel:** ohne Kanal, „für <ownerLogin>", nur global — wie E6 es immer meinte.
+- **Geteiltes Set, Besitzerkanal nicht getroffen** (Set von A aktiv bei X, nicht bei A): nur der
+  Kanal-Eintrag für X, kein Papier-Eintrag, nichts in As Kanal-Ansicht. Benannter Rest derselben
+  Klasse wie F13 (der Auslöser des Papier-Eintrags bleibt bewusst unverändert; ihn auf „Besitzerkanal
+  ohne eigenen Kanal-Eintrag" auszudehnen wäre eine eigene Entscheidung).
+- **Besitzerkanal umbenannt, `expectedChannelName` alt:** Schritt 3 verfehlt den Namen
+  (`notTracked`), Schritt 3a findet die Zeile über die ID → Eintrag mit neuem Kanalnamen,
+  `unresolvedChannelName` alt. Selbstheilend mit der nächsten Zielliste.
+- **Gesperrter Besitzerkanal:** kein Kanal im Eintrag, keine Zeile berührt, kein Resync — und
+  der Eintrag sieht aus wie der eines verlassenen Kanals (E8, AK 12).
+- **Sichtbarkeit:** die Kanal-Ansicht lesen Broadcaster, Mods und Editoren des Kanals
+  (`UsageStatsAccessAuthorizationFilter`); ein Editor, der in einem nicht-aktiven Set löscht, war
+  dort vor #253 ebenso sichtbar.
+
+**Betroffene Abschnitte.** E6, E7, 4.7 Nr. 23, 5.1 Stufe 4/5, 5.2 (Signatur, Schritt 3a), 5.5
+(zwei Zeilen, Invariante), 7 (Mismatch-Zeilen, „anderes nicht-aktives Set", „ungetracktes Ziel",
+zwei neue Zeilen), AK 13, 17, 18, 28. **DECISIONS-Eintrag 2 vom 2026-09-25** („Delete, restore and
+a replace's removals report per emote set — report plus resync"): der Absatz **„Audit"** wird
+ergänzt — der Papier-Eintrag trägt den getrackten Kanal des Besitzer-Accounts (aufgelöst über dessen
+Twitch-ID, aktive Zeile, Sperrliste), mit `targetIsActiveSetOfChannel: false` und ohne
+`targetOwner*`; nur ohne Besitzerkanal bleibt er kanallos mit `targetOwner*`; Begründung: die
+erste Fassung hatte die Einträge nicht-aktiver Sets des eigenen Kanals aus der Kanal-Ansicht
+genommen, was vor #253 nicht so war. Den Eintrag schreibt der Implementer im selben Commit wie die
+Service-Änderung (Regel 3). `docs/Architectur.md` und `docs/UI-Designsprache.md` nennen den
+Papier-Eintrag nicht in dieser Tiefe; keine weitere Doku-Stelle.
+
+**Tests.** `EmoteServiceTests.cs` (9.2): nicht-aktives Set eines getrackten Kanals ⇒ Papier-Eintrag
+mit `ChannelName` = Kanal, `targetIsActiveSetOfChannel: false`, ohne `targetOwner*`; ungetrackt ⇒
+`null` mit `targetOwner*`; gesperrter Besitzerkanal (echter `ExcludedChannelFilter`) ⇒ `null`;
+inaktiver Besitzerkanal ⇒ `null`; Mismatch `activeSetDiffers` ⇒ Kanal gesetzt **und**
+`unresolved*`; Mismatch `notTracked` ⇒ `null` **und** `unresolved*`. Ownership-Tests:
+`OwnerTwitchUserId` auf allen drei Trefferpfaden. `SevenTvEmoteSetSyncInSetEndpointTests` (9.1):
+die Twitch-ID wird an den Service durchgereicht. Ein Integrationstest über
+`AuditLogQueryService.ListAsync` mit `ChannelName`-Filter, der den Papier-Eintrag findet.
+
+**AK 38.** Für ein nicht-aktives Set, dessen Besitzer-Account einen aktiven, nicht gesperrten
+Kanal hat, entsteht der Papier-Eintrag mit `ChannelName` = diesem Kanal und Details
+`{ emoteCount, emoteSetId, targetIsActiveSetOfChannel: false }` ohne `targetOwner*`-Felder, und
+`GET /api/channels/{kanal}/audit-log` listet ihn; für ein Set ohne solchen Kanal (ungetrackt,
+verlassen oder gesperrt) entsteht er mit `ChannelName = null` und beiden `targetOwner*`-Feldern
+ohne `targetIsActiveSetOfChannel`. Kein Eintrag trägt beide Feldgruppen.
+
+**AK 39.** Ein Mismatch `activeSetDiffers` schreibt den Papier-Eintrag mit dem unaufgelösten Kanal
+als `ChannelName`, `targetIsActiveSetOfChannel: false` und den drei `unresolved*`-Feldern, sichtbar
+in dessen Kanal-Audit-Ansicht; ein Mismatch `notTracked` schreibt ihn ohne Kanal, mit
+`targetOwner*` und den drei `unresolved*`-Feldern — für einen gesperrten Kanal byte-gleich mit dem
+eines verlassenen.
+
+### N4 — B3: kein „Erneut melden" bei `channelMismatch`
+
+**Befund (T12, Punkt 5 und B3).** Bei `partial`/`channelMismatch` bot das Dock „Erneut melden" an.
+Ein erneuter Versuch schickt dieselbe Meldung: bei unverändertem Stand ein weiterer Mismatch, ein
+weiterer Papier-Eintrag, ein weiterer Resync-Versuch in den Cooldown — und der Resync, der den
+Mismatch heilt, läuft nach der ersten Antwort bereits (`resyncTriggered`). Der Retry-Knopf kann in
+diesem Zustand nichts verbessern. Der **Wortlaut** der Grundzeile („Rückmeldung fehlgeschlagen …
+konnte es nicht vermerken" ist für einen vermerkten Bericht falsch) gehört zu #255 und ist nicht
+Teil dieses Nachtrags.
+
+**Entscheidung (Betreiber).** Für `channelMismatch` gibt es keinen Retry-Knopf.
+
+**Vertrag.**
+
+- **Retry-Regel (6.4, 6.5):** „Erneut melden" wird angeboten bei `syncReport === 'failed'` (jeder
+  Grund — dort kann ein späterer Versuch gelingen) und bei `partial`/`shortfall`; **nicht** bei
+  `partial`/`channelMismatch`. Die Notiz selbst (Titel, Grundzeile) bleibt in allen drei Fällen
+  stehen; nur die Aktion fehlt. Gilt für alle drei Docks: `RunProgressPanel` (Delete, Restore) und
+  die Notiz der Löschmeldung in `ImportProgressSection` (`retryRemovalReport`).
+- **Festlegung (Doppelboden):** die Dienste weisen `retrySyncReport()` bzw. `retryRemovalReport()`
+  bei `syncReportReason === 'channelMismatch'` ab, wie sie heute `pending` und einen fehlenden
+  Laufdatensatz abweisen — damit der Vertrag am Dienst prüfbar ist und nicht nur am Template.
+- `shortfall` behält den Knopf: ob ein Retry dort etwas ändern kann, ist hier nicht entschieden
+  und bleibt #255 bzw. einem Folgepunkt überlassen.
+- Die Resync-Zeile „wird abgeglichen" (`backendTriggered`) bleibt die Auskunft darüber, dass der
+  Stand von selbst kommt.
+
+**Grenzfälle.**
+
+- **Mismatch mit `notTracked`:** ebenfalls kein Knopf — der Kanal ist weg oder gesperrt, eine
+  Wiederholung ändert daran nichts; die Notiz sagt, was sie sagt (#255).
+- **Ein Retry, der schon lief** (vor diesem Nachtrag, oder per DevTools): das Backend behandelt
+  ihn wie heute — Duplikat schlägt Lücke (5.5).
+- **`failed` nach einem früheren Mismatch** gibt es nicht: ein Lauf meldet einmal, der Zustand
+  ist entweder `partial` oder `failed`.
+
+**Betroffene Abschnitte.** E23, 4.4 Nr. 14, 6.4 (Retry-Regel), 6.5 (Delete, Import), 7 (beide
+Mismatch-Zeilen). Kein DECISIONS-Eintrag: eine UI-Regel innerhalb des bestehenden E23-Vertrags.
+
+**Tests.** `run-progress-panel.spec.ts`: `partial`/`channelMismatch` ⇒ Notiz ohne Retry-Knopf;
+`partial`/`shortfall` und `failed`/`unavailable` ⇒ mit. `import-progress-section.spec.ts`: dasselbe
+für die Löschmeldung. Die drei Dienst-Specs: `retrySyncReport()`/`retryRemovalReport()` bei
+`channelMismatch` ⇒ kein Request.
+
+**AK 40.** Steht ein Meldungszustand auf `partial` mit `syncReportReason === 'channelMismatch'`,
+zeigt keines der drei Docks einen „Erneut melden"-Knopf, und ein Aufruf von
+`retrySyncReport()`/`retryRemovalReport()` löst keinen Request aus; bei `failed` (jeder Grund) und
+bei `partial`/`shortfall` ist der Knopf vorhanden und löst genau eine erneute Meldung aus.
+
+### Zusammenfassung der neuen Akzeptanzkriterien
+
+| AK | Nachtrag | Kern |
+|---|---|---|
+| 36 | N1 | Fallback-Resync des Clients bei endgültig gescheiterter erster Meldung (Restore: `resyncChannelName ?? expectedChannelName`, Delete: `expectedChannelName`; Import unverändert) |
+| 37 | N2 | Mitgliederliste des gewählten nicht-aktiven Ziel-Sets lädt beim Settle mit `refresh=true`; nicht gewähltes Ziel: Vormerkung für den nächsten Ladevorgang dieses Sets |
+| 38 | N3 | Papier-Eintrag trägt den Besitzerkanal (aktiv, ungesperrt, über Twitch-ID) mit `targetIsActiveSetOfChannel: false`; sonst kanallos mit `targetOwner*`; nie beides |
+| 39 | N3 | Mismatch-Eintrag folgt derselben Regel (`activeSetDiffers` mit Kanal, `notTracked` ohne) |
+| 40 | N4 | Kein „Erneut melden" bei `channelMismatch`, in allen drei Docks und am Dienst |
