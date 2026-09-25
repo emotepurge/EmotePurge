@@ -58,32 +58,16 @@ export interface ViolationMessage {
  *  per row and every row, however short its own content, pays for the tallest one any row can
  *  reach.
  *
- *  Re-measured for issue #268's own follow-up review round (a collision row with an aliasless
- *  target entry, an untracked target so replace carries a bracketed disabled reason, and a checked
- *  rename whose typed alias collides with another target alias — the longest field error in either
- *  locale, `fieldError.taken`): content needed 255px narrow (German — its longer bracket/error
- *  strings) / 231px English, and 126px wide (both locales — the row's own longest-field-error
- *  combination pushes the actions column into the wrap this component's `NARROW_BELOW_PX` doc
- *  already anticipated at low `content width`s, even at exactly 760px). That is more than either
- *  constant below had room for (`232`/`120`), so both moved to the measured worst case plus an
- *  ~8-16px margin for cross-browser font-metric slack — the alias-mismatch rows (adopt chosen, and
- *  adopt disabled with its own longest bracketed reason, `adoptBlocked.aliaslessTarget`) stayed
- *  well inside both at 153px/141px, so they did not drive either number.
+ *  Re-measured for issue #268's worst-case row (aliasless target entry, untracked-target replace
+ *  reason, and a checked rename whose typed alias collides — `fieldError.taken`, the longest field
+ *  error in either locale): 255px narrow (German) / 231px English, 126px wide. Both constants moved
+ *  to that worst case plus an ~8-16px cross-browser margin.
  *
- *  Re-measured a second time for issue #269's own follow-up (Codex review round on #269, a
- *  clipping-at-narrow-widths finding fixed by the row's own `min-w-0`/wrap classes plus a
- *  `cdk-virtual-scroll-content-wrapper` sizing fix in styles.css — the CDK content wrapper's
- *  shrink-to-fit default width had let a single unbreakable long name/typed alias widen the whole
- *  row past the dialog regardless of this constant, so nothing here caught it before). The same
- *  radio-label-wrap fix lets the bracketed disabled reason take a second line instead of forcing
- *  width, which costs height: the worst-case narrow row (a ~50-char unbreakable name colliding on
- *  both source and target, an untracked target's two-line disabled reason, and a checked rename
- *  whose typed alias — also unbreakable — collides, wrapping the field error onto two lines too)
- *  now measures 293px of content at the 360px floor AK 22 pins, against the previous 255px. The
- *  wide layout is unaffected by the wrap fix (its longest-field-error row already wrapped the
- *  actions column below `NARROW_BELOW_PX`, per the paragraph above) and stayed at 110px measured,
- *  comfortably inside 136. Narrow moved to 320 (293px content + the row's own 16px `py-2` padding,
- *  plus an ~11px margin, same cross-browser-slack reasoning as the first measurement round). */
+ *  Re-measured again once the CDK content-wrapper shrink-to-fit bug (fixed in styles.css) stopped
+ *  masking a ~50-char unbreakable name/alias: with wrapping now reaching the disabled-reason text,
+ *  the worst-case narrow row measures 293px content at the 360px floor AK 22 pins (was 255px); wide
+ *  is unaffected (its own longest row already wraps below `NARROW_BELOW_PX`) and stays at 110px.
+ *  Narrow moved to 320 (293px + 16px padding + ~11px margin); wide to 136 (110px + margin). */
 const ROW_WIDE_PX = 136;
 const ROW_NARROW_PX = 320;
 /** Content width below which the step switches to the stacked layout. Chosen so that, above it,
@@ -320,7 +304,7 @@ export function violationMessages(
       <!-- Buffers in rows, not the CDK's 100/200 px default, which is less than one tall row.
            data-resolve-viewport: styles.css pins this viewport's CDK content wrapper to a definite
            width instead of CDK's own shrink-to-fit default — see that rule's own comment for why
-           (issue #269 follow-up: an unbreakable long name or typed alias could otherwise widen
+           (issue #268 follow-up: an unbreakable long name or typed alias could otherwise widen
            every row past the panel, clipping instead of truncating/wrapping). -->
       <cdk-virtual-scroll-viewport
         data-resolve-viewport
@@ -376,7 +360,7 @@ export function violationMessages(
                 <!-- Reserved even when empty (issue #268 AK 3): the row's fixed height must not
                      change with the chosen action, on either side. min-h-[1lh] pins one line's
                      worth of height regardless of content — a blockified, content-less span has
-                     no line box of its own to derive it from (found by review after landing). -->
+                     no line box of its own to derive it from. -->
                 <span
                   [id]="'resolve-consequence-' + row.key + '-source'"
                   class="block min-h-[1lh] truncate text-xs text-fg-muted"
@@ -425,7 +409,7 @@ export function violationMessages(
                   @if (row.targetHasAliaslessEntry) {
                     <!-- A replace's REMOVE takes every entry of the target id, so this aliasless
                          entry is struck through together with the named alias above it, not just
-                         the one that happens to carry the collision's name (found by review). -->
+                         the one that happens to carry the collision's name. -->
                     <span
                       class="truncate text-xs text-fg-muted"
                       [class.line-through]="targetConsequenceOf(row)?.kind === 'removed'"
@@ -466,17 +450,12 @@ export function violationMessages(
                 "
               >
                 @for (option of row.options; track option.kind) {
-                  <!-- flex-wrap + min-w-0 (issue #269 follow-up): a bracketed disabled reason
-                       (e.g. "Nur für getrackte Kanäle wiederherstellbar") has no unbreakable run
-                       of its own, but this label's nowrap internal flex still contributed its
-                       full one-line width to the row's own min-content — which the CDK content
-                       wrapper (position absolute, min-width 100%, width auto) uses as its
-                       shrink-to-fit ceiling. Below the narrow threshold that pushed the whole row
-                       wider than the viewport, clipping every truncate span too (truncate never
-                       got a chance to ellipsize — its box was never actually narrow). Letting the
-                       reason wrap onto its own line, and letting the label itself shrink as a flex
-                       item of the radiogroup, keeps this label's own min-content down to its
-                       widest single word instead of the whole bracketed sentence. -->
+                  <!-- flex-wrap + min-w-0 (issue #268 follow-up): a bracketed disabled reason has
+                       no unbreakable run of its own, but this label's nowrap flex still fed its
+                       full one-line width into the row's min-content, which the CDK content
+                       wrapper's shrink-to-fit picks up as its own ceiling — widening every row and
+                       clipping every truncate span. Wrapping the reason and letting the label
+                       shrink keeps its min-content down to its widest single word. -->
                   <label
                     class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 py-0.5"
                     [class.opacity-60]="option.disabledReasonKey !== null"

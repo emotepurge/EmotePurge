@@ -1185,7 +1185,7 @@ const SCENARIOS: Scenario[] = [
       // — the row's fixed height still has to leave room for the tallest a row here ever gets, so
       // some gap is structural to a virtualized list's one-height-fits-all row and not itself a
       // defect. That budget (`ROW_WIDE_PX`, import-conflict-resolution-step.ts) grew 120 -> 136 in
-      // #269's own P2 fix round and stayed there through #269's own clipping-at-narrow-widths
+      // #268's own P2 fix round and stayed there through #268's own clipping-at-narrow-widths
       // follow-up, which re-measured the wide layout's own worst case at 110px content — an
       // untracked target's bracketed "replace" disabled reason, plus a checked rename whose typed
       // alias collides (aliasHeldByTarget) and its field error, all built around one unbreakable
