@@ -915,6 +915,10 @@
       "one": "{{ count }} Emote wieder zum Set hinzufügen?",
       "other": "{{ count }} Emotes wieder zum Set hinzufügen?"
     },
+    "confirmTitleUpTo": {
+      "one": "Bis zu {{ count }} Emote wieder zum Set hinzufügen?",
+      "other": "Bis zu {{ count }} Emotes wieder zum Set hinzufügen?"
+    },
     "confirmSetLine": "In das Set „{{ setName }}“.",
     "confirmSetIdLine": "Set-ID: {{ emoteSetId }}",
     "confirmOwnerLine": "Besitzer: {{ ownerDisplayName }}",
@@ -923,7 +927,9 @@
     "confirmForeignToView": "Diese Ansicht zeigt von diesem Lauf nichts.",
     "confirmExecute": "Wiederherstellen",
     "capacityProjection": "Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.",
+    "capacityProjectionUpTo": "Das Set hätte danach bis zu {{ projected }} von {{ capacity }} Slots belegt.",
     "capacityWarning": "Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.",
+    "capacityWarningUpTo": "Das könnte die Kapazität überschreiten — 7TV würde überzählige Emotes dann ablehnen.",
     "historyNote": "Die Nutzungshistorie bleibt unverändert.",
     "nothingRestored": "Nichts wiederhergestellt.",
     "errors": {

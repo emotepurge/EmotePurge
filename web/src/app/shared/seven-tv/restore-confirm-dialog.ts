@@ -23,6 +23,13 @@ export interface RestoreConfirmDialogData {
    *  capacity projection below is computed against; using the row count instead would understate
    *  the projection by one slot per duplicate and could silently miss the overflow warning. */
   addCount: number;
+  /** Whether `names`/`addCount` above are the *unfiltered* input rather than the open-time
+   *  duplicate check's actual result (operator decision 2026-09-25, #255) — true when that check's
+   *  own 7TV read failed (`available: false` from `loadRestoreConfirmPreview`, which fails open, the
+   *  same as `filterAlreadyPresentForRestore` itself). The dialog then phrases the count as an upper
+   *  bound ("up to N") instead of claiming an exact number it does not have — never a smaller,
+   *  possibly wrong one, and never silence about the uncertainty either. */
+  countIsUpperBound: boolean;
   /** Live view of the set status, so the capacity line pops in once the check answers.
    *  null = unknown (no capacity reported) — then no projection line is shown at all. */
   slots: Signal<{ occupied: number; capacity: number } | null>;
@@ -94,17 +101,17 @@ export interface RestoreConfirmDialogData {
             <span class="flex flex-col gap-1">
               <span>
                 {{
-                  'restore.capacityProjection'
+                  capacityProjectionKey
                     | transloco: { projected: slots.projected, capacity: slots.capacity }
                 }}
               </span>
-              <span>{{ 'restore.capacityWarning' | transloco }}</span>
+              <span>{{ capacityWarningKey | transloco }}</span>
             </span>
           </app-notice-banner>
         } @else {
           <p class="text-sm text-fg-muted">
             {{
-              'restore.capacityProjection'
+              capacityProjectionKey
                 | transloco: { projected: slots.projected, capacity: slots.capacity }
             }}
           </p>
@@ -137,7 +144,26 @@ export class RestoreConfirmDialog {
   protected readonly data = inject<RestoreConfirmDialogData>(DIALOG_DATA);
   protected readonly dialogRef = inject<DialogRef<boolean>>(DialogRef);
 
-  protected readonly titleKey = pluralKey(this.data.names.length, 'restore.confirmTitle');
+  /** #255: the "up to N" family once the open-time check could not verify the count — never mixed
+   *  with the plain family, so a translator can never see one language's title claim certainty the
+   *  other one hedges. */
+  protected readonly titleKey = pluralKey(
+    this.data.names.length,
+    this.data.countIsUpperBound ? 'restore.confirmTitleUpTo' : 'restore.confirmTitle',
+  );
+
+  /** Same hedge as `titleKey`, for the capacity line below — `data` never changes after the dialog
+   *  is created, so a plain field is enough, same reasoning as `titleKey`. */
+  protected readonly capacityProjectionKey = this.data.countIsUpperBound
+    ? 'restore.capacityProjectionUpTo'
+    : 'restore.capacityProjection';
+
+  /** #255 P3(9): the overflow warning itself hedges the same way once the projected count is only
+   *  an upper bound — "this exceeds capacity" is a claim the check never verified; "this could"
+   *  is the honest one. */
+  protected readonly capacityWarningKey = this.data.countIsUpperBound
+    ? 'restore.capacityWarningUpTo'
+    : 'restore.capacityWarning';
 
   protected readonly projection = computed(() => {
     const slots = this.data.slots();

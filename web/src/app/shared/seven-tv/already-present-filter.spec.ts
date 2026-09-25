@@ -10,6 +10,8 @@ import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import {
   filterAlreadyPresent,
   filterAlreadyPresentForRestore,
+  loadRestoreConfirmPreview,
+  restoreConfirmPreviewUnavailable,
   stampReplaceTargets,
   verifyReplaceTargets,
 } from './already-present-filter';
@@ -577,6 +579,132 @@ describe('filterAlreadyPresentForRestore', () => {
     // The row's own id was seen (and matched) on the very first, well within-guard page — the
     // truncation happened later, for ids this row never needed to know about.
     expect(await result$).toEqual({ rows: [], skipped: 1, skippedNameTaken: 0, available: true });
+  });
+});
+
+// Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the restore
+// confirmation's own numbers, derived over `filterAlreadyPresentForRestore`'s result rather than
+// each call site re-deriving them.
+describe('loadRestoreConfirmPreview', () => {
+  let httpClient: HttpClient;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    httpClient = TestBed.inject(HttpClient);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  async function run(rows: RestoreRow[], entries: { id: string; alias?: string }[]) {
+    const result$ = firstValueFrom(loadRestoreConfirmPreview(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).flush(entriesPage(entries));
+    return result$;
+  }
+
+  it('names and counts every row when nothing in the target set collides', async () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa', 'KappaAlt'] },
+    ];
+
+    const result = await run(rows, []);
+
+    expect(result.names).toEqual(['PogU', 'Kappa']);
+    // spec #200, 7.2: ADDs, one per alias — Kappa's duplicate cell counts as two.
+    expect(result.addCount).toBe(3);
+    expect(result.available).toBe(true);
+  });
+
+  it('drops an already-present row from both names and addCount, not only from rows', async () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] },
+    ];
+
+    const result = await run(rows, [{ id: '7tv-1', alias: 'PogU' }]);
+
+    expect(result.names).toEqual(['Kappa']);
+    expect(result.addCount).toBe(1);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('counts only the surviving aliases of a partially-present duplicate cell', async () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'Kappa', aliases: ['Kappa', 'KappaAlt'] },
+    ];
+
+    const result = await run(rows, [{ id: '7tv-1', alias: 'Kappa' }]);
+
+    expect(result.names).toEqual(['Kappa']);
+    expect(result.addCount).toBe(1);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('reports every row unfiltered, with available false, when the read fails', async () => {
+    const rows: RestoreRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }];
+
+    const result$ = firstValueFrom(loadRestoreConfirmPreview(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('error'));
+    const result = await result$;
+
+    expect(result.names).toEqual(['PogU']);
+    expect(result.addCount).toBe(1);
+    expect(result.available).toBe(false);
+  });
+
+  it('reports an empty preview once every row is filtered out', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] };
+
+    const result = await run([row], [{ id: '7tv-1', alias: 'PogU' }]);
+
+    expect(result.rows).toEqual([]);
+    expect(result.names).toEqual([]);
+    expect(result.addCount).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.available).toBe(true);
+  });
+});
+
+// #255 P2a: the "could not verify" shape a caller builds by hand when its own wrapping `timeout`
+// fires before `loadRestoreConfirmPreview`'s read does — a timeout error lands outside that
+// function's own `catchError`, so nothing inside it ever gets a chance to build this.
+describe('restoreConfirmPreviewUnavailable', () => {
+  it('passes every row through unfiltered, names and counts them all, and reports the check as unavailable', () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa', 'KappaAlt'] },
+    ];
+
+    const result = restoreConfirmPreviewUnavailable(rows);
+
+    expect(result.rows).toEqual(rows);
+    expect(result.names).toEqual(['PogU', 'Kappa']);
+    // ADDs, one per alias — same accounting as `loadRestoreConfirmPreview`'s successful path.
+    expect(result.addCount).toBe(3);
+    expect(result.skipped).toBe(0);
+    expect(result.skippedNameTaken).toBe(0);
+    expect(result.available).toBe(false);
+  });
+
+  it('returns a defensive copy of rows, not the same array reference', () => {
+    const rows: RestoreRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }];
+
+    expect(restoreConfirmPreviewUnavailable(rows).rows).not.toBe(rows);
+  });
+
+  it('counts a bare row (no aliases) as one ADD under its own name, like the successful path does', () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU' };
+
+    const result = restoreConfirmPreviewUnavailable([row]);
+
+    expect(result.names).toEqual(['PogU']);
+    expect(result.addCount).toBe(1);
   });
 });
 

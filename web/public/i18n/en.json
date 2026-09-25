@@ -915,6 +915,10 @@
       "one": "Add {{ count }} emote back to the set?",
       "other": "Add {{ count }} emotes back to the set?"
     },
+    "confirmTitleUpTo": {
+      "one": "Add up to {{ count }} emote back to the set?",
+      "other": "Add up to {{ count }} emotes back to the set?"
+    },
     "confirmSetLine": "Into the set “{{ setName }}”.",
     "confirmSetIdLine": "Set ID: {{ emoteSetId }}",
     "confirmOwnerLine": "Owner: {{ ownerDisplayName }}",
@@ -923,7 +927,9 @@
     "confirmForeignToView": "This view shows nothing from this run.",
     "confirmExecute": "Restore",
     "capacityProjection": "The set would then hold {{ projected }} of {{ capacity }} slots.",
+    "capacityProjectionUpTo": "The set would then hold up to {{ projected }} of {{ capacity }} slots.",
     "capacityWarning": "That exceeds the capacity — 7TV will reject the surplus emotes.",
+    "capacityWarningUpTo": "That could exceed the capacity — 7TV would then reject the surplus emotes.",
     "historyNote": "The usage history stays unchanged.",
     "nothingRestored": "Nothing restored.",
     "errors": {

@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, DestroyRef, computed, inject, input, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -159,12 +159,23 @@ export class ImportTrigger {
   private readonly tokenService = inject(SevenTvTokenService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
+  /** Handed to `startRestoreFlow` as `RestoreFlowDeps.destroyRef` (#255 P2a) — the flow has no
+   *  injection context of its own to pull one from. */
+  private readonly destroyRef = inject(DestroyRef);
 
-  protected readonly disabled = computed(() =>
-    importTriggerDisabled({
-      hasActiveRun: this.arbiter.activeRun() !== null,
-      importScopeCurrent: this.importScopeCurrent(),
-    }),
+  /** `startRestoreFlow`'s own `RestoreFlowDeps.previewPending` (#255 P2a): `true` while its
+   *  open-time duplicate check is out, right up until the confirmation opens (or the flow takes
+   *  its "everything already there" shortcut, or opens anyway on a failed/timed-out check) — see
+   *  that field's own doc. Folded into `disabled` below so a second click on this trigger cannot
+   *  start a second restore-flow read while the first is still out. */
+  private readonly restorePreviewPending = signal(false);
+
+  protected readonly disabled = computed(
+    () =>
+      importTriggerDisabled({
+        hasActiveRun: this.arbiter.activeRun() !== null,
+        importScopeCurrent: this.importScopeCurrent(),
+      }) || this.restorePreviewPending(),
   );
 
   protected openDialog(): void {
@@ -195,6 +206,8 @@ export class ImportTrigger {
             tokenService: this.tokenService,
             restoreService: this.restoreService,
             arbiter: this.arbiter,
+            previewPending: this.restorePreviewPending,
+            destroyRef: this.destroyRef,
           },
           result.target,
           result.rows,

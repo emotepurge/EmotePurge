@@ -38,7 +38,13 @@ import {
 } from '../export/purge-run-export';
 import { Button } from '../ui/button';
 import { PREVIEW_CAP } from '../ui/name-preview-list';
-import { filterAlreadyPresentForRestore } from './already-present-filter';
+import {
+  filterAlreadyPresentForRestore,
+  loadRestoreConfirmPreview,
+  RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS,
+  RestoreConfirmPreview,
+  restoreConfirmPreviewUnavailable,
+} from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
 import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
@@ -250,8 +256,18 @@ export interface DeletableEmote {
               </button>
               @if (run.result.doneKeys.length > 0 && arbiter.activeRun() === null) {
                 <!-- The two-tier *shape* of the destructive convention, not its colour: outline
-                     triggers, the dialog's primary-solid executes — restore is constructive. -->
-                <button type="button" appButton="outline" (click)="openRestoreConfirm()">
+                     triggers, the dialog's primary-solid executes — restore is constructive.
+                     Disabled while restoreConfirmPending() (#255 P2a): the target check and the
+                     open-time duplicate check both run before any dialog is on screen, and a
+                     second click in that window must not start a second read racing towards a
+                     second confirmation. -->
+                <button
+                  type="button"
+                  appButton="outline"
+                  class="disabled:cursor-not-allowed"
+                  [disabled]="restoreConfirmPending()"
+                  (click)="openRestoreConfirm()"
+                >
                   {{ 'restore.button' | transloco }}
                 </button>
               }
@@ -448,6 +464,13 @@ export class MassDeletePanel {
    *  open — the delete button stays disabled meanwhile, same idiom as `liveAliasReadPending`, so a
    *  second click cannot start the check twice or open a second confirmation once it answers. */
   protected readonly deleteTargetCheckPending = signal(false);
+  /** The restore entry's own pre-check chain is out (#255 P2a) — from `openRestoreConfirm`'s own
+   *  `resolveEditableSet` call through `openRestoreConfirmDialog`'s open-time duplicate check,
+   *  right up until the confirmation opens (or one of the two shortcuts fires instead: the abort
+   *  notice, or the "everything already there" restore). `false` again while a token prompt is
+   *  open in between the two reads — that dialog already blocks the background on its own, same
+   *  reasoning as every other CDK-modal gap in this file. */
+  protected readonly restoreConfirmPending = signal(false);
   private destroyed = false;
 
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next
@@ -599,6 +622,12 @@ export class MassDeletePanel {
    *  restore entry inert; a hung one left it inert forever; and a late answer after this panel was
    *  torn down could still have opened a confirmation nobody could see or answer. */
   protected openRestoreConfirm(): void {
+    // #255 P2a: refuses a second click while the pre-check chain below (this method's own
+    // `resolveEditableSet`, or `openRestoreConfirmDialog`'s open-time duplicate check) is still
+    // out — belt and suspenders next to the button's own `[disabled]="restoreConfirmPending()"`.
+    if (this.restoreConfirmPending()) {
+      return;
+    }
     const run = this.deleteService.lastRun();
     if (!run || this.arbiter.activeRun() !== null) {
       return;
@@ -608,6 +637,7 @@ export class MassDeletePanel {
     if (doneItems.length === 0) {
       return;
     }
+    this.restoreConfirmPending.set(true);
 
     this.emoteSetService
       .resolveEditableSet(run.setId)
@@ -615,6 +645,7 @@ export class MassDeletePanel {
       .subscribe({
         next: (resolution) => {
           if (resolution.status !== 'editable') {
+            this.restoreConfirmPending.set(false);
             this.abortNotice.set({
               leadKey: 'restore.nothingRestored',
               reasonKey: restoreTargetCheckReasonKey(resolution.status),
@@ -630,8 +661,13 @@ export class MassDeletePanel {
             hostSelectedSetId: this.setId(),
           };
           if (!this.tokenService.hasToken()) {
+            // Released while the token prompt is open — a CDK modal already blocks the button
+            // behind it, same as every other token-prompt gap in this file — and reclaimed right
+            // before the next read starts, whichever way the prompt closes.
+            this.restoreConfirmPending.set(false);
             openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
               if (saved) {
+                this.restoreConfirmPending.set(true);
                 this.openRestoreConfirmDialog(target, doneItems);
               }
             });
@@ -642,6 +678,7 @@ export class MassDeletePanel {
         // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
         // allowed" (F3) — the same distinction `openConfirmDialog`'s own pre-check makes.
         error: () => {
+          this.restoreConfirmPending.set(false);
           this.abortNotice.set({
             leadKey: 'restore.nothingRestored',
             reasonKey: restoreTargetCheckReasonKey('unavailable'),
@@ -658,21 +695,90 @@ export class MassDeletePanel {
     target: ResolvedRestoreTarget,
     doneItems: readonly RunQueueItem[],
   ): void {
+    const emotes: DeleteQueueEmote[] = doneItems.map((item) => ({
+      emoteId: item.emoteId,
+      sevenTvEmoteId: item.sevenTvEmoteId,
+      name: item.name,
+      aliases: item.aliases,
+    }));
+
+    // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter") — same open-time
+    // check as `startRestoreFlow` (`restore-flow.ts`), reused here rather than duplicated: see
+    // `loadRestoreConfirmPreview`'s doc for why this is not a second 7TV read next to the slot
+    // preview above, and the confirm-time re-check below for why it still runs fresh again.
+    //
+    // #255 P2a: bounded by the same timeout budget as this panel's other reads
+    // (`LIVE_ALIAS_READ_TIMEOUT_MS`, exported as `RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS` for
+    // `restore-flow.ts` to share) and dropped on teardown via `takeUntilDestroyed`. A `timeout`
+    // error lands outside `loadRestoreConfirmPreview`'s own `catchError`, so it is treated exactly
+    // like the fetch failure that filter already fails open on: `restoreConfirmPreviewUnavailable`
+    // builds the identical "could not verify" shape by hand.
+    loadRestoreConfirmPreview(this.httpClient, target.emoteSetId, emotes)
+      .pipe(timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (preview) => this.handleRestoreConfirmPreview(target, emotes, preview),
+        error: () =>
+          this.handleRestoreConfirmPreview(
+            target,
+            emotes,
+            restoreConfirmPreviewUnavailable(emotes),
+          ),
+      });
+  }
+
+  /** `emotes` is always the full, unfiltered list `openRestoreConfirmDialog` built from
+   *  `doneItems` — never `preview.rows` — because the confirm-time re-check below (`closed`'s
+   *  handler) has to run against the *complete* row set again, fresh, not against this open-time
+   *  answer's already-filtered subset (see the comment on that re-check). */
+  private handleRestoreConfirmPreview(
+    target: ResolvedRestoreTarget,
+    emotes: readonly DeleteQueueEmote[],
+    preview: RestoreConfirmPreview<DeleteQueueEmote>,
+  ): void {
+    this.restoreConfirmPending.set(false);
+    if (preview.available && preview.rows.length === 0) {
+      // Nothing survives the filter — same "everything already there" shortcut `startRestoreFlow`
+      // takes, reusing the existing notice instead of a dialog that could only ever show zero
+      // names.
+      //
+      // #255 P2b (the #149 P2 fix's own reasoning, applied to this shortcut too): this call starts
+      // a run exactly as much as the regular path's does, so it needs the same mutual-exclusion
+      // check right before it — another 7TV-writing run could have claimed the arbiter while this
+      // read was out, a window the regular path already closes just above its own `startRestore`
+      // call.
+      if (this.arbiter.activeRun() !== null) {
+        return;
+      }
+      this.restoreService.startRestore(
+        restoreStartTarget(target),
+        [],
+        preview.skipped,
+        true,
+        preview.skippedNameTaken,
+      );
+      return;
+    }
+
     // Live slot view, so the projection line pops in once the check answers (the dialog is
-    // already open by then) — same pattern as the delete confirm's shared-set warning. The read
-    // itself is `loadRestoreSlotPreview`, the fork this shares with `restore-flow.ts`'s
-    // `startRestoreFlow` (spec 4.3, point 8 / spec 8.3, final fix wave A5).
+    // already open by then) — same pattern as the delete confirm's shared-set warning. Started
+    // only now rather than up front (#255 P3(10)): the shortcut above already covers the "nothing
+    // left to confirm" case, so starting this read before knowing whether a dialog will even open
+    // would spend a 7TV request the "everything already there" outcome above then throws away
+    // unread — this way it fires exactly once per call, only when there is a confirmation for it
+    // to populate. The read itself is `loadRestoreSlotPreview`, the fork this shares with
+    // `restore-flow.ts`'s `startRestoreFlow` (spec 4.3, point 8 / spec 8.3, final fix wave A5).
+    // Unrelated to the duplicate check above: this one reads occupied/capacity counts, never
+    // entries.
     this.restoreSlots.set(null);
     loadRestoreSlotPreview(
       { emoteAdminService: this.emoteAdminService, emoteSetService: this.emoteSetService },
       target,
-    ).subscribe((preview) => this.restoreSlots.set(preview));
+    ).subscribe((slotPreview) => this.restoreSlots.set(slotPreview));
 
     const data: RestoreConfirmDialogData = {
-      names: doneItems.map((item) => item.name),
-      // spec #200, 7.2: ADDs, not rows — a #74 duplicate cell's row carries every alias it sat
-      // under and restores once per alias.
-      addCount: doneItems.reduce((sum, item) => sum + (item.aliases?.length ?? 1), 0),
+      names: preview.names,
+      addCount: preview.addCount,
+      countIsUpperBound: !preview.available,
       slots: this.restoreSlots.asReadonly(),
       setName: target.setName,
       isActiveSet: target.isActiveSet,
@@ -687,23 +793,17 @@ export class MassDeletePanel {
       if (!confirmed) {
         return;
       }
-      const emotes: DeleteQueueEmote[] = doneItems.map((item) => ({
-        emoteId: item.emoteId,
-        sevenTvEmoteId: item.sevenTvEmoteId,
-        name: item.name,
-        aliases: item.aliases,
-      }));
-      // #149/T5: a restore never had any duplicate protection at all — filter it fresh, right here,
-      // against the target set's current contents, read from 7TV itself rather than our database
-      // (see `filterAlreadyPresent`'s doc — asking our own mirror is exactly wrong for restore,
-      // which runs *because* something already went wrong and our mirror may still be stale) for
-      // why this sits at confirm-time rather than dialog-open-time and for the residual race it
-      // does not close. Per alias, not per id (operator decision 2026-09-22): a row whose id is
-      // present only under some of its own aliases re-adds just the missing ones, and an alias
-      // another emote now holds is left out rather than sent into a certain name conflict — see
-      // `filterAlreadyPresentForRestore`.
+      // #149/T5: a restore never had any duplicate protection at all — filter it fresh, right
+      // here, against the target set's current contents, read from 7TV itself rather than our
+      // database (see `filterAlreadyPresent`'s doc — asking our own mirror is exactly wrong for
+      // restore, which runs *because* something already went wrong and our mirror may still be
+      // stale) for why this sits at confirm-time and re-reads rather than reusing the open-time
+      // preview above, and for the residual race it does not close. Per alias, not per id
+      // (operator decision 2026-09-22): a row whose id is present only under some of its own
+      // aliases re-adds just the missing ones, and an alias another emote now holds is left out
+      // rather than sent into a certain name conflict — see `filterAlreadyPresentForRestore`.
       filterAlreadyPresentForRestore(this.httpClient, target.emoteSetId, emotes).subscribe(
-        ({ rows: toRestore, skipped, skippedNameTaken, available }) => {
+        (confirmCheck) => {
           // #149 P2 review fix: openRestoreConfirm()'s own arbiter check ran before this dialog
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
           // to enforce, since a delete or import can start while the confirm dialog is open and
@@ -713,12 +813,22 @@ export class MassDeletePanel {
           if (this.arbiter.activeRun() !== null) {
             return;
           }
+          // #255 P3(7): a failed confirm-time check normally means every row goes out unfiltered
+          // (`filterAlreadyPresentForRestore`'s own fail-open behaviour) — which would silently
+          // throw away the open-time check's own, still-valid answer for any row it had already
+          // found already present or name-taken. Falls back to that stale-but-real filter instead
+          // of no filter at all, whenever the open-time check succeeded. `available` stays what
+          // the confirm-time check itself answered either way: it is the freshest check, and its
+          // failure still leaves the narrow window since the open-time read unverified, so
+          // `duplicateCheckUnavailable` keeps applying — this only changes *which rows* get sent,
+          // not whether the caller is told the check could not confirm them just now.
+          const fallOnOpenTime = !confirmCheck.available && preview.available;
           this.restoreService.startRestore(
             restoreStartTarget(target),
-            toRestore,
-            skipped,
-            available,
-            skippedNameTaken,
+            fallOnOpenTime ? preview.rows : confirmCheck.rows,
+            fallOnOpenTime ? preview.skipped : confirmCheck.skipped,
+            confirmCheck.available,
+            fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,
           );
         },
       );

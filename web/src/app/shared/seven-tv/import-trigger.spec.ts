@@ -468,6 +468,29 @@ describe('ImportTrigger', () => {
 
       expect(startRestore).not.toHaveBeenCalled();
     });
+
+    // #255 P2a: `startRestoreFlow`'s own open-time duplicate check reports back through
+    // `previewPending`, folded into this trigger's `disabled` — a second click on the same button
+    // while the read is out must not start a second restore-flow read.
+    it('disables the trigger while the open-time duplicate check is out, and re-enables once the confirmation opens', () => {
+      const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
+      httpPost.mockReturnValueOnce(fetch);
+
+      const dialog = render();
+      dialog.click();
+      closedAt<FileImportResult | undefined>(0).next(restoreResult());
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(true);
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+
+      fetch.next(emoteSetPage());
+      fetch.complete();
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(false);
+      expect(dialogOpen).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('import result: confirmation before the token prompt', () => {

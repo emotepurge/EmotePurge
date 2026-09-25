@@ -18,6 +18,10 @@ const DE_TRANSLATIONS = {
       one: '{{ count }} Emote wieder zum Set hinzufügen?',
       other: '{{ count }} Emotes wieder zum Set hinzufügen?',
     },
+    confirmTitleUpTo: {
+      one: 'Bis zu {{ count }} Emote wieder zum Set hinzufügen?',
+      other: 'Bis zu {{ count }} Emotes wieder zum Set hinzufügen?',
+    },
     confirmSetLine: 'In das Set „{{ setName }}“.',
     confirmSetIdLine: 'Set-ID: {{ emoteSetId }}',
     confirmOwnerLine: 'Besitzer: {{ ownerDisplayName }}',
@@ -26,7 +30,11 @@ const DE_TRANSLATIONS = {
     confirmForeignToView: 'Diese Ansicht zeigt von diesem Lauf nichts.',
     confirmExecute: 'Wiederherstellen',
     capacityProjection: 'Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.',
+    capacityProjectionUpTo:
+      'Das Set hätte danach bis zu {{ projected }} von {{ capacity }} Slots belegt.',
     capacityWarning: 'Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.',
+    capacityWarningUpTo:
+      'Das könnte die Kapazität überschreiten — 7TV würde überzählige Emotes dann ablehnen.',
     historyNote: 'Die Nutzungshistorie bleibt unverändert.',
   },
 };
@@ -37,6 +45,7 @@ const CONFIRM = 'Wiederherstellen';
 interface RenderOptions {
   names?: string[];
   addCount?: number;
+  countIsUpperBound?: boolean;
   slots?: { occupied: number; capacity: number } | null;
   setName?: string;
   isActiveSet?: boolean;
@@ -96,6 +105,7 @@ describe('RestoreConfirmDialog', () => {
     dialogData = {
       names,
       addCount: options.addCount ?? names.length,
+      countIsUpperBound: options.countIsUpperBound ?? false,
       slots: slots.asReadonly(),
       setName: options.setName ?? 'Hauptset',
       isActiveSet: options.isActiveSet ?? true,
@@ -293,6 +303,64 @@ describe('RestoreConfirmDialog', () => {
       dialog.detect();
 
       expect(dialog.text()).toContain('Das Set hätte danach 4 von 100 Slots belegt.');
+    });
+  });
+
+  // Operator decision 2026-09-25 (#255): once the open-time duplicate check could not verify the
+  // count (its own 7TV read failed), the dialog hedges rather than claiming an exact number.
+  describe('upper-bound wording (#255)', () => {
+    it('uses the "up to" title instead of the plain one', () => {
+      const dialog = render({ names: ['PogU'], countIsUpperBound: true });
+
+      expect(dialog.text()).toContain('Bis zu 1 Emote wieder zum Set hinzufügen?');
+    });
+
+    it('pluralizes the "up to" title for several rows', () => {
+      const dialog = render({ names: ['PogU', 'Kappa'], countIsUpperBound: true });
+
+      expect(dialog.text()).toContain('Bis zu 2 Emotes wieder zum Set hinzufügen?');
+    });
+
+    it('uses the "up to" capacity line instead of the plain one', () => {
+      const dialog = render({
+        names: ['PogU'],
+        addCount: 1,
+        countIsUpperBound: true,
+        slots: { occupied: 3, capacity: 100 },
+      });
+
+      expect(dialog.text()).toContain('Das Set hätte danach bis zu 4 von 100 Slots belegt.');
+    });
+
+    // #255 P3(9): the overflow warning itself must not claim certainty it does not have — a
+    // projection computed from an unverified count is a "could", not a "does".
+    it('hedges the overflow warning too, once the projected count is only an upper bound', () => {
+      const dialog = render({
+        names: ['PogU'],
+        addCount: 2,
+        countIsUpperBound: true,
+        slots: { occupied: 19, capacity: 20 },
+      });
+
+      expect(dialog.text()).toContain(
+        'Das könnte die Kapazität überschreiten — 7TV würde überzählige Emotes dann ablehnen.',
+      );
+      expect(dialog.text()).not.toContain(
+        'Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.',
+      );
+    });
+
+    it('uses the plain title and capacity line when the count is not an upper bound', () => {
+      const dialog = render({
+        names: ['PogU'],
+        addCount: 1,
+        countIsUpperBound: false,
+        slots: { occupied: 3, capacity: 100 },
+      });
+
+      expect(dialog.text()).toContain('1 Emote wieder zum Set hinzufügen?');
+      expect(dialog.text()).toContain('Das Set hätte danach 4 von 100 Slots belegt.');
+      expect(dialog.text()).not.toContain('Bis zu');
     });
   });
 });

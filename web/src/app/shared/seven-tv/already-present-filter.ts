@@ -187,6 +187,104 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   );
 }
 
+/** `loadRestoreConfirmPreview`'s result: `filterAlreadyPresentForRestore`'s own outcome, plus the
+ *  two numbers the restore confirmation dialog actually renders — derived here, once, so its two
+ *  call sites (`restore-flow.ts`, `mass-delete-panel.ts`) compute them identically rather than each
+ *  reimplementing the same reduction over `rows`. */
+export interface RestoreConfirmPreview<
+  T extends RestoreFilterRow,
+> extends RestoreAlreadyPresentFilterResult<T> {
+  /** Display names for the confirmation's name-preview list — one per surviving row, in the same
+   *  order `filterAlreadyPresentForRestore` returned them. Unfiltered (every input row's name) when
+   *  `available` is `false`: a failed check fails open, so nothing was actually dropped from `rows`
+   *  either, only the *reason* to trust that count differs (see `countIsUpperBound` on
+   *  `RestoreConfirmDialogData`). */
+  names: string[];
+  /** The confirmation's ADD count (spec #200, 7.2) — aliases, not rows, computed over the *filtered*
+   *  `rows` rather than the caller's original input, so it reports what the run will actually send
+   *  once it starts (operator decision 2026-09-25, #255). Same caveat as `names` when `available` is
+   *  `false`. */
+  addCount: number;
+}
+
+/**
+ * `filterAlreadyPresentForRestore` plus the confirmation dialog's own derived numbers (operator
+ * decision 2026-09-25, #255, "Slot-Zahl nach dem Skip-Filter"): before this, both restore
+ * confirmations (`restore-flow.ts`'s `startRestoreFlow`, `mass-delete-panel.ts`'s
+ * `openRestoreConfirmDialog`) ran the duplicate/name-taken check only once the user actually
+ * confirmed, so the dialog's title and its slot-capacity projection counted every row the source
+ * named — including ones that were about to be silently skipped as already present. Now both call
+ * sites run this fresh 7TV read once more, right when the confirmation is about to open, and show
+ * its filtered result instead: the number displayed is the number that will actually be sent, not
+ * an upper bound that happens to match it only when nothing gets skipped.
+ *
+ * This does **not** add a second kind of 7TV read next to the slot preview
+ * (`restore-slot-preview.ts`'s `loadRestoreSlotPreview`): that one reads a set's *occupied/capacity
+ * counts*, a question this filter's read (`loadSevenTvSetEntries`, full alias membership) cannot
+ * answer at all, since it never requests a capacity field. The two stay separate reads for separate
+ * questions; what changes here is only *when* the existing duplicate-check read runs, from
+ * confirm-time-only to open-time-and-confirm-time (the confirm-time read stays exactly as it was —
+ * deliberately re-run fresh right before the run starts, not reused from this earlier snapshot, for
+ * the same staleness reason `filterAlreadyPresentForRestore`'s own doc gives).
+ */
+export function loadRestoreConfirmPreview<T extends RestoreFilterRow>(
+  httpClient: HttpClient,
+  targetSetId: string,
+  rows: readonly T[],
+): Observable<RestoreConfirmPreview<T>> {
+  return filterAlreadyPresentForRestore(httpClient, targetSetId, rows).pipe(
+    map((result) => ({
+      ...result,
+      names: result.rows.map((row) => row.name),
+      addCount: restoreAddCount(result.rows),
+    })),
+  );
+}
+
+/** Total time budget for the open-time duplicate check both restore entry points
+ *  (`restore-flow.ts`'s `startRestoreFlow`, `mass-delete-panel.ts`'s `openRestoreConfirmDialog`)
+ *  run right before their confirmation opens (#255 P2a) — same value and reasoning as
+ *  `mass-delete-panel.ts`'s own `LIVE_ALIAS_READ_TIMEOUT_MS`: generous for a same-origin-adjacent
+ *  GraphQL read of at most 10 pages of up to 500 entries each, against a hung request (7TV accepts
+ *  the connection but never answers). Exported rather than duplicated as a private constant in both
+ *  callers, or imported from `mass-delete-panel.ts` itself, which would make `restore-flow.ts`
+ *  depend on a component file for a plain number. */
+export const RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS = 20_000;
+
+/** The same "could not verify" shape `loadRestoreConfirmPreview`'s own failed fetch produces
+ *  (`available: false`, every row passed through unfiltered) — for a caller whose own wrapping
+ *  `timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS)` fires before the read itself does (#255 P2a). A
+ *  `timeout` error surfaces *outside* `loadRestoreConfirmPreview`/`filterAlreadyPresentForRestore`,
+ *  so their own internal `catchError` never sees it and never gets a chance to build this shape —
+ *  a caller applying its own timeout on top has to build it itself, from exactly the rows it sent.
+ *  Never reduces `rows` to nothing on its own (unlike a genuine filtered answer): a caller that
+ *  reaches for this always still has a confirmation to open, hedged as an upper bound
+ *  (`RestoreConfirmDialogData.countIsUpperBound`), never the "everything already there" shortcut. */
+export function restoreConfirmPreviewUnavailable<T extends RestoreFilterRow>(
+  rows: readonly T[],
+): RestoreConfirmPreview<T> {
+  return {
+    rows: [...rows],
+    skipped: 0,
+    skippedNameTaken: 0,
+    available: false,
+    names: rows.map((row) => row.name),
+    addCount: restoreAddCount(rows),
+  };
+}
+
+/** How many `ADD`s `rows` will send — one per alias, a `null` alias (an entry without one) included,
+ *  a row with no `aliases` at all (or an empty one) counted once for its bare `name` (the same
+ *  fallback `filterAlreadyPresentForRestore` and the restore queue both apply). Shared by
+ *  `loadRestoreConfirmPreview` above and nothing else — the two call sites used to each carry their
+ *  own copy of this reduction. */
+function restoreAddCount(rows: readonly { aliases?: readonly (string | null)[] }[]): number {
+  return rows.reduce(
+    (sum, row) => sum + (row.aliases && row.aliases.length > 0 ? row.aliases.length : 1),
+    0,
+  );
+}
+
 /** Rules 1–3 of `filterAlreadyPresentForRestore` for one row: the aliases of `rowAliases` the set
  *  does not hold under `id` yet — all of them when the id is absent, none when the id sits under
  *  an entry the row does not name (rule 2). */
