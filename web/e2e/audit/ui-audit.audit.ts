@@ -1182,10 +1182,17 @@ const SCENARIOS: Scenario[] = [
       // pinned to the top. Checked once at the 'desktop' matrix cell (1536px, side-by-side layout
       // there, both themes) rather than at every wide viewport this afterLoad also runs at. This
       // row is untouched (the default `skip` decision), so its own content is only the 40px sprite
-      // — the row's fixed height still has to leave room for the tallest a row here ever gets (a
-      // checked "Umbenennen" plus its error line, measured at 86px), so some gap is structural to
-      // a virtualized list's one-height-fits-all row and not itself a defect. 90 catches a gross
-      // regression (the pre-fix row measured a 120px gap here) without failing on that slack.
+      // — the row's fixed height still has to leave room for the tallest a row here ever gets, so
+      // some gap is structural to a virtualized list's one-height-fits-all row and not itself a
+      // defect. That budget (`ROW_WIDE_PX`, import-conflict-resolution-step.ts) grew 120 -> 136 in
+      // #269's own P2 fix round and stayed there through #269's own clipping-at-narrow-widths
+      // follow-up, which re-measured the wide layout's own worst case at 110px content — an
+      // untracked target's bracketed "replace" disabled reason, plus a checked rename whose typed
+      // alias collides (aliasHeldByTarget) and its field error, all built around one unbreakable
+      // ~50-char name — comfortably inside 136, so the wide budget itself didn't move again. A
+      // plain skip row's own structural gap is therefore 136 - 40 = 96px; 104 (96 + an 8px margin,
+      // the same margin family that component's own doc comment uses) catches a gross regression
+      // without failing on that now-larger, but still entirely structural, slack.
       if (original?.width === 1536) {
         const row = page.locator('[data-resolve-index="0"]');
         const rowBox = await row.boundingBox();
@@ -1194,7 +1201,7 @@ const SCENARIOS: Scenario[] = [
           expect(
             rowBox.height - contentBox.height,
             'row-height fix: no large empty band below the content in the side-by-side layout',
-          ).toBeLessThan(90);
+          ).toBeLessThan(104);
           const topGap = contentBox.y - rowBox.y;
           const bottomGap = rowBox.y + rowBox.height - (contentBox.y + contentBox.height);
           expect(
