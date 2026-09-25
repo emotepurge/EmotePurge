@@ -10,6 +10,7 @@ import {
   output,
   signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { catchError, finalize, map, of, timeout } from 'rxjs';
 
@@ -674,7 +675,13 @@ export class MassDeletePanel {
    *  first, like every other first mutation (E19) — in the normal case a cache hit, because the
    *  delete's own report just warmed the target list for this very set. A block shows the panel's
    *  abort notice with a restore-specific lead line and the `restore.errors.*` reason family
-   *  (Plan-253 §6, Nr. 3); nothing opens, nothing is sent to 7TV. */
+   *  (Plan-253 §6, Nr. 3); nothing opens, nothing is sent to 7TV.
+   *
+   *  `timeout`/`error` and `takeUntilDestroyed` mirror `openConfirmDialog`'s own pre-check exactly
+   *  (review round 1, finding 4): before this fix the subscription had no `error` branch at all, so
+   *  a failed request (429, 503, no connection — spec F3) surfaced nothing and silently left the
+   *  restore entry inert; a hung one left it inert forever; and a late answer after this panel was
+   *  torn down could still have opened a confirmation nobody could see or answer. */
   protected openRestoreConfirm(): void {
     const run = this.deleteService.lastRun();
     if (!run || this.arbiter.activeRun() !== null) {
@@ -686,32 +693,45 @@ export class MassDeletePanel {
       return;
     }
 
-    this.emoteSetService.resolveEditableSet(run.setId).subscribe((resolution) => {
-      if (resolution.status !== 'editable') {
-        this.abortNotice.set({
-          leadKey: 'restore.nothingRestored',
-          reasonKey: restoreTargetCheckReasonKey(resolution.status),
-        });
-        return;
-      }
-      // The panel's own inputs are the host fields (spec 6.3): the page this restore starts from,
-      // not the delete run's frozen channel — a restore into a non-active or foreign set must
-      // still be attributed to whichever page the button was clicked on (E13, E21).
-      const target: ResolvedRestoreTarget = {
-        ...resolution.target,
-        hostChannelName: this.channelName(),
-        hostSelectedSetId: this.setId(),
-      };
-      if (!this.tokenService.hasToken()) {
-        openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
-          if (saved) {
-            this.openRestoreConfirmDialog(target, doneItems);
+    this.emoteSetService
+      .resolveEditableSet(run.setId)
+      .pipe(timeout(LIVE_ALIAS_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (resolution) => {
+          if (resolution.status !== 'editable') {
+            this.abortNotice.set({
+              leadKey: 'restore.nothingRestored',
+              reasonKey: restoreTargetCheckReasonKey(resolution.status),
+            });
+            return;
           }
-        });
-        return;
-      }
-      this.openRestoreConfirmDialog(target, doneItems);
-    });
+          // The panel's own inputs are the host fields (spec 6.3): the page this restore starts
+          // from, not the delete run's frozen channel — a restore into a non-active or foreign set
+          // must still be attributed to whichever page the button was clicked on (E13, E21).
+          const target: ResolvedRestoreTarget = {
+            ...resolution.target,
+            hostChannelName: this.channelName(),
+            hostSelectedSetId: this.setId(),
+          };
+          if (!this.tokenService.hasToken()) {
+            openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
+              if (saved) {
+                this.openRestoreConfirmDialog(target, doneItems);
+              }
+            });
+            return;
+          }
+          this.openRestoreConfirmDialog(target, doneItems);
+        },
+        // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
+        // allowed" (F3) — the same distinction `openConfirmDialog`'s own pre-check makes.
+        error: () => {
+          this.abortNotice.set({
+            leadKey: 'restore.nothingRestored',
+            reasonKey: restoreTargetCheckReasonKey('unavailable'),
+          });
+        },
+      });
   }
 
   /** `target` is the resolved target the pre-check produced (spec 6.2) — the restore puts the
@@ -813,34 +833,52 @@ export class MassDeletePanel {
    *  point 20, AK 31) — in the normal case a cache hit, because the page's own set view or the
    *  target picker already warmed the target list this minute. A block shows the panel's existing
    *  abort notice (`massDelete.nothingDeleted` + `massDelete.errors.*`); no dialog opens, no
-   *  request reaches 7TV. */
+   *  request reaches 7TV.
+   *
+   *  `checkedSetId` is read once, here, and threaded through to {@link openConfirmDialogAfterCheck}
+   *  rather than that method re-reading the live `setId()` input: the request can take a moment
+   *  (a cache miss), and a set switch landing in that window must not let the confirmation open
+   *  for whatever set happens to be selected once the answer arrives — only for the one the answer
+   *  actually vouches for (review round 1, finding 3a). A genuine switch still surfaces, just later
+   *  and visibly: `abortReasonBeforeStart` already compares the live `setId()` against this same
+   *  frozen value once the dialog itself closes.
+   *
+   *  `timeout` (same budget as the live alias read, `LIVE_ALIAS_READ_TIMEOUT_MS`) keeps a hung
+   *  request from leaving the delete button disabled forever — a timeout lands in the `error`
+   *  branch like any other failed check, i.e. `unavailable` (review round 1, finding 3b).
+   *  `takeUntilDestroyed` drops a late answer once this panel is gone, so a torn-down component
+   *  never opens a dialog nobody can see or answer (review round 1, finding 3c). */
   private openConfirmDialog(): void {
+    const checkedSetId = this.setId();
     this.deleteTargetCheckPending.set(true);
-    this.emoteSetService.resolveEditableSet(this.setId()).subscribe({
-      next: (resolution) => {
-        this.deleteTargetCheckPending.set(false);
-        if (resolution.status !== 'editable') {
+    this.emoteSetService
+      .resolveEditableSet(checkedSetId)
+      .pipe(timeout(LIVE_ALIAS_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (resolution) => {
+          this.deleteTargetCheckPending.set(false);
+          if (resolution.status !== 'editable') {
+            this.abortNotice.set({
+              leadKey: 'massDelete.nothingDeleted',
+              reasonKey: deleteTargetCheckReasonKey(resolution.status),
+            });
+            return;
+          }
+          this.openConfirmDialogAfterCheck(checkedSetId);
+        },
+        // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
+        // allowed" (F3) — the same distinction `FileImportStep`'s own pre-check makes.
+        error: () => {
+          this.deleteTargetCheckPending.set(false);
           this.abortNotice.set({
             leadKey: 'massDelete.nothingDeleted',
-            reasonKey: deleteTargetCheckReasonKey(resolution.status),
+            reasonKey: deleteTargetCheckReasonKey('unavailable'),
           });
-          return;
-        }
-        this.openConfirmDialogAfterCheck();
-      },
-      // 429, 503 or no connection: "cannot be checked right now", never "not allowed" (F3) — the
-      // same distinction `FileImportStep`'s own pre-check makes.
-      error: () => {
-        this.deleteTargetCheckPending.set(false);
-        this.abortNotice.set({
-          leadKey: 'massDelete.nothingDeleted',
-          reasonKey: deleteTargetCheckReasonKey('unavailable'),
-        });
-      },
-    });
+        },
+      });
   }
 
-  private openConfirmDialogAfterCheck(): void {
+  private openConfirmDialogAfterCheck(checkedSetId: string): void {
     this.setWarning.set(null);
     this.warningLoading.set(true);
 
@@ -848,13 +886,18 @@ export class MassDeletePanel {
     // DeleteConfirmDialogData), so the shared-set warning pops in as soon as the check answers.
     this.loadSetWarning();
 
-    // Frozen here, alongside setName/isActiveSet below, not re-read from the live `setId()` input
-    // at confirm time: the dialog outlives the view it was opened on, and a `channel.synced` set
-    // switch can move the host's selected set (and thus this input) while it is still open. Passed
-    // into `startDelete` so it can compare against the live value and abort rather than delete into
-    // whatever set happens to be selected once the dialog closes (#200 K5 finding A).
-    const frozenSetId = this.setId();
-    const frozenIsActiveSet = this.isActiveSet();
+    // `checkedSetId` (the pre-check's own argument, `openConfirmDialog`), not the live `setId()`
+    // input at this later moment: the dialog outlives the view it was opened on, and a
+    // `channel.synced` set switch can move the host's selected set (and thus this input) while it
+    // is still open — or even while the pre-check request itself was still out (review round 1,
+    // finding 3a). Passed into `startDelete` so it can compare against the live value and abort
+    // rather than delete into whatever set happens to be selected once the dialog closes (#200 K5
+    // finding A). `frozenIsActiveSet` follows the same rule — computed against `checkedSetId`
+    // rather than `this.isActiveSet()` (which reads the live `setId()`), so it never claims a
+    // set is active that was not the one actually checked.
+    const frozenSetId = checkedSetId;
+    const activeSetId = this.effectiveActiveSetId();
+    const frozenIsActiveSet = activeSetId !== null && activeSetId === checkedSetId;
     // Same reasoning, same moment, for the run's channel (K5 fix round item 7): the panel's own
     // `deleteService.startDelete` call used to read the live `channelName()` input instead, which
     // just happens to be stable in production (a panel only ever sees one channel across a run's
