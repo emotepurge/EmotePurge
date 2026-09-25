@@ -1063,7 +1063,7 @@
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
     "syncRetry": "Erneut melden",
-    "syncRetrySucceeded": "Rückmeldung erfolgreich nachgeholt.",
+    "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",

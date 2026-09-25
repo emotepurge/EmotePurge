@@ -25,7 +25,7 @@ const DE_TRANSLATIONS = {
     syncFailed:
       'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.',
     syncRetry: 'Erneut melden',
-    syncRetrySucceeded: 'Rückmeldung erfolgreich nachgeholt.',
+    syncRetrySucceeded: 'Rückmeldung erfolgreich.',
     summary: {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
     },
@@ -333,7 +333,7 @@ describe('RunProgressPanel', () => {
         expect(dialog.button('Erneut melden')).not.toBeNull();
         // 'partial' is documented (run-progress-panel.ts) as sharing this exact hint with 'failed' —
         // same title, same body, same retry action, not merely "also something is shown".
-        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
       },
     );
 
@@ -410,7 +410,7 @@ describe('RunProgressPanel', () => {
         syncReport: 'succeeded',
       });
 
-      expect(dialog.text()).toContain('Rückmeldung erfolgreich nachgeholt.');
+      expect(dialog.text()).toContain('Rückmeldung erfolgreich.');
       expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
       expect(dialog.button('Erneut melden')).toBeNull();
     });
@@ -422,7 +422,7 @@ describe('RunProgressPanel', () => {
         syncReport: 'succeeded',
       });
 
-      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
       expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
     });
 
@@ -435,7 +435,7 @@ describe('RunProgressPanel', () => {
           syncReport,
         });
 
-        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
         expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
       },
     );
