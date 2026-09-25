@@ -1404,7 +1404,7 @@
   "sevenTvToken": {
     "tokenSet": "7TV-Token gesetzt",
     "remove": "Entfernen",
-    "intro": "Zum Löschen brauchst du dein eigenes 7TV-Schreib-Token aus deiner eingeloggten 7tv.app-Session:",
+    "intro": "Für diese Aktion brauchst du dein eigenes 7TV-Schreib-Token aus deiner eingeloggten 7tv.app-Session:",
     "step1": "Auf 7tv.app einloggen (falls noch nicht geschehen).",
     "step2": "Entwicklertools öffnen (F12) → Tab \"Application\" (Chrome) bzw. \"Speicher\" (Firefox) → \"Local Storage\" → \"https://7tv.app\".",
     "step3Prefix": "Den Eintrag mit dem Schlüssel",

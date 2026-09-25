@@ -1404,7 +1404,7 @@
   "sevenTvToken": {
     "tokenSet": "7TV token set",
     "remove": "Remove",
-    "intro": "To delete emotes you need your own 7TV write token from your logged-in 7tv.app session:",
+    "intro": "This action needs your own 7TV write token from your logged-in 7tv.app session:",
     "step1": "Log in on 7tv.app (if you haven't already).",
     "step2": "Open dev tools (F12) → the \"Application\" tab (Chrome) or \"Storage\" tab (Firefox) → \"Local Storage\" → \"https://7tv.app\".",
     "step3Prefix": "Find the entry with the key",
