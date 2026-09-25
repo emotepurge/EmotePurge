@@ -698,7 +698,10 @@ describe('parseTransferRunForRestore', () => {
       plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
     ) as { meta: Record<string, unknown> };
 
-    const missing = JSON.stringify({ ...record, meta: { ...record.meta, targetEmoteSetId: undefined } });
+    const missing = JSON.stringify({
+      ...record,
+      meta: { ...record.meta, targetEmoteSetId: undefined },
+    });
     expect(parseTransferRunForRestore(missing)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.wrongKind',

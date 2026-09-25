@@ -14,6 +14,7 @@ import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service'
 import { RestoreRow } from '../export/purge-run-export';
 import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
+import { loadRestoreSlotPreview, RestoreSlotPreview } from './restore-slot-preview';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
 
 /**
@@ -87,36 +88,11 @@ export function startRestoreFlow(
   const openConfirm = (): void => {
     // Live slot view, same pattern as the delete confirm's shared-set warning. The signal is born
     // here, next to its one subscription and its one reader — openConfirm runs at most once per
-    // flow, so there is nothing to reset it from.
-    const slots = signal<{ occupied: number; capacity: number } | null>(null);
-    // Slot-preview fork (spec 4.3, point 8 — same fork `loadImportTarget` already uses): a
-    // tracked, *active* target reads the cheap, non-7TV-rate-limited status; anything else — a
-    // non-active set of a tracked channel, or an untracked target — reads the live per-set preview
-    // instead, keyed by the tracked channel when there is one, otherwise the account's own
-    // `twitchLogin` (the active-set status endpoint has no set-scoped or untracked form at all).
-    if (target.trackedChannelName !== null && target.isActiveSet) {
-      deps.emoteAdminService.getSetStatus(target.trackedChannelName).subscribe({
-        next: (status) =>
-          slots.set(
-            status.capacity === null
-              ? null
-              : { occupied: status.occupiedSlots, capacity: status.capacity },
-          ),
-        error: () => slots.set(null),
-      });
-    } else {
-      deps.emoteSetService
-        .loadEmoteSetPreview(target.trackedChannelName ?? target.twitchLogin, target.emoteSetId)
-        .subscribe({
-          next: (preview) =>
-            slots.set(
-              preview.capacity === null
-                ? null
-                : { occupied: preview.totalCount, capacity: preview.capacity },
-            ),
-          error: () => slots.set(null),
-        });
-    }
+    // flow, so there is nothing to reset it from. The read itself is the fork
+    // `loadRestoreSlotPreview` shares with `MassDeletePanel.openRestoreConfirmDialog` (spec 4.3,
+    // point 8 / spec 8.3, final fix wave A5) — same fork `loadImportTarget` also uses.
+    const slots = signal<RestoreSlotPreview>(null);
+    loadRestoreSlotPreview(deps, target).subscribe((preview) => slots.set(preview));
 
     // spec #200, 7.2: the projection is against ADDs, not rows — a #74 duplicate cell's row
     // carries every alias it sat under and restores once per alias. An entry without an alias

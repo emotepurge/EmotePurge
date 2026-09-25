@@ -2614,6 +2614,47 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
     expect(startRestore).not.toHaveBeenCalled();
   });
 
+  // restoreTargetCheckReasonKey's "notSelectable" branch (Plan-253 §6, Nr. 4) had no case of its
+  // own here — the delete run's set can only ever have been NORMAL to begin with (the picker never
+  // offers another kind), but the mapping stays total rather than assuming that at the call site.
+  it('shows the abort notice and starts nothing when the pre-check finds the set no longer selectable', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock.expectOne('/api/seventv/me/emote-set-targets').flush({
+      accounts: [
+        {
+          twitchChannelId: 'tw-1',
+          twitchLogin: RUN_CHANNEL,
+          isOwnAccount: true,
+          trackedChannelName: RUN_CHANNEL,
+          activeEmoteSetId: 'set-1',
+          sets: [
+            {
+              id: 'set-1',
+              name: 'set-1',
+              capacity: null,
+              kind: 'GLOBAL',
+              isActive: true,
+              isPersonal: false,
+              ownerDisplayName: null,
+              ownerSevenTvUserId: 'owner-1',
+              editable: true,
+            },
+          ],
+          setsUnavailable: false,
+          sevenTvUserId: 'owner-1',
+        },
+      ],
+      sevenTvUnavailable: false,
+    });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.targetNotSelectable',
+    });
+    expect(getSetStatus).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+  });
+
   it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
     fixture.componentInstance['openRestoreConfirm']();
     httpMock

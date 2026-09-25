@@ -42,6 +42,7 @@ import { filterAlreadyPresentForRestore } from './already-present-filter';
 import { DeleteConfirmDialogData, openDeleteConfirmDialog } from './delete-confirm-dialog';
 import { ResolvedRestoreTarget, restoreStartTarget } from './restore-flow';
 import { RestoreConfirmDialogData, openRestoreConfirmDialog } from './restore-confirm-dialog';
+import { loadRestoreSlotPreview, RestoreSlotPreview } from './restore-slot-preview';
 import { RunProgressPanel } from './run-progress-panel';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { openSevenTvTokenPromptDialog } from './seven-tv-token-prompt-dialog';
@@ -454,7 +455,7 @@ export class MassDeletePanel {
   protected readonly protocolSaved = signal(false);
 
   /** Live slot view for the restore-confirm dialog, loaded when that dialog opens. */
-  private readonly restoreSlots = signal<{ occupied: number; capacity: number } | null>(null);
+  private readonly restoreSlots = signal<RestoreSlotPreview>(null);
 
   constructor() {
     this.destroyRef.onDestroy(() => (this.destroyed = true));
@@ -658,34 +659,14 @@ export class MassDeletePanel {
     doneItems: readonly RunQueueItem[],
   ): void {
     // Live slot view, so the projection line pops in once the check answers (the dialog is
-    // already open by then) — same pattern as the delete confirm's shared-set warning. Same fork
-    // as `restore-flow.ts`'s `startRestoreFlow` (spec 4.3, point 8): a tracked, active target
-    // keeps the cheap, non-7TV-rate-limited status read; anything else reads the live per-set
-    // preview instead (spec 8.3) — `getSetStatus` has no set-scoped or untracked form at all.
+    // already open by then) — same pattern as the delete confirm's shared-set warning. The read
+    // itself is `loadRestoreSlotPreview`, the fork this shares with `restore-flow.ts`'s
+    // `startRestoreFlow` (spec 4.3, point 8 / spec 8.3, final fix wave A5).
     this.restoreSlots.set(null);
-    if (target.trackedChannelName !== null && target.isActiveSet) {
-      this.emoteAdminService.getSetStatus(target.trackedChannelName).subscribe({
-        next: (status) =>
-          this.restoreSlots.set(
-            status.capacity === null
-              ? null
-              : { occupied: status.occupiedSlots, capacity: status.capacity },
-          ),
-        error: () => this.restoreSlots.set(null),
-      });
-    } else {
-      this.emoteSetService
-        .loadEmoteSetPreview(target.trackedChannelName ?? target.twitchLogin, target.emoteSetId)
-        .subscribe({
-          next: (preview) =>
-            this.restoreSlots.set(
-              preview.capacity === null
-                ? null
-                : { occupied: preview.totalCount, capacity: preview.capacity },
-            ),
-          error: () => this.restoreSlots.set(null),
-        });
-    }
+    loadRestoreSlotPreview(
+      { emoteAdminService: this.emoteAdminService, emoteSetService: this.emoteSetService },
+      target,
+    ).subscribe((preview) => this.restoreSlots.set(preview));
 
     const data: RestoreConfirmDialogData = {
       names: doneItems.map((item) => item.name),
