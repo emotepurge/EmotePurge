@@ -1553,3 +1553,72 @@ entfernt und der Reparaturweg sonst nicht existiert.
 | 3 | high | `addOnly` war bei fremdem Ziel-Eintrag gesperrt; kommt `C` mitten in einer `full`-Zeile dazu, gibt es nach dem Teilerfolg keinen ausführbaren Reparaturweg (Undo gesperrt, Restore-Regel 2 wirft, Undo-Datei kann S nicht) | Zutreffend: E20 der zweiten Fassung, Regel 2 (`already-present-filter.ts:210-215`) | Sperre nur für `full` (destruktiv); `addOnly` läuft eintragsweise neben `C` mit Vermerk `notes`, `C` bleibt; Reparaturweg E9 in jeder Lage ausführbar | E20, F14, 4.3 Schritt 3, 4.7, 6.2, 6.4, 7 (drei Zeilen), AK 29, 36, 9.3, 9.4 |
 | 4 | high | `partial` wurde „unabhängig vom Engine-Status" gesetzt und hätte `unknown`/`failed` einer ADD hinter einer Auslassung versteckt | Zutreffend: 6.5 der zweiten Fassung | `omittedEntries` orthogonal; `partial` nur statt `done`; `failed`/`unknown`/`cancelled` bleiben und zählen in ihren Zählern und in `omittedEntryCount` | E23, F19, 4.3 Schritt 6, 4.7, 6.4, 6.5, 7, AK 33, 37 |
 | 5 | medium | Der Vertrag an #256 verlangte offene Läufe über `reset()` hinaus, testete aber nur Signal-Stubs; die Dienste steigen heute bei abgelöstem Lauf vor Settling und Meldung aus | Zutreffend: `onRunComplete` kehrt bei `run() !== started` zurück (`seven-tv-import.service.ts:583-592`); Delete/Restore `:292`/`:321`, `reset()` setzt `syncReport` auf `idle` | Punkt 6 im Vertrag: Lauf-Lebenszyklus `running → settling → reporting → closed` am Laufdatensatz, Meldungszustände am Lauf, Dienst-Signale als Projektion, Retry öffnet nicht wieder, Tests je Dienst für `reset()` in allen drei Phasen; der Undo-Dienst baut es so von Anfang an | F20, 6.5, 11.1 Punkt 5–6, AK 39, 9.3 |
+
+---
+
+## 17. Klärungen zum Plan (2026-09-25)
+
+Vier Stellen, an denen der Plan ([Plan-254-Replace-Undo.md](../../plans/Plan-254-Replace-Undo.md),
+Abschnitt 7) einen Widerspruch oder eine Lücke dieser Spec gefunden hat. Entschieden am
+2026-09-25 — K1, K2 und K4 vom Betreiber, K3 vom Orchestrator —, nach dem adversarialen
+Codex-Review des Plans (gpt-6-sol, drei Befunde `high`, Plan Abschnitt 10). Wo eine Klärung einen
+Satz dieser Spec präzisiert oder ersetzt, steht es hier; die genannten Stellen gelten in dieser
+Fassung. Bezeichner bleiben englisch, der Nachtrag ist deutsch wie die Spec.
+
+**K1 — Bilder im Bestätigungsdialog (präzisiert 4.2 Nr. 7 und 6.3).** Die Quelle zeigt ihr
+echtes Bild, das Ziel einen Platzhalter. Der Live-Read (`loadSevenTvSetEntries`) liest zusätzlich
+`flags { animated }` — dasselbe Feld, das die Vorschau-Query in
+`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs` liest; `Emote.images` liest sie
+absichtlich nicht — und liefert `animatedById`. Die **Quelle** bekommt ihre URL aus ID und Flag
+nach der Backend-Regel `BuildForeignImageUrl` (ebenda): `https://cdn.7tv.app/emote/{id}/4x_static.webp`
+nur bei `animated`, sonst `4x.webp`; fehlt das Flag, `4x.webp` — die Rendition, die für jedes
+Emote existiert (statische Emotes antworten unter `_static` mit 404, live gemessen am
+2026-09-09). Das ist die erste Ableitung einer URL aus der ID im Frontend (`emoteStillUrl` neben
+`animatedEmoteUrl` in `shared/emotes/emote-url.ts`, bytegleich mit dem Backend); das Verbot aus
+Plan-230 T1 galt der Ableitung **ohne** Kenntnis der Animiertheit und bleibt für jede Ableitung
+ohne Flag bestehen. Das **Ziel** steht nach einem geglückten Replace in keinem Set und bekommt den
+Platzhalter des Auflösungsschritts, mit Name und Aliasen daneben; keine zusätzliche 7TV-Anfrage.
+Tests: statisches und animiertes Quell-Emote. Der Satz „über dieselbe Bild-URL-Ableitung wie der
+Auflösungsschritt (Plan-230 T1)" in 6.3 ist damit ersetzt.
+
+**K2 — Herkunfts-Bestätigung bei gemischten `planned`-Dateien (präzisiert 6.3, 4.2 Nr. 8, AK 28;
+vereinheitlicht die `startUndo`-Signatur aus 6.3 und 6.5).** Lesart „effektiver Plan", doppelt
+gesichert. Ohne gesetzte Bestätigung sind unbelegte `full`-Zeilen im Dialog als `skippedUnproven`
+übersprungen (sichtbar, mit Grund); die Aktionszeile folgt dem effektiven Plan — nur
+`addOnly`-Zeilen ⇒ direkt „Starten", keine Rückweg-Datei (4.2 Nr. 8); keine laufende Zeile ⇒
+Aktionszeile gesperrt mit Grund. Mit Bestätigung sind sie `full`, und „Rückweg sichern" erscheint.
+Das Dialog-Ergebnis übergibt die laufenden und die übersprungenen Zeilen **explizit**
+(`runnable`, `skipped`, `acknowledgedUnproven`, `read`). **Der Dienst prüft die Herkunftssperre
+selbst noch einmal:** ohne `acknowledgedUnproven` läuft keine `full`-Zeile mit `provenance:
+'unproven'` — sie wird vor dem Aufbau der Queue `skippedUnproven`, es entsteht kein REMOVE, gleich
+was der Dienst bekommt. Signatur in 6.3 **und** 6.5: `startUndo(target, runnable, skipped,
+acknowledgedUnproven)`; die Drift-Zeilen des Frischchecks stehen in `skipped` mit `skippedDrift`.
+`acknowledgedUnproven` steht im Laufdatensatz und in `meta` beider Undo-Datei-Stufen (Papierspur,
+F6). Ein Test verfolgt eine gemischte `planned`-Datei ohne Bestätigung über „Starten" bis in den
+Dienst und belegt, dass kein REMOVE gesendet wird — als Unit-Test mit dem echten Dienst und als
+E2E.
+
+**K3 — Der erste Read liegt im Flow (präzisiert 4.2 Nr. 6, E14, AK 5, AK 7).** `startUndoFlow`
+macht den ersten Read und die erste Klassifikation. Nichts Laufendes ⇒ transiente Notiz, kein
+Dialog, kein zweiter Request (E18, AK 5). Read-Fehler oder `complete: false` ⇒ der Dialog öffnet
+im Fehlerzustand mit „Ziel neu laden" und gibt nichts frei (AK 7). Erfolg ⇒ der Dialog öffnet mit
+Read und Plan als Eingabe und liest **nur** bei „Ziel neu laden" erneut. „Ein Read beim Öffnen des
+Dialogs" (E14, 4.2 Nr. 6) ist dieser Read des Flows; es bleiben drei Prüfstellen.
+
+**K4 — Übersprungene Kandidaten im Ergebnisprotokoll (präzisiert 6.4, 4.8 Nr. 20, AK 18).** Das
+`finished`-Format bekommt eine eigene Zeilenart „übersprungen" (`kind: 'skipped'`): Quell-ID,
+`sourceName`, `alias`, Ziel-ID, `provenance`, `skippedReason` (jeder Grund aus 4.3 sowie
+`skippedUnproven` und `skippedDrift`), **ohne** `mode`, `restoredTarget`, `removedSource`,
+`status`, `completedSteps` — die bisherige Zeilenform kann einen Kandidaten, der vor der
+Klassifikation übersprungen wurde (`duplicateInFile`), nicht abbilden. Gelaufene Zeilen behalten
+die Form aus 6.4 mit `kind: 'executed'`; eine Zeile, die erst im Lauf über die Prüfung vor dem
+REMOVE übersprungen wird (`skippedDrift`, `recheckUnavailable`), bleibt `executed` mit `status:
+'cancelled'` und `skippedReason`, wie 6.4 es sagt. Das Ergebnisprotokoll führt jeden Kandidaten der
+Datei: gelaufene mit ihrem Status, im Dialog, im Frischcheck oder durch die Herkunftssperre des
+Dienstes übersprungene als „übersprungen". `counts.requested` zählt nur Zeilen, die tatsächlich
+gelaufen sind; `counts.skipped` kommt dazu. Der Restore-Parser der `transfer-undo`-Datei
+überspringt „übersprungen"-Zeilen ausdrücklich (nichts wurde entfernt). Die Rückweg-Datei
+(`planned`) führt weiterhin nur die laufenden Zeilen. CSV: Spalten `kind` und `skipped_reason`,
+die übrigen Spalten einer übersprungenen Zeile leer. Die Festlegung gehört vor die Umsetzung des
+Dateiformats (Plan T1), mit Tests für `duplicateInFile` und die übrigen Übersprünge vor der
+Klassifikation.
