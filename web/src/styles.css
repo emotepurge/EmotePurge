@@ -760,3 +760,14 @@ cdk-virtual-scroll-viewport[scrollWindow] {
 cdk-virtual-scroll-viewport[scrollWindow] .cdk-virtual-scroll-content-wrapper {
   contain: layout style;
 }
+
+/* import-conflict-resolution-step.ts's own inner-scroller viewport (issue #268 follow-up) —
+   UNlayered for the same reason as the two rules above: CDK's own component styles are unlayered.
+
+   CDK gives the wrapper `position: absolute; min-width: 100%` but no `width`, so shrink-to-fit
+   sizes it to the widest unbreakable run in any row — `truncate`/wrapping never engage. `width:
+   100%` resolves against the viewport's own definite width instead. Scoped to this step's own
+   viewport; the app's other virtual-scroll viewports were not measured against this fix. */
+cdk-virtual-scroll-viewport[data-resolve-viewport] .cdk-virtual-scroll-content-wrapper {
+  width: 100%;
+}

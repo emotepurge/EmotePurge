@@ -1241,7 +1241,19 @@
       "hintMismatches": "The emote is already in the target set, but under a different name. “Adopt name” renames it in the target and adds nothing.",
       "listLabelCollisions": "Name collisions",
       "listLabelMismatches": "Differing names",
-      "rowLabel": "{{ source }}, in the target: {{ target }}",
+      "rowLabel": "Source: {{ source }}, target: {{ target }}",
+      "header": {
+        "source": "Source",
+        "target": "Target · {{ set }}",
+        "targetPlain": "Target",
+        "action": "Action"
+      },
+      "consequence": {
+        "removed": "will be removed",
+        "becomes": "becomes “{{ name }}”",
+        "addedAs": "will be added as “{{ name }}”",
+        "kept": "will be kept"
+      },
       "targetGone": "no longer in the target set",
       "aliaslessEntry": "+ one entry without a name",
       "actionGroupLabel": "Action for {{ sourceName }}",

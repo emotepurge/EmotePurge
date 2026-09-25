@@ -110,7 +110,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **The distribution strip carries the same four colours and a 3 px plinth.** Without a plinth a bar of the dead tail is one pixel high, and nobody perceives a colour on one pixel; the plinth also represents "never used" correctly — that is not a small number but a category of its own. Below it a flat segment bar whose widths are the usage shares: the same matter on the other axis, and read together the Pareto statement. It describes the **whole** set even when a filter is active — the strip says "the whole set, ordered by usage", a band heading says what lies underneath it. What gets labelled is not the segment but a wrapping legend beneath it — colour chip, share, band name, sized by content. Forcing the label into the segment width was the attempt to answer a pixel question with a percentage threshold: measured, "11% regular" needs 105 px and gets only 68 even at 1280 px, so it was cut off at **every** width — in English merely less conspicuously, because the words are shorter. Alignment under its own segment is the price for that, and at 11% width it was none anyway.
 - **The sidecar is the magnifier from `lg` up** (`<aside>`, sticky, 16 rem; the grid only becomes two-column once something is actually being inspected). Below that a compact meta row (`lg:hidden`) carries the same numbers. **The drilldown dialog stays** — it is the only way on the ballot, below `lg`, by touch and by keyboard, and it additionally carries the range, first and last use and the voting block. Y axis, peak rate and the live-days row appear in both.
 - **The sidecar never loads per cell.** Its day series comes from **one** call per (channel, range) — `GET /usage-stats/series`. A surface that hangs off the mouse pointer must not generate requests; sweeping through a band would otherwise be a load profile.
-- **Animation is earned by dwelling, and only ever for one emote at a time.** Cells draw every emote as its still. `EmoteSpriteAnimated` (sidecar, inspector row, drilldown dialog, ballot, and the hovered cell of the import grid, §7.3) keeps the still and lays the `2x.webp` animation on top only after the pointer or focus has rested for 200 ms; a still emote never gets a second request. **Under `prefers-reduced-motion: reduce` no animation is fetched or played at all** — the still stays, and switching the preference on while an animation shows withdraws it. This is decided inside `EmoteSpriteAnimated` (via `ReducedMotionService`, `core/motion/`), not at the call sites, so no surface can forget it.
+- **Animation is earned by dwelling, and only ever for one emote at a time.** Cells draw every emote as its still. `EmoteSpriteAnimated` (sidecar, inspector row, drilldown dialog, ballot, and the hovered cell of the import grid, §7.3) keeps the still and lays the `2x.webp` animation on top only after the pointer or focus has rested for 200 ms; a still emote never gets a second request. **Under `prefers-reduced-motion: reduce` no animation is fetched or played at all** — the still stays, and switching the preference on while an animation shows withdraws it. This is decided inside `EmoteSpriteAnimated` (via `ReducedMotionService`, `core/motion/`), not at the call sites, so no surface can forget it. **Named exception: the import confirm dialog's resolution step (§7.2) animates one ROW at a time, both its cells together** — comparing a source emote against its target needs both sides animated at once, not one after the other, so "one emote" widens to "one row" there without widening any further (every other row still draws plain stills).
 - **`.app-dock` appears only as long as there is something to do or to read:** a selection, or a 7TV run (delete, restore, import) that is running or has just finished — whose summary carries the protocol for download and must survive the last delete. Close itself waits on that survival: `RunProgressPanel` only offers Close once the run has settled (its `dismissible` input, #230) — a run whose engine is done but whose settlement is still pending (an `unknown` row's live re-read, up to 20 s) shows neither Cancel nor Close, so the summary and its protocol cannot be dismissed before either exists. A permanently parked action bar is a control the first visit has to read past. The dock carries, as the only surface of the app, a line in the accent colour — it marks the boundary of a living, reversible state. Which commands may stand in it and which belong in the page header is governed by §8.7.
 - **The active emote set gates only the marking half of the dock, not the dock itself.** The count row, the mass-delete panel and the ballot button are about the set of *this* channel and need one; the import section shows a run into a **foreign** set (§7.2) and is therefore mounted outside this gate. Otherwise a writing run together with its cancel button would disappear on a usage page without an active set while it is still running.
 - **Selection, dock and the 20 px history trigger are additionally gated behind `PointerModeService.isCoarse` — no 7TV write access without a mouse.** The 7TV write token can only be copied out of the devtools on 7tv.app, which a phone does not have; the gate is therefore the pointer type, not the width (`(pointer: coarse)`, not `any-pointer` — a desktop with an attached touchscreen keeps everything, because devtools remain). On `coarse` a click on the cell no longer marks anything but opens the drilldown dialog directly (§7.1), the mass-delete panel does not render at all, and in the page header of the usage page the same gate removes the entire `@if` block of the 7TV write paths — the Transfer button **and** the file-ingest trigger (§7.3).
@@ -391,15 +391,32 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   `runBlocked` locks all three states silently, like "Copy".
 - **The resolution step is the second step of the same dialog, not an overlay of its own.**
   One conflict group per opening; the pane widens to `app-dialog-panel-wide` for exactly this step
-  and narrows again on the way back. Row order: a quiet explanation of the actions → the
-  virtualized table (source sprite and name, target sprite and name(s) — both aliases for a #74
-  duplicate —, then a radio group per row named "Action for {source}") → "Back" / "Apply" in the
-  action row, the lock reason beside "Apply" naming the rows by source name. Actions that do not
+  and narrows again on the way back. Row order: a quiet explanation of the actions → **column
+  headers** ("Source" → "Target · {set name}" | "Action", `label` micro type, `aria-hidden` — the
+  wide layout only; the target's name is the dialog's own resolved `targetSetLabel`, so header and
+  title never disagree) → the virtualized table (source sprite and name, target sprite and
+  name(s) — both aliases for a #74 duplicate —, then a radio group per row named "Action for
+  {source}") → "Back" / "Apply" in the action row, the lock reason beside "Apply" naming the rows
+  by source name. Only the row under the pointer, or failing that the row holding keyboard focus,
+  animates its two sprites — both cells together, since the row is a comparison (§113's named
+  exception); every other row draws a plain, always-settled still, the same `pointerKey ??
+  focusKey` idea `foreign-emote-grid.ts` uses for its own hovered cell (§7.3). Below 760px content width the header row disappears and each stacked source/target
+  cell instead carries its own `aria-hidden` caption (issue #268). Actions that do not
   apply to a row stay listed, disabled, with their reason in brackets (the target picker's idiom
   above) — replace for an untracked target or for a drifted row whose live counterpart no
   longer holds the name ("reload target first"), adopt where the target name is taken or
   duplicated. A
-  rename opens a text field prefilled with the source name, with the §5.3 field error. "Apply"
+  rename opens a text field prefilled with the source name, with the §5.3 field error. **A reserved
+  consequence line sits below the name on whichever side an action affects** (issue #268), always
+  rendered so a chosen action never changes the row's fixed height: replace dims and strikes
+  through the target sprite/name and reads "will be removed" (`text-danger-fg`); adopt reads
+  "becomes '{source name}'" under the target; rename reads "will be added as '{typed alias}'"
+  under the source, following every keystroke; skip reads "will be kept" under the target (quiet
+  text, not a banner — nothing changes, the line only says which side survives untouched) unless
+  the target is already gone, where skip leaves both lines empty like every other action that
+  touches nothing there. Each row's radiogroup
+  points `aria-describedby` at both its source and target consequence line ids, present whether or
+  not they currently hold text. "Apply"
   commits the group's decisions; "Back" keeps the committed ones as they were and keeps the edits
   for the next opening. The rows carry a roving tabindex (arrow up/down, Home/End, scrolled into
   the viewport first), because a virtualized row outside the buffer is not in the DOM and Tab alone

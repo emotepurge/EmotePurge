@@ -10,6 +10,30 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — Only the active row animates in the resolution step
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.spec.ts` ·
+`docs/UI-Designsprache.md`
+
+The resolution step (#230/#268/#269) first shipped every row mounting `EmoteSpriteAnimated`
+unconditionally, so opening the step or scrolling through it started every buffered row's own
+200ms dwell and fetched an animation for each one at once — a Codex P2 finding against
+`docs/UI-Designsprache.md` §113 ("Animation is earned by dwelling, and only ever for one emote at
+a time"). The reported reason to animate at all: the operator could not reliably tell some emotes
+apart from their still frame alone.
+
+**Decision:** only the row under the pointer, or failing that the row holding keyboard focus,
+animates — the same `pointerKey ?? focusKey` idea `foreign-emote-grid.ts` already uses for its own
+hovered cell, including its safety nets (a scroll clears the pointer key, since virtualisation can
+recycle a hovered row's DOM node into a different row with no mouseleave to end it; either key
+resets once its row is no longer rendered). Unlike the import grid, which plays one emote at a
+time, this step plays one ROW's two cells together: comparing a source emote against its target
+needs both sides animated at once, not one after the other, because the row is a comparison. §113
+now carries this as a named exception, and §7.2 says so at the resolution step's own entry.
+
+---
+
 ### 2026-09-24 — Every deactivation closes the emote-set observation interval, the objection gate's included
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/ChannelDeactivation.cs` ·

@@ -10,8 +10,10 @@ import { ResolutionDecisions, RowDecision, Violation } from './conflict-resoluti
 import {
   ConflictStepRow,
   ImportConflictResolutionStep,
+  RowConsequence,
   collisionStepRows,
   mismatchStepRows,
+  rowConsequence,
   violationMessages,
 } from './import-conflict-resolution-step';
 import { AliasMismatchRow, NameCollisionRow } from './import-preview';
@@ -23,7 +25,19 @@ const DE_TRANSLATIONS = {
     resolve: {
       listLabelCollisions: 'Namenskollisionen',
       listLabelMismatches: 'Abweichende Namen',
-      rowLabel: '{{ source }}, im Ziel: {{ target }}',
+      rowLabel: 'Quelle: {{ source }}, Ziel: {{ target }}',
+      header: {
+        source: 'Quelle',
+        target: 'Ziel · {{ set }}',
+        targetPlain: 'Ziel',
+        action: 'Aktion',
+      },
+      consequence: {
+        removed: 'wird entfernt',
+        becomes: 'wird zu „{{ name }}“',
+        addedAs: 'wird als „{{ name }}“ hinzugefügt',
+        kept: 'wird behalten',
+      },
       targetGone: 'nicht mehr im Zielset',
       aliaslessEntry: '+ ein Eintrag ohne Namen',
       actionGroupLabel: 'Aktion für {{ sourceName }}',
@@ -146,6 +160,60 @@ describe('ImportConflictResolutionStep', () => {
     ]);
   });
 
+  describe('rowConsequence (issue #268, AK 2)', () => {
+    it('names the target as kept for skip', () => {
+      expect(rowConsequence({ kind: 'skip' }, 'Kappa')).toEqual({
+        side: 'target',
+        kind: 'kept',
+        name: '',
+      } satisfies RowConsequence);
+    });
+
+    it('names nothing for skip once the target is already gone — nothing there to keep', () => {
+      expect(rowConsequence({ kind: 'skip' }, 'Kappa', false, true)).toBeNull();
+    });
+
+    it('names the target as removed for replaceTarget', () => {
+      expect(rowConsequence({ kind: 'replaceTarget' }, 'Kappa')).toEqual({
+        side: 'target',
+        kind: 'removed',
+        name: '',
+      } satisfies RowConsequence);
+    });
+
+    it('names the target as becoming the source name for adoptSourceName', () => {
+      expect(rowConsequence({ kind: 'adoptSourceName' }, 'Kappa')).toEqual({
+        side: 'target',
+        kind: 'becomes',
+        name: 'Kappa',
+      } satisfies RowConsequence);
+    });
+
+    it('names the source as added under the typed alias for renameSource, following each keystroke', () => {
+      expect(rowConsequence({ kind: 'renameSource', alias: 'KappaNeu' }, 'Kappa')).toEqual({
+        side: 'source',
+        kind: 'addedAs',
+        name: 'KappaNeu',
+      } satisfies RowConsequence);
+      // A field the user has cleared names nothing rather than an empty quote.
+      expect(rowConsequence({ kind: 'renameSource', alias: '' }, 'Kappa')).toBeNull();
+    });
+
+    it('names nothing for renameSource while the typed alias has a field error, even though it is not empty (issue #269)', () => {
+      expect(
+        rowConsequence({ kind: 'renameSource', alias: 'KappaTaken' }, 'Kappa', true),
+      ).toBeNull();
+      // Once the error is gone, the same alias names the consequence again.
+      expect(rowConsequence({ kind: 'renameSource', alias: 'KappaTaken' }, 'Kappa', false)).toEqual(
+        {
+          side: 'source',
+          kind: 'addedAs',
+          name: 'KappaTaken',
+        } satisfies RowConsequence,
+      );
+    });
+  });
+
   describe('rendered', () => {
     let fixture: ComponentFixture<ImportConflictResolutionStep>;
     let host: HTMLElement;
@@ -178,11 +246,13 @@ describe('ImportConflictResolutionStep', () => {
       rows: ConflictStepRow[],
       decisions: ResolutionDecisions = new Map(),
       violations: Violation[] = [],
+      targetSetName: string | null = null,
     ): Promise<void> {
       fixture.componentRef.setInput('group', group);
       fixture.componentRef.setInput('rows', rows);
       fixture.componentRef.setInput('decisions', decisions);
       fixture.componentRef.setInput('violations', violations);
+      fixture.componentRef.setInput('targetSetName', targetSetName);
       fixture.detectChanges();
       for (let attempt = 0; attempt < 50 && rowElements().length === 0; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -194,6 +264,16 @@ describe('ImportConflictResolutionStep', () => {
 
     function rowElements(): HTMLElement[] {
       return Array.from(host.querySelectorAll<HTMLElement>('[data-resolve-index]'));
+    }
+
+    /** The reserved consequence line for one row and side — always present, whether or not it
+     *  currently holds text (issue #268 AK 3). */
+    function consequenceEl(key: string, side: 'source' | 'target'): HTMLElement {
+      const found = host.querySelector<HTMLElement>(`#resolve-consequence-${key}-${side}`);
+      if (!found) {
+        throw new Error(`no ${side} consequence line for ${key}`);
+      }
+      return found;
     }
 
     function actionGroup(sourceName: string): HTMLElement {
@@ -223,7 +303,7 @@ describe('ImportConflictResolutionStep', () => {
       expect(radio('Kappa', 'renameSource').checked).toBe(false);
       expect(radio('Kappa', 'replaceTarget').checked).toBe(false);
       // The row itself names both sides, so arrowing onto it says which conflict it is.
-      expect(rowElements()[0].getAttribute('aria-label')).toBe('Kappa, im Ziel: Kappa');
+      expect(rowElements()[0].getAttribute('aria-label')).toBe('Quelle: Kappa, Ziel: Kappa');
     });
 
     it('shows a blocked adopt as a disabled option that says why (AK 8)', async () => {
@@ -242,7 +322,7 @@ describe('ImportConflictResolutionStep', () => {
       expect(radio('Pog', 'skip').disabled).toBe(false);
     });
 
-    it('opens a prefilled rename field and shows its field error for an alias 7TV rejects (AK 10)', async () => {
+    it('opens a prefilled rename field and shows its field error once touched, for an alias 7TV rejects (AK 10)', async () => {
       const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
       await render('nameCollision', rows);
 
@@ -259,7 +339,13 @@ describe('ImportConflictResolutionStep', () => {
       ] satisfies Violation[]);
       fixture.detectChanges();
 
-      const field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+      // Editing the field is what touches it — this also drives it to the value under test.
+      let field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+      field!.value = 'Kappa neu';
+      field!.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
       expect(field?.value).toBe('Kappa neu');
       expect(field?.getAttribute('aria-invalid')).toBe('true');
       const errorId = field?.getAttribute('aria-describedby') ?? '';
@@ -272,6 +358,94 @@ describe('ImportConflictResolutionStep', () => {
       expect(decided.at(-1)).toEqual({
         key: 'a',
         decision: { kind: 'renameSource', alias: 'KappaNeu' },
+      });
+    });
+
+    describe('field error only once touched (issue #269, §5.3)', () => {
+      it('shows no field error and no aria-invalid right after choosing rename, even though the prefilled alias is already taken', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render('nameCollision', rows);
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa' }]]),
+        );
+        // The prefilled alias equals the collision's own name — always taken — so a violation
+        // exists from the first render, before the user has done anything with the field.
+        fixture.componentRef.setInput('violations', [
+          { rule: 'aliasHeldByTarget', rowKeys: ['a'] },
+        ] satisfies Violation[]);
+        fixture.detectChanges();
+
+        const field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+        expect(field?.getAttribute('aria-invalid')).toBeNull();
+        expect(field?.getAttribute('aria-describedby')).toBeNull();
+        expect(host.querySelector('#resolve-alias-a-error')).toBeNull();
+      });
+
+      it('shows the field error once the field is touched by leaving it (blur), still on the same taken alias', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render('nameCollision', rows);
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa' }]]),
+        );
+        fixture.componentRef.setInput('violations', [
+          { rule: 'aliasHeldByTarget', rowKeys: ['a'] },
+        ] satisfies Violation[]);
+        fixture.detectChanges();
+
+        host
+          .querySelector<HTMLInputElement>('#resolve-alias-a')!
+          .dispatchEvent(new FocusEvent('blur'));
+        fixture.detectChanges();
+
+        const field = host.querySelector<HTMLInputElement>('#resolve-alias-a');
+        expect(field?.getAttribute('aria-invalid')).toBe('true');
+        expect(host.querySelector('#resolve-alias-a-error')?.textContent).toContain(
+          'Dieser Name ist im Zielset schon vergeben.',
+        );
+      });
+
+      it('keeps the row touched after switching its action away and back', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render('nameCollision', rows);
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa' }]]),
+        );
+        fixture.detectChanges();
+        let field = host.querySelector<HTMLInputElement>('#resolve-alias-a')!;
+        field.value = 'Kappa neu';
+        field.dispatchEvent(new Event('input'));
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa neu' }]]),
+        );
+        fixture.componentRef.setInput('violations', [
+          { rule: 'invalidTypedAlias', rowKeys: ['a'] },
+        ] satisfies Violation[]);
+        fixture.detectChanges();
+        expect(field.getAttribute('aria-invalid')).toBe('true');
+
+        radio('Kappa', 'skip').click();
+        fixture.componentRef.setInput('decisions', new Map([['a', { kind: 'skip' }]]));
+        fixture.detectChanges();
+
+        radio('Kappa', 'renameSource').click();
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map([['a', { kind: 'renameSource', alias: 'Kappa neu' }]]),
+        );
+        fixture.detectChanges();
+
+        field = host.querySelector<HTMLInputElement>('#resolve-alias-a')!;
+        expect(field.getAttribute('aria-invalid')).toBe('true');
       });
     });
 
@@ -316,6 +490,239 @@ describe('ImportConflictResolutionStep', () => {
       expect(host.querySelector('[data-resolve-index="199"]')).toBeNull();
       second!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
       expect(scrollToIndex).toHaveBeenCalledWith(199);
+    });
+
+    describe('consequence line (issue #268)', () => {
+      it('names the target kept while a row is on skip, and leaves the source line empty', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+        );
+
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+        expect(consequenceEl('a', 'target').textContent?.trim()).toBe('wird behalten');
+      });
+
+      it('leaves both consequence lines empty on skip once the target is already gone — nothing there to keep', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([collision('a', 'Kappa')], true, new Map([['a', null]])),
+        );
+
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+        expect(consequenceEl('a', 'target').textContent?.trim()).toBe('');
+      });
+
+      it('shows the target as removed once replaceTarget is chosen', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+          new Map([['a', { kind: 'replaceTarget' }]]),
+        );
+
+        expect(consequenceEl('a', 'target').textContent?.trim()).toBe('wird entfernt');
+        // Choosing replace says nothing about the source side.
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+      });
+
+      it('shows the target becoming the source name once adoptSourceName is chosen', async () => {
+        await render(
+          'aliasMismatch',
+          mismatchStepRows([mismatch('b', 'Pog')], new Map()),
+          new Map([['b', { kind: 'adoptSourceName' }]]),
+        );
+
+        expect(consequenceEl('b', 'target').textContent?.trim()).toBe('wird zu „Pog“');
+      });
+
+      it('shows the typed alias under the source once renameSource is chosen, and follows further typing', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render('nameCollision', rows);
+
+        radio('Kappa', 'renameSource').click();
+        // The step re-renders once the decision it just emitted comes back through its own
+        // `decisions` input — same round trip the confirm dialog performs for real, simulated here
+        // since this fixture has no dialog wiring the output back to the input.
+        fixture.componentRef.setInput('decisions', new Map([['a', decided.at(-1)!.decision]]));
+        fixture.detectChanges();
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe(
+          'wird als „Kappa“ hinzugefügt',
+        );
+
+        const field = host.querySelector<HTMLInputElement>('#resolve-alias-a')!;
+        field.value = 'KappaNeu';
+        field.dispatchEvent(new Event('input'));
+        fixture.componentRef.setInput('decisions', new Map([['a', decided.at(-1)!.decision]]));
+        fixture.detectChanges();
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe(
+          'wird als „KappaNeu“ hinzugefügt',
+        );
+
+        field.value = '';
+        field.dispatchEvent(new Event('input'));
+        fixture.componentRef.setInput('decisions', new Map([['a', decided.at(-1)!.decision]]));
+        fixture.detectChanges();
+        // An emptied field names nothing rather than an empty quote.
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+      });
+
+      it('shows no consequence line while the typed alias has a field error, and shows it again once valid (issue #269)', async () => {
+        const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+        await render(
+          'nameCollision',
+          rows,
+          new Map([['a', { kind: 'renameSource', alias: 'Taken' }]]),
+          [{ rule: 'aliasHeldByTarget', rowKeys: ['a'] }],
+        );
+
+        // A taken alias will not actually be added — the reserved line stays empty rather than
+        // promising a name the run cannot keep.
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe('');
+
+        // Once the run no longer sees a violation for the row (the user typed a free name), the
+        // same alias names the consequence again.
+        fixture.componentRef.setInput('violations', []);
+        fixture.detectChanges();
+        expect(consequenceEl('a', 'source').textContent?.trim()).toBe(
+          'wird als „Taken“ hinzugefügt',
+        );
+      });
+
+      it("names each row's consequence lines from its radiogroup via aria-describedby", async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+          new Map([['a', { kind: 'replaceTarget' }]]),
+        );
+
+        const describedBy = actionGroup('Kappa').getAttribute('aria-describedby') ?? '';
+        const ids = describedBy.split(/\s+/).filter((id) => id.length > 0);
+        expect(ids).toContain('resolve-consequence-a-source');
+        expect(ids).toContain('resolve-consequence-a-target');
+        // Every id it names actually resolves to an element in the row, and that element carries
+        // the consequence text the chosen action produced.
+        const described = ids.map((id) => host.querySelector(`#${id}`));
+        expect(described.every((el) => el !== null)).toBe(true);
+        expect(described.some((el) => el?.textContent?.trim() === 'wird entfernt')).toBe(true);
+      });
+    });
+
+    describe('target set name caption (issue #268)', () => {
+      it('names the target set in the stacked layout caption', async () => {
+        // jsdom never lays out `#container`, so `narrow()` reads true in every rendered test here —
+        // the stacked layout's own per-cell caption is what this exercises; the wide header row's
+        // rendering is checked visually instead (docs/plans, live Playwright screenshot).
+        await render(
+          'nameCollision',
+          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+          new Map(),
+          [],
+          'Vault',
+        );
+
+        expect(rowElements()[0].textContent).toContain('Ziel · Vault');
+      });
+
+      it('falls back to the plain "Ziel" caption without a target set name', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([collision('a', 'Kappa')], true, new Map()),
+        );
+
+        const targetCell = rowElements()[0];
+        expect(targetCell.textContent).toContain('Ziel');
+        expect(targetCell.textContent).not.toContain('Ziel ·');
+      });
+    });
+
+    describe('active-row animation only (Codex P2 on #269, docs §113)', () => {
+      /** A row with BOTH cells carrying a real (non-null) image url — `collision`'s own default
+       *  leaves the source one `null` (AK 4 is a different concern), which would only ever exercise
+       *  one of the two cells here. */
+      function animatedRow(id: string, name: string): NameCollisionRow {
+        return collision(id, name, {
+          row: importRow(id, name, `https://cdn.7tv.app/emote/${id}/4x_static.webp`),
+        });
+      }
+
+      function animatedCellCount(row: Element): number {
+        return row.querySelectorAll('app-emote-sprite-animated').length;
+      }
+
+      /** Lets the step's own initial "hand focus to the table" (`afterNextRender`) settle before
+       *  this describe's own hover/focus interactions run — otherwise it can land after them and
+       *  reclaim focus back onto row 0 mid-test. `render`'s own wait loop does not guarantee this:
+       *  it returns as soon as rows exist, which can be before `afterNextRender` has fired. */
+      async function settleInitialFocus(): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await fixture.whenStable();
+        fixture.detectChanges();
+      }
+
+      it('animates nothing until a row is hovered or focused', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        expect(host.querySelectorAll('app-emote-sprite-animated')).toHaveLength(0);
+      });
+
+      it('hovering a row animates only that row, both its cells together', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+
+        expect(animatedCellCount(rowElements()[0])).toBe(2);
+        expect(animatedCellCount(rowElements()[1])).toBe(0);
+      });
+
+      it('moving the pointer to another row moves the animation with it', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseleave'));
+        rowElements()[1].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+
+        expect(animatedCellCount(rowElements()[0])).toBe(0);
+        expect(animatedCellCount(rowElements()[1])).toBe(2);
+      });
+
+      it('falls back to the focused row once the pointer leaves', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        rowElements()[1].focus();
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[1])).toBe(2);
+
+        // The pointer on a different row wins over the still-focused one.
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[0])).toBe(2);
+        expect(animatedCellCount(rowElements()[1])).toBe(0);
+
+        // Leaving it hands playback back to the row that still holds keyboard focus.
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseleave'));
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[0])).toBe(0);
+        expect(animatedCellCount(rowElements()[1])).toBe(2);
+      });
     });
   });
 });
