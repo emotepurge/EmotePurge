@@ -760,3 +760,32 @@ cdk-virtual-scroll-viewport[scrollWindow] {
 cdk-virtual-scroll-viewport[scrollWindow] .cdk-virtual-scroll-content-wrapper {
   contain: layout style;
 }
+
+/* import-conflict-resolution-step.ts's own inner-scroller viewport (issue #269 follow-up) —
+   UNlayered for the same reason as the two rules above: CDK's own component styles are unlayered.
+
+   CDK's base stylesheet gives `.cdk-virtual-scroll-content-wrapper` `position: absolute;
+   min-width: 100%` and no `width` at all. With no `width`, an absolutely positioned box with
+   `width: auto` is sized by CSS's shrink-to-fit algorithm — which, measured in a real browser,
+   does NOT clamp to the viewport's own width the way normal block layout would: a single
+   unbreakable run of text anywhere in a row (this step's worst case: a ~50-char emote/set name
+   with no spaces, or a rename field's typed alias quoted inside a translated sentence) sets the
+   wrapper's shrink-to-fit width, and every row — including ones with short, ordinary content —
+   is laid out that wide. `truncate` on a name span never got a chance to ellipsize (its own box
+   was never actually narrower than its text); the dialog's own `overflow-hidden` then clipped the
+   excess pixels raw, with no ellipsis and no wrap, at the panel's right edge (issue #269, Codex
+   review round). `min-w-0` on the row's own flex descendants does nothing for this: shrink-to-fit
+   is an intrinsic-size query run on the wrapper from OUTSIDE the row's flex formatting context,
+   not a flex-shrink negotiation inside a definite width, so it never consults those items' resolved
+   `min-width`. The fix is the wrapper's own sizing, not the row's: `width: 100%` (rather than only
+   `min-width: 100%`) resolves against the viewport's own definite, positioned (`position: relative`)
+   box, so the wrapper gets a genuine definite width instead of shrink-to-fit — verified in a real
+   browser (Chromium) that this alone, with no other class changed, took the same worst-case row
+   from 467px back to the viewport's own 248px, at which point `truncate` ellipsizes and wrapping
+   text actually wraps, both as CSS already intended. Scoped to this step's own viewport via
+   `data-resolve-viewport` rather than applied to every `cdk-virtual-scroll-viewport` in the app,
+   because `foreign-emote-grid.ts`'s own viewport (fixed-size sprite cells, no long unbroken runs)
+   was never measured against this fix and is out of scope here. */
+cdk-virtual-scroll-viewport[data-resolve-viewport] .cdk-virtual-scroll-content-wrapper {
+  width: 100%;
+}

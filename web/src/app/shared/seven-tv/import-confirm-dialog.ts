@@ -564,10 +564,19 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
         </p>
       }
       @if (resolveGroup() !== null && applyReasons().length > 0) {
+        <!-- min-w-0 + break-words (issue #269 follow-up): without min-w-0 this flex item (of the
+             sticky action row's flex-wrap/justify-end classes) never shrinks below its own
+             min-content — a row name can be one long, space-free run (an emote/set name), so that
+             floor can exceed the row's own available width. Once the item is wider than its line,
+             the mr-auto margin resolves to zero (negative free space), and the remaining
+             justify-end then right-aligns the oversized box — the text's LEFT side is what bleeds
+             out past the panel, not the right, which is what made this one easy to miss reading
+             the CSS alone. break-words lets the unbreakable name itself wrap once min-w-0 has
+             given it room to. -->
         <p
           dialog-actions
           id="import-resolve-apply-reason"
-          class="mr-auto text-xs text-fg-secondary"
+          class="mr-auto min-w-0 break-words text-xs text-fg-secondary"
         >
           @for (reason of applyReasons(); track reason.key) {
             <span class="block">{{ reason.key | transloco: { rows: reason.rows } }}</span>

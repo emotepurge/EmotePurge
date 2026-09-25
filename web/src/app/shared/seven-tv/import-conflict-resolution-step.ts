@@ -68,9 +68,24 @@ export interface ViolationMessage {
  *  constant below had room for (`232`/`120`), so both moved to the measured worst case plus an
  *  ~8-16px margin for cross-browser font-metric slack — the alias-mismatch rows (adopt chosen, and
  *  adopt disabled with its own longest bracketed reason, `adoptBlocked.aliaslessTarget`) stayed
- *  well inside both at 153px/141px, so they did not drive either number. */
+ *  well inside both at 153px/141px, so they did not drive either number.
+ *
+ *  Re-measured a second time for issue #269's own follow-up (Codex review round on #269, a
+ *  clipping-at-narrow-widths finding fixed by the row's own `min-w-0`/wrap classes plus a
+ *  `cdk-virtual-scroll-content-wrapper` sizing fix in styles.css — the CDK content wrapper's
+ *  shrink-to-fit default width had let a single unbreakable long name/typed alias widen the whole
+ *  row past the dialog regardless of this constant, so nothing here caught it before). The same
+ *  radio-label-wrap fix lets the bracketed disabled reason take a second line instead of forcing
+ *  width, which costs height: the worst-case narrow row (a ~50-char unbreakable name colliding on
+ *  both source and target, an untracked target's two-line disabled reason, and a checked rename
+ *  whose typed alias — also unbreakable — collides, wrapping the field error onto two lines too)
+ *  now measures 293px of content at the 360px floor AK 22 pins, against the previous 255px. The
+ *  wide layout is unaffected by the wrap fix (its longest-field-error row already wrapped the
+ *  actions column below `NARROW_BELOW_PX`, per the paragraph above) and stayed at 110px measured,
+ *  comfortably inside 136. Narrow moved to 320 (293px content + the row's own 16px `py-2` padding,
+ *  plus an ~11px margin, same cross-browser-slack reasoning as the first measurement round). */
 const ROW_WIDE_PX = 136;
-const ROW_NARROW_PX = 268;
+const ROW_NARROW_PX = 320;
 /** Content width below which the step switches to the stacked layout. Chosen so that, above it,
  *  the actions column still fits the widest row — three radio options, a bracketed disabled
  *  reason, the rename field and its error line — on one line each, comfortably inside
@@ -302,8 +317,13 @@ export function violationMessages(
           <span>{{ 'import.resolve.header.action' | transloco }}</span>
         </div>
       }
-      <!-- Buffers in rows, not the CDK's 100/200 px default, which is less than one tall row. -->
+      <!-- Buffers in rows, not the CDK's 100/200 px default, which is less than one tall row.
+           data-resolve-viewport: styles.css pins this viewport's CDK content wrapper to a definite
+           width instead of CDK's own shrink-to-fit default — see that rule's own comment for why
+           (issue #269 follow-up: an unbreakable long name or typed alias could otherwise widen
+           every row past the panel, clipping instead of truncating/wrapping). -->
       <cdk-virtual-scroll-viewport
+        data-resolve-viewport
         [itemSize]="rowPx()"
         [minBufferPx]="rowPx() * 2"
         [maxBufferPx]="rowPx() * 4"
@@ -446,8 +466,19 @@ export function violationMessages(
                 "
               >
                 @for (option of row.options; track option.kind) {
+                  <!-- flex-wrap + min-w-0 (issue #269 follow-up): a bracketed disabled reason
+                       (e.g. "Nur für getrackte Kanäle wiederherstellbar") has no unbreakable run
+                       of its own, but this label's nowrap internal flex still contributed its
+                       full one-line width to the row's own min-content — which the CDK content
+                       wrapper (position absolute, min-width 100%, width auto) uses as its
+                       shrink-to-fit ceiling. Below the narrow threshold that pushed the whole row
+                       wider than the viewport, clipping every truncate span too (truncate never
+                       got a chance to ellipsize — its box was never actually narrow). Letting the
+                       reason wrap onto its own line, and letting the label itself shrink as a flex
+                       item of the radiogroup, keeps this label's own min-content down to its
+                       widest single word instead of the whole bracketed sentence. -->
                   <label
-                    class="flex items-center gap-2 py-0.5"
+                    class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 py-0.5"
                     [class.opacity-60]="option.disabledReasonKey !== null"
                   >
                     <input
@@ -461,20 +492,22 @@ export function violationMessages(
                     />
                     {{ optionLabelKeys[option.kind] | transloco }}
                     @if (option.disabledReasonKey; as reasonKey) {
-                      <span class="text-xs text-fg-muted">({{ reasonKey | transloco }})</span>
+                      <span class="text-xs text-fg-muted break-words"
+                        >({{ reasonKey | transloco }})</span
+                      >
                     }
                   </label>
                 }
               </div>
 
               @if (renameAlias(row.key); as alias) {
-                <div class="flex items-center gap-2">
+                <div class="flex min-w-0 items-center gap-2">
                   <label class="shrink-0 text-xs text-fg-muted" [for]="'resolve-alias-' + row.key">
                     {{ 'import.resolve.renameLabel' | transloco }}
                   </label>
                   <input
                     type="text"
-                    class="app-input-sm min-w-0 flex-1"
+                    class="app-input-sm min-w-0 w-full flex-1"
                     [id]="'resolve-alias-' + row.key"
                     [value]="alias.value"
                     [attr.aria-invalid]="fieldErrorKey(row.key) !== null ? 'true' : null"
@@ -485,7 +518,10 @@ export function violationMessages(
                   />
                 </div>
                 @if (fieldErrorKey(row.key); as errorKey) {
-                  <p [id]="'resolve-alias-' + row.key + '-error'" class="text-sm text-danger-fg">
+                  <p
+                    [id]="'resolve-alias-' + row.key + '-error'"
+                    class="text-sm text-danger-fg break-words"
+                  >
                     {{ errorKey | transloco }}
                   </p>
                 }
