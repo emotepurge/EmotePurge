@@ -2969,7 +2969,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await page.clock.runFor(5000);
-    await expect(page.getByText('3 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    // The adopt (Pog) renames an existing target entry rather than copying one in, so it no longer
+    // counts as "kopiert" (spec #255) — the replace and the rename-under-KEKWv2 are the 2 copies.
+    await expect(
+      page.getByText('2 kopiert · 1 umbenannt · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
 
     // buildTransferPlan groups rows replace-then-adopt-then-add-then-rename (never source order,
     // `transfer-plan.ts`'s own doc) — with no untouched `add` row here the mutations run REMOVE,

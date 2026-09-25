@@ -1338,6 +1338,7 @@
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",
+      "countsWithRenamed": "{{done}} copied · {{renamed}} renamed · {{failed}} failed · {{cancelled}} cancelled",
       "target": "Target: {{ channel }}",
       "targetWithSet": "Target: {{ channel }} · set {{ setName }}",
       "targetSet": "Target: set {{ setName }} of {{ owner }}",

@@ -30,6 +30,15 @@ const DE_TRANSLATIONS = {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
     },
   },
+  import: {
+    progress: '{{ finished }} / {{ total }} kopiert',
+    progressBarLabel: 'Übertragungsfortschritt',
+    summary: {
+      counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      countsWithRenamed:
+        '{{done}} kopiert · {{renamed}} umbenannt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+    },
+  },
   syncReportReason: {
     forbidden: 'Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.',
     setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
@@ -92,6 +101,7 @@ function accessibleName(el: Element): string {
       [syncReportReason]="syncReportReason"
       [rateLimitPauseSeconds]="rateLimitPauseSeconds"
       [dismissible]="dismissible"
+      [renamedCount]="renamedCount"
       (cancelled)="cancelledCount = cancelledCount + 1"
       (dismissed)="dismissedCount = dismissedCount + 1"
       (syncRetryRequested)="syncRetryRequestedCount = syncRetryRequestedCount + 1"
@@ -112,6 +122,7 @@ class HostComponent {
   syncReportReason: SyncReportReason | null = null;
   rateLimitPauseSeconds: number | null = null;
   dismissible = true;
+  renamedCount: number | null = null;
   projectRunActions = false;
   cancelledCount = 0;
   dismissedCount = 0;
@@ -461,6 +472,45 @@ describe('RunProgressPanel', () => {
 
       expect(dialog.fixture.nativeElement.querySelector('[run-actions]')).not.toBeNull();
       expect(dialog.text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+    });
+  });
+
+  // Spec #255: an import run's adopted renames are a `done` row too, but not a copy — a host
+  // (currently only import) can split them out via `renamedCount` without touching what
+  // massDelete/restore ever showed.
+  describe('summary counts', () => {
+    it('reads "copied" alone when renamedCount is not passed, unaffected by the new field', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done')],
+        isRunning: false,
+        labelPrefix: 'massDelete',
+      });
+
+      expect(dialog.text()).toContain('2 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+      expect(dialog.text()).not.toContain('umbenannt');
+    });
+
+    it('reads "copied" alone when renamedCount is 0, even for a labelPrefix that has a renamed wording', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done')],
+        isRunning: false,
+        labelPrefix: 'import',
+        renamedCount: 0,
+      });
+
+      expect(dialog.text()).toContain('2 kopiert · 0 fehlgeschlagen · 0 abgebrochen');
+      expect(dialog.text()).not.toContain('umbenannt');
+    });
+
+    it('splits renamedCount out of "copied" into its own "renamed" count once it is positive', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done'), queueItem('c', 'done')],
+        isRunning: false,
+        labelPrefix: 'import',
+        renamedCount: 1,
+      });
+
+      expect(dialog.text()).toContain('2 kopiert · 1 umbenannt · 0 fehlgeschlagen · 0 abgebrochen');
     });
   });
 

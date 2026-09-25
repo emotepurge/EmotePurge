@@ -1338,6 +1338,7 @@
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "countsWithRenamed": "{{done}} kopiert · {{renamed}} umbenannt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
       "target": "Ziel: {{ channel }}",
       "targetWithSet": "Ziel: {{ channel }} · Set {{ setName }}",
       "targetSet": "Ziel: Set {{ setName }} von {{ owner }}",

@@ -115,6 +115,7 @@ interface FakeImportService {
   queue: WritableSignal<RunQueueItem[]>;
   items: Signal<RunQueueItem[]>;
   isRunning: WritableSignal<boolean>;
+  doneAdoptCount: WritableSignal<number>;
   rateLimitPauseSeconds: WritableSignal<number | null>;
   run: WritableSignal<ImportRunInfo | null>;
   syncReport: WritableSignal<SyncReportState>;
@@ -140,6 +141,7 @@ function createFakeImportService(): FakeImportService {
     queue,
     items: computed(() => queue()),
     isRunning: signal(false),
+    doneAdoptCount: signal(0),
     rateLimitPauseSeconds: signal<number | null>(null),
     run: signal<ImportRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),

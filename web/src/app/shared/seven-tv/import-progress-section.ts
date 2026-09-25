@@ -122,6 +122,7 @@ import { RunProgressPanel } from './run-progress-panel';
             [items]="importService.items()"
             [isRunning]="importService.isRunning()"
             labelPrefix="import"
+            [renamedCount]="importService.doneAdoptCount()"
             [syncReport]="importService.syncReport()"
             [rateLimitPauseSeconds]="importService.rateLimitPauseSeconds()"
             [dismissible]="run.settlement === 'settled'"

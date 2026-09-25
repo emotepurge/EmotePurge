@@ -1351,12 +1351,35 @@ describe('SevenTvImportService', () => {
       ]);
       expect(service.items()[0].transfer.action).toBe('adoptSourceName');
       expect(service.destructiveRunActive()).toBe(false);
+      // Not `done` yet — doneAdoptCount only counts a settled adopt (spec #255).
+      expect(service.doneAdoptCount()).toBe(0);
 
       answerNext({});
 
       expect(service.isRunning()).toBe(false);
       expect(service.items()).toBe(service.run()?.result?.items);
       expect(service.items()[0].status).toBe('done');
+      expect(service.doneAdoptCount()).toBe(1);
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    // Spec #255: RunProgressPanel's "N kopiert" splits the adopt out of "done" via this count — it
+    // must name only the adopt, never a plain add sitting `done` right next to it in the same run.
+    it('counts only the done adopts of a mixed plan, not the plain add beside it', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [addRow(SOURCE_X), adoptRow(SOURCE_Y, 'PogOld')],
+      });
+      expect(service.doneAdoptCount()).toBe(0);
+
+      answerNext({});
+      answerNext({});
+
+      expect(service.items().map((item) => item.transfer.action)).toEqual([
+        'add',
+        'adoptSourceName',
+      ]);
+      expect(service.doneAdoptCount()).toBe(1);
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 

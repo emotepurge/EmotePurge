@@ -83,7 +83,7 @@ import { NoticeBanner } from '../ui/notice-banner';
       @if (!isRunning() && total() > 0) {
         <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
           <span class="text-fg-secondary">
-            {{ labelPrefix() + '.summary.counts' | transloco: summaryCounts() }}
+            {{ summaryCountsKey() | transloco: summaryCounts() }}
           </span>
           <ng-content select="[run-actions]" />
         </div>
@@ -140,6 +140,11 @@ export class RunProgressPanel {
    *  matters. Defaults to `true`: delete and restore never pass it, so they keep the panel's
    *  original behaviour of offering Close the moment the run stops. */
   readonly dismissible = input(true);
+  /** Rows counted `done` that are not a copy — today only an import run's adopted renames (an
+   *  existing target entry renamed in place, not a new entry added, spec #255). Subtracted out of
+   *  `summaryCounts().done` and broken out as its own `renamed` count once positive; `null` (the
+   *  default) leaves `summaryCounts()` exactly as it always was — delete and restore never pass it. */
+  readonly renamedCount = input<number | null>(null);
   readonly cancelled = output<void>();
   readonly dismissed = output<void>();
   readonly syncRetryRequested = output<void>();
@@ -167,12 +172,24 @@ export class RunProgressPanel {
 
   protected readonly summaryCounts = computed(() => {
     const statuses = this.items().map((item) => item.status);
+    const renamed = this.renamedCount() ?? 0;
     return {
-      done: statuses.filter((status) => status === 'done').length,
+      done: statuses.filter((status) => status === 'done').length - renamed,
+      renamed,
       failed: statuses.filter((status) => status === 'failed').length,
       cancelled: statuses.filter((status) => status === 'cancelled').length,
     };
   });
+
+  /** Which summary sentence to speak — the one that also names the renamed count once there is one
+   *  to name, otherwise the same `.summary.counts` every host has always had (massDelete and
+   *  restore never pass `renamedCount`, so `summaryCounts().renamed` is always 0 for them and this
+   *  always resolves to `.summary.counts`). */
+  protected readonly summaryCountsKey = computed(() =>
+    this.summaryCounts().renamed > 0
+      ? `${this.labelPrefix()}.summary.countsWithRenamed`
+      : `${this.labelPrefix()}.summary.counts`,
+  );
 
   // 'partial' shares the notice with 'failed': in both cases the backend's view of the set differs
   // from what was actually deleted, and the remedy (retry, or wait for the periodic resync) is the same.
