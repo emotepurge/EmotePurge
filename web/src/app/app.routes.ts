@@ -7,7 +7,6 @@ import { channelManageGuard } from './core/channels/channel-manage.guard';
 import { usageStatsAccessGuard } from './core/channels/usage-stats-access.guard';
 import { voteSessionAccessGuard } from './core/voting/vote-session-access.guard';
 import { LoginPage } from './features/login/login-page';
-import { usageStatsLeaveGuard } from './features/usage-stats/usage-stats-leave.guard';
 
 export const routes: Routes = [
   {
@@ -104,13 +103,15 @@ export const routes: Routes = [
           {
             // Must actually be allowed to view THIS channel's usage stats (Twitch mod/broadcaster/
             // admin OR 7TV editor — usageStatsAccessGuard), not just be logged in, unlike the
-            // vote-session pages below. canDeactivate asks before leaving mid-import (R11, #72) —
-            // it only fires while a run is active and never touches the run itself.
+            // vote-session pages below. Loaded via loadChildren rather than loadComponent (issue
+            // #264): the leave-confirmation guard (asks before leaving mid-import, R11, #72) pulls
+            // in the whole 7TV import engine through SevenTvImportService, and moving it into its
+            // own chunk here — see usage-stats.routes.ts — kept that ~127 kB out of the initial
+            // bundle. canActivate stays here on the parent; canDeactivate moved with the guard.
             path: 'usage-stats',
-            loadComponent: () =>
-              import('./features/usage-stats/usage-stats-page').then((m) => m.UsageStatsPage),
             canActivate: [usageStatsAccessGuard],
-            canDeactivate: [usageStatsLeaveGuard],
+            loadChildren: () =>
+              import('./features/usage-stats/usage-stats.routes').then((m) => m.USAGE_STATS_ROUTES),
           },
           {
             // Requires login only — the list itself has no per-session role restriction.

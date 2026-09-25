@@ -10,6 +10,82 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — usage-stats becomes a lazy child route to keep the leave guard out of the initial bundle
+
+**Betrifft:** `web/src/app/app.routes.ts` (the `usage-stats` entry: `loadChildren` instead of
+`loadComponent`, `canDeactivate` removed) · `web/src/app/features/usage-stats/usage-stats.routes.ts`
+(new — the lazy child module, `component: UsageStatsPage` + `canDeactivate: [usageStatsLeaveGuard]`).
+The behavioral check for this split, `web/src/app/features/usage-stats/usage-stats.routes.spec.ts`,
+landed in a separate commit and is described there.
+
+Issue #264: `ng build --stats-json` after merging `main` into `feat/emote-sets-200` via PR #263
+(`chore/200-sync-main`) put the initial bundle at 510.4 kB, over the 500 kB warning budget — a
+genuine result of the merge, since neither branch alone was over it (epic branch 499.5 kB, main
+496.8 kB). By the time this fix started, `feat/emote-sets-200` had moved on to 992eef14 (after PR
+#270 merged further work), where the same build measured 513.14 kB — that later number is the
+baseline the fix below is actually measured against. The chain was `app.routes.ts`'s `usage-stats`
+route → its `canDeactivate: [usageStatsLeaveGuard]` →
+`usageStatsLeaveGuard`'s `SevenTvImportService` dependency, which pulls in the whole 7TV import
+engine (the run engine, the delete/restore services, the emote-set/emote-admin services) plus CDK
+Dialog, Overlay and Scrolling — roughly 127 kB, all of it eager because the guard sat on a
+`loadComponent` route and guards are resolved together with the route they guard. None of that
+belongs in every page's initial load — only in a navigation that actually reaches toward
+usage-stats (see the compromise on exactly when, below); before this fix it loaded on first paint
+regardless of which route a visitor landed on.
+
+**The fix (A2): split `usage-stats` into its own `loadChildren` module, with a plain static
+`component` inside it, not a nested `loadComponent`.** `app.routes.ts`'s `usage-stats` entry keeps
+`canActivate: [usageStatsAccessGuard]` (unaffected — it depends only on `AuthService`/
+`ChannelService`) and trades `loadComponent` + `canDeactivate` for a single
+`loadChildren: () => import('./features/usage-stats/usage-stats.routes').then((m) => m.USAGE_STATS_ROUTES)`.
+The new file's one entry (`path: ''`) carries `component: UsageStatsPage` directly rather than
+another `loadComponent` — a nested `loadComponent` would split `UsageStatsPage` into a *second*
+chunk for no size benefit (the `loadChildren` import already produces one chunk on its own) and
+would cost an extra network round trip before the page renders. Measured: 404.07 kB initial /
+106.39 kB transfer, with `usage-stats-routes` as its own 213.16 kB / 44.67 kB lazy chunk.
+
+**A conscious compromise: the chunk now loads before the guard runs, not after.** In Angular
+22.1.6, route recognition resolves `loadChildren` while expanding the route tree, and that happens
+before `checkGuards` (`_router-chunk.mjs`, the `recognize`/`checkGuards` stages of the navigation
+pipeline around lines 3202–3222 and 3903). So a visitor who cannot actually open usage-stats — a
+voter, or a logged-out visitor arriving via the `/channels/x` redirect — now downloads the
+`usage-stats-routes` chunk before `usageStatsAccessGuard` redirects them away, where the old flat
+`loadComponent` route only loaded the page after guards had already passed. Not a correctness bug —
+the chunk sits inert until something renders it, and the redirect still happens — but a real,
+accepted trade-off against the pre-#264 behavior. `canMatch` is not a free way around this: it
+re-evaluates on every navigation into the route, including every `listQueryState` query-param
+change the page itself makes while already open, not once per visit.
+
+**Why not the alternative sketched in the issue (a slimmer guard, keeping the flat route).** The
+issue also sketched making `usageStatsLeaveGuard` depend only on a small root signal ("an import is
+running") instead of `SevenTvImportService` directly, loading the confirmation dialog dynamically
+only when it actually needs to show one — sidestepping the `leadsToSameRoute` risk below entirely,
+since the route shape would never change. Measured at 406.56 kB initial — smaller than doing
+nothing, but larger than A2, and it would have introduced a new registration convention (something
+has to expose that root signal and keep it in sync with the real service) plus an async guard
+(dynamically importing the confirm dialog inside the guard itself) — A2 measured about 2.5 kB
+smaller than this alternative (404.07 kB against 406.56 kB). Not implemented.
+
+**The `leadsToSameRoute` risk the issue flagged, checked.** `usageStatsLeaveGuard`'s
+`leadsToSameRoute` helper tells a pure channel switch apart from a real navigation away by
+comparing `ActivatedRouteSnapshot.routeConfig` object identity — walking the next router state for
+a snapshot whose `routeConfig` is the same object as the current route's. Moving the route into a
+child `loadChildren` module changes which object plays that role, so this needed an explicit check,
+not just "the build still compiles" (the issue's own words). It still holds: Angular's router
+caches a `loadChildren` route's resolved array on the route object itself
+(`route._loadedRoutes`), and for a plain array export (no `NgModule`) this happens without a new
+child injector (`route._loadedInjector` stays `undefined`, confirmed by reading
+`_router-chunk.mjs`'s `loadChildren()`/`RouterConfigLoader.loadChildren()`) — so the `path: ''`
+entry inside `usage-stats.routes.ts` keeps the same object identity across every navigation after
+the first, exactly as a flat top-level route did, and DI still resolves against the current
+injector rather than a stale cached one. `usage-stats.routes.spec.ts` asserts this behaviorally
+(channel switch during a run: no dialog, same `UsageStatsPage` instance, the route param follows)
+rather than trusting the reasoning alone, and does it against the real `routes` export and the real
+`USAGE_STATS_ROUTES` array — not a hand-typed stand-in of their shape, so a future reshape of either
+file breaks this test instead of only the production build.
+
+---
+
 ### 2026-09-25 — The replace lock for an untracked target falls, and a shared pre-check comes first
 
 **Betrifft:** `web/src/app/shared/seven-tv/conflict-resolution.ts` (rule 7,
