@@ -1,3 +1,4 @@
+import { ListRange } from '@angular/cdk/collections';
 import { CdkVirtualScrollViewport, ScrollingModule } from '@angular/cdk/scrolling';
 import {
   Component,
@@ -7,12 +8,14 @@ import {
   effect,
   inject,
   input,
+  linkedSignal,
   output,
   signal,
   viewChild,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
+import { EmoteSprite } from '../emotes/emote-sprite';
 import { EmoteSpriteAnimated } from '../emotes/emote-sprite-animated';
 import { ResolutionDecisions, RowDecision, Violation, ViolationRule } from './conflict-resolution';
 import { AliasMismatchRow, NameCollisionRow, TargetOverlay } from './import-preview';
@@ -78,6 +81,11 @@ const ROW_NARROW_PX = 320;
  *  previous threshold) sat inside that gap and let exactly this row overflow its fixed height. */
 const NARROW_BELOW_PX = 760;
 const SPRITE_PX = 40;
+/** `EmoteSprite`'s own default classes, duplicated locally so the active row's still can be given
+ *  an `invisible` variant once its animated overlay has painted — same pattern as
+ *  `foreign-emote-grid.ts`'s `spriteClass`/`hiddenSpriteClass` (§7.3). */
+const SPRITE_CLASS = 'h-full w-full object-contain p-1';
+const HIDDEN_SPRITE_CLASS = `${SPRITE_CLASS} invisible`;
 
 const OPTION_LABEL_KEYS: Record<RowDecision['kind'], string> = {
   skip: 'import.resolve.action.skip',
@@ -272,10 +280,22 @@ export function violationMessages(
  * No bottom-sheet variant and no coarse-pointer branch: every 7TV write path is hidden on a coarse
  * pointer, so this step is only ever reached with a mouse. A narrow desktop window gets the stacked
  * layout instead.
+ *
+ * **Only the active row animates its emotes** (docs/UI-Designsprache.md §113/§7.2) — the row under
+ * the pointer, or failing that the row holding keyboard focus (`playingKey`, the same
+ * "pointerKey ?? focusKey" idea `foreign-emote-grid.ts` §7.3 uses, including its own safety nets:
+ * a scroll clears the pointer key, since virtualisation can recycle a hovered row's DOM node into a
+ * different row with no mouseleave to end it, and either key resets once its row is no longer
+ * rendered). Both of that one row's cells animate together, source and target, because the row is a
+ * comparison — unlike the import grid, which plays one emote at a time. Every other row keeps
+ * drawing the plain, always-settled still: mounting `EmoteSpriteAnimated` in all of them at once,
+ * as this step first shipped it, started every row's own 200ms dwell on mount and fetched an
+ * animation for each — many at once on open or during a scroll, which is exactly what the dwell
+ * exists to prevent (Codex P2 on #269's animation follow-up).
  */
 @Component({
   selector: 'app-import-conflict-resolution-step',
-  imports: [EmoteSpriteAnimated, ScrollingModule, TranslocoPipe],
+  imports: [EmoteSprite, EmoteSpriteAnimated, ScrollingModule, TranslocoPipe],
   template: `
     <div
       #container
@@ -286,6 +306,7 @@ export function violationMessages(
           : 'import.resolve.listLabelMismatches'
         ) | transloco
       "
+      (focusout)="onContainerFocusOut($event)"
     >
       <!-- Column headers for the wide layout only — the stacked layout captions each cell instead
            (below), and every row already names both sides itself (rowLabel), so this row is
@@ -339,7 +360,9 @@ export function violationMessages(
           [attr.data-resolve-index]="index"
           [tabindex]="index === activeIndex() ? 0 : -1"
           [style.height.px]="rowPx()"
-          (focusin)="activeIndex.set(index)"
+          (mouseenter)="onRowEnter(row)"
+          (mouseleave)="onRowLeave(row)"
+          (focusin)="onRowFocusIn(row, index)"
           (keydown)="onRowKeydown($event, index)"
         >
           <div
@@ -353,7 +376,24 @@ export function violationMessages(
             <div class="flex min-w-0 items-center gap-2">
               <span class="app-sprite-cell relative block h-10 w-10 shrink-0">
                 @if (row.sourceImageUrl; as url) {
-                  <app-emote-sprite-animated [url]="url" [size]="spritePx" />
+                  <!-- The still stays mounted under the animation and hides only once that has
+                       painted — same pattern as foreign-emote-grid.ts, so the active row's fresh
+                       EmoteSpriteAnimated instance never flashes to hidden while it re-settles on
+                       an already-cached image. -->
+                  <app-emote-sprite
+                    [url]="url"
+                    [size]="spritePx"
+                    [spriteClass]="sourceStillHidden(row) ? hiddenSpriteClass : spriteClass"
+                  />
+                  @if (playsAnimation(row)) {
+                    <span class="absolute inset-0">
+                      <app-emote-sprite-animated
+                        [url]="url"
+                        [size]="spritePx"
+                        (animationShown)="onSourceAnimationShown(row)"
+                      />
+                    </span>
+                  }
                 }
               </span>
               <span class="flex min-w-0 flex-col">
@@ -386,11 +426,22 @@ export function violationMessages(
             <div class="flex min-w-0 items-center gap-2">
               <span class="app-sprite-cell relative block h-10 w-10 shrink-0">
                 @if (row.targetImageUrl; as url) {
-                  <app-emote-sprite-animated
+                  <app-emote-sprite
                     [url]="url"
                     [size]="spritePx"
+                    [spriteClass]="targetStillHidden(row) ? hiddenSpriteClass : spriteClass"
                     [dimmed]="targetConsequenceOf(row)?.kind === 'removed'"
                   />
+                  @if (playsAnimation(row)) {
+                    <span class="absolute inset-0">
+                      <app-emote-sprite-animated
+                        [url]="url"
+                        [size]="spritePx"
+                        [dimmed]="targetConsequenceOf(row)?.kind === 'removed'"
+                        (animationShown)="onTargetAnimationShown(row)"
+                      />
+                    </span>
+                  }
                 }
               </span>
               <span class="flex min-w-0 flex-col">
@@ -545,6 +596,8 @@ export class ImportConflictResolutionStep {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   protected readonly spritePx = SPRITE_PX;
+  protected readonly spriteClass = SPRITE_CLASS;
+  protected readonly hiddenSpriteClass = HIDDEN_SPRITE_CLASS;
   protected readonly optionLabelKeys = OPTION_LABEL_KEYS;
   protected readonly consequenceLabelKeys = CONSEQUENCE_KEYS;
 
@@ -559,6 +612,39 @@ export class ImportConflictResolutionStep {
    *  is chosen, before the user did anything. Keyed like `typedAliases`, for the same reason: it
    *  must survive switching a row away from rename and back. */
   private readonly touchedRows = signal<ReadonlySet<string>>(new Set());
+
+  /** The row the pointer rests on and the row holding keyboard focus, each ended only by its own
+   *  events — same "pointerKey ?? focusKey" idea as `foreign-emote-grid.ts` §7.3. */
+  private readonly pointerKey = signal<string | null>(null);
+  private readonly focusedKey = signal<string | null>(null);
+  /** True for exactly the one `focusin` the constructor's own initial focus handoff produces —
+   *  set right before that call, consumed the moment it lands. Without it, opening the step would
+   *  count as the user having settled on row 0 to compare and start it animating before the reader
+   *  has done anything; a later Home/End/arrow-key move (a real, deliberate row change) is not
+   *  flagged and counts normally. */
+  private skipNextFocusedKey = false;
+  /** The one row that may animate, pointer first — docs/UI-Designsprache.md §113 earns animation by
+   *  dwelling, one emote at a time; here, one ROW at a time, both its cells together, because the
+   *  row is a comparison (§7.2). */
+  protected readonly playingKey = computed(() => this.pointerKey() ?? this.focusedKey());
+
+  /** Which of the playing row's two cells has painted its animation, so that cell's still can
+   *  hide — see `foreign-emote-grid.ts`'s `revealedKey` for the same race this also guards
+   *  against. Kept separate per side: a row's two cells animate independently, and one settling
+   *  must not hide the other's still before it has its own animation to show. */
+  protected readonly revealedSourceKey = linkedSignal<string | null, string | null>({
+    source: this.playingKey,
+    computation: () => null,
+  });
+  protected readonly revealedTargetKey = linkedSignal<string | null, string | null>({
+    source: this.playingKey,
+    computation: () => null,
+  });
+
+  /** The rows the viewport currently renders, mirrored from `renderedRangeStream` — see
+   *  `foreign-emote-grid.ts`'s own copy for why: virtualisation can recycle a hovered/focused
+   *  row's DOM node into a different row's data with no mouseleave/blur to end its key. */
+  private readonly renderedRange = signal<ListRange>({ start: 0, end: 0 });
 
   protected readonly activeIndex = signal(0);
   protected readonly narrow = computed(() => this.containerWidth() < NARROW_BELOW_PX);
@@ -618,8 +704,40 @@ export class ImportConflictResolutionStep {
       }
     });
 
-    // The step replaces the first step's content, whose button had focus — hand focus to the table.
-    afterNextRender(() => this.focusRow(0));
+    // Same mechanism as foreign-emote-grid.ts: a row recycled under a resting pointer fires no
+    // mouseleave, so a scroll clears the pointer key instead (the focus key survives it — Tab
+    // scrolls a partly hidden row into view, and that row should still be the one that plays).
+    effect((onCleanup) => {
+      const viewport = this.viewport();
+      if (!viewport) {
+        return;
+      }
+      const subscription = viewport.elementScrolled().subscribe(() => this.pointerKey.set(null));
+      this.renderedRange.set(viewport.getRenderedRange());
+      subscription.add(
+        viewport.renderedRangeStream.subscribe((range) => this.renderedRange.set(range)),
+      );
+      onCleanup(() => subscription.unsubscribe());
+    });
+
+    // Either key outlives its row otherwise: virtualisation removes a hovered/focused row without
+    // a mouseleave/blur, and the row would then play again once it renders with neither on it.
+    for (const key of [this.pointerKey, this.focusedKey]) {
+      effect(() => {
+        const value = key();
+        if (value !== null && !this.isRowRendered(value)) {
+          key.set(null);
+        }
+      });
+    }
+
+    // The step replaces the first step's content, whose button had focus — hand focus to the
+    // table. That handoff must not itself count as the user settling on row 0 to compare — see
+    // `skipNextFocusedKey`.
+    afterNextRender(() => {
+      this.skipNextFocusedKey = true;
+      this.focusRow(0);
+    });
   }
 
   protected trackRow(_index: number, row: ConflictStepRow): string {
@@ -717,6 +835,59 @@ export class ImportConflictResolutionStep {
     this.focusRow(next);
   }
 
+  protected onRowEnter(row: ConflictStepRow): void {
+    this.pointerKey.set(row.key);
+  }
+
+  /** Only if the pointer key is still this row's: events from another row must not end it. */
+  protected onRowLeave(row: ConflictStepRow): void {
+    if (this.pointerKey() === row.key) {
+      this.pointerKey.set(null);
+    }
+  }
+
+  protected onRowFocusIn(row: ConflictStepRow, index: number): void {
+    this.activeIndex.set(index);
+    if (this.skipNextFocusedKey) {
+      this.skipNextFocusedKey = false;
+      return;
+    }
+    this.focusedKey.set(row.key);
+  }
+
+  /** Ends the list's own focus playback once focus actually leaves it — moving between two
+   *  controls of the same row, or into a different row, both stay inside the container and must
+   *  not clear this; the destination row's own `focusin` sets it instead. */
+  protected onContainerFocusOut(event: FocusEvent): void {
+    const next = event.relatedTarget as Node | null;
+    if (!next || !this.container()?.nativeElement.contains(next)) {
+      this.focusedKey.set(null);
+    }
+  }
+
+  /** Whether this row mounts the animated overlay: the playing one, and only while it is rendered. */
+  protected playsAnimation(row: ConflictStepRow): boolean {
+    return this.playingKey() === row.key;
+  }
+
+  /** The row's source-side still hides only once its own animation has painted over it. */
+  protected sourceStillHidden(row: ConflictStepRow): boolean {
+    return this.playsAnimation(row) && this.revealedSourceKey() === row.key;
+  }
+
+  /** See {@link sourceStillHidden} — the target side is tracked separately. */
+  protected targetStillHidden(row: ConflictStepRow): boolean {
+    return this.playsAnimation(row) && this.revealedTargetKey() === row.key;
+  }
+
+  protected onSourceAnimationShown(row: ConflictStepRow): void {
+    this.revealedSourceKey.set(row.key);
+  }
+
+  protected onTargetAnimationShown(row: ConflictStepRow): void {
+    this.revealedTargetKey.set(row.key);
+  }
+
   private decisionFor(row: ConflictStepRow, kind: RowDecision['kind']): RowDecision {
     switch (kind) {
       case 'renameSource':
@@ -747,5 +918,15 @@ export class ImportConflictResolutionStep {
     }
     this.viewport()?.scrollToIndex(index);
     requestAnimationFrame(() => find()?.focus());
+  }
+
+  /** Whether the row for this key is among the rows the viewport renders — see `renderedRange`. */
+  private isRowRendered(key: string): boolean {
+    const index = this.rows().findIndex((row) => row.key === key);
+    if (index < 0) {
+      return false;
+    }
+    const { start, end } = this.renderedRange();
+    return index >= start && index < end;
   }
 }

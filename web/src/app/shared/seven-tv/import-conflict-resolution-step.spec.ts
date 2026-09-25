@@ -634,5 +634,95 @@ describe('ImportConflictResolutionStep', () => {
         expect(targetCell.textContent).not.toContain('Ziel ·');
       });
     });
+
+    describe('active-row animation only (Codex P2 on #269, docs §113)', () => {
+      /** A row with BOTH cells carrying a real (non-null) image url — `collision`'s own default
+       *  leaves the source one `null` (AK 4 is a different concern), which would only ever exercise
+       *  one of the two cells here. */
+      function animatedRow(id: string, name: string): NameCollisionRow {
+        return collision(id, name, {
+          row: importRow(id, name, `https://cdn.7tv.app/emote/${id}/4x_static.webp`),
+        });
+      }
+
+      function animatedCellCount(row: Element): number {
+        return row.querySelectorAll('app-emote-sprite-animated').length;
+      }
+
+      /** Lets the step's own initial "hand focus to the table" (`afterNextRender`) settle before
+       *  this describe's own hover/focus interactions run — otherwise it can land after them and
+       *  reclaim focus back onto row 0 mid-test. `render`'s own wait loop does not guarantee this:
+       *  it returns as soon as rows exist, which can be before `afterNextRender` has fired. */
+      async function settleInitialFocus(): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await fixture.whenStable();
+        fixture.detectChanges();
+      }
+
+      it('animates nothing until a row is hovered or focused', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        expect(host.querySelectorAll('app-emote-sprite-animated')).toHaveLength(0);
+      });
+
+      it('hovering a row animates only that row, both its cells together', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+
+        expect(animatedCellCount(rowElements()[0])).toBe(2);
+        expect(animatedCellCount(rowElements()[1])).toBe(0);
+      });
+
+      it('moving the pointer to another row moves the animation with it', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseleave'));
+        rowElements()[1].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+
+        expect(animatedCellCount(rowElements()[0])).toBe(0);
+        expect(animatedCellCount(rowElements()[1])).toBe(2);
+      });
+
+      it('falls back to the focused row once the pointer leaves', async () => {
+        await render(
+          'nameCollision',
+          collisionStepRows([animatedRow('a', 'Kappa'), animatedRow('b', 'Pog')], true, new Map()),
+        );
+        await settleInitialFocus();
+
+        rowElements()[1].focus();
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[1])).toBe(2);
+
+        // The pointer on a different row wins over the still-focused one.
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseenter'));
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[0])).toBe(2);
+        expect(animatedCellCount(rowElements()[1])).toBe(0);
+
+        // Leaving it hands playback back to the row that still holds keyboard focus.
+        rowElements()[0].dispatchEvent(new MouseEvent('mouseleave'));
+        fixture.detectChanges();
+        expect(animatedCellCount(rowElements()[0])).toBe(0);
+        expect(animatedCellCount(rowElements()[1])).toBe(2);
+      });
+    });
   });
 });
