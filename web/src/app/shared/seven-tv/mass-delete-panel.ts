@@ -61,6 +61,24 @@ function restoreTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
   }
 }
 
+/** Same mapping as {@link restoreTargetCheckReasonKey}, for the delete confirmation's own
+ *  pre-check before it opens (spec 4.6 point 20, AK 31) — `massDelete.errors.*`, this panel's own
+ *  family for the delete, never `restore.errors.*` (that one names the *restore* entry at a
+ *  finished run, a different first mutation with its own copy). `notSelectable` cannot actually
+ *  occur in production here — the delete panel is always given a set the host already resolved as
+ *  `NORMAL` — but the mapping stays total rather than assuming that at the type level, the same
+ *  discipline `restoreTargetCheckReasonKey` keeps. */
+function deleteTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
+  switch (reason) {
+    case 'notEditable':
+      return 'massDelete.errors.targetNotEditable';
+    case 'notSelectable':
+      return 'massDelete.errors.targetNotSelectable';
+    case 'unavailable':
+      return 'massDelete.errors.targetCheckUnavailable';
+  }
+}
+
 /** Per-instance suffix for the lock reason's element id — the panel renders on two pages, and an
  *  `aria-describedby` target has to be unique in the document. */
 let nextDeleteLockReasonId = 0;
@@ -162,7 +180,8 @@ export interface DeletableEmote {
             deleteLockReasonKey() !== null ||
             deleteService.isRunning() ||
             arbiter.activeRun() !== null ||
-            liveAliasReadPending()
+            liveAliasReadPending() ||
+            deleteTargetCheckPending()
           "
           [attr.aria-describedby]="deleteLockReasonKey() !== null ? deleteLockReasonId : null"
           (click)="openConfirm()"
@@ -487,6 +506,11 @@ export class MassDeletePanel {
    *  `readLiveAliasesFromSet`, see `wantsLiveAliasRead`) — the delete button stays disabled
    *  meanwhile, so a second click cannot open a second confirmation for the same selection. */
   protected readonly liveAliasReadPending = signal(false);
+
+  /** The shared pre-check (spec 4.6 point 20, AK 31) is out for the delete confirmation about to
+   *  open — the delete button stays disabled meanwhile, same idiom as `liveAliasReadPending`, so a
+   *  second click cannot start the check twice or open a second confirmation once it answers. */
+  protected readonly deleteTargetCheckPending = signal(false);
   private destroyed = false;
 
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next
@@ -785,7 +809,38 @@ export class MassDeletePanel {
     });
   }
 
+  /** The shared pre-check (spec 4.2, 6.2, E19), before the delete confirmation ever opens (spec 4.6
+   *  point 20, AK 31) — in the normal case a cache hit, because the page's own set view or the
+   *  target picker already warmed the target list this minute. A block shows the panel's existing
+   *  abort notice (`massDelete.nothingDeleted` + `massDelete.errors.*`); no dialog opens, no
+   *  request reaches 7TV. */
   private openConfirmDialog(): void {
+    this.deleteTargetCheckPending.set(true);
+    this.emoteSetService.resolveEditableSet(this.setId()).subscribe({
+      next: (resolution) => {
+        this.deleteTargetCheckPending.set(false);
+        if (resolution.status !== 'editable') {
+          this.abortNotice.set({
+            leadKey: 'massDelete.nothingDeleted',
+            reasonKey: deleteTargetCheckReasonKey(resolution.status),
+          });
+          return;
+        }
+        this.openConfirmDialogAfterCheck();
+      },
+      // 429, 503 or no connection: "cannot be checked right now", never "not allowed" (F3) — the
+      // same distinction `FileImportStep`'s own pre-check makes.
+      error: () => {
+        this.deleteTargetCheckPending.set(false);
+        this.abortNotice.set({
+          leadKey: 'massDelete.nothingDeleted',
+          reasonKey: deleteTargetCheckReasonKey('unavailable'),
+        });
+      },
+    });
+  }
+
+  private openConfirmDialogAfterCheck(): void {
     this.setWarning.set(null);
     this.warningLoading.set(true);
 

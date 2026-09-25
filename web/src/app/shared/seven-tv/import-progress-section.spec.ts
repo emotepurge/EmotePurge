@@ -13,7 +13,11 @@ import {
 } from '../../core/seven-tv/seven-tv-import.service';
 import { ResyncTriggerState } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
+import {
+  SyncReportReason,
+  SyncReportState,
+  TargetCheckBlockReason,
+} from '../../core/seven-tv/sync-report-outcome';
 import { TransferRow } from '../../core/seven-tv/transfer-plan';
 import { ImportProgressSection } from './import-progress-section';
 
@@ -24,6 +28,11 @@ const DE_TRANSLATIONS = {
   import: {
     duplicateCheckUnavailable:
       'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+    errors: {
+      targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+      targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
+      targetCheckUnavailable: 'Das Zielset konnte gerade nicht geprüft werden.',
+    },
     skippedDuplicates: {
       one: '{{ count }} Emote war beim Start bereits im Zielset und wurde übersprungen.',
       other: '{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
@@ -117,6 +126,7 @@ interface FakeImportService {
   replaceSkippedDrift: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
   protocolSaved: WritableSignal<boolean>;
   cancel: ReturnType<typeof vi.fn>;
   reset: ReturnType<typeof vi.fn>;
@@ -141,6 +151,7 @@ function createFakeImportService(): FakeImportService {
     replaceSkippedDrift: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     protocolSaved: signal(false),
     cancel: vi.fn(),
     reset: vi.fn(),
@@ -692,6 +703,31 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+    });
+
+    // #253, spec 4.5 point 17, AK 32: the shared pre-check blocked a replace-carrying start before
+    // anything ran — same all-blocked-leaves-nothing-queued shape as the drift notice above (no run
+    // object, empty queue), shown for the same `duplicateNoticePending` window.
+    it('shows the shared pre-check block reason even with no run at all — a plan blocked before it started', () => {
+      importService.run.set(null);
+      importService.queue.set([]);
+      importService.targetCheckBlockReason.set('notEditable');
+      importService.duplicateNoticePending.set(true);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.',
+      );
+    });
+
+    it('shows no pre-check block notice once its pending window has elapsed, even while the reason is still set', () => {
+      importService.targetCheckBlockReason.set('unavailable');
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('nicht geprüft werden');
     });
 
     it('shows a retry banner on a failed removal report and calls retryRemovalReport on click', () => {

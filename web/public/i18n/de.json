@@ -1051,7 +1051,10 @@
       "rateLimitedGaveUp": "7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.",
       "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
-      "genericStatus": "7TV-Fehler (Status {{ status }})."
+      "genericStatus": "7TV-Fehler (Status {{ status }}).",
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Konnte gerade nicht geprüft werden — später erneut versuchen."
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
     "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
@@ -1273,7 +1276,6 @@
         "replaceTarget": "Ziel ersetzen",
         "adoptSourceName": "Namen übernehmen"
       },
-      "replaceNeedsTracked": "Nur für getrackte Kanäle wiederherstellbar",
       "reloadTargetFirst": "Ziel hat sich geändert — erst neu laden",
       "adoptBlocked": {
         "nameTaken": "Name im Zielset vergeben",
@@ -1292,8 +1294,7 @@
         "invalidTypedAlias": "Name, den 7TV nicht annimmt: {{ rows }}.",
         "duplicateReplaceTarget": "Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.",
         "targetTouchedByReplaceAndAdopt": "Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.",
-        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}.",
-        "replaceNeedsTrackedTarget": "Ziel ersetzen geht nur bei getrackten Kanälen: {{ rows }}."
+        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}."
       },
       "back": "Zurück",
       "apply": "Übernehmen"
@@ -1306,7 +1307,10 @@
     "errors": {
       "nameTakenNow": "Der Name ist inzwischen im Zielset vergeben — diese Zeile wurde nicht übernommen.",
       "removedButNotAdded": "Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt — im Zielset fehlt jetzt dieser Name. Die Rückweg-Datei stellt das Ziel-Emote wieder her.",
-      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen."
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
+      "targetNotEditable": "Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotSelectable": "Das Zielset ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Das Zielset konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {

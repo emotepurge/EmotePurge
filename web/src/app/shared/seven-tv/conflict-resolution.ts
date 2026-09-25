@@ -41,20 +41,14 @@ export type RowDecision =
  */
 export type ResolutionDecisions = ReadonlyMap<string, RowDecision>;
 
-/** Everything `validateResolution` and `buildTransferPlan` need that is not derivable from
- *  `preview`/`decisions` alone — today just rule 7 (`replaceNeedsTrackedTarget`), which depends on
- *  whether the *target* set is restorable, not on anything the import preview itself carries. */
-export interface ResolutionContext {
-  /** Whether the target set belongs to a tracked channel — see rule 7's own doc for why this, and
-   *  only this, field decides it. */
-  targetIsTracked: boolean;
-}
-
 /**
- * The seven rule names `validateResolution` can report — see that function's doc for what each one
+ * The six rule names `validateResolution` can report — see that function's doc for what each one
  * checks. A `string` union, not an enum: these are also read by the confirm dialog to pick a
- * disabled-reason / inline-error text, so the literal values are the wire vocabulary between the two, and
- * `replaceNeedsTrackedTarget` is pinned by the plan under that exact name.
+ * disabled-reason / inline-error text, so the literal values are the wire vocabulary between the
+ * two. Used to carry a seventh member for the replace lock on an untracked target, dropped with
+ * the lock itself (#253, spec 4.5 point 15/6.6, DECISIONS "The replace lock for an untracked target
+ * falls"): a replace's REMOVE now reports set-centrically regardless of whether the target is
+ * tracked, so there is no longer anything this module needs to refuse it for.
  */
 export type ViolationRule =
   | 'duplicateGeneratedAlias'
@@ -62,8 +56,7 @@ export type ViolationRule =
   | 'invalidTypedAlias'
   | 'duplicateReplaceTarget'
   | 'targetTouchedByReplaceAndAdopt'
-  | 'adoptBlocked'
-  | 'replaceNeedsTrackedTarget';
+  | 'adoptBlocked';
 
 /** One rule violation, naming the rule and every source row (`sevenTvEmoteId`) it involves — never
  *  empty. `rowKeys`' order is not a contract callers should rely on (rule checks below build sets,
@@ -107,10 +100,10 @@ export interface TransferPlanSummary {
  * walking decisions sequentially, so permuting `preview`'s row arrays or `decisions`' insertion order
  * never changes the result — a rule that only held for one row order would not be a rule at all).
  * `ok: true` is the precondition `buildTransferPlan` needs; `buildTransferPlan` runs this function
- * itself, so a caller cannot reach a `replaceTarget` decision past rule 7 by skipping straight to
- * `buildTransferPlan`.
+ * itself, so a caller cannot reach a decision that fails one of the rules below by skipping straight
+ * to `buildTransferPlan`.
  *
- * Seven rules, each producing zero or more {@link Violation}s (a single call to this function can
+ * Six rules, each producing zero or more {@link Violation}s (a single call to this function can
  * report several, from different rules or the same one):
  *
  * 1. **`duplicateGeneratedAlias`** — no two rows may write the same alias in an ADD, whether that
@@ -156,19 +149,13 @@ export interface TransferPlanSummary {
  *    first.
  * 6. **`adoptBlocked`** — an `adoptSourceName` decision is only valid where `adoptBlocked === null`;
  *    this module does not trust the UI to have withheld the option.
- * 7. **`replaceNeedsTrackedTarget`** — a `replaceTarget` decision is only valid when
- *    `context.targetIsTracked`. Only a tracked channel's own resync can currently restore a deleted
- *    entry, so replacing into an untracked target has no way back yet. `skip`, `renameSource` and
- *    `adoptSourceName` are unaffected — none of them delete anything. The restriction is expected to
- *    lift with a future "restore per set" feature.
  */
 export function validateResolution(
   preview: ImportPreview,
   decisions: ResolutionDecisions,
-  context: ResolutionContext,
 ): ResolutionValidation {
   const rows = deriveTransferRows(preview, decisions);
-  const violations = collectViolations(preview, decisions, rows, context);
+  const violations = collectViolations(preview, decisions, rows);
   return violations.length === 0 ? { ok: true } : { ok: false, violations };
 }
 
@@ -176,19 +163,17 @@ export function validateResolution(
  * Derives the one {@link TransferPlan} a preview and a set of decisions resolve to — throwing
  * instead of silently building a broken plan whenever the decisions fail validation.
  *
- * Takes the same {@link ResolutionContext} as `validateResolution` and runs that function itself
- * before deriving anything, so **all seven** rules are checked here, rule 7 included: a caller
- * cannot reach a `replaceTarget` decision against an untracked target by calling `buildTransferPlan`
- * directly instead of `validateResolution` first — this function gives the same guarantee on its
- * own. Calling `validateResolution` separately is only needed when a caller wants to *display*
+ * Runs `validateResolution` itself before deriving anything, so all six rules are checked here: a
+ * caller cannot reach a decision that fails one of them by calling `buildTransferPlan` directly
+ * instead of `validateResolution` first — this function gives the same guarantee on its own.
+ * Calling `validateResolution` separately is only needed when a caller wants to *display*
  * violations before attempting a plan.
  */
 export function buildTransferPlan(
   preview: ImportPreview,
   decisions: ResolutionDecisions,
-  context: ResolutionContext,
 ): TransferPlan {
-  const validation = validateResolution(preview, decisions, context);
+  const validation = validateResolution(preview, decisions);
   if (!validation.ok) {
     const ruleNames = validation.violations.map((violation) => violation.rule).join(', ');
     throw new Error(`Cannot build a transfer plan: decisions fail validation (${ruleNames}).`);
@@ -201,11 +186,10 @@ export function buildTransferPlan(
 export function withoutViolations(
   preview: ImportPreview,
   decisions: ResolutionDecisions,
-  context: ResolutionContext,
 ): ResolutionDecisions {
   let current = decisions;
   for (let pass = 0; pass <= decisions.size; pass++) {
-    const validation = validateResolution(preview, current, context);
+    const validation = validateResolution(preview, current);
     if (validation.ok) {
       return current;
     }
@@ -356,12 +340,11 @@ function deriveTransferRows(preview: ImportPreview, decisions: ResolutionDecisio
   return [...replaceRows, ...adoptRows, ...addRows, ...renameRows];
 }
 
-/** Runs all seven rules and concatenates their findings. */
+/** Runs all six rules and concatenates their findings. */
 function collectViolations(
   preview: ImportPreview,
   decisions: ResolutionDecisions,
   rows: TransferRow[],
-  context: ResolutionContext,
 ): Violation[] {
   return [
     ...ruleDuplicateGeneratedAlias(rows),
@@ -370,7 +353,6 @@ function collectViolations(
     ...ruleDuplicateReplaceTarget(rows),
     ...ruleTargetTouchedByReplaceAndAdopt(rows),
     ...ruleAdoptBlocked(preview, decisions),
-    ...ruleReplaceNeedsTrackedTarget(rows, context),
   ];
 }
 
@@ -540,23 +522,6 @@ function ruleAdoptBlocked(preview: ImportPreview, decisions: ResolutionDecisions
     const decision = decisionFor(decisions, mismatch.row.sevenTvEmoteId);
     if (decision.kind === 'adoptSourceName' && mismatch.adoptBlocked !== null) {
       violations.push({ rule: 'adoptBlocked', rowKeys: [mismatch.row.sevenTvEmoteId] });
-    }
-  }
-  return violations;
-}
-
-/** Rule 7 — see `validateResolution`'s doc, point 7. */
-function ruleReplaceNeedsTrackedTarget(
-  rows: TransferRow[],
-  context: ResolutionContext,
-): Violation[] {
-  if (context.targetIsTracked) {
-    return [];
-  }
-  const violations: Violation[] = [];
-  for (const row of rows) {
-    if (row.action === 'replace') {
-      violations.push({ rule: 'replaceNeedsTrackedTarget', rowKeys: [row.source.sevenTvEmoteId] });
     }
   }
   return violations;

@@ -45,6 +45,9 @@ const RESYNC_C = '/api/channels/kanal_c/resync';
 const SYNC_IMPORTED_SET_U = '/api/seventv/emote-sets/set-u/sync-imported';
 // The removal report is set-centric (spec 6.5): addressed to the run's target set, not a channel.
 const SYNC_DELETED_B = '/api/seventv/emote-sets/set-b/sync-deleted';
+// #253, spec 4.5 point 16/6.6: a replace against an untracked target reports through this same
+// set-centric route too — there is no longer a guard that keeps it from starting at all.
+const SYNC_DELETED_SET_U = '/api/seventv/emote-sets/set-u/sync-deleted';
 
 /** A set-centric `sync-deleted` answer (spec 5.3) — paper only by default. */
 function deletedAnswer(
@@ -973,16 +976,31 @@ describe('SevenTvImportService', () => {
       expect(service.resyncTrigger()).toBe('succeeded');
     });
 
-    it('throws for a replace plan against an untracked target and sends nothing', () => {
-      expect(() =>
-        service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
-          rows: [replaceRow(SOURCE_X, 'tgt-x')],
-        }),
-      ).toThrow();
+    // #253, spec 4.5 point 16/6.6: the guard against a replace targeting an untracked account is
+    // gone (DECISIONS "The replace lock for an untracked target falls") — the run starts and
+    // reports its confirmed REMOVE through the same set-centric route every replace uses, whether
+    // the target is tracked or not.
+    it('starts a replace plan against an untracked target and reports the removal set-centrically', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
 
-      expect(service.isRunning()).toBe(false);
-      expect(service.run()).toBeNull();
-      httpMock.expectNone(GQL_ENDPOINT);
+      expect(service.isRunning()).toBe(true);
+      answerNext({}); // REMOVE
+      answerNext({}); // ADD
+
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+      const removal = httpMock.expectOne(SYNC_DELETED_SET_U);
+      expect(removal.request.body).toEqual({
+        sevenTvEmoteIds: ['tgt-x'],
+        expectedChannelName: null,
+      });
+      removal.flush(deletedAnswer());
+
+      expect(service.removalReport()).toBe('succeeded');
+      // No channel of ours to resync (T2.6) — untouched by the removal report's own resync fork.
+      httpMock.expectNone(RESYNC_B);
+      httpMock.expectNone(RESYNC_C);
     });
 
     it('sends no removal report when no REMOVE was confirmed — and no ADD after a failed REMOVE', () => {

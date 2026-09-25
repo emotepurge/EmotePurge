@@ -30,6 +30,7 @@ import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportReason,
   SyncReportState,
+  TargetCheckBlockReason,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
 } from './sync-report-outcome';
@@ -325,6 +326,14 @@ export class SevenTvImportService {
    *  to sit next to an unrelated *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
 
+  /** Why the shared pre-check (spec 4.2, 6.2, E19) blocked a plan with at least one replace row
+   *  before `import-flow.ts`'s `start()` ever reached `recheckTransferPlan` (spec 4.5 point 17) —
+   *  `null` whenever nothing is currently blocked. Set by {@link reportTargetCheckBlocked}, which
+   *  hangs the abort on `duplicateNoticePending`'s own transient-notice mechanic (0.2 of the plan):
+   *  a blocked pre-check starts no run either, so this is what keeps the dock mounted long enough to
+   *  show the reason. Cleared by the next `startImport()` call, whatever it does, and by `reset()`. */
+  readonly targetCheckBlockReason = signal<TargetCheckBlockReason | null>(null);
+
   /** Whether the shown run's transfer-run protocol was downloaded at least once — the reminder next
    *  to the dock's Close button (`import.summary.protocolNotSaved`), since `reset()` leaves the
    *  downloaded file as the only durable artifact. Reset to `false` by every `startImport()` call
@@ -365,10 +374,12 @@ export class SevenTvImportService {
    *  the same call's `available` and defaults to `true` for the same reason. `replaceSkippedDrift`
    *  is the same re-check's count of held-back `replace` rows, default 0.
    *
-   *  Throws, before anything is sent, for a plan with a `replace` row against an untracked target
-   *  — the second guard behind the plan's own validation (`replaceNeedsTrackedTarget`). The removal
-   *  report no longer needs a channel (it is set-centric, spec 6.5); both guards fall together with
-   *  the validation rule (spec 6.6), not here. */
+   *  No guard against a `replace` row targeting an untracked account any more (#253, spec 4.5
+   *  point 16/6.6, DECISIONS "The replace lock for an untracked target falls"): the removal report
+   *  is set-centric (spec 6.5) regardless of whether the target is tracked, so there is nothing left
+   *  here to refuse it for. The caller's own pre-check (`import-flow.ts`'s `start()`,
+   *  {@link reportTargetCheckBlocked}) already kept an unreadable/inaccessible target from reaching
+   *  this call at all. */
   startImport(
     target: {
       setId: string;
@@ -384,10 +395,8 @@ export class SevenTvImportService {
     replaceSkippedDrift = 0,
   ): void {
     const deletes = plan.rows.some((row) => row.action === 'replace');
-    if (deletes && target.channelName === null) {
-      throw new Error('A transfer plan with a replace row needs a tracked target channel.');
-    }
 
+    this.targetCheckBlockReason.set(null);
     this.skippedDuplicates.set(skippedDuplicates);
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
     this.replaceSkippedDrift.set(replaceSkippedDrift);
@@ -464,8 +473,18 @@ export class SevenTvImportService {
     this.skippedDuplicates.set(0);
     this.replaceSkippedDrift.set(0);
     this.duplicateCheckAvailable.set(true);
+    this.targetCheckBlockReason.set(null);
     this.showDuplicateNotice(false);
     this.protocolSaved.set(false);
+  }
+
+  /** Called by `import-flow.ts`'s `start()` when the shared pre-check (spec 4.2, 6.2) blocks a plan
+   *  with at least one replace row, before `recheckTransferPlan` even runs (spec 4.5 point 17) —
+   *  nothing starts, and the reason is shown at the same transient spot a drift abort uses
+   *  (`duplicateNoticePending`, plan 0.2): a blocked pre-check leaves no run/queue behind either. */
+  reportTargetCheckBlocked(reason: TargetCheckBlockReason): void {
+    this.targetCheckBlockReason.set(reason);
+    this.showDuplicateNotice(true);
   }
 
   /** Manual retry for the closing report — the 7TV adds are long done, so this only re-sends the

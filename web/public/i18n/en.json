@@ -1051,7 +1051,10 @@
       "rateLimitedGaveUp": "7TV rate limit still active after several waits — emote skipped.",
       "cancelledMidRow": "Cancelled partway — 7TV had already carried out part of it.",
       "networkError": "Couldn't connect to 7TV (network error).",
-      "genericStatus": "7TV error (status {{ status }})."
+      "genericStatus": "7TV error (status {{ status }}).",
+      "targetNotEditable": "The set is not (or no longer) editable, or it does not exist.",
+      "targetNotSelectable": "This set is not a normal emote set.",
+      "targetCheckUnavailable": "Could not be checked right now — try again later."
     },
     "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
     "setChangedDuringConfirm": "A different set is selected now.",
@@ -1273,7 +1276,6 @@
         "replaceTarget": "Replace target",
         "adoptSourceName": "Adopt name"
       },
-      "replaceNeedsTracked": "Only restorable for tracked channels",
       "reloadTargetFirst": "Target has changed — reload first",
       "adoptBlocked": {
         "nameTaken": "name taken in the target set",
@@ -1292,8 +1294,7 @@
         "invalidTypedAlias": "Name 7TV does not accept: {{ rows }}.",
         "duplicateReplaceTarget": "The same target is replaced more than once: {{ rows }}.",
         "targetTouchedByReplaceAndAdopt": "The same target is replaced and renamed: {{ rows }}.",
-        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}.",
-        "replaceNeedsTrackedTarget": "Replacing a target only works for tracked channels: {{ rows }}."
+        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}."
       },
       "back": "Back",
       "apply": "Apply"
@@ -1306,7 +1307,10 @@
     "errors": {
       "nameTakenNow": "The name has been taken in the target set in the meantime — this row was not applied.",
       "removedButNotAdded": "The target emote was removed, but the new one was not added — the target set is now missing this name. The recovery file restores the target emote.",
-      "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied."
+      "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied.",
+      "targetNotEditable": "The target set is not (or no longer) editable, or it does not exist.",
+      "targetNotSelectable": "The target set is not a normal emote set.",
+      "targetCheckUnavailable": "The target set could not be checked right now — please try again in a moment."
     },
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {

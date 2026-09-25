@@ -10,6 +10,85 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-25 — The replace lock for an untracked target falls, and a shared pre-check comes first
+
+**Betrifft:** `web/src/app/shared/seven-tv/conflict-resolution.ts` (rule 7,
+`ruleReplaceNeedsTrackedTarget`, `ResolutionContext` all gone) ·
+`web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` (`collisionStepRows` loses its
+`targetIsTracked` parameter) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts` (the same
+field and the three call sites that carried it) · `web/src/app/core/seven-tv/seven-tv-import.service.ts`
+(the guard in `startImport`, and `reportTargetCheckBlocked`/`targetCheckBlockReason`) ·
+`web/src/app/shared/seven-tv/import-flow.ts` (`start`'s pre-check before `recheckTransferPlan`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (the same pre-check before the delete
+confirmation opens) · `web/src/app/shared/seven-tv/import-progress-section.ts`,
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (the block reason's visible and spoken
+notice) · `web/public/i18n/{de,en}.json` (`massDelete.errors.*`, `import.errors.*`, the two
+`import.resolve.*` keys the lock owned are gone) · `web/e2e/emote-import.e2e.spec.ts`,
+`web/e2e/vote-ballot.e2e.spec.ts` (every test that starts a delete or a replace now mocks the
+target list).
+
+Part of the restore-per-set plan (#253, spec `docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md`,
+E19, sections 4.5, 4.6 and 6.6). **Before**, `validateResolution`'s rule 7
+(`replaceNeedsTrackedTarget`) refused a `replaceTarget` decision whenever the target set belonged
+to an untracked account — the reasoning being that only a tracked channel's own resync could
+restore a deleted entry, so replacing into an untracked target had no way back. Since the entry
+"The file names the target of a restore, and the target list checks it" (2026-09-25, earlier
+today) an untracked target's restore works like any other — reported as paper only — so that
+reasoning no longer holds for the replace direction either: the restore half of the 2026-09-23
+entry "Restore reads transfer-run files" is what that earlier entry already revised; this entry
+revises only the *replace* half of that same day's "The import dialog becomes a deleting
+operation" — the paragraph "Replace is **only offered for a tracked target** — deleting from an
+untracked set would have no way back".
+
+**The lock is gone, not relaxed.** `ViolationRule` loses `replaceNeedsTrackedTarget`,
+`validateResolution` and `buildTransferPlan` lose their third parameter (`ResolutionContext`)
+outright rather than keeping an unused field — a caller that has nothing meaningful left to pass
+should not compile one up. `collisionStepRows` drops the parameter that fed the disabled reason;
+the confirm dialog's own `resolutionContext` field and the three sites that read it are deleted with
+it. Rename, adopt and skip were never affected by rule 7 to begin with (none of them delete
+anything), so nothing about their own behavior changes. The two locale keys the lock owned
+(`import.resolve.replaceNeedsTracked`, `import.resolve.violation.replaceNeedsTrackedTarget`) are
+removed from both locales, not left dangling.
+
+**What still stands.** The pre-run drift check (`import.resolve.reloadTargetFirst`) is a different
+finding — a row whose live counterpart no longer holds the name it collides on — and is untouched.
+The mandatory recovery file before the first REMOVE (2026-09-23, "The safeguard is a file, not a
+typed confirmation") is unconditional and stays exactly as strict for an untracked target as for a
+tracked one; its filename already fell back to the set id for an untracked target
+(`transferPlanFilename(targetChannelName ?? setId, …)`), a branch that simply went unreachable while
+the lock stood. Nothing about `reportRemoved`'s own set-centric reporting (entry "Delete, restore
+and a replace's removals report per emote set") changes here — it already reported without a
+channel branch for every replace, tracked target or not.
+
+**A shared pre-check comes first, everywhere a first mutation can happen.** The lock's removal
+would otherwise let a replace start against a set the actor's right to edit has since lapsed, or
+that 7TV no longer has at all — the picker's own choice carried `editable` at pick time (spec 5.8),
+but that snapshot can be stale by the time the run actually starts, and the three side doors (file,
+foreign channel, leaderboard) never asked in the first place. `resolveEditableSet` (spec 6.2, from
+the earlier "The file names the target" entry) is now the pre-check every first mutation into a
+7TV set runs immediately before it: `import-flow.ts`'s `start` runs it — only when the plan carries
+at least one `replace` row — *before* `recheckTransferPlan`, and `MassDeletePanel` runs it before
+`openDeleteConfirmDialog` ever opens, mirroring the restore entry's own pre-check the same file
+already had (spec E16, 4.6 point 22). A block starts nothing: the delete confirmation never opens,
+the replace-carrying plan never reaches `recheckTransferPlan`, and the reason is shown at the same
+spot a drift abort already used — `SevenTvImportService.duplicateNoticePending`'s transient-notice
+mechanic (`reportTargetCheckBlocked`/`targetCheckBlockReason`), because a blocked pre-check leaves
+no run or queue behind either and the dock still has to mount to say why. The delete panel's own
+button gains a matching `deleteTargetCheckPending` lock, the same idiom as the existing
+`liveAliasReadPending`. A plan without any replace row never runs this pre-check at all — an ADD
+into a set the actor cannot write to fails at 7TV itself, and its report is already gated on the
+same right server-side (spec 5.7).
+
+**Locale families, one per first-mutation caller** (spec 6, table under "Fehlergründe und
+Locale-Familien"): the delete confirmation's own family is `massDelete.errors.*`, the replace
+start's is `import.errors.*` — both carry the same three reasons
+(`targetNotEditable`/`targetNotSelectable`/`targetCheckUnavailable`) the restore file step
+(`restore.import.errors.*`) and the panel restore (`restore.errors.*`) already used. Four families,
+one vocabulary, each caller its own copy — the wording is provisional (#255), the family per caller
+is the contract.
+
+---
+
 ### 2026-09-25 — The file names a restore's target, and the target list checks it
 
 **Betrifft:** `web/src/app/shared/export/purge-run-export.ts` ·

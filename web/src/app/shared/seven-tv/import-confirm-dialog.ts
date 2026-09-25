@@ -49,7 +49,6 @@ import {
   verifyReplaceTargets,
 } from './already-present-filter';
 import {
-  ResolutionContext,
   ResolutionDecisions,
   RowDecision,
   buildTransferPlan,
@@ -636,11 +635,6 @@ export class ImportConfirmDialog {
   private readonly injector = inject(Injector);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
-  /** Replace is only offered where a deletion has a way back (rule 7 of `validateResolution`). */
-  private readonly resolutionContext: ResolutionContext = {
-    targetIsTracked: this.data.targetChannelName !== null,
-  };
-
   /** Which conflict group the second step shows, or `null` while the first step is up. */
   protected readonly resolveGroup = signal<ConflictGroup | null>(null);
 
@@ -732,7 +726,7 @@ export class ImportConfirmDialog {
     const onConflicts = new Map(
       [...this.appliedDecisions()].filter(([key]) => conflictKeys.has(key)),
     );
-    return withoutViolations(preview, onConflicts, this.resolutionContext);
+    return withoutViolations(preview, onConflicts);
   });
 
   /** Source names of the committed decisions `planDecisions` drops, or `null` when there are none.
@@ -755,9 +749,7 @@ export class ImportConfirmDialog {
   /** The one plan the summary counts and `execute()` closes with. */
   protected readonly plan = computed<TransferPlan | null>(() => {
     const preview = this.effectivePreview();
-    return preview === null
-      ? null
-      : buildTransferPlan(preview, this.planDecisions(), this.resolutionContext);
+    return preview === null ? null : buildTransferPlan(preview, this.planDecisions());
   });
 
   private readonly summary = computed(() => {
@@ -1051,11 +1043,7 @@ export class ImportConfirmDialog {
       return [];
     }
     if (group === 'nameCollision') {
-      return collisionStepRows(
-        preview.nameCollisionRows,
-        this.resolutionContext.targetIsTracked,
-        this.targetOverlays(),
-      );
+      return collisionStepRows(preview.nameCollisionRows, this.targetOverlays());
     }
     const imageUrlById = new Map<string, string>();
     for (const emote of target.emotes) {
@@ -1086,7 +1074,7 @@ export class ImportConfirmDialog {
     if (preview === null || this.resolveGroup() === null) {
       return [];
     }
-    const validation = validateResolution(preview, this.stepDecisions(), this.resolutionContext);
+    const validation = validateResolution(preview, this.stepDecisions());
     return validation.ok ? [] : validation.violations;
   });
 

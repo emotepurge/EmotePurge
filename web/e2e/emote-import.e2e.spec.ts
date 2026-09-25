@@ -2849,7 +2849,12 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       { sevenTvEmoteId: '7tv-3', name: 'PogOld' },
     ]);
 
-    let syncImportedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    // `Record<string, unknown>`, not a narrower `{ sevenTvEmoteIds?: string[] }` shape: under the
+    // pinned TypeScript version, a `let` that is only ever reassigned inside a route handler
+    // closure and declared with a plain object-literal type narrows to `never` at any later read
+    // — a real compiler quirk (reproduces even for a bare `string | null`), not a contract change.
+    // The field is still read through a typed cast below.
+    let syncImportedBody: Record<string, unknown> | null = null;
     await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, async (route) => {
       syncImportedBody = route.request().postDataJSON();
       await route.fulfill({ status: 204 });
@@ -2982,7 +2987,9 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
 
     // sync-imported names every row that added an emote (CatJAM's replace, KEKW's rename) — never
     // the adopt, which renames an existing entry rather than adding one.
-    expect(syncImportedBody?.sevenTvEmoteIds?.slice().sort()).toEqual(['7tv-1', '7tv-2']);
+    expect((syncImportedBody?.['sevenTvEmoteIds'] as string[] | undefined)?.slice().sort()).toEqual(
+      ['7tv-1', '7tv-2'],
+    );
     // sync-deleted (the set-centric removal report `SevenTvImportService.removalReport` sends,
     // spec 6.5) names only the replaced target.
     expect(syncDeletedBodies[0]?.sevenTvEmoteIds).toEqual(['target-catjam']);
@@ -3299,7 +3306,12 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       { sevenTvEmoteId: 'target-b', name: 'KEKW' },
     ]);
 
-    let syncImportedBody: { sevenTvEmoteIds?: string[] } | null = null;
+    // `Record<string, unknown>`, not a narrower `{ sevenTvEmoteIds?: string[] }` shape: under the
+    // pinned TypeScript version, a `let` that is only ever reassigned inside a route handler
+    // closure and declared with a plain object-literal type narrows to `never` at any later read
+    // — a real compiler quirk (reproduces even for a bare `string | null`), not a contract change.
+    // The field is still read through a typed cast below.
+    let syncImportedBody: Record<string, unknown> | null = null;
     await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, async (route) => {
       syncImportedBody = route.request().postDataJSON();
       await route.fulfill({ status: 204 });
@@ -3396,7 +3408,7 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       page.getByText(/Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt/),
     ).toBeVisible();
 
-    expect(syncImportedBody?.sevenTvEmoteIds).toEqual(['7tv-1']);
+    expect(syncImportedBody?.['sevenTvEmoteIds']).toEqual(['7tv-1']);
     expect(syncDeletedBodies[0]?.sevenTvEmoteIds?.slice().sort()).toEqual(['target-a', 'target-b']);
     // The target is the tracked channel's active set: its channel is the expected hit (AK 8).
     expect(syncDeletedBodies[0]?.expectedChannelName).toBe(TARGET_CHANNEL);
@@ -3562,7 +3574,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     ).toBeVisible();
   });
 
-  test('an untracked target disables replace with its reason, still allows a rename, and copying leaves no removal line and no download (R5)', async ({
+  // #253, spec 4.5 point 15/18: the replace lock for an untracked target is gone — "Ziel ersetzen"
+  // is offered exactly as for a tracked target, still requires the recovery file before it starts
+  // (AK 16, 17), and the removal report goes to the set-centric route with `expectedChannelName:
+  // null` (F2, the untracked account has no channel of ours to expect a hit from).
+  test('an untracked target offers replace, requires the recovery file named by set id, and reports the removal set-centrically with no expected channel (R5, AK 16, 17)', async ({
     page,
   }) => {
     await mockAuthMe(page, AUTH_USER);
@@ -3594,6 +3610,9 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       emotes: [{ sevenTvEmoteId: 'target-catjam', name: 'CatJAM' }],
     });
     await mockSyncImportedToSet(page, 'set-untracked');
+    // The replace's removal report is set-centric (spec 6.5), addressed to the untracked target
+    // set — there is no channel of ours to report against.
+    const syncDeletedBodies = await mockSyncDeletedInSet(page, 'set-untracked');
 
     const liveTarget: LiveSetEntry[] = [{ id: 'target-catjam', aliases: ['CatJAM'] }];
     const calls: GqlCall[] = [];
@@ -3603,6 +3622,12 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       switch (kind) {
         case 'setRead':
           return sevenTvSetReadPayload(liveTarget);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
         case 'addEmote':
           return {
             data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
@@ -3610,10 +3635,6 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
         default:
           throw new Error(`unexpected 7TV GQL request: ${request.query}`);
       }
-    });
-    let downloadFired = false;
-    page.on('download', () => {
-      downloadFired = true;
     });
     await page.clock.install();
 
@@ -3627,43 +3648,44 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
 
     // No title assertion here: the row is a collision, so the title's own `addCount` settles at 0
     // the moment the target set loads (a transient "1" — the honest upper bound before the target
-    // answers — would make this racy). The title is worth reading again once the rename below
-    // gives the plan something to add.
+    // answers — would make this racy).
     const confirm = page.getByRole('dialog');
     await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
 
-    // Replace stays listed but disabled — the reason names why (rule 7, "restore has no way back
-    // for an untracked target yet"), never a silently missing option.
+    // Replace is listed and enabled, exactly like a tracked target's own — the lock is gone (AK 16).
     const replaceRadio = confirm
       .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
-      .getByRole('radio', { name: /^Ziel ersetzen/ });
-    await expect(replaceRadio).toBeDisabled();
-    await expect(confirm.getByText('Nur für getrackte Kanäle wiederherstellbar')).toBeVisible();
-
-    await confirm
-      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
-      .getByRole('radio', { name: 'Umbenennen' })
-      .check();
-    await confirm.getByLabel('Neuer Name').fill('CatJAM2');
+      .getByRole('radio', { name: 'Ziel ersetzen' });
+    await expect(replaceRadio).toBeEnabled();
+    await replaceRadio.check();
     await confirm.getByRole('button', { name: 'Übernehmen' }).click();
 
-    await expect(confirm.locator('#app-dialog-title')).toHaveText(
-      "1 Emote in Set ‚Wegwerf-Set' kopieren?",
+    await expect(
+      confirm.getByText('1 Emote wird aus dem Zielset entfernt und durch das Quell-Emote ersetzt.'),
+    ).toBeVisible();
+
+    // The safeguard is still a file, not a typed confirmation (AK 17) — the recovery file's name
+    // falls back to the set id where a tracked run would have named the channel (spec 4.5 point 18).
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(
+      /^emotepurge_set-untracked_transfer-plan_.*\.json$/,
     );
-    await expect(confirm.getByText(/Emote wird aus dem Zielset entfernt/)).toHaveCount(0);
-    await expect(confirm.getByRole('button', { name: 'Rückweg sichern' })).toHaveCount(0);
-    const executeButton = confirm.getByRole('button', { name: 'Kopieren' });
-    await expect(executeButton).toBeEnabled();
-    await executeButton.click();
+
+    await confirm.getByRole('button', { name: 'Starten' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await page.clock.runFor(2000);
     await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
 
     const mutations = calls.filter((call) => call.kind !== 'setRead');
-    expect(mutations.map((call) => call.kind)).toEqual(['addEmote']);
-    expect(mutations[0].variables).toMatchObject({ emoteId: '7tv-1', alias: 'CatJAM2' });
-    expect(calls.some((call) => call.kind === 'removeEmote')).toBe(false);
-    expect(downloadFired).toBe(false);
+    expect(mutations.map((call) => call.kind)).toEqual(['removeEmote', 'addEmote']);
+    expect(mutations[0].variables).toMatchObject({ emoteId: 'target-catjam' });
+    expect(mutations[1].variables).toMatchObject({ emoteId: '7tv-1', alias: 'CatJAM' });
+
+    expect(syncDeletedBodies[0]?.sevenTvEmoteIds).toEqual(['target-catjam']);
+    // No channel of ours to expect a hit from — the untracked account has none (F2).
+    expect(syncDeletedBodies[0]?.expectedChannelName).toBeNull();
   });
 });

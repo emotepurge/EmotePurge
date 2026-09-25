@@ -33,7 +33,6 @@ const DE_TRANSLATIONS = {
         replaceTarget: 'Ziel ersetzen',
         adoptSourceName: 'Namen übernehmen',
       },
-      replaceNeedsTracked: 'Nur für getrackte Kanäle wiederherstellbar',
       reloadTargetFirst: 'Ziel hat sich geändert — erst neu laden',
       adoptBlocked: {
         nameTaken: 'Name im Zielset vergeben',
@@ -99,7 +98,7 @@ function optionKinds(row: ConflictStepRow): string[] {
 describe('ImportConflictResolutionStep', () => {
   describe('which actions a row offers (AK 6, 8, R5)', () => {
     it('offers skip, rename and replace for a name collision, and skip and adopt for a mismatch', () => {
-      const [collisionRow] = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+      const [collisionRow] = collisionStepRows([collision('a', 'Kappa')], new Map());
       const [mismatchRow] = mismatchStepRows([mismatch('b', 'Pog')], new Map());
 
       expect(optionKinds(collisionRow)).toEqual(['skip', 'renameSource', 'replaceTarget']);
@@ -108,17 +107,19 @@ describe('ImportConflictResolutionStep', () => {
       expect(mismatchRow.options.every((option) => option.disabledReasonKey === null)).toBe(true);
     });
 
-    it('keeps replace listed but disabled with its reason for an untracked target or a target that is gone', () => {
-      const [untracked] = collisionStepRows([collision('a', 'Kappa')], false, new Map());
-      const [gone] = collisionStepRows([collision('a', 'Kappa')], true, new Map([['a', null]]));
+    // #253, spec 4.5 point 15/6.6: the replace lock for an untracked target is gone —
+    // `collisionStepRows` no longer takes a middle "is the target tracked" parameter at all, and
+    // replace is offered exactly the same for every target (AK 16).
+    it('offers replace enabled for an untracked target the same as for a tracked one', () => {
+      const [row] = collisionStepRows([collision('a', 'Kappa')], new Map());
 
-      expect(untracked.options.find((o) => o.kind === 'replaceTarget')?.disabledReasonKey).toBe(
-        'import.resolve.replaceNeedsTracked',
-      );
-      // Rename stays available: it deletes nothing.
-      expect(untracked.options.find((o) => o.kind === 'renameSource')?.disabledReasonKey).toBe(
-        null,
-      );
+      expect(row.options.find((o) => o.kind === 'replaceTarget')?.disabledReasonKey).toBe(null);
+      expect(row.options.find((o) => o.kind === 'renameSource')?.disabledReasonKey).toBe(null);
+    });
+
+    it('keeps replace listed but disabled with its reason for a target that is gone', () => {
+      const [gone] = collisionStepRows([collision('a', 'Kappa')], new Map([['a', null]]));
+
       // The live counterpart laid over the row: gone, so no picture and nothing left to replace.
       expect(gone.targetGone).toBe(true);
       expect(gone.targetImageUrl).toBeNull();
@@ -217,7 +218,7 @@ describe('ImportConflictResolutionStep', () => {
     }
 
     it('names each action group after its row and starts every row on skip (AK 5, 23)', async () => {
-      await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], true, new Map()));
+      await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], new Map()));
 
       expect(radio('Kappa', 'skip').checked).toBe(true);
       expect(radio('Kappa', 'renameSource').checked).toBe(false);
@@ -243,7 +244,7 @@ describe('ImportConflictResolutionStep', () => {
     });
 
     it('opens a prefilled rename field and shows its field error for an alias 7TV rejects (AK 10)', async () => {
-      const rows = collisionStepRows([collision('a', 'Kappa')], true, new Map());
+      const rows = collisionStepRows([collision('a', 'Kappa')], new Map());
       await render('nameCollision', rows);
 
       radio('Kappa', 'renameSource').click();
@@ -278,7 +279,6 @@ describe('ImportConflictResolutionStep', () => {
     it('draws the empty plate without a picture for a row without an image url (AK 4)', async () => {
       const rows = collisionStepRows(
         [collision('a', 'Kappa', { row: importRow('a', 'Kappa', null) })],
-        true,
         new Map(),
       );
       await render('nameCollision', rows);
@@ -294,7 +294,7 @@ describe('ImportConflictResolutionStep', () => {
       const many = Array.from({ length: 200 }, (_, index) =>
         collision(`r${index}`, `Emote${index}`),
       );
-      await render('nameCollision', collisionStepRows(many, true, new Map()));
+      await render('nameCollision', collisionStepRows(many, new Map()));
       const viewport = fixture.debugElement.query(By.directive(CdkVirtualScrollViewport))
         .componentInstance as CdkVirtualScrollViewport;
       // jsdom has no Element.scrollTo — only the call itself is the subject here.

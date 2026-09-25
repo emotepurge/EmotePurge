@@ -163,7 +163,6 @@ const DE_TRANSLATIONS = {
         replaceTarget: 'Ziel ersetzen',
         adoptSourceName: 'Namen übernehmen',
       },
-      replaceNeedsTracked: 'Nur für getrackte Kanäle wiederherstellbar',
       reloadTargetFirst: 'Ziel hat sich geändert — erst neu laden',
       adoptBlocked: {
         nameTaken: 'Name im Zielset vergeben',
@@ -182,7 +181,6 @@ const DE_TRANSLATIONS = {
         duplicateReplaceTarget: 'Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.',
         targetTouchedByReplaceAndAdopt: 'Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.',
         adoptBlocked: 'Namen übernehmen ist hier nicht möglich: {{ rows }}.',
-        replaceNeedsTrackedTarget: 'Ziel ersetzen geht nur bei getrackten Kanälen: {{ rows }}.',
       },
       back: 'Zurück',
       apply: 'Übernehmen',
@@ -1553,7 +1551,12 @@ describe('ImportConfirmDialog', () => {
       ]);
     });
 
-    it('keeps replace visible but disabled for an untracked target, while rename and adopt stay selectable (R5)', async () => {
+    // #253, spec 4.5 point 15/18: the replace lock for an untracked target is gone — the dialog
+    // offers "Ziel ersetzen" for an untracked target exactly as for a tracked one (AK 16), still
+    // requires the recovery file before it starts (AK 17), and the file's name falls back to the
+    // set id where a tracked run would have named the channel (spec 4.5 point 18).
+    it('offers replace for an untracked target too, requires the recovery file, and names it by set id (R5, AK 16, 17)', async () => {
+      const downloads = captureDownloads();
       const dialog = render({
         source: conflictSource(),
         target: conflictTarget(),
@@ -1563,20 +1566,29 @@ describe('ImportConfirmDialog', () => {
 
       await openStep(dialog, 'nameCollision');
       for (const name of ['Collides', 'Dup']) {
-        expect(option(dialog, name, 'replaceTarget').disabled).toBe(true);
+        expect(option(dialog, name, 'replaceTarget').disabled).toBe(false);
         expect(option(dialog, name, 'renameSource').disabled).toBe(false);
       }
-      expect(dialog.text()).toContain('(Nur für getrackte Kanäle wiederherstellbar)');
-      dialog.button('Zurück').click();
-      dialog.detect();
-
-      await openStep(dialog, 'aliasMismatch');
-      choose(dialog, 'Pog', 'adoptSourceName');
+      choose(dialog, 'Collides', 'replaceTarget');
       apply(dialog);
 
-      // No plan with a replace can exist here, so there is no removal line and no recovery step.
-      expect(dialog.text()).not.toContain('aus dem Zielset entfernt');
-      expect(dialog.hasButton(EXECUTE)).toBe(true);
+      expect(dialog.element('import-confirm-removals')?.textContent).toContain(
+        '1 Emote wird aus dem Zielset entfernt.',
+      );
+      // The safeguard is still a file, not a typed confirmation — a plan with a replace row never
+      // gets the plain "Kopieren" button, untracked target included.
+      expect(dialog.hasButton(EXECUTE)).toBe(false);
+      expect(downloads).toEqual([]);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead(LIVE_UNCHANGED));
+
+      // conflictTarget()'s own setId ('set-9') stands in for the channel name the tracked case
+      // uses (`emotepurge_targetchannel_transfer-plan_…`, the sibling AK 16/17 test above).
+      expect(downloads).toHaveLength(1);
+      expect(downloads[0].filename).toMatch(/^emotepurge_set-9_transfer-plan_.*\.json$/);
+      expect(dialog.hasButton('Starten')).toBe(true);
     });
 
     it('shows the removal line only once a replace is applied, and swaps Kopieren for Rückweg sichern (AK 20)', async () => {

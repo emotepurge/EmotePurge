@@ -9,6 +9,7 @@ import {
   mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
+  mockEmoteSetTargets,
   mockForeignEmoteSetPreview,
   mockSetWarning,
   mockSevenTvGql,
@@ -337,6 +338,21 @@ test.describe('vote ballot — a set-session created from a non-active (Hallowee
         { id: HALLOWEEN_SET_ID, name: 'Halloween' },
       ],
     });
+    // #253 AK 31: the delete confirmation runs the shared pre-check before it opens
+    // (resolveEditableSet) — without this, the request has nothing to answer it.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'sensitron-1',
+        twitchLogin: CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: CHANNEL,
+        activeEmoteSetId: ACTIVE_SET_ID,
+        sets: [
+          { id: ACTIVE_SET_ID, name: 'Hauptset', isActive: true },
+          { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+        ],
+      },
+    ]);
     await mockUsageTotals(page, CHANNEL, [
       {
         emoteId: 'e-pump',
@@ -523,6 +539,21 @@ test.describe('vote ballot — a set-session delete reads its own set live and e
         { id: HALLOWEEN_SET_ID, name: 'Halloween' },
       ],
     });
+    // #253 AK 31: the delete confirmation runs the shared pre-check before it opens
+    // (resolveEditableSet) — without this, the request has nothing to answer it.
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'sensitron-1',
+        twitchLogin: CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: CHANNEL,
+        activeEmoteSetId: 'set-1',
+        sets: [
+          { id: 'set-1', name: 'Hauptset', isActive: true },
+          { id: HALLOWEEN_SET_ID, name: 'Halloween' },
+        ],
+      },
+    ]);
     await mockVoteSessionResults(page, CHANNEL, SESSION, emotes);
     await mockSetWarning(page, CHANNEL);
 

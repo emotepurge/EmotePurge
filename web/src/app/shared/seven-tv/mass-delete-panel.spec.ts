@@ -1,7 +1,7 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { Component, WritableSignal, signal } from '@angular/core';
+import { Component, EnvironmentProviders, Provider, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { Subject, of } from 'rxjs';
@@ -9,7 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
-import { EmoteSetTargetsResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
+import {
+  EditableSetTarget,
+  EmoteSetTargetsResponse,
+} from '../../core/seven-tv/seven-tv-emote-set.model';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -768,8 +772,39 @@ function fakeRunArbiter(
   return { activeRun };
 }
 
+/** A resolved target every editable-stub answer carries — irrelevant to the delete confirmation
+ *  itself (spec 4.6 point 20: the pre-check only gates, it never feeds `DeleteConfirmDialogData`),
+ *  so its exact field values are never asserted on by the blocks below. */
+const EDITABLE_STUB_TARGET: EditableSetTarget = {
+  emoteSetId: 'set-1',
+  setName: 'set-1',
+  ownerDisplayName: 'owner',
+  twitchLogin: 'owner',
+  trackedChannelName: 'somechannel',
+  isActiveSet: true,
+};
+
+type EmoteSetServiceFake = Pick<SevenTvEmoteSetService, 'resolveEditableSet'>;
+
+/** #253 AK 31/20: `MassDeletePanel` now runs the shared pre-check (`resolveEditableSet`) before
+ *  every delete confirmation opens. Defaults to an immediate `'editable'` answer so every block
+ *  below that does not itself test the pre-check keeps opening the confirmation synchronously,
+ *  exactly as it did before that pre-check existed — the dedicated pre-check block further down
+ *  overrides this with the real service instead (`panelProviders({ emoteSetService: null })`) to
+ *  drive `HttpTestingController` directly. */
+function fakeEmoteSetService(overrides: Partial<EmoteSetServiceFake> = {}): EmoteSetServiceFake {
+  return {
+    resolveEditableSet: vi
+      .fn()
+      .mockReturnValue(of({ status: 'editable', target: EDITABLE_STUB_TARGET })),
+    ...overrides,
+  };
+}
+
 /** The provider list every #89 block below needs, differing only in which fakes a test wants to
- *  drive — the rest default to an idle/untouched instance. */
+ *  drive — the rest default to an idle/untouched instance. `emoteSetService: null` opts out of the
+ *  default editable stub and leaves `SevenTvEmoteSetService` real, for a block that drives it
+ *  through its own `HttpTestingController` (the restore-confirm-path and delete-pre-check blocks). */
 function panelProviders(
   options: {
     deleteService?: DeleteServiceFake;
@@ -777,9 +812,10 @@ function panelProviders(
     arbiter?: RunArbiterFake;
     dialogOpen?: ReturnType<typeof vi.fn>;
     emoteAdminService?: Partial<EmoteAdminService>;
+    emoteSetService?: EmoteSetServiceFake | null;
   } = {},
 ) {
-  return [
+  const providers: (Provider | EnvironmentProviders)[] = [
     provideHttpClient(),
     {
       provide: EmoteAdminService,
@@ -804,6 +840,14 @@ function panelProviders(
     },
     { provide: Dialog, useValue: { open: options.dialogOpen ?? vi.fn() } as unknown as Dialog },
   ];
+  if (options.emoteSetService !== null) {
+    providers.push({
+      provide: SevenTvEmoteSetService,
+      useValue: (options.emoteSetService ??
+        fakeEmoteSetService()) as unknown as SevenTvEmoteSetService,
+    });
+  }
+  return providers;
 }
 
 /** `Löschen (n)` — the same wording `DELETE_LABEL` pins for n=2, generalised so the lock block can
@@ -1375,6 +1419,13 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
         {
           provide: SevenTvTokenService,
           useValue: { hasToken: signal(true) } as unknown as SevenTvTokenService,
+        },
+        // #253 AK 31/20: the pre-check before the confirmation opens — an immediate `'editable'`
+        // answer, same reasoning as `panelProviders`' own default (this block does not use that
+        // helper, it builds its providers manually).
+        {
+          provide: SevenTvEmoteSetService,
+          useValue: fakeEmoteSetService() as unknown as SevenTvEmoteSetService,
         },
         { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
         // Only needed once DeleteConfirmDialog itself is instantiated below — resolved lazily via
@@ -2739,6 +2790,10 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
       restoreService,
       dialogOpen: vi.fn().mockReturnValue({ closed }),
       emoteAdminService,
+      // This block drives resolveEditableSet through the real service and HttpTestingController
+      // (targetsResponse() below) — the default editable stub would answer before the test ever
+      // gets to flush its own response.
+      emoteSetService: null,
     });
 
     await TestBed.configureTestingModule({
@@ -2856,5 +2911,106 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
       reasonKey: 'restore.errors.targetCheckUnavailable',
     });
     expect(startRestore).not.toHaveBeenCalled();
+  });
+});
+
+// #253, spec 4.6 point 20, AK 31: the shared pre-check now runs before the delete confirmation
+// itself opens, not only before the panel's own restore entry (the block above). Real
+// `SevenTvEmoteSetService` over `HttpTestingController` (`emoteSetService: null`, same reasoning as
+// the restore-confirm-path block above) so each test can drive the pre-check's own answer.
+describe('MassDeletePanel — the shared pre-check runs before the delete confirmation opens (#253 AK 31)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let httpMock: HttpTestingController;
+  let dialogOpen: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    dialogOpen = vi.fn().mockReturnValue({ closed: of(undefined) });
+    const providers = panelProviders({
+      dialogOpen,
+      emoteSetService: null,
+      emoteAdminService: {
+        getSetWarning: () =>
+          of({
+            available: true,
+            isOwnSet: true,
+            otherTrackedChannelsSharingSet: [],
+            otherModeratedChannelsSharingSet: [],
+          }),
+      },
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [...providers, provideHttpClientTesting()],
+    }).compileComponents();
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', EMOTES);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => httpMock.verify());
+
+  it('locks the delete button and opens no dialog while the pre-check is out, then opens it on an editable answer', () => {
+    fixture.componentInstance['openConfirm']();
+
+    expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(true);
+    expect(dialogOpen).not.toHaveBeenCalled();
+
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(targetsResponse('set-1', 'somechannel'));
+
+    expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
+  });
+
+  it('shows the abort notice and opens no dialog when the pre-check finds the set not editable', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: false });
+
+    expect(fixture.componentInstance['deleteTargetCheckPending']()).toBe(false);
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetNotEditable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  it('maps a degraded pre-check (list incomplete) to the "check unavailable" reason', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush({ accounts: [], sevenTvUnavailable: true });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetCheckUnavailable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
+  });
+
+  it('maps a failed pre-check request (429) to the "check unavailable" reason too', () => {
+    fixture.componentInstance['openConfirm']();
+    httpMock
+      .expectOne('/api/seventv/me/emote-set-targets')
+      .flush(null, { status: 429, statusText: 'Too Many Requests' });
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: 'massDelete.errors.targetCheckUnavailable',
+    });
+    expect(dialogOpen).not.toHaveBeenCalled();
   });
 });

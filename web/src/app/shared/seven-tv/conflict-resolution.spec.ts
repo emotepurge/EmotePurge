@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
 import { ImportRow } from '../../core/seven-tv/import-source';
 import {
-  ResolutionContext,
   ResolutionDecisions,
   ResolutionValidation,
   RowDecision,
@@ -19,8 +18,6 @@ import { AliasMismatchRow, ImportPreview, NameCollisionRow } from './import-prev
 import { projectSlots } from './slot-projection';
 
 const TARGET_IMAGE_URL = 'https://cdn.7tv.app/placeholder/1x.webp';
-const TRACKED: ResolutionContext = { targetIsTracked: true };
-const UNTRACKED: ResolutionContext = { targetIsTracked: false };
 
 function importRow(id: string, name: string): ImportRow {
   return { sevenTvEmoteId: id, name, imageUrl: null };
@@ -102,7 +99,7 @@ describe('validateResolution', () => {
         ['c-2', { kind: 'renameSource', alias: 'Shared' }],
       ]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'duplicateGeneratedAlias', ['c-1', 'c-2']);
+      expectViolation(validateResolution(p, d), 'duplicateGeneratedAlias', ['c-1', 'c-2']);
     });
 
     it('flags a rename onto the name of an untouched toAdd row', () => {
@@ -114,10 +111,7 @@ describe('validateResolution', () => {
       });
       const d = decisions([['c-1', { kind: 'renameSource', alias: 'Shared' }]]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'duplicateGeneratedAlias', [
-        'add-1',
-        'c-1',
-      ]);
+      expectViolation(validateResolution(p, d), 'duplicateGeneratedAlias', ['add-1', 'c-1']);
     });
 
     it('does not flag two untouched toAdd rows sharing a name (plan stays as today)', () => {
@@ -125,10 +119,10 @@ describe('validateResolution', () => {
         toAdd: [importRow('add-1', 'Dup'), importRow('add-2', 'Dup')],
       });
 
-      const result = validateResolution(p, decisions([]), TRACKED);
+      const result = validateResolution(p, decisions([]));
 
       expect(result).toEqual({ ok: true });
-      const plan = buildTransferPlan(p, decisions([]), TRACKED);
+      const plan = buildTransferPlan(p, decisions([]));
       expect(plan.rows).toEqual([
         { action: 'add', source: importRow('add-1', 'Dup'), alias: 'Dup' },
         { action: 'add', source: importRow('add-2', 'Dup'), alias: 'Dup' },
@@ -145,8 +139,8 @@ describe('validateResolution', () => {
       });
       const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
 
-      expect(validateResolution(p, d, TRACKED)).toEqual({ ok: true });
-      const plan = buildTransferPlan(p, d, TRACKED);
+      expect(validateResolution(p, d)).toEqual({ ok: true });
+      const plan = buildTransferPlan(p, d);
       expect(plan.rows).toEqual([
         {
           action: 'replace',
@@ -176,12 +170,10 @@ describe('validateResolution', () => {
       const forward = validateResolution(
         preview({ nameCollisionRows: [rowFreesA, rowRenamesToA], targetNames }),
         d,
-        TRACKED,
       );
       const backward = validateResolution(
         preview({ nameCollisionRows: [rowRenamesToA, rowFreesA], targetNames }),
         d,
-        TRACKED,
       );
 
       expectViolation(forward, 'aliasHeldByTarget', ['c-rename', 'c-free']);
@@ -203,7 +195,7 @@ describe('validateResolution', () => {
         ['c-1', { kind: 'renameSource', alias: 'OldAlias' }],
       ]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'aliasHeldByTarget', ['c-1', 'm-1']);
+      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', ['c-1', 'm-1']);
     });
 
     it('flags a rename onto one alias of a #74 duplicate target that a different replace takes', () => {
@@ -226,7 +218,7 @@ describe('validateResolution', () => {
         ['c-other', { kind: 'renameSource', alias: 'Alias2' }],
       ]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'aliasHeldByTarget', ['c-other', 'c-own']);
+      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', ['c-other', 'c-own']);
     });
 
     it('flags a rename onto a target name that no conflict row exposes at all', () => {
@@ -242,7 +234,7 @@ describe('validateResolution', () => {
       });
       const d = decisions([['c-1', { kind: 'renameSource', alias: 'UntouchedName' }]]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'aliasHeldByTarget', ['c-1']);
+      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', ['c-1']);
     });
   });
 
@@ -255,7 +247,7 @@ describe('validateResolution', () => {
       });
       const d = decisions([['c-1', { kind: 'renameSource', alias: 'has space' }]]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'invalidTypedAlias', ['c-1']);
+      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['c-1']);
     });
 
     it('flags a rename alias over 100 characters', () => {
@@ -266,7 +258,7 @@ describe('validateResolution', () => {
       });
       const d = decisions([['c-1', { kind: 'renameSource', alias: 'a'.repeat(101) }]]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'invalidTypedAlias', ['c-1']);
+      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['c-1']);
     });
 
     it('flags an empty rename alias', () => {
@@ -277,7 +269,7 @@ describe('validateResolution', () => {
       });
       const d = decisions([['c-1', { kind: 'renameSource', alias: '' }]]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'invalidTypedAlias', ['c-1']);
+      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['c-1']);
     });
   });
 
@@ -298,7 +290,7 @@ describe('validateResolution', () => {
         ['c-2', { kind: 'replaceTarget' }],
       ]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'duplicateReplaceTarget', ['c-1', 'c-2']);
+      expectViolation(validateResolution(p, d), 'duplicateReplaceTarget', ['c-1', 'c-2']);
     });
   });
 
@@ -320,7 +312,7 @@ describe('validateResolution', () => {
         ['shared-id', { kind: 'adoptSourceName' }],
       ]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'targetTouchedByReplaceAndAdopt', [
+      expectViolation(validateResolution(p, d), 'targetTouchedByReplaceAndAdopt', [
         'c-1',
         'shared-id',
       ]);
@@ -334,12 +326,16 @@ describe('validateResolution', () => {
       });
       const d = decisions([['m-1', { kind: 'adoptSourceName' }]]);
 
-      expectViolation(validateResolution(p, d, TRACKED), 'adoptBlocked', ['m-1']);
+      expectViolation(validateResolution(p, d), 'adoptBlocked', ['m-1']);
     });
   });
 
-  describe('rule 7 — replace only against a tracked target', () => {
-    it('flags a replace decision when the target is untracked', () => {
+  // Rule 7 ("replace only against a tracked target") is gone (#253, spec 4.5 point 15/6.6): a
+  // replace's REMOVE now reports set-centrically regardless of whether the target is tracked, so
+  // `validateResolution` no longer takes a third argument to decide it and has no rule left that
+  // reads anything about the target's tracking state at all.
+  describe('a replace decision no longer depends on whether the target is tracked (AK 16)', () => {
+    it('validates a replace decision with no context argument at all', () => {
       const p = preview({
         nameCollisionRows: [
           collisionRow(importRow('c-1', 'Name1'), emoteListItem('t-1', 'Name1'), ['Name1']),
@@ -347,33 +343,20 @@ describe('validateResolution', () => {
       });
       const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
 
-      expectViolation(validateResolution(p, d, UNTRACKED), 'replaceNeedsTrackedTarget', ['c-1']);
-    });
-
-    it('allows the same replace decision once the target is tracked', () => {
-      const p = preview({
-        nameCollisionRows: [
-          collisionRow(importRow('c-1', 'Name1'), emoteListItem('t-1', 'Name1'), ['Name1']),
-        ],
-      });
-      const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
-
-      expect(validateResolution(p, d, TRACKED)).toEqual({ ok: true });
-    });
-
-    it('allows rename and adopt decisions against an untracked target', () => {
-      const p = preview({
-        nameCollisionRows: [
-          collisionRow(importRow('c-1', 'Old'), emoteListItem('t-1', 'Old'), ['Old']),
-        ],
-        aliasMismatchRows: [mismatchRow(importRow('m-1', 'NewAlias'), ['OldAlias'])],
-      });
-      const d = decisions([
-        ['c-1', { kind: 'renameSource', alias: 'Fresh' }],
-        ['m-1', { kind: 'adoptSourceName' }],
+      expect(validateResolution(p, d)).toEqual({ ok: true });
+      expect(buildTransferPlan(p, d).rows).toEqual([
+        {
+          action: 'replace',
+          source: importRow('c-1', 'Name1'),
+          alias: 'Name1',
+          target: {
+            sevenTvEmoteId: 't-1',
+            aliases: ['Name1'],
+            hasAliaslessEntry: false,
+            defaultName: null,
+          },
+        },
       ]);
-
-      expect(validateResolution(p, d, UNTRACKED)).toEqual({ ok: true });
     });
   });
 
@@ -391,8 +374,8 @@ describe('validateResolution', () => {
         ['unknown-id', { kind: 'replaceTarget' }], // no row carries this key at all
       ]);
 
-      expect(validateResolution(p, d, TRACKED)).toEqual({ ok: true });
-      expect(buildTransferPlan(p, d, TRACKED).rows).toEqual([]);
+      expect(validateResolution(p, d)).toEqual({ ok: true });
+      expect(buildTransferPlan(p, d).rows).toEqual([]);
     });
   });
 });
@@ -401,7 +384,7 @@ describe('buildTransferPlan', () => {
   it('builds exactly preview.toAdd as add rows when there are no decisions (AK 5)', () => {
     const p = preview({ toAdd: [importRow('add-1', 'Foo'), importRow('add-2', 'Bar')] });
 
-    const plan = buildTransferPlan(p, decisions([]), TRACKED);
+    const plan = buildTransferPlan(p, decisions([]));
 
     expect(plan.rows).toEqual([
       { action: 'add', source: importRow('add-1', 'Foo'), alias: 'Foo' },
@@ -419,8 +402,8 @@ describe('buildTransferPlan', () => {
     const invalidRow = importRow('add-1', 'has space');
     const p = preview({ toAdd: [invalidRow], invalidNames: ['has space'] });
 
-    expect(validateResolution(p, decisions([]), TRACKED)).toEqual({ ok: true });
-    const plan = buildTransferPlan(p, decisions([]), TRACKED);
+    expect(validateResolution(p, decisions([]))).toEqual({ ok: true });
+    const plan = buildTransferPlan(p, decisions([]));
     expect(plan.rows).toEqual([{ action: 'add', source: invalidRow, alias: 'has space' }]);
   });
 
@@ -436,18 +419,7 @@ describe('buildTransferPlan', () => {
       ['c-2', { kind: 'renameSource', alias: 'Shared' }],
     ]);
 
-    expect(() => buildTransferPlan(p, d, TRACKED)).toThrow();
-  });
-
-  it('throws on a replace decision against an untracked target, with no separate validateResolution call', () => {
-    const p = preview({
-      nameCollisionRows: [
-        collisionRow(importRow('c-1', 'Name1'), emoteListItem('t-1', 'Name1'), ['Name1']),
-      ],
-    });
-    const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
-
-    expect(() => buildTransferPlan(p, d, UNTRACKED)).toThrow();
+    expect(() => buildTransferPlan(p, d)).toThrow();
   });
 
   describe('row order in the plan', () => {
@@ -468,7 +440,7 @@ describe('buildTransferPlan', () => {
         ['m-1', { kind: 'adoptSourceName' }],
       ]);
 
-      const plan = buildTransferPlan(p, d, TRACKED);
+      const plan = buildTransferPlan(p, d);
 
       expect(plan.rows.map((row) => row.source.sevenTvEmoteId)).toEqual([
         'c-replace', // every replace row first
@@ -489,7 +461,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
     });
     const d = decisions([['c-1', { kind: 'renameSource', alias: 'Renamed' }]]);
 
-    const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
+    const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
     expect(summary).toEqual({ addCount: 1, removeCount: 0, removedEntryCount: 0, adoptCount: 0 });
   });
@@ -501,7 +473,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
     });
     const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
 
-    const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
+    const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
     expect(summary).toEqual({ addCount: 1, removeCount: 1, removedEntryCount: 1, adoptCount: 0 });
   });
@@ -512,7 +484,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
     });
     const d = decisions([['m-1', { kind: 'adoptSourceName' }]]);
 
-    const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
+    const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
     expect(summary).toEqual({ addCount: 0, removeCount: 0, removedEntryCount: 0, adoptCount: 1 });
   });
@@ -531,7 +503,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
       ['c-replace', { kind: 'replaceTarget' }],
     ]);
 
-    const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
+    const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
     expect(summary).toEqual({ addCount: 3, removeCount: 1, removedEntryCount: 2, adoptCount: 0 });
     expect(projectSlots(0, 10, summary.addCount - summary.removedEntryCount)).toEqual({
@@ -548,7 +520,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
     });
     const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
 
-    const summary = summarizeTransferPlan(buildTransferPlan(p, d, TRACKED));
+    const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
     expect(summary).toEqual({ addCount: 1, removeCount: 1, removedEntryCount: 2, adoptCount: 0 });
     expect(projectSlots(10, 100, summary.addCount - summary.removedEntryCount)).toEqual({
@@ -578,7 +550,7 @@ describe('withoutViolations', () => {
       ['src-3', { kind: 'adoptSourceName' }],
     ]);
 
-    expect(withoutViolations(resolvable, valid, TRACKED)).toBe(valid);
+    expect(withoutViolations(resolvable, valid)).toBe(valid);
   });
 
   it('drops every decision a violation names and keeps the rest', () => {
@@ -588,16 +560,10 @@ describe('withoutViolations', () => {
       ['src-3', { kind: 'adoptSourceName' }],
     ]);
 
-    const kept = withoutViolations(resolvable, clashing, TRACKED);
+    const kept = withoutViolations(resolvable, clashing);
 
     expect([...kept]).toEqual([['src-3', { kind: 'adoptSourceName' }]]);
-    expect(validateResolution(resolvable, kept, TRACKED)).toEqual({ ok: true });
-  });
-
-  it('drops a replace that an untracked target does not allow', () => {
-    const replace = decisions([['src-1', { kind: 'replaceTarget' }]]);
-
-    expect(withoutViolations(resolvable, replace, UNTRACKED).size).toBe(0);
+    expect(validateResolution(resolvable, kept)).toEqual({ ok: true });
   });
 });
 

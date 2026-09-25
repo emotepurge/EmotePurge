@@ -17,7 +17,11 @@ import {
 } from '../export/transfer-run-export';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
-import { copiedNotActiveNotice, resyncNoticeKey } from './dock-outcome-announcer';
+import {
+  copiedNotActiveNotice,
+  importTargetCheckBlockedKey,
+  resyncNoticeKey,
+} from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
 
 /**
@@ -71,6 +75,17 @@ import { RunProgressPanel } from './run-progress-panel';
     @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{ replaceSkippedDriftKey() | transloco: { count: importService.replaceSkippedDrift() } }}
+      </p>
+    }
+    <!-- The shared pre-check blocked a replace-carrying start before anything ran (spec 4.5 point
+         17, AK 32) — shares duplicateNoticePending's window and gate with its siblings above, so a
+         plan held back entirely (the only replace row(s) all blocked) still leaves a notice and
+         keeps this section (and the dock) mounted, exactly like the all-duplicates/all-drift cases.
+         aria-hidden like every notice in this section; the spoken twin is
+         DockOutcomeAnnouncer's importTargetCheckBlockedNoticeKey. -->
+    @if (targetCheckBlockedKey(); as key) {
+      <p aria-hidden="true" class="text-sm text-fg-secondary">
+        {{ key | transloco }}
       </p>
     }
     @if (importService.isRunning() || importService.queue().length > 0) {
@@ -240,6 +255,15 @@ export class ImportProgressSection {
    *  `skippedDuplicatesKey` above, and the same all-drift-leaves-nothing-queued concern. */
   protected readonly replaceSkippedDriftKey = computed(() =>
     pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),
+  );
+
+  /** The shared pre-check's block reason (spec 4.5 point 17, AK 32), gated on
+   *  `duplicateNoticePending` like its siblings above — see that signal's doc for why a blocked
+   *  pre-check needs this same window to stay visible at all. */
+  protected readonly targetCheckBlockedKey = computed(() =>
+    this.importService.duplicateNoticePending()
+      ? importTargetCheckBlockedKey(this.importService.targetCheckBlockReason())
+      : null,
   );
 
   /** Wording for the settled run's confirmed REMOVEs (`ImportRunInfo.removedCount`). */
