@@ -693,6 +693,24 @@ describe('parseTransferRunForRestore', () => {
     });
   });
 
+  it('refuses a file whose meta.targetEmoteSetId is missing or an empty string as wrongKind', () => {
+    const record = JSON.parse(
+      plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+    ) as { meta: Record<string, unknown> };
+
+    const missing = JSON.stringify({ ...record, meta: { ...record.meta, targetEmoteSetId: undefined } });
+    expect(parseTransferRunForRestore(missing)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+
+    const empty = JSON.stringify({ ...record, meta: { ...record.meta, targetEmoteSetId: '' } });
+    expect(parseTransferRunForRestore(empty)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+  });
+
   it('refuses a finished file without a single confirmed REMOVE', () => {
     const text = transferRunJson(
       buildTransferRunProtocol({

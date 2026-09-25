@@ -14,6 +14,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import { ExportKind } from '../export/export-envelope';
 import { parseImportSource } from '../export/import-source-parser';
 import { RestoreFileTarget, RestoreRow, parsePurgeRunProtocol } from '../export/purge-run-export';
 import { readEnvelope } from '../export/read-envelope';
@@ -35,7 +36,7 @@ export type FileImportResult =
 
 /** The copy sorts (`import-source-parser.ts`) — the two a page without a selected set refuses up
  *  front (spec #253, E22), since they have no set to copy into. */
-const COPY_ENVELOPE_KINDS: ReadonlySet<string> = new Set(['emote-list', 'usage']);
+const COPY_ENVELOPE_KINDS: ReadonlySet<ExportKind> = new Set(['emote-list', 'usage']);
 
 /** The banner for each way the target check can block a restore file (spec 4.2, 6.1). */
 const TARGET_CHECK_ERROR_KEYS: Record<TargetCheckBlockReason, string> = {

@@ -412,6 +412,67 @@ describe('SevenTvEmoteSetService', () => {
       expect(result).toEqual({ status: 'unavailable' });
     });
 
+    it('resolves a found, NORMAL set with editable false to "notEditable" (AK 3)', () => {
+      let result: EditableSetResolution | undefined;
+      service.resolveEditableSet('set-active').subscribe((r) => (result = r));
+
+      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(
+        targetsResponse({
+          accounts: [
+            {
+              twitchChannelId: '1',
+              twitchLogin: 'handofblood',
+              isOwnAccount: true,
+              trackedChannelName: 'handofblood',
+              activeEmoteSetId: 'set-active',
+              sevenTvUserId: 'user-1',
+              setsUnavailable: false,
+              sets: [
+                {
+                  id: 'set-active',
+                  name: 'Main',
+                  capacity: 250,
+                  kind: 'NORMAL',
+                  isActive: true,
+                  isPersonal: false,
+                  ownerDisplayName: 'HandOfBlood',
+                  ownerSevenTvUserId: 'user-1',
+                  editable: false,
+                },
+              ],
+            },
+          ],
+        }),
+      );
+
+      expect(result).toEqual({ status: 'notEditable' });
+    });
+
+    it('resolves a not-found set to "unavailable" when the owning account\'s own list was unreadable (setsUnavailable, AK 4)', () => {
+      let result: EditableSetResolution | undefined;
+      service.resolveEditableSet('set-unknown').subscribe((r) => (result = r));
+
+      httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(
+        targetsResponse({
+          sevenTvUnavailable: false,
+          accounts: [
+            {
+              twitchChannelId: '1',
+              twitchLogin: 'handofblood',
+              isOwnAccount: true,
+              trackedChannelName: 'handofblood',
+              activeEmoteSetId: 'set-active',
+              sevenTvUserId: 'user-1',
+              setsUnavailable: true,
+              sets: [],
+            },
+          ],
+        }),
+      );
+
+      expect(result).toEqual({ status: 'unavailable' });
+    });
+
     it('serves a second resolveEditableSet call within 60 s from the cache — no second request goes out', () => {
       service.resolveEditableSet('set-active').subscribe();
       httpMock.expectOne('/api/seventv/me/emote-set-targets').flush(targetsResponse());

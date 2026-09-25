@@ -250,6 +250,24 @@ describe('parsePurgeRunProtocol', () => {
     });
   });
 
+  it('refuses a protocol whose meta.emoteSetId is an empty string as wrongKind', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.meta.emoteSetId = '';
+    expect(parsePurgeRunProtocol(JSON.stringify(proto))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+  });
+
+  it('rejects a protocol whose channelName is not a string as wrongKind', () => {
+    const proto = JSON.parse(purgeRunJson(protocol()));
+    proto.channelName = 42;
+    expect(parsePurgeRunProtocol(JSON.stringify(proto))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+  });
+
   it('rejects a protocol without rows array', () => {
     const broken = JSON.stringify({
       source: 'emotepurge',
