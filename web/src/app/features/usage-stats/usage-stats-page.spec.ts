@@ -58,6 +58,7 @@ import {
   EmoteSetSummary,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -1680,6 +1681,38 @@ describe('UsageStatsPage — import entry without a selected set (spec #253, AK 
       (button) => button.textContent?.trim() === 'import.copyButton',
     );
     expect(copyButton).toBeUndefined();
+  });
+
+  // Fix round 1 (Critical, confirmed review finding): before this fix `dockVisible()`
+  // (`actionDockHasContent` via `action-dock.ts`) gated `restoreShown` behind `hasActiveSet`, so a
+  // running restore with nothing to report yet (no skipped/name-taken/unavailable notice —
+  // `duplicateNoticePending` stays false for a clean run, see `showDuplicateNotice`) never mounted
+  // `.app-dock` at all on a page like this one — AK 33's "das Restore-Dock ist sichtbar" failed for
+  // exactly this, the ordinary case. `isRunning` is the real, writable signal `SevenTvRestoreService`
+  // exposes (readonly binding, not a readonly signal — same pattern this file already uses for
+  // `SevenTvDeleteService.lastRun` above); no HTTP round trip needed to drive it, and `run()` stays
+  // null on purpose — this pins dock visibility, not `RestoreProgressSection`'s own target-line
+  // rendering, which is that component's own spec's job.
+  it('shows the dock for a running, notice-free restore even without a selected set (AK 33, fix round 1)', () => {
+    mountWithoutActiveSet('a');
+
+    const restoreService = TestBed.inject(SevenTvRestoreService);
+    expect(restoreService.duplicateNoticePending()).toBe(false);
+    restoreService.isRunning.set(true);
+    fixture.detectChanges();
+
+    const host: HTMLElement = fixture.nativeElement;
+    expect(host.querySelector('.app-dock')).not.toBeNull();
+    expect(host.querySelector('app-restore-progress-section')).not.toBeNull();
+  });
+
+  // The other half of the same fix: marking-only content (nothing running, nothing pending) must
+  // still not conjure a dock out of an active-set-less page — action-dock.spec.ts already pins this
+  // at the unit level; this is the page-level twin using the real template.
+  it('still shows no dock for a page without a selected set and no restore/import activity', () => {
+    mountWithoutActiveSet('a');
+
+    expect(fixture.nativeElement.querySelector('.app-dock')).toBeNull();
   });
 });
 
