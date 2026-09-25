@@ -58,7 +58,11 @@ import {
   EmoteSetSummary,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
-import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import {
+  RestoreRunInfo,
+  SevenTvRestoreService,
+} from '../../core/seven-tv/seven-tv-restore.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -3071,6 +3075,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     totals: EmoteUsageTotalDto[];
     members?: ForeignEmoteSetResponse | 'unavailable';
     observations?: EmoteSetSummary['observations'];
+    extraSets?: EmoteSetSummary[];
   }): Promise<void> {
     configure();
     router = TestBed.inject(Router);
@@ -3113,6 +3118,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
           isActive: false,
           observations: options.observations ?? [],
         }),
+        ...(options.extraSets ?? []),
       ]),
     );
     await settle();
@@ -3504,6 +3510,122 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
     expect(component['nameTwinSetNames'](twin)).toBe('Hauptset, nknown');
     expect(component['totalUsage']()).toBe(12);
+  });
+
+  // --- Nachtrag N2 (AK 37): a run's own settle reloads the chosen non-active set's member list ---
+
+  /** A finished run's engine result with `done` rows for the given keys. */
+  function runResult(doneKeys: string[]) {
+    return { doneKeys, items: [], startedAt: 0, finishedAt: 1 };
+  }
+
+  /** Settles a restore run into `setId` the way `SevenTvRestoreService.onRunComplete` does. */
+  function settleRestore(setId: string, doneKeys: string[]): void {
+    const run: RestoreRunInfo = {
+      targetSetId: setId,
+      expectedChannelName: null,
+      resyncChannelName: 'a',
+      hostChannelName: 'a',
+      setName: setId,
+      ownerOrChannelLabel: 'a',
+      result: runResult(doneKeys),
+    };
+    TestBed.inject(SevenTvRestoreService)['runState'].set(run);
+  }
+
+  function settleImport(setId: string, doneKeys: string[]): void {
+    TestBed.inject(SevenTvImportService).run.set({
+      targetSetId: setId,
+      settlement: 'settled',
+      result: runResult(doneKeys),
+    } as unknown as ImportRunInfo);
+  }
+
+  function settleDelete(setId: string, doneKeys: string[]): void {
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId,
+      channelName: 'a',
+      result: runResult(doneKeys),
+    });
+  }
+
+  function liveListRequestsFor(setId: string): TestRequest[] {
+    return liveListRequests().filter((r) => r.request.params.get('emoteSetId') === setId);
+  }
+
+  it.each([
+    ['restore', settleRestore],
+    ['delete', settleDelete],
+    ['import', settleImport],
+  ] as const)(
+    'reloads the chosen non-active set’s members bypassing the cache once a %s run into it settles',
+    async (_kind, settleRun) => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [],
+        members: memberList([member('7tv-x', 'PumpkinX')]),
+      });
+
+      settleRun('set-b', ['7tv-y']);
+      await settle();
+
+      const reloaded = liveListRequests();
+      expect(reloaded).toHaveLength(1);
+      expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+      expect(reloaded[0].request.params.get('refresh')).toBe('true');
+    },
+  );
+
+  it('sends nothing for a run without a done row, or one into the active set', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+    });
+
+    settleRestore('set-b', []);
+    settleImport('set-a', ['7tv-y']);
+    await settle();
+
+    expect(liveListRequests()).toHaveLength(0);
+  });
+
+  it('marks a non-active target that is not chosen, so exactly its next load bypasses the cache', async () => {
+    await openView({ totals: [] });
+
+    settleRestore('set-b', ['7tv-y']);
+    await settle();
+    expect(liveListRequests()).toHaveLength(0);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    const request = liveListRequestsFor('set-b');
+    expect(request).toHaveLength(1);
+    expect(request[0].request.params.get('refresh')).toBe('true');
+  });
+
+  it('drops the mark on the next load of another set', async () => {
+    await openView({
+      totals: [],
+      extraSets: [emoteSet({ id: 'set-c', name: 'Winter', isActive: false })],
+    });
+
+    settleDelete('set-b', ['7tv-y']);
+    await settle();
+
+    component['onEmoteSetSelected']('set-c');
+    await settle();
+    const other = liveListRequestsFor('set-c');
+    expect(other).toHaveLength(1);
+    expect(other[0].request.params.get('refresh')).toBeNull();
+    other[0].flush(memberList([], { emoteSetId: 'set-c' }));
+    await settle();
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    const target = liveListRequestsFor('set-b');
+    expect(target).toHaveLength(1);
+    expect(target[0].request.params.get('refresh')).toBeNull();
   });
 
   // --- T4.4: the caption matrix (8.4, AK 60) ----------------------------------------------------
