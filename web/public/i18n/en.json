@@ -588,12 +588,27 @@
       "userDelete": "Account deleted"
     },
     "details": {
-      "emoteCount": "{{count}} emotes",
-      "removedEntries": "{{count}} entries removed",
+      "emoteCount": {
+        "one": "{{count}} emote",
+        "other": "{{count}} emotes"
+      },
+      "removedEntries": {
+        "one": "{{count}} entry removed",
+        "other": "{{count}} entries removed"
+      },
       "title": "“{{title}}”",
-      "importedFromChannel": "{{count}} emotes from {{title}}",
-      "importedFromFile": "{{count}} emotes from a file",
-      "importedFromLeaderboard": "{{count}} emotes from {{title}}",
+      "importedFromChannel": {
+        "one": "{{count}} emote from {{title}}",
+        "other": "{{count}} emotes from {{title}}"
+      },
+      "importedFromFile": {
+        "one": "{{count}} emote from a file",
+        "other": "{{count}} emotes from a file"
+      },
+      "importedFromLeaderboard": {
+        "one": "{{count}} emote from {{title}}",
+        "other": "{{count}} emotes from {{title}}"
+      },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",
         "TOP_ALL_TIME": "7TV top overall"

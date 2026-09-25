@@ -53,7 +53,19 @@ describe('toAuditRows', () => {
       IDENTITY_TRANSLATE,
     );
 
-    expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 12 } });
+    expect(row.detail).toEqual({ key: 'audit.details.emoteCount.other', params: { count: 12 } });
+  });
+
+  // Every counting kind routes its key through pluralKey (#255) — a count of exactly one earns
+  // the `.one` sibling instead of `.other`, same rule as every other plural label in the app.
+  it('picks the .one sibling for a counting detail with exactly one', () => {
+    const [row] = toAuditRows(
+      [entry({ detail: { kind: 'emoteCount', count: 1, text: null } })],
+      'de-DE',
+      IDENTITY_TRANSLATE,
+    );
+
+    expect(row.detail).toEqual({ key: 'audit.details.emoteCount.one', params: { count: 1 } });
   });
 
   it('renders a naming detail with its title parameter', () => {
@@ -79,7 +91,7 @@ describe('toAuditRows', () => {
     );
 
     expect(row.detail).toEqual({
-      key: 'audit.details.importedFromChannel',
+      key: 'audit.details.importedFromChannel.other',
       params: { count: 5, title: 'sourcechannel' },
     });
   });
@@ -92,7 +104,7 @@ describe('toAuditRows', () => {
     );
 
     expect(row.detail).toEqual({
-      key: 'audit.details.importedFromFile',
+      key: 'audit.details.importedFromFile.other',
       params: { count: 7 },
     });
   });
@@ -138,7 +150,7 @@ describe('toAuditRows', () => {
       );
 
       expect(row.detail).toEqual({
-        key: 'audit.details.importedFromLeaderboard',
+        key: 'audit.details.importedFromLeaderboard.other',
         params: { count: 12, title: '7TV Trend heute' },
       });
     });
@@ -317,7 +329,7 @@ describe('toAuditRows', () => {
         IDENTITY_TRANSLATE,
       );
 
-      expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 4 } });
+      expect(row.detail).toEqual({ key: 'audit.details.emoteCount.other', params: { count: 4 } });
       expect(row.targetSet).toEqual({
         key: 'audit.details.targetEmoteSet',
         params: { setId: '01J94NYQ' },
@@ -345,7 +357,7 @@ describe('toAuditRows', () => {
         IDENTITY_TRANSLATE,
       );
 
-      expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 2 } });
+      expect(row.detail).toEqual({ key: 'audit.details.emoteCount.other', params: { count: 2 } });
       expect(row.targetSet).toEqual({
         key: 'audit.details.targetEmoteSetNotActive',
         params: { setId: 'set-hall' },
@@ -364,7 +376,7 @@ describe('toAuditRows', () => {
         IDENTITY_TRANSLATE,
       );
 
-      expect(row.detail).toEqual({ key: 'audit.details.emoteCount', params: { count: 6 } });
+      expect(row.detail).toEqual({ key: 'audit.details.emoteCount.other', params: { count: 6 } });
       expect(row.targetSet).toBeNull();
     });
   });

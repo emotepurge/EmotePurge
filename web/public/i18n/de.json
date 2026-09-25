@@ -588,12 +588,27 @@
       "userDelete": "Account gelöscht"
     },
     "details": {
-      "emoteCount": "{{count}} Emotes",
-      "removedEntries": "{{count}} Einträge entfernt",
+      "emoteCount": {
+        "one": "{{count}} Emote",
+        "other": "{{count}} Emotes"
+      },
+      "removedEntries": {
+        "one": "{{count}} Eintrag entfernt",
+        "other": "{{count}} Einträge entfernt"
+      },
       "title": "„{{title}}“",
-      "importedFromChannel": "{{count}} Emotes aus {{title}}",
-      "importedFromFile": "{{count}} Emotes aus einer Datei",
-      "importedFromLeaderboard": "{{count}} Emotes aus {{title}}",
+      "importedFromChannel": {
+        "one": "{{count}} Emote aus {{title}}",
+        "other": "{{count}} Emotes aus {{title}}"
+      },
+      "importedFromFile": {
+        "one": "{{count}} Emote aus einer Datei",
+        "other": "{{count}} Emotes aus einer Datei"
+      },
+      "importedFromLeaderboard": {
+        "one": "{{count}} Emote aus {{title}}",
+        "other": "{{count}} Emotes aus {{title}}"
+      },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
         "TOP_ALL_TIME": "7TV Top insgesamt"
