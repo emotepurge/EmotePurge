@@ -285,6 +285,28 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
     [Theory]
     [InlineData(Deleted)]
     [InlineData(Restored)]
+    public async Task Resync_StillReturns200_WhenTriggerResyncThrows_AndReleasesTheCooldown(string route)
+    {
+        // Stage 7 claims the cooldown before calling TriggerResyncAsync — a throw there must not
+        // leave the slot claimed forever, and must not turn an already-committed report into a 500.
+        var userId = NewUserId();
+        ArrangeConfirmedOwnership(userId);
+        ArrangeReport(route, new InSetOutcome(1, [new SyncInSetChannelResultDto("rsthrows", 1, 0, [])], null));
+        ArrangeCooldown("rsthrows", acquired: true);
+        _factory.Channels.TriggerResyncAsync("rsthrows", Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns<Task<ChannelResyncResult>>(_ => throw new InvalidOperationException("Provoked for the cooldown-release regression test."));
+
+        var response = await SendAsync(route, EmoteSetId, userId);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Empty(json.RootElement.GetProperty("resyncTriggered").EnumerateArray());
+        await _factory.ResyncCooldown.Received(1).ReleaseAsync("rsthrows", Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
     public async Task NotTrackedMismatch_TriggersNoResync_AndAChannelThatIsGoneReleasesItsSlot(string route)
     {
         // AK 28: a notTracked expected channel has nothing to resync, and must not reveal a block by
@@ -308,20 +330,6 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         await _factory.ResyncCooldown.DidNotReceive().TryBeginAsync("ntexpected", Arg.Any<CancellationToken>());
         await _factory.Channels.DidNotReceive().TriggerResyncAsync("ntexpected", Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
         await _factory.ResyncCooldown.Received(1).ReleaseAsync("ntpurged", Arg.Any<CancellationToken>());
-    }
-
-    private static EmoteSetListResult SetList(string accountSevenTvUserId, params (string Id, string OwnerSevenTvUserId)[] sets) =>
-        EmoteSetListResult.Ok(new EmoteSetList(
-            null,
-            [.. sets.Select(set => new EmoteSetSummary(set.Id, "Some Set", 1000, "NORMAL", false, "Some Owner", set.OwnerSevenTvUserId))],
-            accountSevenTvUserId));
-
-    private static string NewUserId() => Guid.NewGuid().ToString("N");
-
-    private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage response)
-    {
-        var body = await response.Content.ReadAsStringAsync();
-        return JsonDocument.Parse(body).RootElement.GetProperty("errorCode").GetString();
     }
 
     private void ArrangeActorWithoutGrants(string userId, EmoteSetListResult actorList)
@@ -426,6 +434,20 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         }
 
         return await client.SendAsync(request);
+    }
+
+    private static EmoteSetListResult SetList(string accountSevenTvUserId, params (string Id, string OwnerSevenTvUserId)[] sets) =>
+        EmoteSetListResult.Ok(new EmoteSetList(
+            null,
+            [.. sets.Select(set => new EmoteSetSummary(set.Id, "Some Set", 1000, "NORMAL", false, "Some Owner", set.OwnerSevenTvUserId))],
+            accountSevenTvUserId));
+
+    private static string NewUserId() => Guid.NewGuid().ToString("N");
+
+    private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        return JsonDocument.Parse(body).RootElement.GetProperty("errorCode").GetString();
     }
 
     private sealed record InSetOutcome(int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel);

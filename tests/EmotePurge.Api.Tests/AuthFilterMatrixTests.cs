@@ -624,6 +624,31 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     // above already covers the one remaining ladder step for the restore route.
 
     [Fact]
+    public async Task SyncRestored_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync()
+    {
+        // Mirror of SyncDeleted_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync below —
+        // the 200 path of the legacy Guid form was otherwise untested for the restore route (AK 23).
+        _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Emotes.MarkRestoredAsync(
+                Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new SyncRestoredResultDto(1, []));
+        _factory.Channels.TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelResyncResult.Triggered);
+
+        var legacyBody = """{"emoteIds": ["11111111-1111-1111-1111-111111111111"]}""";
+        var response = await SendAsync("POST", $"/api/channels/{Channel}/emotes/sync-restored", NewUserId(), body: legacyBody);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await _factory.Emotes.Received(1).MarkRestoredAsync(
+            Channel,
+            Arg.Is<IReadOnlyList<string>>(ids => ids.SequenceEqual(new[] { "11111111-1111-1111-1111-111111111111" })),
+            Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.ResyncCooldown.Received(1).TryBeginAsync(Channel, Arg.Any<CancellationToken>());
+        await _factory.Channels.Received(1).TriggerResyncAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task SyncDeleted_Returns200_ForTheLegacyGuidForm_AndTriggersTheGuardedResync()
     {
         // Proves the Guid form reaches its own overload and that stage 7 (spec 5.1/5.6) claims the

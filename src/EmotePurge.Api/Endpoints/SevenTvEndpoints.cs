@@ -610,6 +610,7 @@ public static class SevenTvEndpoints
         IChannelService channelService,
         ILogger logger)
     {
+        var cooldownAcquired = false;
         try
         {
             var cooldown = await resyncCooldown.TryBeginAsync(channelName, CancellationToken.None);
@@ -618,6 +619,7 @@ public static class SevenTvEndpoints
                 return false;
             }
 
+            cooldownAcquired = true;
             var result = await channelService.TriggerResyncAsync(channelName, actor, CancellationToken.None);
             if (result == ChannelResyncResult.Triggered)
             {
@@ -630,6 +632,23 @@ public static class SevenTvEndpoints
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Resync after a set-centric report could not be triggered for {Channel}.", channelName);
+
+            // The claim already succeeded — a throw from TriggerResyncAsync must still hand the
+            // slot back, or a broadcaster who just hit a transient error is locked out of a real
+            // retry for the rest of the cooldown window. Wrapped so a release failure cannot turn
+            // an already-committed report into a 500 either.
+            if (cooldownAcquired)
+            {
+                try
+                {
+                    await resyncCooldown.ReleaseAsync(channelName, CancellationToken.None);
+                }
+                catch (Exception releaseEx)
+                {
+                    logger.LogWarning(releaseEx, "Releasing the resync cooldown after a failed trigger also failed for {Channel}.", channelName);
+                }
+            }
+
             return false;
         }
     }
