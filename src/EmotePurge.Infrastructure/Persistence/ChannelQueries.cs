@@ -1,4 +1,5 @@
 using EmotePurge.Core.Entities;
+using EmotePurge.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Persistence;
@@ -89,6 +90,27 @@ internal static class ChannelQueries
     public static Task<Channel?> LoadChannelByTwitchIdReadOnlyAsync(
         this AppDbContext db, string twitchChannelId, CancellationToken cancellationToken) =>
         db.Channels.AsNoTracking().SingleOrDefaultAsync(c => c.TwitchChannelId == twitchChannelId, cancellationToken);
+
+    /// <summary>
+    /// Loads the active, unblocked channel for a Twitch id — the rule every caller means by "this
+    /// account's tracked channel": an <see cref="Channel.IsBotActive"/> row whose Twitch id is not on
+    /// <c>Channels:ExcludedChannelIds</c>. <c>null</c> covers untracked, left and blocked alike, on
+    /// purpose — a blocked channel must look exactly like an untracked one to every caller
+    /// (<see cref="ChannelService.GetActiveByTwitchChannelIdAsync"/>, and the set-centric report's
+    /// owner-channel paper entry, addendum N3 5.2 step 3a).
+    /// </summary>
+    public static async Task<Channel?> LoadActiveChannelByTwitchIdReadOnlyAsync(
+        this AppDbContext db, string twitchChannelId, IExcludedChannelFilter excludedChannelFilter, CancellationToken cancellationToken)
+    {
+        var channel = await db.Channels
+            .AsNoTracking()
+            .Where(c => c.TwitchChannelId == twitchChannelId && c.IsBotActive)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return channel is not null && excludedChannelFilter.IsExcluded(channel.TwitchChannelId)
+            ? null
+            : channel;
+    }
 
     /// <summary>
     /// Loads a channel by its (un-normalized) name and locks the row with <c>SELECT … FOR UPDATE</c>

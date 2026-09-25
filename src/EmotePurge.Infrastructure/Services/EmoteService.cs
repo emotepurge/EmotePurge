@@ -309,26 +309,19 @@ public class EmoteService(AppDbContext db, ILogger<EmoteService> logger, IExclud
         {
             // Step 3a (addendum N3): the owner's tracked channel, by the owner's Twitch id — the same
             // rule as ChannelService.GetActiveByTwitchChannelIdAsync (active row, not on the block
-            // list), which is also how the target list derives trackedChannelName, so the entry names
-            // the channel the client saw. By id, not login: logins move (#44), the id does not. It
-            // only names the paper entry; no row of the owner channel is touched or counted here, and
-            // a blocked one is as invisible as in step 3.
-            var ownerChannel = await db.Channels
-                .AsNoTracking()
-                .Where(c => c.TwitchChannelId == owner.TwitchUserId && c.IsBotActive)
-                .Select(c => new { c.ChannelName, c.TwitchChannelId })
-                .FirstOrDefaultAsync(cancellationToken);
-            var ownerChannelName = ownerChannel is null || excludedChannelFilter.IsExcluded(ownerChannel.TwitchChannelId)
-                ? null
-                : ownerChannel.ChannelName;
-            var ownerChannelIsActiveHere = ownerChannelName is not null && hits.Exists(hit => hit.TwitchChannelId == ownerChannel!.TwitchChannelId);
+            // list, F3: now one shared query), which is also how the target list derives
+            // trackedChannelName, so the entry names the channel the client saw. By id, not login:
+            // logins move (#44), the id does not. It only names the paper entry; no row of the owner
+            // channel is touched or counted here, and a blocked one is as invisible as in step 3.
+            var ownerChannel = await db.LoadActiveChannelByTwitchIdReadOnlyAsync(owner.TwitchUserId, excludedChannelFilter, cancellationToken);
+            var ownerChannelIsActiveHere = ownerChannel is not null && hits.Exists(hit => hit.TwitchChannelId == ownerChannel.TwitchChannelId);
             db.AddAuditEntry(
                 actor,
                 action,
-                channelName: ownerChannelName,
+                channelName: ownerChannel?.ChannelName,
                 targetType: "emoteSet",
                 targetId: emoteSetId,
-                details: ownerChannelName is null
+                details: ownerChannel is null
                     ? BuildOwnerPaperDetails(dedupedIds, emoteSetId, owner, unresolved)
                     : BuildOwnerChannelPaperDetails(dedupedIds, emoteSetId, unresolved, ownerChannelIsActiveHere));
         }

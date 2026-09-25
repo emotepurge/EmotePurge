@@ -175,6 +175,11 @@ legacy routes' own body/handler) ·
 `src/EmotePurge.Infrastructure/Services/EmoteService.cs` (F1 fix wave: `targetIsActiveSetOfChannel`
 derived from the hit list, not hard-coded; the Twitch-id lookup deferred to where the paper entry is
 actually written) ·
+`src/EmotePurge.Infrastructure/Persistence/ChannelQueries.cs`
+(`LoadActiveChannelByTwitchIdReadOnlyAsync`, F3 fix wave: the owner-channel lookup step 3a used to
+copy inline, now shared with `ChannelService`),
+`src/EmotePurge.Infrastructure/Services/ChannelService.cs`
+(`GetActiveByTwitchChannelIdAsync` now calls the shared query) ·
 `src/EmotePurge.Core/Services/IImportTargetOwnershipService.cs`,
 `src/EmotePurge.Infrastructure/Services/ImportTargetOwnershipService.cs` (addendum N3: `OwnerTwitchUserId`) ·
 `src/EmotePurge.Api/Validation/ApiErrorCodes.cs`,
