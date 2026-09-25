@@ -621,6 +621,20 @@ describe('SevenTvRestoreService', () => {
       expect(service.syncReportReason()).toBe('channelMismatch');
     });
 
+    // Nachtrag N4, AK 40: nothing a retry could improve — the service refuses it, no request.
+    it('refuses a manual retry of a report that ended partial/channelMismatch', () => {
+      runOneRestoreToReport(target({ active: true })).flush(
+        restoredAnswer({
+          unresolvedChannel: { channelName: 'sensitron', reason: 'notTracked' },
+        }),
+      );
+
+      service.retrySyncReport();
+
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+      expect(service.syncReport()).toBe('partial');
+    });
+
     it('reads a 403 as failed/forbidden, without an automatic retry', () => {
       runOneRestoreToReport(target({ untracked: true })).flush(null, {
         status: 403,

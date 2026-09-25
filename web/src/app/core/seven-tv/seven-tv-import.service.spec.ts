@@ -1016,6 +1016,28 @@ describe('SevenTvImportService', () => {
       httpMock.expectNone(RESYNC_B);
     });
 
+    // Nachtrag N4, AK 40: a channel mismatch is recorded and already being resynced — a retry could
+    // only repeat it, so the service refuses one, no request.
+    it('refuses a manual retry of a removal report that ended partial/channelMismatch', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      answerNext({});
+      answerNext({});
+
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_B).flush(
+        deletedAnswer({
+          unresolvedChannel: { channelName: 'kanal_b', reason: 'activeSetDiffers' },
+          resyncTriggered: ['kanal_b'],
+        }),
+      );
+      expect(service.removalReportReason()).toBe('channelMismatch');
+
+      service.retryRemovalReport();
+
+      httpMock.expectNone(SYNC_DELETED_B);
+      expect(service.removalReport()).toBe('partial');
+    });
+
     // AK 15, #224: a vanished target set is failed/setNotFound, never succeeded — and the resync,
     // which the failed report did not cover, still runs.
     it('reads a 404 removal report after the retries as failed/setNotFound and still resyncs', () => {

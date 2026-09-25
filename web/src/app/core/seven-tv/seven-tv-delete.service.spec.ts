@@ -163,6 +163,35 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReportReason()).toBe('channelMismatch');
     });
 
+    // Nachtrag N4, AK 40: nothing a retry could improve — the service refuses it, no request.
+    it('refuses a manual retry of a report that ended partial/channelMismatch', () => {
+      runOneDeleteToSyncRequest().flush(
+        deletedAnswer({
+          unresolvedChannel: { channelName: 'sensitron', reason: 'activeSetDiffers' },
+          resyncTriggered: ['sensitron'],
+        }),
+      );
+
+      service.retrySyncReport();
+
+      httpMock.expectNone(SYNC_ENDPOINT);
+      expect(service.syncReport()).toBe('partial');
+    });
+
+    it('still allows a manual retry of a report that ended partial/shortfall', () => {
+      runOneDeleteToSyncRequest().flush(
+        deletedAnswer({
+          channels: [{ channelName: 'sensitron', archivedCount: 0, notFoundIds: ['7tv-1'] }],
+        }),
+      );
+      expect(service.syncReportReason()).toBe('shortfall');
+
+      service.retrySyncReport();
+
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
     // AK 15: a revoked right is final — no automatic retry, failed/forbidden.
     it('reads a 403 as failed/forbidden without retrying', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });

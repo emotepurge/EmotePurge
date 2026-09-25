@@ -179,14 +179,17 @@ import { RunProgressPanel } from './run-progress-panel';
                       <span>{{ 'syncReportReason.' + reason | transloco }}</span>
                     }
                   </span>
-                  <button
-                    notice-action
-                    type="button"
-                    appButton="outline"
-                    (click)="importService.retryRemovalReport()"
-                  >
-                    {{ 'import.removalSyncRetry' | transloco }}
-                  </button>
+                  <!-- No retry for a channel mismatch (Nachtrag N4), as in RunProgressPanel. -->
+                  @if (importService.removalReportReason() !== 'channelMismatch') {
+                    <button
+                      notice-action
+                      type="button"
+                      appButton="outline"
+                      (click)="importService.retryRemovalReport()"
+                    >
+                      {{ 'import.removalSyncRetry' | transloco }}
+                    </button>
+                  }
                 </app-notice-banner>
               } @else if (
                 importService.removalReport() === 'succeeded' && !importService.isRunning()

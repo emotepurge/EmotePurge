@@ -512,11 +512,14 @@ export class SevenTvImportService {
     this.reportImported(current);
   }
 
-  /** Manual retry for the removal report — same rules as `retrySyncReport`, same record. */
+  /** Manual retry for the removal report — same rules as `retrySyncReport`, same record, and none
+   *  for a channel mismatch (Nachtrag N4, AK 40): it is recorded and its resync already runs, so a
+   *  retry could only write the same mismatch again. */
   retryRemovalReport(): void {
     const current = this.run();
     if (
       this.removalReport() === 'pending' ||
+      this.removalReportReason() === 'channelMismatch' ||
       current?.settlement !== 'settled' ||
       removedTargetIds(current).length === 0
     ) {

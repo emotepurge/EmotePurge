@@ -357,6 +357,41 @@ describe('RunProgressPanel', () => {
       },
     );
 
+    // Nachtrag N4, AK 40: a channel mismatch keeps its notice but loses the retry action — a
+    // retry would only repeat the same mismatch; failed (any reason) and shortfall keep it.
+    it('offers no retry for partial/channelMismatch, but keeps the notice and its reason', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        syncReport: 'partial',
+        syncReportReason: 'channelMismatch',
+      });
+
+      expect(dialog.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+      expect(dialog.text()).toContain(DE_TRANSLATIONS.syncReportReason.channelMismatch);
+      expect(dialog.button('Erneut melden')).toBeNull();
+    });
+
+    it.each([
+      ['partial', 'shortfall'],
+      ['failed', 'unavailable'],
+      ['failed', 'forbidden'],
+    ] as const)(
+      "offers the retry for syncReport '%s' with reason '%s'",
+      (syncReport, syncReportReason) => {
+        const dialog = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport,
+          syncReportReason,
+        });
+
+        dialog.button('Erneut melden')?.click();
+
+        expect(dialog.host.syncRetryRequestedCount).toBe(1);
+      },
+    );
+
     it('shows the succeeded hint instead, once settled and not sync-failed', () => {
       const dialog = render({
         items: [queueItem('a', 'done')],

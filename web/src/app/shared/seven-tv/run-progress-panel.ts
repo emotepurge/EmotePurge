@@ -100,14 +100,18 @@ import { NoticeBanner } from '../ui/notice-banner';
               <span>{{ 'syncReportReason.' + reason | transloco }}</span>
             }
           </span>
-          <button
-            notice-action
-            type="button"
-            appButton="outline"
-            (click)="syncRetryRequested.emit()"
-          >
-            {{ labelPrefix() + '.syncRetry' | transloco }}
-          </button>
+          <!-- No retry for a channel mismatch (Nachtrag N4): it is recorded, and the resync that
+               heals it already runs — a retry could only repeat the same mismatch. -->
+          @if (syncRetryOffered()) {
+            <button
+              notice-action
+              type="button"
+              appButton="outline"
+              (click)="syncRetryRequested.emit()"
+            >
+              {{ labelPrefix() + '.syncRetry' | transloco }}
+            </button>
+          }
         </app-notice-banner>
       } @else if (syncReport() === 'succeeded' && !isRunning()) {
         <p class="mt-3 text-sm text-fg-muted">
@@ -174,6 +178,12 @@ export class RunProgressPanel {
   // from what was actually deleted, and the remedy (retry, or wait for the periodic resync) is the same.
   protected readonly syncReportFailed = computed(
     () => this.syncReport() === 'failed' || this.syncReport() === 'partial',
+  );
+
+  /** "Erneut melden" for `failed` (any reason) and `partial`/`shortfall`, never for
+   *  `partial`/`channelMismatch` (Nachtrag N4, AK 40) — the services refuse that retry as well. */
+  protected readonly syncRetryOffered = computed(
+    () => this.syncReportReason() !== 'channelMismatch',
   );
 
   /** An `unknown` row gets its own wording family rather than its transport error: the point for

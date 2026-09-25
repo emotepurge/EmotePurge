@@ -776,6 +776,33 @@ describe('ImportProgressSection', () => {
       expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
     });
 
+    // Nachtrag N4, AK 40: the removal notice stays for a channel mismatch, its retry does not.
+    it('offers no removal retry for partial/channelMismatch, but keeps the notice', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('partial');
+      importService.removalReportReason.set('channelMismatch');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain('Entfernungs-Rückmeldung fehlgeschlagen');
+      expect(findButton(fixture, 'Entfernung erneut melden')).toBeFalsy();
+    });
+
+    it('keeps the removal retry for partial/shortfall', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled' }));
+      importService.removalReport.set('partial');
+      importService.removalReportReason.set('shortfall');
+
+      const fixture = render();
+      findButton(fixture, 'Entfernung erneut melden')?.click();
+
+      expect(importService.retryRemovalReport).toHaveBeenCalledTimes(1);
+    });
+
     it('shows the succeeded note for a settled, successful removal report, not the retry banner', () => {
       importService.isRunning.set(false);
       importService.queue.set([doneItem()]);

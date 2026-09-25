@@ -275,6 +275,9 @@ export class SevenTvDeleteService {
     const current = this.run;
     if (
       this.syncReport() === 'pending' ||
+      // Nachtrag N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
+      // could only write the same mismatch again.
+      this.syncReportReason() === 'channelMismatch' ||
       !current?.result ||
       current.result.doneKeys.length === 0
     ) {
