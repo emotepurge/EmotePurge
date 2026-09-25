@@ -1271,7 +1271,19 @@
       "hintMismatches": "Das Emote ist im Zielset schon vorhanden, heißt dort aber anders. „Namen übernehmen“ benennt es im Ziel um, fügt aber nichts hinzu.",
       "listLabelCollisions": "Namenskollisionen",
       "listLabelMismatches": "Abweichende Namen",
-      "rowLabel": "{{ source }}, im Ziel: {{ target }}",
+      "rowLabel": "Quelle: {{ source }}, Ziel: {{ target }}",
+      "header": {
+        "source": "Quelle",
+        "target": "Ziel · {{ set }}",
+        "targetPlain": "Ziel",
+        "action": "Aktion"
+      },
+      "consequence": {
+        "removed": "wird entfernt",
+        "becomes": "wird zu „{{ name }}“",
+        "addedAs": "wird als „{{ name }}“ hinzugefügt",
+        "kept": "wird behalten"
+      },
       "targetGone": "nicht mehr im Zielset",
       "aliaslessEntry": "+ ein Eintrag ohne Namen",
       "actionGroupLabel": "Aktion für {{ sourceName }}",

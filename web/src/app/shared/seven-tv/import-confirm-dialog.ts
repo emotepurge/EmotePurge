@@ -230,6 +230,7 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
           [decisions]="stepDecisions()"
           [violations]="stepViolations()"
           [reservedRem]="stepReservedRem()"
+          [targetSetName]="resolveTargetSetName()"
           (decide)="onDecide($event)"
         />
       } @else {
@@ -561,11 +562,18 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
           {{ 'import.confirm.verifying' | transloco }}
         </p>
       }
-      @if (resolveGroup() !== null && applyReasons().length > 0) {
+      @if (resolveGroup() !== null) {
+        <!-- min-w-0 + break-words (issue #268 follow-up): a row name can be a long, space-free
+             run (an emote/set name); min-w-0 lets this flex item shrink and break-words lets it
+             wrap, instead of the right-aligned box bleeding out past the panel's left edge.
+             Always rendered, with min-h-[1lh] reserving one line whether or not a reason currently
+             fills it (issue #269): the panel sizes to its content, so this line appearing and
+             disappearing with the first violation shrank the whole dialog — the same reserved-line
+             idiom the resolution step's own consequence lines use. -->
         <p
           dialog-actions
           id="import-resolve-apply-reason"
-          class="mr-auto text-xs text-fg-secondary"
+          class="mr-auto min-h-[1lh] min-w-0 break-words text-xs text-fg-secondary"
         >
           @for (reason of applyReasons(); track reason.key) {
             <span class="block">{{ reason.key | transloco: { rows: reason.rows } }}</span>
@@ -1054,6 +1062,14 @@ export class ImportConfirmDialog {
     return mismatchStepRows(preview.aliasMismatchRows, imageUrlById);
   });
 
+  /** The step's "Ziel · {set}" header/caption name — the same `targetSetLabel` resolution the
+   *  title's own `setName` param reads (issue #268), so the two never disagree. `null` until the
+   *  target has loaded, same as `stepRows`. */
+  protected readonly resolveTargetSetName = computed<string | null>(() => {
+    const target = this.ready();
+    return target === null ? null : this.targetSetLabel(target);
+  });
+
   /** The committed decisions with this group's draft laid over them — what the step shows, and what
    *  "Übernehmen" would commit. Validated over the whole run, so a rule that spans both groups (the
    *  same target replaced here and adopted there) is caught in either. */
@@ -1085,8 +1101,11 @@ export class ImportConfirmDialog {
     return violationMessages(this.stepViolations(), (key) => names.get(key) ?? key);
   });
 
-  /** The chrome around the step's viewport that grows with the lock reason in the action row. */
-  protected readonly stepReservedRem = computed(() => this.applyReasons().length * 2);
+  /** The chrome around the step's viewport that the lock reason in the action row takes. Floored
+   *  at one line (issue #269) to match the reason paragraph's own reserved `min-h-[1lh]`: going
+   *  from no violation to the first one must not change this term, or the viewport — and with it
+   *  the whole panel, which sizes to its content — jumps. */
+  protected readonly stepReservedRem = computed(() => Math.max(1, this.applyReasons().length) * 2);
 
   constructor() {
     // The resolution table needs the room a form does not: the pane widens for the second step and
