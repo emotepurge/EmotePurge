@@ -10,6 +10,44 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — A restore's confirm-time recheck can only narrow the confirmation, never widen it
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts` (`clipToShown`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (`handleRestoreConfirmPreview`) ·
+`web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Codex review finding on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change
+(2026-09-25 entry below): that change made both restore entry points run
+`filterAlreadyPresentForRestore` once, fresh, right before the confirmation opens, so its title and
+slot projection count what the run will actually send. The confirm-time re-check that already ran
+afterward, right before `startRestore`, kept querying the *original*, unfiltered row set every
+time — correct for *narrowing* the set further (that is the whole reason it re-reads instead of
+reusing the open-time answer), but it left a hole for *widening* it back: a row, or one alias of a
+row, the open-time check had already found present — and which the confirmation dialog therefore
+never named or counted — could come back as "missing" at confirm time if the live entry disappeared
+from the target set in the window between the two reads (another editor, or the confirmation simply
+left open a while). It would then be sent as an `ADD` the user never saw or agreed to, silently
+invalidating the capacity number the dialog had already committed to.
+
+**What changed.** The confirm-time check still queries `filterAlreadyPresentForRestore` with every
+row's full, original alias context — it has to, to keep applying that function's rule 2 correctly
+(a row whose input aliases were pre-trimmed to only what survived the open-time filter would make an
+alias that lives under a different, correctly-still-missing name of the *same* row look "foreign",
+and drop the row outright — the #74 duplicate-cell partial retry this filter exists to support).
+Its result is intersected through the new `clipToShown(rows, shown)` against the open-time
+preview's own `rows` — id by id, then alias by alias for whichever ids survive that — before it
+ever reaches `startRestore`. A row whose id was filtered out entirely at open time is dropped even
+if the confirm-time read now calls it missing; a row that only partially survived keeps at most the
+aliases the open-time answer still named for it. The invariant this establishes, and the reason for
+the two-step shape (query full, then clip) rather than querying the already-narrowed set directly:
+**the confirm-time check can only narrow what the confirmation showed, never widen it.** The skip
+counters (`skippedDuplicates`/`skippedNameTaken`) are unaffected — they still come straight from the
+confirm-time check's own fresh count, exactly as before this fix.
+
+---
+
 ### 2026-09-26 — `channelMismatch` splits into two reasons, and `partial` gets its own wording
 
 **Betrifft:** `web/src/app/core/seven-tv/sync-report-outcome.ts` (`SyncReportReason`,

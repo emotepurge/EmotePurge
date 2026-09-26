@@ -187,6 +187,60 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   );
 }
 
+/**
+ * Intersects a fresh `filterAlreadyPresentForRestore` result with what an earlier, open-time run
+ * of the same check already showed the user (`shown` — a `RestoreConfirmPreview.rows`) — id by id,
+ * then alias by alias for whichever ids survive that. The result can only be a subset of `rows`,
+ * never anything beyond `shown`: a row whose id is not in `shown` at all (every alias of it was
+ * already hidden from the confirmation) is dropped even if `rows` calls it missing, and a row that
+ * only partially survived the open-time filter keeps at most the aliases `shown` still names for
+ * that id, however many `rows` itself found missing.
+ *
+ * Confirm-time (#255 P1, Codex review): the confirmation only ever shows the open-time check's
+ * `rows`, so `startRestore` must never be handed more than that — but the confirm-time re-check
+ * cannot simply be *run* over `shown` instead of the caller's full original row set, because
+ * `filterAlreadyPresentForRestore`'s rule 2 needs a row's *complete* alias list to tell an entry
+ * genuinely foreign to the row from one of the row's own aliases that a narrower input would no
+ * longer name — feeding it only `shown`'s already-trimmed aliases would misclassify a live entry
+ * under the row's own *other*, correctly-still-missing alias as foreign and drop it outright (the
+ * #74 duplicate-cell partial retry this filter exists to support). So the confirm-time check keeps
+ * querying with full context, and this function clips its answer down afterward instead — the
+ * narrowing the rule needs and the narrowing the confirmation promised stay two separate steps.
+ *
+ * Named for what it does to `rows`, not for when it runs: this is a pure intersection, no request
+ * of its own.
+ */
+export function clipToShown<T extends RestoreFilterRow>(
+  rows: readonly T[],
+  shown: readonly RestoreFilterRow[],
+): T[] {
+  const shownAliasesById = new Map(shown.map((row) => [row.sevenTvEmoteId, clipAliasSet(row)]));
+  const clipped: T[] = [];
+  for (const row of rows) {
+    const allowed = shownAliasesById.get(row.sevenTvEmoteId);
+    if (allowed === undefined) {
+      continue;
+    }
+    const kept = clipRowAliases(row).filter((alias) => allowed.has(alias));
+    if (kept.length > 0) {
+      clipped.push({ ...row, aliases: kept });
+    }
+  }
+  return clipped;
+}
+
+/** A row's aliases, applying the same `[name]` fallback `filterAlreadyPresentForRestore` and the
+ *  restore queue both use for a row with no `aliases` of its own. Named apart from that function's
+ *  own identically-shaped local (`rowAliases`, inside its loop) purely to avoid shadowing it —
+ *  `clipToShown` is the only caller. */
+function clipRowAliases(row: RestoreFilterRow): (string | null)[] {
+  return row.aliases && row.aliases.length > 0 ? [...row.aliases] : [row.name];
+}
+
+function clipAliasSet(row: RestoreFilterRow): ReadonlySet<string | null> {
+  return new Set(clipRowAliases(row));
+}
+
 /** `loadRestoreConfirmPreview`'s result: `filterAlreadyPresentForRestore`'s own outcome, plus the
  *  two numbers the restore confirmation dialog actually renders — derived here, once, so its two
  *  call sites (`restore-flow.ts`, `mass-delete-panel.ts`) compute them identically rather than each

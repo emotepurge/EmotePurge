@@ -898,4 +898,43 @@ describe('startRestoreFlow', () => {
       0,
     );
   });
+
+  // #255 P1 (Codex review): a row the open-time check already found present is hidden from the
+  // confirmation dialog entirely — it must stay hidden from the *run* too, even if it goes missing
+  // from the target set again before the user confirms (another editor, or the confirmation simply
+  // left open a while). Without the fix, the confirm-time re-check's own fresh read — which has to
+  // query the full row set to apply its per-alias rule correctly — would see the row as newly
+  // missing and resend it as an `ADD` the user never saw or agreed to.
+  it('never sends a row the open-time check already hid, even if it goes missing again before confirm', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+    // Open-time: '7tv-1' (PogU) is already present -> hidden from the dialog; '7tv-2' (Kappa) is
+    // not -> shown.
+    httpPost.mockReturnValueOnce(of(emoteSetPage(['7tv-1'])));
+    // Confirm-time: '7tv-1' has since been removed from the set too, so a full re-check now finds
+    // BOTH rows missing.
+    httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    // 'PogU' (7tv-1) never appeared in the confirmation and must not appear in the run either,
+    // however the confirm-time read now classifies it.
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+      [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }],
+      0,
+      true,
+      0,
+    );
+  });
 });

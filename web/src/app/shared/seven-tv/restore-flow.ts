@@ -15,6 +15,7 @@ import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { RestoreRow } from '../export/purge-run-export';
 import {
+  clipToShown,
   filterAlreadyPresentForRestore,
   loadRestoreConfirmPreview,
   RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS,
@@ -255,9 +256,24 @@ export function startRestoreFlow(
             // *which rows* get sent, not whether the caller is told the check could not confirm
             // them just now.
             const fallOnOpenTime = !confirmCheck.available && preview.available;
+            // #255 P1 (Codex review): the confirmation only ever showed `preview.rows` — a row (or
+            // one alias of a row) the open-time check above had already found present, and which
+            // never appeared in the dialog's names or `addCount`, must not come back just because
+            // it went missing again by the time this fresher check ran (the target set changing in
+            // the few seconds a confirmation sits open, or between the two reads). `confirmCheck`
+            // itself still has to query with every row's full, original aliases — `clipToShown`'s
+            // own doc explains why a narrower input here would break the #74 partial-retry case —
+            // so the invariant is enforced afterward instead: the confirm-time answer only ever
+            // narrows what was shown, `startRestore` can never see more than that. `fallOnOpenTime`
+            // already reuses `preview.rows` unclipped — that IS what was shown, nothing to narrow
+            // further. Unaffected: the skip counters below, which still come straight from
+            // `confirmCheck`'s own fresh count, exactly as before this fix.
+            const rows = fallOnOpenTime
+              ? preview.rows
+              : clipToShown(confirmCheck.rows, preview.rows);
             deps.restoreService.startRestore(
               restoreStartTarget(target),
-              fallOnOpenTime ? preview.rows : confirmCheck.rows,
+              rows,
               fallOnOpenTime ? preview.skipped : confirmCheck.skipped,
               confirmCheck.available,
               fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,

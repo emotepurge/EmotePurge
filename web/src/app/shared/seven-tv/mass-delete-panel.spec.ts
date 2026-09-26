@@ -2828,6 +2828,82 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
     expect(data.countIsUpperBound).toBe(false);
   });
 
+  // #255 P1 (Codex review): a row the open-time check already found present is hidden from the
+  // confirmation entirely — it must stay hidden from the run too, even if it goes missing from the
+  // target set again before the user confirms (another editor, or the confirmation simply left open
+  // a while). Without the fix, the confirm-time re-check's own fresh read — which has to query the
+  // full row set to apply its per-alias rule correctly — would see the row as newly missing and
+  // resend it as an `ADD` the user never saw or agreed to.
+  it('never sends a row the open-time check already hid, even if it goes missing again before confirm', () => {
+    lastRun.set({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      result: {
+        doneKeys: ['7tv-1', '7tv-2'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-2',
+            emoteId: 'e2',
+            sevenTvEmoteId: '7tv-2',
+            name: 'KEKW',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    // Open-time: 7tv-1 (PogU) is already present -> hidden from the dialog; 7tv-2 (KEKW) is not.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    expect((dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData).names).toEqual(['KEKW']);
+
+    closed.next(true);
+
+    // Confirm-time: 7tv-1 has since been removed from the set too — a full re-check now finds
+    // BOTH rows missing.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+    });
+
+    // 'PogU' (7tv-1) never appeared in the confirmation and must not appear in the run either,
+    // however the confirm-time read now classifies it.
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: 'set-1', hostChannelName: LIVE_CHANNEL }),
+      [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] }],
+      0,
+      true,
+      0,
+    );
+  });
+
   // #255 P2a: the open-time duplicate check (`loadRestoreConfirmPreview`, run once the pre-check
   // above has already resolved editable) gets the same timeout budget as every other read in this
   // panel — a hung request must not leave the restore button disabled forever, and the

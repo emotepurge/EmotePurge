@@ -39,6 +39,7 @@ import {
 import { Button } from '../ui/button';
 import { PREVIEW_CAP } from '../ui/name-preview-list';
 import {
+  clipToShown,
   filterAlreadyPresentForRestore,
   loadRestoreConfirmPreview,
   RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS,
@@ -738,7 +739,10 @@ export class MassDeletePanel {
   /** `emotes` is always the full, unfiltered list `openRestoreConfirmDialog` built from
    *  `doneItems` — never `preview.rows` — because the confirm-time re-check below (`closed`'s
    *  handler) has to run against the *complete* row set again, fresh, not against this open-time
-   *  answer's already-filtered subset (see the comment on that re-check). */
+   *  answer's already-filtered subset (see the comment on that re-check). Its *result*, though, is
+   *  clipped back down to `preview.rows` before it ever reaches `startRestore` (#255 P1, Codex
+   *  review) — see the comment on that clip for why querying full and clipping after, rather than
+   *  querying `preview.rows` directly, is the fix. */
   private handleRestoreConfirmPreview(
     target: ResolvedRestoreTarget,
     emotes: readonly DeleteQueueEmote[],
@@ -832,9 +836,22 @@ export class MassDeletePanel {
           // `duplicateCheckUnavailable` keeps applying — this only changes *which rows* get sent,
           // not whether the caller is told the check could not confirm them just now.
           const fallOnOpenTime = !confirmCheck.available && preview.available;
+          // #255 P1 (Codex review): the confirmation only ever showed `preview.rows` — a row (or
+          // one alias of a row) the open-time check above had already found present, and which
+          // never appeared in the dialog's names or `addCount`, must not come back just because it
+          // went missing again by the time this fresher check ran (the target set changing while
+          // the confirmation sat open, or between the two reads). `confirmCheck` itself still has
+          // to query with every row's full, original aliases — `clipToShown`'s own doc explains why
+          // a narrower input here would break the #74 partial-retry case — so the invariant is
+          // enforced afterward instead: the confirm-time answer only ever narrows what was shown,
+          // `startRestore` can never see more than that. `fallOnOpenTime` already reuses
+          // `preview.rows` unclipped — that IS what was shown, nothing to narrow further.
+          // Unaffected: the skip counters below, which still come straight from `confirmCheck`'s
+          // own fresh count, exactly as before this fix.
+          const rows = fallOnOpenTime ? preview.rows : clipToShown(confirmCheck.rows, preview.rows);
           this.restoreService.startRestore(
             restoreStartTarget(target),
-            fallOnOpenTime ? preview.rows : confirmCheck.rows,
+            rows,
             fallOnOpenTime ? preview.skipped : confirmCheck.skipped,
             confirmCheck.available,
             fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,
