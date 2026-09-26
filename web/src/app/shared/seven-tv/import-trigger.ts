@@ -163,8 +163,11 @@ export class ImportTrigger {
   private readonly tokenService = inject(SevenTvTokenService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
-  /** The undo's run service (#254). Injected only here, in the usage-stats page's lazy chunk, never
-   *  from an eagerly loaded file (F9) — injecting it is also what registers it with the arbiter. */
+  /** The undo's run service (#254) — injecting it anywhere is what registers it with the arbiter.
+   *  Not only here any more: also injected in the usage-stats page's own lazy chunk
+   *  (`usage-stats-page.ts`, `usage-stats-leave.guard.ts`, `dock-outcome-announcer.ts`,
+   *  `undo-progress-section.ts`) and in `channel-workspace-layout.ts` — never from an eagerly
+   *  loaded file (F9). */
   private readonly undoService = inject(SevenTvUndoService);
   /** Handed to `startRestoreFlow` as `RestoreFlowDeps.destroyRef` (#255 P2a) — the flow has no
    *  injection context of its own to pull one from. */

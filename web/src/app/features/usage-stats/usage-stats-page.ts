@@ -314,8 +314,10 @@ export class UsageStatsPage {
   private readonly deleteService = inject(SevenTvDeleteService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
-  /** Injected here, not only in the dock section, so the service exists — and has registered with
-   *  the run arbiter — from the moment this (lazily loaded) page does (#254, F9). */
+  /** The parent `channel-workspace-layout.ts` already injects this (F9), so it exists and is
+   *  registered with the run arbiter before this (lazily loaded) page ever mounts; injected again
+   *  here because the page reads it directly — `undoShown`/`undoNoticePending` below and the settle
+   *  watcher (`watchRunSettle`) — not for the registration timing. */
   private readonly undoService = inject(SevenTvUndoService);
   private readonly tokenService = inject(SevenTvTokenService);
   /** Read here only for the header button's lock (#72, R1) — the template needs it too, hence
