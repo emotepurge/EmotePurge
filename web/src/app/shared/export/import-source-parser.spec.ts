@@ -128,6 +128,19 @@ describe('parseImportSource', () => {
     },
   );
 
+  // #254: an undo's own protocol is the same story one layer down — its rows are 7TV mutations of
+  // an undo run, not an emote list, and are rejected by name rather than falling into wrongKind.
+  it.each(['planned', 'finished'] as const)(
+    'names a transfer-undo protocol (stage: %s) instead of trying to read it as an emote list',
+    (stage) => {
+      const result = parseImportSource(
+        envelope({ kind: 'transfer-undo', meta: { stage } }),
+        'transfer-undo.json',
+      );
+      expect(result).toEqual({ ok: false, errorKey: 'restore.import.errors.transferUndo' });
+    },
+  );
+
   it('falls back to wrongKind for anything other than emote-list, usage or voting', () => {
     expect(parseImportSource(envelope({ kind: 'purge-run' }), 'x.json')).toEqual({
       ok: false,

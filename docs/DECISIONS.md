@@ -10,6 +10,80 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — Every recovery file restores what its own run removed — the transfer-undo file
+
+**Betrifft:** `web/src/app/shared/export/export-envelope.ts` (`ExportKind` gains `'transfer-undo'`) ·
+`web/src/app/shared/export/transfer-run-export.ts` (`UndoCandidate`, `UndoSourceFileInfo`,
+`parseTransferRunForUndo`, `TransferRunUndoParseResult`) ·
+`web/src/app/shared/export/transfer-undo-export.ts` (new: `TRANSFER_UNDO_FORMAT_VERSION`,
+`TransferUndoRow` — `TransferUndoExecutedRow` | `TransferUndoSkippedRow` —,
+`buildTransferUndoPlanRecord`, `buildTransferUndoProtocol`, `transferUndoJson`, `transferUndoCsv`,
+`transferUndoPlanFilename`, `transferUndoFilename`, `parseTransferUndoForRestore`) ·
+`web/src/app/shared/export/import-source-parser.ts` (rejects `transfer-undo` by name, same as
+`transfer-run`) · `web/public/i18n/{de,en}.json` (`restore.import.sorts.transferUndo`,
+`restore.import.errors.{transferUndo,transferUndoNoRows}`) — consumed from #254's later tasks:
+`web/src/app/core/seven-tv/seven-tv-undo.service.ts` (the run that writes both stages),
+`web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (shows a `planned` file's unproven rows) and
+`web/src/app/shared/seven-tv/file-import-step.ts` (dispatches an uploaded `transfer-undo` file
+straight to the restore parser, no file-step weiche — that weiche belongs to `transfer-run` alone).
+
+Issue #254 (spec `docs/superpowers/specs/2026-09-25-replace-undo-254-design.md`, E2, E3, E12, F6, F7,
+F17, spec 17 K4): a replace's undo is a fourth destructive 7TV run — REMOVE the source's collision
+alias off the target, then re-ADD whatever entries that `replace` row took from the target — and
+every destructive run in this codebase already carries a recovery file written before its first
+mutation (the purge-run protocol, the transfer-run protocol). The principle behind both, stated
+plainly for the first time here because a third file kind is what makes it worth naming: **a recovery
+file restores what its own run removed, never what some other run removed.** A transfer-run's
+`planned` file already restores the *target* a replace is about to clear
+(`parseTransferRunForRestore`); it cannot also stand in for the *source* an undo removes later — same
+principle, opposite direction, so the undo gets its own file kind rather than overloading the
+transfer-run file with a second meaning. `transfer-undo` follows the same two-stage shape as
+`transfer-run` (`planned` before the first REMOVE, `finished` after the run settles) and versions its
+own row shape independently (`TRANSFER_UNDO_FORMAT_VERSION`), exactly like the purge-run and
+transfer-run protocols already do — a shared envelope version would tie three unrelated row shapes to
+one number.
+
+**Mirrors #230's "The safeguard is a file, not a typed confirmation" (2026-09-23).** The undo
+downloads its own `planned` recovery file from a live read before issuing a single REMOVE, and
+without it there is no start — the same rule a replace itself follows, one destructive layer down.
+`parseTransferRunForUndo` (in `transfer-run-export.ts`, next to the restore parser it mirrors) reads a
+transfer-run file's `replace` rows back out as `UndoCandidate`s: every row of a `planned` file
+(`provenance: 'unproven'` — a `planned` file is written *before* the first REMOVE and proves nothing
+about whether its run ever started, #254 spec F17/E2), or only the rows whose REMOVE 7TV actually
+confirmed in a `finished` file (`provenance: 'confirmed'`). That candidate carries `provenance`
+straight into the `transfer-undo` file it eventually produces (`UndoCandidate.provenance` →
+`TransferUndoExecutedRow.provenance`), so the paper trail keeps saying how proven a removal was, all
+the way through.
+
+**Does not revive #230's decision 6, the untracked-target replace lock** (already removed by "The
+replace lock for an untracked target falls, and a shared pre-check comes first", 2026-09-25): that
+lock existed only because a replace into an untracked target had no restore path back then. Since
+#253 every set — tracked or not — has a restore and a paper trail regardless of who owns it, and the
+undo's own recovery file is exactly as readable for an untracked target as for a tracked one (its rows
+are set-centric, not channel-centric, same as `transfer-run`'s). The condition that carried the lock
+is gone for the undo exactly as it is for the replace it undoes; reinstating a lock without the reason
+that carried it would be a second, disconnected truth.
+
+**Skipped candidates get their own row kind, not a status.** `TransferUndoRow` is a `kind`-discriminated
+union: `'executed'` for anything the run actually queued (whatever it settled at — `done`, `failed`,
+`cancelled`, `unknown`, or skipped mid-run by its own freshness recheck), `'skipped'` for a candidate
+the run never turned into a row at all — deduplicated in the file step, dropped in the confirm
+dialog's classification, or refused by the service's own second origin check. A `'skipped'` row cannot
+carry `mode`/`restoredTarget`/`removedSource`/`status`/`completedSteps`: none of those were ever
+decided for it, and forcing the executed row's shape onto a candidate that was never classified would
+mean inventing values for fields that have no honest answer. `counts.requested` on the `finished` stage
+counts only executed rows; `counts.skipped` is the skipped ones on top, never merged into the same
+number. The `planned` stage never carries a `'skipped'` row at all — a back-out file names only what
+its run is about to touch, same as `transfer-run`'s own `planned` stage never named an `add` row.
+
+**Read-only for now.** This entry covers only the file formats and their parsers (#254 T1) — nothing
+here writes a `transfer-undo` file yet, no dialog reads one, and `parseTransferRunForUndo`'s
+`UndoCandidate`s are not classified against a live set by anything on this branch yet. The
+classification, the run itself, the confirm dialog and the file-step dispatch are separate,
+later commits.
+
+---
+
 ### 2026-09-26 — The run arbiter takes registrations, counts settling as busy and owns the unload guard
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (`SevenTvRunParticipant`,

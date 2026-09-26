@@ -980,6 +980,7 @@
       "sorts": {
         "purgeRun": "Purge-Protokoll (Wiederherstellen) als JSON",
         "transferRun": "Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
+        "transferUndo": "Rückweg-Protokoll einer Ersetzung — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
         "emoteList": "Emote-Liste (Kopieren) als JSON",
         "usageExport": "Nutzungs-Export (Kopieren) als JSON"
       },
@@ -994,6 +995,8 @@
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
         "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",
+        "transferUndo": "Das ist das Rückweg-Protokoll einer Ersetzung (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
+        "transferUndoNoRows": "Diese Rückweg-Datei enthält keine entfernten Quell-Emotes.",
         "targetNotEditable": "Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
         "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set.",
         "targetCheckUnavailable": "Das Set aus der Datei konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",

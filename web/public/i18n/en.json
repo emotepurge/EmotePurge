@@ -980,6 +980,7 @@
       "sorts": {
         "purgeRun": "Purge protocol (restore) as JSON",
         "transferRun": "Transfer protocol — recovery file or result protocol (restore) as JSON",
+        "transferUndo": "A replace's undo protocol — recovery file or result protocol (restore) as JSON",
         "emoteList": "Emote list (copy) as JSON",
         "usageExport": "Usage export (copy) as JSON"
       },
@@ -994,6 +995,8 @@
         "noRows": "The file contains no importable emotes.",
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore.",
         "transferRunNoRows": "This transfer file contains no removed emotes.",
+        "transferUndo": "That is a replace's undo protocol (recovery file or result protocol), not an emote list to copy from — such files only serve to restore removed emotes.",
+        "transferUndoNoRows": "This recovery file contains no removed source emotes.",
         "targetNotEditable": "The set named in the file is not (or no longer) editable, or it no longer exists.",
         "targetNotSelectable": "The set named in the file is not a normal emote set.",
         "targetCheckUnavailable": "The set named in the file could not be checked right now — please try again in a moment.",

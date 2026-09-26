@@ -9,6 +9,7 @@ import {
   buildTransferPlanRecord,
   buildTransferRunProtocol,
   parseTransferRunForRestore,
+  parseTransferRunForUndo,
   transferPlanFilename,
   transferRunCsv,
   transferRunFilename,
@@ -737,6 +738,179 @@ describe('parseTransferRunForRestore', () => {
     expect(parseTransferRunForRestore(text)).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.transferRunNoRows',
+    });
+  });
+});
+
+// #254: the mirror image of parseTransferRunForRestore — a replace row's *source*, not its target.
+describe('parseTransferRunForUndo', () => {
+  it("turns every replace row of a planned file into a candidate marked 'unproven', even one without a confirmed REMOVE (a planned file proves nothing about whether its run ever started)", () => {
+    const text = plannedText(
+      setEntries({
+        aliasesById: new Map([
+          ['tgt-1', ['Kappa']],
+          ['tgt-2', ['Pog']],
+        ]),
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.stage).toBe('planned');
+    expect(result.target).toEqual({ emoteSetId: 'set-1' });
+    expect(result.candidates.map((candidate) => candidate.sourceSevenTvEmoteId)).toEqual([
+      'src-kappa',
+      'src-pog',
+    ]);
+    expect(result.candidates.every((candidate) => candidate.provenance === 'unproven')).toBe(true);
+  });
+
+  it("turns only confirmed-REMOVE rows of a finished file into candidates, marked 'confirmed'", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          // REMOVE confirmed, ADD failed — still a candidate.
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'failed',
+            failedStep: 1,
+            completedSteps: 1,
+          }),
+          // REMOVE itself failed — not a candidate, nothing to undo.
+          item({
+            transfer: replaceRow(SOURCE_POG, 'tgt-2', ['Pog']),
+            status: 'failed',
+            failedStep: 0,
+            completedSteps: 0,
+          }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.stage).toBe('finished');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0].sourceSevenTvEmoteId).toBe('src-kappa');
+    expect(result.candidates[0].provenance).toBe('confirmed');
+  });
+
+  it('keeps a finished row whose REMOVE was confirmed but whose ADD answer was lost (status unknown) as a candidate', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'unknown',
+            completedSteps: 1,
+          }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates.map((candidate) => candidate.sourceSevenTvEmoteId)).toEqual([
+      'src-kappa',
+    ]);
+  });
+
+  it('reads every field of a candidate, including an aliasless target entry and its default name', () => {
+    const replace: TransferRow = {
+      action: 'replace',
+      source: SOURCE_KAPPA,
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: true,
+        defaultName: 'KappaDefault',
+      },
+    };
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [item({ transfer: replace, completedSteps: 2 })],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates).toEqual([
+      {
+        sourceSevenTvEmoteId: 'src-kappa',
+        sourceName: 'Kappa',
+        alias: 'Kappa',
+        fileStatus: 'done',
+        target: {
+          sevenTvEmoteId: 'tgt-1',
+          entries: [{ alias: 'Kappa' }, { alias: null }],
+          defaultName: 'KappaDefault',
+        },
+        provenance: 'confirmed',
+      },
+    ]);
+  });
+
+  it('refuses a file with no undo candidates as transferRunNoRows', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'failed',
+            failedStep: 0,
+            completedSteps: 0,
+          }),
+          item({ transfer: { action: 'add', source: SOURCE_POG, alias: 'Pog' } }),
+        ],
+      }),
+    );
+
+    expect(parseTransferRunForUndo(text)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.transferRunNoRows',
+    });
+  });
+
+  it('refuses a transfer-undo file as an undo input — there is no undo of an undo', () => {
+    const disguised = JSON.stringify({
+      source: 'emotepurge',
+      kind: 'transfer-undo',
+      formatVersion: 1,
+      exportedAt: '2026-09-26T10:00:00Z',
+      channelName: 'zielkanal',
+      withheld: [],
+      meta: { stage: 'planned', targetEmoteSetId: 'set-1' },
+      rows: [],
+    });
+
+    expect(parseTransferRunForUndo(disguised)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
     });
   });
 });
