@@ -243,14 +243,19 @@ describe('SevenTvUndoService', () => {
 
   afterEach(() => {
     // `httpMock.verify()` throws on a leftover open request — a real failure in the test above, not
-    // a fixture bug. But if it runs first and throws, the two lines after it never run, and fake
-    // timers stay installed for every test that follows: one red test then cascades into dozens.
-    // `finally` keeps teardown unconditional while still surfacing the `verify()` failure itself.
+    // a fixture bug. But if it runs first and throws, the lines after it never run, and fake timers
+    // (plus a stale TestBed) stay installed for every test that follows: one red test then cascades
+    // into dozens. `finally` keeps teardown unconditional while still surfacing the `verify()`
+    // failure itself. `resetTestingModule()` matters here specifically: without it, a leaked open
+    // request still leaves the previous test's injector alive, and the next test's own
+    // `TestBed.configureTestingModule()` throws "already instantiated" instead of the one real
+    // failure staying isolated.
     try {
       httpMock.verify();
     } finally {
       vi.useRealTimers();
       vi.restoreAllMocks();
+      TestBed.resetTestingModule();
     }
   });
 

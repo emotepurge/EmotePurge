@@ -76,23 +76,23 @@ The dock shows `backendTriggered` when either answer names the expected channel.
 resyncs the expected channel only when every report the run sent failed for good — then no report
 reached the backend's own resync; a non-active or untracked target never gets one.
 
-**Layering fix (T5 merge, same day).** The exception noted here at first landing — the service
-reaching from `core/` into `shared/` for the pure classification and the candidate/file types — was
-closed before the branch merged: `undo-plan.ts` moved to `core/seven-tv/undo-plan.ts` and the
-candidate/file types to the new `core/seven-tv/undo-candidate.ts`, both alongside `transfer-plan.ts`
-as `core/`-owned pure modules; `buildUndoRunProtocol`/`toExecutedInput`/`settledStatus` moved the
-other way, out of the service into `web/src/app/shared/export/transfer-undo-export.ts`, since that
-mapping's own home is next to the protocol it builds. `undo-plan.ts` sits in `core/` rather than at
-spec 14's `shared/` path because a `core/` service — this one — consumes it at run time; spec 14 did
-not anticipate that a `core/` module would need it.
+**Deviation from spec 14: the pure modules live in `core/`, not `shared/`.** `undo-plan.ts` sits at
+`core/seven-tv/undo-plan.ts` and the candidate/file types at `core/seven-tv/undo-candidate.ts`,
+alongside `transfer-plan.ts` as `core/`-owned pure modules, rather than at spec 14's `shared/` path.
+Reason: a `core/` service — this one — consumes `undo-plan.ts` at run time (the recheck before every
+REMOVE, E19), and `core/` may not import from `shared/` (layering rule); spec 14 did not anticipate
+that a `core/` module would need it. `buildUndoRunProtocol`/`toExecutedInput`/`settledStatus` go the
+other way, in `web/src/app/shared/export/transfer-undo-export.ts` rather than the service, since that
+mapping's own home is next to the protocol it builds.
 
 ---
 
 ### 2026-09-26 — Every recovery file restores what its own run removed — the transfer-undo file
 
 **Betrifft:** `web/src/app/shared/export/export-envelope.ts` (`ExportKind` gains `'transfer-undo'`) ·
-`web/src/app/shared/export/transfer-run-export.ts` (`UndoCandidate`, `UndoSourceFileInfo`,
-`parseTransferRunForUndo`, `TransferRunUndoParseResult`) ·
+`web/src/app/shared/export/transfer-run-export.ts` (`parseTransferRunForUndo`,
+`TransferRunUndoParseResult`, and re-exports `UndoCandidate`/`UndoSourceFileInfo`, defined in
+`web/src/app/core/seven-tv/undo-candidate.ts`) ·
 `web/src/app/shared/export/transfer-undo-export.ts` (new: `TRANSFER_UNDO_FORMAT_VERSION`,
 `TransferUndoRow` — `TransferUndoExecutedRow` | `TransferUndoSkippedRow` —,
 `buildTransferUndoPlanRecord`, `buildTransferUndoProtocol`, `transferUndoJson`, `transferUndoCsv`,
