@@ -25,7 +25,18 @@ still aufgelöst. Was der Plan über Vertrag und Issue hinaus festlegt, steht in
 
 **Leitplanke: fail-closed.** Wo eine Regel zwei Lesarten zulässt, gilt die, bei der eher nichts
 startet, eher der Unload-Schutz scharf bleibt und eher eine Meldung doppelt geprüft als einmal
-verschluckt wird.
+verschluckt wird. **Eine Mutation, die bei 7TV angekommen ist, bleibt nie ungemeldet.**
+
+**Fassung 2 (2026-09-26).** Die erste Fassung (`be68db06`) ist um die drei Befunde des adversarialen
+Codex-Reviews (gpt-6-sol, zwei `high`, ein `medium`, Abschnitt 11) überarbeitet — alle drei am Code
+bestätigt: `reset()` während `running` lässt die Engine zu Ende laufen statt sie abzubrechen
+(Festlegung Nr. 3 neu gefasst), die Meldung eines abgelösten Laufs bleibt sichtbar und
+wiederholbar (Festlegung Nr. 13, Abschnitt 8 „Für den Betreiber zur Kenntnis"), die Dock-Signale
+werden schreibbare Projektionen statt `computed` (Festlegung Nr. 14), Meldungen bekommen einen
+Zeitrahmen je Versuch (Festlegung Nr. 15), die Spec-Fixtures gehören zu T1/T2, und jeder Task fährt
+den Seiten-Spec und eine Typprüfung der Specs mit. Außerdem: der Branch wird **auf
+`origin/fix/255-wording-counts` gestapelt**, statt auf den Epic-Stand nach dem Merge von #255 zu
+warten (0.1, 0.4, 0.7, T0, T9).
 
 ---
 
@@ -33,9 +44,13 @@ verschluckt wird.
 
 ### 0.1 Was feststeht
 
-- **Reihenfolge #255 → #256 → #254** (Betreiber 2026-09-25, Spec 15 B). #255 läuft parallel auf
-  `fix/255-wording-counts` und wird **vor** #256 gemergt; dieser Plan setzt auf dem Epic-Stand
-  **nach** diesem Merge auf (T0). #254 wartet auf #256 Punkt 1: dessen T0 prüft den Vertrag P1–P6
+- **Reihenfolge #255 → #256 → #254** (Betreiber 2026-09-25, Spec 15 B). #255 ist inhaltlich fertig
+  (drei Tasks auf `fix/255-wording-counts`); Review, PR und Merge folgen am nächsten Tag. Dieser
+  Plan wartet nicht darauf: **`fix/256-robustness` wird auf `origin/fix/255-wording-counts`
+  gestapelt** (T0 merged den Branch), und nach dem Merge von #255 wird auf
+  `origin/feat/emote-sets-200` rebased (T9). Der PR geht gegen `feat/emote-sets-200`. Kommen aus dem
+  Review von #255 noch Fixes, merged T0 sie vor dem Start bzw. T9 vor den Gates nach. #254 wartet
+  auf #256 Punkt 1: dessen T0 prüft den Vertrag P1–P6
   Punkt für Punkt am Code und endet mit Befund, wenn ein Punkt fehlt. **Dieser Plan liefert genau
   das, was #254 T0 prüft** — die Abbildung steht in Abschnitt 4.
 - **Kein Backend-Diff, kein 7TV-Vertragswechsel.** Alle Meldeaufrufe (`sync-imported`,
@@ -65,7 +80,12 @@ verschluckt wird.
    ruft `engine.reset()` — die Engine läuft weiter, schreibt ihre Zeilenzustände aber in eine leere
    Queue, und `finish()` baut sein `RunResult` aus dieser Queue: `doneKeys` leer, `items` leer,
    gemeldet wird nichts, selbst wenn der Frühausstieg fiele. T1 muss beide Wege schließen
-   (Festlegung Nr. 3).
+   (Festlegung Nr. 3). **Abbrechen ist dafür kein Weg** (Codex-Befund 1, am Code bestätigt): die
+   Delete- und Restore-Operationen setzen `transportLossIsUnknown` nicht (`REMOVE_OPERATION`,
+   `addOperation`), und `cancelRemainingRows` (`seven-tv-run-engine.ts:727-760`) macht eine Zeile
+   mit Request in der Luft dann `cancelled` — 7TV kann die Mutation längst angewendet haben, der
+   Lauf meldet sie nicht, und der Unload-Schutz des Delete fiele mit `closed`. Die Engine muss also
+   zu Ende laufen; `reset()` löst nur die Anzeige und leert die Queue erst nach `finish()`.
 2. **`applyIfCurrent` schützt die Projektion, und die Projektion ist heute der einzige Speicherort.**
    `syncReport`, `syncReportReason`, `removalReport`, `resyncTrigger` sind Dienst-Signale, nicht
    Felder des Laufdatensatzes; ein abgelöster Lauf hat deshalb keinen Ort, an dem seine Antwort
@@ -113,6 +133,31 @@ verschluckt wird.
     fragt nur `importService.isRunning()` und nur beim Verlassen der Seite; ein settelnder Lauf
     verliert beim Seitenwechsel nichts, weil die Dienste `providedIn: 'root'` sind. Kein Task fasst
     `usage-stats-leave.guard.ts` oder `usage-stats.routes.ts` an; #254 T7 ergänzt dort den Undo.
+11. **Eine Ablösung während der Meldephase ist heute erreichbar, und ihr Scheitern wäre unsichtbar**
+    (Codex-Befund 2, am Code bestätigt): `resetIfChannelChanged` in Delete und Restore setzt zurück,
+    sobald `isRunning()` falsch ist — also auch, während `syncReport` `pending` ist; und der
+    Schließen-Knopf des `RunProgressPanel` erscheint, sobald `isRunning()` fällt (`dismissible`
+    Default `true`; nur die Import-Section gated ihn auf `settlement === 'settled'`). Mit dem
+    lauf-gebundenen Abschluss ginge die Meldung dann zwar raus, aber ein späteres `failed` (403,
+    Retries erschöpft) stünde an einem Datensatz, den kein Dock zeigt und kein Retry erreicht —
+    der Audit-Eintrag fehlte ohne sichtbaren Weg. Festlegung Nr. 13 schließt das: Schließen und
+    Kanalwechsel lösen erst einen `closed`-Lauf, ein abgelöster Lauf mit nicht erfolgreicher
+    Meldung zeigt sich selbst wieder, und jede Meldung erreicht per Zeitrahmen sicher einen
+    Endzustand (Nr. 15).
+12. **99 Spec-Zeilen schreiben die Signale, die Projektionen werden** (Codex-Befund 3, gezählt am
+    2026-09-26): `import-progress-section.spec.ts` 48, `mass-delete-panel.spec.ts` 21,
+    `restore-progress-section.spec.ts` 14, `dock-outcome-announcer.spec.ts` 11,
+    `usage-stats-page.spec.ts` 4 (`lastRun.set` ×3, `run.set` ×1), `seven-tv-import.service.spec.ts`
+    1 — alle mit `.set(...)` auf `syncReport`, `syncReportReason`, `resyncTrigger`,
+    `removalReport`, `lastRun`, `run`. Ein `computed` bräche sie alle, und keine gefilterte Suite
+    aus T1/T2 sähe es. Festlegung Nr. 14: die Dock-Signale bleiben **schreibbar** als
+    `linkedSignal`-Projektionen des gezeigten Laufs, `run` bleibt das schreibbare Signal des
+    gezeigten Datensatzes; Produktivcode schreibt nur den Datensatz (Abnahme-Grep). Die Fixtures,
+    die einen Datensatz bauen, bekommen die neuen Felder in T1 (Import) bzw. T2 (Delete, Restore),
+    und beide Tasks fahren den Seiten-Spec plus `npx tsc -p tsconfig.spec.json --noEmit` (in
+    `web/`; am 2026-09-26 auf `9e380cc4` geprüft: läuft in ~4 s, Exit 0 — `tsconfig.spec.json`
+    schließt `src/**/*.spec.ts` ein, `tsconfig.app.json` schließt sie aus, der Build prüft Specs
+    also nicht).
 
 ### 0.3 Modelle je Task
 
@@ -130,8 +175,9 @@ Widerspruch zwischen Opus-Review und Codex entscheidet Fable als Schiedsrichter 
 ### 0.4 Branch, Worktree, Commits, Gates
 
 - **Branch `fix/256-robustness`**, Worktree `/home/dev/projects/EmotePurge-sets`, PR gegen
-  `feat/emote-sets-200`. T0 bringt ihn per Merge von `origin/feat/emote-sets-200` auf den Stand
-  **nach** dem Merge von #255. Andere Worktrees und `/home/dev/projects/EmotePurge` bleiben
+  `feat/emote-sets-200`. T0 merged `origin/fix/255-wording-counts` hinein (gestapelt auf #255);
+  nach dem Merge von #255 in das Epic rebased T9 auf `origin/feat/emote-sets-200`, bevor die
+  vollen Gates laufen. Andere Worktrees und `/home/dev/projects/EmotePurge` bleiben
   unberührt; aus dem Worktree nur bauen und testen, nie `docker compose up` (Memory:
   „compose aus dem Worktree reißt den Stack ab"); E2E nur, wenn auf `:5151` keine Api lauscht.
 - **Lanes** (Abschnitt 5): Welle 2 mit drei Lanes (T2 ∥ T5 ∥ T6), Welle 3 mit zwei (T3 ∥ T7); alles
@@ -148,8 +194,12 @@ Widerspruch zwischen Opus-Review und Codex entscheidet Fable als Schiedsrichter 
   (Live-Reload nach Drift) in T6. T2 hängt seine zwei Dienste in `Betrifft:` von Eintrag 1 an. Die
   Hauptsession liest jeden DECISIONS-Diff selbst (Memory: „Grüne Suiten sind keine
   Fertigmeldung").
-- **Gates je Task:** gefilterte Vitest-Specs, `npm --prefix web run build`, `npm --prefix web run
-  lint`, `npm --prefix web run format`. **Gates am Ende (T9):** `npm --prefix web test --
+- **Gates je Task:** gefilterte Vitest-Specs, **immer** `src/app/features/usage-stats/usage-stats-page.spec.ts`
+  mit dabei, sobald ein Dienst-Signal oder ein Laufdatensatz die Form ändert (T1–T5), `npm --prefix
+  web run build` (Typprüfung des Produktivcodes — die Specs sind in `tsconfig.app.json`
+  ausgeschlossen), **`cd web && npx tsc -p tsconfig.spec.json --noEmit`** (Typprüfung aller Specs,
+  ~4 s; Codex-Befund 3), `npm --prefix web run lint`, `npm --prefix web run format`. **Gates am
+  Ende (T9):** `npm --prefix web test --
   --watch=false` voll, `npm --prefix web run e2e` (ohne Api auf `:5151`), `dotnet test
   EmotePurge.slnx` (unverändert, Docker nötig — der Plan ändert kein Backend, das Gate bleibt
   trotzdem die Fertigmeldung des Repos), `node scripts/coverage-local.mjs --frontend-only` (Memory:
@@ -166,7 +216,10 @@ Widerspruch zwischen Opus-Review und Codex entscheidet Fable als Schiedsrichter 
 | Lauf-Phase | `RunPhase = 'running' \| 'settling' \| 'reporting' \| 'closed'` | `core/seven-tv/seven-tv-run-lifecycle.ts` (neu) | P6 | T1 | T1, T2, T3 (nur über die drei Signale), #254 T4 |
 | Lebenszyklus-Baustein | `SevenTvRunLifecycle<TRun>` — hält die offenen Läufe eines Dienstes **per `runId`** (nicht per Objektreferenz: Datensätze werden bei jedem Übergang als neues Objekt ersetzt, wie heute `finished = { ...started, result }`), den gezeigten Lauf, und liefert `isSettling`, `destructiveOpen`, `shown`; Operationen: Lauf eröffnen, Datensatz patchen, Phase setzen, Meldung eröffnen/abschließen, Lauf schließen, wenn keine Meldung mehr offen ist, Anzeige lösen | ebenda | P1, P6 | T1 | T1 (Import), T2 (Delete, Restore), #254 T4 (Undo) |
 | Laufdatensatz-Basis | jeder Laufdatensatz trägt `runId`, `phase`, `destructive` (mindestens eine destruktive Zeile) und seine Meldungszustände als Felder (`syncReport`/`syncReportReason` bzw. `removalReport`/`removalReportReason`, `resyncTrigger`); `settlement: 'pending' \| 'settled'` bleibt am Import als abgeleitetes Feld (`'settled'` ⇔ Phase `reporting` oder `closed`), weil `usage-stats-page.ts` (`watchRunSettle`), `import-progress-section.ts` (vier Stellen) und #254 es lesen | die drei Dienste | P6 | T1, T2 | Docks, Seite, #254 |
+| Dock-Projektionen (Festlegung Nr. 14) | `run` bleibt das **schreibbare** Signal des gezeigten Datensatzes (der Baustein hält es); `syncReport`, `syncReportReason`, `removalReport`, `removalReportReason`, `resyncTrigger`, `protocolSaved`, Delete-`lastRun` werden `linkedSignal`-Projektionen von `run()` — schreibbar, damit die 99 Spec-Zeilen aus 0.2 Nr. 12 stehen bleiben; Produktivcode schreibt nie in sie, nur in den Datensatz | die drei Dienste | P6 | T1, T2 | Docks, Announcer, Seite, alle Specs aus 0.6 |
 | Dienst-Signale für den Arbiter | `isRunning` (Engine, unverändert), `isSettling`, `destructiveOpen` — je Dienst, Projektionen des Lebenszyklus-Bausteins; das Import-Signal `destructiveRunActive` **entfällt** zugunsten von `destructiveOpen` | die drei Dienste | P1, P3 | T1, T2 | T3, #254 T0 (Prüfung), #254 T4 |
+| Meldungs-Zeitrahmen (Festlegung Nr. 15) | `REPORT_TIMEOUT_MS = 30_000` je Versuch der Meldungskette (`sync-imported`, `sync-deleted`, `sync-restored`); ein Ablauf zählt als transienter Fehler in derselben Retry-Policy, nach den Retries `failed`/`unavailable` | `seven-tv-delete.service.ts` (neben `SYNC_RETRY_DELAY_MS`, exportiert wie dieses) | P6 („jede Meldung erreicht einen Endzustand") | T1 | T2, #254 T4 |
+| Schließen-Gate | `RunProgressPanel.dismissible` wird in allen drei Docks auf „Lauf `closed`" gebunden (Import: heute `settlement === 'settled'`; Delete/Restore: heute ungegated); `resetIfChannelChanged` löst nur einen `closed`-Lauf | `import-progress-section.ts`, `mass-delete-panel.ts`, `restore-progress-section.ts`, Delete/Restore-Dienste | Festlegung Nr. 13 | T1 (Import), T2 (Delete, Restore) | #254 T7 |
 | Teilnehmer und Registrierung | `SevenTvRunParticipant { kind: SevenTvRunKind; isRunning; isSettling; destructiveOpen }`, `SevenTvRunArbiter.register(participant)`; jeder Dienst registriert sich **in seinem Konstruktor**; `SevenTvRunKind` bleibt der eine Union-Typ (`'delete' \| 'restore' \| 'import'`, #254 ergänzt `'undo'`) | `core/seven-tv/seven-tv-run-arbiter.ts` | P4, P5 | T3 | T1/T2 (Registrierung, nachgezogen in T3), #254 T4 |
 | Arbiter-Antwort | `activeRun: Signal<SevenTvRunKind \| null>` (Bedeutung erweitert: läuft **oder** settelt), neu `activeClaim: Signal<{ kind; phase: 'running' \| 'settling' } \| null>` als Grund, `destructiveOpen: Signal<boolean>` (Vereinigung), `refusedStart: Signal<{ attempted: SevenTvRunKind; blockedBy: { kind; phase } } \| null>` mit `noteRefusedStart(attempted)` und `REFUSED_START_FEEDBACK_MS = 4000` (§4.5) | ebenda | P2, P3, P5 | T3 | T4 (Startpunkte, Seite, Panel), #254 T6 |
 | Unload-Schutz | der `beforeunload`-Effekt samt `preventUnload` wandert aus dem Import-Dienst in den Arbiter und hängt an dessen `destructiveOpen` | ebenda | P3 | T3 | — |
@@ -179,9 +232,9 @@ Widerspruch zwischen Opus-Review und Codex entscheidet Fable als Schiedsrichter 
 
 | Signatur / Typ, geändert durch | Aufrufer, Fixtures, Provider-Stubs | landet in |
 |---|---|---|
-| `SevenTvImportService`: `run`, `items`, `syncReport`, `removalReport`, `removalReportReason`, `resyncTrigger`, `protocolSaved` werden Projektionen; `destructiveRunActive` entfällt; `reset()`-Semantik (T1) | `import-progress-section.ts` (sieben Lesestellen), `dock-outcome-announcer.ts`, `usage-stats-page.ts` (`watchRunSettle`), `import-flow.ts`; Specs: `seven-tv-import.service.spec.ts` (1.597 Zeilen — die Fälle „drops the follow-up answers of a superseded run" ~702, „keeps a re-read answer after reset() off the dock but still sends its reports" ~1319, „counts a replace run as destructive until its re-read has settled it" ~1527, `describe('beforeunload guard')` ~1552 ändern ihre Erwartung oder ziehen um), `import-progress-section.spec.ts`, `dock-outcome-announcer.spec.ts`, `usage-stats-page.spec.ts` (Provider-Stub), `import-trigger.spec.ts`, `seven-tv-run-arbiter.spec.ts` | T1 (Dienst + eigener Spec), T3 (Unload-Fälle ziehen um), Stubs bleiben, wenn sie nur `isRunning`/`run` tragen |
-| `SevenTvDeleteService`: `run` wird Signal, `lastRun`/`syncReport`/`syncReportReason` Projektionen (T2) | `mass-delete-panel.ts` (`lastRun` ×4, `syncReport` ×3), `usage-stats-page.ts` (`lastRun` ×2), `run-progress-panel.ts` (Input), `channel-workspace-layout.ts` (`resetIfChannelChanged`); Specs: `seven-tv-delete.service.spec.ts` (978 Zeilen; „discards a late sync-deleted answer from a superseded run" ~663 ändert die Erwartung), `mass-delete-panel.spec.ts` (2.897 Zeilen, Provider-Stubs), `usage-stats-page.spec.ts`, `vote-session-detail-page.spec.ts`, `channel-workspace-layout.spec.ts` | T2 |
-| `SevenTvRestoreService`: `syncReport`/`syncReportReason`/`resyncTrigger` Projektionen (T2) | `restore-progress-section.ts` (drei), `dock-outcome-announcer.ts`, `mass-delete-panel.ts`, `restore-flow.ts`; Specs: `seven-tv-restore.service.spec.ts` (1.000 Zeilen; `describe('superseded run (R15)')` ~869), `restore-progress-section.spec.ts`, `restore-flow.spec.ts`, `channel-workspace-layout.spec.ts` | T2 |
+| `SevenTvImportService`: `ImportRunInfo` bekommt `runId`, `phase`, `destructive`, Meldungsfelder; `syncReport`, `removalReport`, `removalReportReason`, `resyncTrigger`, `protocolSaved` werden schreibbare Projektionen; `destructiveRunActive` entfällt; `reset()`-Semantik; Schließen-Gate auf `closed` (T1) | `import-progress-section.ts` (sieben Lesestellen, `[dismissible]`), `dock-outcome-announcer.ts`, `usage-stats-page.ts` (`watchRunSettle`), `import-flow.ts`; Specs mit **Schreibzugriffen oder `ImportRunInfo`-Fixtures — alle in T1:** `seven-tv-import.service.spec.ts` (1.597 Zeilen — die Fälle „drops the follow-up answers of a superseded run" ~702, „keeps a re-read answer after reset() off the dock but still sends its reports" ~1319, „counts a replace run as destructive until its re-read has settled it" ~1527 ändern ihre Erwartung; `describe('beforeunload guard')` ~1552 zieht in T3 um), `import-progress-section.spec.ts` (48 Schreibzeilen), `dock-outcome-announcer.spec.ts` (11, Import-Anteil), `usage-stats-page.spec.ts` (`run.set` Zeile ~3543 — Fixture braucht die neuen Felder), `import-trigger.spec.ts`, `seven-tv-run-arbiter.spec.ts` | T1 (Dienst, eigener Spec, **alle** genannten Fixtures), T3 (Unload-Fälle ziehen um) |
+| `SevenTvDeleteService`: `run` wird Signal (Baustein), `lastRun`/`syncReport`/`syncReportReason` schreibbare Projektionen; `resetIfChannelChanged` nur bei `closed`; Schließen-Gate (T2) | `mass-delete-panel.ts` (`lastRun` ×4, `syncReport` ×3, `[dismissible]` neu), `usage-stats-page.ts` (`lastRun` ×2), `run-progress-panel.ts` (Input), `channel-workspace-layout.ts` (`resetIfChannelChanged`); Specs mit **Schreibzugriffen — alle in T2:** `seven-tv-delete.service.spec.ts` (978 Zeilen; „discards a late sync-deleted answer from a superseded run" ~663 ändert die Erwartung), `mass-delete-panel.spec.ts` (2.897 Zeilen, 21 Schreibzeilen, Provider-Stubs), `usage-stats-page.spec.ts` (`lastRun.set` Zeilen ~3465, ~3482, ~3551 — Shape bleibt, Fälle laufen mit), `dock-outcome-announcer.spec.ts` (Restore-Anteil), `vote-session-detail-page.spec.ts`, `channel-workspace-layout.spec.ts` | T2 |
+| `SevenTvRestoreService`: `RestoreRunInfo` += Basisfelder, `syncReport`/`syncReportReason`/`resyncTrigger` schreibbare Projektionen; `resetIfChannelChanged` nur bei `closed`; Schließen-Gate (T2) | `restore-progress-section.ts` (drei, `[dismissible]` neu), `dock-outcome-announcer.ts`, `mass-delete-panel.ts`, `restore-flow.ts`; Specs mit **Schreibzugriffen — alle in T2:** `seven-tv-restore.service.spec.ts` (1.000 Zeilen; `describe('superseded run (R15)')` ~869), `restore-progress-section.spec.ts` (14 Schreibzeilen), `restore-flow.spec.ts`, `channel-workspace-layout.spec.ts` | T2 |
 | `SevenTvRunArbiter`: kein `inject` der Dienste mehr, `register`, `activeClaim`, `destructiveOpen`, `refusedStart`, `noteRefusedStart` (T3) | `usage-stats-page.ts` (`transferButtonDisabled`, `hasActiveRun`, `startImportFlow`-Deps), `import-trigger.ts`, `import-trigger-gate.ts` (nur Doku-Kommentar), `import-shortcut.ts` (Doku), `import-flow.ts` (zwei Prüfungen + `runBlocked`), `restore-flow.ts` (zwei), `mass-delete-panel.ts` (drei Prüfungen, zwei Template-Gates); **Stubs mit `activeRun` allein:** `foreign-import-flow.spec.ts`, `import-flow.spec.ts`, `import-trigger.spec.ts` (2), `mass-delete-panel.spec.ts` (10), `restore-flow.spec.ts`; `seven-tv-delete.service.spec.ts` und `seven-tv-restore.service.spec.ts` nennen die Klasse ebenfalls (prüfen, was sie damit tun) | T3 (Arbiter, Registrierung in den drei Konstruktoren, eigener Spec), T4 (Startpunkte + Stubs bekommen `noteRefusedStart`/`refusedStart`) |
 | `ImportRunInfo` += `unknownRemovalCount` (T5) | `import-progress-section.ts`, Fixtures in `import-progress-section.spec.ts`, `usage-stats-page.spec.ts`, `dock-outcome-announcer.spec.ts` (jede typisierte `ImportRunInfo`-Fixture) | T5 |
 | `ImportConfirmDialogData` += `reloadLive` (T6) | `import-flow.ts` (einziger Produktiv-Aufrufer), `import-confirm-dialog.spec.ts` (jede Data-Fixture, 1.984 Zeilen), `foreign-import-flow.spec.ts`/`import-flow.spec.ts` (falls sie den Dialog-Aufruf prüfen) | T6 |
@@ -205,10 +258,13 @@ berührt:
 | Familien-Vereinheitlichung der „nicht bearbeitbar"-Fehler, Token-Dialog-Intro, Audit-Plurale | Locales, `audit-row.ts`, Token-Dialog | keiner | nur Textkonflikte in `de.json`/`en.json`, trivial |
 | **T3 (in Arbeit):** `channelMismatch` → `notTracked` \| `activeSetDiffers`, N4-Vergleiche | `sync-report-outcome.ts`, `run-progress-panel.ts`, `import-progress-section.ts`, drei Dienste | T1, T2, T5 | Die Retry-Sperre bei Kanal-Mismatch wandert in T1/T2 auf den Laufdatensatz; sie muss die **aufgespaltenen** Werte prüfen, wie #255 T3 sie liefert — nicht `'channelMismatch'` |
 
-**Konsequenz für die Reihenfolge:** T0 startet erst, wenn der PR von #255 gemergt ist (alle drei
-Tasks, das Epic trägt den Merge-Commit). Läuft #255 T3 dann noch, würde jeder Task dieses Plans
-in denselben Dateien arbeiten — das ist der eine Fall, in dem T0 mit Befund endet, statt zu
-mergen.
+**Konsequenz für die Reihenfolge (Fassung 2):** T0 merged `origin/fix/255-wording-counts` in
+`fix/256-robustness`, sobald **alle drei** #255-Tasks dort liegen — Prüfkriterium für T3 ist
+`grep -n "channelMismatch" web/src/app/core/seven-tv/sync-report-outcome.ts` leer und
+`notTracked`/`activeSetDiffers` vorhanden. Liegt T3 noch nicht auf dem Branch, endet T0 mit
+Befund: jeder Task dieses Plans arbeitete sonst in denselben Dateien. Review-Fixes von #255, die
+danach noch kommen, merged T0 (vor dem Start) bzw. T9 (vor den Gates) nach; nach dem Merge von
+#255 in das Epic rebased T9 auf `origin/feat/emote-sets-200`.
 
 ---
 
@@ -288,29 +344,33 @@ Nahtstellen aus Abschnitt 2, die er berührt, den Vertrag (Spec 11.1 im Original
 aus `/home/dev/projects/EmotePurge-254`), den Stand von 0.7, die Sprachregel (Kommentare,
 Log-/Throw-Texte, Commit englisch) und die Member-Reihenfolge aus `web/.claude/CLAUDE.md`.
 
-### T0 — Vorbedingungen: #255 gemergt, Epic-Stand, Inventur nachgezogen, Bundle-Baseline
+### T0 — Vorbedingungen: auf #255 gestapelt, Inventur nachgezogen, Bundle-Baseline
 
-**Ziel:** Der Branch steht auf dem Epic-Stand nach dem Merge von #255; die Inventur aus 0.6/0.7
-ist gegen diesen Stand verifiziert; die Bundle-Baseline ist gemessen; kein Feature-Task startet
-gegen einen Stand, den #255 noch verändert.
+**Ziel:** Der Branch steht auf `origin/fix/255-wording-counts` mit allen drei #255-Tasks; die
+Inventur aus 0.6/0.7 ist gegen diesen Stand verifiziert; die Bundle-Baseline ist gemessen; kein
+Feature-Task startet gegen einen Stand, den #255 noch in denselben Dateien verändert.
 
 **Schritte:**
 
-1. `git fetch origin`; prüfen, dass der PR von #255 gemergt ist (`gh pr list --state merged
-   --head fix/255-wording-counts`, `git log --oneline 9e380cc4..origin/feat/emote-sets-200` nennt
-   den Merge). **Ist er nicht gemergt, oder ist `fix/255-wording-counts` danach weitergewachsen
-   (offene Commits über dem Merge), endet der Task hier mit Befund.**
-2. `git merge origin/feat/emote-sets-200` in `fix/256-robustness` (Konflikte nur in `docs/`
+1. `git fetch origin`; prüfen, dass **alle drei** #255-Tasks auf `origin/fix/255-wording-counts`
+   liegen: T1 (`89fbe0bb`, Restore-Resync), T2 (`cdfd1fb4`…`847d7def`, Adopt-Zählung,
+   Rename-only-Texte, `liveOccupiedSlots`) und T3 (`grep -n "channelMismatch"
+   web/src/app/core/seven-tv/sync-report-outcome.ts` auf dem Branch-Stand leer, `notTracked` und
+   `activeSetDiffers` vorhanden). **Fehlt T3, endet der Task hier mit Befund.** Ist #255 inzwischen
+   in das Epic gemergt, wird stattdessen `origin/feat/emote-sets-200` gemergt und der Rebase-Schritt
+   in T9 entfällt.
+2. `git merge origin/fix/255-wording-counts` in `fix/256-robustness` (Konflikte nur in `docs/`
    denkbar; `docs/DECISIONS.md` beide Seiten behalten, neuere oben). `npm --prefix web install`
-   nur, wenn `package-lock.json` sich geändert hat.
-3. Inventur nachziehen: die Greps aus 0.6 auf dem gemergten Stand wiederholen (`activeRun`,
-   `destructiveRunActive`, `lastRun`, die Signal-Leser, die Arbiter-Stubs); Abweichungen zu 0.6
-   und die tatsächliche Zahl der Prüfstellen in `restore-flow.ts` und `mass-delete-panel.ts` nach
-   #255 ins Ledger. Prüfen, ob #255 T3 gelandet ist (`grep -n "channelMismatch"
-   web/src/app/core/seven-tv/sync-report-outcome.ts` — erwartet: leer, dafür `notTracked` und
-   `activeSetDiffers`) und die Werte, auf die die Retry-Sperre in T1/T2 prüfen muss, ins Ledger.
-4. Gates auf dem gemergten Stand: `npm --prefix web run build`, `npm --prefix web test --
-   --watch=false` (voll). Beides grün ist die Freigabe für Welle 1.
+   nur, wenn `package-lock.json` sich geändert hat. Den gemergten #255-SHA ins Ledger — T9 prüft
+   dagegen, ob Review-Fixes nachzumergen sind.
+3. Inventur nachziehen: die Greps aus 0.6 und die Zählung aus 0.2 Nr. 12 auf dem gemergten Stand
+   wiederholen (`activeRun`, `destructiveRunActive`, `lastRun`, die Signal-Leser, die
+   Spec-Schreibzugriffe, die Arbiter-Stubs); Abweichungen zu 0.6 und die tatsächliche Zahl der
+   Prüfstellen in `restore-flow.ts` und `mass-delete-panel.ts` nach #255 ins Ledger; die
+   aufgespaltenen Mismatch-Werte, auf die die Retry-Sperre in T1/T2 prüfen muss, ebenfalls.
+4. Gates auf dem gemergten Stand: `npm --prefix web run build`, `cd web && npx tsc -p
+   tsconfig.spec.json --noEmit`, `npm --prefix web test -- --watch=false` (voll). Alles grün ist die
+   Freigabe für Welle 1.
 5. Bundle-Baseline: aus der Build-Ausgabe die Zeile „Initial total" (Erwartung ≈ 404 kB) und per
    `npx ng build --stats-json` (im Worktree, `--output-path` in den Scratch-Ordner) die Liste der
    Initial-Chunks ins Ledger, damit T9 vergleichen kann.
@@ -333,20 +393,29 @@ Festlegungen Nr. 2, 3, 4; #255-Berührung (0.7: `doneAdoptCount`, aufgespaltene 
 **Dateien:** `web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (neu, + `.spec.ts`, pur —
 kein TestBed, kein HTTP; Baustein aus 0.5); `web/src/app/core/seven-tv/seven-tv-import.service.ts`
 (+ `.spec.ts`): `ImportRunInfo` bekommt `runId`, `phase`, `destructive`, die Meldungsfelder;
-`settlement` bleibt abgeleitet; `run`, `items`, `syncReport`, `removalReport`,
-`removalReportReason`, `resyncTrigger`, `protocolSaved` werden Projektionen des gezeigten Laufs;
-`onRunComplete` ohne Frühausstieg — Ergebnis in den Datensatz, in `run()` nur gespiegelt, wenn der
-Lauf noch gezeigt wird; `settleRun`/`sendFollowUp` auf dem Datensatz; `reportImported`/
-`reportRemoved` schreiben per `runId` in den Datensatz (der `applyIfCurrent`-Helfer entfällt — die
-Projektion erledigt, was er schützte); `retrySyncReport`/`retryRemovalReport` öffnen den Lauf
-nicht wieder; `reset()` und `startImport` lösen nur die Anzeige (Festlegung Nr. 3 zu `reset()`
-während `running`); `destructiveRunActive` **entfällt**, `destructiveOpen` und `isSettling`
-kommen vom Baustein; der `beforeunload`-Effekt bleibt in diesem Task noch im Dienst, hängt aber
-schon an `destructiveOpen` (T3 zieht ihn um); `docs/DECISIONS.md` (Eintrag 1, oben: „7TV runs
-complete run-bound — running → settling → reporting → closed; reset() detaches the display
-only", `Betrifft:` nennt Baustein und Import; T2 ergänzt Delete/Restore). Leser der Signale aus 0.6
-bleiben unverändert, weil die Projektionen dieselben Namen und Typen tragen — der Task belegt das
-per Build.
+`settlement` bleibt abgeleitet; `run` bleibt das schreibbare Signal des gezeigten Datensatzes;
+`syncReport`, `removalReport`, `removalReportReason`, `resyncTrigger`, `protocolSaved` werden
+**schreibbare** `linkedSignal`-Projektionen von `run()` (Festlegung Nr. 14) — Produktivcode
+schreibt sie nie; `onRunComplete` ohne Frühausstieg — Ergebnis in den Datensatz, in `run()` nur
+gespiegelt, wenn der Lauf noch gezeigt wird; `settleRun`/`sendFollowUp` auf dem Datensatz;
+`reportImported`/`reportRemoved` schreiben per `runId` in den Datensatz (der
+`applyIfCurrent`-Helfer entfällt — die Projektion erledigt, was er schützte) und laufen mit
+`REPORT_TIMEOUT_MS` je Versuch (Festlegung Nr. 15; die Konstante entsteht neben
+`SYNC_RETRY_DELAY_MS` im Delete-Dienst, exportiert); `retrySyncReport`/`retryRemovalReport`
+öffnen den Lauf nicht wieder; `reset()` und `startImport` lösen nur die Anzeige — **`reset()`
+während `running` bricht die Engine nicht ab**, die Queue wird erst nach `finish()` geleert
+(Festlegung Nr. 3); ein abgelöster Lauf, dessen Meldung nicht `succeeded` endet, zeigt sich
+selbst wieder, wenn `run()` leer ist (Festlegung Nr. 13); `destructiveRunActive` **entfällt**,
+`destructiveOpen` und `isSettling` kommen vom Baustein; der `beforeunload`-Effekt bleibt in
+diesem Task noch im Dienst, hängt aber schon an `destructiveOpen` (T3 zieht ihn um);
+`web/src/app/shared/seven-tv/import-progress-section.ts` (`[dismissible]` von `settlement ===
+'settled'` auf „Lauf `closed`"; Kommentar dazu) + `.spec.ts` (48 Schreibzeilen bleiben, Fixtures
+mit den neuen Feldern); `dock-outcome-announcer.spec.ts` (Import-Fixtures);
+`usage-stats-page.spec.ts` (`run.set`-Fixture ~3543); `docs/DECISIONS.md` (Eintrag 1, oben: „7TV
+runs complete run-bound — running → settling → reporting → closed; reset() detaches the display
+only", `Betrifft:` nennt Baustein und Import; T2 ergänzt Delete/Restore). Leser der Signale aus
+0.6 bleiben unverändert, weil die Projektionen dieselben Namen und Typen tragen — der Task belegt
+das per Build **und** per Spec-Typprüfung.
 
 **Grenzfälle (alle als Spec-Fall am Import):**
 - ohne `unknown`-Zeile: Engine fertig ⇒ Phase `reporting` (oder `closed`, wenn keine Meldung
@@ -361,13 +430,25 @@ per Build.
   `closed`, `isSettling` bleibt falsch, `destructiveOpen` bleibt falsch
 - `destructiveOpen` wahr für einen Plan mit `replace`-Zeile von `running` bis `closed`, auch nach
   `reset()` und nach einem neuen Lauf; nie für einen Plan ohne `replace`
-- **die drei `reset()`-Fälle (P6, letzter Spiegelstrich):** `reset()` während `running` ⇒ Engine
-  wird sauber abgebrochen (Festlegung Nr. 3), jede bis dahin bestätigte Mutation wird gemeldet,
-  Lauf schließt; `reset()` während `settling` ⇒ Nachlesen endet, beide Meldungen gehen raus, Lauf
-  schließt; `reset()` während eine Meldung unterwegs ist ⇒ ihre Antwort landet im Datensatz, Lauf
-  schließt, `isSettling` fällt erst danach — in allen drei Fällen sieht der `HttpTestingController`
-  jede Meldung **genau einmal**, `run()` ist `null`, die Projektionen stehen auf `idle`, und der
-  Arbiter (hier: die zwei Dienst-Signale) ist danach frei
+- **die drei `reset()`-Fälle (P6, letzter Spiegelstrich):** `reset()` während `running` ⇒ die
+  Engine läuft **zu Ende** (Festlegung Nr. 3), auch die noch ausstehenden Zeilen; jede bestätigte
+  Mutation wird gemeldet, Lauf schließt — **mit dem Fall „Request in der Luft":** `reset()`, während
+  ein REMOVE unbeantwortet ist, dann bestätigt 7TV ihn ⇒ die Zeile wird `done`, das Ziel steht in
+  `sync-deleted` (Codex-Befund 1); `reset()` während `settling` ⇒ Nachlesen endet, beide Meldungen
+  gehen raus, Lauf schließt; `reset()` während eine Meldung unterwegs ist ⇒ ihre Antwort landet im
+  Datensatz, Lauf schließt, `isSettling` fällt erst danach — in allen drei Fällen sieht der
+  `HttpTestingController` jede Meldung **genau einmal**, `run()` ist `null` (Ausnahme: der
+  Wiederanzeige-Fall unten), die Projektionen stehen auf `idle`, und der Arbiter (hier: die zwei
+  Dienst-Signale) ist danach frei; `queue()` ist erst nach `finish()` leer
+- **Wiederanzeige (Festlegung Nr. 13):** `reset()` während `reporting`, dann endet die Meldung
+  `failed` (403) oder `partial` ⇒ `run()` zeigt den Lauf wieder, die Projektion trägt `failed` samt
+  Grund, `retrySyncReport()` sendet erneut; ist inzwischen ein anderer Lauf gezeigt ⇒ keine
+  Wiederanzeige, `console.warn` (englisch) mit `runId` und Grund, der Datensatz behält den Zustand
+- **Zeitrahmen (Festlegung Nr. 15):** eine Meldung ohne Antwort ⇒ nach `REPORT_TIMEOUT_MS` zählt
+  der Versuch als transient, Retry-Policy wie bei 429; nach den Retries `failed`/`unavailable`,
+  Lauf `closed`, Schließen möglich
+- **Schließen-Gate:** `dismissible` falsch während `settling` und `reporting`, wahr ab `closed` —
+  auch bei `failed`
 - ein zweiter `startImport` während der erste settelt (nur konstruiert erreichbar, weil die Engine
   frei ist): beide Läufe schließen, jede Meldung genau einmal, `run()` zeigt den zweiten, die
   Antworten des ersten schreiben in seinen Datensatz und nie in die Projektion des zweiten (das ist
@@ -375,21 +456,31 @@ per Build.
 - Kanalwechsel: der Import hat kein `resetIfChannelChanged` (DECISIONS 2026-09-06), unverändert
 - `doneAdoptCount` (#255) liefert nach dem Umbau dieselben Werte (Bestandsfall bleibt grün)
 
-**Tests:** `seven-tv-run-lifecycle.spec.ts` (neu) **≥ 10** (eröffnen, patchen, Phasen, Schließen
+**Tests:** `seven-tv-run-lifecycle.spec.ts` (neu) **≥ 12** (eröffnen, patchen, Phasen, Schließen
 nur ohne offene Meldung, `isSettling`/`destructiveOpen` über zwei Läufe, Anzeige lösen ohne
-Schließen, Retry am geschlossenen Lauf, Identität per `runId` nach Ersatz des Objekts);
-`seven-tv-import.service.spec.ts` **+12 / ±4** (die Liste oben; die vier Bestandsfälle aus 0.6
-mit geänderter Erwartung; `describe('beforeunload guard')` bleibt hier, bis T3 ihn umzieht).
+Schließen, Retry am geschlossenen Lauf, Identität per `runId` nach Ersatz des Objekts,
+Wiederanzeige bei leerer Anzeige, keine Wiederanzeige bei belegter);
+`seven-tv-import.service.spec.ts` **+15 / ±4** (die Liste oben inklusive Request-in-der-Luft,
+Wiederanzeige, Zeitrahmen; die vier Bestandsfälle aus 0.6 mit geänderter Erwartung;
+`describe('beforeunload guard')` bleibt hier, bis T3 ihn umzieht); `import-progress-section.spec.ts`
+**+1 / ±0** (Schließen-Gate; die 48 Schreibzeilen bleiben); `usage-stats-page.spec.ts`,
+`dock-outcome-announcer.spec.ts` **±0** (nur Fixtures).
 
-**Abnahme:** `grep -n "this.run() !== started\|applyIfCurrent\|destructiveRunActive"
-web/src/app/core/seven-tv/seven-tv-import.service.ts` leer; `grep -rn "destructiveRunActive"
-web/src/app` nennt nur noch Spec-Zeilen, die T3 umzieht, oder ist leer; DECISIONS-Eintrag 1 steht
-oben. **Vertrag P1 (Import), P6 (Import).**
+**Abnahme:** `grep -n "this.run() !== started\|applyIfCurrent\|destructiveRunActive\|engine.cancel()"
+web/src/app/core/seven-tv/seven-tv-import.service.ts` trifft nur `cancel()` selbst; `grep -n
+"syncReport.set\|removalReport.set\|removalReportReason.set\|resyncTrigger.set\|protocolSaved.set"
+web/src/app/core/seven-tv/seven-tv-import.service.ts` leer (Produktivcode schreibt den Datensatz,
+nicht die Projektion — Ausnahme nur `protocolSaved` über `markProtocolSaved`, falls es so heißt;
+dann als Datensatz-Feld); `grep -rn "destructiveRunActive" web/src/app` nennt nur noch
+Spec-Zeilen, die T3 umzieht, oder ist leer; DECISIONS-Eintrag 1 steht oben. **Vertrag P1 (Import),
+P6 (Import).**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/core/seven-tv/**/*.spec.ts'
 --include='src/app/shared/seven-tv/import-progress-section.spec.ts'
---include='src/app/shared/seven-tv/dock-outcome-announcer.spec.ts'`; `npm --prefix web run build`;
-Lint, Format.
+--include='src/app/shared/seven-tv/dock-outcome-announcer.spec.ts'
+--include='src/app/shared/seven-tv/import-trigger.spec.ts'
+--include='src/app/features/usage-stats/usage-stats-page.spec.ts'`; `npm --prefix web run build`;
+`cd web && npx tsc -p tsconfig.spec.json --noEmit`; Lint, Format.
 
 **Commit:** `feat(seventv): close import runs run-bound and keep their reports after reset`.
 **Abhängigkeiten:** T0. **Modell:** `opus`.
@@ -405,42 +496,66 @@ Phase, Meldung am Datensatz, kein Frühausstieg, `isSettling`/`destructiveOpen` 
 ein Signal (heute privates Feld), `lastRun`/`syncReport`/`syncReportReason` Projektionen mit
 unverändertem Shape (Naht 2.4); `DeleteRunInfo` += `runId`, `phase`, `destructive: true` (jede
 Delete-Zeile ist destruktiv — Festlegung Nr. 6), Meldungsfelder; `onRunComplete` ohne
-Frühausstieg; `reportDeleted` per `runId`; `resetIfChannelChanged` unverändert (nicht während
-`running`; löst nur die Anzeige); `confirmedRunPending`-Mechanik unverändert.
-`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (+ `.spec.ts`): `RestoreRunInfo` += die
-Basisfelder, `destructive: false` (nur ADDs — `destructiveOpen` konstant falsch); `syncReport`/
-`syncReportReason`/`resyncTrigger` Projektionen; `reportRestored`/`resyncAfterReport`/
-`triggerResync` per `runId`, **auf der #255-Fassung** (kein Client-Resync für nicht-aktives Ziel);
-`applyIfCurrent` entfällt in beiden. `docs/DECISIONS.md` (Eintrag 1: `Betrifft:` um beide Dienste
-ergänzt, ein Absatz zu Delete als destruktivem Lauf im Unload-Schutz — Festlegung Nr. 6).
-Provider-Stubs aus 0.6 nur, wo der Build sie verlangt.
+Frühausstieg; `reportDeleted` per `runId` mit `REPORT_TIMEOUT_MS`; **`resetIfChannelChanged`
+löst nur einen `closed`-Lauf** (heute: nur nicht während `running` — Festlegung Nr. 13);
+`confirmedRunPending`-Mechanik unverändert; `reset()` während `running` bricht nicht ab
+(Festlegung Nr. 3). `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (+ `.spec.ts`):
+`RestoreRunInfo` += die Basisfelder, `destructive: false` (nur ADDs — `destructiveOpen` konstant
+falsch); `syncReport`/`syncReportReason`/`resyncTrigger` schreibbare Projektionen (Nr. 14);
+`reportRestored`/`resyncAfterReport`/`triggerResync` per `runId`, **auf der #255-Fassung** (kein
+Client-Resync für nicht-aktives Ziel); `resetIfChannelChanged` nur bei `closed`; `applyIfCurrent`
+entfällt in beiden; Wiederanzeige bei nicht erfolgreicher Meldung eines abgelösten Laufs (Nr. 13)
+in beiden. `web/src/app/shared/seven-tv/mass-delete-panel.ts` (`[dismissible]` auf „Lauf `closed`"
+am Delete-Panel; sonst nichts) + `.spec.ts` (21 Schreibzeilen bleiben; ein Fall zum Gate);
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (`[dismissible]` ebenso) + `.spec.ts`
+(14 Schreibzeilen bleiben); `usage-stats-page.spec.ts` (`lastRun.set` ×3 — Shape unverändert,
+läuft mit); `dock-outcome-announcer.spec.ts` (Restore-Anteil); `web/public/i18n/{de,en}.json`
+(`massDelete.settling`, `restore.settling` — das Panel zeigt `<prefix>.settling`, sobald
+`dismissible` falsch und `isRunning` falsch ist; heute gibt es den Schlüssel nur für `import`;
+Wortlaut vorläufig, wie `import.settling`); `docs/DECISIONS.md` (Eintrag 1:
+`Betrifft:` um beide Dienste ergänzt, ein Absatz zu Delete als destruktivem Lauf im Unload-Schutz
+— Festlegung Nr. 6 — und einer zum Schließen-Gate und zum Kanalwechsel — Nr. 13). Provider-Stubs
+aus 0.6 nur, wo Build oder Spec-Typprüfung sie verlangen.
 
 **Grenzfälle (je Dienst als Spec-Fall):** Engine fertig ohne `doneKeys` ⇒ sofort `closed` · mit
 `doneKeys` ⇒ `reporting` bis Endzustand, dann `closed` · endgültig `failed` ⇒ `closed`, Fallback-
 Resync (N1) läuft, ohne den Lauf offen zu halten · Retry am geschlossenen Lauf öffnet nicht wieder;
 Retry-Sperre bei Kanal-Mismatch prüft die aufgespaltenen Werte aus #255 T3 (Ledger aus T0) · die
-drei `reset()`-Fälle (`running`: Engine sauber abgebrochen, bestätigte Zeilen gemeldet; `reporting`
+drei `reset()`-Fälle (`running`: Engine läuft zu Ende, **Request in der Luft wird abgewartet und
+bei Bestätigung gemeldet** — Codex-Befund 1, der Fall, den `cancel()` heute verliert; `reporting`
 mit Meldung unterwegs: Antwort landet im Datensatz, Lauf schließt; für Delete/Restore gibt es kein
 `settling`, der Spec-Fall belegt den direkten Übergang) — jede Meldung genau einmal, Projektionen
-danach `idle`, Signale frei · `resetIfChannelChanged` mit fremdem Kanal während `reporting` ⇒
-Anzeige weg, Meldung läuft zu Ende, Lauf schließt (heute: nur, wenn nicht `isRunning`; die
-Meldephase ist nicht `isRunning`, also greift der Reset — und darf die Meldung nicht mehr
-verlieren) · der bisherige „superseded run"-Fall (Delete ~663, Restore ~869) mit neuer Erwartung:
-verbucht im eigenen Datensatz, Projektion des neuen Laufs unberührt · Delete: `destructiveOpen`
-wahr von `startDelete` bis `closed`, auch nach `reset()`; Restore: nie.
+danach `idle`, Signale frei · **`resetIfChannelChanged` mit fremdem Kanal während `reporting` ⇒
+Lauf bleibt gezeigt** (Nr. 13), Meldung läuft zu Ende; endet sie `failed` ⇒ Lauf bleibt mit Grund
+und Retry sichtbar; endet sie `succeeded` ⇒ nächster Kanalwechsel löst ihn (heute: der Reset
+greift schon während `pending`, und ein späteres `failed` hätte keinen Ort — Codex-Befund 2) ·
+programmatisches `reset()` während `reporting`, dann `failed` ⇒ Wiederanzeige, Retry sendet
+erneut; bei inzwischen gezeigtem anderem Lauf ⇒ `console.warn`, keine Wiederanzeige · Meldung
+ohne Antwort ⇒ `REPORT_TIMEOUT_MS`, Retries, `failed`/`unavailable`, `closed`, Schließen möglich ·
+Schließen-Gate: `dismissible` falsch während `reporting`, wahr ab `closed` · der bisherige
+„superseded run"-Fall (Delete ~663, Restore ~869) mit neuer Erwartung: verbucht im eigenen
+Datensatz, Projektion des neuen Laufs unberührt · Delete: `destructiveOpen` wahr von `startDelete`
+bis `closed`, auch nach `reset()`; Restore: nie.
 
-**Tests:** `seven-tv-delete.service.spec.ts` **+7 / ±2**, `seven-tv-restore.service.spec.ts`
-**+7 / ±2** (die Liste oben; Zählung im Bericht).
+**Tests:** `seven-tv-delete.service.spec.ts` **+10 / ±3**, `seven-tv-restore.service.spec.ts`
+**+10 / ±3** (die Liste oben; Zählung im Bericht); `mass-delete-panel.spec.ts` **+1**,
+`restore-progress-section.spec.ts` **+1** (Schließen-Gate); `usage-stats-page.spec.ts`,
+`channel-workspace-layout.spec.ts` **±0**.
 
-**Abnahme:** `grep -n "this.run !== started\|this.runState() !== started\|applyIfCurrent"` in
-beiden Diensten leer; `lastRun`-Leser in `mass-delete-panel.ts`/`usage-stats-page.ts` unverändert
-(Diff der beiden Dateien leer). **Vertrag P1, P6 (Delete, Restore).**
+**Abnahme:** `grep -n "this.run !== started\|this.runState() !== started\|applyIfCurrent\|engine.cancel()"`
+in beiden Diensten trifft nur `cancel()` selbst; `grep -n "syncReport.set\|syncReportReason.set\|resyncTrigger.set\|lastRun.set"`
+in beiden Diensten leer; `lastRun`-Leser in `mass-delete-panel.ts`/`usage-stats-page.ts`
+unverändert (Diff der Lesestellen leer; das Panel ändert nur `[dismissible]`). **Vertrag P1, P6
+(Delete, Restore).**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/core/seven-tv/**/*.spec.ts'
 --include='src/app/shared/seven-tv/mass-delete-panel.spec.ts'
 --include='src/app/shared/seven-tv/restore-progress-section.spec.ts'
---include='src/app/features/channel-workspace/**/*.spec.ts'`; `npm --prefix web run build`; Lint,
-Format.
+--include='src/app/shared/seven-tv/dock-outcome-announcer.spec.ts'
+--include='src/app/features/usage-stats/usage-stats-page.spec.ts'
+--include='src/app/features/voting/**/*.spec.ts'
+--include='src/app/features/channel-workspace/**/*.spec.ts'`; `npm --prefix web run build`;
+`cd web && npx tsc -p tsconfig.spec.json --noEmit`; Lint, Format.
 
 **Commit:** `feat(seventv): close delete and restore runs run-bound like the import`.
 **Abhängigkeiten:** T1. **Modell:** `sonnet` — das Muster liegt nach T1 in einem Dienst vor; die
@@ -505,7 +620,7 @@ P3, P4, P5.**
 danach die **volle** Vitest-Suite (Provider-Stubs in Seiten-Specs können durch die gedrehte Kante
 reißen — ein Stub eines Dienstes, der den Arbiter nicht mehr injiziert, ist harmlos, ein Spec, der
 den echten Dienst mit einem Arbiter-Stub ohne `register` kombiniert, nicht); `npm --prefix web run
-build`; Lint, Format.
+build`; `cd web && npx tsc -p tsconfig.spec.json --noEmit`; Lint, Format.
 
 **Commit:** `feat(seventv): let run services register with the arbiter, block while settling and guard unload as a union`.
 **Abhängigkeiten:** T2. **Modell:** `opus`.
@@ -564,7 +679,8 @@ web/src/app/shared/seven-tv/mass-delete-panel.ts` leer — dieselbe Lesart wie #
 **Vertrag P2 (Startpunkte).**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/**/*.spec.ts'
---include='src/app/features/**/*.spec.ts'`; `npm --prefix web run build`; Lint, Format.
+--include='src/app/features/**/*.spec.ts'`; `npm --prefix web run build`; `cd web && npx tsc -p
+tsconfig.spec.json --noEmit`; Lint, Format.
 
 **Commit:** `feat(seventv): say why a confirmed run did not start while another one runs or settles`.
 **Abhängigkeiten:** T3. **Modell:** `sonnet`.
@@ -599,8 +715,11 @@ Zeile.
 bytegleich mit dem Aufbau `<family>.summary.unknownRecordedIn`. **Issue Punkt 4.**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/core/seven-tv/seven-tv-import.service.spec.ts'
---include='src/app/shared/seven-tv/import-progress-section.spec.ts'`; `npm --prefix web run
-build`; Lint, Format.
+--include='src/app/shared/seven-tv/import-progress-section.spec.ts'
+--include='src/app/shared/seven-tv/dock-outcome-announcer.spec.ts'
+--include='src/app/features/usage-stats/usage-stats-page.spec.ts'` (die `ImportRunInfo`-Fixtures
+dort bekommen das neue Feld); `npm --prefix web run build`; `cd web && npx tsc -p
+tsconfig.spec.json --noEmit`; Lint, Format.
 
 **Commit:** `feat(import): say in the dock where an unconfirmed removal is recorded`.
 **Abhängigkeiten:** T1. **Modell:** `sonnet`.
@@ -643,7 +762,7 @@ genau den Drift-Knopf und die Data-Schnittstelle; DECISIONS-Eintrag 3 steht oben
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/import-flow.spec.ts'
 --include='src/app/shared/seven-tv/import-confirm-dialog.spec.ts'
 --include='src/app/shared/seven-tv/foreign-import-flow.spec.ts'`; `npm --prefix web run build`;
-Lint, Format.
+`cd web && npx tsc -p tsconfig.spec.json --noEmit`; Lint, Format.
 
 **Commit:** `fix(import): reload the target live after a drifted replace target`.
 **Abhängigkeiten:** T0 (unabhängig von T1–T3). **Modell:** `sonnet`.
@@ -692,7 +811,7 @@ import-confirm-dialog.ts` trifft weiterhin eine Setz-Stelle, gespeist aus dem Be
 "inject(" recovery-file-gate.ts` leer. **Issue Punkt 5.**
 
 **Gates:** `npm --prefix web test -- --watch=false --include='src/app/shared/seven-tv/**/*.spec.ts'`;
-`npm --prefix web run build`; Lint, Format.
+`npm --prefix web run build`; `cd web && npx tsc -p tsconfig.spec.json --noEmit`; Lint, Format.
 
 **Commit:** `refactor(import): extract the verify-and-save state machine from the confirm dialog`.
 **Abhängigkeiten:** T6. **Modell:** `opus`.
@@ -740,7 +859,13 @@ e2e/emote-import.e2e.spec.ts`.
 **Ziel:** Alle Gates des Repos grün, Coverage-Vorabschätzung gelesen, Bundle gegen die Baseline
 verglichen, Codex-Zweitmeinung eingeholt und unverändert wiedergegeben.
 
-**Schritte:** `npm --prefix web test -- --watch=false` (voll); `npm --prefix web run e2e` (voll,
+**Schritte:** Zuerst der Stand von #255: `git fetch origin`; ist #255 in `origin/feat/emote-sets-200`
+gemergt ⇒ `git rebase origin/feat/emote-sets-200` (die #255-Commits fallen dabei heraus, weil sie
+im Epic liegen; Konflikte nur in `docs/DECISIONS.md` denkbar, neuere oben), danach ein
+`git push --force-with-lease`; ist er noch nicht gemergt, aber `origin/fix/255-wording-counts` hat
+Review-Fixes über dem in T0 gemergten SHA ⇒ diese nachmergen; erst dann die Gates.
+`npm --prefix web test -- --watch=false` (voll); `cd web && npx tsc -p tsconfig.spec.json
+--noEmit`; `npm --prefix web run e2e` (voll,
 ohne Api auf `:5151`; rote Fälle einmal allein wiederholen — Memory Speicherdruck); `dotnet test
 EmotePurge.slnx` (Docker; unverändertes Backend — grün ist die Fertigmeldung des Repos, nicht
 optional); `npm --prefix web run lint`, `npm --prefix web run format` (Diff leer); `node
@@ -834,6 +959,9 @@ Welle 7   T10
   meldet schon lauf-gebunden; nach T2 dasselbe für alle drei; nach T3 sperrt Settling still (die
   Startpunkte lesen `activeRun() !== null`), erst T4 macht den Grund sichtbar. Kein Zwischenstand
   ist fail-open gegenüber heute.
+- **Stapel auf #255:** Der Branch trägt bis zum Rebase in T9 die #255-Commits mit. Lanes, die in
+  eigenen Worktrees laufen, zweigen von `fix/256-robustness` ab, nie vom Epic. Ein Rebase vor T9
+  findet nicht statt, damit die Lanes eine stabile Basis haben.
 
 ---
 
@@ -843,7 +971,7 @@ Welle 7   T10
 |---|---|---|---|---|
 | 1 | Vertrag P4 „registriert sich beim Arbiter" vs. DECISIONS 2026-09-06 „Dienste kennen den Arbiter nicht" | Die Registrierung dreht die DI-Kante | Dienste injizieren den Arbiter und registrieren sich im Konstruktor; der Arbiter injiziert **keinen** Dienst mehr — kein Zirkel. R1 (ableiten statt sperren) bleibt: die Registry hält Signale, keinen Lock. Alternative verworfen: Multi-Provider-Token in `usage-stats.routes.ts` (Root-Arbiter sieht Routen-Provider nicht; zwei Arbiter-Instanzen hießen zwei Unload-Effekte) | T3 |
 | 2 | Vertrag P6: Laufdatensatz „ist ein eigener Datensatz" | Datensätze werden heute bei jedem Übergang als neues Objekt ersetzt; Identität per Referenz bricht dann | Identität per `runId`; der Baustein hält die Datensätze per Id, Rückrufe schreiben per Id | T1 |
-| 3 | Vertrag P6 „`reset()` während `running` ⇒ die Engine läuft **oder** wird sauber abgebrochen" | Zwei erlaubte Lesarten; 0.2 Nr. 1: `engine.reset()` mitten im Lauf verliert das Ergebnis | `reset()` während `running` bricht die Engine ab (`cancel()`, bestätigte Zeilen bleiben, Rest `cancelled`/`unknown` nach Engine-Regel), löst dann die Anzeige; die Queue wird erst nach `finish()` geleert. Erreichbar heute nur programmatisch (die Docks bieten Schließen erst nach dem Lauf) | T1, T2 |
+| 3 | Vertrag P6 „`reset()` während `running` ⇒ die Engine läuft **oder** wird sauber abgebrochen" | Zwei erlaubte Lesarten; 0.2 Nr. 1: `engine.reset()` mitten im Lauf verliert das Ergebnis. **Fassung 1 wählte den Abbruch — falsch (Codex-Befund 1):** ohne `transportLossIsUnknown` (Delete, Restore) macht `cancelRemainingRows` einen Request in der Luft `cancelled`, obwohl 7TV ihn anwenden kann; die Mutation bliebe ungemeldet | **`reset()` während `running` lässt die Engine zu Ende laufen.** Es löst nur die Anzeige; der Baustein merkt sich, dass die Queue nach `finish()` zu leeren ist; `onRunComplete` verbucht das volle Ergebnis am Datensatz, jede bestätigte Zeile wird gemeldet. Erreichbar heute nur programmatisch (die Docks bieten Schließen erst nach dem Lauf, T1/T2 gaten es zusätzlich auf `closed`). Ein Spec-Fall je Dienst deckt den Request in der Luft, der nach dem `reset()` bestätigt wird | T1, T2 |
 | 4 | Vertrag P6 „`closed`, wenn … jede seiner Meldungen einen Endzustand hat" | Ob der Resync eine Meldung ist, sagt der Vertrag nicht; #254 Spec 11.1 letzter Absatz zählt für den Undo „eine der beiden Meldungen" | Resync ist keine Meldung: er hält weder `isSettling` noch `destructiveOpen`; der periodische Worker-Sync ist sein Fallback | T1, T2 |
 | 5 | Vertrag P1 für Delete/Restore | Kein Nachlesen dort | Phase `settling` wird übersprungen; `isSettling` = `reporting` | T2 |
 | 6 | Vertrag P3 „mindestens ein Lauf mit destruktiver Zeile" | Jede Delete-Zeile ist destruktiv; heute schützt nur der Import den Tab | Delete armiert den Unload-Schutz von `startDelete` bis `closed` — sichtbare Verhaltensänderung, im DECISIONS-Eintrag 2 genannt; Restore nie | T2, T3 |
@@ -853,17 +981,56 @@ Welle 7   T10
 | 10 | Issue Punkt 5 | Wie generisch die Einheit sein muss, sagt das Issue nicht; #254 Spec 11.3 nennt dieselben Übergänge mit anderer Klassifikation | Generisch über Plan- und Drift-Typ mit Funktions-Abhängigkeiten, ohne Injektion; `applyDrift` bleibt Dialogsache | T7 |
 | 11 | Vertrag P2 „Grund … mindestens `running \| settling`, je Dienst" | Wortlaut ist #255-Sache, #255 ist dann gemergt | Familie `sevenTvRun.*`, vorläufig, gesammelt im PR-Text für eine Wortlaut-Runde | T4 |
 | 12 | Regel 16 | Kein Backend, kein 7TV-Vertrag berührt | Kein Regel-16-Gate; ein Browser-Handgriff für die Tab-Nachfrage, Ergebnis transparent im PR | T10 |
+| 13 | Vertrag P6 „`reset()`, `resetIfChannelChanged()` und ein neuer Lauf lösen nur die Anzeige" (Codex-Befund 2) | 0.2 Nr. 11: Ablösung während `reporting` ist heute per Kanalwechsel und per Schließen erreichbar; ein späteres `failed` der Meldung hätte weder Anzeige noch Retry — der Audit-Eintrag fehlte ohne sichtbaren Weg. Zwei Wege standen zur Wahl: (a) abgelöste Fehlschläge als eigene Liste im Dock sichtbar und wiederholbar halten; (b) die Ablösung bis zum Endzustand aufschieben. | **fail-closed, dreiteilig:** (1) **Schließen erst ab `closed`** — `dismissible` in allen drei Docks hängt am Lauf-Zustand; ein `failed`/`partial` ist ein Endzustand, also erscheint Schließen genau dann, wenn der Fehlschlag mit Grund und Retry sichtbar ist. (2) **`resetIfChannelChanged` löst nur einen `closed`-Lauf** — ein meldender Lauf folgt dem Nutzer für die Sekunden bis zum Endzustand in den nächsten Kanal; endet er `failed`, bleibt er dort mit Retry stehen, bis der Nutzer schließt oder erneut wechselt (heutiges Verhalten für fertige Läufe). (3) **Wiederanzeige:** endet die Meldung eines per programmatischem `reset()` abgelösten Laufs nicht `succeeded` und ist nichts gezeigt, zeigt der Dienst diesen Lauf wieder (`run()` gesetzt, das Dock mountet über `dockVisible`); ist ein anderer Lauf gezeigt, bleibt der Fehlschlag am Datensatz und im `console.warn`. Weg (a) verworfen: eine zweite Liste im Dock für einen Fall, den (1) und (2) im UI unerreichbar machen, wäre neue Fläche ohne Nutzer; (3) deckt den programmatischen Rest. **Die Umsetzung hängt nicht an einer Betreiberantwort** (Abschnitt 8) | T1, T2 |
+| 14 | Vertrag P6 „Dienst-Signale … sind Projektionen des gezeigten Laufs" (Codex-Befund 3) | 99 Spec-Zeilen schreiben diese Signale (0.2 Nr. 12); ein `computed` bräche sie alle | `run` bleibt das schreibbare Signal des gezeigten Datensatzes; die Dock-Signale werden `linkedSignal`-Projektionen von `run()` — schreibbar für Specs, vom Produktivcode nie geschrieben (Abnahme-Grep je Dienst). Das erfüllt P6 (der Datensatz ist die Quelle, die Projektion folgt ihm) und hält die Specs | T1, T2 |
+| 15 | Vertrag P6 „`closed` erreicht ein Lauf, wenn … jede seiner Meldungen einen Endzustand hat" | Die Meldeketten haben Retries, aber keinen Zeitrahmen; eine Anfrage ohne Antwort hielte den Lauf offen — mit Nr. 13 wäre dann Schließen nie möglich, mit Nr. 6 der Tab dauerhaft geschützt | `REPORT_TIMEOUT_MS = 30_000` je Versuch (großzügiger als der 20-s-Read, weil die Meldung serverseitig Resync-Stufen anstößt); Ablauf = transienter Fehler in derselben Retry-Policy; nach den Retries `failed`/`unavailable`, der Retry-Knopf bleibt (die Meldungen sind wiederholbar, das steht an jedem `retry…`) | T1 (Konstante), T1, T2 |
 
 ---
 
 ## 7. Offene Entscheidungen
 
 Keine. Jede Stelle, an der Vertrag oder Issue schweigen, ist in Abschnitt 6 mit Begründung
-entschieden und steht unter Betreiber-Veto; ein Veto trifft jeweils genau den genannten Task.
+entschieden und steht unter Betreiber-Veto; ein Veto trifft jeweils genau den genannten Task. Die
+zwei Festlegungen, die der Nutzer im Produkt bemerken kann, stehen zusätzlich in Abschnitt 8.
 
 ---
 
-## 8. Rückweg
+## 8. Für den Betreiber zur Kenntnis
+
+Drei Entscheidungen aus Abschnitt 6 sind ohne Rückfrage getroffen (2026-09-26, nachts) und stehen
+unter Veto; keine davon blockiert die Umsetzung, ein Veto trifft nur T1/T2.
+
+1. **Schließen wartet auf die Rückmeldung, und ein Lauf folgt beim Kanalwechsel bis dahin
+   (Festlegung Nr. 13).** Im Lösch- und Wiederherstellungs-Dock erscheint „Schließen" künftig erst,
+   wenn die Rückmeldung an EmotePurge einen Endzustand hat — in der Regel ein bis zwei Sekunden
+   nach dem letzten Emote, mit Retries höchstens ~100 s (drei Versuche à 30 s plus Pausen);
+   solange steht „Wird abgeschlossen…" — das `RunProgressPanel` zeigt in diesem Zustand
+   `<prefix>.settling`, den es heute nur für `import` gibt; T2 legt `massDelete.settling` und
+   `restore.settling` in beiden Sprachen an (vorläufiger Wortlaut wie beim Import). Ein Kanalwechsel in diesem
+   Fenster nimmt den Lauf mit auf die nächste Seite; scheitert die Rückmeldung, bleibt der Lauf
+   dort mit Grund und „Erneut melden" stehen, bis Sie schließen oder erneut wechseln. Grund: bisher
+   konnte ein Kanalwechsel in genau diesem Fenster einen später gescheiterten Audit-Eintrag
+   unsichtbar machen (Codex-Befund 2). Alternative, wenn Sie das nicht wollen: eine eigene Zeile
+   „eine frühere Rückmeldung ist gescheitert" im Dock — ein neuer Baustein, in T2 austauschbar.
+2. **Rückmeldungen haben jetzt einen Zeitrahmen von 30 s je Versuch (Festlegung Nr. 15).** Eine
+   Rückmeldung, die länger als 30 s keine Antwort bekommt, gilt als vorübergehend gescheitert,
+   wird wie ein 429 wiederholt und endet nach den Wiederholungen als „fehlgeschlagen" mit
+   Retry-Knopf. Vorher konnte sie beliebig lange offen bleiben. Da die Rückmeldungen wiederholbar
+   sind (ein doppelt gemeldetes Emote zählt einmal), ist ein falsches „fehlgeschlagen" nur ein
+   Klick, kein Schaden.
+3. **Nicht Teil dieses Plans, aber gefunden (Codex-Befund 1, am Code bestätigt):** „Abbrechen"
+   während ein Lösch- oder Wiederherstellungs-Request bei 7TV in der Luft ist, markiert die Zeile
+   als „abgebrochen", obwohl 7TV sie anwenden kann — die Delete- und Restore-Operationen setzen
+   `transportLossIsUnknown` nicht (nur der Import mit `replace`-Zeilen tut es). Die Mutation wird
+   dann nicht gemeldet, der periodische Sync heilt die Datenbank, der Audit-Eintrag fehlt. Dieser
+   Plan vermeidet nur, denselben Pfad **programmatisch** zu nehmen (Festlegung Nr. 3); das
+   Nutzer-„Abbrechen" bleibt, wie es ist. **Vorschlag:** Folge-Issue im Epic #200 („Delete/Restore:
+   `transportLossIsUnknown` + Nachlesen wie beim Import"); die Memory-Regel „neue Issues gehören ins
+   Epic" gilt.
+
+---
+
+## 9. Rückweg
 
 Kein Backend, keine Migration, kein Dateiformat: der Rückweg ist ein Revert des PR. Die
 Rückweg-Dateien und Ergebnisprotokolle bleiben in beiden Richtungen lesbar (T5 fügt eine
@@ -873,10 +1040,24 @@ nimmt dessen Registrierung die Grundlage — die Reihenfolge beim Zurücknehmen 
 
 ---
 
-## 9. Ledger
+## 10. Ledger
 
 `.superpowers/sdd/Plan-256-Robustheit/progress.md` (gitignoriert, wie bei Plan-253). Je Welle:
 Preflight der Nähte aus Abschnitt 2, Dispatch mit BASE-SHA und Modell, Bericht, Review, Rulings
-mit „cost if wrong", Merge-SHA. Dazu: die Bundle-Baseline (T0), die #255-T3-Werte (T0), die
-Baustein-API nach T1 (für den T2-Brief und für #254 T0), die Codex-Befunde (T9) und der
-Browser-Handgriff (T10), bevor sie in den PR-Text wandern.
+mit „cost if wrong", Merge-SHA. Dazu: die Bundle-Baseline (T0), der gemergte #255-SHA und die
+#255-T3-Werte (T0), die Baustein-API nach T1 (für den T2-Brief und für #254 T0), die
+Codex-Befunde (T9) und der Browser-Handgriff (T10), bevor sie in den PR-Text wandern.
+
+---
+
+## 11. Nachtrag: Codex-Adversarial-Review über die erste Fassung (gpt-6-sol, 2026-09-26)
+
+Drei Befunde über `be68db06`, alle am Code geprüft und bestätigt, alle in dieser Fassung
+eingearbeitet. Codex hat den Engine-Pfad aus der Doku gefolgert („inference"); die Prüfung am Code
+(`cancelRemainingRows`, `REMOVE_OPERATION`, `addOperation`) hat die Folgerung belegt.
+
+| # | Schwere | Befund | Prüfung am Code | Lösung | Wo |
+|---|---|---|---|---|---|
+| 1 | high | `engine.cancel()` bei `reset()` während `running` kann eine angewandte Mutation ungemeldet lassen: ohne `transportLossIsUnknown` wird ein Request in der Luft `cancelled` | Bestätigt: `REMOVE_OPERATION` und `addOperation` setzen das Flag nicht; `cancelRemainingRows` (`seven-tv-run-engine.ts:727-760`) macht die Zeile `cancelled`, `finish()` meldet sie nicht; der Delete-Unload-Schutz fiele mit `closed` | Festlegung Nr. 3 neu: die Engine läuft zu Ende, `reset()` löst nur die Anzeige, die Queue wird nach `finish()` geleert; je Dienst ein Spec-Fall „Request in der Luft, nach `reset()` bestätigt ⇒ gemeldet". Der Nutzer-Abbruch bleibt als bekannte Grenze (Abschnitt 8 Nr. 3) | 0.2 Nr. 1, T1, T2, Abschnitt 6 Nr. 3, Abschnitt 8 |
+| 2 | high | Eine Meldung, die nach einem Kanalwechsel scheitert, hat weder Anzeige noch Retry — die Retry-Methoden sehen nur den gezeigten Lauf | Bestätigt: `resetIfChannelChanged` (Delete `:263`, Restore `:290`) setzt zurück, sobald `isRunning()` falsch ist, also auch bei `syncReport === 'pending'`; `RunProgressPanel.dismissible` ist im Delete- und Restore-Dock ungegated | Festlegung Nr. 13 (Schließen erst ab `closed`, Kanalwechsel löst nur `closed`, Wiederanzeige eines abgelösten Fehlschlags), Nr. 15 (Zeitrahmen, damit `closed` immer erreicht wird); Spec-Fälle je Dienst; Abschnitt 8 für den Betreiber | 0.2 Nr. 11, 0.5, T1, T2, Abschnitt 6 Nr. 13/15, Abschnitt 8 |
+| 3 | medium | T1/T2 machten `run`, `lastRun`, `runState` und die Meldungs-Signale zu `computed`, aber `usage-stats-page.spec.ts` und weitere Specs schreiben sie per `.set`; die gefilterten Suiten sahen es nicht, `tsconfig.app.json` prüft keine Specs | Bestätigt und gezählt: 99 Schreibzeilen in sechs Spec-Dateien (0.2 Nr. 12); `tsconfig.spec.json` schließt die Specs ein, `npx tsc -p tsconfig.spec.json --noEmit` läuft in ~4 s mit Exit 0 | Festlegung Nr. 14 (schreibbare `linkedSignal`-Projektionen, `run` bleibt schreibbar); Fixtures in T1 (Import) und T2 (Delete, Restore) zugeordnet; jeder Task T1–T7 fährt `usage-stats-page.spec.ts` mit, sobald er Datensatz oder Signale ändert, und die Spec-Typprüfung als Gate | 0.2 Nr. 12, 0.4, 0.5, 0.6, T0–T7, T9, Abschnitt 6 Nr. 14 |
