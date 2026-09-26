@@ -196,7 +196,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   | `success` | LIVE · "running" states |
   | `neutral` | inactive/neutral |
   | `warning` | degraded/warning |
-  | `danger` | error/disconnected |
+  | `danger` | error/disconnected · since #254 also the mark of a **destructive option** in a choice: "removes emotes" on the undo row of the file step's switch (§7.3) — the one place the tone marks what an option *will do* rather than a state |
 
 - **The test question is "notable how often?"** A pill that stands in every row no longer marks anything — it is a colour ladder. What is the same word on most rows becomes quiet text: the **roles** in the overview (broadcaster/moderator/7TV editor) are a fact about *you* and repeat themselves; the **voting audience** carries its restriction as a contrast step instead of as a blue pill; **offline** is the inconspicuous case. The pill stays reserved for what applies *right now* and does not stand on every row — **LIVE** is the model case.
 - **State ≠ property.** What a row currently *is* (bot is measuring / session is running / Twitch token present) is `<app-state-dot>` with `tone="on"|"off"` — dot plus word instead of a pill. That way the state does not compete with the properties next to it, and the colour carries no meaning the word does not already carry.
@@ -220,9 +220,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **What applies:** Feedback that acknowledges something just completed and has nothing more to say afterwards is **not** a banner but a `<span role="status">` that disappears on its own after 4000 ms. There is **no** toast service and none is to arise; the pattern is deliberately written out per place: a constant `…_FEEDBACK_MS = 4000`, a signal with the translation key, a `setTimeout` handle that is cleared **first** when it is set anew, and a cleanup when the component is destroyed.
 - **The role is `status`, never `alert`.** An acknowledgement is not an error; `alert` interrupts the screen reader mid-sentence and is reserved for something that demands attention immediately (4.4).
 - **When to apply:** "Resync is queued", "n emotes have dropped out of the selection" — things that *have happened*. A state that **persists** (reauth needed, sync pending, request failed) belongs in a `NoticeBanner` and must not fade out while it applies.
-- **The place must survive the case it reports.** The message does not belong on a surface that disappears through the same event. Concretely: a message about a shrunken selection must not stand in the dock, because the dock unmounts as soon as the selection is empty (2, 8.7) — that is, in exactly the worst case. It therefore sits on the emote count row, which always stands. The same holds for the *announcement* of what the dock does show: the duplicate and resync notices of a restore and of an import stand visibly in the dock, but the dock mounts and unmounts with its own content (`actionDockHasContent`) — and a fully refused run (every row already present) is exactly what mounts it. A status region inside the dock is then created in the same change-detection pass as its text and announces nothing. Their announcement therefore comes from `DockOutcomeAnnouncer` (`shared/seven-tv/dock-outcome-announcer.ts`), which each host page mounts permanently outside every dock gate, `!isCoarse()` included — `usage-stats-page.html` with import outcomes, `vote-session-detail-page.html` with restore outcomes only, since it shows no import section. **The same holds for a line inside an already-mounted dock whose own `@if` creates it together with its sentence**: the usage-stats dock's "n of them hidden by the filter" row (`hiddenSelectedCount`) is spoken by the same announcer, fed a count that is 0 whenever the row is not on screen, so the region never says something the dock does not show. **The marked-count row differs (Opus review, 2026-09-19):** it is reachable in the accessibility tree itself again, not `aria-hidden` — this is the one visible dock line the announcer does *not* continuously mirror, because an individual mark or unmark already announces itself through its own cell's `aria-pressed` flip, and mirroring the live count here too spoke every one of those a second time. The announcer instead speaks only the outcome of a bulk-mark gesture ("mark all" in the toolbar, §8.7, or the per-band one) — exactly the gesture that can take the row from unmounted to a double-digit count with nothing else to announce it — holding that number until a non-bulk change retires it (an individual mark/unmark, a filter-driven prune, a clear) or the row itself leaves the screen, and *not* merely until the selection empties (follow-up, 2026-09-19): a lone deselect that leaves the selection non-empty must retire the announcement too, otherwise a later bulk gesture landing back on the same total would repeat the paragraph's text unchanged and `role="status"` would announce nothing for a gesture that really happened. The notices in the dock and in the mass-delete panel, and the hidden-by-filter row, are `aria-hidden` — the text only, never a focusable control inside it (axe `aria-hidden-focus`); the hidden-by-filter row's "reset filters" button therefore stays outside the hidden span. With several messages at once it speaks one paragraph each, in the dock's reading order: the marked count first, then the hidden-by-filter line, then restore before import, and within each the skipped count, the check-unavailable notice, then the resync acknowledgement — for an import into a tracked channel's *non-active* set (2026-09-21), the resync never fires at all, and a `copiedNotActiveNotice` (`dock-outcome-announcer.ts`) takes that same slot instead, naming the set the copy actually landed in rather than claiming a channel-page update that never happens. `role="status"` is implicitly `aria-atomic="true"` (WAI-ARIA 1.2, §status); a status region that holds several messages at once, as this one does, must set `aria-atomic="false"` explicitly, otherwise every added or changed paragraph re-reads all of them — a single-message status region elsewhere keeps the implicit default.
-- **The live region itself is permanently mounted, only its text comes and goes.** A `role="status"` element that only enters the DOM together with its content (`@if (feedback(); as f) { <span role="status">…</span> }`) announces **nothing** on most screen reader/browser pairings — those announce only a mutation *inside* an already existing region, not its own appearance. Binding, therefore, are two elements: a permanently mounted `sr-only` region with `role="status"` in which only the *content* changes via `@if`, plus a visible twin next to it marked with `aria-hidden="true"` — otherwise the same message is read out twice, once from the live region, once from the visible text. Precedent and rationale in the comment: `app-shell.ts` (the `liveQuotaExhausted` message); since #94 (P2) likewise `usage-stats-page.html`; since #134 likewise `channel-workspace-layout.ts`, `admin-channels-page.ts`, `admin-users-page.ts`, `vote-session-list-page.html`, and for the dock's outcome notices and its hidden-by-filter line `DockOutcomeAnnouncer` on `usage-stats-page.html` and `vote-session-detail-page.html` (see the bullet above for why not inside the dock). **Not everything that cannot announce itself needs a twin:** inside a modal the dialog pulls focus and is read out whole on open, so a block that mounts with the dialog gains nothing from a live region and only competes with the banners already in it — `delete-confirm-dialog.ts`'s hidden-by-filter block is deliberately a plain paragraph for that reason. **One known open instance:** `run-progress-panel.ts` — the whole progress panel is `role="status"` and mounts together with its first state, so the start of a run is not announced.
-- **Reference:** `channel-workspace-layout.ts` (`showResyncFeedback`), `admin-channels-page.ts`, `admin-users-page.ts` (role-cache-cleared notice), `vote-session-list-page.html` (copy-link notice), `dock-outcome-announcer.ts` (duplicate/resync notices of the dock, placed by `usage-stats-page.html` and `vote-session-detail-page.html`), `usage-stats-page.ts` (`showSelectionPrunedFeedback`; since #256 also the arbiter's `refusedStart` notice — no timer of its own, the arbiter holds `REFUSED_START_FEEDBACK_MS`), `app-shell.ts` (live-region precedent).
+- **The place must survive the case it reports.** The message does not belong on a surface that disappears through the same event. Concretely: a message about a shrunken selection must not stand in the dock, because the dock unmounts as soon as the selection is empty (2, 8.7) — that is, in exactly the worst case. It therefore sits on the emote count row, which always stands. The same holds for the *announcement* of what the dock does show: the duplicate and resync notices of a restore and of an import stand visibly in the dock, but the dock mounts and unmounts with its own content (`actionDockHasContent`) — and a fully refused run (every row already present) is exactly what mounts it. A status region inside the dock is then created in the same change-detection pass as its text and announces nothing. Their announcement therefore comes from `DockOutcomeAnnouncer` (`shared/seven-tv/dock-outcome-announcer.ts`), which each host page mounts permanently outside every dock gate, `!isCoarse()` included — `usage-stats-page.html` with import and undo outcomes, `vote-session-detail-page.html` with restore outcomes only, since it shows no import or undo section. **The same holds for a line inside an already-mounted dock whose own `@if` creates it together with its sentence**: the usage-stats dock's "n of them hidden by the filter" row (`hiddenSelectedCount`) is spoken by the same announcer, fed a count that is 0 whenever the row is not on screen, so the region never says something the dock does not show. **The marked-count row differs (Opus review, 2026-09-19):** it is reachable in the accessibility tree itself again, not `aria-hidden` — this is the one visible dock line the announcer does *not* continuously mirror, because an individual mark or unmark already announces itself through its own cell's `aria-pressed` flip, and mirroring the live count here too spoke every one of those a second time. The announcer instead speaks only the outcome of a bulk-mark gesture ("mark all" in the toolbar, §8.7, or the per-band one) — exactly the gesture that can take the row from unmounted to a double-digit count with nothing else to announce it — holding that number until a non-bulk change retires it (an individual mark/unmark, a filter-driven prune, a clear) or the row itself leaves the screen, and *not* merely until the selection empties (follow-up, 2026-09-19): a lone deselect that leaves the selection non-empty must retire the announcement too, otherwise a later bulk gesture landing back on the same total would repeat the paragraph's text unchanged and `role="status"` would announce nothing for a gesture that really happened. The notices in the dock and in the mass-delete panel, and the hidden-by-filter row, are `aria-hidden` — the text only, never a focusable control inside it (axe `aria-hidden-focus`); the hidden-by-filter row's "reset filters" button therefore stays outside the hidden span. With several messages at once it speaks one paragraph each, in the dock's reading order: the marked count first, then the hidden-by-filter line, then restore before import, then the undo (#254), and within each the skipped count (the undo: one line per skip reason — its transient notice of a start gives way as soon as the run that start began stops running, which can be before that run has settled; from then on the run's summary lines name the same candidates, so the two never stand together), the check-unavailable notice, then the resync acknowledgement — for an import into a tracked channel's *non-active* set (2026-09-21), the resync never fires at all, and a `copiedNotActiveNotice` (`dock-outcome-announcer.ts`) takes that same slot instead, naming the set the copy actually landed in rather than claiming a channel-page update that never happens. `role="status"` is implicitly `aria-atomic="true"` (WAI-ARIA 1.2, §status); a status region that holds several messages at once, as this one does, must set `aria-atomic="false"` explicitly, otherwise every added or changed paragraph re-reads all of them — a single-message status region elsewhere keeps the implicit default.
+- **The live region itself is permanently mounted, only its text comes and goes.** A `role="status"` element that only enters the DOM together with its content (`@if (feedback(); as f) { <span role="status">…</span> }`) announces **nothing** on most screen reader/browser pairings — those announce only a mutation *inside* an already existing region, not its own appearance. Binding, therefore, are two elements: a permanently mounted `sr-only` region with `role="status"` in which only the *content* changes via `@if`, plus a visible twin next to it marked with `aria-hidden="true"` — otherwise the same message is read out twice, once from the live region, once from the visible text. Precedent and rationale in the comment: `app-shell.ts` (the `liveQuotaExhausted` message); since #94 (P2) likewise `usage-stats-page.html`; since #134 likewise `channel-workspace-layout.ts`, `admin-channels-page.ts`, `admin-users-page.ts`, `vote-session-list-page.html`, and for the dock's outcome notices and its hidden-by-filter line `DockOutcomeAnnouncer` on `usage-stats-page.html` and `vote-session-detail-page.html` (see the bullet above for why not inside the dock). **Not everything that cannot announce itself needs a twin:** inside a modal the dialog pulls focus and is read out whole on open, so a block that mounts with the dialog gains nothing from a live region and only competes with the banners already in it — `delete-confirm-dialog.ts`'s hidden-by-filter block is deliberately a plain paragraph for that reason. **One known open instance:** `run-progress-panel.ts` — the whole progress panel is `role="status"` and mounts together with its first state, so the start of a run is not announced. **The undo's second report has a region of its own (#254):** the panel's region carries the removal report (`sync-deleted`) with its reason and retry; the restore report (`sync-restored`) stands right below the panel in `UndoProgressSection`'s own `role="status"` `aria-atomic="false"` block, mounted with the run rather than with the report's end state, so its failure and its retry are announced when they appear. Both read in the order they are sent: removal report first, restore report second (F8).
+- **Reference:** `channel-workspace-layout.ts` (`showResyncFeedback`), `admin-channels-page.ts`, `admin-users-page.ts` (role-cache-cleared notice), `vote-session-list-page.html` (copy-link notice), `dock-outcome-announcer.ts` (duplicate/resync notices of the dock, placed by `usage-stats-page.html` and `vote-session-detail-page.html`; since #254 also the undo's skipped notice and resync acknowledgement, placed by `usage-stats-page.html` only), `undo-progress-section.ts` (the restore report's own region), `usage-stats-page.ts` (`showSelectionPrunedFeedback`; since #256 also the arbiter's `refusedStart` notice — no timer of its own, the arbiter holds `REFUSED_START_FEEDBACK_MS`), `app-shell.ts` (live-region precedent).
 
 ## 5. Forms & validation
 
@@ -453,7 +453,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 ### 7.3 Ingest dialog (#91, since #147 the one import dialog)
 
 - **What applies:** Everything that brings emotes **into** a set from a channel page — into the
-  channel of the page for the copy sources, into the set a restore file names for a restore (#253) —
+  channel of the page for the copy sources, into the set a restore file names for a restore (#253), and back into
+  the set a transfer file names when its replacements are undone (#254) —
   begins in the page header with the trigger `<app-import-trigger>` (§8.7 governs the surface, §4.2 the blocks) and runs through **one**
   dialog: `ImportSourceDialog` (`shared/seven-tv/import-source-dialog.ts`,
   `openImportSourceDialog`). **Its first step is the source selection** — until #147 the
@@ -517,9 +518,10 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   second pick. **Without a selected set on the page the branch reads restore files only**; an emote
   list or a usage export is refused with its own banner (no set to copy into) before it is parsed.
 - **Row order in the file branch (contract):**
-  1. The **list of the four permissible kinds of file**, each its own list entry with the addition
+  1. The **list of the five permissible kinds of file**, each its own list entry with the addition
      "as JSON": purge protocol (restore) · transfer protocol, recovery file or result protocol
-     (restore) · emote list (copy) · usage export (copy). The two restore sorts come first, in that
+     (restore or undo the replacements) · recovery file or result protocol of an undo (restore,
+     #254) · emote list (copy) · usage export (copy). The three restore sorts come first, in that
      order. It stands **above** the control it explains, and is a list and not a
      sentence with commas — the German versions would otherwise break at an arbitrary point at 360 px
      (§12).
@@ -527,9 +529,46 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
      `<input type="file" accept="application/json">`. The button is the first meaningful
      control of the step and receives focus on entry (see the focus contract below).
      §7 "cancel always comes first" applies to the action row and stays untouched by this.
-  3. The error banner (`NoticeBanner` `error`) — only in the error case.
+  3. The **switch** (#254) — only for a transfer protocol whose set passed the check, see below.
+  4. The error banner (`NoticeBanner` `error`) — only in the error case.
 
-  There is **no** "Continue" button in this branch: the file selection itself is the execution.
+  There is **no** "Continue" button in this branch: the file selection itself is the execution —
+  for a transfer protocol, the pick at the switch.
+- **The switch for a transfer protocol is a contract (#254).** A transfer protocol (either stage)
+  can do two things — close the gaps its replacements left, or undo the replacements — and the step
+  asks which, instead of reporting straight away. Only this kind gets the switch: a purge protocol,
+  an undo's own file and the two copy sorts report straight away, and a file whose set fails the check
+  shows its banner and no switch. The switch is a question (`restore.import.choice.legend`, the
+  group's accessible name) over **two ruled rows in the source selection's idiom** — buttons, not a
+  radio group: a pick navigates, and the confirmation of what it does comes after, in the restore's
+  or the undo's own dialog. **The non-destructive option comes first and takes focus** when the
+  switch appears ("Close the gaps": adds back, removes nothing); the undo comes second and carries a
+  `danger` `StatusBadge` "removes emotes" next to its label — a new use of that tone (§4.3), marking
+  the one option in a choice that takes something out of a set. **Disabled explains itself (§10):**
+  when the file reads as a restore but not as an undo (no replacement an undo could reverse), the
+  undo row stays in place, disabled, its reason as a third line inside the button, so the reason is
+  part of the row's accessible name — the house pattern of the source rows. A new file removes the
+  switch; the undo side never infers its own success from the restore side's.
+- **The undo confirmation (`UndoConfirmDialog`, `shared/seven-tv/undo-confirm-dialog.ts`, #254),
+  row order top to bottom (contract):** the file line (which stage, from when) and the origin of the
+  undone transfer → the target lines (set, set id, owner; channel and "not active" for a tracked
+  target — #253's lines) → the foreign-to-view hint when the target is not the set on screen → the
+  removal banner (`warning`, only while a row removes a source) → the read note with "Reload target"
+  → **the rows, in the file's order**, source (its still image) beside target (the resolution
+  step's empty plate, name and entries), then what the read makes of it ("Source out, target back",
+  "Target back only", or "Skipped: reason" with the live counterpart); **a skipped row stays in its
+  place** with its reason — it is neither hidden nor moved to the end, so toggling the confirmation
+  below only changes a row's status line → the totals (mode counts, entries coming back, entries
+  already there, entries left out, one line per skip reason) → the slot projection (a warning,
+  never a lock) → the refused-download banner → the confirmation for unproven rows (only when the
+  plan has an unproven `full` row — a `planned` file whose rows would all only add shows none;
+  right above the action row) → Cancel / the executor, with its reason beside it while it
+  is locked. The executor follows §7.2's recovery-file pattern, but only for a plan that removes
+  something: "Save recovery file" downloads the undo's own `planned` file from the read the dialog
+  already holds (no second request), then turns into "Start"; a plan that only adds starts directly
+  and writes no file. A failed or incomplete read opens the dialog in its error state and releases
+  nothing until "Reload target" brings a complete one. The token is asked for **before** the first
+  read, as for delete and restore — §7.2's import exception does not apply.
 - **Channel branch (`ForeignChannelStep`, `shared/seven-tv/foreign-channel-step.ts`):** visibly
   labelled channel field (§5.2 applies here in full — it is not a filter bar) plus "Load set", after that
   loading state/error banner and the `ForeignEmoteGrid`. The step closes nothing; it reports its
@@ -596,8 +635,9 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   making `DialogShell`'s host a flex column for all twelve dialogs — deliberately not done.
   The numbers hang on an E2E case, because jsdom has no layout.
 - **Result contract:** on success the dialog closes with a discriminated result —
-  "Restore" with the restorable rows of the file and its checked target, "Import" with the `ImportSource` from the
-  file or "Foreign" with the rows marked in the grid —, on cancel/Escape/backdrop with
+  "Restore" with the restorable rows of the file and its checked target, "Undo" with the undo
+  candidates of a transfer protocol, its checked target and where the file came from (#254),
+  "Import" with the `ImportSource` from the file or "Foreign" with the rows marked in the grid —, on cancel/Escape/backdrop with
   `undefined`. It starts **no** run, chooses **no** import target and opens **no** further
   dialog. In the error case it stays open and shows the banner; every new attempt resets it, and
   the file input is cleared after every selection so that the same corrected file triggers a
@@ -609,7 +649,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   exactly one question remained there that the page context had already answered. The step is
   deleted without replacement. `forcedScope` itself stays — the dock entry point in §8.7 still uses it.
 - **The chains run one after another, not into one another.** First the import dialog closes with its
-  result, then the trigger starts the matching chain — `startRestoreFlow` (token → confirmation)
+  result, then the trigger starts the matching chain — `startRestoreFlow` (token → confirmation),
+  `startUndoFlow` (arbiter → token → first read → confirmation → freshness read → start, #254)
   or `startImportFlow` (confirmation → token, §7.2). No dialog of these chains is opened out of an
   open dialog; the one-dialog contract from §7 stays intact and both
   orders stay as they are.
@@ -650,10 +691,11 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   tile has only an en dash for it and a screen reader does not pronounce that at all.
 - **Reference:** `web/src/app/shared/seven-tv/import-source-dialog.ts`, `file-import-step.ts`,
   `foreign-channel-step.ts`, `leaderboard-step.ts`, `foreign-emote-grid.ts`, `import-trigger.ts`,
-  `import-trigger-gate.ts`, `restore-flow.ts`, `restore-progress-section.ts`;
+  `import-trigger-gate.ts`, `restore-flow.ts`, `restore-progress-section.ts`, `undo-flow.ts`,
+  `undo-confirm-dialog.ts`, `undo-progress-section.ts`; `core/seven-tv/undo-plan.ts`;
   `core/seven-tv/seven-tv-leaderboard.service.ts`,
   `leaderboard.model.ts`; parsers `shared/export/read-envelope.ts`, `purge-run-export.ts`,
-  `import-source-parser.ts`.
+  `transfer-run-export.ts`, `transfer-undo-export.ts`, `import-source-parser.ts`.
 
 ### 7.4 Export dialog (purpose instead of format)
 

@@ -7,6 +7,7 @@ import {
   Subscription,
   catchError,
   concatMap,
+  defaultIfEmpty,
   defer,
   delayWhen,
   from,
@@ -14,6 +15,7 @@ import {
   map,
   of,
   retry,
+  take,
   tap,
   throwError,
   timer,
@@ -77,12 +79,16 @@ export interface RunQueueItem extends RunQueueEmote {
   errorMessage?: string;
   /** How many of this row's steps 7TV confirmed with a success answer, whatever the row's final
    *  status — a two-step row that ends `failed` or `unknown` with `completedSteps >= 1` had its first
-   *  mutation applied. `0` until the first answer. */
+   *  mutation applied. `0` until the first answer. A row a `beforeStep` hook skips at step >= 1 ends
+   *  `cancelled` with this left at whatever it already reached — a named gap, not a loss (see
+   *  `RunOperation.beforeStep`). */
   completedSteps: number;
   /** Index of the step the row ended on when it ended `failed` or `unknown` — `0` for a
    *  single-step row, never missing on those two statuses. For a row cancelled after a confirmed
    *  step it is the first step 7TV never confirmed; for a row cancelled while a request was in
-   *  flight, the step of that request. `null` on every other status. */
+   *  flight, the step of that request. `null` on every other status — including a row a
+   *  `beforeStep` hook skipped, which is `cancelled` without ever having had a failed step of its
+   *  own (`completedSteps` alone tells that story there). */
   failedStep: number | null;
 }
 
@@ -93,6 +99,10 @@ export interface RunFailure {
   errorCode: string | null;
   gqlStatus: number | null;
 }
+
+/** What a `beforeStep` hook returns for one attempt of a step — see the hook's own documentation
+ *  on `RunOperation` for what each outcome does. */
+export type StepGate = { kind: 'proceed' } | { kind: 'skip'; errorMessage: string };
 
 /** What a run does per emote. The engine owns pacing, retries, token handling and the queue; the
  *  operation owns only the mutations — REMOVE for the delete, ADD for the restore and the import.
@@ -118,6 +128,41 @@ export interface RunOperation {
     query: string;
     variables: Record<string, unknown>;
   };
+  /**
+   * Asked before every attempt of this step's request — the first try and, because the engine
+   * calls it again whenever `retry()` resubscribes, every retry after a rate-limit pause too.
+   * Lets the calling service gate a step on an asynchronous precondition `buildRequest` cannot
+   * check on its own (the undo run's per-REMOVE freshness read, spec #254 E19, is the reason this
+   * exists).
+   *
+   * `{ kind: 'proceed' }` sends the request exactly as it would without a hook. `{ kind: 'skip',
+   * errorMessage }` ends the row `cancelled` with that message and sends no request at all:
+   * `completedSteps` is left exactly as it was — a multi-step row skipped past its first step
+   * keeps whatever it already confirmed, a named gap rather than a loss (Plan #254 §T3) —,
+   * `abortOn` is not consulted, and the run paces itself for the next row exactly as it does after
+   * any other row.
+   *
+   * **Contract: exactly one value, then whatever happens after is ignored.** The engine takes only
+   * the first emission (`take(1)`) and unsubscribes right after — a second, synchronous emission
+   * never reaches it (no duplicate REMOVE), and a hook that never completes on its own does not
+   * hang the row: one `next` is all the engine needs. An observable that *completes* without ever
+   * emitting is treated as `skip` with a generic, engine-owned message, the same as a hook that
+   * throws synchronously or whose observable errors — all three are fail-closed, logged via
+   * `console.error` the same way a throwing `abortOn` hook is (below). The engine does **not** time
+   * a slow hook out; an observable that neither emits, errors nor completes leaves the row waiting
+   * forever, and giving it a deadline is the hook owner's job (`timeout()` upstream of returning
+   * it), not this one's.
+   *
+   * Not asked again for the same attempt once its request is out: this hook decides whether to
+   * *make* the request, `abortOn` decides whether to keep going after one that *failed*. A
+   * `cancel()` while the hook is still pending ends the row exactly as a cancel during a request
+   * in flight does — the hook's own answer, however it resolves, is simply never observed.
+   *
+   * Omitted means every attempt proceeds straight away, with no detour through this hook at all —
+   * delete, restore and import, none of which set it, are unaffected byte-for-byte.
+   */
+  beforeStep?(setId: string, emote: RunQueueEmote, step: number): Observable<StepGate>;
+
   /**
    * `true` makes a step whose answer never came out of 7TV's GraphQL layer end its row `unknown`
    * instead of `failed`: no response at all (`httpStatus 0` — network loss, timeout) and every HTTP
@@ -188,8 +233,13 @@ interface RunStepFailure {
   gqlStatus: number | null;
 }
 
-/** The outcome of one step, after any rate-limit retries. */
-type RunOneResult = { outcome: 'done' } | ({ outcome: 'failed' | 'unknown' } & RunStepFailure);
+/** The outcome of one step, after any rate-limit retries. `skip` is never seen by `retry` — it is
+ *  an ordinary emitted value, not an error — so a `beforeStep` hook that skips one attempt does not
+ *  prevent the engine from asking it again before the next. */
+type RunOneResult =
+  | { outcome: 'done' }
+  | ({ outcome: 'failed' | 'unknown' } & RunStepFailure)
+  | { outcome: 'skip'; errorMessage: string };
 
 /** The rate-limit numbers 7TV mirrors into a rejected mutation's `extensions.headers`. All values
  *  arrive as strings; `reset` is in seconds. Any of them can be missing. */
@@ -420,6 +470,14 @@ export class SevenTvRunEngine {
             ),
           );
         }
+        if (result.outcome === 'skip') {
+          // The beforeStep hook declined this attempt: no request went out, so nothing 7TV
+          // confirmed changes — completedSteps and failedStep are left exactly as they were. A
+          // multi-step row skipped past its first step keeps whatever it already confirmed, a
+          // named gap rather than a loss (Plan #254 §T3). abortOn is never consulted here.
+          this.updateRow(emote.key, { status: 'cancelled', errorMessage: result.errorMessage });
+          return of(undefined);
+        }
         // A step that fails or stays unknown ends the row: a later step would build on a state 7TV
         // did not confirm (an ADD onto a name the REMOVE may not have freed is a 409 waiting).
         this.updateRow(emote.key, {
@@ -447,7 +505,7 @@ export class SevenTvRunEngine {
     operation: RunOperation,
     token: string,
   ): Observable<RunOneResult> {
-    return this.runOne(setId, emote, step, operation, token).pipe(
+    return this.runGatedOne(setId, emote, step, operation, token).pipe(
       retry({
         count: MAX_RATE_LIMIT_RETRIES,
         delay: (error) => {
@@ -459,10 +517,10 @@ export class SevenTvRunEngine {
         },
       }),
       catchError(() =>
-        // Only a RateLimitHit can get here — runOne turns everything else into a result value.
-        // httpStatus, errorCode and gqlStatus are all null: this is a give-up after retries,
-        // synthesised locally, not a single server response to read any of them off. 7TV did
-        // answer every attempt, so it is `failed`, never `unknown`.
+        // Only a RateLimitHit can get here — runGatedOne turns everything else into a result
+        // value. httpStatus, errorCode and gqlStatus are all null: this is a give-up after
+        // retries, synthesised locally, not a single server response to read any of them off. 7TV
+        // did answer every attempt, so it is `failed`, never `unknown`.
         of<RunOneResult>({
           outcome: 'failed',
           errorMessage: this.translocoService.translate('massDelete.errors.rateLimitedGaveUp'),
@@ -472,6 +530,65 @@ export class SevenTvRunEngine {
         }),
       ),
     );
+  }
+
+  /** Asks the operation's `beforeStep` hook, if any, for this attempt of the step — `retry()`
+   *  resubscribes to whatever this returns on every rate-limit retry, so a hook is asked again
+   *  before each one. `skip`, a throwing hook, an erroring observable, or one that completes empty
+   *  all short-circuit straight to a `skip` result without ever calling `runOne` — no request goes
+   *  out. `take(1)` enforces the hook's contract at the engine's end: only the first emission is
+   *  observed (a second, synchronous one is dropped, so a double emission cannot send the request
+   *  twice), and unsubscribing right after means a hook that never completes on its own does not
+   *  keep this chain alive. Without a hook this *is* `runOne`, with no detour, so an operation that
+   *  never sets `beforeStep` runs exactly as it did before this method existed. */
+  private runGatedOne(
+    setId: string,
+    emote: RunQueueEmote,
+    step: number,
+    operation: RunOperation,
+    token: string,
+  ): Observable<RunOneResult> {
+    if (!operation.beforeStep) {
+      return this.runOne(setId, emote, step, operation, token);
+    }
+    return defer(() => {
+      let gate$: Observable<StepGate>;
+      try {
+        // Called as operation.beforeStep(...), like buildRequest and abortOn, so a hook that reads
+        // its own `this` off the operation object sees the same one they do.
+        gate$ = operation.beforeStep!(setId, emote, step);
+      } catch (error) {
+        console.error('[EmotePurge] 7TV run beforeStep hook threw — skipping the step', error);
+        return of<RunOneResult>({ outcome: 'skip', errorMessage: this.beforeStepFailedMessage() });
+      }
+      return gate$.pipe(
+        take(1),
+        // An observable that completes without ever emitting is exactly as unusable as one that
+        // errors — both fail closed rather than send a request blind.
+        defaultIfEmpty<StepGate, StepGate>({
+          kind: 'skip',
+          errorMessage: this.beforeStepFailedMessage(),
+        }),
+        catchError((error) => {
+          console.error('[EmotePurge] 7TV run beforeStep hook errored — skipping the step', error);
+          return of<StepGate>({ kind: 'skip', errorMessage: this.beforeStepFailedMessage() });
+        }),
+        concatMap((gate) =>
+          gate.kind === 'skip'
+            ? of<RunOneResult>({ outcome: 'skip', errorMessage: gate.errorMessage })
+            : this.runOne(setId, emote, step, operation, token),
+        ),
+      );
+    });
+  }
+
+  /** Fail-closed fallback text for a `beforeStep` hook that throws, errors, or completes without
+   *  ever emitting — a shipped hook is written not to do any of those, so this is not expected to
+   *  reach a user in practice; it exists only so a broken hook still skips the step instead of
+   *  sending a request blind. Translated like the engine's other own texts (`rateLimitedGaveUp`,
+   *  `cancelledMidRow`), not read off the hook, which never gets to say anything in this case. */
+  private beforeStepFailedMessage(): string {
+    return this.translocoService.translate('massDelete.errors.beforeStepFailed');
   }
 
   private runOne(
@@ -747,7 +864,13 @@ export class SevenTvRunEngine {
    *    unconfirmed step: 7TV already changed, and `cancelled` says in the protocol that nothing
    *    happened.
    *  On the abort path neither exception can arise: the aborting row is already `failed`, and its
-   *  answer has cleared `inFlight`. */
+   *  answer has cleared `inFlight`.
+   *
+   *  That second exception is about *this* method's own `cancelled`, reached via `cancel()` or an
+   *  `abortOn` abort — it does not describe a `beforeStep` skip. A skip is applied directly in
+   *  `runRowFrom`, never through here, and its `cancelled` can carry `completedSteps > 0`: there it
+   *  says the step this attempt gated never ran, not that nothing in the row happened (see
+   *  `RunOperation.beforeStep`). */
   private cancelRemainingRows(): void {
     const inFlight = this.operation?.transportLossIsUnknown ? this.inFlight : null;
     this.inFlight = null;

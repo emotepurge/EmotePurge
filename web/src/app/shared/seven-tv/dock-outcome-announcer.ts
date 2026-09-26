@@ -7,7 +7,9 @@ import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import { UNDO_SKIP_REASONS, UndoSkipReason, UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 
 /** Translation key for the shared pre-check's block reason on a replace-carrying start (spec 4.5
  *  point 17, AK 32), or `null` while nothing is blocked — shared by this announcer and the visible
@@ -30,17 +32,66 @@ export function importTargetCheckBlockedKey(reason: TargetCheckBlockReason | nul
 }
 
 /** Translation key for a run's resync acknowledgement, or `null` while there is nothing to say.
- *  Shared by this announcer and the two visible notices it speaks for (`RestoreProgressSection`,
- *  `ImportProgressSection` — moved out of `MassDeletePanel` in #253/T9), so the spoken and the
- *  shown wording cannot drift apart. Every
+ *  Shared by this announcer and the three visible notices it speaks for (`RestoreProgressSection`,
+ *  `ImportProgressSection` — moved out of `MassDeletePanel` in #253/T9 — and
+ *  `UndoProgressSection`), so the spoken and the shown wording cannot drift apart. Every
  *  non-`'idle'` state maps to `<family>.resync.<state>`, so a new `ResyncTriggerState` needs its
- *  key in both locales — `'backendTriggered'` only under `restore`, since the import never takes
- *  it (spec 6.4/6.5). */
+ *  key in both locales — `'backendTriggered'` only under `restore` and `undo`, since the import
+ *  never takes it (spec 6.4/6.5; #254 spec 4.5 point 17). */
 export function resyncNoticeKey(
   state: ResyncTriggerState,
-  family: 'import' | 'restore',
+  family: 'import' | 'restore' | 'undo',
 ): string | null {
   return state === 'idle' ? null : `${family}.resync.${state}`;
+}
+
+/** One line of the undo's skipped candidates: how many were skipped for `reason`. */
+export interface UndoSkippedLine {
+  reason: UndoSkipReason;
+  count: number;
+}
+
+/** The non-empty reasons of `countsByReason`, in `UNDO_SKIP_REASONS` order (the classification's
+ *  own table order, then the callers') — the one order in which both the dock and this announcer
+ *  name skipped undo candidates. Each reason is one line (`undo.summary.skipped`), so a candidate
+ *  is named exactly once, under the reason it carries. */
+export function undoSkippedLines(
+  countsByReason: Readonly<Partial<Record<UndoSkipReason, number>>>,
+): UndoSkippedLine[] {
+  return UNDO_SKIP_REASONS.map((reason) => ({ reason, count: countsByReason[reason] ?? 0 })).filter(
+    (line) => line.count > 0,
+  );
+}
+
+/**
+ * The undo's transient skipped notice (#254 spec 4.7): the candidates the last `startUndo` call
+ * skipped (dialog, freshness check, the service's own locks), by reason — or `null` while there is
+ * nothing to say. Shared by `UndoProgressSection` (visible, aria-hidden) and this announcer (spoken),
+ * so both follow the same gate.
+ *
+ * Silent once the run that call started has stopped running: from then on that run's settled
+ * summary names the very same candidates under the same reasons (they are its `skipped`, the
+ * array the notice was set from), and showing both would name each candidate twice. A call that
+ * started nothing — everything skipped, or refused — leaves no run of its own, so the notice is the
+ * only place those candidates are named and it stays for its whole window.
+ */
+export function undoSkippedNotice(state: {
+  noticePending: boolean;
+  noticeSkipped: readonly UndoSkippedRow[];
+  run: UndoRunInfo | null;
+  isRunning: boolean;
+}): UndoSkippedLine[] | null {
+  if (!state.noticePending || state.noticeSkipped.length === 0) {
+    return null;
+  }
+  if (state.run !== null && state.run.skipped === state.noticeSkipped && !state.isRunning) {
+    return null;
+  }
+  const counts: Partial<Record<UndoSkipReason, number>> = {};
+  for (const row of state.noticeSkipped) {
+    counts[row.reason] = (counts[row.reason] ?? 0) + 1;
+  }
+  return undoSkippedLines(counts);
 }
 
 /** The two settled-run notices below (`copiedNotActiveNotice`, `renamedNotActiveNotice`) share this
@@ -145,9 +196,10 @@ export function markedCountNoticeKey(count: number): string {
  *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
- * just below), then restore (the marking half) before import, and within each the skipped count
- * (for restore followed by its name-taken count), the check-unavailable notice, then the resync
- * acknowledgement. `role="status"` is implicitly
+ * just below), then restore (the marking half) before import, then the undo (#254), and within each
+ * the skipped count (for restore followed by its name-taken count, for the undo one line per skip
+ * reason), the check-unavailable notice, then the resync acknowledgement. `role="status"` is
+ * implicitly
  * `aria-atomic="true"` (WAI-ARIA 1.2, §status), and Blink/WebKit apply that default — so without an
  * explicit override, a new or changed paragraph would make the whole region, standing ones
  * included, be read again. This multi-message region therefore sets `aria-atomic="false"` on its
@@ -155,8 +207,9 @@ export function markedCountNoticeKey(count: number): string {
  * interpolated text node so an in-place pending→succeeded change is still read as the full new
  * sentence, not a fragment.
  *
- * `withImport`: the import section only exists on the usage-stats page. The voting-results page
- * mounts the mass-delete panel alone and must not speak for an import run it does not show.
+ * `withImport`: the import section — and since #254 the undo section — only exists on the
+ * usage-stats page. The voting-results page mounts the mass-delete panel alone and must not speak
+ * for an import or undo run it does not show.
  *
  * `hiddenSelectedCount` is not a run outcome but a standing condition: how many marked rows a filter
  * currently hides. It does not self-clear the way a run outcome does (docs/UI-Designsprache.md §4.4,
@@ -237,6 +290,20 @@ export function markedCountNoticeKey(count: number): string {
       } @else if (importResyncKey(); as key) {
         <p>{{ key | transloco }}</p>
       }
+      <!-- The undo (#254) after the import, in the dock's own order: its skipped notice, then its
+           resync acknowledgement — both aria-hidden in UndoProgressSection. -->
+      @for (line of undoSkippedNotice(); track line.reason) {
+        <p>
+          {{
+            'undo.summary.skipped'
+              | transloco
+                : { count: line.count, reason: ('undo.confirm.reason.' + line.reason | transloco) }
+          }}
+        </p>
+      }
+      @if (undoResyncKey(); as key) {
+        <p>{{ key | transloco }}</p>
+      }
     }
   `,
 })
@@ -255,6 +322,7 @@ export class DockOutcomeAnnouncer {
 
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
+  private readonly undoService = inject(SevenTvUndoService);
 
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
@@ -288,5 +356,17 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importRenamedNotActive = computed(() =>
     renamedNotActiveNotice(this.importService.run()),
+  );
+  protected readonly undoSkippedNotice = computed(
+    () =>
+      undoSkippedNotice({
+        noticePending: this.undoService.noticePending(),
+        noticeSkipped: this.undoService.noticeSkipped(),
+        run: this.undoService.run(),
+        isRunning: this.undoService.isRunning(),
+      }) ?? [],
+  );
+  protected readonly undoResyncKey = computed(() =>
+    resyncNoticeKey(this.undoService.resyncTrigger(), 'undo'),
   );
 }

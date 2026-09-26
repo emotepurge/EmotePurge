@@ -979,11 +979,25 @@
       "title": "Import file",
       "sorts": {
         "purgeRun": "Purge protocol (restore) as JSON",
-        "transferRun": "Transfer protocol — recovery file or result protocol (restore) as JSON",
+        "transferRun": "Transfer protocol — recovery file or result protocol (restore or undo the replacements) as JSON",
+        "transferUndo": "A replace's undo protocol — recovery file or result protocol (restore) as JSON",
         "emoteList": "Emote list (copy) as JSON",
         "usageExport": "Usage export (copy) as JSON"
       },
       "fileLabel": "Choose file",
+      "choice": {
+        "legend": "What should happen with this transfer file?",
+        "restore": {
+          "label": "Close the gaps",
+          "hint": "Brings removed target emotes back where their name is free. Removes nothing."
+        },
+        "undo": {
+          "label": "Undo the replacements",
+          "hint": "Removes the source emotes that took over the name and brings the targets back. You confirm first.",
+          "destructive": "removes emotes",
+          "unavailable": "This file holds no replacement that could be undone."
+        }
+      },
       "errors": {
         "notJson": "The file is not valid JSON.",
         "csvInsteadOfJson": "That is the CSV version. The import needs the same file as JSON — pick the JSON format when exporting.",
@@ -994,6 +1008,8 @@
         "noRows": "The file contains no importable emotes.",
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore.",
         "transferRunNoRows": "This transfer file contains no removed emotes.",
+        "transferUndo": "That is a replace's undo protocol (recovery file or result protocol), not an emote list to copy from — such files only serve to restore removed emotes.",
+        "transferUndoNoRows": "This recovery file contains no removed source emotes.",
         "targetNotEditable": "The set named in the file is not (or no longer) editable, or it no longer exists.",
         "targetNotSelectable": "The set named in the file is not a normal emote set.",
         "targetCheckUnavailable": "The set named in the file could not be checked right now — please try again in a moment.",
@@ -1082,6 +1098,7 @@
       "rateLimited": "Too many requests to 7TV (rate limit) — try again later.",
       "rateLimitedGaveUp": "7TV rate limit still active after several waits — emote skipped.",
       "cancelledMidRow": "Cancelled partway — 7TV had already carried out part of it.",
+      "beforeStepFailed": "Skipped — the check before this step failed.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }}).",
       "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
@@ -1415,6 +1432,170 @@
     },
     "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
   },
+  "undo": {
+    "confirm": {
+      "title": {
+        "one": "Undo {{ count }} replacement from the file?",
+        "other": "Undo {{ count }} replacements from the file?"
+      },
+      "fileLine": {
+        "planned": "From a recovery file of the transfer, written on {{ date }} — before its first step.",
+        "finished": "From the result protocol of the transfer of {{ date }}."
+      },
+      "origin": {
+        "channel": "The transfer came from the channel {{ channel }}.",
+        "file": "The transfer came from the file {{ fileName }}.",
+        "leaderboard": "The transfer came from 7TV's leaderboard: {{ sort }}.",
+        "unknown": "The file does not say where the transfer came from."
+      },
+      "setLine": "In the set “{{ setName }}”.",
+      "removals": {
+        "one": "{{ count }} source emote will be removed from the set.",
+        "other": "{{ count }} source emotes will be removed from the set."
+      },
+      "readNote": "Checked against the target set as it is now; it is read again before the start and before every removal.",
+      "reloadTarget": "Reload target",
+      "listLabel": "Replacements from the file",
+      "sourceAlias": "as “{{ alias }}”",
+      "targetUnnamed": "Target without a default name",
+      "unnamedEntry": "(unnamed)",
+      "mode": {
+        "full": "Source out, target back",
+        "addOnly": "Target back only"
+      },
+      "skippedRow": "Skipped: {{ reason }}",
+      "reason": {
+        "duplicateInFile": "duplicated in the file",
+        "sourceUnderOtherName": "the source now has a different name",
+        "sourceHasMoreEntries": "the source now has further entries",
+        "targetNameUnverifiable": "an unnamed target entry cannot be checked",
+        "targetHasForeignEntries": "the target carries an entry the file does not know",
+        "targetNameTaken": "a target name is taken by another emote",
+        "inconsistent": "file and set do not match",
+        "nothingToDo": "nothing to do",
+        "skippedUnproven": "unproven and not confirmed",
+        "skippedDrift": "changed since the check",
+        "recheckUnavailable": "could not be rechecked"
+      },
+      "unproven": "unproven",
+      "adds": "Comes back as: {{ names }}",
+      "omitted": {
+        "targetNameTaken": "“{{ alias }}” is left out — the name is taken by another emote.",
+        "targetNameUnverifiable": "An unnamed entry is left out — the file names no default name."
+      },
+      "foreignNote": "The target already carries an entry the file does not know — it stays untouched.",
+      "liveSource": "Now in the set — source:",
+      "liveTarget": "target:",
+      "liveAbsent": "not in the set",
+      "modeCounts": "Source out, target back: {{ full }} · target back only: {{ addOnly }} · skipped: {{ skipped }}",
+      "additions": {
+        "one": "{{ count }} target entry comes back.",
+        "other": "{{ count }} target entries come back."
+      },
+      "alreadyPresent": {
+        "one": "{{ count }} target entry from the file is already in the set.",
+        "other": "{{ count }} target entries from the file are already in the set."
+      },
+      "omittedCount": {
+        "one": "{{ count }} target entry does not come back because its name is taken or cannot be checked.",
+        "other": "{{ count }} target entries do not come back because their names are taken or cannot be checked."
+      },
+      "skippedCount": "{{ count }} skipped: {{ reason }}",
+      "reading": "Reading the target set…",
+      "readFailed": "The target set could not be read completely. Without a complete picture nothing is released.",
+      "saveFailed": "The browser refused to download the recovery file. Without that file no run that removes anything starts.",
+      "acknowledgeUnproven": {
+        "planned": "The loaded file was written before the transfer and does not prove that the transfer ran. I have checked that the source emotes shown come from this transfer.",
+        "finished": "According to the result log, the transfer did not complete for the marked rows, so the file does not prove that it put the source emotes shown into the set. I have checked that they come from this transfer."
+      },
+      "acknowledgeHint": {
+        "one": "Without the confirmation, the row marked as unproven is skipped.",
+        "other": "Without the confirmation, the {{ count }} rows marked as unproven are skipped."
+      },
+      "blockedUnproven": "No row runs without the confirmation above.",
+      "blockedNothing": "No row runs — every one is skipped.",
+      "saveRecovery": "Save recovery file",
+      "start": "Start"
+    },
+    "settling": "Finishing — the re-read and the reports are still running…",
+    "errors": {
+      "removedButNotRestored": "The source emote was removed, but the target was not fully brought back — the set is now missing an entry. Run the same undo from the same file again to close the gap.",
+      "cancelledMidRow": "Cancelled after the source emote had already been removed — the target is not fully back. Run the same undo again to close the gap.",
+      "restoreIncomplete": "Not every entry of the target was brought back. Run the same undo again to add the rest.",
+      "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied.",
+      "skippedDrift": "Skipped — the set changed since you confirmed; nothing on this row was touched.",
+      "recheckUnavailable": "Skipped — the set could not be read right before the removal; nothing on this row was touched."
+    },
+    "progress": "{{ finished }} / {{ total }} processed",
+    "progressBarLabel": "Undo progress",
+    "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
+    "unknownOutcome": "Unclear whether it was undone — 7TV gave no clear answer. Please check the set.",
+    "deleteFailedFallback": "Undo failed",
+    "syncFailedTitle": "Reporting the removal back to EmotePurge failed",
+    "syncFailed": "The source emotes were removed from the set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
+    "syncPartialTitle": "Reporting the removal back to EmotePurge incomplete",
+    "syncPartial": "The source emotes were removed from the set on 7TV and recorded at EmotePurge — but not completely.",
+    "syncRetry": "Report removal again",
+    "syncRetrySucceeded": "Removal reported back successfully.",
+    "restoreSyncFailedTitle": "Reporting the restored targets back to EmotePurge failed",
+    "restoreSyncFailed": "The target emotes are back in the set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
+    "restoreSyncPartialTitle": "Reporting the restored targets back to EmotePurge incomplete",
+    "restoreSyncPartial": "The target emotes are back in the set on 7TV and recorded at EmotePurge — but not completely.",
+    "restoreSyncRetry": "Report restore again",
+    "restoreSyncSucceeded": "Restore reported back successfully.",
+    "resync": {
+      "pending": "Triggering a sync…",
+      "succeeded": "Sync triggered — the list will refresh in a moment.",
+      "cooldown": "Sync cooldown active — the list refreshes on its own within a minute.",
+      "failed": "Could not trigger a sync — the periodic sync catches up within a minute.",
+      "backendTriggered": "Already being re-synced — the list updates shortly."
+    },
+    "leaveWhileRunning": {
+      "message": "The replace undo is still running. It continues in the background, but its progress is only visible on the emote-usage page. Leave the page anyway?",
+      "confirm": "Leave"
+    },
+    "summary": {
+      "counts": "{{done}} undone · {{failed}} failed · {{cancelled}} cancelled",
+      "targetChannel": "Target: {{ channel }} · set {{ setName }}",
+      "targetOwner": "Target: set {{ setName }} of {{ owner }}",
+      "removed": {
+        "one": "{{ count }} source emote was removed.",
+        "other": "{{ count }} source emotes were removed."
+      },
+      "restored": {
+        "one": "{{ count }} target entry was brought back.",
+        "other": "{{ count }} target entries were brought back."
+      },
+      "unknownRows": {
+        "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
+        "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
+      },
+      "unknownRecordedIn": {
+        "one": "For {{ count }} row it is unclear whether the source emote was removed — the result log does not record it as a confirmed removal, only the undo's recovery file covers it.",
+        "other": "For {{ count }} rows it is unclear whether the source emote was removed — the result log does not record them as confirmed removals, only the undo's recovery file covers them."
+      },
+      "gaps": {
+        "one": "{{ count }} row left a gap: the source emote is gone, but the target is not fully back. Run the same undo from the same file again to close it.",
+        "other": "{{ count }} rows left a gap: the source emotes are gone, but the targets are not fully back. Run the same undo from the same file again to close them."
+      },
+      "partialRows": {
+        "one": "Of the undone rows, {{ count }} is only partly back — an entry was left out.",
+        "other": "Of the undone rows, {{ count }} are only partly back — entries were left out."
+      },
+      "omittedEntries": {
+        "one": "{{ count }} target entry was left out because its name is taken or cannot be checked — free the name and run the same undo again.",
+        "other": "{{ count }} target entries were left out because their names are taken or cannot be checked — free the names and run the same undo again."
+      },
+      "foreignNoted": {
+        "one": "{{ count }} target already carried an entry the file does not know — it was left untouched.",
+        "other": "{{ count }} targets already carried an entry the file does not know — each was left untouched."
+      },
+      "skipped": "{{ count }} skipped: {{ reason }}",
+      "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped and the token was removed.",
+      "downloadProtocol": "Download result log",
+      "protocolNotSaved": "Result log not saved yet — it is gone once you close this."
+    }
+  },
   "sevenTvRun": {
     "notStarted": {
       "running": "Nothing started — {{ kind }} is still running.",
@@ -1423,7 +1604,8 @@
     "kind": {
       "delete": "the deletion run",
       "restore": "the restore",
-      "import": "the transfer"
+      "import": "the transfer",
+      "undo": "the replace undo"
     }
   },
   "sevenTvToken": {

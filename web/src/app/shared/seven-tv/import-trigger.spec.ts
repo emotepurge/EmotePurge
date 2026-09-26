@@ -14,12 +14,16 @@ import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.servic
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import { TransferPlan } from '../../core/seven-tv/transfer-plan';
+import { UndoCandidate } from '../../core/seven-tv/undo-candidate';
 import { PurgeRunRow } from '../export/purge-run-export';
 import { FileImportResult } from './file-import-step';
 import { ImportSourceDialogResult } from './import-source-dialog';
 import { ImportTrigger } from './import-trigger';
 import { ResolvedRestoreTarget } from './restore-flow';
+import { UndoConfirmDialogData, UndoConfirmOutcome } from './undo-confirm-dialog';
+import { undoRunTarget } from './undo-flow';
 
 /**
  * `ImportTrigger` opens every dialog through the plain `Dialog` it injects, same as
@@ -144,6 +148,7 @@ describe('ImportTrigger', () => {
   let httpPost: ReturnType<typeof vi.fn>;
   let startRestore: ReturnType<typeof vi.fn>;
   let startImport: ReturnType<typeof vi.fn>;
+  let startUndo: ReturnType<typeof vi.fn>;
   let loadEmoteSetPreview: ReturnType<typeof vi.fn>;
   let hasToken: WritableSignal<boolean>;
   let activeRun: WritableSignal<SevenTvRunKind | null>;
@@ -163,6 +168,7 @@ describe('ImportTrigger', () => {
     httpPost = vi.fn(() => of(emoteSetPage()));
     startRestore = vi.fn();
     startImport = vi.fn();
+    startUndo = vi.fn();
     // Never reached by any test that leaves `activeSetId` omitted (`undefined`) — those always take
     // the 'trackedActive' fast path (see `resolveActiveSetId`). Only the non-active-set and the
     // unknown-active-set describe blocks below override this.
@@ -199,6 +205,12 @@ describe('ImportTrigger', () => {
         {
           provide: SevenTvImportService,
           useValue: { startImport } as unknown as SevenTvImportService,
+        },
+        // A stub, not the real service: the real one registers itself with the arbiter on
+        // construction (#256), and the arbiter here is a stub without `register`.
+        {
+          provide: SevenTvUndoService,
+          useValue: { startUndo } as unknown as SevenTvUndoService,
         },
         {
           provide: SevenTvEmoteSetService,
@@ -404,6 +416,108 @@ describe('ImportTrigger', () => {
         true,
         0,
       );
+    });
+  });
+
+  describe('an undo of a transfer-run file (#254, spec 4.1 point 4)', () => {
+    const candidate: UndoCandidate = {
+      sourceSevenTvEmoteId: 'src-1',
+      sourceName: 'Kappa',
+      alias: 'Kappa',
+      fileStatus: 'done',
+      target: { sevenTvEmoteId: 'tgt-1', entries: [{ alias: 'Kappa' }], defaultName: null },
+      provenance: 'confirmed',
+    };
+    const sourceFile = {
+      stage: 'finished' as const,
+      exportedAt: '2026-09-25T10:00:00.000Z',
+      verifiedAt: null,
+      finishedAt: '2026-09-25T10:00:00.000Z',
+      origin: null,
+    };
+
+    function undoResult(): Extract<FileImportResult, { kind: 'transfer-undo' }> {
+      const restore = restoreResult({ trackedChannelName: null, isActiveSet: false });
+      if (restore.kind !== 'restore') {
+        throw new Error('unreachable');
+      }
+      return { kind: 'transfer-undo', candidates: [candidate], target: restore.target, sourceFile };
+    }
+
+    /** The undo flow's set read (`loadSevenTvSetEntries`): `src-1` under `Kappa` when `removable`,
+     *  else the target already back — nothing left to undo. */
+    function setRead(removable: boolean) {
+      const item = removable
+        ? { alias: 'Kappa', emote: { id: 'src-1' } }
+        : { alias: 'Kappa', emote: { id: 'tgt-1' } };
+      return {
+        data: {
+          emoteSets: { emoteSet: { emotes: { totalCount: 1, pageCount: 1, items: [item] } } },
+        },
+      };
+    }
+
+    it('starts the undo flow with the step’s result as it came — confirmation, freshness read, then the undo service, never a restore or an import', () => {
+      httpPost.mockReturnValue(of(setRead(true)));
+      const dialog = render();
+      dialog.click();
+      const result = undoResult();
+
+      closedAt<FileImportResult | undefined>(0).next(result);
+
+      expect(httpPost).toHaveBeenCalledTimes(1);
+      const data = dataAt(1) as UndoConfirmDialogData;
+      expect(data.candidates).toEqual([candidate]);
+      expect(data.target).toEqual(result.target);
+      expect(data.initialRead?.aliasesById.get('src-1')).toEqual(['Kappa']);
+
+      const outcome: UndoConfirmOutcome = {
+        runnable: [
+          {
+            candidate,
+            mode: 'full',
+            adds: [{ alias: 'Kappa' }],
+            stepCount: 2,
+            provenance: 'confirmed',
+            omittedEntries: [],
+            notes: [],
+          },
+        ],
+        skipped: [],
+        acknowledgedUnproven: false,
+        read: data.initialRead!,
+      };
+      closedAt<UndoConfirmOutcome>(1).next(outcome);
+
+      expect(httpPost).toHaveBeenCalledTimes(2);
+      expect(startUndo).toHaveBeenCalledWith(
+        undoRunTarget(result.target, sourceFile),
+        outcome.runnable,
+        [],
+        false,
+      );
+      expect(startRestore).not.toHaveBeenCalled();
+      expect(startImport).not.toHaveBeenCalled();
+    });
+
+    it('stays disabled while the undo’s first read is out, and hands a file with nothing left to undo to the undo service’s notice without a dialog', () => {
+      const read = new Subject<unknown>();
+      httpPost.mockReturnValue(read);
+      const dialog = render();
+      dialog.click();
+
+      closedAt<FileImportResult | undefined>(0).next(undoResult());
+      dialog.detect();
+      expect(dialog.triggerDisabled()).toBe(true);
+
+      read.next(setRead(false));
+      read.complete();
+      dialog.detect();
+
+      expect(dialog.triggerDisabled()).toBe(false);
+      expect(dialogOpen).toHaveBeenCalledTimes(1);
+      expect(startUndo).toHaveBeenCalledTimes(1);
+      expect(startUndo.mock.calls[0][1]).toEqual([]);
     });
   });
 

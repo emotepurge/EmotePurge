@@ -41,6 +41,14 @@ export function parseImportSource(
   if (partial.kind === 'transfer-run') {
     return { ok: false, errorKey: 'restore.import.errors.transferRun' };
   }
+  // A transfer-undo protocol (either stage, #254) is the same story one layer down: its rows are the
+  // 7TV mutations of an undo run, not an emote list — named explicitly for the same reason
+  // `transfer-run` is above. The file-step dispatch's own switch (#254 T6) routes a transfer-undo
+  // file straight to the restore parser before ever calling this function, same as it already does
+  // for `transfer-run` and `purge-run` — this branch only answers when that dispatch is bypassed.
+  if (partial.kind === 'transfer-undo') {
+    return { ok: false, errorKey: 'restore.import.errors.transferUndo' };
+  }
   if (partial.kind !== 'emote-list' && partial.kind !== 'usage') {
     // Anything else — an unknown kind, or a purge-run protocol handed here by mistake (the file
     // dispatch decides which parser to call, so this should not happen, but `kind` is untrusted

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { RunItemStatus, RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
-import { RunProgressPanel } from './run-progress-panel';
+import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
 
 // Only the keys this panel itself translates — not the full app translation file. Texts are the
 // real German ones (`massDelete` family, `web/public/i18n/de.json`), so an assertion reads as the
@@ -40,6 +40,12 @@ const DE_TRANSLATIONS = {
       counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
       countsWithRenamed:
         '{{done}} kopiert · {{renamed}} umbenannt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+    },
+  },
+  undo: {
+    progress: '{{ finished }} / {{ total }} verarbeitet',
+    summary: {
+      counts: '{{done}} zurückgenommen · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
     },
   },
   syncReportReason: {
@@ -107,6 +113,7 @@ function accessibleName(el: Element): string {
       [rateLimitPauseSeconds]="rateLimitPauseSeconds"
       [dismissible]="dismissible"
       [renamedCount]="renamedCount"
+      [tally]="tally"
       (cancelled)="cancelledCount = cancelledCount + 1"
       (dismissed)="dismissedCount = dismissedCount + 1"
       (syncRetryRequested)="syncRetryRequestedCount = syncRetryRequestedCount + 1"
@@ -122,12 +129,13 @@ function accessibleName(el: Element): string {
 class HostComponent {
   items: RunQueueItem[] = [];
   isRunning = false;
-  labelPrefix: 'massDelete' | 'restore' | 'import' = 'massDelete';
+  labelPrefix: 'massDelete' | 'restore' | 'import' | 'undo' = 'massDelete';
   syncReport: SyncReportState = 'idle';
   syncReportReason: SyncReportReason | null = null;
   rateLimitPauseSeconds: number | null = null;
   dismissible = true;
   renamedCount: number | null = null;
+  tally: RunProgressTally | null = null;
   projectRunActions = false;
   cancelledCount = 0;
   dismissedCount = 0;
@@ -540,6 +548,22 @@ describe('RunProgressPanel', () => {
       });
 
       expect(dialog.text()).toContain('2 kopiert · 1 umbenannt · 0 fehlgeschlagen · 0 abgebrochen');
+    });
+
+    // #254: the undo counts a row its recheck skipped as finished and names it under its own
+    // reason, never as a cancellation — so it hands the panel its own tally. The bar and the
+    // sentence follow it; `total` still counts the rows.
+    it('reads the bar and the sentence from a host tally instead of counting items by status', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'cancelled'), queueItem('c', 'cancelled')],
+        isRunning: false,
+        labelPrefix: 'undo',
+        tally: { finished: 2, done: 1, failed: 0, cancelled: 1 },
+      });
+
+      expect(dialog.text()).toContain('2 / 3 verarbeitet');
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('2');
+      expect(dialog.text()).toContain('1 zurückgenommen · 0 fehlgeschlagen · 1 abgebrochen');
     });
   });
 

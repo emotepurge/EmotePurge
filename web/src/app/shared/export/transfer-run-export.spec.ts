@@ -9,6 +9,7 @@ import {
   buildTransferPlanRecord,
   buildTransferRunProtocol,
   parseTransferRunForRestore,
+  parseTransferRunForUndo,
   transferPlanFilename,
   transferRunCsv,
   transferRunFilename,
@@ -33,6 +34,7 @@ function setEntries(overrides: Partial<SevenTvSetEntries> = {}): SevenTvSetEntri
     aliasesById: new Map(),
     aliaslessIds: new Set(),
     defaultNameById: new Map(),
+    animatedById: new Map(),
     occupiedSlots: 0,
     complete: true,
     ...overrides,
@@ -738,5 +740,497 @@ describe('parseTransferRunForRestore', () => {
       ok: false,
       errorKey: 'restore.import.errors.transferRunNoRows',
     });
+  });
+});
+
+// #254: the mirror image of parseTransferRunForRestore — a replace row's *source*, not its target.
+describe('parseTransferRunForUndo', () => {
+  it("turns every replace row of a planned file into a candidate marked 'unproven', even one without a confirmed REMOVE (a planned file proves nothing about whether its run ever started)", () => {
+    const text = plannedText(
+      setEntries({
+        aliasesById: new Map([
+          ['tgt-1', ['Kappa']],
+          ['tgt-2', ['Pog']],
+        ]),
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.stage).toBe('planned');
+    expect(result.target).toEqual({ emoteSetId: 'set-1' });
+    expect(result.candidates.map((candidate) => candidate.sourceSevenTvEmoteId)).toEqual([
+      'src-kappa',
+      'src-pog',
+    ]);
+    expect(result.candidates.every((candidate) => candidate.provenance === 'unproven')).toBe(true);
+  });
+
+  it("turns only confirmed-REMOVE rows of a finished file into candidates — 'unproven' when the row itself did not settle 'done' (spec §18)", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          // REMOVE confirmed, ADD failed — still a candidate, but its own run did not settle
+          // 'done', so live state does not provably match the file (spec §18): 'unproven'.
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'failed',
+            failedStep: 1,
+            completedSteps: 1,
+          }),
+          // REMOVE itself failed — not a candidate, nothing to undo.
+          item({
+            transfer: replaceRow(SOURCE_POG, 'tgt-2', ['Pog']),
+            status: 'failed',
+            failedStep: 0,
+            completedSteps: 0,
+          }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.stage).toBe('finished');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0].sourceSevenTvEmoteId).toBe('src-kappa');
+    expect(result.candidates[0].provenance).toBe('unproven');
+  });
+
+  it("marks a finished row 'confirmed' only when it settled 'done'; 'unknown' and 'cancelled' are 'unproven' (spec §18)", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), status: 'done' }),
+          item({ transfer: replaceRow(SOURCE_POG, 'tgt-2', ['Pog']), status: 'unknown' }),
+          item({ transfer: replaceRow(SOURCE_LUL, 'tgt-3', ['LUL']), status: 'cancelled' }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(
+      result.candidates.map((candidate) => [candidate.sourceSevenTvEmoteId, candidate.provenance]),
+    ).toEqual([
+      ['src-kappa', 'confirmed'],
+      ['src-pog', 'unproven'],
+      ['src-lul', 'unproven'],
+    ]);
+  });
+
+  it('keeps a finished row whose REMOVE was confirmed but whose ADD answer was lost (status unknown) as a candidate', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'unknown',
+            completedSteps: 1,
+          }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates.map((candidate) => candidate.sourceSevenTvEmoteId)).toEqual([
+      'src-kappa',
+    ]);
+  });
+
+  it('reads every field of a candidate, including an aliasless target entry and its default name', () => {
+    const replace: TransferRow = {
+      action: 'replace',
+      source: SOURCE_KAPPA,
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: true,
+        defaultName: 'KappaDefault',
+      },
+    };
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [item({ transfer: replace, completedSteps: 2 })],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates).toEqual([
+      {
+        sourceSevenTvEmoteId: 'src-kappa',
+        sourceName: 'Kappa',
+        alias: 'Kappa',
+        fileStatus: 'done',
+        target: {
+          sevenTvEmoteId: 'tgt-1',
+          entries: [{ alias: 'Kappa' }, { alias: null }],
+          defaultName: 'KappaDefault',
+        },
+        provenance: 'confirmed',
+      },
+    ]);
+  });
+
+  it('refuses a file with no undo candidates as transferRunNoRows', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'failed',
+            failedStep: 0,
+            completedSteps: 0,
+          }),
+          item({ transfer: { action: 'add', source: SOURCE_POG, alias: 'Pog' } }),
+        ],
+      }),
+    );
+
+    expect(parseTransferRunForUndo(text)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.transferRunNoRows',
+    });
+  });
+
+  it('refuses a transfer-undo file as an undo input — there is no undo of an undo', () => {
+    const disguised = JSON.stringify({
+      source: 'emotepurge',
+      kind: 'transfer-undo',
+      formatVersion: 1,
+      exportedAt: '2026-09-26T10:00:00Z',
+      channelName: 'zielkanal',
+      withheld: [],
+      meta: { stage: 'planned', targetEmoteSetId: 'set-1' },
+      rows: [],
+    });
+
+    expect(parseTransferRunForUndo(disguised)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongKind',
+    });
+  });
+
+  it("reads sourceFile from a planned file's own meta — verifiedAt set, finishedAt null, the exact origin", () => {
+    const text = plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }));
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const record = JSON.parse(text) as { exportedAt: string; meta: { verifiedAt: string } };
+    expect(result.sourceFile).toEqual({
+      stage: 'planned',
+      exportedAt: record.exportedAt,
+      verifiedAt: record.meta.verifiedAt,
+      finishedAt: null,
+      origin: ORIGIN,
+    });
+  });
+
+  it("reads sourceFile from a finished file's own meta — finishedAt set, verifiedAt null", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: Date.parse('2026-09-26T10:05:00Z'),
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sourceFile).toEqual({
+      stage: 'finished',
+      exportedAt: (JSON.parse(text) as { exportedAt: string }).exportedAt,
+      verifiedAt: null,
+      finishedAt: '2026-09-26T10:05:00.000Z',
+      origin: ORIGIN,
+    });
+  });
+
+  it('reads sourceFile.origin as null when meta.origin is missing, rather than passing an undefined value through as if it were one', () => {
+    const record = JSON.parse(
+      plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+    ) as { meta: Record<string, unknown> };
+    const { origin: _origin, ...metaWithoutOrigin } = record.meta;
+    const text = JSON.stringify({ ...record, meta: metaWithoutOrigin });
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sourceFile.origin).toBeNull();
+  });
+
+  it('reads sourceFile.origin as null for an unrecognized kind, rather than casting it through unchecked', () => {
+    const record = JSON.parse(
+      plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+    ) as { meta: Record<string, unknown> };
+    const text = JSON.stringify({
+      ...record,
+      meta: { ...record.meta, origin: { kind: 'from-the-future', channelName: 'x' } },
+    });
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sourceFile.origin).toBeNull();
+  });
+
+  it('reads a candidate defaultName of an empty string the same as a missing one — both become null', () => {
+    const replace: TransferRow = {
+      action: 'replace',
+      source: SOURCE_KAPPA,
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: '',
+      },
+    };
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [item({ transfer: replace, completedSteps: 2 })],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates[0].target.defaultName).toBeNull();
+  });
+
+  it("falls back to the named aliases list when a row's target entries array is empty", () => {
+    // A row written before `entries` existed (or one with a broken `entries` array) still names its
+    // target's aliases — same fallback `readEntryAliases` gives the restore parser.
+    const record = JSON.parse(
+      transferRunJson(
+        buildTransferRunProtocol({
+          ...TARGET,
+          origin: ORIGIN,
+          startedAt: 0,
+          finishedAt: 1,
+          items: [
+            item({
+              transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa', 'KappaAlt']),
+              completedSteps: 2,
+            }),
+          ],
+        }),
+      ),
+    ) as { rows: { removedTarget: Record<string, unknown> }[] };
+    record.rows[0].removedTarget['entries'] = [];
+
+    const result = parseTransferRunForUndo(JSON.stringify(record));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates[0].target.entries).toEqual([
+      { alias: 'Kappa' },
+      { alias: 'KappaAlt' },
+    ]);
+  });
+
+  it('excludes renameSource and adoptSourceName rows — nothing about them was ever removed', () => {
+    const renameRow: TransferRow = {
+      action: 'renameSource',
+      source: SOURCE_POG,
+      alias: 'PogAlt',
+    };
+    const adoptRow: TransferRow = {
+      action: 'adoptSourceName',
+      source: SOURCE_LUL,
+      alias: 'LUL',
+      target: {
+        sevenTvEmoteId: 'src-lul',
+        aliases: ['LULOld'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+          item({ transfer: renameRow }),
+          item({ transfer: adoptRow }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates.map((candidate) => candidate.sourceSevenTvEmoteId)).toEqual([
+      'src-kappa',
+    ]);
+  });
+
+  // The four real ImportOrigin shapes every writer in this codebase actually produces, so
+  // readImportOrigin (transfer-run-export.ts) is checked against real payloads, not a hand-typed
+  // approximation of them.
+  const REAL_ORIGINS: { label: string; origin: ImportOrigin }[] = [
+    // usage-stats-page.ts:2640 (startImportFromChoice) — the tracked-channel grid source.
+    { label: 'channel', origin: { kind: 'channel', channelName: 'quellkanal' } },
+    // foreign-import-flow.ts:45 (buildForeignImportSource) — a foreign Twitch login's live set.
+    { label: 'seventv-channel', origin: { kind: 'seventv-channel', channelName: 'fremdkanal' } },
+    // foreign-import-flow.ts:92 (buildLeaderboardImportSource) — a 7TV leaderboard pick.
+    {
+      label: 'seventv-leaderboard',
+      origin: { kind: 'seventv-leaderboard', sortBy: 'TRENDING_DAILY' },
+    },
+    // import-source-parser.ts:94 (parseImportSource) — a file re-read back in.
+    {
+      label: 'file',
+      origin: {
+        kind: 'file',
+        fileName: 'emotes.json',
+        exportedAt: '2026-09-01T00:00:00Z',
+        channelName: 'quellkanal',
+        envelopeKind: 'emote-list',
+      },
+    },
+  ];
+
+  it.each(REAL_ORIGINS)(
+    'round-trips the real $label origin shape through readImportOrigin unchanged',
+    ({ origin }) => {
+      const text = transferRunJson(
+        buildTransferPlanRecord({
+          ...TARGET,
+          origin,
+          verifiedAt: 0,
+          plan: { rows: [replaceRow(SOURCE_KAPPA, 'tgt-1')] },
+          entries: setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }),
+          defaultNameById: new Map(),
+        }),
+      );
+
+      const result = parseTransferRunForUndo(text);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.sourceFile.origin).toEqual(origin);
+    },
+  );
+
+  it('drops a candidate whose own alias is an empty string', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+        ],
+      }),
+    );
+    const record = JSON.parse(text) as { rows: Record<string, unknown>[] };
+    record.rows[0]['alias'] = '';
+
+    expect(parseTransferRunForUndo(JSON.stringify(record))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.transferRunNoRows',
+    });
+  });
+
+  it('drops a candidate whose target has neither a readable entries array nor a named aliases list to fall back to', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+        ],
+      }),
+    );
+    const record = JSON.parse(text) as { rows: { removedTarget: Record<string, unknown> }[] };
+    record.rows[0].removedTarget['entries'] = [];
+    record.rows[0].removedTarget['aliases'] = [];
+
+    expect(parseTransferRunForUndo(JSON.stringify(record))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.transferRunNoRows',
+    });
+  });
+
+  it("falls fileStatus back to 'pending' for a status string outside the known RunItemStatus values", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'done',
+            completedSteps: 2,
+          }),
+        ],
+      }),
+    );
+    const record = JSON.parse(text) as { rows: Record<string, unknown>[] };
+    record.rows[0]['status'] = 'not-a-real-status';
+
+    const result = parseTransferRunForUndo(JSON.stringify(record));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates[0].fileStatus).toBe('pending');
   });
 });

@@ -1,8 +1,17 @@
 import { ImportOrigin } from '../../core/seven-tv/import-source';
+import { isLeaderboardSort } from '../../core/seven-tv/leaderboard.model';
 import { ImportRunItem } from '../../core/seven-tv/seven-tv-import.service';
 import { RunItemStatus } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { TransferPlan, TransferRow, TransferRowTarget } from '../../core/seven-tv/transfer-plan';
+// `UndoCandidate`/`UndoCandidateTargetEntry`/`UndoSourceFileInfo` moved to
+// `core/seven-tv/undo-candidate.ts` (#254 layering fix) — imported here for this module's own use
+// and re-exported below so this module's existing importers keep working unchanged.
+import type {
+  UndoCandidate,
+  UndoCandidateTargetEntry,
+  UndoSourceFileInfo,
+} from '../../core/seven-tv/undo-candidate';
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
@@ -24,6 +33,10 @@ import { readEnvelope } from './read-envelope';
  * by name) — its rows are 7TV mutations already applied or about to be, not an emote list to copy
  * from. Both stages *are* restore sources: `parseTransferRunForRestore` below turns the removed
  * target entries back into restore rows, read through the same file step as a purge-run protocol.
+ *
+ * Both stages are also an undo source (#254): `parseTransferRunForUndo` below turns a `replace`
+ * row's *source* — the emote this file's own run removed from the set — into an {@link UndoCandidate},
+ * the mirror image of the restore rows above.
  */
 export const TRANSFER_RUN_FORMAT_VERSION = 1;
 
@@ -337,6 +350,224 @@ export function transferRunFilename(
 ): string {
   const stamp = finishedAt.slice(0, 16).replace('T', '-').replace(':', '');
   return `emotepurge_${sanitizeFilenamePart(channelOrSetLabel)}_transfer_${stamp}.${ext}`;
+}
+
+/**
+ * `UndoCandidateTargetEntry`, `UndoCandidate` and `UndoSourceFileInfo` moved to
+ * `core/seven-tv/undo-candidate.ts` (#254 layering fix): the undo classification and the undo
+ * service both need them at run time, and `core/` may not import from `shared/` (layering rule).
+ * Re-exported here so this module's own importers (the transfer-run file readers/writers, and
+ * anything importing them from here today) keep working unchanged.
+ */
+export type {
+  UndoCandidate,
+  UndoCandidateTargetEntry,
+  UndoSourceFileInfo,
+} from '../../core/seven-tv/undo-candidate';
+
+/** Every {@link RunItemStatus} value, for validating an untrusted `status` field rather than casting
+ *  it — a file can claim any string there. */
+const KNOWN_RUN_ITEM_STATUSES: ReadonlySet<string> = new Set<RunItemStatus>([
+  'pending',
+  'in-progress',
+  'done',
+  'failed',
+  'cancelled',
+  'unknown',
+]);
+
+/**
+ * Validates an untrusted `meta.origin` value as an {@link ImportOrigin} — there is no existing
+ * general-purpose reader for it (the one other place that builds one, `import-source-parser.ts`,
+ * only ever constructs a `kind: 'file'` origin from fields it already trusts). `null` for anything
+ * that is not an object, has an unrecognized `kind`, or is missing a field its `kind` requires —
+ * fail closed rather than pass a shape-mismatched value on to a caller that reads it as if it were
+ * one of the four real variants.
+ */
+function readImportOrigin(value: unknown): ImportOrigin | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const origin = value as Record<string, unknown>;
+  const kind = origin['kind'];
+  switch (kind) {
+    case 'channel':
+    case 'seventv-channel':
+      return typeof origin['channelName'] === 'string'
+        ? { kind, channelName: origin['channelName'] }
+        : null;
+    case 'file': {
+      const fileName = origin['fileName'];
+      const exportedAt = origin['exportedAt'];
+      const channelName = origin['channelName'];
+      const envelopeKind = origin['envelopeKind'];
+      if (typeof fileName !== 'string') {
+        return null;
+      }
+      if (exportedAt !== null && typeof exportedAt !== 'string') {
+        return null;
+      }
+      if (channelName !== null && typeof channelName !== 'string') {
+        return null;
+      }
+      if (envelopeKind !== 'emote-list' && envelopeKind !== 'usage') {
+        return null;
+      }
+      return { kind: 'file', fileName, exportedAt, channelName, envelopeKind };
+    }
+    case 'seventv-leaderboard':
+      return typeof origin['sortBy'] === 'string' && isLeaderboardSort(origin['sortBy'])
+        ? { kind: 'seventv-leaderboard', sortBy: origin['sortBy'] }
+        : null;
+    default:
+      return null;
+  }
+}
+
+export type TransferRunUndoParseResult =
+  | {
+      ok: true;
+      candidates: UndoCandidate[];
+      stage: TransferRunMeta['stage'];
+      target: RestoreFileTarget;
+      sourceFile: UndoSourceFileInfo;
+    }
+  /** `errorKey` is a Transloco key (restore.import.errors.*), never finished prose. */
+  | { ok: false; errorKey: string };
+
+/**
+ * Reads either stage of a transfer-run file as undo candidates (#254, spec 6.1) — the mirror image
+ * of {@link parseTransferRunForRestore}: that function turns a `replace` row's removed *target* back
+ * into something a restore re-adds, this one turns the same row's *source* (the emote a replace took
+ * off this set) into something an undo removes again and gives back to whatever the target held.
+ *
+ * Selection follows E2: `planned` offers **every** `replace` row (the run may never have started, so
+ * nothing is filtered on `confirmed` — see {@link UndoCandidate.provenance}); `finished` offers only
+ * rows whose REMOVE 7TV actually confirmed (`removedTarget.confirmed === true`), whatever the row's
+ * own final status — the same "confirmed, not done" rule the restore parser uses, so an `unknown` row
+ * whose REMOVE went through is still a candidate and a `failed@0` row (REMOVE itself never happened)
+ * is not.
+ *
+ * A `transfer-undo` file itself is refused here with `wrongKind` (F7) — there is no undo of an undo;
+ * the way back from one is a fresh transfer, not this parser.
+ */
+export function parseTransferRunForUndo(text: string): TransferRunUndoParseResult {
+  const read = readEnvelope(text);
+  if (!read.ok) {
+    return read;
+  }
+  // Untrusted JSON from a file — every field below is checked by hand, mirroring
+  // `parseTransferRunForRestore`'s own cast.
+  const envelope = read.envelope as unknown as Partial<TransferPlanRecord | TransferRunProtocol>;
+  if (envelope.kind !== 'transfer-run') {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
+  }
+  if (envelope.formatVersion !== TRANSFER_RUN_FORMAT_VERSION) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongVersion' };
+  }
+  const meta = envelope.meta as Partial<TransferRunMeta> | undefined;
+  if (!meta || typeof meta !== 'object') {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
+  }
+  const targetEmoteSetId = meta.targetEmoteSetId;
+  if (typeof targetEmoteSetId !== 'string' || targetEmoteSetId.length === 0) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
+  }
+  const stage = meta.stage;
+  if ((stage !== 'planned' && stage !== 'finished') || !Array.isArray(envelope.rows)) {
+    return { ok: false, errorKey: 'restore.import.errors.wrongKind' };
+  }
+
+  const candidates = (envelope.rows as unknown[]).flatMap((row) => {
+    const candidate = readUndoCandidate(row, stage);
+    return candidate ? [candidate] : [];
+  });
+  if (candidates.length === 0) {
+    return { ok: false, errorKey: 'restore.import.errors.transferRunNoRows' };
+  }
+
+  // `meta` is `Partial<TransferRunMetaPlanned> | Partial<TransferRunMetaFinished>` at this point —
+  // reading `verifiedAt`/`finishedAt` across that union needs the same untrusted-field cast the rest
+  // of this file uses rather than an intersection type (which TS collapses to `never` over the two
+  // stages' conflicting `stage` literal).
+  const untypedMeta = meta as Record<string, unknown>;
+  const rawVerifiedAt = untypedMeta['verifiedAt'];
+  const rawFinishedAt = untypedMeta['finishedAt'];
+  const sourceFile: UndoSourceFileInfo = {
+    stage,
+    exportedAt: typeof envelope.exportedAt === 'string' ? envelope.exportedAt : '',
+    verifiedAt: stage === 'planned' && typeof rawVerifiedAt === 'string' ? rawVerifiedAt : null,
+    finishedAt: stage === 'finished' && typeof rawFinishedAt === 'string' ? rawFinishedAt : null,
+    origin: readImportOrigin(untypedMeta['origin']),
+  };
+
+  return { ok: true, candidates, stage, target: { emoteSetId: targetEmoteSetId }, sourceFile };
+}
+
+/** The undo candidate for one untrusted transfer-run row, or `null` when it names nothing an undo
+ *  could reverse: not a `replace` row, no readable `removedTarget`, an empty own `alias`, no target
+ *  entry to compare against (same "nothing to restore" rule the restore parser's own
+ *  `readRemovedTarget` uses), or — in the `finished` stage — a REMOVE 7TV never confirmed. */
+function readUndoCandidate(value: unknown, stage: TransferRunMeta['stage']): UndoCandidate | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  if (row['action'] !== 'replace') {
+    return null;
+  }
+  const target = row['removedTarget'];
+  if (typeof target !== 'object' || target === null) {
+    return null;
+  }
+  const { sevenTvEmoteId, entries, aliases, defaultName, confirmed } = target as Record<
+    string,
+    unknown
+  >;
+  if (typeof sevenTvEmoteId !== 'string' || sevenTvEmoteId.length === 0) {
+    return null;
+  }
+  if (stage === 'finished' && confirmed !== true) {
+    return null;
+  }
+  const sourceSevenTvEmoteId = row['sevenTvEmoteId'];
+  const sourceName = row['sourceName'];
+  const alias = row['alias'];
+  if (typeof sourceSevenTvEmoteId !== 'string' || sourceSevenTvEmoteId.length === 0) {
+    return null;
+  }
+  if (typeof sourceName !== 'string' || typeof alias !== 'string' || alias.length === 0) {
+    return null;
+  }
+  const status = row['status'];
+  const fileStatus: RunItemStatus | 'pending' =
+    typeof status === 'string' && KNOWN_RUN_ITEM_STATUSES.has(status)
+      ? (status as RunItemStatus)
+      : 'pending';
+  const targetEntries = readEntryAliases(entries, aliases).map(
+    (entryAlias): UndoCandidateTargetEntry => ({ alias: entryAlias }),
+  );
+  // Same rule `readRemovedTarget` (the restore parser) applies to its own `restoreAliases`: a
+  // target with no readable entry at all is nothing an undo could restore anything back onto.
+  if (targetEntries.length === 0) {
+    return null;
+  }
+  const knownDefaultName =
+    typeof defaultName === 'string' && defaultName.length > 0 ? defaultName : null;
+
+  return {
+    sourceSevenTvEmoteId,
+    sourceName,
+    alias,
+    fileStatus,
+    target: { sevenTvEmoteId, entries: targetEntries, defaultName: knownDefaultName },
+    // `confirmed` above only says 7TV took the target's REMOVE; it says nothing about whether the
+    // row's own ADD (giving the source its alias) ever completed. A `finished` row is `confirmed`
+    // only when its own run settled `done` — `failed`/`unknown`/`cancelled`/a stamped `pending` all
+    // mean the live state does not provably match the file, so the row gets the same origin lock and
+    // checkbox as a `planned` one (spec §18: live state proves state, not origin).
+    provenance: stage === 'planned' || fileStatus !== 'done' ? 'unproven' : 'confirmed',
+  };
 }
 
 export type TransferRunRestoreParseResult =

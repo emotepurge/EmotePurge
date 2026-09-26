@@ -10,6 +10,16 @@ import {
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 
+/** Counts a host hands the panel instead of letting it count `items` by engine status — for a run
+ *  whose rows the engine's statuses alone cannot count (see `RunProgressPanel.tally`). */
+export interface RunProgressTally {
+  /** Rows the run is done with — the bar's value. */
+  finished: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+}
+
 /** Renamed from DeleteProgressPanel when the restore run (A6) became its second consumer — the
  *  mechanics (bar, cancel, rate-limit countdown, failure list) are run-generic; only the wording
  *  differs, selected via `labelPrefix`. Dynamic Transloco keys follow the established
@@ -129,7 +139,7 @@ export class RunProgressPanel {
   readonly items = input.required<RunQueueItem[]>();
   readonly isRunning = input.required<boolean>();
   /** Which wording family the panel speaks — the union keeps the dynamic keys findable. */
-  readonly labelPrefix = input<'massDelete' | 'restore' | 'import'>('massDelete');
+  readonly labelPrefix = input<'massDelete' | 'restore' | 'import' | 'undo'>('massDelete');
   /** State of the run's closing bookkeeping call (sync-deleted / sync-restored). Defaults to the
    *  state that renders nothing; the notice wording follows labelPrefix. */
   readonly syncReport = input<SyncReportState>('idle');
@@ -150,6 +160,13 @@ export class RunProgressPanel {
    *  `summaryCounts().done` and broken out as its own `renamed` count once positive; `null` (the
    *  default) leaves `summaryCounts()` exactly as it always was — delete and restore never pass it. */
   readonly renamedCount = input<number | null>(null);
+  /** The host's own counts, for the bar and the summary sentence; `null` (the default) counts
+   *  `items` by engine status, as delete, restore and import always have. Today only the undo
+   *  (#254) passes it: a row its recheck skipped before the REMOVE is `cancelled` for the engine,
+   *  yet it is finished (nothing left to send) and named under its own reason, never as a
+   *  cancellation — counted from `items` it would hold the bar short and appear twice. `total` and
+   *  the failure list keep reading `items`. */
+  readonly tally = input<RunProgressTally | null>(null);
   readonly cancelled = output<void>();
   readonly dismissed = output<void>();
   readonly syncRetryRequested = output<void>();
@@ -160,6 +177,7 @@ export class RunProgressPanel {
   // An `unknown` row is finished too: the run is done with it, 7TV's answer is what is missing.
   protected readonly finished = computed(
     () =>
+      this.tally()?.finished ??
       this.items().filter(
         (item) => item.status === 'done' || item.status === 'failed' || item.status === 'unknown',
       ).length,
@@ -176,13 +194,13 @@ export class RunProgressPanel {
   );
 
   protected readonly summaryCounts = computed(() => {
-    const statuses = this.items().map((item) => item.status);
+    const counts = this.tally() ?? countByStatus(this.items());
     const renamed = this.renamedCount() ?? 0;
     return {
-      done: statuses.filter((status) => status === 'done').length - renamed,
+      done: counts.done - renamed,
       renamed,
-      failed: statuses.filter((status) => status === 'failed').length,
-      cancelled: statuses.filter((status) => status === 'cancelled').length,
+      failed: counts.failed,
+      cancelled: counts.cancelled,
     };
   });
 
@@ -233,4 +251,13 @@ export class RunProgressPanel {
       this.translocoService.translate(`${this.labelPrefix()}.deleteFailedFallback`)
     );
   }
+}
+
+function countByStatus(items: readonly RunQueueItem[]): Omit<RunProgressTally, 'finished'> {
+  const statuses = items.map((item) => item.status);
+  return {
+    done: statuses.filter((status) => status === 'done').length,
+    failed: statuses.filter((status) => status === 'failed').length,
+    cancelled: statuses.filter((status) => status === 'cancelled').length,
+  };
 }

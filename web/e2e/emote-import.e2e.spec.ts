@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
 
-import { Locator, Page, Request, expect, test } from '@playwright/test';
+import { Download, Locator, Page, Request, expect, test } from '@playwright/test';
 
 import {
   AUTH_USER,
   MockEmoteUsage,
   MockLeaderboardEmote,
+  MockSyncInSetAnswer,
+  MockSyncInSetBody,
   SevenTvGqlRequest,
   SevenTvGqlRequestKind,
   emitLive,
@@ -186,6 +188,18 @@ async function openFileImportDialog(page: Page): Promise<Locator> {
   await dialog.getByRole('button', { name: /^Aus einer Datei/ }).click();
   await expect(dialog.locator('#app-dialog-title')).toHaveText('Datei importieren');
   return dialog.locator('input[type="file"]');
+}
+
+/**
+ * A transfer-run file ends at the file step's switch (#254, spec 4.1 point 3) once its set passed the
+ * pre-check; "Lücken schließen" is the restore every transfer file went straight into before (F10).
+ * The option's name starts with its label — its hint follows in the same button.
+ */
+async function chooseCloseGaps(page: Page): Promise<void> {
+  const choice = page
+    .getByRole('dialog')
+    .getByRole('group', { name: 'Was soll mit dieser Übertragungsdatei geschehen?' });
+  await choice.getByRole('button', { name: /^Lücken schließen/ }).click();
 }
 
 /**
@@ -1493,7 +1507,7 @@ test.describe('import dialog: shell contract', () => {
     expect(previewRequests).toEqual(['set-active', 'set-alt']);
   });
 
-  test('lists the three acceptable file sorts before the file control', async ({ page }) => {
+  test('lists the acceptable file sorts before the file control', async ({ page }) => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
@@ -1512,9 +1526,12 @@ test.describe('import dialog: shell contract', () => {
     // (`:492-496`).
     const dialogText = await page.getByRole('dialog').innerText();
     const sortsIndex = dialogText.indexOf('Purge-Protokoll (Wiederherstellen) als JSON');
+    // #254: the transfer-undo file is the fifth sort, listed with the other restore sorts.
+    const undoSortIndex = dialogText.indexOf('Rückweg-Protokoll einer Ersetzung');
     const controlIndex = dialogText.indexOf('Datei auswählen');
     expect(sortsIndex).toBeGreaterThan(-1);
-    expect(controlIndex).toBeGreaterThan(sortsIndex);
+    expect(undoSortIndex).toBeGreaterThan(sortsIndex);
+    expect(controlIndex).toBeGreaterThan(undoSortIndex);
   });
 });
 
@@ -3895,6 +3912,8 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       mimeType: 'application/json',
       buffer: Buffer.from(finishedProtocolText, 'utf-8'),
     });
+    // #254 F10: a transfer file ends at the switch; closing the gaps is the restore this test is about.
+    await chooseCloseGaps(page);
 
     // #255: the confirmation's own open-time duplicate check (`loadRestoreConfirmPreview`) is a
     // third `setRead` here, past the two the transfer run above already spent — so it, too, lands
@@ -4240,6 +4259,8 @@ test.describe('restore per set: the file names the target (#253)', () => {
         targetOwnerDisplayName: 'Stranger',
       }),
     );
+    // #254 F10: the switch comes first; this test is about the restore.
+    await chooseCloseGaps(page);
 
     // The confirmation names what the TARGET LIST resolved (AK 35): set name, set id and owner; no
     // channel line and no "not active" line for an untracked target (spec 4.3 point 6); and the
@@ -4357,6 +4378,8 @@ test.describe('restore per set: the file names the target (#253)', () => {
         targetOwnerDisplayName: TARGET_CHANNEL,
       }),
     );
+    // #254 F10: the switch comes first; this test is about the restore.
+    await chooseCloseGaps(page);
 
     // A page with no selected set shows the foreign-to-view hint for any target (E21, AK 19).
     const confirm = page.getByRole('dialog');
@@ -4501,3 +4524,1463 @@ test.describe('restore per set: the file names the target (#253)', () => {
     expect(sevenTvRequests).toEqual(['https://7tv.io/v4/gql']);
   });
 });
+
+/**
+ * #254: undoing a replace from its transfer file — the file step's switch, the token prompt, the
+ * flow's first read, the confirmation with its recovery file, the run with a fresh read before
+ * every REMOVE, the settle re-read, both reports, the dock and the finished protocol (spec 9.4).
+ *
+ * Every case runs against {@link fakeSevenTvSet}: a small in-test 7TV set that applies each ADD and
+ * REMOVE to its own state and answers every read from that state, so a second run reads what the
+ * first one left behind rather than a script of canned answers. The set is `SOURCE_CHANNEL`'s own
+ * active set, which is also the set on screen — the target's tracked channel is therefore the
+ * expected hit of both reports (`expectedChannelName`, #253).
+ *
+ * Two invariants hold for every run here and are checked in every case
+ * ({@link expectUndoRequestInvariants}): a set read directly before every `removeEmote` (AK 38) and
+ * no `addEmote` without a non-empty alias (AK 40).
+ */
+test.describe('replace undo (#254)', () => {
+  const UNDO_SET_ID = 'set-1';
+  const UNDO_SET_NAME = 'Hauptset';
+
+  /** One `replace` row of a transfer-run file: the source that took the target's name, and the
+   *  target entries its REMOVE took off the set (`null` for an aliasless one). */
+  interface ReplaceRowSpec {
+    sourceId: string;
+    alias: string;
+    targetId: string;
+    targetEntries: (string | null)[];
+    targetDefaultName: string | null;
+  }
+
+  interface FilePayload {
+    name: string;
+    mimeType: string;
+    buffer: Buffer;
+  }
+
+  /**
+   * A transfer-run file into `UNDO_SET_ID` (#230, spec 6.4): `finished` — the result protocol, every
+   * replace row `done` with a REMOVE 7TV confirmed — or `planned` — the recovery file written before
+   * the first REMOVE, every row `pending`, nothing confirmed (F17).
+   */
+  function transferRunFile(
+    stage: 'planned' | 'finished',
+    rows: readonly ReplaceRowSpec[],
+  ): FilePayload {
+    const fileRows = rows.map((row) => ({
+      action: 'replace',
+      sourceName: row.alias,
+      alias: row.alias,
+      sevenTvEmoteId: row.sourceId,
+      status: stage === 'finished' ? 'done' : 'pending',
+      failedStep: null,
+      errorMessage: null,
+      removedTarget: {
+        sevenTvEmoteId: row.targetId,
+        entries: row.targetEntries.map((alias) => ({ alias })),
+        aliases: row.targetEntries.filter((alias): alias is string => alias !== null),
+        defaultName: row.targetDefaultName,
+        confirmed: stage === 'finished',
+      },
+    }));
+    const metaBase = {
+      targetEmoteSetId: UNDO_SET_ID,
+      targetChannelName: SOURCE_CHANNEL,
+      targetOwnerDisplayName: 'Sensitron',
+      origin: { kind: 'channel', channelName: TARGET_CHANNEL },
+    };
+    const meta =
+      stage === 'finished'
+        ? {
+            ...metaBase,
+            stage,
+            startedAt: '2026-09-24T12:00:00Z',
+            finishedAt: '2026-09-24T12:01:00Z',
+            counts: {
+              requested: rows.length,
+              succeeded: rows.length,
+              failed: 0,
+              cancelled: 0,
+              removed: rows.length,
+              unknown: 0,
+            },
+          }
+        : {
+            ...metaBase,
+            stage,
+            verifiedAt: '2026-09-24T11:59:00Z',
+            counts: { planned: rows.length, removals: rows.length },
+          };
+    return {
+      name: `emotepurge_${SOURCE_CHANNEL}_transfer${stage === 'planned' ? '-plan' : ''}_2026-09-24-1200.json`,
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          source: 'emotepurge',
+          kind: 'transfer-run',
+          formatVersion: 1,
+          exportedAt: '2026-09-24T12:05:00Z',
+          channelName: SOURCE_CHANNEL,
+          withheld: [],
+          meta,
+          rows: fileRows,
+        }),
+        'utf-8',
+      ),
+    };
+  }
+
+  /** How the fake answers one mutation: apply it; reject it at the GraphQL level (never applied,
+   *  `failed`); or lose the answer (HTTP 503, `unknown`), having applied it or not. */
+  type FakeAnswer = 'apply' | { reject: number } | { lost: 'applied' | 'notApplied' };
+
+  /** One call as the fake saw it, with the `Authorization` header it carried (`null` for none —
+   *  the set reads are tokenless). */
+  interface FakeGqlCall extends GqlCall {
+    authorization: string | null;
+  }
+
+  interface FakeSevenTv {
+    /** Every call to 7TV's GQL endpoint, in the order it arrived. */
+    calls: FakeGqlCall[];
+    entriesOf(id: string): (string | null)[];
+    /** Edits the set directly — what a hand edit in 7TV's web UI (or a stub between two steps) does. */
+    add(id: string, alias: string | null): void;
+    /** Takes one entry off an id, the id's other entries staying — a hand edit in 7TV's web UI. */
+    removeEntry(id: string, alias: string | null): void;
+  }
+
+  interface FakeSevenTvOptions {
+    /** Seeds the write token before the page loads (default), so no token prompt appears. */
+    seedToken?: boolean;
+    /** Default names for ids that are not in the initial set (a removed target). */
+    defaultNames?: Record<string, string>;
+    answer?: (call: GqlCall) => FakeAnswer | undefined;
+    /** Runs right after a mutation changed the set — the place to change it once more "between two
+     *  steps" (AK 26, AK 36). */
+    afterApply?: (call: GqlCall, fake: FakeSevenTv) => void;
+    /** Whether the `readIndex`-th set read (zero-based) fails at the GraphQL level. */
+    readFails?: (readIndex: number) => boolean;
+  }
+
+  /**
+   * An in-test 7TV set behind `https://7tv.io/v4/gql` (see the describe block's doc). A REMOVE takes
+   * every entry of the id (F2), an ADD adds one named entry under the alias it sends — 7TV no longer
+   * creates aliasless entries, those are legacy (F5) — and an ADD whose name another id already
+   * holds is refused with 409, as 7TV does, without a script. A read answers the set as it stands at
+   * that moment, in insertion order.
+   */
+  async function fakeSevenTvSet(
+    page: Page,
+    initial: readonly { id: string; aliases: (string | null)[]; defaultName?: string }[],
+    options: FakeSevenTvOptions = {},
+  ): Promise<FakeSevenTv> {
+    const state = new Map<string, (string | null)[]>(
+      initial.map((entry) => [entry.id, [...entry.aliases]]),
+    );
+    const defaultNames = new Map<string, string>([
+      ...initial.flatMap((entry): [string, string][] =>
+        entry.defaultName === undefined ? [] : [[entry.id, entry.defaultName]],
+      ),
+      ...Object.entries(options.defaultNames ?? {}),
+    ]);
+    const calls: FakeGqlCall[] = [];
+    const fake: FakeSevenTv = {
+      calls,
+      entriesOf: (id) => [...(state.get(id) ?? [])],
+      add: (id, alias) => {
+        state.set(id, [...(state.get(id) ?? []), alias]);
+      },
+      removeEntry: (id, alias) => {
+        const rest = (state.get(id) ?? []).filter((entry) => entry !== alias);
+        if (rest.length === 0) {
+          state.delete(id);
+        } else {
+          state.set(id, rest);
+        }
+      },
+    };
+    const apply = (call: GqlCall): void => {
+      const id = String(call.variables['emoteId']);
+      if (call.kind === 'removeEmote') {
+        state.delete(id);
+      } else {
+        fake.add(id, call.variables['alias'] as string | null);
+      }
+      options.afterApply?.(call, fake);
+    };
+
+    /** 7TV's own refusal: an ADD under a name a different id already holds — as a named alias, or
+     *  (spec §18, undo-plan.ts's `aliaslessDefaultNameHolders`) as an aliasless entry whose default
+     *  name is that alias. */
+    const nameConflict = (call: GqlCall): FakeAnswer | undefined => {
+      if (call.kind !== 'addEmote') {
+        return undefined;
+      }
+      const id = String(call.variables['emoteId']);
+      const alias = call.variables['alias'] as string;
+      const taken = [...state].some(([holder, aliases]) => {
+        if (holder === id) {
+          return false;
+        }
+        return (
+          aliases.includes(alias) || (aliases.includes(null) && defaultNames.get(holder) === alias)
+        );
+      });
+      return taken ? { reject: 409 } : undefined;
+    };
+
+    if (options.seedToken ?? true) {
+      await page.addInitScript(() => {
+        window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
+      });
+    }
+    let readIndex = 0;
+    await page.route('https://7tv.io/v4/gql', async (route) => {
+      const body = route.request().postDataJSON() as SevenTvGqlRequest;
+      const call: FakeGqlCall = {
+        kind: sevenTvGqlRequestKind(body),
+        variables: body.variables,
+        authorization: route.request().headers()['authorization'] ?? null,
+      };
+      calls.push(call);
+      if (call.kind === 'setRead') {
+        const failed = options.readFails?.(readIndex) ?? false;
+        readIndex += 1;
+        if (failed) {
+          await route.fulfill({ json: { errors: [{ message: 'emote set read failed' }] } });
+          return;
+        }
+        await route.fulfill({
+          json: sevenTvSetReadPayload(
+            [...state].map(([id, aliases]) => ({ id, aliases, defaultName: defaultNames.get(id) })),
+          ),
+        });
+        return;
+      }
+      if (call.kind !== 'addEmote' && call.kind !== 'removeEmote') {
+        // Recorded above; every case compares the full call list, so this cannot pass unnoticed.
+        await route.fulfill({ json: { errors: [{ message: 'unexpected request' }] } });
+        return;
+      }
+      const answer = options.answer?.(call) ?? nameConflict(call) ?? 'apply';
+      if (answer === 'apply') {
+        apply(call);
+        const id = call.variables['emoteId'];
+        await route.fulfill({
+          json: {
+            data: {
+              emoteSets: {
+                emoteSet: call.kind === 'addEmote' ? { addEmote: { id } } : { removeEmote: { id } },
+              },
+            },
+          },
+        });
+        return;
+      }
+      if ('reject' in answer) {
+        await route.fulfill({
+          json: {
+            errors: [
+              {
+                message: 'emote alias already in use',
+                extensions: { code: 'MUTATION_ERROR', status: answer.reject },
+              },
+            ],
+          },
+        });
+        return;
+      }
+      if (answer.lost === 'applied') {
+        apply(call);
+      }
+      await route.fulfill({
+        status: 503,
+        headers: { 'access-control-allow-origin': '*' },
+        body: '',
+      });
+    });
+    return fake;
+  }
+
+  /** The call list as one readable line per call — `read`, `remove <S>`, `add <T> <alias>`. */
+  function trace(calls: readonly GqlCall[]): string[] {
+    return calls.map((call) => {
+      switch (call.kind) {
+        case 'setRead':
+          return 'read';
+        case 'removeEmote':
+          return `remove ${String(call.variables['emoteId'])}`;
+        case 'addEmote':
+          return `add ${String(call.variables['emoteId'])} ${String(call.variables['alias'])}`;
+        default:
+          return call.kind;
+      }
+    });
+  }
+
+  /** AK 38 and AK 40, over every call of a case: a set read directly before every `removeEmote`,
+   *  and every `addEmote` with a non-empty alias — never `null`, never missing. */
+  function expectUndoRequestInvariants(calls: readonly GqlCall[]): void {
+    calls.forEach((call, index) => {
+      if (call.kind === 'removeEmote') {
+        expect(calls[index - 1]?.kind, `the call before removeEmote #${index}`).toBe('setRead');
+      }
+      if (call.kind === 'addEmote') {
+        const alias = call.variables['alias'];
+        expect(typeof alias, `alias of addEmote #${index}`).toBe('string');
+        expect(alias, `alias of addEmote #${index}`).not.toBe('');
+      }
+    });
+  }
+
+  /** Everything the usage-stats page of `SOURCE_CHANNEL` needs, the target list naming its active
+   *  set as editable (the file step's pre-check), both set-centric report routes, and a recorder
+   *  for the requests the undo must never send: a channel-bound report route (AK 12) or a client
+   *  resync (AK 14). `reportOrder` lists the two reports as they leave the page. */
+  async function undoWorkspace(
+    page: Page,
+    answers: { syncDeleted?: MockSyncInSetAnswer; syncRestored?: MockSyncInSetAnswer } = {},
+  ): Promise<{
+    syncDeleted: MockSyncInSetBody[];
+    syncRestored: MockSyncInSetBody[];
+    reportOrder: string[];
+    strayRequests: string[];
+  }> {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'source-1',
+        twitchLogin: SOURCE_CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: SOURCE_CHANNEL,
+        activeEmoteSetId: UNDO_SET_ID,
+        sets: [
+          {
+            id: UNDO_SET_ID,
+            name: UNDO_SET_NAME,
+            isActive: true,
+            ownerDisplayName: 'Sensitron',
+            editable: true,
+          },
+        ],
+      },
+    ]);
+    const syncDeleted = await mockSyncDeletedInSet(page, UNDO_SET_ID, answers.syncDeleted);
+    const syncRestored = await mockSyncRestoredInSet(page, UNDO_SET_ID, answers.syncRestored);
+    const reportOrder: string[] = [];
+    const strayRequests: string[] = [];
+    page.on('request', (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path.startsWith(`/api/seventv/emote-sets/${UNDO_SET_ID}/sync-`)) {
+        reportOrder.push(path.slice(path.lastIndexOf('/') + 1));
+      }
+      if (
+        /^\/api\/channels\/[^/]+\/emotes\/sync-(deleted|restored)$/.test(path) ||
+        (request.method() === 'POST' && path.endsWith('/resync'))
+      ) {
+        strayRequests.push(`${request.method()} ${path}`);
+      }
+    });
+    return { syncDeleted, syncRestored, reportOrder, strayRequests };
+  }
+
+  const switchGroup = (page: Page) =>
+    page
+      .getByRole('dialog')
+      .getByRole('group', { name: 'Was soll mit dieser Übertragungsdatei geschehen?' });
+
+  const undoChoice = (page: Page) =>
+    switchGroup(page).getByRole('button', { name: /^Ersetzungen rückgängig machen/ });
+
+  /** The undo's own dock section — scoped so a line never also matches the page-level
+   *  DockOutcomeAnnouncer's spoken twin of it (§4.5). */
+  const undoDock = (page: Page) => page.locator('app-undo-progress-section');
+
+  /** Reads `file` through the import dialog's file branch and picks the undo at the switch. */
+  async function chooseUndoFromFile(page: Page, file: FilePayload): Promise<void> {
+    const fileInput = await openFileImportDialog(page);
+    await fileInput.setInputFiles(file);
+    await undoChoice(page).click();
+  }
+
+  /** Waits past the file dialog for the undo confirmation (same trap as
+   *  {@link waitForImportConfirmDialog}: the file dialog's own title is still attached at first). */
+  async function waitForUndoConfirm(page: Page): Promise<Locator> {
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#app-dialog-title')).toHaveText(
+      /aus der Datei rückgängig machen\?$/,
+    );
+    return dialog;
+  }
+
+  async function readJsonDownload<T>(download: Download): Promise<T> {
+    const path = await download.path();
+    return JSON.parse(readFileSync(path, 'utf-8')) as T;
+  }
+
+  /** "Rückweg sichern" in the confirmation: the `planned` transfer-undo file (AK 6). */
+  async function saveRecoveryFile(
+    page: Page,
+    dialog: Locator,
+  ): Promise<{ filename: string; file: UndoFileJson }> {
+    const downloadPromise = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: 'Rückweg sichern' }).click();
+    const download = await downloadPromise;
+    return {
+      filename: download.suggestedFilename(),
+      file: await readJsonDownload<UndoFileJson>(download),
+    };
+  }
+
+  /** The dock's "Ergebnisprotokoll herunterladen" as JSON (AK 18). */
+  async function downloadUndoProtocol(
+    page: Page,
+  ): Promise<{ filename: string; file: UndoFileJson }> {
+    const downloadPromise = page.waitForEvent('download');
+    await undoDock(page).getByRole('button', { name: 'Ergebnisprotokoll herunterladen' }).click();
+    const exportDialog = page.getByRole('dialog');
+    await exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' }).check();
+    await exportDialog.getByRole('button', { name: 'Exportieren' }).click();
+    const download = await downloadPromise;
+    return {
+      filename: download.suggestedFilename(),
+      file: await readJsonDownload<UndoFileJson>(download),
+    };
+  }
+
+  /**
+   * Advances the installed clock in small steps until `locator` shows — the run's pacing delays and
+   * the reports' timers only start once the preceding request has answered in real time, so one big
+   * `runFor` could pass before the next timer even exists. Each step stays far below the 20 s read
+   * deadlines, and the clock is never paused (real time keeps running as well).
+   */
+  async function runClockUntilVisible(page: Page, locator: Locator): Promise<void> {
+    await runClockUntil(page, () => locator.isVisible());
+  }
+
+  /** {@link runClockUntilVisible} for any condition. */
+  async function runClockUntil(
+    page: Page,
+    condition: () => boolean | Promise<boolean>,
+  ): Promise<void> {
+    await expect
+      .poll(
+        async () => {
+          if (await condition()) {
+            return true;
+          }
+          await page.clock.runFor(250);
+          return condition();
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+  }
+
+  /** The dock line that says the run is over: its last report answered — or, for a run with
+   *  nothing to report, the "Schließen" a closed run offers. */
+  const restoreReported = (page: Page) =>
+    undoDock(page).getByText('Rückmeldung über die Wiederherstellung erfolgreich.');
+  const dockCloseButton = (page: Page) => undoDock(page).getByRole('button', { name: 'Schließen' });
+
+  /** A whole undo from `file` for a case whose subject is what comes after it: switch,
+   *  confirmation, the recovery file, start. Only for a plan with a `full` row — the recovery file
+   *  is required there (AK 6), so its absence fails here instead of being stepped around. */
+  async function runUndo(page: Page, file: FilePayload): Promise<void> {
+    await chooseUndoFromFile(page, file);
+    const confirm = await waitForUndoConfirm(page);
+    await saveRecoveryFile(page, confirm);
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  }
+
+  /** The dock's gap counter for one row (AK 17). */
+  const ONE_GAP_LINE =
+    '1 Zeile hat eine Lücke hinterlassen: das Quell-Emote ist weg, das Ziel aber nicht vollständig zurück. Dieselbe Rücknahme aus derselben Datei erneut starten schließt sie.';
+
+  const CATJAM_ROW: ReplaceRowSpec = {
+    sourceId: 'src-catjam',
+    alias: 'CatJAM',
+    targetId: 'tgt-catjam',
+    targetEntries: ['CatJAM'],
+    targetDefaultName: 'CatJAM',
+  };
+  /** A #74 duplicate cell: the target sat in the set under two names and once without an alias,
+   *  which comes back under the file's default name `KEKWide` (E21). */
+  const KEKW_ROW: ReplaceRowSpec = {
+    sourceId: 'src-kekw',
+    alias: 'KEKW',
+    targetId: 'tgt-kekw',
+    targetEntries: ['KEKW', 'KEKWait', null],
+    targetDefaultName: 'KEKWide',
+  };
+  /** The live set right after the two replaces of CATJAM_ROW and KEKW_ROW: both sources under the
+   *  taken names, both targets gone, one bystander. */
+  const AFTER_TWO_REPLACES = [
+    { id: 'src-catjam', aliases: ['CatJAM'] },
+    { id: 'src-kekw', aliases: ['KEKW'] },
+    { id: 'e-pog', aliases: ['Pog'] },
+  ];
+
+  test('undoing a two-replace result protocol reads before each removal, restores every target entry under an explicit name, and reports the removal before the restore (AK 1, 6, 9, 12, 18, 38, 40)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page, {
+      syncDeleted: {
+        channels: [{ channelName: SOURCE_CHANNEL }],
+        resyncTriggered: [SOURCE_CHANNEL],
+      },
+      syncRestored: { channels: [{ channelName: SOURCE_CHANNEL }] },
+    });
+    // Held back until the test lets it answer: the restore report must wait for it (AK 12).
+    const releaseSyncDeleted = await deferRoute(
+      page,
+      `**/api/seventv/emote-sets/${UNDO_SET_ID}/sync-deleted`,
+    );
+    // No token yet: the flow asks for it before its first read (E13).
+    const fake = await fakeSevenTvSet(page, AFTER_TWO_REPLACES, { seedToken: false });
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const fileInput = await openFileImportDialog(page);
+    await fileInput.setInputFiles(transferRunFile('finished', [CATJAM_ROW, KEKW_ROW]));
+    // AK 1: a transfer file ends at the switch; the undo is the second, destructive option.
+    await expect(undoChoice(page)).toContainText('entfernt Emotes');
+    await undoChoice(page).click();
+
+    const prompt = page.getByRole('dialog');
+    await expect(prompt.locator('#app-dialog-title')).toHaveText('7TV-Token hinterlegen');
+    expect(fake.calls).toEqual([]);
+    await prompt.getByLabel('7TV-Token einfügen').fill('e2e-typed-write-token');
+    await prompt.getByRole('button', { name: 'Speichern' }).click();
+
+    const confirm = await waitForUndoConfirm(page);
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '2 Ersetzungen aus der Datei rückgängig machen?',
+    );
+    await expect(confirm.getByText('Die Übertragung kam aus dem Kanal aatrociity.')).toBeVisible();
+    await expect(confirm.getByText(`Im Set „${UNDO_SET_NAME}“.`)).toBeVisible();
+    await expect(confirm.getByText('2 Quell-Emotes werden aus dem Set entfernt.')).toBeVisible();
+    const rows = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toContainText('Quelle raus, Ziel zurück');
+    await expect(rows.nth(0)).toContainText('Kommt zurück als: CatJAM');
+    await expect(rows.nth(1)).toContainText('Quelle raus, Ziel zurück');
+    await expect(rows.nth(1)).toContainText('Kommt zurück als: KEKW · KEKWait · KEKWide');
+    await expect(
+      confirm.getByText('Quelle raus, Ziel zurück: 2 · nur Ziel zurück: 0 · übersprungen: 0'),
+    ).toBeVisible();
+    await expect(confirm.getByText('4 Ziel-Einträge kommen zurück.')).toBeVisible();
+    // Slot delta: 4 ADDs − 2 REMOVEs = +2 on the three entries the read counted.
+    await expect(confirm.getByText('Das Set hätte danach 5 von 1000 Slots belegt.')).toBeVisible();
+
+    // AK 6: with a `full` row, "Starten" only exists after the recovery file.
+    await expect(confirm.getByRole('button', { name: 'Starten' })).toHaveCount(0);
+    const recovery = await saveRecoveryFile(page, confirm);
+    expect(recovery.filename).toMatch(
+      /^emotepurge_sensitron_transfer-undo-plan_\d{4}-\d{2}-\d{2}-\d{4}\.json$/,
+    );
+    expect(recovery.file.kind).toBe('transfer-undo');
+    expect(recovery.file.meta.stage).toBe('planned');
+    expect(
+      recovery.file.rows.map((row) => ({
+        mode: row.mode,
+        source: row.sourceSevenTvEmoteId,
+        removed: row.removedSource,
+        restored: row.restoredTarget?.entries.map((entry) => entry.alias),
+      })),
+    ).toEqual([
+      {
+        mode: 'full',
+        source: 'src-catjam',
+        removed: { entries: [{ alias: 'CatJAM' }], confirmed: false },
+        restored: ['CatJAM'],
+      },
+      {
+        mode: 'full',
+        source: 'src-kekw',
+        removed: { entries: [{ alias: 'KEKW' }], confirmed: false },
+        restored: ['KEKW', 'KEKWait', 'KEKWide'],
+      },
+    ]);
+    // Saving builds the file from the read the dialog holds — no request of its own.
+    expect(trace(fake.calls)).toEqual(['read']);
+
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // AK 12: the removal report goes out first, and the restore report waits for its answer — not
+    // merely for its request. Two seconds on the clock while it is held fire any timer that could
+    // send it early, and stay far below the 30 s report timeout.
+    await runClockUntil(page, () => reports.reportOrder.length > 0);
+    expect(reports.reportOrder).toEqual(['sync-deleted']);
+    await page.clock.runFor(2000);
+    expect(reports.reportOrder).toEqual(['sync-deleted']);
+    releaseSyncDeleted();
+    await runClockUntilVisible(page, restoreReported(page));
+
+    // AK 9, 38, 40: the flow's first read, the freshness check, then per row a read right before
+    // its REMOVE and the ADDs after it — the aliasless entry under the file's default name.
+    expect(trace(fake.calls)).toEqual([
+      'read',
+      'read',
+      'read',
+      'remove src-catjam',
+      'add tgt-catjam CatJAM',
+      'read',
+      'remove src-kekw',
+      'add tgt-kekw KEKW',
+      'add tgt-kekw KEKWait',
+      'add tgt-kekw KEKWide',
+    ]);
+    expectUndoRequestInvariants(fake.calls);
+    for (const call of fake.calls) {
+      const setId = call.kind === 'setRead' ? call.variables['id'] : call.variables['setId'];
+      expect(setId).toBe(UNDO_SET_ID);
+    }
+    // The writes carry the token typed into the prompt; the reads are tokenless.
+    for (const call of fake.calls) {
+      expect(call.authorization, trace([call])[0]).toBe(
+        call.kind === 'setRead' ? null : 'Bearer e2e-typed-write-token',
+      );
+    }
+
+    // Both set-centric, the tracked channel expected.
+    expect(reports.reportOrder).toEqual(['sync-deleted', 'sync-restored']);
+    expect(reports.syncDeleted).toEqual([
+      { sevenTvEmoteIds: ['src-catjam', 'src-kekw'], expectedChannelName: SOURCE_CHANNEL },
+    ]);
+    expect(reports.syncRestored).toEqual([
+      { sevenTvEmoteIds: ['tgt-catjam', 'tgt-kekw'], expectedChannelName: SOURCE_CHANNEL },
+    ]);
+    // AK 14 (request half): the backend resynced; the client sends no resync of its own.
+    expect(reports.strayRequests).toEqual([]);
+
+    const dock = undoDock(page);
+    await expect(dock.getByText(`Ziel: ${SOURCE_CHANNEL} · Set ${UNDO_SET_NAME}`)).toBeVisible();
+    await expect(
+      dock.getByText('2 zurückgenommen · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(dock.getByText('2 Quell-Emotes wurden entfernt.')).toBeVisible();
+    await expect(dock.getByText('4 Ziel-Einträge sind wieder da.')).toBeVisible();
+    await expect(dock.getByText('Rückmeldung über die Entfernung erfolgreich.')).toBeVisible();
+    await expect(
+      dock.getByText('Abgleich läuft bereits — die Liste aktualisiert sich gleich.'),
+    ).toBeVisible();
+    await expect(dockCloseButton(page)).toBeVisible();
+
+    // AK 18: the finished protocol, from the settled run; the quiet reminder goes with it.
+    const notSaved = dock.getByText(
+      'Ergebnisprotokoll noch nicht gespeichert — nach dem Schließen ist es weg.',
+    );
+    await expect(notSaved).toBeVisible();
+    const protocol = await downloadUndoProtocol(page);
+    expect(protocol.filename).toMatch(
+      /^emotepurge_sensitron_transfer-undo_\d{4}-\d{2}-\d{2}-\d{4}\.json$/,
+    );
+    expect(protocol.file.meta.stage).toBe('finished');
+    expect(protocol.file.meta.undoneFile).toMatchObject({
+      stage: 'finished',
+      finishedAt: '2026-09-24T12:01:00Z',
+      origin: { kind: 'channel', channelName: TARGET_CHANNEL },
+    });
+    expect(protocol.file.meta.counts).toMatchObject({
+      requested: 2,
+      succeeded: 2,
+      removed: 2,
+      added: 4,
+      skipped: 0,
+    });
+    expect(
+      protocol.file.rows.map((row) => ({
+        kind: row.kind,
+        status: row.status,
+        completedSteps: row.completedSteps,
+        removedConfirmed: row.removedSource?.confirmed,
+        added: row.restoredTarget?.entries.map((entry) => entry.added),
+      })),
+    ).toEqual([
+      {
+        kind: 'executed',
+        status: 'done',
+        completedSteps: 2,
+        removedConfirmed: true,
+        added: [true],
+      },
+      {
+        kind: 'executed',
+        status: 'done',
+        completedSteps: 4,
+        removedConfirmed: true,
+        added: [true, true, true],
+      },
+    ]);
+    await expect(notSaved).toHaveCount(0);
+  });
+
+  test('the same result protocol a second time is a notice without a dialog, a run, a report or a file (AK 5, 21)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, AFTER_TWO_REPLACES);
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const file = transferRunFile('finished', [CATJAM_ROW, KEKW_ROW]);
+    await runUndo(page, file);
+    await runClockUntilVisible(page, restoreReported(page));
+    await expect(
+      undoDock(page).getByText('2 zurückgenommen · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+
+    const callsBefore = fake.calls.length;
+    const downloads: string[] = [];
+    page.on('download', (download) => downloads.push(download.suggestedFilename()));
+    await chooseUndoFromFile(page, file);
+
+    // Every target entry is back, every source gone: both rows are `nothingToDo`.
+    await expect(undoDock(page).getByText('2 übersprungen: nichts zu tun')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(trace(fake.calls.slice(callsBefore))).toEqual(['read']);
+    expect(reports.syncDeleted).toHaveLength(1);
+    expect(reports.syncRestored).toHaveLength(1);
+    expect(downloads).toEqual([]);
+    expectUndoRequestInvariants(fake.calls);
+  });
+
+  test('a replace whose second ADD was refused leaves a gap the dock names, and the same file again restores exactly the missing entry (AK 17, 30)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    let refusedOnce = false;
+    const fake = await fakeSevenTvSet(page, [{ id: 'src-hype', aliases: ['Hype'] }], {
+      answer: (call) => {
+        if (call.kind === 'addEmote' && call.variables['alias'] === 'HypeTrain' && !refusedOnce) {
+          refusedOnce = true;
+          return { reject: 409 };
+        }
+        return undefined;
+      },
+    });
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const file = transferRunFile('finished', [
+      {
+        sourceId: 'src-hype',
+        alias: 'Hype',
+        targetId: 'tgt-hype',
+        targetEntries: ['Hype', 'HypeTrain'],
+        targetDefaultName: 'Hype',
+      },
+    ]);
+    await runUndo(page, file);
+    await runClockUntilVisible(page, restoreReported(page));
+
+    const dock = undoDock(page);
+    await expect(
+      dock.getByText('0 zurückgenommen · 1 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(dock.getByText(ONE_GAP_LINE)).toBeVisible();
+    // The REMOVE and the first ADD were confirmed: both reports carry their id.
+    expect(reports.syncDeleted).toEqual([
+      { sevenTvEmoteIds: ['src-hype'], expectedChannelName: SOURCE_CHANNEL },
+    ]);
+    expect(reports.syncRestored).toEqual([
+      { sevenTvEmoteIds: ['tgt-hype'], expectedChannelName: SOURCE_CHANNEL },
+    ]);
+    const firstRun = fake.calls.length;
+    expect(trace(fake.calls)).toEqual([
+      'read',
+      'read',
+      'read',
+      'remove src-hype',
+      'add tgt-hype Hype',
+      'add tgt-hype HypeTrain',
+    ]);
+
+    // Second run from the same file: the source is gone, the target holds `Hype` — an ADD-only row
+    // with exactly the missing entry, started without a recovery file (nothing is removed).
+    await chooseUndoFromFile(page, file);
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Nur Ziel zurück');
+    await expect(row).toContainText('Kommt zurück als: HypeTrain');
+    // `Hype` is the target's own entry, already back — present, not a name someone else holds.
+    await expect(confirm.getByText('1 Ziel-Eintrag aus der Datei ist schon im Set.')).toBeVisible();
+    await expect(row).not.toContainText('bleibt aus');
+    await expect(confirm.getByText(/werden? aus dem Set entfernt/)).toHaveCount(0);
+    await expect(confirm.getByRole('button', { name: 'Rückweg sichern' })).toHaveCount(0);
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await runClockUntilVisible(
+      page,
+      dock.getByText('1 zurückgenommen · 0 fehlgeschlagen · 0 abgebrochen'),
+    );
+    await runClockUntilVisible(page, restoreReported(page));
+
+    expect(trace(fake.calls.slice(firstRun))).toEqual(['read', 'read', 'add tgt-hype HypeTrain']);
+    expect(fake.entriesOf('tgt-hype')).toEqual(['Hype', 'HypeTrain']);
+    // Nothing removed the second time: no second removal report.
+    expect(reports.syncDeleted).toHaveLength(1);
+    expect(reports.syncRestored).toHaveLength(2);
+    expect(reports.syncRestored[1]).toEqual({
+      sevenTvEmoteIds: ['tgt-hype'],
+      expectedChannelName: SOURCE_CHANNEL,
+    });
+    expectUndoRequestInvariants(fake.calls);
+  });
+
+  test('a second alias on a later source, given right after the first REMOVE, is seen by that row’s own read and skips it without a request (AK 26, 38)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(
+      page,
+      [
+        { id: 'src-one', aliases: ['One'] },
+        { id: 'src-two', aliases: ['Two'] },
+      ],
+      {
+        afterApply: (call, set) => {
+          if (call.kind === 'removeEmote' && call.variables['emoteId'] === 'src-one') {
+            set.add('src-two', 'TwoToo');
+          }
+        },
+      },
+    );
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await runUndo(
+      page,
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-one',
+          alias: 'One',
+          targetId: 'tgt-one',
+          targetEntries: ['One'],
+          targetDefaultName: 'One',
+        },
+        {
+          sourceId: 'src-two',
+          alias: 'Two',
+          targetId: 'tgt-two',
+          targetEntries: ['Two'],
+          targetDefaultName: 'Two',
+        },
+      ]),
+    );
+    await runClockUntilVisible(page, restoreReported(page));
+
+    // The second row's own read comes after the first row's writes and is the last call: no
+    // REMOVE, no ADD for it.
+    expect(trace(fake.calls)).toEqual([
+      'read',
+      'read',
+      'read',
+      'remove src-one',
+      'add tgt-one One',
+      'read',
+    ]);
+    expectUndoRequestInvariants(fake.calls);
+    expect(fake.entriesOf('src-two')).toEqual(['Two', 'TwoToo']);
+
+    const dock = undoDock(page);
+    await expect(
+      dock.getByText('1 zurückgenommen · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(dock.getByText('1 übersprungen: seit der Prüfung geändert')).toBeVisible();
+    expect(reports.syncDeleted.map((body) => body.sevenTvEmoteIds)).toEqual([['src-one']]);
+    expect(reports.syncRestored.map((body) => body.sevenTvEmoteIds)).toEqual([['tgt-one']]);
+  });
+
+  test('a recovery file of the transfer locks the undo until the unproven rows are confirmed, then runs it (AK 28)', async ({
+    page,
+  }) => {
+    await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, [{ id: 'src-lurk', aliases: ['Lurk'] }]);
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await chooseUndoFromFile(
+      page,
+      transferRunFile('planned', [
+        {
+          sourceId: 'src-lurk',
+          alias: 'Lurk',
+          targetId: 'tgt-lurk',
+          targetEntries: ['Lurk'],
+          targetDefaultName: 'Lurk',
+        },
+      ]),
+    );
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Übersprungen: unbelegt und nicht bestätigt');
+    await expect(row).toContainText('unbelegt');
+
+    // Without the confirmation nothing runs: no recovery file on offer, the executor locked with
+    // its reason.
+    await expect(confirm.getByRole('button', { name: 'Rückweg sichern' })).toHaveCount(0);
+    const execute = confirm.getByRole('button', { name: 'Starten' });
+    await expect(execute).toBeDisabled();
+    await expect(execute).toHaveAccessibleDescription(
+      'Ohne die Bestätigung oben läuft keine Zeile.',
+    );
+
+    await confirm.getByRole('checkbox').check();
+    await expect(row).toContainText('Quelle raus, Ziel zurück');
+    const recovery = await saveRecoveryFile(page, confirm);
+    expect(recovery.file.meta.acknowledgedUnproven).toBe(true);
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await runClockUntilVisible(page, restoreReported(page));
+
+    expect(trace(fake.calls)).toEqual([
+      'read',
+      'read',
+      'read',
+      'remove src-lurk',
+      'add tgt-lurk Lurk',
+    ]);
+    expectUndoRequestInvariants(fake.calls);
+  });
+
+  test('a target back under a foreign name skips its full row untouched, while an ADD-only row next to a foreign entry restores the missing names and leaves it (AK 29)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, [
+      // Row 1: the source still holds its alias, the target was brought back by hand under `Cozy`.
+      { id: 'src-comfy', aliases: ['Comfy'] },
+      { id: 'tgt-comfy', aliases: ['Cozy'] },
+      // Row 2: the source is gone, the target is back under `Snug` only.
+      { id: 'tgt-warm', aliases: ['Snug'] },
+    ]);
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await chooseUndoFromFile(
+      page,
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-comfy',
+          alias: 'Comfy',
+          targetId: 'tgt-comfy',
+          targetEntries: ['Comfy', 'ComfyToo'],
+          targetDefaultName: 'Comfy',
+        },
+        {
+          sourceId: 'src-warm',
+          alias: 'Warm',
+          targetId: 'tgt-warm',
+          targetEntries: ['Warm', 'WarmToo'],
+          targetDefaultName: 'Warm',
+        },
+      ]),
+    );
+    const confirm = await waitForUndoConfirm(page);
+    const rows = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(rows.nth(0)).toContainText(
+      'Übersprungen: das Ziel trägt einen Eintrag, den die Datei nicht kennt',
+    );
+    await expect(rows.nth(1)).toContainText('Nur Ziel zurück');
+    await expect(rows.nth(1)).toContainText('Kommt zurück als: Warm · WarmToo');
+    await expect(rows.nth(1)).toContainText(
+      'Das Ziel trägt schon einen Eintrag, den die Datei nicht kennt — er bleibt unangetastet.',
+    );
+    // Nothing is removed: "Starten" at once, no recovery file.
+    await expect(confirm.getByRole('button', { name: 'Rückweg sichern' })).toHaveCount(0);
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await runClockUntilVisible(page, restoreReported(page));
+
+    expect(trace(fake.calls)).toEqual([
+      'read',
+      'read',
+      'add tgt-warm Warm',
+      'add tgt-warm WarmToo',
+    ]);
+    expectUndoRequestInvariants(fake.calls);
+    expect(fake.entriesOf('src-comfy')).toEqual(['Comfy']);
+    expect(fake.entriesOf('tgt-comfy')).toEqual(['Cozy']);
+    expect(fake.entriesOf('tgt-warm')).toEqual(['Snug', 'Warm', 'WarmToo']);
+    expect(reports.syncDeleted).toEqual([]);
+    expect(reports.syncRestored.map((body) => body.sevenTvEmoteIds)).toEqual([['tgt-warm']]);
+
+    const dock = undoDock(page);
+    await expect(
+      dock.getByText(
+        '1 Ziel trug schon einen Eintrag, den die Datei nicht kennt — er blieb unangetastet.',
+      ),
+    ).toBeVisible();
+    await expect(
+      dock.getByText('1 übersprungen: das Ziel trägt einen Eintrag, den die Datei nicht kennt'),
+    ).toBeVisible();
+  });
+
+  test('a foreign alias that appears after the first ADD ends the row failed at step 2, and the same file again adds only the missing entry next to it (AK 36)', async ({
+    page,
+  }) => {
+    await undoWorkspace(page);
+    let refusedOnce = false;
+    const fake = await fakeSevenTvSet(page, [{ id: 'src-wave', aliases: ['Wave'] }], {
+      afterApply: (call, set) => {
+        if (call.kind === 'addEmote' && call.variables['alias'] === 'Wave') {
+          set.add('tgt-wave', 'Hi');
+        }
+      },
+      answer: (call) => {
+        if (call.kind === 'addEmote' && call.variables['alias'] === 'WaveToo' && !refusedOnce) {
+          refusedOnce = true;
+          return { reject: 409 };
+        }
+        return undefined;
+      },
+    });
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const file = transferRunFile('finished', [
+      {
+        sourceId: 'src-wave',
+        alias: 'Wave',
+        targetId: 'tgt-wave',
+        targetEntries: ['Wave', 'WaveToo'],
+        targetDefaultName: 'Wave',
+      },
+    ]);
+    await runUndo(page, file);
+    await runClockUntilVisible(page, restoreReported(page));
+    // `Hi` lands on the target right after `add tgt-wave Wave`; the next ADD is refused.
+    expect(trace(fake.calls)).toEqual([
+      'read',
+      'read',
+      'read',
+      'remove src-wave',
+      'add tgt-wave Wave',
+      'add tgt-wave WaveToo',
+    ]);
+    const dock = undoDock(page);
+    await expect(
+      dock.getByText('0 zurückgenommen · 1 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+
+    const protocol = await downloadUndoProtocol(page);
+    expect(protocol.file.rows[0]).toMatchObject({
+      kind: 'executed',
+      mode: 'full',
+      status: 'failed',
+      failedStep: 2,
+      completedSteps: 2,
+    });
+
+    const firstRun = fake.calls.length;
+    await chooseUndoFromFile(page, file);
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Nur Ziel zurück');
+    await expect(row).toContainText('Kommt zurück als: WaveToo');
+    await expect(row).toContainText(
+      'Das Ziel trägt schon einen Eintrag, den die Datei nicht kennt — er bleibt unangetastet.',
+    );
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await runClockUntilVisible(
+      page,
+      dock.getByText('1 zurückgenommen · 0 fehlgeschlagen · 0 abgebrochen'),
+    );
+
+    expect(trace(fake.calls.slice(firstRun))).toEqual(['read', 'read', 'add tgt-wave WaveToo']);
+    expect(fake.entriesOf('tgt-wave')).toEqual(['Wave', 'Hi', 'WaveToo']);
+    await expect(
+      dock.getByText(
+        '1 Ziel trug schon einen Eintrag, den die Datei nicht kennt — er blieb unangetastet.',
+      ),
+    ).toBeVisible();
+    expectUndoRequestInvariants(fake.calls);
+  });
+
+  test('a target entry restored under its default name counts as present on the next run: nothing to do, and with another entry missing only that one comes back (AK 35, 40)', async ({
+    page,
+  }) => {
+    await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, [{ id: 'src-pepe', aliases: ['Pepe'] }], {
+      defaultNames: { 'tgt-pepe': 'PepeLaugh' },
+    });
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const file = transferRunFile('finished', [
+      {
+        sourceId: 'src-pepe',
+        alias: 'Pepe',
+        targetId: 'tgt-pepe',
+        targetEntries: ['Pepe', null],
+        targetDefaultName: 'PepeLaugh',
+      },
+    ]);
+    await runUndo(page, file);
+    await runClockUntilVisible(page, restoreReported(page));
+    expect(trace(fake.calls)).toEqual([
+      'read',
+      'read',
+      'read',
+      'remove src-pepe',
+      'add tgt-pepe Pepe',
+      'add tgt-pepe PepeLaugh',
+    ]);
+    // The file's aliasless entry comes back as a named entry under its default name `D` (F18):
+    // 7TV stores the alias it is sent.
+    expect(fake.entriesOf('tgt-pepe')).toEqual(['Pepe', 'PepeLaugh']);
+
+    const firstRun = fake.calls.length;
+    await chooseUndoFromFile(page, file);
+    // `PepeLaugh` is the file's own `null` entry under `D` — present, not a foreign entry.
+    await expect(undoDock(page).getByText('1 übersprungen: nichts zu tun')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(trace(fake.calls.slice(firstRun))).toEqual(['read']);
+
+    // "Nothing to do" alone would also follow if `D` were taken for someone else's name (every
+    // missing entry omitted, Festlegung Nr. 7). A hand edit takes `Pepe` off the target: now the
+    // dialog shows `D` as already present, and only `Pepe` comes back — no omission, no foreign note.
+    fake.removeEntry('tgt-pepe', 'Pepe');
+    await chooseUndoFromFile(page, file);
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Nur Ziel zurück');
+    await expect(row.getByText('Kommt zurück als: Pepe', { exact: true })).toBeVisible();
+    await expect(confirm.getByText('1 Ziel-Eintrag aus der Datei ist schon im Set.')).toBeVisible();
+    await expect(row).not.toContainText('bleibt aus');
+    await expect(row).not.toContainText('den die Datei nicht kennt');
+    expectUndoRequestInvariants(fake.calls);
+  });
+
+  test('a legacy aliasless entry on the target stands for the file’s own unnamed entry: present, not foreign (F5, AK 4)', async ({
+    page,
+  }) => {
+    await undoWorkspace(page);
+    // The source is gone; the target holds only an old aliasless entry, as 7TV no longer writes them.
+    const fake = await fakeSevenTvSet(page, [
+      { id: 'tgt-kappa', aliases: [null], defaultName: 'KappaPride' },
+    ]);
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await chooseUndoFromFile(
+      page,
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-kappa',
+          alias: 'Kappa',
+          targetId: 'tgt-kappa',
+          targetEntries: ['Kappa', null],
+          targetDefaultName: 'KappaPride',
+        },
+      ]),
+    );
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Nur Ziel zurück');
+    await expect(row.getByText('Kommt zurück als: Kappa', { exact: true })).toBeVisible();
+    await expect(confirm.getByText('1 Ziel-Eintrag aus der Datei ist schon im Set.')).toBeVisible();
+    await expect(row).not.toContainText('den die Datei nicht kennt');
+    await confirm.getByRole('button', { name: 'Abbrechen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(trace(fake.calls)).toEqual(['read']);
+  });
+
+  test('an ADD-only row with an omitted entry whose one ADD is lost and cannot be re-read ends unknown, not partial (AK 37)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, [{ id: 'third', aliases: ['Beta'] }], {
+      answer: (call) => (call.kind === 'addEmote' ? { lost: 'notApplied' } : undefined),
+      // Reads 0 and 1 are the flow's; read 2 is the settle re-read after the lost answer.
+      readFails: (readIndex) => readIndex >= 2,
+    });
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await chooseUndoFromFile(
+      page,
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-alpha',
+          alias: 'Alpha',
+          targetId: 'tgt-alpha',
+          targetEntries: ['Alpha', 'Beta'],
+          targetDefaultName: 'Alpha',
+        },
+      ]),
+    );
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Nur Ziel zurück');
+    await expect(row).toContainText(
+      '„Beta“ bleibt aus — der Name ist von einem anderen Emote belegt.',
+    );
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const dock = undoDock(page);
+    await runClockUntilVisible(page, dockCloseButton(page));
+    expect(trace(fake.calls)).toEqual(['read', 'read', 'add tgt-alpha Alpha', 'read']);
+    expectUndoRequestInvariants(fake.calls);
+    await expect(
+      dock.getByText(
+        'Bei 1 Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.',
+      ),
+    ).toBeVisible();
+    await expect(
+      dock.getByText(
+        '1 Ziel-Eintrag blieb aus, weil sein Name belegt oder nicht prüfbar ist — Namen freimachen und dieselbe Rücknahme erneut starten.',
+      ),
+    ).toBeVisible();
+    await expect(dock.getByText(/nur teilweise zurück/)).toHaveCount(0);
+    // Nothing confirmed, nothing reported (AK 11).
+    expect(reports.syncDeleted).toEqual([]);
+    expect(reports.syncRestored).toEqual([]);
+
+    const protocol = await downloadUndoProtocol(page);
+    expect(protocol.file.rows[0]).toMatchObject({
+      kind: 'executed',
+      mode: 'addOnly',
+      status: 'unknown',
+      omittedEntries: [{ alias: 'Beta', reason: 'targetNameTaken' }],
+    });
+    expect(protocol.file.meta.counts).toMatchObject({ unknown: 1, partial: 0 });
+  });
+
+  test('a REMOVE whose answer is lost is cleared up by exactly one re-read: the source is gone, so the row fails with a gap and the removal is reported (AK 11)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, [{ id: 'src-gg', aliases: ['GG'] }], {
+      answer: (call) => (call.kind === 'removeEmote' ? { lost: 'applied' } : undefined),
+    });
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await runUndo(
+      page,
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-gg',
+          alias: 'GG',
+          targetId: 'tgt-gg',
+          targetEntries: ['GG'],
+          targetDefaultName: 'GG',
+        },
+      ]),
+    );
+    const dock = undoDock(page);
+    await runClockUntilVisible(
+      page,
+      dock.getByText('Rückmeldung über die Entfernung erfolgreich.'),
+    );
+
+    // One settle re-read after the unanswered REMOVE, and no ADD: the row stopped at its REMOVE.
+    expect(trace(fake.calls)).toEqual(['read', 'read', 'read', 'remove src-gg', 'read']);
+    expectUndoRequestInvariants(fake.calls);
+    await expect(
+      dock.getByText('0 zurückgenommen · 1 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(dock.getByText('1 Quell-Emote wurde entfernt.')).toBeVisible();
+    await expect(dock.getByText(ONE_GAP_LINE)).toBeVisible();
+    await expect(
+      dock.getByText(/^GG: Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig/),
+    ).toBeVisible();
+    expect(reports.syncDeleted).toEqual([
+      { sevenTvEmoteIds: ['src-gg'], expectedChannelName: SOURCE_CHANNEL },
+    ]);
+    expect(reports.syncRestored).toEqual([]);
+
+    const protocol = await downloadUndoProtocol(page);
+    expect(protocol.file.rows[0]).toMatchObject({
+      status: 'failed',
+      failedStep: 1,
+      completedSteps: 1,
+      removedSource: { confirmed: true },
+    });
+  });
+
+  test('the switch offers closing the gaps first and focused, names the undo destructive, explains a disabled undo, and "Lücken schließen" still restores without removing anything (AK 1, F10)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    const fake = await fakeSevenTvSet(page, [{ id: 'e-pog', aliases: ['Pog'] }]);
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    const fileInput = await openFileImportDialog(page);
+    // A row the restore can read (its target) but the undo cannot (no alias of its own): the undo
+    // stays visible, disabled, with its reason in its own name (§10).
+    await fileInput.setInputFiles(
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-nameless',
+          alias: '',
+          targetId: 'tgt-nameless',
+          targetEntries: ['Nameless'],
+          targetDefaultName: 'Nameless',
+        },
+      ]),
+    );
+    await expect(undoChoice(page)).toBeDisabled();
+    await expect(undoChoice(page)).toContainText(
+      'Diese Datei enthält keine Ersetzung, die sich rückgängig machen ließe.',
+    );
+
+    // A new file replaces the switch; the non-destructive option comes first and takes focus.
+    await fileInput.setInputFiles(
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-bye',
+          alias: 'Bye',
+          targetId: 'tgt-bye',
+          targetEntries: ['Bye'],
+          targetDefaultName: 'Bye',
+        },
+      ]),
+    );
+    const options = switchGroup(page).getByRole('button');
+    await expect(options).toHaveCount(2);
+    await expect(options.nth(0)).toHaveAccessibleName(/^Lücken schließen/);
+    await expect(options.nth(0)).toBeFocused();
+    await expect(options.nth(1)).toHaveAccessibleName(/^Ersetzungen rückgängig machen/);
+    await expect(options.nth(1)).toContainText('entfernt Emotes');
+    await expect(options.nth(1)).toBeEnabled();
+    await chooseCloseGaps(page);
+
+    const restoreConfirm = page.getByRole('dialog');
+    await expect(restoreConfirm.locator('#app-dialog-title')).toHaveText(
+      '1 Emote wieder zum Set hinzufügen?',
+    );
+    await restoreConfirm.getByRole('button', { name: 'Wiederherstellen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await runClockUntilVisible(
+      page,
+      page.getByText('1 wiederhergestellt · 0 fehlgeschlagen · 0 abgebrochen'),
+    );
+
+    const mutations = fake.calls.filter((call) => call.kind !== 'setRead');
+    expect(trace(mutations)).toEqual(['add tgt-bye Bye']);
+    await expect
+      .poll(() => reports.syncRestored)
+      .toEqual([{ sevenTvEmoteIds: ['tgt-bye'], expectedChannelName: SOURCE_CHANNEL }]);
+    expect(reports.syncDeleted).toEqual([]);
+    // The undo's dock stays empty: no undo ran.
+    await expect(undoDock(page)).toBeEmpty();
+  });
+
+  test('a mixed recovery file without the confirmation runs only its ADD-only row: no REMOVE, no removal report, and the protocol lists the unproven row as skipped (AK 28, spec 17 K2/K4)', async ({
+    page,
+  }) => {
+    const reports = await undoWorkspace(page);
+    // Row 1's source still holds its name (a `full` row, unproven); row 2's source is gone.
+    const fake = await fakeSevenTvSet(page, [{ id: 'src-first', aliases: ['First'] }]);
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await chooseUndoFromFile(
+      page,
+      transferRunFile('planned', [
+        {
+          sourceId: 'src-first',
+          alias: 'First',
+          targetId: 'tgt-first',
+          targetEntries: ['First'],
+          targetDefaultName: 'First',
+        },
+        {
+          sourceId: 'src-second',
+          alias: 'Second',
+          targetId: 'tgt-second',
+          targetEntries: ['Second'],
+          targetDefaultName: 'Second',
+        },
+      ]),
+    );
+    const confirm = await waitForUndoConfirm(page);
+    const rows = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(rows.nth(0)).toContainText('Übersprungen: unbelegt und nicht bestätigt');
+    await expect(rows.nth(1)).toContainText('Nur Ziel zurück');
+    await expect(confirm.getByRole('checkbox')).not.toBeChecked();
+    await expect(confirm.getByRole('button', { name: 'Rückweg sichern' })).toHaveCount(0);
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await runClockUntilVisible(page, restoreReported(page));
+
+    expect(trace(fake.calls)).toEqual(['read', 'read', 'add tgt-second Second']);
+    expectUndoRequestInvariants(fake.calls);
+    expect(fake.entriesOf('src-first')).toEqual(['First']);
+    expect(reports.syncDeleted).toEqual([]);
+    expect(reports.syncRestored).toEqual([
+      { sevenTvEmoteIds: ['tgt-second'], expectedChannelName: SOURCE_CHANNEL },
+    ]);
+
+    const protocol = await downloadUndoProtocol(page);
+    expect(protocol.file.meta.acknowledgedUnproven).toBe(false);
+    expect(protocol.file.meta.counts).toMatchObject({ requested: 1, skipped: 1 });
+    expect(
+      protocol.file.rows.map((row) => ({
+        kind: row.kind,
+        source: row.sourceSevenTvEmoteId,
+        skippedReason: row.skippedReason,
+      })),
+    ).toEqual([
+      { kind: 'executed', source: 'src-second', skippedReason: null },
+      { kind: 'skipped', source: 'src-first', skippedReason: 'skippedUnproven' },
+    ]);
+  });
+});
+
+/** The transfer-undo file as the undo's recovery file and result protocol write it (spec 6.4) —
+ *  only the fields the #254 cases read. */
+interface UndoFileJson {
+  kind: string;
+  meta: {
+    stage: string;
+    acknowledgedUnproven: boolean;
+    undoneFile?: Record<string, unknown>;
+    counts: Record<string, number>;
+  };
+  rows: {
+    kind: 'executed' | 'skipped';
+    mode?: string;
+    sourceSevenTvEmoteId: string;
+    status?: string;
+    failedStep?: number | null;
+    completedSteps?: number;
+    skippedReason: string | null;
+    removedSource?: { entries: { alias: string }[]; confirmed: boolean } | null;
+    restoredTarget?: { sevenTvEmoteId: string; entries: { alias: string; added: boolean }[] };
+    omittedEntries?: { alias: string | null; reason: string }[];
+  }[];
+}

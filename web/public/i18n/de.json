@@ -979,11 +979,25 @@
       "title": "Datei importieren",
       "sorts": {
         "purgeRun": "Purge-Protokoll (Wiederherstellen) als JSON",
-        "transferRun": "Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
+        "transferRun": "Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen oder Ersetzungen rückgängig machen) als JSON",
+        "transferUndo": "Rückweg-Protokoll einer Ersetzung — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
         "emoteList": "Emote-Liste (Kopieren) als JSON",
         "usageExport": "Nutzungs-Export (Kopieren) als JSON"
       },
       "fileLabel": "Datei auswählen",
+      "choice": {
+        "legend": "Was soll mit dieser Übertragungsdatei geschehen?",
+        "restore": {
+          "label": "Lücken schließen",
+          "hint": "Holt entfernte Ziel-Emotes zurück, wo ihr Name frei ist. Entfernt nichts."
+        },
+        "undo": {
+          "label": "Ersetzungen rückgängig machen",
+          "hint": "Entfernt die Quell-Emotes, die den Namen übernommen haben, und holt die Ziele zurück. Vorher kommt eine Bestätigung.",
+          "destructive": "entfernt Emotes",
+          "unavailable": "Diese Datei enthält keine Ersetzung, die sich rückgängig machen ließe."
+        }
+      },
       "errors": {
         "notJson": "Die Datei ist kein gültiges JSON.",
         "csvInsteadOfJson": "Das ist die CSV-Fassung. Der Import braucht dieselbe Datei als JSON — beim Export das Format JSON wählen.",
@@ -994,6 +1008,8 @@
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
         "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",
+        "transferUndo": "Das ist das Rückweg-Protokoll einer Ersetzung (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
+        "transferUndoNoRows": "Diese Rückweg-Datei enthält keine entfernten Quell-Emotes.",
         "targetNotEditable": "Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
         "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set.",
         "targetCheckUnavailable": "Das Set aus der Datei konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
@@ -1082,6 +1098,7 @@
       "rateLimited": "Zu viele Anfragen an 7TV (Rate Limit) — später erneut versuchen.",
       "rateLimitedGaveUp": "7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.",
       "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
+      "beforeStepFailed": "Übersprungen — die Prüfung vor dem Schritt ist fehlgeschlagen.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }}).",
       "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
@@ -1415,6 +1432,170 @@
     },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
   },
+  "undo": {
+    "confirm": {
+      "title": {
+        "one": "{{ count }} Ersetzung aus der Datei rückgängig machen?",
+        "other": "{{ count }} Ersetzungen aus der Datei rückgängig machen?"
+      },
+      "fileLine": {
+        "planned": "Aus einer Rückweg-Datei der Übertragung, geschrieben am {{ date }} — vor ihrem ersten Schritt.",
+        "finished": "Aus dem Ergebnisprotokoll der Übertragung vom {{ date }}."
+      },
+      "origin": {
+        "channel": "Die Übertragung kam aus dem Kanal {{ channel }}.",
+        "file": "Die Übertragung kam aus der Datei {{ fileName }}.",
+        "leaderboard": "Die Übertragung kam aus 7TVs Bestenliste: {{ sort }}.",
+        "unknown": "Woher die Übertragung kam, nennt die Datei nicht."
+      },
+      "setLine": "Im Set „{{ setName }}“.",
+      "removals": {
+        "one": "{{ count }} Quell-Emote wird aus dem Set entfernt.",
+        "other": "{{ count }} Quell-Emotes werden aus dem Set entfernt."
+      },
+      "readNote": "Geprüft gegen den aktuellen Stand des Zielsets; vor dem Start und vor jeder Entfernung wird erneut gelesen.",
+      "reloadTarget": "Ziel neu laden",
+      "listLabel": "Ersetzungen aus der Datei",
+      "sourceAlias": "unter „{{ alias }}“",
+      "targetUnnamed": "Ziel ohne Standardnamen",
+      "unnamedEntry": "(ohne Namen)",
+      "mode": {
+        "full": "Quelle raus, Ziel zurück",
+        "addOnly": "Nur Ziel zurück"
+      },
+      "skippedRow": "Übersprungen: {{ reason }}",
+      "reason": {
+        "duplicateInFile": "doppelt in der Datei",
+        "sourceUnderOtherName": "die Quelle heißt inzwischen anders",
+        "sourceHasMoreEntries": "die Quelle hat inzwischen weitere Einträge",
+        "targetNameUnverifiable": "ein Ziel-Eintrag ohne Namen lässt sich nicht prüfen",
+        "targetHasForeignEntries": "das Ziel trägt einen Eintrag, den die Datei nicht kennt",
+        "targetNameTaken": "ein Ziel-Name ist von einem anderen Emote belegt",
+        "inconsistent": "Datei und Set passen nicht zusammen",
+        "nothingToDo": "nichts zu tun",
+        "skippedUnproven": "unbelegt und nicht bestätigt",
+        "skippedDrift": "seit der Prüfung geändert",
+        "recheckUnavailable": "nicht erneut prüfbar"
+      },
+      "unproven": "unbelegt",
+      "adds": "Kommt zurück als: {{ names }}",
+      "omitted": {
+        "targetNameTaken": "„{{ alias }}“ bleibt aus — der Name ist von einem anderen Emote belegt.",
+        "targetNameUnverifiable": "Ein Eintrag ohne Namen bleibt aus — die Datei nennt keinen Standardnamen."
+      },
+      "foreignNote": "Das Ziel trägt schon einen Eintrag, den die Datei nicht kennt — er bleibt unangetastet.",
+      "liveSource": "Jetzt im Set — Quelle:",
+      "liveTarget": "Ziel:",
+      "liveAbsent": "nicht im Set",
+      "modeCounts": "Quelle raus, Ziel zurück: {{ full }} · nur Ziel zurück: {{ addOnly }} · übersprungen: {{ skipped }}",
+      "additions": {
+        "one": "{{ count }} Ziel-Eintrag kommt zurück.",
+        "other": "{{ count }} Ziel-Einträge kommen zurück."
+      },
+      "alreadyPresent": {
+        "one": "{{ count }} Ziel-Eintrag aus der Datei ist schon im Set.",
+        "other": "{{ count }} Ziel-Einträge aus der Datei sind schon im Set."
+      },
+      "omittedCount": {
+        "one": "{{ count }} Ziel-Eintrag kommt nicht zurück, weil sein Name belegt oder nicht prüfbar ist.",
+        "other": "{{ count }} Ziel-Einträge kommen nicht zurück, weil ihr Name belegt oder nicht prüfbar ist."
+      },
+      "skippedCount": "{{ count }} übersprungen: {{ reason }}",
+      "reading": "Das Zielset wird gelesen…",
+      "readFailed": "Das Zielset ließ sich nicht vollständig lesen. Ohne vollständigen Stand wird nichts freigegeben.",
+      "saveFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
+      "acknowledgeUnproven": {
+        "planned": "Die eingelesene Datei wurde vor der Übertragung geschrieben und belegt nicht, dass die Übertragung gelaufen ist. Ich habe geprüft, dass die gezeigten Quell-Emotes aus dieser Übertragung stammen.",
+        "finished": "Laut Ergebnisprotokoll ist die Übertragung bei den markierten Zeilen nicht vollständig durchgelaufen; die Datei belegt also nicht, dass die gezeigten Quell-Emotes durch sie ins Set kamen. Ich habe geprüft, dass sie aus dieser Übertragung stammen."
+      },
+      "acknowledgeHint": {
+        "one": "Ohne Bestätigung wird die als unbelegt markierte Zeile übersprungen.",
+        "other": "Ohne Bestätigung werden die {{ count }} als unbelegt markierten Zeilen übersprungen."
+      },
+      "blockedUnproven": "Ohne die Bestätigung oben läuft keine Zeile.",
+      "blockedNothing": "Keine Zeile läuft — alle sind übersprungen.",
+      "saveRecovery": "Rückweg sichern",
+      "start": "Starten"
+    },
+    "settling": "Wird abgeschlossen — Nachlesen und Rückmeldungen laufen noch…",
+    "errors": {
+      "removedButNotRestored": "Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig zurückgeholt — im Set fehlt jetzt ein Eintrag. Dieselbe Rücknahme aus derselben Datei noch einmal starten, um die Lücke zu schließen.",
+      "cancelledMidRow": "Abgebrochen, nachdem das Quell-Emote schon entfernt war — das Ziel ist nicht vollständig zurück. Dieselbe Rücknahme noch einmal starten, um die Lücke zu schließen.",
+      "restoreIncomplete": "Nicht alle Einträge des Ziels wurden zurückgeholt. Dieselbe Rücknahme noch einmal starten, um den Rest nachzuholen.",
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
+      "skippedDrift": "Übersprungen — das Set hat sich seit der Bestätigung verändert; an dieser Zeile wurde nichts geändert.",
+      "recheckUnavailable": "Übersprungen — das Set ließ sich unmittelbar vor dem Entfernen nicht lesen; an dieser Zeile wurde nichts geändert."
+    },
+    "progress": "{{ finished }} / {{ total }} verarbeitet",
+    "progressBarLabel": "Fortschritt der Rücknahme",
+    "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
+    "unknownOutcome": "Unklar, ob zurückgenommen — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
+    "deleteFailedFallback": "Rücknahme fehlgeschlagen",
+    "syncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",
+    "syncFailed": "Die Quell-Emotes sind bei 7TV aus dem Set entfernt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "syncPartialTitle": "Rückmeldung über die Entfernung unvollständig",
+    "syncPartial": "Die Quell-Emotes sind bei 7TV aus dem Set entfernt und bei EmotePurge vermerkt — aber nicht vollständig.",
+    "syncRetry": "Entfernung erneut melden",
+    "syncRetrySucceeded": "Rückmeldung über die Entfernung erfolgreich.",
+    "restoreSyncFailedTitle": "Rückmeldung über die Wiederherstellung fehlgeschlagen",
+    "restoreSyncFailed": "Die Ziel-Emotes sind bei 7TV wieder im Set, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "restoreSyncPartialTitle": "Rückmeldung über die Wiederherstellung unvollständig",
+    "restoreSyncPartial": "Die Ziel-Emotes sind bei 7TV wieder im Set und bei EmotePurge vermerkt — aber nicht vollständig.",
+    "restoreSyncRetry": "Wiederherstellung erneut melden",
+    "restoreSyncSucceeded": "Rückmeldung über die Wiederherstellung erfolgreich.",
+    "resync": {
+      "pending": "Synchronisierung wird angestoßen…",
+      "succeeded": "Synchronisierung angestoßen — die Liste aktualisiert sich gleich.",
+      "cooldown": "Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.",
+      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.",
+      "backendTriggered": "Abgleich läuft bereits — die Liste aktualisiert sich gleich."
+    },
+    "leaveWhileRunning": {
+      "message": "Die Rücknahme der Ersetzungen läuft noch. Sie läuft im Hintergrund weiter, ihr Fortschritt ist aber nur auf der Emote-Nutzungsseite sichtbar. Seite trotzdem verlassen?",
+      "confirm": "Verlassen"
+    },
+    "summary": {
+      "counts": "{{done}} zurückgenommen · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "targetChannel": "Ziel: {{ channel }} · Set {{ setName }}",
+      "targetOwner": "Ziel: Set {{ setName }} von {{ owner }}",
+      "removed": {
+        "one": "{{ count }} Quell-Emote wurde entfernt.",
+        "other": "{{ count }} Quell-Emotes wurden entfernt."
+      },
+      "restored": {
+        "one": "{{ count }} Ziel-Eintrag ist wieder da.",
+        "other": "{{ count }} Ziel-Einträge sind wieder da."
+      },
+      "unknownRows": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
+      },
+      "unknownRecordedIn": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob das Quell-Emote entfernt wurde — im Ergebnisprotokoll steht sie nicht als bestätigte Entfernung, nur die Rückweg-Datei der Rücknahme deckt sie ab.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob das Quell-Emote entfernt wurde — im Ergebnisprotokoll stehen sie nicht als bestätigte Entfernungen, nur die Rückweg-Datei der Rücknahme deckt sie ab."
+      },
+      "gaps": {
+        "one": "{{ count }} Zeile hat eine Lücke hinterlassen: das Quell-Emote ist weg, das Ziel aber nicht vollständig zurück. Dieselbe Rücknahme aus derselben Datei erneut starten schließt sie.",
+        "other": "{{ count }} Zeilen haben eine Lücke hinterlassen: die Quell-Emotes sind weg, die Ziele aber nicht vollständig zurück. Dieselbe Rücknahme aus derselben Datei erneut starten schließt sie."
+      },
+      "partialRows": {
+        "one": "Von den zurückgenommenen Zeilen ist {{ count }} nur teilweise zurück — ein Eintrag blieb aus.",
+        "other": "Von den zurückgenommenen Zeilen sind {{ count }} nur teilweise zurück — Einträge blieben aus."
+      },
+      "omittedEntries": {
+        "one": "{{ count }} Ziel-Eintrag blieb aus, weil sein Name belegt oder nicht prüfbar ist — Namen freimachen und dieselbe Rücknahme erneut starten.",
+        "other": "{{ count }} Ziel-Einträge blieben aus, weil ihre Namen belegt oder nicht prüfbar sind — Namen freimachen und dieselbe Rücknahme erneut starten."
+      },
+      "foreignNoted": {
+        "one": "{{ count }} Ziel trug schon einen Eintrag, den die Datei nicht kennt — er blieb unangetastet.",
+        "other": "{{ count }} Ziele trugen schon einen Eintrag, den die Datei nicht kennt — er blieb jeweils unangetastet."
+      },
+      "skipped": "{{ count }} übersprungen: {{ reason }}",
+      "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde abgebrochen und das Token entfernt.",
+      "downloadProtocol": "Ergebnisprotokoll herunterladen",
+      "protocolNotSaved": "Ergebnisprotokoll noch nicht gespeichert — nach dem Schließen ist es weg."
+    }
+  },
   "sevenTvRun": {
     "notStarted": {
       "running": "Nichts gestartet — {{ kind }} läuft noch.",
@@ -1423,7 +1604,8 @@
     "kind": {
       "delete": "der Löschlauf",
       "restore": "die Wiederherstellung",
-      "import": "die Übertragung"
+      "import": "die Übertragung",
+      "undo": "die Rücknahme der Ersetzungen"
     }
   },
   "sevenTvToken": {

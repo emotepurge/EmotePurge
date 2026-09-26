@@ -11,7 +11,7 @@ import {
 
 /** The 7TV-writing runs, one engine instance each — see the class doc. A new run service adds its
  *  name here and registers itself; nothing else in this file changes (#256, contract P4). */
-export type SevenTvRunKind = 'delete' | 'restore' | 'import';
+export type SevenTvRunKind = 'delete' | 'restore' | 'import' | 'undo';
 
 /** Why the arbiter is busy: a run is `running` (its engine works a queue) or `settling` (the engine
  *  is done, but a re-read or a report of that run has no end state yet). */
@@ -48,7 +48,7 @@ export const REFUSED_START_FEEDBACK_MS = 4000;
 
 /**
  * Answers one question for every 7TV-writing start point: may a run start right now, and if not,
- * why? It exists because delete, restore and import each run over their *own*
+ * why? It exists because delete, restore, import and undo each run over their *own*
  * `SevenTvRunEngine` instance, so no single engine's `isRunning` can speak for all of them.
  *
  * **Registration, not a service list (#256, contract P4).** Each run service registers itself in
@@ -193,6 +193,7 @@ export const SEVEN_TV_RUN_KIND_LABEL_KEY: Record<SevenTvRunKind, string> = {
   delete: 'sevenTvRun.kind.delete',
   restore: 'sevenTvRun.kind.restore',
   import: 'sevenTvRun.kind.import',
+  undo: 'sevenTvRun.kind.undo',
 };
 
 /** The transient status message for a refused start (contract P2, `docs/UI-Designsprache.md`
