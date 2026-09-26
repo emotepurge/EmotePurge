@@ -22,7 +22,8 @@
  * function taking only booleans, testable without a TestBed (same shape as `import-shortcut.ts`).
  */
 export interface ImportTriggerGateState {
-  /** `SevenTvRunArbiter.activeRun() !== null` — any of the three 7TV-writing runs, not just this one. */
+  /** `SevenTvRunArbiter.activeRun() !== null` — any 7TV-writing run active or settling, not just
+   *  this one. */
   readonly hasActiveRun: boolean;
   /** See `importScopeIsCurrent` — false during the window right after a same-route channel switch. */
   readonly importScopeCurrent: boolean;

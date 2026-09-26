@@ -9,6 +9,8 @@ import {
   ABORTED_DELETE_NOTICE_MS,
   DELETE_DELAY_MS,
   DeleteQueueEmote,
+  DeleteRunInfo,
+  REPORT_TIMEOUT_MS,
   SevenTvDeleteService,
 } from './seven-tv-delete.service';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
@@ -270,6 +272,55 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReport()).toBe('failed');
     });
 
+    // #256 P2-1 (Plan-256 review): a malformed 200 answer makes `classifySyncInSetResponse` throw
+    // inside the `map` ahead of `retry` — this proves that throw is retried exactly like an HTTP
+    // failure (the comment beside that `map` call explains why: a plain `TypeError`, not an
+    // `HttpErrorResponse`, so `retry`'s 401/403 check never matches it) and, once the retries are
+    // exhausted, still reaches an end state rather than leaving the run `reporting` forever.
+    it('retries a malformed 200 answer that makes the classification throw, and closes the run once the retries are exhausted', () => {
+      runOneDeleteToSyncRequest().flush(null);
+
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null);
+
+      vi.advanceTimersByTime(4000);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null);
+      flushFallbackResync();
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('other');
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    // #256 P2-2 (Plan-256 review, Festlegung 15): a report that never answers must not keep its run
+    // open for good — same contract and constant as the import's own version of this test
+    // (seven-tv-import.service.spec.ts).
+    it('gives up a report without an answer after REPORT_TIMEOUT_MS per attempt and closes the run', () => {
+      const firstAttempt = runOneDeleteToSyncRequest();
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS - 1);
+      expect(firstAttempt.cancelled).toBe(false);
+      expect(service.run()?.phase).toBe('reporting');
+      vi.advanceTimersByTime(1);
+      expect(firstAttempt.cancelled).toBe(true);
+
+      vi.advanceTimersByTime(2000);
+      const secondAttempt = httpMock.expectOne(SYNC_ENDPOINT);
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+      expect(secondAttempt.cancelled).toBe(true);
+
+      vi.advanceTimersByTime(4000);
+      const thirdAttempt = httpMock.expectOne(SYNC_ENDPOINT);
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+      expect(thirdAttempt.cancelled).toBe(true);
+      flushFallbackResync();
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('unavailable');
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
     it('does not retry a 401 — an expired session cannot be fixed by waiting', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
       flushFallbackResync();
@@ -367,19 +418,269 @@ describe('SevenTvDeleteService', () => {
     });
   });
 
+  // #256, Plan-256 Festlegungen 3, 6, 13: the run-bound lifecycle. `run`/`isSettling`/
+  // `destructiveOpen` are the lifecycle's own signals; the report keeps going on the run's own
+  // record whether or not the dock shows it.
+  describe('#256 run lifecycle', () => {
+    it('holds destructiveOpen from startDelete to closed — every delete row is destructive', () => {
+      expect(service.destructiveOpen()).toBe(false);
+
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      expect(service.destructiveOpen()).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      expect(service.destructiveOpen()).toBe(true); // reporting — not closed yet
+
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    it('isSettling is true while the report is out, false once it closes', () => {
+      expect(service.isSettling()).toBe(false);
+      const syncReq = runOneDeleteToSyncRequest();
+      expect(service.isSettling()).toBe(true);
+
+      syncReq.flush(deletedAnswer());
+      expect(service.isSettling()).toBe(false);
+    });
+
+    // Codex-Befund 1 on the plan: `reset()` during `running` must not cancel the engine — a REMOVE
+    // already in flight when the display detaches can still be confirmed by 7TV afterwards, and the
+    // run must still report it, even though nothing shows it any more.
+    it('reset() while running lets the engine finish and still reports a REMOVE that was in flight', () => {
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      const inFlightReq = httpMock.expectOne(GQL_ENDPOINT);
+
+      service.reset();
+
+      expect(service.run()).toBeNull(); // detached at once
+      expect(service.isRunning()).toBe(true); // the engine itself was not touched
+      expect(service.destructiveOpen()).toBe(true); // the run is still open, just not shown
+
+      // 7TV confirms the request that was in flight when reset() was called.
+      inFlightReq.flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      // The confirmed removals are reported all the same, on the run's own record.
+      const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
+      expect(syncReq.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+        expectedChannelName: 'sensitron',
+      });
+      syncReq.flush(deletedAnswer());
+
+      expect(service.run()).toBeNull(); // still nothing shown — a success needs no reshow
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    // Festlegung 13, Codex-Befund 2: a channel switch mid-report must not drop a run whose report
+    // could still fail — only a `closed` run follows resetIfChannelChanged's old "engine stopped"
+    // rule.
+    it('resetIfChannelChanged() during reporting leaves the run shown until it closes', () => {
+      const syncReq = runOneDeleteToSyncRequest();
+
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('pending');
+
+      syncReq.flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      // Ended failed — stays visible with its reason and a retry, not swept away mid-report.
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      // Only now, once closed, does a channel switch actually reset it.
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).toBeNull();
+    });
+
+    // Festlegung 13: a programmatic reset() detaches a run whose report has not answered yet; if
+    // that report then does not succeed, the run shows itself again so its reason and retry stay
+    // reachable — unless something else is shown by then, in which case the failure only reaches
+    // the console.
+    it('shows a detached run again once its report fails, and lets a retry send from there', () => {
+      const syncReq = runOneDeleteToSyncRequest();
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      syncReq.flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      service.retrySyncReport();
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('does not reshow a failed report once a newer run is shown, and logs it instead', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const syncReq = runOneDeleteToSyncRequest();
+      service.reset();
+
+      service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel');
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      const run2SyncReq = httpMock.expectOne(SYNC_ENDPOINT_SET_2);
+      expect(service.isRunning()).toBe(false); // run 2's engine work is done, only its report is out
+      expect(service.run()?.setId).toBe('set-2');
+
+      syncReq.flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      expect(service.run()?.setId).toBe('set-2'); // run 1's failure did not take the dock back
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[EmotePurge] 7TV delete report of a run no longer shown did not succeed',
+        expect.objectContaining({ state: 'failed', reason: 'forbidden' }),
+      );
+
+      run2SyncReq.flush(deletedAnswer());
+    });
+  });
+
+  // #256 P2 (Plan-256-Robustheit review, branch-review round): a manual retry used to leave the
+  // record on its previous end state until the retry's own answer came in — the retry button stayed
+  // up for a second, parallel report, and a `closed`-but-nothing-pending record could not survive a
+  // "Close" click mid-retry. `reportDeleted` now patches the record to `pending` before sending,
+  // mirroring the import's `reportImported`/`reportRemoved`.
+  describe('#256 P2: a manual retry marks the record pending before sending', () => {
+    it('retrySyncReport() patches the record to pending before the request goes out', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+      expect(service.syncReport()).toBe('failed');
+
+      service.retrySyncReport();
+
+      // Neither 'failed' nor 'partial' — run-progress-panel's `syncReportFailed` computed reads
+      // this and hides the retry button/reason line the moment it is not one of those two.
+      expect(service.syncReport()).toBe('pending');
+      expect(service.syncReportReason()).toBeNull();
+
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('a second click while the retry is out sends nothing', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
+
+      service.retrySyncReport(); // no-op: syncReport is already 'pending'
+      httpMock.expectNone(SYNC_ENDPOINT);
+
+      retryReq.flush(deletedAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('isSettling and destructiveOpen stay false while a closed run’s retry is out', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+      expect(service.run()?.phase).toBe('closed');
+
+      service.retrySyncReport();
+
+      // `closed` is a one-way door (#256): the retry never reopens the phase, so neither signal —
+      // both derived from the phase, not from `syncReport` — sees this run as busy again.
+      expect(service.isSettling()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
+
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('reshows a run whose manual retry fails after the dock was closed mid-retry', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      // Without the pending patch, this record had already left the lifecycle's map (`closed`,
+      // nothing pending) the moment reset() detached it, and this answer would have found no
+      // record at all — no reshow, no console.warn.
+      retryReq.flush(null, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+    });
+  });
+
+  // #256 P3 (Plan-256-Robustheit review, branch-review round): the success-path counterpart to
+  // "reset() while running lets the engine finish and still reports a REMOVE that was in flight" —
+  // this one detaches while the *report itself* (not the engine) is in flight, and the report
+  // succeeds.
+  it('#256 P3: reset() while the report is in flight still lands a successful answer on the record exactly once, closing isSettling only after', () => {
+    const syncReq = runOneDeleteToSyncRequest();
+    expect(service.isSettling()).toBe(true);
+
+    service.reset();
+    expect(service.run()).toBeNull();
+    expect(service.isSettling()).toBe(true); // still open — the report has not answered yet
+
+    syncReq.flush(deletedAnswer());
+
+    // httpMock's own afterEach.verify() proves the answer landed exactly once (no leftover, no
+    // second request); a success needs no reshow.
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBeNull();
+  });
+
+  // A closed run's own record — never goes through the engine, so it leaves `queue()` untouched;
+  // only stands in for whatever the dock already shows when a *second* start is refused, below.
+  const PREVIOUS_CLOSED_RUN: DeleteRunInfo = {
+    runId: 'delete-previous',
+    phase: 'closed',
+    destructive: true,
+    channelName: 'sensitron',
+    expectedChannelName: 'sensitron',
+    setId: 'set-2',
+    result: { doneKeys: ['7tv-9'], items: [], startedAt: 0, finishedAt: 1 },
+    syncReport: 'succeeded',
+    syncReportReason: null,
+  };
+
   it('does nothing without a stored token', () => {
+    // #256 P3-1 (Plan-256 review, "open() vor start()"): a previous, already-closed run is shown
+    // on the dock when this refused start comes in. `startDelete` opens its own record *before*
+    // asking the engine to start (#256 review finding) — a refused start must take that record back
+    // (`discardUnstarted`) rather than leave it dangling in the lifecycle's map, or this run's
+    // `destructive: true` would leak into `destructiveOpen` forever and the previous run's dock
+    // would be silently replaced.
+    service.run.set(PREVIOUS_CLOSED_RUN);
     tokenService.clearToken();
 
     service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     expect(service.isRunning()).toBe(false);
     expect(service.queue()).toEqual([]);
+    expect(service.destructiveOpen()).toBe(false);
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBe(PREVIOUS_CLOSED_RUN);
   });
 
   it('does nothing when the emote list is empty', () => {
+    // #256 P3-1 — same reasoning as the no-token case above.
+    service.run.set(PREVIOUS_CLOSED_RUN);
+
     service.startDelete('set-1', 'sensitron', [], 'sensitron');
 
     expect(service.isRunning()).toBe(false);
+    expect(service.destructiveOpen()).toBe(false);
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBe(PREVIOUS_CLOSED_RUN);
   });
 
   it('keys every queue row by its 7TV id', () => {
@@ -693,6 +994,12 @@ describe('SevenTvDeleteService', () => {
     staleSyncReq.flush(deletedAnswer());
     expect(service.syncReport()).toBe('idle');
     expect(service.lastRun()).toBeNull();
+    // #256 P3-4 (Plan-256 review): run 1's late answer is still verbucht on *its own* record and
+    // closes it (Plan-256 Festlegung 2, identity by `runId`) — `isSettling`/`destructiveOpen` here
+    // read run 2's own state, not a stale leftover of run 1's: run 2 is still `running` (not yet
+    // reporting) but destructive, so `isSettling` is false and `destructiveOpen` is true.
+    expect(service.isSettling()).toBe(false);
+    expect(service.destructiveOpen()).toBe(true);
 
     // Run 2 finishes normally afterwards — the guard must not have swallowed its own terminal
     // flank along with the stale one.
@@ -850,8 +1157,8 @@ describe('SevenTvDeleteService', () => {
     httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
   });
 
-  // The arbiter (#70, Task 4) has no lock of its own — it reads this service's own isRunning
-  // signal, so these three cases pin the invariants a hand-kept tryAcquire/release could not have
+  // The arbiter (#70, Task 4) has no lock of its own — it reads the signals this service registers
+  // with it (#256: isRunning, isSettling, destructiveOpen), so these three cases pin the invariants a hand-kept tryAcquire/release could not have
   // guaranteed (see R1 in docs/DECISIONS.md): the derived state can never outlive the run it
   // describes, not even across cancel() or a start the engine itself refused.
   describe('run arbiter', () => {
@@ -873,16 +1180,20 @@ describe('SevenTvDeleteService', () => {
       expect(arbiter.activeRun()).toBeNull();
     });
 
-    it('clears the active run once cancel() ends it', () => {
+    it('clears the active run once a run ended by cancel() has had its report answered', () => {
       service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
       httpMock.expectOne(GQL_ENDPOINT).flush({});
 
       service.cancel();
 
-      expect(arbiter.activeRun()).toBeNull();
+      // #256 (contract P2): the confirmed row is still being reported — the arbiter counts that
+      // settling window as busy, and frees up only once the report has an end state.
+      expect(service.isRunning()).toBe(false);
+      expect(arbiter.activeRun()).toBe('delete');
 
-      // Drain the closing sync-deleted call so afterEach's httpMock.verify() stays green.
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+
+      expect(arbiter.activeRun()).toBeNull();
     });
 
     it('leaves no active run when the engine refuses the start for a cleared token', () => {

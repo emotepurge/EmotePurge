@@ -195,8 +195,11 @@ export function startRestoreFlow(
         // starts a run exactly as much as the regular path's does, so it needs the same
         // mutual-exclusion check right before it — another 7TV-writing run could have claimed the
         // arbiter while this read was out, a window the regular path already closes just above its
-        // own `startRestore` call.
+        // own `startRestore` call. #256 contract P2, Festlegung Nr. 8: this shortcut only runs once
+        // the open-time check found nothing left to confirm — a *confirmed* start finding nothing
+        // to start, same as the regular path below, so it notes the refusal instead of vanishing.
         if (deps.arbiter.activeRun() !== null) {
+          deps.arbiter.noteRefusedStart('restore');
           return;
         }
         deps.restoreService.startRestore(
@@ -245,10 +248,11 @@ export function startRestoreFlow(
         if (!confirmed) {
           return;
         }
-        // The engine only refuses *its own* second run; a delete or import running elsewhere is
-        // invisible to it, so the cross-kind check happens here — silently, because the progress of
-        // that other run is already on screen and saying it twice would be the louder mistake.
+        // The engine only refuses *its own* second run; a delete or import running or settling
+        // elsewhere is invisible to it, so the cross-kind check happens here — a confirmed start
+        // finding nothing to start (Festlegung Nr. 8, #256 contract P2), so it notes why.
         if (deps.arbiter.activeRun() !== null) {
+          deps.arbiter.noteRefusedStart('restore');
           return;
         }
         // #149/T5: a restore never had any duplicate protection at all — filter it fresh, right
@@ -265,9 +269,10 @@ export function startRestoreFlow(
             // #149 P2 review fix: the arbiter check above ran *before* this fetch, outside the
             // mutual-exclusion contract (design doc §4.3) it is meant to enforce — another run can
             // start in that window. Re-checked here, right before the only remaining call that
-            // actually starts anything; silent on a block for the same reason as the check above,
-            // the run that got there first is already visible in the dock.
+            // actually starts anything — same reasoning as the check above (#256 contract P2,
+            // Festlegung Nr. 8): a confirmed start finding nothing to start notes why.
             if (deps.arbiter.activeRun() !== null) {
+              deps.arbiter.noteRefusedStart('restore');
               return;
             }
             // #255 P3(7): a failed confirm-time check normally means every row goes out

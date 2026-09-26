@@ -157,6 +157,40 @@ function toTargetSelection(target: ImportFlowTarget): ImportTargetSelection {
   return { kind: 'untrackedSet', channelName: choice.twitchLogin, emoteSetId: choice.emoteSetId };
 }
 
+/**
+ * `reloadLive`'s own selection (Issue #256 point 2) — always the loader's live branch
+ * (`'trackedSet'`/`'untrackedSet'`), for the id the last `ready` state already resolved, never
+ * re-derived from `target` itself (the same "the load already resolved it, do not ask a second
+ * time" rule {@link startImportFlow}'s `startAfterCheck` follows for `outcome.targetSetId`).
+ *
+ * A tracked-active target (an `'activeSet'` door, or a `'chosen'` pick equal to the account's own
+ * active set) takes the live branch here **on purpose**, unlike its first load via
+ * {@link toTargetSelection}: AK 36 pins the *first* load's three requests, not a reload forced by a
+ * drift the confirm dialog's own live read just found — by definition a fresher read than the
+ * Postgres-backed "today" path, which can already be a drift round behind 7TV (0.2 Nr. 7 of the
+ * plan this closes). A non-active tracked or an untracked target already takes this branch on its
+ * first load (spec F5) — `reloadLive` repeats the exact same call there, changing nothing about
+ * which requests fire, only reading a fresher answer.
+ */
+function toLiveTargetSelection(
+  target: ImportFlowTarget,
+  emoteSetId: string,
+): ImportTargetSelection {
+  if (target.kind === 'activeSet') {
+    return { kind: 'trackedSet', channelName: target.channelName, emoteSetId };
+  }
+  const choice = target.choice;
+  if (choice.isTracked) {
+    if (choice.channelName === null) {
+      throw new Error(
+        'ImportTargetChoice.isTracked without a channelName — picker contract broken',
+      );
+    }
+    return { kind: 'trackedSet', channelName: choice.channelName, emoteSetId };
+  }
+  return { kind: 'untrackedSet', channelName: choice.twitchLogin, emoteSetId };
+}
+
 /** The confirm dialog's `targetChannelName` from an `ImportFlowTarget` — `null` only for an
  *  untracked choice, which the header then names by owner instead (spec 8.6, AK 39). */
 function toTargetChannelName(target: ImportFlowTarget): string | null {
@@ -265,6 +299,12 @@ export function startImportFlow(
   // the dialog bumps the generation too, so a late answer writes into nothing after that.
   let generation = 0;
 
+  // The `setId` of the last `ready` answer, for `reloadLive` (Issue #256 point 2) — never read back
+  // out of `target` itself (F5's rule against re-deriving an id the load already resolved): a
+  // `'trackedActive'`/`'activeSet'` target carries no `emoteSetId` of its own at all, so this is the
+  // only place a drift reload could get one from. `null` until the first load ever answers `ready`.
+  let lastReadySetId: string | null = null;
+
   // Computed once, from the choice the picker closed with — never re-derived per load/retry, since
   // it names a set the picker already knew, not something a reload could learn anew.
   const activeSetName = chosenActiveSetName(target);
@@ -284,25 +324,62 @@ export function startImportFlow(
   const titleSetName: string | null =
     !isActiveSet && target.kind === 'chosen' ? target.choice.setName : null;
 
-  const load = (): void => {
+  const performLoad = (
+    selection: ImportTargetSelection,
+    options: { refresh?: boolean } = {},
+  ): void => {
     const mine = ++generation;
     targetState.set({ status: 'loading' });
-    loadImportTarget(
-      deps.emoteAdminService,
-      deps.emoteSetService,
-      toTargetSelection(target),
-    ).subscribe((state) => {
-      if (mine === generation) {
-        targetState.set(withChosenSetName(state, activeSetName));
-      }
-    });
+    loadImportTarget(deps.emoteAdminService, deps.emoteSetService, selection, options).subscribe(
+      (state) => {
+        if (mine === generation) {
+          const named = withChosenSetName(state, activeSetName);
+          if (named.status === 'ready') {
+            lastReadySetId = named.setId;
+          }
+          targetState.set(named);
+        }
+      },
+    );
+  };
+
+  const load = (): void => performLoad(toTargetSelection(target));
+
+  /**
+   * Issue #256 point 2: re-reads the already-resolved target live instead of repeating the
+   * ordinary load — what the confirm dialog's drifted-target notice asks for, since that notice
+   * exists *because* the last live read (the recovery-file check before a replace run) found the
+   * target had moved on. Repeating {@link load} for a tracked active set would re-run the
+   * Postgres-backed "today" read (AK 36) — the very kind of read that is already a drift round
+   * behind 7TV — instead of the fresher live read {@link toLiveTargetSelection} forces.
+   *
+   * `{ refresh: true }` (Codex P2 fix, 2026-09-26) is what actually makes that read fresh:
+   * `loadEmoteSetPreview` sits behind the backend's own 60 s preview cache (same TTL as the
+   * `ForeignEmoteLookup` permit bucket it guards), so without this flag a reload landing inside that
+   * window would get back the *same* cached answer that just drifted — the drift/reload loop this
+   * task exists to close. `load()`/`retry` never pass it: the first load and a plain retry after a
+   * failed read are not asking to force a live re-read, only `reloadLive` is.
+   *
+   * Fails closed without a known `ready` state yet (nothing to force live for that would not just
+   * repeat {@link load} under a different name): falls back to the ordinary load rather than doing
+   * nothing.
+   */
+  const reloadLive = (): void => {
+    if (lastReadySetId === null) {
+      load();
+      return;
+    }
+    performLoad(toLiveTargetSelection(target, lastReadySetId), { refresh: true });
   };
 
   const start = (outcome: ImportConfirmOutcome): void => {
-    // The engine only refuses *its own* second run; a delete or restore running elsewhere is
-    // invisible to it, so the cross-kind check happens here — silently, because the progress of
-    // that other run is already on screen and saying it twice would be the louder mistake.
+    // The engine only refuses *its own* second run; a delete or restore running or settling
+    // elsewhere is invisible to it, so the cross-kind check happens here. This is a *confirmed*
+    // start finding nothing to start (Festlegung Nr. 8, #256 contract P2) — unlike the still-silent
+    // locks ahead of the confirmation (an unconfirmed click outracing a lock, or the dialog's own
+    // runBlocked), so it notes why instead of vanishing quietly.
     if (deps.arbiter.activeRun() !== null) {
+      deps.arbiter.noteRefusedStart('import');
       return;
     }
     // Spec 4.5 point 17: a plan with at least one replace row runs the shared pre-check
@@ -344,10 +421,13 @@ export function startImportFlow(
         // exclusion contract (design doc §4.3, the SevenTvRunArbiter paragraph) does not actually
         // cover — a delete or restore can start in that window and this would otherwise start a
         // second, overlapping run against the same set. Re-checked here, right before the only
-        // remaining call that actually starts anything. Silent on a block, same reasoning as the
-        // pre-fetch check above: whichever run got there first is already visible in the dock, so
-        // there is something on screen explaining what happened — just not from this confirmation.
+        // remaining call that actually starts anything — same reasoning as the pre-fetch check
+        // above (#256 contract P2, Festlegung Nr. 8): a confirmed start finding nothing to start
+        // notes why, so it fires `noteRefusedStart` again rather than assuming the first call above
+        // already said enough — the arbiter's own claim can have changed kind or phase in the
+        // meantime, and the notice always reflects the most recent refusal.
         if (deps.arbiter.activeRun() !== null) {
+          deps.arbiter.noteRefusedStart('import');
           return;
         }
         deps.importService.startImport(
@@ -394,6 +474,7 @@ export function startImportFlow(
     titleSetName,
     target: targetState.asReadonly(),
     retry: load,
+    reloadLive,
     runBlocked: computed(() => deps.arbiter.activeRun() !== null),
     httpClient: deps.httpClient,
   });

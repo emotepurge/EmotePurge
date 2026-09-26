@@ -87,13 +87,24 @@ function fetchBlocking<T>(source$: Observable<T>): Observable<BlockingOutcome<T>
 /** Same blocking contract as {@link fetchBlocking}, plus spec 6.4's "`truncated` is `failed` for
  *  the import target loader" rule (spec 8.6 point 5, F3): a page cap that hid part of the set's
  *  real contents is not a smaller-but-usable answer here — the preview would undercount both the
- *  set's occupied slots and its name collisions, so it counts as a failed load, not a partial one. */
+ *  set's occupied slots and its name collisions, so it counts as a failed load, not a partial one.
+ *
+ *  `refresh` is passed through untouched to {@link SevenTvEmoteSetService.loadEmoteSetPreview} only
+ *  when `true` — never as a `{ refresh: false }` third argument — so a caller that never asks for a
+ *  live re-read (the ordinary first load, `retry`) keeps calling the two-argument overload exactly
+ *  as before (Issue #256 P2 fix: `reloadLive` used to land here too, without this flag, and hit the
+ *  backend's 60 s preview cache instead of 7TV — the very staleness the drift notice exists to
+ *  close). */
 function fetchLiveTarget(
   emoteSetService: SevenTvEmoteSetService,
   channelName: string,
   emoteSetId: string,
+  refresh: boolean,
 ): Observable<BlockingOutcome<ForeignEmoteSetResponse>> {
-  return emoteSetService.loadEmoteSetPreview(channelName, emoteSetId).pipe(
+  const request$ = refresh
+    ? emoteSetService.loadEmoteSetPreview(channelName, emoteSetId, { refresh: true })
+    : emoteSetService.loadEmoteSetPreview(channelName, emoteSetId);
+  return request$.pipe(
     map((response): BlockingOutcome<ForeignEmoteSetResponse> =>
       response.truncated ? { kind: 'failed' } : { kind: 'ok', value: response },
     ),
@@ -122,11 +133,19 @@ function fetchLiveTarget(
  * A missing active set (`activeEmoteSetId === ''`, or either blocking request 404ing) and any
  * other failure of a blocking request both count against `no-set`/`failed` — when both occur at
  * once, `no-set` wins: a 404 is the more conclusive of the two statements.
+ *
+ * `options.refresh` (Issue #256 P2 fix) only ever reaches {@link fetchLiveTarget} — the
+ * `'trackedSet'`/`'untrackedSet'` branch below, which is the only one that reads through
+ * {@link SevenTvEmoteSetService.loadEmoteSetPreview} and therefore the only one behind that
+ * service's 60 s preview cache. The `'trackedActive'` branch never touches that cache at all (it
+ * reads `EmoteSetStatus`/`listEmotes` instead), so the flag has nothing to bypass there and is
+ * silently ignored — `import-flow.ts`'s `reloadLive` never sends it on that branch either (AK 36).
  */
 export function loadImportTarget(
   emoteAdminService: EmoteAdminService,
   emoteSetService: SevenTvEmoteSetService,
   target: ImportTargetSelection,
+  options: { refresh?: boolean } = {},
 ): Observable<ImportTargetLoadState> {
   if (target.kind === 'trackedActive') {
     // The "today" path (#72) — unchanged since before this spec, on purpose (AK 36): the caller
@@ -169,7 +188,12 @@ export function loadImportTarget(
   // one thing that still depends on the class (spec 8.6): a tracked channel can still be checked
   // for ownership (E9); an untracked account has no channel to check at all, so its warning is the
   // unavailable fallback, at zero extra cost.
-  const target$ = fetchLiveTarget(emoteSetService, target.channelName, target.emoteSetId);
+  const target$ = fetchLiveTarget(
+    emoteSetService,
+    target.channelName,
+    target.emoteSetId,
+    options.refresh === true,
+  );
   const warning$ =
     target.kind === 'trackedSet'
       ? emoteAdminService

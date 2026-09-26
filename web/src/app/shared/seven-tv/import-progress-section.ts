@@ -127,7 +127,7 @@ import { RunProgressPanel } from './run-progress-panel';
             [renamedCount]="importService.doneAdoptCount()"
             [syncReport]="importService.syncReport()"
             [rateLimitPauseSeconds]="importService.rateLimitPauseSeconds()"
-            [dismissible]="run.settlement === 'settled'"
+            [dismissible]="run.phase === 'closed'"
             (cancelled)="importService.cancel()"
             (dismissed)="importService.reset()"
             (syncRetryRequested)="importService.retrySyncReport()"
@@ -139,10 +139,10 @@ import { RunProgressPanel } from './run-progress-panel';
                    run.result.items — the settled, run-bound outcome — never the engine's live
                    queue, whose rows a later run can already have overwritten: that is exactly
                    why [items] above now binds to importService.items() instead of
-                   importService.queue(). Close shares this same settlement gate ([dismissible]
-                   above): without it, Close could end the run before this protocol and the
-                   unload cover over the pending re-read (SevenTvImportService.onRunComplete)
-                   ever exist. -->
+                   importService.queue(). Close waits one step longer ([dismissible] above,
+                   #256): until the run is closed — its re-read done and every report answered,
+                   failed or partial included — so a report that fails later always has this dock
+                   with its reason and its retry to land on. -->
               @if (run.settlement === 'settled') {
                 <button type="button" appButton="neutral" (click)="openProtocolExport()">
                   {{ 'import.summary.downloadProtocol' | transloco }}
@@ -161,6 +161,11 @@ import { RunProgressPanel } from './run-progress-panel';
               @if (run.unknownCount > 0) {
                 <span class="text-xs text-fg-muted">
                   {{ unknownRowsKey() | transloco: { count: run.unknownCount } }}
+                </span>
+              }
+              @if (run.unknownRemovalCount > 0) {
+                <span class="text-xs text-fg-muted">
+                  {{ unknownRemovalCountKey() | transloco: { count: run.unknownRemovalCount } }}
                 </span>
               }
               <!-- The removal report (set-centric sync-deleted) — mirrors RunProgressPanel's own
@@ -289,6 +294,17 @@ export class ImportProgressSection {
     pluralKey(this.importService.run()?.unknownCount ?? 0, 'import.summary.unknownRows'),
   );
 
+  /** Wording for the settled run's replace rows whose REMOVE stayed `unknown`
+   *  (`ImportRunInfo.unknownRemovalCount`) — issue point 4: those rows are not among the confirmed
+   *  removals `removedCountKey` names, and the result log does not record them either; only the
+   *  recovery file covers them. */
+  protected readonly unknownRemovalCountKey = computed(() =>
+    pluralKey(
+      this.importService.run()?.unknownRemovalCount ?? 0,
+      'import.summary.unknownRecordedIn',
+    ),
+  );
+
   /** The removal report's title/text key — `.removalSyncPartialTitle`/`.removalSyncPartial` while
    *  `removalReport` is `'partial'` (recorded, just not fully — #255), the plain
    *  `.removalSyncFailedTitle`/`.removalSyncFailed` for `'failed'`. Same split as
@@ -371,7 +387,7 @@ export class ImportProgressSection {
         );
       }
       if (choice) {
-        this.importService.protocolSaved.set(true);
+        this.importService.markProtocolSaved();
       }
     });
   }

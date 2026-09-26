@@ -161,6 +161,7 @@ interface Harness {
   startImport: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
 function setup(): Harness {
@@ -223,7 +224,8 @@ function setup(): Harness {
   } as unknown as SevenTvImportService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
-  const arbiter = { activeRun } as unknown as SevenTvRunArbiter;
+  const noteRefusedStart = vi.fn();
+  const arbiter = { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
@@ -249,6 +251,7 @@ function setup(): Harness {
     startImport,
     hasToken,
     activeRun,
+    noteRefusedStart,
   };
 }
 
@@ -634,9 +637,10 @@ describe('startImportFlow', () => {
   // duplicate check's async fetch — a second run could start in that window and would have
   // overlapped this one. Pinned as behaviour, not implementation: confirming while the fetch is
   // still in flight, then having another run claim the arbiter before it answers, must abandon
-  // this start.
-  it('abandons the start when another run claims the arbiter while the fresh check is still in flight', () => {
-    const { deps, dialogOpen, startImport, httpPost, activeRun } = setup();
+  // this start. #256 T4: this is a *confirmed* start finding nothing to start, so it also notes
+  // the refusal (Festlegung Nr. 8) instead of vanishing without a word, as it used to.
+  it('abandons the start and notes the refusal when another run claims the arbiter while the fresh check is still in flight', () => {
+    const { deps, dialogOpen, startImport, httpPost, activeRun, noteRefusedStart } = setup();
     const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
     httpPost.mockReturnValue(fetch);
     startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
@@ -653,6 +657,7 @@ describe('startImportFlow', () => {
     fetch.complete();
 
     expect(startImport).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('import');
   });
 
   it('starts nothing when the confirm dialog is dismissed without an outcome', () => {
@@ -665,8 +670,8 @@ describe('startImportFlow', () => {
     expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('silently drops a confirmed outcome while another 7TV run is already active', () => {
-    const { deps, dialogOpen, startImport, activeRun } = setup();
+  it('notes a refused start instead of silently dropping a confirmed outcome while another 7TV run is already active', () => {
+    const { deps, dialogOpen, startImport, activeRun, noteRefusedStart } = setup();
     activeRun.set('delete');
     startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
@@ -677,6 +682,7 @@ describe('startImportFlow', () => {
     });
 
     expect(startImport).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('import');
   });
 
   it('prompts for a 7TV token when none is stored, and starts only once the prompt confirms', () => {
@@ -995,6 +1001,89 @@ describe('startImportFlow', () => {
         true,
         0,
       );
+    });
+  });
+
+  // Issue #256 point 2: the confirm dialog's drifted-target notice reloads through this, not
+  // through the plain `retry` a failed/loading/no-set target still uses (0.2 Nr. 7 of the plan this
+  // closes). `reloadLive` never asks `target` itself for a set id — only the last `ready` answer's
+  // own `setId` — so a stale target could never leak into the selection either.
+  describe('reloadLive', () => {
+    it('forces the live branch for a tracked active target once it has answered ready, instead of repeating getSetStatus/listEmotes', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-9' }));
+      statusSubjects[0].complete();
+      loadEmoteSetPreview.mockReturnValue(
+        of(liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9' })),
+      );
+
+      confirmData(dialogOpen).reloadLive();
+
+      // The reload takes 7TV's live branch for the *same* set the "today" path already resolved —
+      // not another getSetStatus/listEmotes round (AK 36 pins only the *first* load's requests).
+      expect(statusSubjects).toHaveLength(1);
+      expect(loadEmoteSetPreview).toHaveBeenCalledTimes(1);
+      // Codex P2 fix: `reloadLive` must bypass the backend's 60 s preview cache, or a reload inside
+      // that window would answer with the exact same drifted data (the drift/reload loop this fix
+      // closes) — `{ refresh: true }` is what makes that a live 7TV read instead of a cache hit.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('target-channel', 'set-9', {
+        refresh: true,
+      });
+      expect(confirmData(dialogOpen).target()).toMatchObject({ status: 'ready', setId: 'set-9' });
+    });
+
+    it('never forces a refresh for the ordinary first load or a plain retry — only reloadLive does', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+
+      // A `'chosen'` non-active tracked target already takes the live branch on its *first* load
+      // (spec F5) — the case most likely to be confused with `reloadLive` forcing a refresh, since
+      // both call the very same `loadEmoteSetPreview`.
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+      expect(loadEmoteSetPreview).toHaveBeenNthCalledWith(1, 'handofblood', 'set-halloween');
+
+      confirmData(dialogOpen).retry();
+      expect(loadEmoteSetPreview).toHaveBeenNthCalledWith(2, 'handofblood', 'set-halloween');
+      expect(loadEmoteSetPreview).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to the ordinary load without a known ready state yet — fail-closed rather than reloading nothing', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      // The first getSetStatus has not answered yet — target() is still 'loading'.
+
+      confirmData(dialogOpen).reloadLive();
+
+      expect(statusSubjects).toHaveLength(2);
+      expect(loadEmoteSetPreview).not.toHaveBeenCalled();
+    });
+
+    it('drops a stale reloadLive answer once a newer reload has started', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-9' }));
+      statusSubjects[0].complete();
+
+      const first = new Subject<ForeignEmoteSetResponse>();
+      const second = new Subject<ForeignEmoteSetResponse>();
+      loadEmoteSetPreview.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      const data = confirmData(dialogOpen);
+
+      data.reloadLive();
+      data.reloadLive();
+
+      // The newer reload answers first — it applies.
+      second.next(
+        liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9', totalCount: 2 }),
+      );
+      second.complete();
+      expect(data.target()).toMatchObject({ status: 'ready', occupiedSlots: 2 });
+
+      // The stale (first) reload's answer lands after — it must change nothing.
+      first.next(liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9', totalCount: 1 }));
+      first.complete();
+      expect(data.target()).toMatchObject({ status: 'ready', occupiedSlots: 2 });
     });
   });
 });

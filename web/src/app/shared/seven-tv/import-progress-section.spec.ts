@@ -76,6 +76,11 @@ const DE_TRANSLATIONS = {
         one: 'Bei {{ count }} Zeile unklar, ob übernommen.',
         other: 'Bei {{ count }} Zeilen unklar, ob übernommen.',
       },
+      unknownRecordedIn: {
+        one: 'Bei {{ count }} Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+        other:
+          'Bei {{ count }} Ersetzungen unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      },
     },
     resync: {
       pending: 'Abgleich des Zielkanals wird angestoßen…',
@@ -93,8 +98,20 @@ const DE_TRANSLATIONS = {
   },
 };
 
+/** A settled fixture defaults to a closed run (every report answered) and a pending one to a
+ *  settling run — the two pairings the service produces; a test that needs a settled run still
+ *  reporting says `phase: 'reporting'` itself. */
 function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
   return {
+    runId: 'import-1',
+    phase: overrides.settlement === 'settled' ? 'closed' : 'settling',
+    destructive: false,
+    syncReport: 'idle',
+    removalReport: 'idle',
+    removalReportReason: null,
+    resyncTrigger: 'idle',
+    abortedForPrivileges: false,
+    protocolSaved: false,
     targetChannelName: 'zielkanal',
     targetOwnerDisplayName: null,
     targetSetId: 'set-1',
@@ -107,6 +124,7 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     settlement: 'pending',
     removedCount: 0,
     unknownCount: 0,
+    unknownRemovalCount: 0,
     result: null,
     ...overrides,
   };
@@ -137,6 +155,7 @@ interface FakeImportService {
   duplicateNoticePending: WritableSignal<boolean>;
   targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
   protocolSaved: WritableSignal<boolean>;
+  markProtocolSaved: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   reset: ReturnType<typeof vi.fn>;
   retrySyncReport: ReturnType<typeof vi.fn>;
@@ -163,6 +182,7 @@ function createFakeImportService(): FakeImportService {
     duplicateNoticePending: signal(false),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     protocolSaved: signal(false),
+    markProtocolSaved: vi.fn(),
     cancel: vi.fn(),
     reset: vi.fn(),
     retrySyncReport: vi.fn(),
@@ -677,6 +697,26 @@ describe('ImportProgressSection', () => {
       expect(findButton(fixture, 'Schließen')).toBeUndefined();
     });
 
+    // #256: Close waits for the run to close — a settled run whose report is still out, or whose
+    // re-read is still running, is not closable; once every report has an end state, a failed one
+    // included, it is.
+    it('offers Close only once the run is closed, a failed report included', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', phase: 'reporting' }));
+      importService.syncReport.set('pending');
+
+      const reporting = render();
+      expect(findButton(reporting, 'Schließen')).toBeUndefined();
+      expect(findButton(reporting, 'Protokoll herunterladen')).toBeDefined();
+
+      importService.run.set(runInfo({ settlement: 'settled', phase: 'closed' }));
+      importService.syncReport.set('failed');
+
+      const closed = render();
+      expect(findButton(closed, 'Schließen')).toBeDefined();
+    });
+
     it('shows the protocolNotSaved hint until the protocol has been saved, once settled', () => {
       importService.isRunning.set(false);
       importService.queue.set([doneItem()]);
@@ -730,6 +770,34 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(fixture.nativeElement.textContent).toContain('Bei 1 Zeile unklar, ob übernommen.');
+    });
+
+    // #256 issue point 4: the dock says where an unconfirmed REMOVE is recorded — under the
+    // existing unknown-rows line, only the recovery file covers it.
+    it('shows the unknown-removal row when the settled run has a replace REMOVE 7TV never clarified', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(
+        runInfo({ settlement: 'settled', unknownCount: 1, unknownRemovalCount: 1 }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Bei 1 Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      );
+    });
+
+    it('shows no unknown-removal row when nothing is an unconfirmed removal', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(
+        runInfo({ settlement: 'settled', unknownCount: 1, unknownRemovalCount: 0 }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('Rückweg-Datei deckt sie ab.');
     });
 
     it('shows the drift notice for a run that still queued something', () => {

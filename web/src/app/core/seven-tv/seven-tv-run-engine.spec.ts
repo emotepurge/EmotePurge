@@ -341,6 +341,26 @@ describe('SevenTvRunEngine', () => {
     expect(results).toEqual([]);
   });
 
+  // #256: a detached run whose report did not succeed is shown again after its queue was cleared —
+  // its own finished rows go back on the queue, and never over a run in flight.
+  it('puts finished rows back on the queue only while no run is in flight', () => {
+    start([EMOTES[0]]);
+    const shownRows = [
+      { ...EMOTES[1], status: 'done' as const, completedSteps: 1, failedStep: null },
+    ];
+
+    expect(engine.showFinishedRows(shownRows)).toBe(false);
+    expect(engine.queue().map((item) => item.key)).toEqual(['internal-1']);
+
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    engine.reset();
+
+    expect(engine.showFinishedRows(shownRows)).toBe(true);
+    expect(engine.queue()).toEqual(shownRows);
+    expect(engine.isRunning()).toBe(false);
+  });
+
   it('logs the closing measurement under the operation label', () => {
     start([EMOTES[0]]);
     httpMock.expectOne(GQL_ENDPOINT).flush({});

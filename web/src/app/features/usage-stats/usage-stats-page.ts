@@ -16,7 +16,7 @@ import {
 } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { Subscription, catchError, first, merge, of, switchMap, timer } from 'rxjs';
 
 import { ChannelService } from '../../core/channels/channel.service';
@@ -40,7 +40,7 @@ import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.mod
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
-import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { refusedStartMessage, SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import {
@@ -304,6 +304,10 @@ export class UsageStatsPage {
   private readonly httpClient = inject(HttpClient);
   private readonly channelService = inject(ChannelService);
   private readonly languageService = inject(LanguageService);
+  /** Only for `refusedStartNotice` below, which builds the blocking kind's noun outside the
+   *  template pipe (transloco's own interpolation only substitutes a param's literal text, never a
+   *  second, nested key). */
+  private readonly translocoService = inject(TranslocoService);
   private readonly deleteService = inject(SevenTvDeleteService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
@@ -949,6 +953,24 @@ export class UsageStatsPage {
   protected readonly selectionPrunedFeedback = signal<{ key: string; count: number } | null>(null);
   private selectionPrunedFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * The transient status message (`docs/UI-Designsprache.md` §4.5) for a confirmed run the arbiter
+   * refused to start (contract P2, #256 T4) — unlike `selectionPrunedFeedback` above, this page
+   * holds no timer of its own: `SevenTvRunArbiter.refusedStart()` already carries its own
+   * `REFUSED_START_FEEDBACK_MS` window, so this only projects it into the message key plus the
+   * blocking kind's already-translated noun (`refusedStartMessage`'s own doc explains why the noun
+   * has to be resolved here rather than through the template's `transloco` pipe). Reads `lang()`
+   * first so a language switch while the notice is showing re-translates it — same reasoning as
+   * `import-confirm-dialog.ts`'s `leaderboardOrigin`.
+   */
+  protected readonly refusedStartNotice = computed(() => {
+    this.languageService.lang();
+    const refused = this.arbiter.refusedStart();
+    return refused === null
+      ? null
+      : refusedStartMessage(refused.blockedBy, (key) => this.translocoService.translate(key));
+  });
+
   // Survives search and filter (supersedes S2-16, 2026-09-18): a filter change narrows what is on
   // screen, never what is selected — the filter lost its onChange hook entirely, there is nothing
   // left for it to call. What used to be pruned here now only shows up as selection.hiddenSelectedCount().
@@ -1544,7 +1566,7 @@ export class UsageStatsPage {
   /**
    * Whether the header "Übertragen" button is disabled — same empty-scope reasoning as
    * `exportButtonDisabled` above, plus the two locks the push shares with `app-import-trigger`
-   * (see the template comment above both buttons): any of the three 7TV-writing runs active, or
+   * (see the template comment above both buttons): any 7TV-writing run active or settling, or
    * the set status/rows still belonging to the previous channel (`importScopeCurrent`).
    */
   protected readonly transferButtonDisabled = computed(
@@ -2825,6 +2847,10 @@ export class UsageStatsPage {
    * report: the 7TV mutations are done by then, and waiting for the report would never reload after
    * a failed one. Set ids are globally unique, so no channel comparison is needed. A run that had
    * already settled before this page mounted is not replayed.
+   *
+   * A settle is recognised by its settled `result` object, not by the run record around it: since
+   * #256 a run's report states live on its record, so every report answer replaces the record while
+   * the result stays the same object — and must not reload the list once per answer.
    */
   private watchOwnRunSettles(): void {
     this.watchRunSettle(
@@ -2853,14 +2879,15 @@ export class UsageStatsPage {
     source: () => T | null,
     settledTarget: (run: T) => { setId: string; result: RunResult } | null,
   ): void {
-    let seen = untracked(source);
+    const settledOf = (run: T | null) => (run === null ? null : settledTarget(run));
+    let seen = untracked(() => settledOf(source()))?.result ?? null;
     effect(() => {
-      const run = source();
-      if (run === seen) {
+      const settled = settledOf(source());
+      const result = settled?.result ?? null;
+      if (result === seen) {
         return;
       }
-      seen = run;
-      const settled = run === null ? null : settledTarget(run);
+      seen = result;
       if (settled !== null && settled.result.doneKeys.length > 0) {
         untracked(() => this.onOwnRunSettled(settled.setId));
       }

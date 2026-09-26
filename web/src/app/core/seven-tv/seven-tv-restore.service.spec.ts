@@ -5,10 +5,19 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DELETE_DELAY_MS, DeleteQueueEmote, SevenTvDeleteService } from './seven-tv-delete.service';
+import {
+  DELETE_DELAY_MS,
+  DeleteQueueEmote,
+  REPORT_TIMEOUT_MS,
+  SevenTvDeleteService,
+} from './seven-tv-delete.service';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
-import { RestoreStartTarget, SevenTvRestoreService } from './seven-tv-restore.service';
+import {
+  RestoreRunInfo,
+  RestoreStartTarget,
+  SevenTvRestoreService,
+} from './seven-tv-restore.service';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
@@ -70,6 +79,25 @@ const EMOTES: DeleteQueueEmote[] = [
   { emoteId: 'internal-1', sevenTvEmoteId: '7tv-1', name: 'PogU' },
   { emoteId: 'internal-2', sevenTvEmoteId: '7tv-2', name: 'KEKW' },
 ];
+
+// #256 P3-1 (Plan-256 review): a closed run's own record — never goes through the engine, so it
+// leaves `queue()` untouched — standing in for whatever the dock already shows when a *second*
+// `startRestore` is refused (no token, or nothing left to queue). See either `it` that uses it.
+const PREVIOUS_CLOSED_RUN: RestoreRunInfo = {
+  runId: 'restore-previous',
+  phase: 'closed',
+  destructive: false,
+  targetSetId: 'set-2',
+  expectedChannelName: 'sensitron',
+  resyncChannelName: null,
+  hostChannelName: 'sensitron',
+  setName: 'set-2',
+  ownerOrChannelLabel: 'sensitron',
+  result: { doneKeys: ['7tv-9'], items: [], startedAt: 0, finishedAt: 1 },
+  syncReport: 'succeeded',
+  syncReportReason: null,
+  resyncTrigger: 'idle',
+};
 
 describe('SevenTvRestoreService', () => {
   let service: SevenTvRestoreService;
@@ -387,11 +415,23 @@ describe('SevenTvRestoreService', () => {
       // A second restore over rows already restored: the caller's pre-run filter (T5) removed
       // every row, leaving an empty list — the engine refuses to start on an empty queue, but the
       // skip count must still reach the user rather than the run silently doing nothing.
+      //
+      // #256 P3-1 (Plan-256 review, "open() vor start()"): a previous, already-closed run is shown
+      // on the dock when this refused start comes in. `startRestore` opens its own record *before*
+      // asking the engine to start (#256 review finding) — a refused start must take that record
+      // back (`discardUnstarted`) rather than leave it dangling in the lifecycle's map, or
+      // `isSettling` would leak `true` forever and the previous run's dock would be silently
+      // replaced.
+      service.run.set(PREVIOUS_CLOSED_RUN);
+
       service.startRestore(target(), [], 2);
 
       expect(service.isRunning()).toBe(false);
       expect(service.queue()).toEqual([]);
       expect(service.skippedDuplicates()).toBe(2);
+      expect(service.destructiveOpen()).toBe(false);
+      expect(service.isSettling()).toBe(false);
+      expect(service.run()).toBe(PREVIOUS_CLOSED_RUN);
     });
 
     it('resets to 0 on the next call, even without duplicates', () => {
@@ -661,6 +701,56 @@ describe('SevenTvRestoreService', () => {
       expect(service.syncReport()).toBe('failed');
       expect(service.syncReportReason()).toBe('unavailable');
     });
+
+    // #256 P2-1 (Plan-256 review): a malformed 200 answer makes `classifySyncInSetResponse` throw
+    // inside the `map` ahead of `retry` — this proves that throw is retried exactly like an HTTP
+    // failure (the comment beside that `map` call explains why: a plain `TypeError`, not an
+    // `HttpErrorResponse`, so `retry`'s 401/403 check never matches it) and, once the retries are
+    // exhausted, still reaches an end state rather than leaving the run `reporting` forever.
+    it('retries a malformed 200 answer that makes the classification throw, and closes the run once the retries are exhausted', () => {
+      runOneRestoreToReport(target({ untracked: true })).flush(null);
+
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(null);
+
+      vi.advanceTimersByTime(4000);
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(null);
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('other');
+      expect(service.run()?.phase).toBe('closed');
+      // Restore is never destructive (Plan-256 Festlegung 6) — checked here all the same, so a
+      // future change to that constant would surface in this test too, not only in the dedicated
+      // "always false" case elsewhere in this file.
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    // #256 P2-2 (Plan-256 review, Festlegung 15): a report that never answers must not keep its run
+    // open for good — same contract and constant as the import's own version of this test
+    // (seven-tv-import.service.spec.ts) and the delete's (seven-tv-delete.service.spec.ts).
+    it('gives up a report without an answer after REPORT_TIMEOUT_MS per attempt and closes the run', () => {
+      const firstAttempt = runOneRestoreToReport(target({ untracked: true }));
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS - 1);
+      expect(firstAttempt.cancelled).toBe(false);
+      expect(service.run()?.phase).toBe('reporting');
+      vi.advanceTimersByTime(1);
+      expect(firstAttempt.cancelled).toBe(true);
+
+      vi.advanceTimersByTime(2000);
+      const secondAttempt = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+      expect(secondAttempt.cancelled).toBe(true);
+
+      vi.advanceTimersByTime(4000);
+      const thirdAttempt = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+      expect(thirdAttempt.cancelled).toBe(true);
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('unavailable');
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.destructiveOpen()).toBe(false);
+    });
   });
 
   // Spec 6.4, F15, AK 21/27, operator decision 2026-09-25 (#255): the client's own resync follows
@@ -870,6 +960,239 @@ describe('SevenTvRestoreService', () => {
     });
   });
 
+  // #256, Plan-256 Festlegungen 3, 6, 13: the run-bound lifecycle. `run`/`isSettling`/
+  // `destructiveOpen` are the lifecycle's own signals; the report keeps going on the run's own
+  // record whether or not the dock shows it.
+  describe('#256 run lifecycle', () => {
+    it('destructiveOpen stays false for a restore — only ADDs, never destructive', () => {
+      expect(service.destructiveOpen()).toBe(false);
+
+      service.startRestore(target({ active: true }), [EMOTES[0]]);
+      expect(service.destructiveOpen()).toBe(false);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      expect(service.destructiveOpen()).toBe(false); // reporting, but still never destructive
+
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    it('isSettling is true while the report is out, false once it closes', () => {
+      expect(service.isSettling()).toBe(false);
+      const reportReq = runOneRestoreToReport(target({ active: true }));
+      expect(service.isSettling()).toBe(true);
+
+      reportReq.flush(restoredAnswer());
+      expect(service.isSettling()).toBe(false);
+    });
+
+    // Codex-Befund 1 on the plan: `reset()` during `running` must not cancel the engine — an ADD
+    // already in flight when the display detaches can still be confirmed by 7TV afterwards, and the
+    // run must still report it, even though nothing shows it any more.
+    it('reset() while running lets the engine finish and still reports an ADD that was in flight', () => {
+      service.startRestore(target({ active: true }), EMOTES);
+      const inFlightReq = httpMock.expectOne(GQL_ENDPOINT);
+
+      service.reset();
+
+      expect(service.run()).toBeNull();
+      expect(service.isRunning()).toBe(true); // the engine itself was not touched
+
+      inFlightReq.flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(reportReq.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+        expectedChannelName: 'sensitron',
+      });
+      reportReq.flush(restoredAnswer());
+
+      expect(service.run()).toBeNull(); // still nothing shown — a success needs no reshow
+    });
+
+    // Festlegung 13, Codex-Befund 2: a channel switch mid-report must not drop a run whose report
+    // could still fail — only a `closed` run follows resetIfChannelChanged's old "engine stopped"
+    // rule. Non-active target: no resync noise to flush, the report alone is the point here.
+    it('resetIfChannelChanged() during reporting leaves the run shown until it closes', () => {
+      const reportReq = runOneRestoreToReport(target({ active: false }));
+
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('pending');
+
+      reportReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      // Only now, once closed, does a channel switch actually reset it.
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).toBeNull();
+    });
+
+    // Festlegung 13: a programmatic reset() detaches a run whose report has not answered yet; if
+    // that report then does not succeed, the run shows itself again so its reason and retry stay
+    // reachable — unless something else is shown by then, in which case the failure only reaches
+    // the console.
+    it('shows a detached run again once its report fails, and lets a retry send from there', () => {
+      const reportReq = runOneRestoreToReport(target({ active: false }));
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      reportReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      service.retrySyncReport();
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('does not reshow a failed report once a newer run is shown, and logs it instead', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const reportReq = runOneRestoreToReport(target({ active: false }));
+      service.reset();
+
+      service.startRestore(target({ setId: 'set-2', channel: 'other-channel', active: false }), [
+        EMOTES[1],
+      ]);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      const run2ReportReq = httpMock.expectOne(SYNC_RESTORED_SET_2);
+      expect(service.isRunning()).toBe(false); // run 2's engine work is done, only its report is out
+      expect(service.run()?.targetSetId).toBe('set-2');
+
+      reportReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()?.targetSetId).toBe('set-2'); // run 1's failure did not take the dock back
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[EmotePurge] 7TV restore report of a run no longer shown did not succeed',
+        expect.objectContaining({ state: 'failed', reason: 'forbidden' }),
+      );
+
+      run2ReportReq.flush(restoredAnswer());
+    });
+  });
+
+  // #256 P2 (Plan-256-Robustheit review, branch-review round): a manual retry used to leave the
+  // record on its previous end state until the retry's own answer came in — the retry button stayed
+  // up for a second, parallel report, and a `closed`-but-nothing-pending record could not survive a
+  // "Close" click mid-retry. `reportRestored` now patches the record to `pending` before sending,
+  // mirroring the import's `reportImported`/`reportRemoved` — same fix as the delete service's.
+  describe('#256 P2: a manual retry marks the record pending before sending', () => {
+    it('retrySyncReport() patches the record to pending before the request goes out', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+      expect(service.syncReport()).toBe('failed');
+
+      service.retrySyncReport();
+
+      // Neither 'failed' nor 'partial' — run-progress-panel's `syncReportFailed` computed reads
+      // this and hides the retry button/reason line the moment it is not one of those two.
+      expect(service.syncReport()).toBe('pending');
+      expect(service.syncReportReason()).toBeNull();
+
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('a second click while the retry is out sends nothing', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+
+      service.retrySyncReport(); // no-op: syncReport is already 'pending'
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+
+      retryReq.flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('isSettling and destructiveOpen stay false while a closed run’s retry is out', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+      expect(service.run()?.phase).toBe('closed');
+
+      service.retrySyncReport();
+
+      // `closed` is a one-way door (#256): the retry never reopens the phase, so neither signal —
+      // both derived from the phase, not from `syncReport` — sees this run as busy again. Restore's
+      // destructiveOpen is always false anyway, checked here for parity with the delete service.
+      expect(service.isSettling()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
+
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+    });
+
+    it('reshows a run whose manual retry fails after the dock was closed mid-retry', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      // Without the pending patch, this record had already left the lifecycle's map (`closed`,
+      // nothing pending) the moment reset() detached it, and this answer would have found no
+      // record at all — no reshow, no console.warn.
+      retryReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+    });
+  });
+
+  // #256 P3 (Plan-256-Robustheit review, branch-review round): the success-path counterpart to
+  // "reset() while running lets the engine finish and still reports an ADD that was in flight" —
+  // this one detaches while the *report itself* (not the engine) is in flight, and the report
+  // succeeds.
+  it('#256 P3: reset() while the report is in flight still lands a successful answer on the record exactly once, closing isSettling only after', () => {
+    const reportReq = runOneRestoreToReport(target({ active: true }));
+    expect(service.isSettling()).toBe(true);
+
+    service.reset();
+    expect(service.run()).toBeNull();
+    expect(service.isSettling()).toBe(true); // still open — the report has not answered yet
+
+    reportReq.flush(restoredAnswer());
+
+    // httpMock's own afterEach.verify() proves the answer landed exactly once (no leftover, no
+    // second request); a success needs no reshow.
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBeNull();
+  });
+
   // R15 (#72, T12): finish() flips isRunning() to false *before* the two closing calls resolve, so
   // a second run can legitimately start while the first one's report/resync are still in flight.
   // Their late answers must not land on the second run's state.
@@ -896,6 +1219,13 @@ describe('SevenTvRestoreService', () => {
 
       staleSyncReq.flush({}, { status: 401, statusText: 'Unauthorized' });
       expect(service.syncReport()).toBe('idle'); // still run 2's state, untouched by run 1's answer
+      // #256 P3-4 (Plan-256 review): run 1's late answer is still verbucht on *its own* record and
+      // closes it (Plan-256 Festlegung 2, identity by `runId`) — `isSettling` here reads run 2's own
+      // state, not a stale leftover of run 1's: run 2 is still `running` (its own GQL mutation has
+      // not even been flushed yet), so `isSettling` is false. `destructiveOpen` is always false for
+      // restore (Plan-256 Festlegung 6) — checked here all the same as a run-1-leaked-open guard.
+      expect(service.isSettling()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
       // Run 1's resync still goes out — it is owed to 7TV's state, not to the dock — but its answer
       // does not land on run 2's state either.
       httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
@@ -944,8 +1274,8 @@ describe('SevenTvRestoreService', () => {
     });
   });
 
-  // The arbiter (#70, Task 4) has no lock of its own — it reads this service's own isRunning
-  // signal, so these cases pin the invariants a hand-kept tryAcquire/release could not have
+  // The arbiter (#70, Task 4) has no lock of its own — it reads the signals this service registers
+  // with it (#256: isRunning, isSettling, destructiveOpen), so these cases pin the invariants a hand-kept tryAcquire/release could not have
   // guaranteed (see R1 in docs/DECISIONS.md): the derived state can never outlive the run it
   // describes, not even across cancel(), a start the engine itself refused, or a hand-off to the
   // sibling delete service once this run has ended.
@@ -970,26 +1300,35 @@ describe('SevenTvRestoreService', () => {
       expect(arbiter.activeRun()).toBeNull();
     });
 
-    it('clears the active run once cancel() ends it', () => {
+    it('clears the active run once a run ended by cancel() has had its report answered', () => {
       service.startRestore(target(), EMOTES);
       httpMock.expectOne(GQL_ENDPOINT).flush({});
 
       service.cancel();
 
-      expect(arbiter.activeRun()).toBeNull();
+      // #256 (contract P2): the confirmed row is still being reported — the arbiter counts that
+      // settling window as busy, and frees up only once the report has an end state. #255: no
+      // resync follows a plain success that names nothing.
+      expect(service.isRunning()).toBe(false);
+      expect(arbiter.activeRun()).toBe('restore');
 
-      // Drain the closing sync-restored call so afterEach's httpMock.verify() stays green — #255:
-      // no resync follows a plain success that names nothing.
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+
+      expect(arbiter.activeRun()).toBeNull();
     });
 
     it('leaves no active run when the engine refuses the start for a cleared token', () => {
+      // #256 P3-1 — same reasoning as the empty-list case above.
+      service.run.set(PREVIOUS_CLOSED_RUN);
       tokenService.clearToken();
 
       service.startRestore(target(), EMOTES);
 
       expect(service.isRunning()).toBe(false);
       expect(arbiter.activeRun()).toBeNull();
+      expect(service.destructiveOpen()).toBe(false);
+      expect(service.isSettling()).toBe(false);
+      expect(service.run()).toBe(PREVIOUS_CLOSED_RUN);
     });
 
     it('lets a delete start once this restore has ended — the cross-service invariant a held lock could not guarantee', () => {
