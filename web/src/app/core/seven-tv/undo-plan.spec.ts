@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
-import { UndoCandidate } from '../export/transfer-run-export';
-import {
-  TransferUndoRunnableInput,
-  buildTransferUndoPlanRecord,
-} from '../export/transfer-undo-export';
+import { SevenTvSetEntries } from './seven-tv-set-entries';
+import { UndoCandidate } from './undo-candidate';
 import {
   UndoPlan,
   UndoPlanRow,
@@ -93,11 +89,6 @@ function onlySkipped(plan: UndoPlan): UndoSkippedRow {
   if (isUndoPlanRow(row)) {
     throw new Error(`expected a skipped row, got ${row.mode}`);
   }
-  return row;
-}
-
-/** Compiler-enforced seam to the transfer-undo file builder: a runnable row *is* a builder input. */
-function asRunnableInput(row: UndoPlanRow): TransferUndoRunnableInput {
   return row;
 }
 
@@ -880,57 +871,6 @@ describe('classifyUndoRows — counts', () => {
         nothingToDo: 1,
       },
     });
-  });
-
-  it('hands its runnable rows to the transfer-undo file builder as they are', () => {
-    const live = read([
-      { id: S, alias: 'A' },
-      { id: THIRD, alias: 'Taken' },
-    ]);
-    const plan = classifyUndoRows(
-      [
-        candidate({ target: { entries: [{ alias: 'A' }, { alias: null }], defaultName: 'D' } }),
-        candidate({
-          sourceSevenTvEmoteId: 'src-2',
-          alias: 'B',
-          provenance: 'unproven',
-          target: { sevenTvEmoteId: 'tgt-2', entries: [{ alias: 'B' }, { alias: 'Taken' }] },
-        }),
-      ],
-      live,
-    );
-
-    const record = buildTransferUndoPlanRecord({
-      targetEmoteSetId: 'set-1',
-      targetChannelName: null,
-      targetOwnerDisplayName: null,
-      sourceFile: {
-        stage: 'planned',
-        exportedAt: '',
-        verifiedAt: '',
-        finishedAt: null,
-        origin: null,
-      },
-      verifiedAt: 0,
-      acknowledgedUnproven: false,
-      read: live,
-      rows: plan.rows.map(asRunnableInput),
-    });
-
-    expect(
-      record.rows.map(
-        (row) =>
-          row.kind === 'executed' && [
-            row.mode,
-            row.restoredTarget.entries.map((entry) => entry.alias),
-            row.omittedEntries,
-            row.provenance,
-          ],
-      ),
-    ).toEqual([
-      ['full', ['A', 'D'], [], 'confirmed'],
-      ['addOnly', ['B'], [{ alias: 'Taken', reason: 'targetNameTaken' }], 'unproven'],
-    ]);
   });
 });
 

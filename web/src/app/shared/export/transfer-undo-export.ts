@@ -1,6 +1,14 @@
 import { RunItemStatus } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
-import { UndoSkipReason } from '../seven-tv/undo-plan';
+// Type-only: `seven-tv-undo.service.ts` is the one core module that builds this file's protocol,
+// so it is the natural owner of `UndoRunInfo`/`UndoRunItem`/`UndoRunItemStatus` — mirrors
+// `transfer-run-export.ts` importing `ImportRunItem` from `seven-tv-import.service`.
+import type {
+  UndoRunInfo,
+  UndoRunItem,
+  UndoRunItemStatus,
+} from '../../core/seven-tv/seven-tv-undo.service';
+import { UndoSkipReason } from '../../core/seven-tv/undo-plan';
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
@@ -449,6 +457,62 @@ export function buildTransferUndoProtocol(input: {
     rows: [...executedRows, ...skippedRows],
   });
   return { ...envelope, formatVersion: TRANSFER_UNDO_FORMAT_VERSION };
+}
+
+/**
+ * The `finished` protocol of a settled run (spec 6.4, 17 K4) — every row it executed, as
+ * `kind: 'executed'` (a row the recheck skipped included, `cancelled` with its reason), and every
+ * candidate that never became a row, as `kind: 'skipped'`. `null` until the run is settled. What the
+ * dock's download (T7) serializes with `transferUndoJson`/`transferUndoCsv`.
+ *
+ * Moved out of `SevenTvUndoService` (#254 layering fix): the mapping from the service's own
+ * `UndoRunInfo`/`UndoRunItem` shapes to this file's `TransferUndoExecutedInput`/
+ * `TransferUndoSkippedInput` belongs next to the protocol it builds, not inside `core/`, which may
+ * not import from `shared/`.
+ */
+export function buildUndoRunProtocol(run: UndoRunInfo): TransferUndoProtocol | null {
+  if (run.settlement !== 'settled' || run.result === null) {
+    return null;
+  }
+  return buildTransferUndoProtocol({
+    targetEmoteSetId: run.targetSetId,
+    targetChannelName: run.trackedChannelName,
+    targetOwnerDisplayName: run.ownerDisplayName,
+    sourceFile: run.sourceFile,
+    startedAt: run.result.startedAt,
+    finishedAt: run.result.finishedAt,
+    acknowledgedUnproven: run.acknowledgedUnproven,
+    executed: run.result.items.map(toExecutedInput),
+    skipped: run.skipped.map((row) => ({ candidate: row.candidate, skippedReason: row.reason })),
+  });
+}
+
+/** One settled row as the `finished` protocol's input — `full` rows always with their source
+ *  entries (F13), `addOnly` rows with `null`. A settled row is never `pending`/`in-progress`; one
+ *  that somehow is counts as `cancelled`. */
+function toExecutedInput(item: UndoRunItem): TransferUndoExecutedInput {
+  const base = {
+    candidate: item.candidate,
+    adds: item.adds,
+    omittedEntries: item.omittedEntries,
+    notes: item.notes,
+    status: settledStatus(item.undoStatus),
+    failedStep: item.failedStep,
+    completedSteps: item.completedSteps,
+    errorMessage: item.sevenTvErrorMessage ?? item.errorMessage ?? null,
+    skippedReason: item.skippedReason,
+  };
+  return item.mode === 'full'
+    ? {
+        ...base,
+        mode: 'full',
+        sourceEntriesAtRemove: item.sourceEntriesAtRemove ?? [{ alias: item.candidate.alias }],
+      }
+    : { ...base, mode: 'addOnly', sourceEntriesAtRemove: null };
+}
+
+function settledStatus(status: UndoRunItemStatus): TransferUndoSettledStatus {
+  return status === 'pending' || status === 'in-progress' ? 'cancelled' : status;
 }
 
 export function transferUndoJson(protocol: TransferUndoPlanRecord | TransferUndoProtocol): string {

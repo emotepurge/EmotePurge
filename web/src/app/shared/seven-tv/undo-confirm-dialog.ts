@@ -13,6 +13,18 @@ import { ImportOrigin } from '../../core/seven-tv/import-source';
 import { LEADERBOARD_SORT_LABEL_KEYS } from '../../core/seven-tv/leaderboard.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import {
+  UNDO_SKIP_REASONS,
+  UndoLiveCounterpart,
+  UndoOmittedEntry,
+  UndoPlan,
+  UndoPlanRow,
+  UndoPlanSummary,
+  UndoSkippedRow,
+  classifyUndoRows,
+  summarizeUndoPlan,
+  undoLiveCounterpart,
+} from '../../core/seven-tv/undo-plan';
 import { EmoteSprite } from '../emotes/emote-sprite';
 import { emoteStillUrl } from '../emotes/emote-url';
 import { JSON_MIME } from '../export/export-envelope';
@@ -32,18 +44,6 @@ import { RecoveryFileGate, RecoveryFileSave } from './recovery-file-gate';
 import { ResolvedRestoreTarget } from './restore-flow';
 import { loadRestoreSlotPreview } from './restore-slot-preview';
 import { projectSlots } from './slot-projection';
-import {
-  UNDO_SKIP_REASONS,
-  UndoLiveCounterpart,
-  UndoOmittedEntry,
-  UndoPlan,
-  UndoPlanRow,
-  UndoPlanSummary,
-  UndoSkippedRow,
-  classifyUndoRows,
-  summarizeUndoPlan,
-  undoLiveCounterpart,
-} from './undo-plan';
 
 export interface UndoConfirmDialogData {
   /** Every candidate the transfer-run file offers (`parseTransferRunForUndo`), in file order. */

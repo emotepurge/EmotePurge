@@ -1193,3 +1193,13 @@ Animiertheit reicher (K1), während T4 parallel Specs mit typisierten Reads schr
 davor. Nach dem Zusammenführen bräche die Typprüfung der Specs. Empfehlung: die Read-Erweiterung
 samt Fixture-Nachzug vor Welle 2 ziehen (an T2 oder als eigener kleiner Schritt), sodass T4 und T5
 auf dem erweiterten Typ bauen.
+
+**Nachtrag 2026-09-26 (Merge T5 + Schichten-Fix).** Die in T4 notierte Schichten-Ausnahme ist beim
+Zusammenführen von T5 aufgelöst worden: `undo-plan.ts` liegt jetzt unter
+`web/src/app/core/seven-tv/undo-plan.ts`, die Kandidaten-/Dateitypen (`UndoCandidate`,
+`UndoCandidateTargetEntry`, `UndoSourceFileInfo`) in einer neuen Datei
+`web/src/app/core/seven-tv/undo-candidate.ts`, und `buildUndoRunProtocol` samt seinen beiden
+Hilfsfunktionen ist aus dem Dienst heraus nach `web/src/app/shared/export/transfer-undo-export.ts`
+gewandert. `web/src/app/shared/export/transfer-run-export.ts` importiert die Kandidatentypen jetzt
+per `import type` aus `core/` und reicht sie per `export type` an ihre bisherigen Importierer weiter,
+sodass an deren Stellen nichts geändert werden musste.

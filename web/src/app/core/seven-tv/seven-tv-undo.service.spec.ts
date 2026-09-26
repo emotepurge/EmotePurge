@@ -9,14 +9,6 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { UndoCandidate, UndoSourceFileInfo } from '../../shared/export/transfer-run-export';
-import {
-  UndoPlan,
-  UndoPlanRow,
-  UndoSkippedRow,
-  classifyUndoRows,
-  undoLiveCounterpart,
-} from '../../shared/seven-tv/undo-plan';
 import { REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
 import {
   SyncDeletedInSetResponse,
@@ -33,8 +25,9 @@ import {
   UNDO_NOTICE_MS,
   UNDO_SETTLE_READ_TIMEOUT_MS,
   UndoRunTarget,
-  buildUndoRunProtocol,
 } from './seven-tv-undo.service';
+import { UndoCandidate, UndoSourceFileInfo } from './undo-candidate';
+import { UndoPlan, UndoPlanRow, UndoSkippedRow, classifyUndoRows } from './undo-plan';
 
 // The keys the engine and this service translate.
 const DE_TRANSLATIONS = {
@@ -395,12 +388,12 @@ describe('SevenTvUndoService', () => {
       expect(run.skipped.map((skipped) => [skipped.candidate.alias, skipped.reason])).toEqual([
         ['A1', 'skippedUnproven'],
       ]);
-      const protocol = buildUndoRunProtocol(run)!;
-      expect(protocol.rows).toContainEqual(
-        expect.objectContaining({ kind: 'skipped', alias: 'A1', skippedReason: 'skippedUnproven' }),
-      );
-      expect(protocol.meta.counts).toMatchObject({ requested: 1, skipped: 1 });
-      expect(protocol.meta.acknowledgedUnproven).toBe(false);
+      // The unproven full row never became a row or a queue item — only the addOnly one did (see
+      // `buildUndoRunProtocol`'s tests in `transfer-undo-export.spec.ts` for what this state turns
+      // into as a protocol: `requested: 1, skipped: 1`).
+      expect(run.rows).toHaveLength(1);
+      expect(run.result?.items).toHaveLength(1);
+      expect(run.acknowledgedUnproven).toBe(false);
     });
 
     it('runs the unproven full row once the confirmation is given', () => {
@@ -980,10 +973,9 @@ describe('SevenTvUndoService', () => {
     expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
 
     expect(service.summary().foreignNotedRows).toBe(1);
-    expect(buildUndoRunProtocol(service.run()!)!.rows[0]).toMatchObject({
-      kind: 'executed',
-      notes: ['targetHasForeignEntries'],
-    });
+    // The note travels on the item itself; `buildUndoRunProtocol` (transfer-undo-export.spec.ts)
+    // carries `UndoRunItem.notes` into the protocol row unchanged.
+    expect(service.items()[0].notes).toEqual(['targetHasForeignEntries']);
   });
 
   describe('reports (spec 4.5; AK 12, 13, 14)', () => {
@@ -1352,98 +1344,14 @@ describe('SevenTvUndoService', () => {
     });
   });
 
-  describe('protocol (spec 6.4, 17 K4)', () => {
-    it('lists every executed row and every skipped candidate once the run has settled', () => {
-      const partialRow = row(
-        cand('3', { entries: ['A3', 'B3'] }),
-        [{ id: 'third', alias: 'B3' }],
-        'addOnly',
-      );
-      const dialogSkip: UndoSkippedRow = {
-        candidate: cand('4'),
-        reason: 'nothingToDo',
-        live: undoLiveCounterpart(cand('4'), typedRead([])),
-        omittedEntries: [],
-      };
-      start([fullRow('1'), fullRow('2'), partialRow, fullRow('5', { provenance: 'unproven' })], {
-        skipped: [dialogSkip],
-      });
-      expect(buildUndoRunProtocol(service.run()!)).toBeNull();
-
-      runFull('1');
-      answerRead([
-        { id: 'src-2', alias: 'A2' },
-        { id: 'src-2', alias: 'X2' },
-      ]);
-      next();
-      runAddOnly('3', ['A3']);
-      httpMock.expectOne(SYNC_DELETED).flush(answer());
-      httpMock.expectOne(SYNC_RESTORED).flush(answer());
-
-      const protocol = buildUndoRunProtocol(service.run()!)!;
-      expect(protocol.meta).toMatchObject({
-        stage: 'finished',
-        targetEmoteSetId: SET_ID,
-        targetChannelName: 'kanal_t',
-        undoneFile: SOURCE_FILE,
-        acknowledgedUnproven: false,
-        counts: {
-          requested: 3,
-          succeeded: 1,
-          cancelled: 1,
-          partial: 1,
-          failed: 0,
-          unknown: 0,
-          removed: 1,
-          added: 2,
-          skipped: 2,
-        },
-      });
-      expect(protocol.rows).toEqual([
-        expect.objectContaining({
-          kind: 'executed',
-          alias: 'A1',
-          status: 'done',
-          removedSource: { entries: [{ alias: 'A1' }], confirmed: true },
-          restoredTarget: expect.objectContaining({ entries: [{ alias: 'A1', added: true }] }),
-        }),
-        expect.objectContaining({
-          kind: 'executed',
-          alias: 'A2',
-          status: 'cancelled',
-          skippedReason: 'skippedDrift',
-          removedSource: { entries: [{ alias: 'A2' }, { alias: 'X2' }], confirmed: false },
-        }),
-        expect.objectContaining({
-          kind: 'executed',
-          alias: 'A3',
-          mode: 'addOnly',
-          status: 'partial',
-          removedSource: null,
-          omittedEntries: [{ alias: 'B3', reason: 'targetNameTaken' }],
-        }),
-        expect.objectContaining({ kind: 'skipped', alias: 'A4', skippedReason: 'nothingToDo' }),
-        expect.objectContaining({ kind: 'skipped', alias: 'A5', skippedReason: 'skippedUnproven' }),
-      ]);
-    });
-
-    it('carries steps the re-read confirmed into the protocol', () => {
-      start([fullRow('1')]);
-      answerRead([{ id: 'src-1', alias: 'A1' }]);
-      expectRemove('src-1').error(new ProgressEvent('error'));
-      next();
-      expectRead().flush(readPage([]));
-      httpMock.expectOne(SYNC_DELETED).flush(answer());
-
-      const [executed] = buildUndoRunProtocol(service.run()!)!.rows;
-      expect(executed).toMatchObject({
-        status: 'failed',
-        completedSteps: 1,
-        removedSource: { confirmed: true },
-        restoredTarget: expect.objectContaining({ entries: [{ alias: 'A1', added: false }] }),
-      });
-    });
-  });
+  // The `protocol (spec 6.4, 17 K4)` describe block that lived here moved to
+  // `buildUndoRunProtocol` in `transfer-undo-export.spec.ts` (#254 layering fix): both its cases
+  // tested the mapping from a settled run to the transfer-undo protocol, which now lives there —
+  // as hand-built `UndoRunInfo`/`UndoRunItem` fixtures rather than a full HTTP-driven run, since
+  // the mapping itself needs neither. The individual item states that scenario combined (a `full`
+  // row that completes, one the recheck cancels as `skippedDrift`, an `addOnly` row left `partial`
+  // by an omission, and the service's own two lock reasons) are each still covered on their own by
+  // the other describe blocks in this file.
 
   it('shows the skipped candidates of a started run as a transient notice that reset() clears', () => {
     const skipped: UndoSkippedRow = {

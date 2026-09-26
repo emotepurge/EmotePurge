@@ -1,5 +1,5 @@
-import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
-import { UndoCandidate } from '../export/transfer-run-export';
+import { SevenTvSetEntries } from './seven-tv-set-entries';
+import { UndoCandidate } from './undo-candidate';
 
 /**
  * The pure classification behind a replace undo (#254, spec 4.3 / 6.2): given the candidates a

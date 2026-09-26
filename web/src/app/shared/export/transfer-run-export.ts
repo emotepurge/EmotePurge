@@ -4,6 +4,14 @@ import { ImportRunItem } from '../../core/seven-tv/seven-tv-import.service';
 import { RunItemStatus } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { TransferPlan, TransferRow, TransferRowTarget } from '../../core/seven-tv/transfer-plan';
+// `UndoCandidate`/`UndoCandidateTargetEntry`/`UndoSourceFileInfo` moved to
+// `core/seven-tv/undo-candidate.ts` (#254 layering fix) — imported here for this module's own use
+// and re-exported below so this module's existing importers keep working unchanged.
+import type {
+  UndoCandidate,
+  UndoCandidateTargetEntry,
+  UndoSourceFileInfo,
+} from '../../core/seven-tv/undo-candidate';
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
@@ -345,57 +353,17 @@ export function transferRunFilename(
 }
 
 /**
- * One target entry as an undo candidate names it — `alias: null` for the one entry that came back
- * without one, same shape as a purge/transfer-run restore row's own entries.
+ * `UndoCandidateTargetEntry`, `UndoCandidate` and `UndoSourceFileInfo` moved to
+ * `core/seven-tv/undo-candidate.ts` (#254 layering fix): the undo classification and the undo
+ * service both need them at run time, and `core/` may not import from `shared/` (layering rule).
+ * Re-exported here so this module's own importers (the transfer-run file readers/writers, and
+ * anything importing them from here today) keep working unchanged.
  */
-export interface UndoCandidateTargetEntry {
-  alias: string | null;
-}
-
-/**
- * One `replace` row's REMOVE, read back out as something a #254 undo might reverse: the source
- * emote to bring back, and the target entries it once held. `provenance` says how much trust the
- * *file itself* — as opposed to a live re-check — puts in the row (F17, Codex-Befund 2): a
- * `finished` file only ever names a row 7TV actually confirmed the REMOVE for, so its candidates are
- * `'confirmed'`; a `planned` file is written *before* the first REMOVE and proves nothing about
- * whether its run ever started, so every one of its candidates is `'unproven'` until a human
- * confirms the source shown really is the one that vanished (spec 17 K1/K2, the undo confirm
- * dialog's checkbox). Classification (#254 T2) reads this through unchanged; it is not something
- * the live check can derive.
- */
-export interface UndoCandidate {
-  sourceSevenTvEmoteId: string;
-  sourceName: string;
-  /** The alias the row's ADD wrote onto the target — the name a REMOVE-then-ADD undo pair moves
-   *  back to the source. */
-  alias: string;
-  fileStatus: RunItemStatus | 'pending';
-  target: {
-    sevenTvEmoteId: string;
-    entries: UndoCandidateTargetEntry[];
-    defaultName: string | null;
-  };
-  provenance: 'confirmed' | 'unproven';
-}
-
-/**
- * Where an undo candidate's own transfer-run file came from — carried into the `transfer-undo`
- * file's `meta.undoneFile` (F6) so a human reading the undo's paper trail can follow the chain back
- * to the transfer it reverses, the same way `TransferRunRow.sourceName` lets a restore reconstruct a
- * rename. `verifiedAt`/`finishedAt` mirror whichever of `TransferRunMetaPlanned`/`Finished` the file
- * actually was — only one of the two is ever non-null. `origin` is `null` when the file's own
- * `meta.origin` is missing or not a recognizable {@link ImportOrigin} — untrusted JSON from a file,
- * validated rather than cast (see {@link readImportOrigin}), so a corrupted or hand-edited field
- * shows up here as an honest "unknown" instead of throwing later wherever this gets displayed or
- * re-serialized.
- */
-export interface UndoSourceFileInfo {
-  stage: TransferRunMeta['stage'];
-  exportedAt: string;
-  verifiedAt: string | null;
-  finishedAt: string | null;
-  origin: ImportOrigin | null;
-}
+export type {
+  UndoCandidate,
+  UndoCandidateTargetEntry,
+  UndoSourceFileInfo,
+} from '../../core/seven-tv/undo-candidate';
 
 /** Every {@link RunItemStatus} value, for validating an untrusted `status` field rather than casting
  *  it — a file can claim any string there. */

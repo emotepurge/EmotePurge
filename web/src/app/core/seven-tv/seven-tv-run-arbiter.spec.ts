@@ -6,7 +6,6 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { UndoPlanRow, classifyUndoRows } from '../../shared/seven-tv/undo-plan';
 import { ImportOrigin, ImportRow } from './import-source';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { DELETE_DELAY_MS, DeleteQueueEmote, SevenTvDeleteService } from './seven-tv-delete.service';
@@ -24,6 +23,7 @@ import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import { SevenTvUndoService, UndoRunTarget } from './seven-tv-undo.service';
 import { TransferPlan } from './transfer-plan';
+import { UndoPlanRow, classifyUndoRows } from './undo-plan';
 
 /** A registered participant whose three signals a case sets by hand (contract P5). */
 interface StubParticipant extends SevenTvRunParticipant {

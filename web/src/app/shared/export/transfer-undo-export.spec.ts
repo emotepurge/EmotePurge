@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { ImportOrigin } from '../../core/seven-tv/import-source';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import { UndoPlanRow, UndoSkippedRow, classifyUndoRows } from '../../core/seven-tv/undo-plan';
+// Type-only, for the buildUndoRunProtocol fixtures below (moved from
+// seven-tv-undo.service.spec.ts, #254 layering fix) — same seam
+// transfer-undo-export.ts itself uses to reach these service-owned shapes.
+import type { UndoRunInfo, UndoRunItem } from '../../core/seven-tv/seven-tv-undo.service';
 import { UndoCandidate, UndoSourceFileInfo } from './transfer-run-export';
 import {
   TRANSFER_UNDO_FORMAT_VERSION,
@@ -11,6 +16,7 @@ import {
   TransferUndoSkippedInput,
   buildTransferUndoPlanRecord,
   buildTransferUndoProtocol,
+  buildUndoRunProtocol,
   parseTransferUndoForRestore,
   transferUndoCsv,
   transferUndoFilename,
@@ -238,6 +244,102 @@ describe('buildTransferUndoPlanRecord', () => {
     expect(record.meta.acknowledgedUnproven).toBe(true);
     expect(record.meta.verifiedAt).toBe('2026-09-25T10:00:00.000Z');
     expect(record.channelName).toBe('zielkanal');
+  });
+});
+
+/** Moved from `undo-plan.spec.ts` (#254 layering fix): the assignability check that a
+ *  `classifyUndoRows` runnable row is a `TransferUndoRunnableInput` as it is, plus the one
+ *  behavioural test that exercises it — kept here rather than in `undo-plan.spec.ts` so that core
+ *  spec imports nothing from `shared/` (`undo-plan.ts` itself has no reason to know this builder
+ *  exists). A shared-owned read helper, distinct from `setEntries` above: it builds a
+ *  `SevenTvSetEntries` from a plain entries list, the shape `classifyUndoRows`'s own tests use. */
+function liveRead(entries: { id: string; alias: string | null }[]): SevenTvSetEntries {
+  const aliasesById = new Map<string, string[]>();
+  const aliaslessIds = new Set<string>();
+  for (const entry of entries) {
+    if (entry.alias === null) {
+      aliaslessIds.add(entry.id);
+      continue;
+    }
+    aliasesById.set(entry.id, [...(aliasesById.get(entry.id) ?? []), entry.alias]);
+  }
+  return {
+    aliasesById,
+    aliaslessIds,
+    defaultNameById: new Map(),
+    animatedById: new Map(),
+    occupiedSlots: entries.length,
+    complete: true,
+  };
+}
+
+/** Compiler-enforced seam to the transfer-undo file builder: a runnable row *is* a builder input. */
+function asRunnableInput(row: UndoPlanRow): TransferUndoRunnableInput {
+  return row;
+}
+
+describe('buildTransferUndoPlanRecord — assignability from classifyUndoRows', () => {
+  it('hands its runnable rows to the transfer-undo file builder as they are', () => {
+    const live = liveRead([
+      { id: 'src-kappa', alias: 'A' },
+      { id: 'third-1', alias: 'Taken' },
+    ]);
+    const plan = classifyUndoRows(
+      [
+        candidate({
+          sourceSevenTvEmoteId: 'src-kappa',
+          alias: 'A',
+          target: {
+            sevenTvEmoteId: 'tgt-1',
+            entries: [{ alias: 'A' }, { alias: null }],
+            defaultName: 'D',
+          },
+        }),
+        candidate({
+          sourceSevenTvEmoteId: 'src-2',
+          alias: 'B',
+          provenance: 'unproven',
+          target: {
+            sevenTvEmoteId: 'tgt-2',
+            entries: [{ alias: 'B' }, { alias: 'Taken' }],
+            defaultName: null,
+          },
+        }),
+      ],
+      live,
+    );
+
+    const record = buildTransferUndoPlanRecord({
+      targetEmoteSetId: 'set-1',
+      targetChannelName: null,
+      targetOwnerDisplayName: null,
+      sourceFile: {
+        stage: 'planned',
+        exportedAt: '',
+        verifiedAt: '',
+        finishedAt: null,
+        origin: null,
+      },
+      verifiedAt: 0,
+      acknowledgedUnproven: false,
+      read: live,
+      rows: plan.rows.map(asRunnableInput),
+    });
+
+    expect(
+      record.rows.map(
+        (row) =>
+          row.kind === 'executed' && [
+            row.mode,
+            row.restoredTarget.entries.map((entry) => entry.alias),
+            row.omittedEntries,
+            row.provenance,
+          ],
+      ),
+    ).toEqual([
+      ['full', ['A', 'D'], [], 'confirmed'],
+      ['addOnly', ['B'], [{ alias: 'Taken', reason: 'targetNameTaken' }], 'unproven'],
+    ]);
   });
 });
 
@@ -548,6 +650,210 @@ describe('buildTransferUndoProtocol', () => {
   it('contains no token anywhere', () => {
     const record = protocol({ executed: [executedInput()] });
     expect(transferUndoJson(record)).not.toMatch(/token|authorization|bearer/i);
+  });
+});
+
+/** Moved from `seven-tv-undo.service.spec.ts` (#254 layering fix): `buildUndoRunProtocol` is the
+ *  mapping from the service's own `UndoRunInfo`/`UndoRunItem` to this file's protocol, so its test
+ *  cases belong here now — as hand-built run fixtures rather than a full HTTP-driven service run,
+ *  since the mapping itself needs neither. The service's own spec keeps testing that a real run
+ *  settles into the right `UndoRunItem`s; this only checks that those items become the right file. */
+function undoCandidate(
+  n: string,
+  overrides: Partial<Omit<UndoCandidate, 'target'>> & {
+    target?: Partial<UndoCandidate['target']>;
+  } = {},
+): UndoCandidate {
+  const { target, ...rest } = overrides;
+  return {
+    sourceSevenTvEmoteId: `src-${n}`,
+    sourceName: `Source${n}`,
+    alias: `A${n}`,
+    fileStatus: 'done',
+    provenance: 'confirmed',
+    ...rest,
+    target: {
+      sevenTvEmoteId: `tgt-${n}`,
+      entries: [{ alias: `A${n}` }],
+      defaultName: null,
+      ...target,
+    },
+  };
+}
+
+function undoRunItem(
+  overrides: Partial<UndoRunItem> & { candidate: UndoCandidate; mode: 'full' | 'addOnly' },
+): UndoRunItem {
+  return {
+    key: overrides.candidate.sourceSevenTvEmoteId,
+    sevenTvEmoteId: overrides.candidate.sourceSevenTvEmoteId,
+    name: overrides.candidate.alias,
+    status: 'done',
+    completedSteps: 0,
+    failedStep: null,
+    provenance: overrides.candidate.provenance,
+    adds: [{ alias: overrides.candidate.alias }],
+    omittedEntries: [],
+    notes: [],
+    undoStatus: 'done',
+    skippedReason: null,
+    sourceEntriesAtRemove:
+      overrides.mode === 'full' ? [{ alias: overrides.candidate.alias }] : null,
+    ...overrides,
+  };
+}
+
+function undoRunInfo(overrides: Partial<UndoRunInfo> = {}): UndoRunInfo {
+  return {
+    runId: 'run-1',
+    phase: 'closed',
+    destructive: true,
+    targetSetId: 'set-t',
+    expectedChannelName: 'kanal_t',
+    hostChannelName: 'kanal_t',
+    setName: 'tttt',
+    ownerOrChannelLabel: 'kanal_t',
+    trackedChannelName: 'kanal_t',
+    ownerDisplayName: 'Olaf',
+    sourceFile: sourceFile({ stage: 'finished' }),
+    acknowledgedUnproven: false,
+    rows: [],
+    skipped: [],
+    recheck: {},
+    settlement: 'settled',
+    result: null,
+    removalReport: 'idle',
+    removalReportReason: null,
+    restoreReport: 'idle',
+    restoreReportReason: null,
+    resyncTrigger: 'idle',
+    abortedForPrivileges: false,
+    protocolSaved: false,
+    ...overrides,
+  };
+}
+
+describe('buildUndoRunProtocol', () => {
+  it('is null for a run that has not settled yet', () => {
+    expect(buildUndoRunProtocol(undoRunInfo({ settlement: 'pending', result: null }))).toBeNull();
+  });
+
+  it('is null when the run has no result even if marked settled', () => {
+    expect(buildUndoRunProtocol(undoRunInfo({ settlement: 'settled', result: null }))).toBeNull();
+  });
+
+  it('lists every executed row and every skipped candidate once the run has settled', () => {
+    const item1 = undoRunItem({
+      candidate: undoCandidate('1'),
+      mode: 'full',
+      undoStatus: 'done',
+      completedSteps: 2,
+      sourceEntriesAtRemove: [{ alias: 'A1' }],
+    });
+    const item2 = undoRunItem({
+      candidate: undoCandidate('2'),
+      mode: 'full',
+      undoStatus: 'cancelled',
+      skippedReason: 'skippedDrift',
+      completedSteps: 0,
+      sourceEntriesAtRemove: [{ alias: 'A2' }, { alias: 'X2' }],
+    });
+    const item3 = undoRunItem({
+      candidate: undoCandidate('3', { target: { entries: [{ alias: 'A3' }, { alias: 'B3' }] } }),
+      mode: 'addOnly',
+      undoStatus: 'partial',
+      completedSteps: 1,
+      omittedEntries: [{ alias: 'B3', reason: 'targetNameTaken' }],
+    });
+    const skipped4: UndoSkippedRow = {
+      candidate: undoCandidate('4'),
+      reason: 'nothingToDo',
+      live: { sourceEntries: [], targetEntries: [] },
+      omittedEntries: [],
+    };
+    const skipped5: UndoSkippedRow = {
+      candidate: undoCandidate('5', { provenance: 'unproven' }),
+      reason: 'skippedUnproven',
+      live: { sourceEntries: [], targetEntries: [] },
+      omittedEntries: [],
+    };
+
+    const protocol = buildUndoRunProtocol(
+      undoRunInfo({
+        skipped: [skipped4, skipped5],
+        result: {
+          doneKeys: ['src-1', 'src-3'],
+          items: [item1, item2, item3],
+          startedAt: 0,
+          finishedAt: 1,
+        },
+      }),
+    )!;
+
+    expect(protocol.meta).toMatchObject({
+      stage: 'finished',
+      targetEmoteSetId: 'set-t',
+      targetChannelName: 'kanal_t',
+      acknowledgedUnproven: false,
+      counts: {
+        requested: 3,
+        succeeded: 1,
+        cancelled: 1,
+        partial: 1,
+        failed: 0,
+        unknown: 0,
+        removed: 1,
+        added: 2,
+        skipped: 2,
+      },
+    });
+    expect(protocol.rows).toEqual([
+      expect.objectContaining({
+        kind: 'executed',
+        alias: 'A1',
+        status: 'done',
+        removedSource: { entries: [{ alias: 'A1' }], confirmed: true },
+        restoredTarget: expect.objectContaining({ entries: [{ alias: 'A1', added: true }] }),
+      }),
+      expect.objectContaining({
+        kind: 'executed',
+        alias: 'A2',
+        status: 'cancelled',
+        skippedReason: 'skippedDrift',
+        removedSource: { entries: [{ alias: 'A2' }, { alias: 'X2' }], confirmed: false },
+      }),
+      expect.objectContaining({
+        kind: 'executed',
+        alias: 'A3',
+        mode: 'addOnly',
+        status: 'partial',
+        removedSource: null,
+        omittedEntries: [{ alias: 'B3', reason: 'targetNameTaken' }],
+      }),
+      expect.objectContaining({ kind: 'skipped', alias: 'A4', skippedReason: 'nothingToDo' }),
+      expect.objectContaining({ kind: 'skipped', alias: 'A5', skippedReason: 'skippedUnproven' }),
+    ]);
+  });
+
+  it('carries steps a failed row still confirmed through a re-read into the protocol', () => {
+    const item = undoRunItem({
+      candidate: undoCandidate('1'),
+      mode: 'full',
+      undoStatus: 'failed',
+      completedSteps: 1,
+      sourceEntriesAtRemove: [{ alias: 'A1' }],
+    });
+
+    const [executed] = buildUndoRunProtocol(
+      undoRunInfo({ result: { doneKeys: [], items: [item], startedAt: 0, finishedAt: 1 } }),
+    )!.rows;
+
+    expect(executed).toMatchObject({
+      status: 'failed',
+      completedSteps: 1,
+      removedSource: { confirmed: true },
+      restoredTarget: expect.objectContaining({ entries: [{ alias: 'A1', added: false }] }),
+    });
   });
 });
 

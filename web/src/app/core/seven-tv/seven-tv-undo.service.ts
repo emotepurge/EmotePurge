@@ -11,28 +11,6 @@ import {
 import { TranslocoService } from '@jsverse/transloco';
 import { Observable, catchError, map, of, retry, throwError, timeout, timer } from 'rxjs';
 
-// Layering note (#254 T4): these three modules sit in `shared/` because the spec places them
-// there (spec 14) — the pure classification, the undo candidate and the transfer-undo file. The
-// service needs the classification at run time (the recheck before every REMOVE, E19) and the
-// file builder's input types, so `core/` reaches into `shared/` here; reported to the
-// orchestrator rather than silently moved, since T5 builds on the same modules in parallel.
-import { UndoCandidate, UndoSourceFileInfo } from '../../shared/export/transfer-run-export';
-import {
-  TransferUndoExecutedInput,
-  TransferUndoProtocol,
-  TransferUndoSettledStatus,
-  buildTransferUndoProtocol,
-} from '../../shared/export/transfer-undo-export';
-import {
-  UNDO_SKIP_REASONS,
-  UndoNote,
-  UndoOmittedEntry,
-  UndoPlanRow,
-  UndoSkipReason,
-  UndoSkippedRow,
-  classifyUndoRow,
-  sameClassification,
-} from '../../shared/seven-tv/undo-plan';
 import { ChannelService } from '../channels/channel.service';
 import {
   MAX_AUTOMATIC_SYNC_RETRIES,
@@ -65,6 +43,17 @@ import {
   classifySyncInSetResponse,
   isChannelMismatch,
 } from './sync-report-outcome';
+import { UndoCandidate, UndoSourceFileInfo } from './undo-candidate';
+import {
+  UNDO_SKIP_REASONS,
+  UndoNote,
+  UndoOmittedEntry,
+  UndoPlanRow,
+  UndoSkipReason,
+  UndoSkippedRow,
+  classifyUndoRow,
+  sameClassification,
+} from './undo-plan';
 
 /** The ADD every undo step after the REMOVE sends — the same mutation the restore and the import
  *  use (copied, not shared, like theirs). The undo **always** sets `$alias` (spec E21): an entry the
@@ -917,29 +906,6 @@ export class SevenTvUndoService {
   }
 }
 
-/**
- * The `finished` protocol of a settled run (spec 6.4, 17 K4) — every row it executed, as
- * `kind: 'executed'` (a row the recheck skipped included, `cancelled` with its reason), and every
- * candidate that never became a row, as `kind: 'skipped'`. `null` until the run is settled. What the
- * dock's download (T7) serializes with `transferUndoJson`/`transferUndoCsv`.
- */
-export function buildUndoRunProtocol(run: UndoRunInfo): TransferUndoProtocol | null {
-  if (run.settlement !== 'settled' || run.result === null) {
-    return null;
-  }
-  return buildTransferUndoProtocol({
-    targetEmoteSetId: run.targetSetId,
-    targetChannelName: run.trackedChannelName,
-    targetOwnerDisplayName: run.ownerDisplayName,
-    sourceFile: run.sourceFile,
-    startedAt: run.result.startedAt,
-    finishedAt: run.result.finishedAt,
-    acknowledgedUnproven: run.acknowledgedUnproven,
-    executed: run.result.items.map(toExecutedInput),
-    skipped: run.skipped.map((row) => ({ candidate: row.candidate, skippedReason: row.reason })),
-  });
-}
-
 /** The dock's counters (spec 4.7) over a run's rows and its skipped candidates — see
  *  `UndoRunSummary` for what is counted where. */
 export function summarizeUndoRun(
@@ -1351,32 +1317,4 @@ function reportPatch(
 function includesChannel(channels: readonly string[], channelName: string): boolean {
   const normalized = channelName.toLowerCase();
   return channels.some((channel) => channel.toLowerCase() === normalized);
-}
-
-/** One settled row as the `finished` protocol's input — `full` rows always with their source
- *  entries (F13), `addOnly` rows with `null`. A settled row is never `pending`/`in-progress`; one
- *  that somehow is counts as `cancelled`. */
-function toExecutedInput(item: UndoRunItem): TransferUndoExecutedInput {
-  const base = {
-    candidate: item.candidate,
-    adds: item.adds,
-    omittedEntries: item.omittedEntries,
-    notes: item.notes,
-    status: settledStatus(item.undoStatus),
-    failedStep: item.failedStep,
-    completedSteps: item.completedSteps,
-    errorMessage: item.sevenTvErrorMessage ?? item.errorMessage ?? null,
-    skippedReason: item.skippedReason,
-  };
-  return item.mode === 'full'
-    ? {
-        ...base,
-        mode: 'full',
-        sourceEntriesAtRemove: item.sourceEntriesAtRemove ?? [{ alias: item.candidate.alias }],
-      }
-    : { ...base, mode: 'addOnly', sourceEntriesAtRemove: null };
-}
-
-function settledStatus(status: UndoRunItemStatus): TransferUndoSettledStatus {
-  return status === 'pending' || status === 'in-progress' ? 'cancelled' : status;
 }

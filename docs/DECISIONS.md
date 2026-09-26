@@ -14,12 +14,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-undo.service.ts` (new: `SevenTvUndoService`,
 `UndoRunTarget`, `UndoRunInfo`, `UndoRunItem`, `UndoRunResult`, `UndoSettlement`, `UndoRunSummary`,
-`buildUndoRunProtocol`, `summarizeUndoRun`) · `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts`
+`summarizeUndoRun`) · `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts`
 (`SevenTvRunKind` gains `'undo'`, `SEVEN_TV_RUN_KIND_LABEL_KEY.undo`) · `web/public/i18n/{de,en}.json`
 (`sevenTvRun.kind.undo`, `undo.settling`, `undo.errors.*`) — built on
 `web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`RunOperation.beforeStep`),
-`web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts`, `web/src/app/shared/seven-tv/undo-plan.ts`
-and `web/src/app/shared/export/transfer-undo-export.ts`; consumed from #254's later tasks:
+`web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts`, `web/src/app/core/seven-tv/undo-plan.ts`,
+`web/src/app/core/seven-tv/undo-candidate.ts` (`UndoCandidate`, `UndoCandidateTargetEntry`,
+`UndoSourceFileInfo`) and `web/src/app/shared/export/transfer-undo-export.ts` (also holds
+`buildUndoRunProtocol` — see the layering-fix addendum below); consumed from #254's later tasks:
 `web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (the effective plan and the confirmation it
 hands over), `web/src/app/shared/seven-tv/undo-flow.ts`, `web/src/app/shared/seven-tv/file-import-step.ts`
 and `web/src/app/shared/seven-tv/import-trigger.ts` (the switch that reaches `startUndo`),
@@ -74,11 +76,15 @@ The dock shows `backendTriggered` when either answer names the expected channel.
 resyncs the expected channel only when every report the run sent failed for good — then no report
 reached the backend's own resync; a non-active or untracked target never gets one.
 
-**Layering exception, flagged.** The service lives in `core/seven-tv/` (spec 14) but needs the pure
-classification (`shared/seven-tv/undo-plan.ts`) at run time and the candidate and file types from
-`shared/export/` — the first `core/` → `shared/` import. Moving those pure modules into `core/`, as
-`transfer-plan.ts` already is, would restore the rule; left to review because the confirm dialog
-builds on the same modules in parallel.
+**Layering fix (T5 merge, same day).** The exception noted here at first landing — the service
+reaching from `core/` into `shared/` for the pure classification and the candidate/file types — was
+closed before the branch merged: `undo-plan.ts` moved to `core/seven-tv/undo-plan.ts` and the
+candidate/file types to the new `core/seven-tv/undo-candidate.ts`, both alongside `transfer-plan.ts`
+as `core/`-owned pure modules; `buildUndoRunProtocol`/`toExecutedInput`/`settledStatus` moved the
+other way, out of the service into `web/src/app/shared/export/transfer-undo-export.ts`, since that
+mapping's own home is next to the protocol it builds. `undo-plan.ts` sits in `core/` rather than at
+spec 14's `shared/` path because a `core/` service — this one — consumes it at run time; spec 14 did
+not anticipate that a `core/` module would need it.
 
 ---
 
