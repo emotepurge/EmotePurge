@@ -2,6 +2,9 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  Injector,
+  afterNextRender,
+  computed,
   inject,
   input,
   output,
@@ -19,9 +22,15 @@ import { ExportKind } from '../export/export-envelope';
 import { parseImportSource } from '../export/import-source-parser';
 import { RestoreFileTarget, RestoreRow, parsePurgeRunProtocol } from '../export/purge-run-export';
 import { readEnvelope } from '../export/read-envelope';
-import { parseTransferRunForRestore } from '../export/transfer-run-export';
+import {
+  TransferRunUndoParseResult,
+  parseTransferRunForRestore,
+  parseTransferRunForUndo,
+} from '../export/transfer-run-export';
+import { parseTransferUndoForRestore } from '../export/transfer-undo-export';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
+import { StatusBadge } from '../ui/status-badge';
 import { ResolvedRestoreTarget } from './restore-flow';
 
 /**
@@ -47,6 +56,18 @@ export type FileImportResult =
     }
   | { kind: 'import'; source: ImportSource };
 
+/**
+ * A transfer-run file that passed the pre-check, waiting for the user's direction (spec 4.1 point
+ * 3): the same target and both readings of the file. `undo` holds the undo parser's own answer —
+ * it can fail where the restore parser succeeded (a hand-edited file whose replace rows lost their
+ * alias), and that failure is shown on the undo option rather than inferred away.
+ */
+interface TransferRunChoice {
+  target: ResolvedRestoreTarget;
+  restoreRows: RestoreRow[];
+  undo: TransferRunUndoParseResult;
+}
+
 /** The copy sorts (`import-source-parser.ts`) — the two a page without a selected set refuses up
  *  front (spec #253, E22), since they have no set to copy into. */
 const COPY_ENVELOPE_KINDS: ReadonlySet<ExportKind> = new Set(['emote-list', 'usage']);
@@ -63,8 +84,10 @@ const TARGET_CHECK_ERROR_KEYS: Record<TargetCheckBlockReason, string> = {
  * dialog of its own (`FileImportDialog`); it is now the "Aus einer Datei" branch of the one import
  * dialog (`ImportSourceDialog`, design language §7.3). **Only its housing changed** — the reading,
  * the envelope dispatch, the two-pass purge-run validation and the error handling below are the
- * same code they were, moved. Since then the dispatch has gained its second restore sort, the
- * transfer-run file (both stages), validated the same two-pass way.
+ * same code they were, moved. Since then the dispatch has gained two more restore sorts, the
+ * transfer-run file and the transfer-undo file (both stages each), validated the same two-pass way —
+ * and a transfer-run file no longer reports straight away: after the pre-check it ends at a switch,
+ * "close gaps" (the restore) or "undo the replacements" (#254, spec 4.1 point 3).
  *
  * **The file names the target of a restore, and this step checks it (spec #253, E1/E2/E10).** A
  * restore file is never held against the page any more — no channel or set comparison; the set
@@ -78,10 +101,12 @@ const TARGET_CHECK_ERROR_KEYS: Record<TargetCheckBlockReason, string> = {
  * one must not (F6). On a page without a selected set only restore files are read; the two copy
  * sorts are refused before their own parser runs, because there is no set to copy into (E22).
  *
- * Body order is a contract (plan §1.1, design language §7.3): the four acceptable file sorts — so
- * the explanation sits *above* the control it explains — then the file control, then the error
- * banner (only on failure). There is no "weiter" step, the file pick itself is the action; the
- * dialog around this step therefore renders a cancel-only action row for it.
+ * Body order is a contract (plan §1.1, design language §7.3): the acceptable file sorts — so the
+ * explanation sits *above* the control it explains — then the file control, then the switch (only
+ * for a transfer-run file that passed the pre-check), then the error banner (only on failure).
+ * There is no "weiter" step: the file pick itself is the action, or for a transfer-run file the
+ * pick of a direction at the switch; the dialog around this step therefore renders a cancel-only
+ * action row for it.
  *
  * The file control is the step's entry point for the keyboard, and {@link focusFirstControl} is how
  * the dialog puts the caret there on the way in. It used to happen by itself — the file dialog
@@ -97,11 +122,12 @@ const TARGET_CHECK_ERROR_KEYS: Record<TargetCheckBlockReason, string> = {
  */
 @Component({
   selector: 'app-file-import-step',
-  imports: [Button, NoticeBanner, TranslocoPipe],
+  imports: [Button, NoticeBanner, StatusBadge, TranslocoPipe],
   template: `
     <ul class="list-disc space-y-1 pl-5 text-sm text-fg-secondary">
       <li>{{ 'restore.import.sorts.purgeRun' | transloco }}</li>
       <li>{{ 'restore.import.sorts.transferRun' | transloco }}</li>
+      <li>{{ 'restore.import.sorts.transferUndo' | transloco }}</li>
       <li>{{ 'restore.import.sorts.emoteList' | transloco }}</li>
       <li>{{ 'restore.import.sorts.usageExport' | transloco }}</li>
     </ul>
@@ -129,6 +155,54 @@ const TARGET_CHECK_ERROR_KEYS: Record<TargetCheckBlockReason, string> = {
       />
     </div>
 
+    @if (choice()) {
+      <!-- The switch (spec 4.1 point 3, #254): where a transfer-run file used to report straight
+           away. A menu of ruled rows like the source choice, not a radiogroup — picking a direction
+           navigates, the confirmation of what it does comes after (the restore's or the undo's own
+           dialog). The undo row names itself destructive; when the file cannot be read as an undo it
+           stays visible, disabled with its reason (§10 "Disabled explains itself"). -->
+      <p id="file-import-choice-legend" class="text-sm text-fg-secondary">
+        {{ 'restore.import.choice.legend' | transloco }}
+      </p>
+      <div
+        role="group"
+        aria-labelledby="file-import-choice-legend"
+        class="flex flex-col border-t border-border"
+      >
+        <button #firstChoice type="button" [class]="choiceRowClass" (click)="chooseRestore()">
+          <span class="text-sm font-medium text-fg">{{
+            'restore.import.choice.restore.label' | transloco
+          }}</span>
+          <span class="text-xs text-fg-secondary">{{
+            'restore.import.choice.restore.hint' | transloco
+          }}</span>
+        </button>
+        <button
+          type="button"
+          [class]="choiceRowClass"
+          [disabled]="undoUnavailable()"
+          (click)="chooseUndo()"
+        >
+          <span class="flex items-center gap-2">
+            <span class="text-sm font-medium text-fg">{{
+              'restore.import.choice.undo.label' | transloco
+            }}</span>
+            <app-status-badge tone="danger">{{
+              'restore.import.choice.undo.destructive' | transloco
+            }}</app-status-badge>
+          </span>
+          <span class="text-xs text-fg-secondary">{{
+            'restore.import.choice.undo.hint' | transloco
+          }}</span>
+          @if (undoUnavailable()) {
+            <span class="text-xs text-fg-muted">{{
+              'restore.import.choice.undo.unavailable' | transloco
+            }}</span>
+          }
+        </button>
+      </div>
+    }
+
     @if (errorKey(); as error) {
       <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
     }
@@ -153,15 +227,23 @@ export class FileImportStep {
 
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly injector = inject(Injector);
 
   // Named apart from the #fileInput template reference, same reasoning as the panel this was split
   // out of: inside the template the bare name resolves to the reference (the raw element), which is
   // not callable — AOT rejects it.
   private readonly fileInputRef = viewChild.required<ElementRef<HTMLInputElement>>('fileInput');
   private readonly pickerButtonRef = viewChild<ElementRef<HTMLButtonElement>>('pickerButton');
+  private readonly firstChoiceRef = viewChild<ElementRef<HTMLButtonElement>>('firstChoice');
   protected readonly errorKey = signal<string | null>(null);
   /** True while a restore file's target is being checked — locks the file control (F6). */
   protected readonly checking = signal(false);
+  /** The transfer-run file waiting at the switch, `null` whenever there is none. */
+  protected readonly choice = signal<TransferRunChoice | null>(null);
+  protected readonly undoUnavailable = computed(() => this.choice()?.undo.ok === false);
+  /** The source choice's ruled-row look (`import-source-dialog.ts`), so both menus read alike. */
+  protected readonly choiceRowClass =
+    'flex min-h-11 flex-col items-start justify-center gap-0.5 border-b border-border px-2 py-3 text-left transition enabled:hover:bg-surface-inset disabled:cursor-not-allowed disabled:opacity-60';
 
   /** Where the caret goes when this step is entered — see the class doc. Called by the dialog after
    *  the step has rendered, never from a constructor. */
@@ -186,6 +268,7 @@ export class FileImportStep {
     }
 
     this.errorKey.set(null);
+    this.choice.set(null);
     const text = await file.text();
     const read = readEnvelope(text);
     if (!read.ok) {
@@ -193,29 +276,7 @@ export class FileImportStep {
       return;
     }
 
-    if (read.envelope.kind === 'purge-run') {
-      // parsePurgeRunProtocol deliberately re-reads the very same text: it does its own envelope
-      // check and its own `meta`/row validation, which readEnvelope knows nothing about. The second
-      // pass is the contract, not a slip.
-      const parsed = parsePurgeRunProtocol(text);
-      if (!parsed.ok) {
-        this.errorKey.set(parsed.errorKey);
-        return;
-      }
-      this.checkTargetAndPick(parsed.target, parsed.rows);
-      return;
-    }
-
-    if (read.envelope.kind === 'transfer-run') {
-      // Either stage is a restore source, never an import source — the same second pass as the
-      // purge-run branch above. `parseImportSource` would refuse the kind by name; it is never
-      // reached with one from here.
-      const parsed = parseTransferRunForRestore(text);
-      if (!parsed.ok) {
-        this.errorKey.set(parsed.errorKey);
-        return;
-      }
-      this.checkTargetAndPick(parsed.target, parsed.rows);
+    if (this.readRestoreSort(read.envelope.kind, text)) {
       return;
     }
 
@@ -232,13 +293,105 @@ export class FileImportStep {
     this.picked.emit({ kind: 'import', source: parsedSource.source });
   }
 
+  protected chooseRestore(): void {
+    const offered = this.choice();
+    if (offered === null) {
+      return;
+    }
+    this.picked.emit({ kind: 'restore', rows: offered.restoreRows, target: offered.target });
+  }
+
+  protected chooseUndo(): void {
+    const offered = this.choice();
+    if (offered === null || !offered.undo.ok) {
+      return;
+    }
+    this.picked.emit({
+      kind: 'transfer-undo',
+      candidates: offered.undo.candidates,
+      target: offered.target,
+      sourceFile: offered.undo.sourceFile,
+    });
+  }
+
+  /**
+   * The three restore sorts, dispatched before the copy sorts ever see the envelope — true when
+   * `kind` was one of them (handled, whatever the outcome). Each re-reads the very same text through
+   * its own parser: they do their own envelope check and their own `meta`/row validation, which
+   * `readEnvelope` knows nothing about. The second pass is the contract, not a slip.
+   *
+   * - `purge-run` → restore, as before.
+   * - `transfer-run` (either stage) → both parsers, the pre-check, then the switch (spec 4.1 point
+   *   2/3): the file can be restored *or* undone, and only the user can say which. The restore
+   *   parser decides whether the file is readable at all; the undo parser's answer rides along to
+   *   the switch, where a failure shows on the undo option.
+   * - `transfer-undo` (either stage) → the source emotes it removed, back as a restore, with no
+   *   switch (spec 4.1 point 2, E12): there is no undo of an undo. `parseImportSource` would refuse
+   *   the kind by name, which is why it is dispatched here, before that parser.
+   */
+  private readRestoreSort(kind: ExportKind, text: string): boolean {
+    switch (kind) {
+      case 'purge-run': {
+        const parsed = parsePurgeRunProtocol(text);
+        this.pickRestore(parsed);
+        return true;
+      }
+      case 'transfer-undo': {
+        const parsed = parseTransferUndoForRestore(text);
+        this.pickRestore(parsed);
+        return true;
+      }
+      case 'transfer-run': {
+        const parsed = parseTransferRunForRestore(text);
+        if (!parsed.ok) {
+          this.errorKey.set(parsed.errorKey);
+          return true;
+        }
+        const undo = parseTransferRunForUndo(text);
+        this.checkTarget(parsed.target, (target) =>
+          this.offerChoice({ target, restoreRows: parsed.rows, undo }),
+        );
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** A restore sort without a switch: its parser's error, or the pre-check and then `picked`. */
+  private pickRestore(
+    parsed:
+      { ok: true; rows: RestoreRow[]; target: RestoreFileTarget } | { ok: false; errorKey: string },
+  ): void {
+    if (!parsed.ok) {
+      this.errorKey.set(parsed.errorKey);
+      return;
+    }
+    this.checkTarget(parsed.target, (target) =>
+      this.picked.emit({ kind: 'restore', rows: parsed.rows, target }),
+    );
+  }
+
+  /** Shows the switch and puts the caret on its first option — the file window has just closed
+   *  onto the picker button, and the question the step now asks sits below it. */
+  private offerChoice(choice: TransferRunChoice): void {
+    this.choice.set(choice);
+    afterNextRender(() => this.firstChoiceRef()?.nativeElement.focus(), {
+      injector: this.injector,
+    });
+  }
+
   /**
    * The third step for a restore file (spec 4.2): the set the file names, looked up through the
-   * shared pre-check. Only an `'editable'` answer emits, carrying the pre-check's own target — its
-   * set id included, the one the confirmation shows (AK 35) — plus the two host fields. The host
-   * values are read here, at emit time, from the inputs the caller froze at its click.
+   * shared pre-check. Only an `'editable'` answer goes on, as the pre-check's own target — its set
+   * id included, the one the confirmation shows (AK 35) — plus the two host fields; a blocked check
+   * ends in the banner, before any switch (AK 2). The host values are read here, at answer time,
+   * from the inputs the caller froze at its click.
    */
-  private checkTargetAndPick(fileTarget: RestoreFileTarget, rows: RestoreRow[]): void {
+  private checkTarget(
+    fileTarget: RestoreFileTarget,
+    onEditable: (target: ResolvedRestoreTarget) => void,
+  ): void {
     this.checking.set(true);
     this.emoteSetService
       .resolveEditableSet(fileTarget.emoteSetId)
@@ -250,14 +403,10 @@ export class FileImportStep {
             this.errorKey.set(TARGET_CHECK_ERROR_KEYS[resolution.status]);
             return;
           }
-          this.picked.emit({
-            kind: 'restore',
-            rows,
-            target: {
-              ...resolution.target,
-              hostChannelName: this.channelName(),
-              hostSelectedSetId: this.hostSelectedSetId(),
-            },
+          onEditable({
+            ...resolution.target,
+            hostChannelName: this.channelName(),
+            hostSelectedSetId: this.hostSelectedSetId(),
           });
         },
         // 429, 503 or no connection: "cannot be checked right now", never "not allowed" (F3).

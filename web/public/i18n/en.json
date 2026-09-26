@@ -979,12 +979,25 @@
       "title": "Import file",
       "sorts": {
         "purgeRun": "Purge protocol (restore) as JSON",
-        "transferRun": "Transfer protocol — recovery file or result protocol (restore) as JSON",
+        "transferRun": "Transfer protocol — recovery file or result protocol (restore or undo the replacements) as JSON",
         "transferUndo": "A replace's undo protocol — recovery file or result protocol (restore) as JSON",
         "emoteList": "Emote list (copy) as JSON",
         "usageExport": "Usage export (copy) as JSON"
       },
       "fileLabel": "Choose file",
+      "choice": {
+        "legend": "What should this transfer file do?",
+        "restore": {
+          "label": "Close the gaps",
+          "hint": "Brings removed target emotes back where their name is free. Removes nothing."
+        },
+        "undo": {
+          "label": "Undo the replacements",
+          "hint": "Removes the source emotes that took over the name and brings the targets back. You confirm first.",
+          "destructive": "removes emotes",
+          "unavailable": "This file holds no replacement that could be undone."
+        }
+      },
       "errors": {
         "notJson": "The file is not valid JSON.",
         "csvInsteadOfJson": "That is the CSV version. The import needs the same file as JSON — pick the JSON format when exporting.",

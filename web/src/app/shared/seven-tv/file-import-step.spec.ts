@@ -16,8 +16,14 @@ import { buildPurgeRunProtocol, purgeRunJson } from '../export/purge-run-export'
 import {
   buildTransferPlanRecord,
   buildTransferRunProtocol,
+  parseTransferRunForUndo,
   transferRunJson,
 } from '../export/transfer-run-export';
+import {
+  buildTransferUndoPlanRecord,
+  buildTransferUndoProtocol,
+  transferUndoJson,
+} from '../export/transfer-undo-export';
 import { FileImportResult, FileImportStep } from './file-import-step';
 
 /**
@@ -31,11 +37,26 @@ const DE_TRANSLATIONS = {
       sorts: {
         purgeRun: 'Purge-Protokoll (Wiederherstellen) als JSON',
         transferRun:
-          'Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON',
+          'Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen oder Ersetzungen rückgängig machen) als JSON',
+        transferUndo:
+          'Rückweg-Protokoll einer Ersetzung — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON',
         emoteList: 'Emote-Liste (Kopieren) als JSON',
         usageExport: 'Nutzungs-Export (Kopieren) als JSON',
       },
       fileLabel: 'Datei auswählen',
+      choice: {
+        legend: 'Was soll mit dieser Übertragungsdatei geschehen?',
+        restore: {
+          label: 'Lücken schließen',
+          hint: 'Holt entfernte Ziel-Emotes zurück, wo ihr Name frei ist. Entfernt nichts.',
+        },
+        undo: {
+          label: 'Ersetzungen rückgängig machen',
+          hint: 'Entfernt die Quell-Emotes, die den Namen übernommen haben, und holt die Ziele zurück. Vorher kommt eine Bestätigung.',
+          destructive: 'entfernt Emotes',
+          unavailable: 'Diese Datei enthält keine Ersetzung, die sich rückgängig machen ließe.',
+        },
+      },
       errors: {
         notJson: 'Die Datei ist kein gültiges JSON.',
         csvInsteadOfJson:
@@ -62,6 +83,12 @@ const DE_TRANSLATIONS = {
 };
 
 const CURRENT_CHANNEL = 'somechannel';
+
+/** The labels of the switch's two options (#254, spec 4.1 point 3). */
+const CHOICE = {
+  restore: DE_TRANSLATIONS.restore.import.choice.restore.label,
+  undo: DE_TRANSLATIONS.restore.import.choice.undo.label,
+};
 const CURRENT_SET = 'set-current';
 
 /** What the shared pre-check answers for the file's set in the default (editable) case — a
@@ -219,6 +246,92 @@ function transferRunText(
   );
 }
 
+/** A transfer-run file whose one replace row lost its alias — hand-edited, never written that way.
+ *  The restore reading still finds the removed target; the undo reading finds no candidate. */
+function transferRunTextWithoutAlias(): string {
+  const envelope = JSON.parse(transferRunText('finished')) as { rows: { alias: string }[] };
+  envelope.rows[0].alias = '';
+  return JSON.stringify(envelope);
+}
+
+/** Either stage of a transfer-undo file for an undo of `REPLACE_ROW` into `set`: one `full` row
+ *  that removed `src-1` (under `Kappa`) and gave `tgt-1` back. */
+function transferUndoText(stage: 'planned' | 'finished', set = CURRENT_SET): string {
+  const candidate = {
+    sourceSevenTvEmoteId: 'src-1',
+    sourceName: 'Kappa',
+    alias: 'Kappa',
+    fileStatus: 'done' as const,
+    target: { sevenTvEmoteId: 'tgt-1', entries: [{ alias: 'KappaOld' }], defaultName: null },
+    provenance: 'confirmed' as const,
+  };
+  const row = {
+    candidate,
+    mode: 'full' as const,
+    adds: [{ alias: 'KappaOld' }],
+    omittedEntries: [],
+    notes: [],
+  };
+  const common = {
+    targetEmoteSetId: set,
+    targetChannelName: CURRENT_CHANNEL,
+    targetOwnerDisplayName: null,
+    sourceFile: {
+      stage: 'finished' as const,
+      exportedAt: '2026-09-01T10:00:00Z',
+      verifiedAt: null,
+      finishedAt: '2026-09-01T10:05:00Z',
+      origin: null,
+    },
+    acknowledgedUnproven: false,
+  };
+  if (stage === 'planned') {
+    return transferUndoJson(
+      buildTransferUndoPlanRecord({
+        ...common,
+        verifiedAt: 0,
+        read: {
+          aliasesById: new Map([['src-1', ['Kappa']]]),
+          aliaslessIds: new Set(),
+          defaultNameById: new Map([['src-1', 'Kappa']]),
+          animatedById: new Map([['src-1', false]]),
+          occupiedSlots: 1,
+          complete: true,
+        },
+        rows: [row],
+      }),
+    );
+  }
+  return transferUndoJson(
+    buildTransferUndoProtocol({
+      ...common,
+      startedAt: 0,
+      finishedAt: 1,
+      executed: [
+        {
+          ...row,
+          status: 'done',
+          failedStep: null,
+          completedSteps: 2,
+          errorMessage: null,
+          skippedReason: null,
+          sourceEntriesAtRemove: [{ alias: 'Kappa' }],
+        },
+      ],
+      skipped: [],
+    }),
+  );
+}
+
+/** What either stage of `transferUndoText` restores: the removed source, under its own alias. */
+const TRANSFER_UNDO_RESTORE_ROW = {
+  emoteId: null,
+  sevenTvEmoteId: 'src-1',
+  name: 'Kappa',
+  aliases: ['Kappa'],
+  defaultName: null,
+};
+
 /** What either stage of `transferRunText` restores: the removed target, under its old alias. */
 const TRANSFER_RESTORE_ROW = {
   emoteId: null,
@@ -255,6 +368,10 @@ function expectedTarget(emoteSetId: string, host: { channel: string; selected: s
 interface Harness {
   fixture: ComponentFixture<FileImportStep>;
   pickerButton(): HTMLButtonElement;
+  /** The switch's option whose label starts the button's text, or `null` without a switch. */
+  choiceOption(label: string): HTMLButtonElement | null;
+  /** The switch itself — the group labelled by its question — or `null`. */
+  choiceGroup(): HTMLElement | null;
   alertText(): string | null;
   focusableInOrder(): Element[];
   /** Drives `onFileSelected` directly with a synthetic `Event`/`<input>` pair, awaiting the whole
@@ -326,6 +443,9 @@ describe('FileImportStep', () => {
         }
         return found;
       },
+      choiceOption: (label) =>
+        buttons().find((button) => button.textContent?.trim().startsWith(label)) ?? null,
+      choiceGroup: () => host.querySelector<HTMLElement>('[role="group"]'),
       alertText: () => host.querySelector('[role="alert"]')?.textContent?.trim() ?? null,
       focusableInOrder: () => Array.from(host.querySelectorAll('button, input, a[href]')),
       selectFile: async (selected) => {
@@ -385,12 +505,15 @@ describe('FileImportStep', () => {
       ]);
     });
 
+    // F10: a transfer-run file now ends at the switch; "Lücken schließen" is the restore it always
+    // was, with the same rows and target.
     it.each(['planned', 'finished'] as const)(
-      'reports a restore result carrying the removed target of a %s transfer-run file',
+      'reports a restore result carrying the removed target of a %s transfer-run file once "close the gaps" is picked',
       async (stage) => {
         const dialog = render();
 
         await dialog.selectFile(file(transferRunText(stage)));
+        dialog.choiceOption(CHOICE.restore)?.click();
 
         expect(closed).toEqual([
           {
@@ -440,6 +563,152 @@ describe('FileImportStep', () => {
 
       expect(closed).toHaveLength(1);
       expect(closed[0]?.kind).toBe('import');
+    });
+  });
+
+  describe('the switch for a transfer-run file (#254, spec 4.1 points 2–4, AK 1)', () => {
+    it.each(['planned', 'finished'] as const)(
+      'ends a %s transfer-run file at the switch, reporting nothing until a direction is picked',
+      async (stage) => {
+        const dialog = render();
+
+        await dialog.selectFile(file(transferRunText(stage)));
+
+        expect(closed).toEqual([]);
+        expect(dialog.choiceOption(CHOICE.restore)?.disabled).toBe(false);
+        expect(dialog.choiceOption(CHOICE.undo)?.disabled).toBe(false);
+        expect(resolveEditableSet).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([
+      ['planned', 'unproven'],
+      ['finished', 'confirmed'],
+    ] as const)(
+      'reports a transfer-undo result for a %s file once "undo the replacements" is picked — its candidates (%s), the resolved target and where the file came from',
+      async (stage, provenance) => {
+        const text = transferRunText(stage);
+        const expected = parseTransferRunForUndo(text);
+        if (!expected.ok) {
+          throw new Error('fixture must read as an undo');
+        }
+        const dialog = render();
+
+        await dialog.selectFile(file(text));
+        dialog.choiceOption(CHOICE.undo)?.click();
+
+        expect(closed).toEqual([
+          {
+            kind: 'transfer-undo',
+            candidates: expected.candidates,
+            target: expectedTarget(CURRENT_SET, {
+              channel: CURRENT_CHANNEL,
+              selected: CURRENT_SET,
+            }),
+            sourceFile: expected.sourceFile,
+          },
+        ]);
+        expect(expected.candidates.map((candidate) => candidate.provenance)).toEqual([provenance]);
+        expect(expected.sourceFile.stage).toBe(stage);
+      },
+    );
+
+    // AK 22: an untracked target goes through the switch exactly like a tracked one.
+    it('offers the switch for a file whose set belongs to an untracked account, and carries that target on', async () => {
+      const untracked = {
+        emoteSetId: 'set-stranger',
+        setName: 'Wegwerf-Set',
+        ownerDisplayName: 'Stranger',
+        twitchLogin: 'stranger',
+        trackedChannelName: null,
+        isActiveSet: false,
+      };
+      resolveEditableSet.mockReturnValue(of({ status: 'editable', target: untracked }));
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('finished')));
+      dialog.choiceOption(CHOICE.undo)?.click();
+
+      expect(closed).toHaveLength(1);
+      expect(closed[0]).toMatchObject({
+        kind: 'transfer-undo',
+        target: { ...untracked, hostChannelName: CURRENT_CHANNEL, hostSelectedSetId: CURRENT_SET },
+      });
+    });
+
+    // The two parsers read the same file for different things: a replace row without its alias
+    // still names a removed target, but no source to take back. The undo option says so instead of
+    // inheriting the restore reading's success.
+    it('keeps the undo option visible but disabled, with its reason, when the file reads as a restore but not as an undo', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunTextWithoutAlias()));
+
+      const undo = dialog.choiceOption(CHOICE.undo);
+      expect(undo?.disabled).toBe(true);
+      expect(undo?.textContent).toContain(DE_TRANSLATIONS.restore.import.choice.undo.unavailable);
+      undo?.click();
+      expect(closed).toEqual([]);
+
+      dialog.choiceOption(CHOICE.restore)?.click();
+      expect(closed).toEqual([
+        {
+          kind: 'restore',
+          rows: [TRANSFER_RESTORE_ROW],
+          target: expectedTarget(CURRENT_SET, { channel: CURRENT_CHANNEL, selected: CURRENT_SET }),
+        },
+      ]);
+    });
+
+    it('drops the switch when another file is picked', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('finished')));
+      expect(dialog.choiceGroup()).not.toBeNull();
+      await dialog.selectFile(file('not json{'));
+
+      expect(dialog.choiceGroup()).toBeNull();
+      expect(closed).toEqual([]);
+    });
+
+    it('offers no switch for a purge-run protocol — it reports its restore at once', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(purgeRunText()));
+
+      expect(dialog.choiceGroup()).toBeNull();
+      expect(closed.map((result) => result.kind)).toEqual(['restore']);
+    });
+
+    // Spec 4.1 point 2, E12: a transfer-undo file restores the source emotes its run removed, with
+    // no switch — there is no undo of an undo. Its own set is checked like every restore file's.
+    it.each(['planned', 'finished'] as const)(
+      'reads a %s transfer-undo file straight as a restore of the removed sources, after the pre-check and with no switch',
+      async (stage) => {
+        const dialog = render();
+
+        await dialog.selectFile(file(transferUndoText(stage, 'set-undo')));
+
+        expect(resolveEditableSet).toHaveBeenCalledWith('set-undo');
+        expect(dialog.choiceGroup()).toBeNull();
+        expect(closed).toEqual([
+          {
+            kind: 'restore',
+            rows: [TRANSFER_UNDO_RESTORE_ROW],
+            target: expectedTarget('set-undo', { channel: CURRENT_CHANNEL, selected: CURRENT_SET }),
+          },
+        ]);
+      },
+    );
+
+    it('reads a transfer-undo file on a page without a selected set too', async () => {
+      hostSelectedSetId = null;
+      const dialog = render();
+
+      await dialog.selectFile(file(transferUndoText('finished')));
+
+      expect(closed.map((result) => result.kind)).toEqual(['restore']);
+      expect(dialog.alertText()).toBeNull();
     });
   });
 
@@ -503,6 +772,8 @@ describe('FileImportStep', () => {
 
         expect(closed).toEqual([]);
         expect(dialog.alertText()).toBe(DE_TRANSLATIONS.restore.import.errors[key]);
+        // #254 AK 2: the banner stands where the switch would have — no switch after a block.
+        expect(dialog.choiceGroup()).toBeNull();
       },
     );
 
@@ -568,6 +839,7 @@ describe('FileImportStep', () => {
       const dialog = render();
 
       await dialog.selectFile(file(transferRunText('planned')));
+      dialog.choiceOption(CHOICE.restore)?.click();
 
       expect(closed).toEqual([
         {
@@ -671,6 +943,21 @@ describe('FileImportStep', () => {
       const picker = dialog.pickerButton();
       expect(picker.textContent?.trim()).toBe('Datei auswählen');
       expect(dialog.focusableInOrder()[0]).toBe(picker);
+    });
+
+    it('names the switch by its question and puts the caret on its first option', async () => {
+      const dialog = render();
+
+      await dialog.selectFile(file(transferRunText('finished')));
+      await dialog.fixture.whenStable();
+
+      const group = dialog.choiceGroup();
+      const legendId = group?.getAttribute('aria-labelledby');
+      expect(legendId).toBeTruthy();
+      expect(
+        (dialog.fixture.nativeElement as HTMLElement).querySelector(`#${legendId}`)?.textContent,
+      ).toContain(DE_TRANSLATIONS.restore.import.choice.legend);
+      expect(document.activeElement).toBe(dialog.choiceOption(CHOICE.restore));
     });
 
     it('renders the error banner with role="alert"', async () => {

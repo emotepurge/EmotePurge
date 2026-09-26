@@ -979,12 +979,25 @@
       "title": "Datei importieren",
       "sorts": {
         "purgeRun": "Purge-Protokoll (Wiederherstellen) als JSON",
-        "transferRun": "Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
+        "transferRun": "Übertragungsprotokoll — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen oder Ersetzungen rückgängig machen) als JSON",
         "transferUndo": "Rückweg-Protokoll einer Ersetzung — Rückweg-Datei oder Ergebnisprotokoll (Wiederherstellen) als JSON",
         "emoteList": "Emote-Liste (Kopieren) als JSON",
         "usageExport": "Nutzungs-Export (Kopieren) als JSON"
       },
       "fileLabel": "Datei auswählen",
+      "choice": {
+        "legend": "Was soll mit dieser Übertragungsdatei geschehen?",
+        "restore": {
+          "label": "Lücken schließen",
+          "hint": "Holt entfernte Ziel-Emotes zurück, wo ihr Name frei ist. Entfernt nichts."
+        },
+        "undo": {
+          "label": "Ersetzungen rückgängig machen",
+          "hint": "Entfernt die Quell-Emotes, die den Namen übernommen haben, und holt die Ziele zurück. Vorher kommt eine Bestätigung.",
+          "destructive": "entfernt Emotes",
+          "unavailable": "Diese Datei enthält keine Ersetzung, die sich rückgängig machen ließe."
+        }
+      },
       "errors": {
         "notJson": "Die Datei ist kein gültiges JSON.",
         "csvInsteadOfJson": "Das ist die CSV-Fassung. Der Import braucht dieselbe Datei als JSON — beim Export das Format JSON wählen.",

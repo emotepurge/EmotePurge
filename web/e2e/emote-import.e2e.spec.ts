@@ -189,6 +189,18 @@ async function openFileImportDialog(page: Page): Promise<Locator> {
 }
 
 /**
+ * A transfer-run file ends at the file step's switch (#254, spec 4.1 point 3) once its set passed the
+ * pre-check; "Lücken schließen" is the restore every transfer file went straight into before (F10).
+ * The option's name starts with its label — its hint follows in the same button.
+ */
+async function chooseCloseGaps(page: Page): Promise<void> {
+  const choice = page
+    .getByRole('dialog')
+    .getByRole('group', { name: 'Was soll mit dieser Übertragungsdatei geschehen?' });
+  await choice.getByRole('button', { name: /^Lücken schließen/ }).click();
+}
+
+/**
  * Waits past the still-open file-import dialog (plan §1.1, task-5 "Falle 1"): after
  * `setInputFiles`, that dialog stays open until `file.text()` resolves, only then closing and
  * handing off to the confirm dialog. A bare wait on `#app-dialog-title` resolves immediately
@@ -1493,7 +1505,7 @@ test.describe('import dialog: shell contract', () => {
     expect(previewRequests).toEqual(['set-active', 'set-alt']);
   });
 
-  test('lists the three acceptable file sorts before the file control', async ({ page }) => {
+  test('lists the acceptable file sorts before the file control', async ({ page }) => {
     await mockAuthMe(page, AUTH_USER);
     await mockWorkerHealth(page);
     await installLiveStub(page);
@@ -1512,9 +1524,12 @@ test.describe('import dialog: shell contract', () => {
     // (`:492-496`).
     const dialogText = await page.getByRole('dialog').innerText();
     const sortsIndex = dialogText.indexOf('Purge-Protokoll (Wiederherstellen) als JSON');
+    // #254: the transfer-undo file is the fifth sort, listed with the other restore sorts.
+    const undoSortIndex = dialogText.indexOf('Rückweg-Protokoll einer Ersetzung');
     const controlIndex = dialogText.indexOf('Datei auswählen');
     expect(sortsIndex).toBeGreaterThan(-1);
-    expect(controlIndex).toBeGreaterThan(sortsIndex);
+    expect(undoSortIndex).toBeGreaterThan(sortsIndex);
+    expect(controlIndex).toBeGreaterThan(undoSortIndex);
   });
 });
 
@@ -3895,6 +3910,8 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       mimeType: 'application/json',
       buffer: Buffer.from(finishedProtocolText, 'utf-8'),
     });
+    // #254 F10: a transfer file ends at the switch; closing the gaps is the restore this test is about.
+    await chooseCloseGaps(page);
 
     // #255: the confirmation's own open-time duplicate check (`loadRestoreConfirmPreview`) is a
     // third `setRead` here, past the two the transfer run above already spent — so it, too, lands
@@ -4240,6 +4257,8 @@ test.describe('restore per set: the file names the target (#253)', () => {
         targetOwnerDisplayName: 'Stranger',
       }),
     );
+    // #254 F10: the switch comes first; this test is about the restore.
+    await chooseCloseGaps(page);
 
     // The confirmation names what the TARGET LIST resolved (AK 35): set name, set id and owner; no
     // channel line and no "not active" line for an untracked target (spec 4.3 point 6); and the
@@ -4357,6 +4376,8 @@ test.describe('restore per set: the file names the target (#253)', () => {
         targetOwnerDisplayName: TARGET_CHANNEL,
       }),
     );
+    // #254 F10: the switch comes first; this test is about the restore.
+    await chooseCloseGaps(page);
 
     // A page with no selected set shows the foreign-to-view hint for any target (E21, AK 19).
     const confirm = page.getByRole('dialog');
