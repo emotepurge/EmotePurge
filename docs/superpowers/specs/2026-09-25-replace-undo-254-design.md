@@ -1727,3 +1727,19 @@ Abschnitt sagt, wo er nicht mehr stimmt.
     Lauf-Dienste-Chunk dadurch um rund 20 kB roh / 5 kB gzip. Codex meldete das als Bruch der
     Lazy-Grenze; Fable hat als Schiedsrichter entschieden, es so zu lassen — eine Isolierung nur für
     den Undo würde das #256-Muster für alle drei Dienste ändern.
+21. **Der Leave-Guard fragt nur, solange der Lauf läuft (Live-Verifikation T10, 9.5 Punkt 9).** Der
+    Guard (`web/src/app/features/usage-stats/usage-stats-leave.guard.ts:15-18, 27-35`) prüft
+    `isRunning()`, wie Plan Abschnitt 11/T7 es vorgibt. Während des Settelns schützt nur noch
+    `beforeunload` das Schließen des Tabs; ein Wechsel auf die Nutzungsseite eines anderen Kanals
+    ist bewusst ausgenommen (Guard-Kommentar). Spec 9.5 Punkt 9 erwartet dagegen eine
+    Rückfrage bei jedem Kanalwechsel während eines settelnden Laufs — das baut die Umsetzung nicht.
+22. **Die Arbiter-Notiz aus 9.5 Punkt 6d ist während des Settelns unerreichbar.** Jeder Einstieg auf
+    der Nutzungsseite ist dann `disabled` — der Import-Auslöser über `arbiter.activeRun()`, der
+    Kopf-Knopf „Übertragen", das Dock-„Löschen" —, sodass `sevenTvRun.notStarted.*` nie zur
+    Anzeige kommt (live geprüft, T10 Punkt 6d). Die Sperre selbst wirkt; nur die versprochene Notiz
+    bleibt aus, weil kein Klick sie mehr auslösen kann.
+23. **Eine durch Drift übersprungene Zeile zählt im Ergebnisprotokoll als `cancelled`, nicht als
+    `skipped` (Spec Zeile 947, `seven-tv-undo.service.ts:227-228`).** Sie läuft unter
+    `counts.cancelled`, mit `skippedReason` gesetzt. Das Dock zeigt sie als „übersprungen: seit der
+    Prüfung geändert" und zählt sie nicht unter „abgebrochen" — spec-konform, aber leicht zu
+    verwechseln, wenn man vom Protokoll auf das Dock schließt.
