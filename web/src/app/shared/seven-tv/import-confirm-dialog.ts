@@ -771,6 +771,7 @@ export class ImportConfirmDialog {
     noticeResetSource: this.preview,
     destroyRef: this.destroyRef,
     read: (target) => loadSevenTvSetEntries(this.data.httpClient, target.setId),
+    isComplete: (entries) => entries.complete,
     verify: verifyReplaceTargets,
     stamp: stampReplaceTargets,
     save: (file) => this.saveRecoveryFile(file),
