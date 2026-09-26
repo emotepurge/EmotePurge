@@ -160,8 +160,8 @@ mapping's own home is next to the protocol it builds.
 straight to the restore parser, no file-step weiche — that weiche belongs to `transfer-run` alone).
 
 Issue #254 (spec `docs/superpowers/specs/2026-09-25-replace-undo-254-design.md`, E2, E3, E12, F6, F7,
-F17, spec 17 K4): a replace's undo is a fourth destructive 7TV run — REMOVE the source's collision
-alias off the target, then re-ADD whatever entries that `replace` row took from the target — and a
+F17, spec 17 K4): a replace's undo is a fourth destructive 7TV run — REMOVE the source emote from the
+target set, then re-ADD whatever entries that `replace` row took from the target — and a
 transfer-run's `planned` file already carries the same mandatory-before-the-first-mutation shape a
 replace itself established (2026-09-23, "The safeguard is a file, not a typed confirmation"; the
 purge-run protocol is a different case — its own file is optional and only ever offered for download
@@ -189,6 +189,12 @@ straight into the `transfer-undo` file it eventually produces (`UndoCandidate.pr
 `TransferUndoExecutedRow.provenance`), so the paper trail keeps saying how proven a removal was, all
 the way through.
 
+**Review-Nachbesserung (2026-09-26): a confirmed REMOVE alone is not enough for `'confirmed'`.** A
+`finished` row is `provenance: 'confirmed'` only when its own `status` also settled `'done'` —
+`failed`, `unknown`, `cancelled` and a stamped `pending` all keep it `'unproven'` and behind the same
+origin lock as a `planned` row, because 7TV having taken the REMOVE says nothing about whether the
+rest of that row's own run (its ADD) ever finished; live state proves state, not the file's stage.
+
 **Does not revive #230's decision 6, the untracked-target replace lock** (already removed by "The
 replace lock for an untracked target falls, and a shared pre-check comes first", 2026-09-25): that
 lock existed only because a replace into an untracked target had no restore path back then. Since
@@ -201,7 +207,8 @@ that carried it would be a second, disconnected truth.
 **Skipped candidates get their own row kind, not a status.** `TransferUndoRow` is a `kind`-discriminated
 union: `'executed'` for anything the run actually queued (whatever it settled at — `done`, `failed`,
 `cancelled`, `unknown`, or skipped mid-run by its own freshness recheck), `'skipped'` for a candidate
-the run never turned into a row at all — deduplicated in the file step, dropped in the confirm
+the run never turned into a row at all — refused as `duplicateInFile` by the classification's own
+step 0 (`core/seven-tv/undo-plan.ts`) or by the service's own lock, dropped in the confirm
 dialog's classification, or refused by the service's own second origin check. A `'skipped'` row cannot
 carry `mode`/`restoredTarget`/`removedSource`/`status`/`completedSteps`: none of those were ever
 decided for it, and forcing the executed row's shape onto a candidate that was never classified would
@@ -210,11 +217,11 @@ counts only executed rows; `counts.skipped` is the skipped ones on top, never me
 number. The `planned` stage never carries a `'skipped'` row at all — a back-out file names only what
 its run is about to touch, same as `transfer-run`'s own `planned` stage never named an `add` row.
 
-**Read-only for now.** This entry covers only the file formats and their parsers (#254 T1) — nothing
-here writes a `transfer-undo` file yet, no dialog reads one, and `parseTransferRunForUndo`'s
-`UndoCandidate`s are not classified against a live set by anything on this branch yet. The
-classification, the run itself, the confirm dialog and the file-step dispatch are separate,
-later commits.
+**Consumed by the tasks that follow.** This entry covers the file formats and their parsers (#254
+T1) on their own; the classification against a live set (`undo-plan.ts`, the entry above), the run
+that writes both stages (`SevenTvUndoService`), the confirm dialog that shows a `planned` file's
+unproven rows and the file-step dispatch that routes an uploaded `transfer-undo` file to the restore
+parser are the later commits described in the two entries above.
 
 ---
 

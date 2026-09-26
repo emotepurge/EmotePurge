@@ -18,8 +18,8 @@ import { UndoCandidate, UndoSourceFileInfo } from './transfer-run-export';
 
 /**
  * The transfer-undo protocol (#254): the paper trail of undoing a `replace` — REMOVE the source
- * emote's collision alias back off the target, then re-ADD whatever entries that `replace` took from
- * the target. One envelope kind, two stages (`meta.stage`), same shape as `transfer-run` (#230):
+ * emote from the target set, then re-ADD whatever entries that `replace` took from the target. One
+ * envelope kind, two stages (`meta.stage`), same shape as `transfer-run` (#230):
  * `planned` is the back-out file, written from a *live* read of the target set right before the
  * undo's first `REMOVE`; `finished` is the result protocol, written after the run settles.
  *
@@ -124,9 +124,10 @@ export interface TransferUndoExecutedRow {
 }
 
 /**
- * A candidate the run never turned into an executed row at all — skipped in the file-step dedup
- * (`duplicateInFile`), the confirm dialog (`nothingToDo`, `sourceUnderOtherName`, `targetNameTaken`,
- * …), the pre-run freshness recheck (`skippedDrift`), or the service's own second origin check
+ * A candidate the run never turned into an executed row at all — refused as `duplicateInFile` by the
+ * classification's own step 0 or the service's own lock (`undo-plan.ts`, `seven-tv-undo.service.ts`),
+ * the confirm dialog (`nothingToDo`, `sourceUnderOtherName`, `targetNameTaken`, …), the pre-run
+ * freshness recheck (`skippedDrift`), or the service's own second origin check
  * (`skippedUnproven`) — spec 17 K4. Cannot carry `mode`/`restoredTarget`/`removedSource`/`status`/
  * `completedSteps`: none of those were ever decided for it. Never appears in the `planned` stage — a
  * back-out file names only what its run is actually about to touch (spec 6.4).
