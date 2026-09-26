@@ -986,7 +986,7 @@
       },
       "fileLabel": "Choose file",
       "choice": {
-        "legend": "What should this transfer file do?",
+        "legend": "What should happen with this transfer file?",
         "restore": {
           "label": "Close the gaps",
           "hint": "Brings removed target emotes back where their name is free. Removes nothing."
