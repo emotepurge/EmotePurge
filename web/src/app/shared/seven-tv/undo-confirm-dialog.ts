@@ -453,7 +453,7 @@ const SPRITE_PX = 40;
                 [checked]="acknowledged()"
                 (change)="acknowledged.set($any($event.target).checked)"
               />
-              {{ 'undo.confirm.acknowledgeUnproven' | transloco }}
+              {{ acknowledgeUnprovenKey | transloco }}
             </label>
             <span id="undo-confirm-acknowledge-hint" class="text-xs text-fg-muted">
               {{ acknowledgeHintKey() | transloco: { count: plan.unprovenFullCount } }}
@@ -511,6 +511,11 @@ export class UndoConfirmDialog {
   protected readonly spritePx = SPRITE_PX;
   protected readonly titleKey = pluralKey(this.data.candidates.length, 'undo.confirm.title');
   protected readonly fileLineKey = `undo.confirm.fileLine.${this.data.sourceFile.stage}`;
+  /** The origin-lock checkbox's own wording is not the same claim for both stages (spec §18): a
+   *  `planned` file was written before the transfer ran at all, but a `finished` file's unproven row
+   *  means the transfer *did* run and settled `failed`/`unknown`/`cancelled` — "written before the
+   *  transfer" would be false for it. */
+  protected readonly acknowledgeUnprovenKey = `undo.confirm.acknowledgeUnproven.${this.data.sourceFile.stage}`;
   protected readonly foreignToView =
     this.data.target.emoteSetId !== this.data.target.hostSelectedSetId;
 

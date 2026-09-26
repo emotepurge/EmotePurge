@@ -1504,7 +1504,10 @@
       "reading": "Reading the target set…",
       "readFailed": "The target set could not be read completely. Without a complete picture nothing is released.",
       "saveFailed": "The browser refused to download the recovery file. Without that file no run that removes anything starts.",
-      "acknowledgeUnproven": "The loaded file was written before the transfer and does not prove that the transfer ran. I have checked that the source emotes shown come from this transfer.",
+      "acknowledgeUnproven": {
+        "planned": "The loaded file was written before the transfer and does not prove that the transfer ran. I have checked that the source emotes shown come from this transfer.",
+        "finished": "According to the result log, the transfer did not complete for the marked rows, so the file does not prove that it put the source emotes shown into the set. I have checked that they come from this transfer."
+      },
       "acknowledgeHint": {
         "one": "Without the confirmation, the row marked as unproven is skipped.",
         "other": "Without the confirmation, the {{ count }} rows marked as unproven are skipped."

@@ -1504,7 +1504,10 @@
       "reading": "Das Zielset wird gelesen…",
       "readFailed": "Das Zielset ließ sich nicht vollständig lesen. Ohne vollständigen Stand wird nichts freigegeben.",
       "saveFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
-      "acknowledgeUnproven": "Die eingelesene Datei wurde vor der Übertragung geschrieben und belegt nicht, dass die Übertragung gelaufen ist. Ich habe geprüft, dass die gezeigten Quell-Emotes aus dieser Übertragung stammen.",
+      "acknowledgeUnproven": {
+        "planned": "Die eingelesene Datei wurde vor der Übertragung geschrieben und belegt nicht, dass die Übertragung gelaufen ist. Ich habe geprüft, dass die gezeigten Quell-Emotes aus dieser Übertragung stammen.",
+        "finished": "Laut Ergebnisprotokoll ist die Übertragung bei den markierten Zeilen nicht vollständig durchgelaufen; die Datei belegt also nicht, dass die gezeigten Quell-Emotes durch sie ins Set kamen. Ich habe geprüft, dass sie aus dieser Übertragung stammen."
+      },
       "acknowledgeHint": {
         "one": "Ohne Bestätigung wird die als unbelegt markierte Zeile übersprungen.",
         "other": "Ohne Bestätigung werden die {{ count }} als unbelegt markierten Zeilen übersprungen."

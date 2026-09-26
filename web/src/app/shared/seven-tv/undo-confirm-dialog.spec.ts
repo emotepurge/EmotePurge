@@ -708,6 +708,11 @@ describe('UndoConfirmDialog', () => {
       expect(dialog.checkbox()).not.toBeNull();
       expect(executor(dialog).disabled).toBe(true);
       expect(executor(dialog).getAttribute('aria-describedby')).toBe('undo-confirm-blocked');
+      // The checkbox's own wording must not claim the file "was written before the transfer" — for
+      // a finished file that ran and settled failed/unknown/cancelled, that claim would be false.
+      const label = dialog.checkbox()?.closest('label')?.textContent ?? '';
+      expect(label).toContain('Laut Ergebnisprotokoll ist die Übertragung');
+      expect(label).not.toContain('wurde vor der Übertragung geschrieben');
 
       click(dialog, executor(dialog));
       expect(closed).toEqual([]);
