@@ -68,9 +68,12 @@ export interface TransferUndoRemovedSource {
 /** A target entry a `full` row could not restore, or an `addOnly` row's entry it skipped — a name a
  *  third id holds (`targetNameTaken`) or a `null` entry whose file carries no `defaultName` to add it
  *  back under (`targetNameUnverifiable`). Orthogonal to `status` (E23): a row can be `partial` with
- *  omissions while every entry it *did* attempt succeeded. */
+ *  omissions while every entry it *did* attempt succeeded. `alias` is `null` exactly for a
+ *  `targetNameUnverifiable` entry: it is omitted *because* the file has no name for it (E21) — there
+ *  is nothing honest to invent, so `alias` stays `null` rather than a made-up placeholder. A
+ *  `targetNameTaken` entry always has a name (a third id cannot hold a name nobody wrote down). */
 export interface TransferUndoOmittedEntry {
-  alias: string;
+  alias: string | null;
   reason: 'targetNameTaken' | 'targetNameUnverifiable';
 }
 
@@ -154,12 +157,16 @@ export interface TransferUndoCountsPlanned {
 }
 
 export interface TransferUndoCountsFinished {
-  /** Rows that actually ran — never counts a {@link TransferUndoSkippedRow} (spec 17 K4). */
+  /** Rows that actually ran — never counts a {@link TransferUndoSkippedRow} (spec 17 K4).
+   *  `succeeded + failed + cancelled + unknown + partial` always sums to this. */
   requested: number;
   succeeded: number;
   failed: number;
   cancelled: number;
   unknown: number;
+  /** An otherwise-`done` `addOnly` row an omission kept from being complete (F19) — its own bucket,
+   *  disjoint from the four above, so the five sub-counters add up to `requested` exactly. */
+  partial: number;
   /** Confirmed REMOVEs (`removedSource.confirmed`). */
   removed: number;
   /** Confirmed ADDs, across every row. */
@@ -194,14 +201,13 @@ export type TransferUndoPlanRecord = ExportEnvelope<TransferUndoRow, TransferUnd
  *  (`buildTransferUndoProtocol`). */
 export type TransferUndoProtocol = ExportEnvelope<TransferUndoRow, TransferUndoMetaFinished>;
 
-/** One row a `buildTransferUndoPlanRecord`/`buildTransferUndoProtocol` caller hands in, shared by
- *  both a not-yet-run plan row and a settled run's row: the classified candidate, its mode, and the
- *  ADDs it asks for (or asked for). `adds`/`omittedEntries`/`notes` are exactly
- *  `UndoPlanRow`'s/`UndoRunItem`'s own fields of the same name (#254 T2/T4) — passed straight
- *  through, not re-derived here; this module only ever turns them into a file row. */
-interface TransferUndoRowInput {
+/** Fields a `buildTransferUndoPlanRecord`/`buildTransferUndoProtocol` caller hands in for *every*
+ *  row, regardless of mode: the classified candidate and the ADDs it asks for (or asked for).
+ *  `adds`/`omittedEntries`/`notes` are exactly `UndoPlanRow`'s/`UndoRunItem`'s own fields of the same
+ *  name (#254 T2/T4) — passed straight through, not re-derived here; this module only ever turns
+ *  them into a file row. */
+interface TransferUndoRowInputBase {
   candidate: UndoCandidate;
-  mode: 'full' | 'addOnly';
   /** The ADDs this row asks the target for — always a non-empty, non-null alias (E21); a `full` row
    *  with zero ADDs cannot happen (F11). */
   adds: { alias: string }[];
@@ -212,22 +218,39 @@ interface TransferUndoRowInput {
 }
 
 /** One runnable row for the `planned` stage — everything `buildTransferUndoPlanRecord` needs beyond
- *  the live read it restores `removedSource.entries` from. */
-export type TransferUndoRunnableInput = TransferUndoRowInput;
+ *  the live read it restores `removedSource.entries` from. Not discriminated on `mode` the way
+ *  {@link TransferUndoExecutedInput} is: the `planned` builder derives `removedSource.entries` itself
+ *  from the live read it is given, so there is no `sourceEntriesAtRemove` field here to make
+ *  conditionally required. */
+export type TransferUndoRunnableInput = TransferUndoRowInputBase & { mode: 'full' | 'addOnly' };
 
-/** One row of a settled run, for the `finished` stage. `completedSteps` drives both
- *  `removedSource.confirmed` (`>= 1`) and each ADD's own `entries[].added` — step 0 is the REMOVE on
- *  a `full` row (absent on `addOnly`), so ADD *i* (0-based) is confirmed once `completedSteps` passes
- *  it. `sourceEntriesAtRemove` is the *last* read this row's own pre-REMOVE recheck made (F13) —
- *  `null` for an `addOnly` row, which never rechecks or removes anything. */
-export interface TransferUndoExecutedInput extends TransferUndoRowInput {
+interface TransferUndoExecutedInputBase extends TransferUndoRowInputBase {
   status: RunItemStatus | 'partial';
   failedStep: number | null;
   completedSteps: number;
   errorMessage: string | null;
   skippedReason: string | null;
-  sourceEntriesAtRemove: { alias: string }[] | null;
 }
+
+/**
+ * One row of a settled run, for the `finished` stage. `completedSteps` drives both
+ * `removedSource.confirmed` (`>= 1`) and each ADD's own `entries[].added` — step 0 is the REMOVE on
+ * a `full` row (absent on `addOnly`), so ADD *i* (0-based) is confirmed once `completedSteps` passes
+ * it.
+ *
+ * Discriminated on `mode` (spec 6.4: `removedSource` is `null` only for `addOnly`) so a `full` row
+ * cannot be built without `sourceEntriesAtRemove` — the *last* read this row's own pre-REMOVE
+ * recheck made (F13) — even one whose REMOVE never confirmed: the recheck always reads *something*
+ * before attempting the mutation, so this is never `null` for a `full` row, and a caller that has
+ * nothing to put there has a bug, not an honest gap. An `addOnly` row never rechecks or removes
+ * anything, so its `sourceEntriesAtRemove` is always `null`, not merely optional.
+ */
+export type TransferUndoExecutedInput =
+  | (TransferUndoExecutedInputBase & {
+      mode: 'full';
+      sourceEntriesAtRemove: { alias: string }[];
+    })
+  | (TransferUndoExecutedInputBase & { mode: 'addOnly'; sourceEntriesAtRemove: null });
 
 /** One candidate the run never turned into a row — see {@link TransferUndoSkippedRow}. */
 export interface TransferUndoSkippedInput {
@@ -236,7 +259,7 @@ export interface TransferUndoSkippedInput {
 }
 
 function transferUndoExecutedRow(
-  input: TransferUndoRowInput,
+  input: TransferUndoRowInputBase & { mode: 'full' | 'addOnly' },
   removedSourceEntries: { alias: string }[] | null,
   completedSteps: number,
   status: RunItemStatus | 'partial',
@@ -253,9 +276,13 @@ function transferUndoExecutedRow(
     sourceSevenTvEmoteId: candidate.sourceSevenTvEmoteId,
     sourceName: candidate.sourceName,
     alias: candidate.alias,
+    // A `full` row always carries `removedSource` (spec 6.4: `null` is only ever valid for
+    // `addOnly`) — `removedSourceEntries ?? []` rather than falling through to `null` if a caller
+    // ever passed one, so a bug upstream shows up as an empty entries list, not a `full` row that
+    // silently looks like it never removed anything at all.
     removedSource:
-      mode === 'full' && removedSourceEntries !== null
-        ? { entries: removedSourceEntries, confirmed: completedSteps >= 1 }
+      mode === 'full'
+        ? { entries: removedSourceEntries ?? [], confirmed: completedSteps >= 1 }
         : null,
     restoredTarget: {
       sevenTvEmoteId: candidate.target.sevenTvEmoteId,
@@ -348,7 +375,9 @@ export function buildTransferUndoPlanRecord(input: {
  * `cancelled`, `unknown`, and a row the per-REMOVE recheck skipped mid-flight, all still
  * `kind: 'executed'`) alongside every candidate the run never turned into a row at all
  * (`kind: 'skipped'`, spec 17 K4). `counts.requested` counts only the executed rows; `counts.skipped`
- * is the skipped ones on top — the two are never conflated.
+ * is the skipped ones on top — the two are never conflated. `counts.succeeded` + `.failed` +
+ * `.cancelled` + `.unknown` + `.partial` always sums to `counts.requested`: every executed row's
+ * `status` lands in exactly one of those five buckets, never more than one.
  */
 export function buildTransferUndoProtocol(input: {
   targetEmoteSetId: string;
@@ -362,9 +391,11 @@ export function buildTransferUndoProtocol(input: {
   skipped: TransferUndoSkippedInput[];
 }): TransferUndoProtocol {
   const executedRows = input.executed.map((item) =>
+    // `item.mode === 'full'` narrows `item.sourceEntriesAtRemove` to the non-null branch of the
+    // TransferUndoExecutedInput union — an `addOnly` item's is always `null` by that same union.
     transferUndoExecutedRow(
       item,
-      item.sourceEntriesAtRemove,
+      item.mode === 'full' ? item.sourceEntriesAtRemove : null,
       item.completedSteps,
       item.status,
       item.failedStep,
@@ -399,6 +430,7 @@ export function buildTransferUndoProtocol(input: {
         failed: statuses.filter((status) => status === 'failed').length,
         cancelled: statuses.filter((status) => status === 'cancelled').length,
         unknown: statuses.filter((status) => status === 'unknown').length,
+        partial: statuses.filter((status) => status === 'partial').length,
         removed,
         added,
         skipped: skippedRows.length,
@@ -416,7 +448,9 @@ export function transferUndoJson(protocol: TransferUndoPlanRecord | TransferUndo
 /** CSV only exists for the `finished` stage, same reasoning as `transferRunCsv`: the `planned`
  *  back-out file is JSON-only. A `kind: 'skipped'` row leaves every column but `kind`, `source_name`,
  *  `alias`, `source_seven_tv_emote_id`, `target_seven_tv_emote_id` and `skipped_reason` empty — it
- *  never had a `mode`, a REMOVE or an ADD to report on. */
+ *  never had a `mode`, a REMOVE or an ADD to report on. `omitted_entries` is `alias:reason` pairs,
+ *  `|`-joined for a row with more than one — an entry with no name (`targetNameUnverifiable`, whose
+ *  `alias` is `null`) writes the alias half empty rather than inventing one, e.g. `:targetNameUnverifiable`. */
 export function transferUndoCsv(protocol: TransferUndoProtocol): string {
   const columns: CsvColumn<TransferUndoRow>[] = [
     { header: 'kind', value: (row) => row.kind },
@@ -459,9 +493,15 @@ export function transferUndoCsv(protocol: TransferUndoProtocol): string {
       value: (row) => (row.kind === 'executed' ? row.errorMessage : null),
     },
     {
-      header: 'skipped_reason',
-      value: (row) => (row.kind === 'executed' ? row.skippedReason : row.skippedReason),
+      header: 'omitted_entries',
+      value: (row) =>
+        row.kind === 'executed'
+          ? row.omittedEntries.map((entry) => `${entry.alias ?? ''}:${entry.reason}`).join('|')
+          : null,
     },
+    // Both row kinds carry `skippedReason` under the same name — no branch needed, unlike every
+    // other column above, which only the executed row shape has.
+    { header: 'skipped_reason', value: (row) => row.skippedReason },
   ];
   return toCsv(protocol.rows, columns);
 }
@@ -548,13 +588,14 @@ export function parseTransferUndoForRestore(text: string): TransferUndoRestorePa
 }
 
 /** The restore row for one untrusted `kind: 'executed'` file row, or `null` when it names no source
- *  to restore: a `kind: 'skipped'` row (nothing was removed), an `addOnly` row (`removedSource` is
- *  `null`), or — in the `finished` stage — a REMOVE 7TV never confirmed. */
+ *  to restore: a `kind: 'skipped'` row (nothing was removed), a row whose `mode` is not `full` (an
+ *  `addOnly` row never issues a REMOVE, whatever a manipulated `removedSource` next to it might
+ *  claim), or — in the `finished` stage — a REMOVE 7TV never confirmed. */
 function readUndoSourceRow(
   row: Record<string, unknown>,
   stage: TransferUndoMeta['stage'],
 ): RestoreRow | null {
-  if (row['kind'] !== 'executed') {
+  if (row['kind'] !== 'executed' || row['mode'] !== 'full') {
     return null;
   }
   const sourceSevenTvEmoteId = row['sourceSevenTvEmoteId'];

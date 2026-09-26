@@ -112,6 +112,29 @@ describe('buildTransferUndoPlanRecord', () => {
     });
   });
 
+  it('gives a full row an empty (not null) removedSource.entries when the live read knows nothing of the source — removedSource itself is still present', () => {
+    const rows: TransferUndoRunnableInput[] = [
+      {
+        candidate: candidate(),
+        mode: 'full',
+        adds: [{ alias: 'A' }],
+        omittedEntries: [],
+        notes: [],
+      },
+    ];
+    const record = buildTransferUndoPlanRecord({
+      ...TARGET,
+      sourceFile: sourceFile(),
+      verifiedAt: 0,
+      acknowledgedUnproven: false,
+      read: setEntries(),
+      rows,
+    });
+
+    const [row] = record.rows;
+    expect(row.kind === 'executed' && row.removedSource).toEqual({ entries: [], confirmed: false });
+  });
+
   it('gives an addOnly row removedSource null — nothing was ever removed for it', () => {
     const rows: TransferUndoRunnableInput[] = [
       {
@@ -217,22 +240,31 @@ describe('buildTransferUndoPlanRecord', () => {
   });
 });
 
+/** Builds a valid, correctly-discriminated `TransferUndoExecutedInput` — `mode` decides the shape of
+ *  `sourceEntriesAtRemove` (an explicit array for `full`, always `null` for `addOnly`) rather than
+ *  letting a caller's override drift out of sync with its own `mode`. */
 function executedInput(
   overrides: Partial<TransferUndoExecutedInput> = {},
 ): TransferUndoExecutedInput {
+  const mode = overrides.mode ?? 'full';
+  const common = {
+    candidate: overrides.candidate ?? candidate(),
+    adds: overrides.adds ?? [{ alias: 'A' }],
+    omittedEntries: overrides.omittedEntries ?? [],
+    notes: overrides.notes ?? [],
+    status: overrides.status ?? 'done',
+    failedStep: overrides.failedStep ?? null,
+    completedSteps: overrides.completedSteps ?? 2,
+    errorMessage: overrides.errorMessage ?? null,
+    skippedReason: overrides.skippedReason ?? null,
+  };
+  if (mode === 'addOnly') {
+    return { ...common, mode: 'addOnly', sourceEntriesAtRemove: null };
+  }
   return {
-    candidate: candidate(),
+    ...common,
     mode: 'full',
-    adds: [{ alias: 'A' }],
-    omittedEntries: [],
-    notes: [],
-    status: 'done',
-    failedStep: null,
-    completedSteps: 2,
-    errorMessage: null,
-    skippedReason: null,
-    sourceEntriesAtRemove: [{ alias: 'Kappa' }],
-    ...overrides,
+    sourceEntriesAtRemove: overrides.sourceEntriesAtRemove ?? [{ alias: 'Kappa' }],
   };
 }
 
@@ -272,12 +304,22 @@ describe('buildTransferUndoProtocol', () => {
     ]);
   });
 
-  it('gives a failed@0 row (REMOVE itself failed) an unconfirmed removal', () => {
+  it('gives a failed@0 row (REMOVE itself failed) an unconfirmed removal, but still a removedSource object', () => {
     const failed = protocol({
-      executed: [executedInput({ status: 'failed', failedStep: 0, completedSteps: 0 })],
+      executed: [
+        executedInput({
+          status: 'failed',
+          failedStep: 0,
+          completedSteps: 0,
+          sourceEntriesAtRemove: [{ alias: 'Kappa' }],
+        }),
+      ],
     });
     const [row] = failed.rows;
-    expect(row.kind === 'executed' && row.removedSource?.confirmed).toBe(false);
+    expect(row.kind === 'executed' && row.removedSource).toEqual({
+      entries: [{ alias: 'Kappa' }],
+      confirmed: false,
+    });
   });
 
   it('never sets removedSource for an addOnly row, however many of its ADDs completed', () => {
@@ -334,13 +376,16 @@ describe('buildTransferUndoProtocol', () => {
     ]);
   });
 
-  it('keeps omittedEntries and notes on an addOnly row untouched — orthogonal to status', () => {
+  it('keeps omittedEntries and notes on an addOnly row untouched — orthogonal to status, and a null alias for an unverifiable entry stays null', () => {
     const record = protocol({
       executed: [
         executedInput({
           mode: 'addOnly',
           adds: [{ alias: 'A' }],
-          omittedEntries: [{ alias: 'B', reason: 'targetNameTaken' }],
+          omittedEntries: [
+            { alias: 'B', reason: 'targetNameTaken' },
+            { alias: null, reason: 'targetNameUnverifiable' },
+          ],
           notes: ['targetHasForeignEntries'],
           status: 'partial',
           completedSteps: 1,
@@ -350,6 +395,7 @@ describe('buildTransferUndoProtocol', () => {
     const [row] = record.rows;
     expect(row.kind === 'executed' && row.omittedEntries).toEqual([
       { alias: 'B', reason: 'targetNameTaken' },
+      { alias: null, reason: 'targetNameUnverifiable' },
     ]);
     expect(row.kind === 'executed' && row.notes).toEqual(['targetHasForeignEntries']);
     expect(row.kind === 'executed' && row.status).toBe('partial');
@@ -366,6 +412,21 @@ describe('buildTransferUndoProtocol', () => {
       'failed',
       'unknown',
     ]);
+  });
+
+  it('never drops removedSource for a full row even if a caller manages to hand it null entries — defensive ?? []', () => {
+    // Bypasses the discriminated union on purpose: the type now makes this impossible to construct
+    // honestly, but the runtime fallback still guards a `full` row against silently looking like it
+    // never touched the source at all if some future caller manages to violate the type.
+    const bad = {
+      ...executedInput({ mode: 'full' }),
+      sourceEntriesAtRemove: null,
+    } as unknown as TransferUndoExecutedInput;
+
+    const record = protocol({ executed: [bad] });
+
+    const [row] = record.rows;
+    expect(row.kind === 'executed' && row.removedSource).toEqual({ entries: [], confirmed: true });
   });
 
   it.each([
@@ -397,7 +458,67 @@ describe('buildTransferUndoProtocol', () => {
     },
   );
 
-  it('counts requested/succeeded only over executed rows, and skipped candidates separately on top', () => {
+  it('counts a mixed run — done, failed, cancelled (mid-run skip) and its own removedSource.entries pinned to the last read, not the restored alias', () => {
+    const record = protocol({
+      executed: [
+        executedInput({ status: 'done', completedSteps: 2 }),
+        executedInput({
+          candidate: candidate({
+            sourceSevenTvEmoteId: 'src-pog',
+            sourceName: 'Pog',
+            alias: 'Pog',
+          }),
+          status: 'failed',
+          failedStep: 0,
+          completedSteps: 0,
+        }),
+        executedInput({
+          candidate: candidate({
+            sourceSevenTvEmoteId: 'src-lul',
+            sourceName: 'LUL',
+            alias: 'LUL',
+          }),
+          status: 'cancelled',
+          skippedReason: 'skippedDrift',
+          completedSteps: 0,
+          // The recheck's own last read before it gave up — deliberately *not* `[{ alias: row.alias }]`,
+          // so a builder bug that fabricates entries from the row's own alias instead of the real
+          // recheck read would show up here as a mismatch (F13).
+          sourceEntriesAtRemove: [{ alias: 'LUL' }, { alias: 'LulSecondAlias' }],
+        }),
+        executedInput({
+          candidate: candidate({
+            sourceSevenTvEmoteId: 'src-sadge',
+            sourceName: 'Sadge',
+            alias: 'Sadge',
+          }),
+          mode: 'addOnly',
+          adds: [{ alias: 'X' }],
+          status: 'unknown',
+          completedSteps: 0,
+        }),
+      ],
+    });
+
+    expect(record.meta.counts).toMatchObject({
+      requested: 4,
+      succeeded: 1,
+      failed: 1,
+      cancelled: 1,
+      unknown: 1,
+      partial: 0,
+    });
+    const cancelledRow = record.rows.find(
+      (row) => row.kind === 'executed' && row.sourceSevenTvEmoteId === 'src-lul',
+    );
+    expect(cancelledRow?.kind === 'executed' && cancelledRow.removedSource?.entries).toEqual([
+      { alias: 'LUL' },
+      { alias: 'LulSecondAlias' },
+    ]);
+    expect(cancelledRow?.kind === 'executed' && cancelledRow.skippedReason).toBe('skippedDrift');
+  });
+
+  it('counts requested/succeeded only over executed rows, and skipped candidates separately on top, with every sub-counter summing to requested', () => {
     const record = protocol({
       executed: [
         executedInput({ status: 'done', completedSteps: 2 }),
@@ -414,10 +535,13 @@ describe('buildTransferUndoProtocol', () => {
       failed: 1,
       cancelled: 0,
       unknown: 0,
+      partial: 0,
       removed: 1,
       added: 1,
       skipped: 1,
     });
+    const { succeeded, failed, cancelled, unknown, partial } = record.meta.counts;
+    expect(succeeded + failed + cancelled + unknown + partial).toBe(record.meta.counts.requested);
   });
 
   it('contains no token anywhere', () => {
@@ -434,9 +558,28 @@ describe('transferUndoCsv', () => {
 
     const lines = transferUndoCsv(record).replace(/^﻿/, '').trimEnd().split('\r\n');
     expect(lines[0]).toBe(
-      'kind,mode,source_name,alias,source_seven_tv_emote_id,removed_confirmed,target_seven_tv_emote_id,target_default_name,target_aliases,target_added,status,failed_step,error_message,skipped_reason',
+      'kind,mode,source_name,alias,source_seven_tv_emote_id,removed_confirmed,target_seven_tv_emote_id,target_default_name,target_aliases,target_added,status,failed_step,error_message,omitted_entries,skipped_reason',
     );
-    expect(lines[1]).toBe('executed,full,Kappa,Kappa,src-kappa,true,tgt-1,,A|B,true|true,done,,,');
+    expect(lines[1]).toBe('executed,full,Kappa,Kappa,src-kappa,true,tgt-1,,A|B,true|true,done,,,,');
+  });
+
+  it('writes an empty alias half for a null (targetNameUnverifiable) omitted entry, and joins several with |', () => {
+    const record = protocol({
+      executed: [
+        executedInput({
+          mode: 'addOnly',
+          omittedEntries: [
+            { alias: 'B', reason: 'targetNameTaken' },
+            { alias: null, reason: 'targetNameUnverifiable' },
+          ],
+          status: 'partial',
+        }),
+      ],
+    });
+
+    const lines = transferUndoCsv(record).replace(/^﻿/, '').trimEnd().split('\r\n');
+    const omittedCell = lines[1].split(',')[13];
+    expect(omittedCell).toBe('B:targetNameTaken|:targetNameUnverifiable');
   });
 
   it('leaves every executed-only column empty for a skipped row, keeping kind/source/target/reason', () => {
@@ -445,7 +588,7 @@ describe('transferUndoCsv', () => {
     });
 
     const lines = transferUndoCsv(record).replace(/^﻿/, '').trimEnd().split('\r\n');
-    expect(lines[1]).toBe('skipped,,Kappa,Kappa,src-kappa,,tgt-1,,,,,,,duplicateInFile');
+    expect(lines[1]).toBe('skipped,,Kappa,Kappa,src-kappa,,tgt-1,,,,,,,,duplicateInFile');
   });
 });
 
@@ -458,18 +601,12 @@ describe('transferUndoPlanFilename', () => {
 });
 
 describe('transferUndoFilename', () => {
-  it('names the finished-stage file with its own suffix and the requested extension, for a tracked channel', () => {
+  it('names the finished-stage file with its own suffix and the requested extension', () => {
     expect(transferUndoFilename('Zielkanal', '2026-09-25T10:05:12Z', 'json')).toBe(
       'emotepurge_zielkanal_transfer-undo_2026-09-25-1005.json',
     );
     expect(transferUndoFilename('Zielkanal', '2026-09-25T10:05:12Z', 'csv')).toBe(
       'emotepurge_zielkanal_transfer-undo_2026-09-25-1005.csv',
-    );
-  });
-
-  it('falls back to the set id for an untracked target', () => {
-    expect(transferUndoFilename('set-42', '2026-09-25T10:05:12Z', 'json')).toBe(
-      'emotepurge_set-42_transfer-undo_2026-09-25-1005.json',
     );
   });
 });
@@ -554,15 +691,99 @@ describe('parseTransferUndoForRestore', () => {
     expect(parsed.ok && parsed.rows.map((row) => row.sevenTvEmoteId)).toEqual(['src-kappa']);
   });
 
-  it('excludes a kind: skipped row in both stages — nothing was ever removed for it', () => {
-    const record = protocol({
-      executed: [executedInput({ completedSteps: 2, status: 'done' })],
-      skipped: [
-        { candidate: candidate({ sourceSevenTvEmoteId: 'src-pog' }), skippedReason: 'nothingToDo' },
-      ],
-    });
+  it.each(['planned', 'finished'] as const)(
+    'excludes a kind: skipped row in the %s stage even with a manipulated removedSource next to it — the kind check alone must decide',
+    (stage) => {
+      // Hand-built rather than through the builders: a real `kind: 'skipped'` row can never carry
+      // `removedSource` at all, so this is the only way to prove the parser's exclusion rests on the
+      // `kind` check itself and not merely on `removedSource` happening to be absent. Removing the
+      // `row['kind'] !== 'executed'` guard would let this row through and turn the test red.
+      const envelope = {
+        source: 'emotepurge',
+        kind: 'transfer-undo',
+        formatVersion: TRANSFER_UNDO_FORMAT_VERSION,
+        exportedAt: '2026-09-25T09:05:00Z',
+        channelName: 'zielkanal',
+        withheld: [],
+        meta: {
+          stage,
+          targetEmoteSetId: 'set-1',
+          targetChannelName: 'zielkanal',
+          targetOwnerDisplayName: null,
+          undoneFile: sourceFile(),
+          acknowledgedUnproven: false,
+          ...(stage === 'planned'
+            ? {
+                verifiedAt: '2026-09-25T09:00:00Z',
+                counts: { planned: 1, removals: 1, additions: 1 },
+              }
+            : {
+                startedAt: '2026-09-25T09:00:00Z',
+                finishedAt: '2026-09-25T09:05:00Z',
+                counts: {
+                  requested: 1,
+                  succeeded: 1,
+                  failed: 0,
+                  cancelled: 0,
+                  unknown: 0,
+                  partial: 0,
+                  removed: 1,
+                  added: 1,
+                  skipped: 1,
+                },
+              }),
+        },
+        rows: [
+          {
+            kind: 'executed',
+            mode: 'full',
+            sourceSevenTvEmoteId: 'src-kappa',
+            sourceName: 'Kappa',
+            alias: 'Kappa',
+            removedSource: { entries: [{ alias: 'Kappa' }], confirmed: true },
+            restoredTarget: { sevenTvEmoteId: 'tgt-1', defaultName: null, entries: [] },
+            provenance: 'confirmed',
+            omittedEntries: [],
+            notes: [],
+            status: 'done',
+            failedStep: null,
+            completedSteps: 2,
+            errorMessage: null,
+            skippedReason: null,
+          },
+          {
+            kind: 'skipped',
+            sourceSevenTvEmoteId: 'src-pog',
+            sourceName: 'Pog',
+            alias: 'Pog',
+            targetSevenTvEmoteId: 'tgt-2',
+            provenance: 'confirmed',
+            skippedReason: 'nothingToDo',
+            // Manipulated: a genuine skipped row never has this field. If the parser's exclusion
+            // only worked because `removedSource` was absent, this row would now sneak through.
+            removedSource: { confirmed: true },
+          },
+        ],
+      };
 
-    const parsed = parseTransferUndoForRestore(transferUndoJson(record));
+      const parsed = parseTransferUndoForRestore(JSON.stringify(envelope));
+
+      expect(parsed.ok && parsed.rows.map((row) => row.sevenTvEmoteId)).toEqual(['src-kappa']);
+    },
+  );
+
+  it('excludes a row whose mode is not full even if a manipulated removedSource claims it was confirmed', () => {
+    const good = protocol({ executed: [executedInput({ completedSteps: 2, status: 'done' })] });
+    const parsedGood = JSON.parse(transferUndoJson(good)) as { rows: Record<string, unknown>[] };
+    const addOnlyButClaimedRemoved = {
+      ...parsedGood.rows[0],
+      sourceSevenTvEmoteId: 'src-sneaky',
+      mode: 'addOnly',
+      removedSource: { entries: [{ alias: 'Sneaky' }], confirmed: true },
+    };
+    const tampered = { ...parsedGood, rows: [...parsedGood.rows, addOnlyButClaimedRemoved] };
+
+    const parsed = parseTransferUndoForRestore(JSON.stringify(tampered));
 
     expect(parsed.ok && parsed.rows.map((row) => row.sevenTvEmoteId)).toEqual(['src-kappa']);
   });
