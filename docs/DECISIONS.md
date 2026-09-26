@@ -29,19 +29,21 @@ straight to the restore parser, no file-step weiche — that weiche belongs to `
 
 Issue #254 (spec `docs/superpowers/specs/2026-09-25-replace-undo-254-design.md`, E2, E3, E12, F6, F7,
 F17, spec 17 K4): a replace's undo is a fourth destructive 7TV run — REMOVE the source's collision
-alias off the target, then re-ADD whatever entries that `replace` row took from the target — and
-every destructive run in this codebase already carries a recovery file written before its first
-mutation (the purge-run protocol, the transfer-run protocol). The principle behind both, stated
-plainly for the first time here because a third file kind is what makes it worth naming: **a recovery
-file restores what its own run removed, never what some other run removed.** A transfer-run's
-`planned` file already restores the *target* a replace is about to clear
-(`parseTransferRunForRestore`); it cannot also stand in for the *source* an undo removes later — same
-principle, opposite direction, so the undo gets its own file kind rather than overloading the
-transfer-run file with a second meaning. `transfer-undo` follows the same two-stage shape as
-`transfer-run` (`planned` before the first REMOVE, `finished` after the run settles) and versions its
-own row shape independently (`TRANSFER_UNDO_FORMAT_VERSION`), exactly like the purge-run and
-transfer-run protocols already do — a shared envelope version would tie three unrelated row shapes to
-one number.
+alias off the target, then re-ADD whatever entries that `replace` row took from the target — and a
+transfer-run's `planned` file already carries the same mandatory-before-the-first-mutation shape a
+replace itself established (2026-09-23, "The safeguard is a file, not a typed confirmation"; the
+purge-run protocol is a different case — its own file is optional and only ever offered for download
+*after* the run settles, `mass-delete-panel.ts`'s `openProtocolExport`, so it is not a second instance
+of the same rule). The principle stated plainly for the first time here because a second file kind
+that *is* mandatory up front is what makes it worth naming: **a recovery file restores what its own
+run removed, never what some other run removed.** A transfer-run's `planned` file already restores
+the *target* a replace is about to clear (`parseTransferRunForRestore`); it cannot also stand in for
+the *source* an undo removes later — same principle, opposite direction, so the undo gets its own file
+kind rather than overloading the transfer-run file with a second meaning. `transfer-undo` follows the
+same two-stage shape as `transfer-run` (`planned` before the first REMOVE, `finished` after the run
+settles) and versions its own row shape independently (`TRANSFER_UNDO_FORMAT_VERSION`), exactly like
+the purge-run and transfer-run protocols already do — a shared envelope version would tie three
+unrelated row shapes to one number.
 
 **Mirrors #230's "The safeguard is a file, not a typed confirmation" (2026-09-23).** The undo
 downloads its own `planned` recovery file from a live read before issuing a single REMOVE, and
