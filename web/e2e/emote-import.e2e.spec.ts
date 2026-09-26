@@ -4636,12 +4636,20 @@ test.describe('replace undo (#254)', () => {
    *  `failed`); or lose the answer (HTTP 503, `unknown`), having applied it or not. */
   type FakeAnswer = 'apply' | { reject: number } | { lost: 'applied' | 'notApplied' };
 
+  /** One call as the fake saw it, with the `Authorization` header it carried (`null` for none —
+   *  the set reads are tokenless). */
+  interface FakeGqlCall extends GqlCall {
+    authorization: string | null;
+  }
+
   interface FakeSevenTv {
     /** Every call to 7TV's GQL endpoint, in the order it arrived. */
-    calls: GqlCall[];
+    calls: FakeGqlCall[];
     entriesOf(id: string): (string | null)[];
     /** Edits the set directly — what a hand edit in 7TV's web UI (or a stub between two steps) does. */
     add(id: string, alias: string | null): void;
+    /** Takes one entry off an id, the id's other entries staying — a hand edit in 7TV's web UI. */
+    removeEntry(id: string, alias: string | null): void;
   }
 
   interface FakeSevenTvOptions {
@@ -4655,15 +4663,14 @@ test.describe('replace undo (#254)', () => {
     afterApply?: (call: GqlCall, fake: FakeSevenTv) => void;
     /** Whether the `readIndex`-th set read (zero-based) fails at the GraphQL level. */
     readFails?: (readIndex: number) => boolean;
-    /** Stores an ADD whose alias is the emote's default name as an aliasless entry — how an entry
-     *  added under its own default name can come back from 7TV (F18). */
-    foldDefaultNameAlias?: boolean;
   }
 
   /**
    * An in-test 7TV set behind `https://7tv.io/v4/gql` (see the describe block's doc). A REMOVE takes
-   * every entry of the id (F2), an ADD adds one entry; a read answers the set as it stands at that
-   * moment, in insertion order.
+   * every entry of the id (F2), an ADD adds one named entry under the alias it sends — 7TV no longer
+   * creates aliasless entries, those are legacy (F5) — and an ADD whose name another id already
+   * holds is refused with 409, as 7TV does, without a script. A read answers the set as it stands at
+   * that moment, in insertion order.
    */
   async function fakeSevenTvSet(
     page: Page,
@@ -4679,12 +4686,20 @@ test.describe('replace undo (#254)', () => {
       ),
       ...Object.entries(options.defaultNames ?? {}),
     ]);
-    const calls: GqlCall[] = [];
+    const calls: FakeGqlCall[] = [];
     const fake: FakeSevenTv = {
       calls,
       entriesOf: (id) => [...(state.get(id) ?? [])],
       add: (id, alias) => {
         state.set(id, [...(state.get(id) ?? []), alias]);
+      },
+      removeEntry: (id, alias) => {
+        const rest = (state.get(id) ?? []).filter((entry) => entry !== alias);
+        if (rest.length === 0) {
+          state.delete(id);
+        } else {
+          state.set(id, rest);
+        }
       },
     };
     const apply = (call: GqlCall): void => {
@@ -4692,10 +4707,22 @@ test.describe('replace undo (#254)', () => {
       if (call.kind === 'removeEmote') {
         state.delete(id);
       } else {
-        const alias = call.variables['alias'] as string | null;
-        fake.add(id, options.foldDefaultNameAlias && alias === defaultNames.get(id) ? null : alias);
+        fake.add(id, call.variables['alias'] as string | null);
       }
       options.afterApply?.(call, fake);
+    };
+
+    /** 7TV's own refusal: an ADD under a name a different id already holds. */
+    const nameConflict = (call: GqlCall): FakeAnswer | undefined => {
+      if (call.kind !== 'addEmote') {
+        return undefined;
+      }
+      const id = String(call.variables['emoteId']);
+      const alias = call.variables['alias'];
+      const taken = [...state].some(
+        ([holder, aliases]) => holder !== id && aliases.includes(alias as string),
+      );
+      return taken ? { reject: 409 } : undefined;
     };
 
     if (options.seedToken ?? true) {
@@ -4706,7 +4733,11 @@ test.describe('replace undo (#254)', () => {
     let readIndex = 0;
     await page.route('https://7tv.io/v4/gql', async (route) => {
       const body = route.request().postDataJSON() as SevenTvGqlRequest;
-      const call: GqlCall = { kind: sevenTvGqlRequestKind(body), variables: body.variables };
+      const call: FakeGqlCall = {
+        kind: sevenTvGqlRequestKind(body),
+        variables: body.variables,
+        authorization: route.request().headers()['authorization'] ?? null,
+      };
       calls.push(call);
       if (call.kind === 'setRead') {
         const failed = options.readFails?.(readIndex) ?? false;
@@ -4727,7 +4758,7 @@ test.describe('replace undo (#254)', () => {
         await route.fulfill({ json: { errors: [{ message: 'unexpected request' }] } });
         return;
       }
-      const answer = options.answer?.(call) ?? 'apply';
+      const answer = options.answer?.(call) ?? nameConflict(call) ?? 'apply';
       if (answer === 'apply') {
         apply(call);
         const id = call.variables['emoteId'];
@@ -4923,14 +4954,22 @@ test.describe('replace undo (#254)', () => {
    * deadlines, and the clock is never paused (real time keeps running as well).
    */
   async function runClockUntilVisible(page: Page, locator: Locator): Promise<void> {
+    await runClockUntil(page, () => locator.isVisible());
+  }
+
+  /** {@link runClockUntilVisible} for any condition. */
+  async function runClockUntil(
+    page: Page,
+    condition: () => boolean | Promise<boolean>,
+  ): Promise<void> {
     await expect
       .poll(
         async () => {
-          if (await locator.isVisible()) {
+          if (await condition()) {
             return true;
           }
           await page.clock.runFor(250);
-          return locator.isVisible();
+          return condition();
         },
         { timeout: 20_000 },
       )
@@ -4944,13 +4983,12 @@ test.describe('replace undo (#254)', () => {
   const dockCloseButton = (page: Page) => undoDock(page).getByRole('button', { name: 'Schließen' });
 
   /** A whole undo from `file` for a case whose subject is what comes after it: switch,
-   *  confirmation, the recovery file where one is required, start. */
+   *  confirmation, the recovery file, start. Only for a plan with a `full` row — the recovery file
+   *  is required there (AK 6), so its absence fails here instead of being stepped around. */
   async function runUndo(page: Page, file: FilePayload): Promise<void> {
     await chooseUndoFromFile(page, file);
     const confirm = await waitForUndoConfirm(page);
-    if ((await confirm.getByRole('button', { name: 'Rückweg sichern' }).count()) > 0) {
-      await saveRecoveryFile(page, confirm);
-    }
+    await saveRecoveryFile(page, confirm);
     await confirm.getByRole('button', { name: 'Starten' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
   }
@@ -4993,6 +5031,11 @@ test.describe('replace undo (#254)', () => {
       },
       syncRestored: { channels: [{ channelName: SOURCE_CHANNEL }] },
     });
+    // Held back until the test lets it answer: the restore report must wait for it (AK 12).
+    const releaseSyncDeleted = await deferRoute(
+      page,
+      `**/api/seventv/emote-sets/${UNDO_SET_ID}/sync-deleted`,
+    );
     // No token yet: the flow asks for it before its first read (E13).
     const fake = await fakeSevenTvSet(page, AFTER_TWO_REPLACES, { seedToken: false });
     await page.clock.install();
@@ -5007,7 +5050,7 @@ test.describe('replace undo (#254)', () => {
     const prompt = page.getByRole('dialog');
     await expect(prompt.locator('#app-dialog-title')).toHaveText('7TV-Token hinterlegen');
     expect(fake.calls).toEqual([]);
-    await prompt.getByLabel('7TV-Token einfügen').fill('e2e-fake-write-token');
+    await prompt.getByLabel('7TV-Token einfügen').fill('e2e-typed-write-token');
     await prompt.getByRole('button', { name: 'Speichern' }).click();
 
     const confirm = await waitForUndoConfirm(page);
@@ -5066,6 +5109,14 @@ test.describe('replace undo (#254)', () => {
 
     await confirm.getByRole('button', { name: 'Starten' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    // AK 12: the removal report goes out first, and the restore report waits for its answer — not
+    // merely for its request. Real time only while it is held: no clock step can time it out.
+    await runClockUntil(page, () => reports.reportOrder.length > 0);
+    expect(reports.reportOrder).toEqual(['sync-deleted']);
+    await page.waitForTimeout(750);
+    expect(reports.reportOrder).toEqual(['sync-deleted']);
+    releaseSyncDeleted();
     await runClockUntilVisible(page, restoreReported(page));
 
     // AK 9, 38, 40: the flow's first read, the freshness check, then per row a read right before
@@ -5087,8 +5138,14 @@ test.describe('replace undo (#254)', () => {
       const setId = call.kind === 'setRead' ? call.variables['id'] : call.variables['setId'];
       expect(setId).toBe(UNDO_SET_ID);
     }
+    // The writes carry the token typed into the prompt; the reads are tokenless.
+    for (const call of fake.calls) {
+      expect(call.authorization, trace([call])[0]).toBe(
+        call.kind === 'setRead' ? null : 'Bearer e2e-typed-write-token',
+      );
+    }
 
-    // AK 12: removal first, then restore, both set-centric with the tracked channel expected.
+    // Both set-centric, the tracked channel expected.
     expect(reports.reportOrder).toEqual(['sync-deleted', 'sync-restored']);
     expect(reports.syncDeleted).toEqual([
       { sevenTvEmoteIds: ['src-catjam', 'src-kekw'], expectedChannelName: SOURCE_CHANNEL },
@@ -5553,13 +5610,12 @@ test.describe('replace undo (#254)', () => {
     expectUndoRequestInvariants(fake.calls);
   });
 
-  test('a target entry restored under its default name and read back without an alias counts as present: the second run has nothing to do (AK 35, 40)', async ({
+  test('a target entry restored under its default name counts as present on the next run: nothing to do, and with another entry missing only that one comes back (AK 35, 40)', async ({
     page,
   }) => {
     await undoWorkspace(page);
     const fake = await fakeSevenTvSet(page, [{ id: 'src-pepe', aliases: ['Pepe'] }], {
       defaultNames: { 'tgt-pepe': 'PepeLaugh' },
-      foldDefaultNameAlias: true,
     });
     await page.clock.install();
     await gotoUsageStats(page, SOURCE_CHANNEL);
@@ -5583,16 +5639,68 @@ test.describe('replace undo (#254)', () => {
       'add tgt-pepe Pepe',
       'add tgt-pepe PepeLaugh',
     ]);
-    // 7TV keeps the default-name entry without an alias (F18) — not the file's own name.
-    expect(fake.entriesOf('tgt-pepe')).toEqual(['Pepe', null]);
+    // The file's aliasless entry comes back as a named entry under its default name `D` (F18):
+    // 7TV stores the alias it is sent.
+    expect(fake.entriesOf('tgt-pepe')).toEqual(['Pepe', 'PepeLaugh']);
 
     const firstRun = fake.calls.length;
     await chooseUndoFromFile(page, file);
-    // Not `targetHasForeignEntries`: the aliasless entry is the file's own `null` entry.
+    // `PepeLaugh` is the file's own `null` entry under `D` — present, not a foreign entry.
     await expect(undoDock(page).getByText('1 übersprungen: nichts zu tun')).toBeVisible();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     expect(trace(fake.calls.slice(firstRun))).toEqual(['read']);
+
+    // "Nothing to do" alone would also follow if `D` were taken for someone else's name (every
+    // missing entry omitted, Festlegung Nr. 7). A hand edit takes `Pepe` off the target: now the
+    // dialog shows `D` as already present, and only `Pepe` comes back — no omission, no foreign note.
+    fake.removeEntry('tgt-pepe', 'Pepe');
+    await chooseUndoFromFile(page, file);
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Nur Ziel zurück');
+    await expect(row.getByText('Kommt zurück als: Pepe', { exact: true })).toBeVisible();
+    await expect(confirm.getByText('1 Ziel-Eintrag aus der Datei ist schon im Set.')).toBeVisible();
+    await expect(row).not.toContainText('bleibt aus');
+    await expect(row).not.toContainText('den die Datei nicht kennt');
     expectUndoRequestInvariants(fake.calls);
+  });
+
+  test('a legacy aliasless entry on the target stands for the file’s own unnamed entry: present, not foreign (F5, AK 4)', async ({
+    page,
+  }) => {
+    await undoWorkspace(page);
+    // The source is gone; the target holds only an old aliasless entry, as 7TV no longer writes them.
+    const fake = await fakeSevenTvSet(page, [
+      { id: 'tgt-kappa', aliases: [null], defaultName: 'KappaPride' },
+    ]);
+    await page.clock.install();
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await chooseUndoFromFile(
+      page,
+      transferRunFile('finished', [
+        {
+          sourceId: 'src-kappa',
+          alias: 'Kappa',
+          targetId: 'tgt-kappa',
+          targetEntries: ['Kappa', null],
+          targetDefaultName: 'KappaPride',
+        },
+      ]),
+    );
+    const confirm = await waitForUndoConfirm(page);
+    const row = confirm
+      .getByRole('list', { name: 'Ersetzungen aus der Datei' })
+      .getByRole('listitem');
+    await expect(row).toContainText('Nur Ziel zurück');
+    await expect(row.getByText('Kommt zurück als: Kappa', { exact: true })).toBeVisible();
+    await expect(confirm.getByText('1 Ziel-Eintrag aus der Datei ist schon im Set.')).toBeVisible();
+    await expect(row).not.toContainText('den die Datei nicht kennt');
+    await confirm.getByRole('button', { name: 'Abbrechen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(trace(fake.calls)).toEqual(['read']);
   });
 
   test('an ADD-only row with an omitted entry whose one ADD is lost and cannot be re-read ends unknown, not partial (AK 37)', async ({
