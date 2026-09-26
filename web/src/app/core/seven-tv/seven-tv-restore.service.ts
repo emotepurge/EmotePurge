@@ -1,17 +1,20 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { inject, Injectable, signal } from '@angular/core';
+import { Injectable, inject, linkedSignal, signal, WritableSignal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { retry, throwError, timer } from 'rxjs';
+import { map, retry, throwError, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import {
   DeleteQueueEmote,
   MAX_AUTOMATIC_SYNC_RETRIES,
   SYNC_RETRY_DELAY_MS,
+  timeoutReportAttempt,
 } from './seven-tv-delete.service';
 import { SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { RunOperation, RunQueueEmote, RunResult, SevenTvRunEngine } from './seven-tv-run-engine';
+import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
+import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportOutcome,
@@ -19,6 +22,7 @@ import {
   SyncReportState,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  isChannelMismatch,
 } from './sync-report-outcome';
 
 /** Same shape as the delete's REMOVE, with `addEmote` and the alias to restore under. `alias`
@@ -73,10 +77,11 @@ const DUPLICATE_NOTICE_MS = 4000;
 
 /** Outcome of the closing resync trigger. 'cooldown' is not a failure: the per-channel cooldown
  *  (429) means a sync just ran or is about to — the periodic worker heals the view within its
- *  60s tick either way. `'backendTriggered'` (restore only, spec 6.4/E12/F15) means the report's
- *  own answer named the channel in `resyncTriggered`: the backend already started the resync, so
- *  no request of ours went out — the dock says "being re-synced" all the same. The import never
- *  takes this value; its resync skips such a channel and stays `'idle'`. */
+ *  60s tick either way. `'backendTriggered'` (restore only, active set only since #255, spec
+ *  6.4/F15) means the report's own answer named the channel in `resyncTriggered`: the backend
+ *  already started the resync, so no request of ours went out — the dock says "being re-synced"
+ *  all the same. The import never takes this value; its resync skips such a channel and stays
+ *  `'idle'`. */
 export type ResyncTriggerState =
   'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed' | 'backendTriggered';
 
@@ -88,9 +93,12 @@ export type ResyncTriggerState =
  * - `setId` — the 7TV set every `ADD`, the report and every retry name.
  * - `expectedChannelName` — the tracked channel the report expects to touch: the target account's
  *   tracked channel when the target is its *active* set, otherwise `null` (E18).
- * - `resyncChannelName` — the tracked channel whose resync the client itself may trigger: set only
- *   for a *non-active* set of a tracked channel, otherwise `null` (E12). No backend resync covers
- *   that case, and it is what reloads the non-active set's member list (spec #200, 8.3).
+ * - `resyncChannelName` — the tracked channel of a *non-active* set, otherwise `null`; display only
+ *   since the operator decision 2026-09-25 (#255) — `RestoreProgressSection`'s target line reads it
+ *   to name the channel, but `resyncAfterReport` no longer does. Before #255 this also named the
+ *   one case no backend resync covered and triggered the client's own resync for it (former E12) —
+ *   dropped because that resync only ever reloaded the channel's *active* set view, never the
+ *   non-active set the run actually wrote to (design doc §18 addendum, 2026-09-25).
  * - `hostChannelName` — the channel of the page the run was started on; only
  *   `resetIfChannelChanged` compares against it (F7).
  * - `setName`, `ownerOrChannelLabel` — display only, never compared (the dock's target line, 4.4
@@ -106,20 +114,22 @@ export interface RestoreStartTarget {
 }
 
 /**
- * One restore run, from the moment it starts to the moment both closing calls are done (spec E13).
- * Everything the two asynchronous follow-ups need hangs off *this* object, never off a field next
- * to the service (R15, #72, T12) — see the identical note on `DeleteRunInfo` in
- * `seven-tv-delete.service.ts` and on `ImportRunInfo` in `seven-tv-import.service.ts`. A restore has
- * *two* callbacks racing a superseded run (`sync-restored` and `resync`), each checked
- * independently: one settling first must not stop the other's guard from applying.
+ * One restore run, from the moment it starts to the moment its closing report reaches an end state
+ * (#256, `SevenTvRunLifecycle`): `running → reporting → closed` on its own record — a restore never
+ * re-reads, so it never sees `settling`. `runId` is the identity a late answer or a manual retry
+ * finds it by; the record is replaced by a new object on every change, never mutated (see the
+ * identical note on `DeleteRunInfo` in `seven-tv-delete.service.ts` and on `ImportRunInfo` in
+ * `seven-tv-import.service.ts`). `destructive` is always `false`: a restore only ever `ADD`s, so it
+ * never arms the tab's unload guard (Plan-256 Festlegung 6).
  */
-export interface RestoreRunInfo {
+export interface RestoreRunInfo extends RunRecordBase {
   /** The set the run re-adds into, frozen when it starts (spec #200, 7.2, AK 71) — the report and
    *  every retry name this set. */
   targetSetId: string;
   /** See `RestoreStartTarget.expectedChannelName` — sent with every report and retry. */
   expectedChannelName: string | null;
-  /** See `RestoreStartTarget.resyncChannelName`. */
+  /** See `RestoreStartTarget.resyncChannelName` — display only since #255, read by
+   *  `RestoreProgressSection`'s target line, never by `resyncAfterReport`. */
   resyncChannelName: string | null;
   /** See `RestoreStartTarget.hostChannelName`. */
   hostChannelName: string;
@@ -129,6 +139,14 @@ export interface RestoreRunInfo {
   ownerOrChannelLabel: string;
   /** `null` while the run is in flight; set once the engine reports the run complete. */
   result: RunResult | null;
+  /** This run's `sync-restored` report — `SevenTvRestoreService.syncReport` projects it for the
+   *  shown run. */
+  syncReport: SyncReportState;
+  /** Projected by `syncReportReason`. */
+  syncReportReason: SyncReportReason | null;
+  /** Projected by `resyncTrigger`. Not a report (#256, Plan-256 Festlegung 4): never holds the run
+   *  open. */
+  resyncTrigger: ResyncTriggerState;
 }
 
 /**
@@ -140,11 +158,20 @@ export interface RestoreRunInfo {
  * bookkeeping call that un-archives the rows of every tracked channel whose active set this is
  * and — the reason it exists at all — writes the `emotes.syncRestored` audit entry, for any
  * target, tracked or not. The backend resyncs every channel it touched (E17) and says so in
- * `resyncTriggered`; this service only follows up with its own resync for a non-active set of a
- * tracked channel (E12), and only once the report has answered, so a channel is never resynced
- * twice for one report (F15, AK 27). A first report that fails for good gets a resync of
- * `resyncChannelName ?? expectedChannelName` instead, since the backend never reached its own
- * (addendum N1, AK 36).
+ * `resyncTriggered`; a **successful** report never makes this service trigger a resync of its own —
+ * for the target's active set the backend's own coverage (E17) is unconditional, so only the dock's
+ * `'backendTriggered'` display depends on whether the answer happens to name it, and a non-active
+ * tracked target gets no client resync at all any more (operator decision 2026-09-25, #255, same as
+ * the import, `seven-tv-import.service.ts:657-671`). Only the **first** report of a run that fails
+ * for good, and only for the active set, makes the client stand in with its own resync of
+ * `expectedChannelName`, since the backend never reached its own resync stage then (addendum N1,
+ * AK 36); the cooldown (F15) absorbs a duplicate against a resync the backend or an earlier run
+ * already triggered.
+ *
+ * Every run completes run-bound (#256, `SevenTvRunLifecycle`): `running → reporting → closed` on
+ * its own record, whether or not the dock still shows it. `reset()` and a newer run only change
+ * what is shown. `isSettling` and `destructiveOpen` look across every open run of this service —
+ * `destructiveOpen` is always `false` here, since a restore never removes anything.
  */
 @Injectable({ providedIn: 'root' })
 export class SevenTvRestoreService {
@@ -158,26 +185,46 @@ export class SevenTvRestoreService {
     inject(TranslocoService),
   );
 
-  /** The run every asynchronous follow-up is bound to (R15). */
-  private readonly runState = signal<RestoreRunInfo | null>(null);
+  /** Every open run of this service, by id, plus the one the dock shows (#256). */
+  private readonly lifecycle = new SevenTvRunLifecycle<RestoreRunInfo>(
+    'restore',
+    (run) => run.syncReport === 'pending',
+  );
 
-  /** The run this service is showing — in flight (`result === null`) or finished. Read-only view,
-   *  for the dock's target line (`setName`, `ownerOrChannelLabel`). */
-  readonly run = this.runState.asReadonly();
+  /** The run this service is showing — in flight (`result === null`) or finished. Its record is
+   *  replaced by a new object on every change; `runId` is its identity. Writable because specs
+   *  drive the dock through it; production code only writes through the lifecycle. */
+  readonly run: WritableSignal<RestoreRunInfo | null> = this.lifecycle.shown;
 
   readonly queue = this.engine.queue;
   readonly isRunning = this.engine.isRunning;
   readonly rateLimitPauseSeconds = this.engine.rateLimitPauseSeconds;
   readonly progress = this.engine.progress;
 
-  /** State of the closing sync-restored call — same contract as the delete's syncReport. */
-  readonly syncReport = signal<SyncReportState>('idle');
+  /** True while any run of this service reports — shown or not (#256, contract P1). A restore never
+   *  re-reads, so this is exactly "reporting", never "settling". */
+  readonly isSettling = this.lifecycle.isSettling;
+
+  /** Always `false`: no restore row is destructive (#256, contract P3; Plan-256 Festlegung 6). Kept
+   *  as a real projection of the lifecycle, not a literal, so the contract holds even if that ever
+   *  changes. */
+  readonly destructiveOpen = this.lifecycle.destructiveOpen;
+
+  /** State of the shown run's closing sync-restored call — same contract as the delete's
+   *  syncReport. `linkedSignal` projection of the shown record (#256, Plan-256 Festlegung 14):
+   *  writable so specs can drive a dock directly; production code never writes it, only the
+   *  record. */
+  readonly syncReport = linkedSignal<SyncReportState>(() => this.run()?.syncReport ?? 'idle');
 
   /** Why `syncReport` is `'failed'`/`'partial'` (spec E23), `null` otherwise — the dock shows it as
-   *  its own line under the report notice. */
-  readonly syncReportReason = signal<SyncReportReason | null>(null);
+   *  its own line under the report notice. Projection, like `syncReport`. */
+  readonly syncReportReason = linkedSignal<SyncReportReason | null>(
+    () => this.run()?.syncReportReason ?? null,
+  );
 
-  readonly resyncTrigger = signal<ResyncTriggerState>('idle');
+  readonly resyncTrigger = linkedSignal<ResyncTriggerState>(
+    () => this.run()?.resyncTrigger ?? 'idle',
+  );
 
   /** How many `ADD`s — one per alias of a protocol row, counted per alias since the 2026-09-22
    *  "middle rule" (`filterAlreadyPresentForRestore`) — the caller's pre-run duplicate check
@@ -215,7 +262,35 @@ export class SevenTvRestoreService {
    *  *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
 
+  /** Whether a restore's shared open-time pre-check chain (`resolveEditableSet`, then the open-time
+   *  duplicate check) is out right now, from *either* of the two entry points a restore can start
+   *  from — `ImportTrigger`'s restore-file door (`startRestoreFlow`, `restore-flow.ts`) or
+   *  `MassDeletePanel`'s restore button (`openRestoreConfirm`). Root-level and shared on purpose
+   *  (#255 P2, Codex review): the two entries used to keep separate, component-local pending flags,
+   *  which guarded each button against a second click on *itself* but left the other entry's button
+   *  fully enabled while the first's read was still out — both mount together on the usage-stats
+   *  page (`usage-stats-page.html`), so a click there while the other's pre-check chain was in
+   *  flight could open a second confirmation stacked on the first, with a duplicate
+   *  `app-dialog-title` id. Both entries now read and set this same signal instead of a field of
+   *  their own — see `ImportTrigger.restorePreviewPending`/`RestoreFlowDeps.previewPending` and
+   *  `MassDeletePanel.restoreConfirmPending`, both of which alias this signal rather than holding
+   *  their own. Exposed writable (not `.asReadonly()`), like `RestoreFlowDeps.previewPending`
+   *  already was before this fix: both call sites are the ones setting it, this only moves *where*
+   *  the shared instance lives. */
+  readonly restorePreCheckPending: WritableSignal<boolean> = signal(false);
+
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  constructor() {
+    // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
+    // tab's unload guard from these three signals; it does not know this service otherwise.
+    inject(SevenTvRunArbiter).register({
+      kind: 'restore',
+      isRunning: this.isRunning,
+      isSettling: this.isSettling,
+      destructiveOpen: this.destructiveOpen,
+    });
+  }
 
   /** `target` is where the run goes and whom it tells — see `RestoreStartTarget`; frozen into the
    *  run record here and never read again from the caller. `skippedDuplicates` is the caller's own
@@ -223,7 +298,8 @@ export class SevenTvRestoreService {
    *  (see `already-present-filter.ts`, which every current caller runs first). Defaults to 0 so
    *  callers/tests that pass only two arguments are unaffected. `duplicateCheckAvailable` mirrors
    *  the same call's `available` and defaults to `true` for the same reason; `skippedNameTaken` is
-   *  the same call's name-taken count, default 0. */
+   *  the same call's name-taken count, default 0. A run that starts is shown at once; the run shown
+   *  before it goes on to close on its own record (#256). */
   startRestore(
     target: RestoreStartTarget,
     emotes: readonly RestoreQueueEmote[],
@@ -237,7 +313,12 @@ export class SevenTvRestoreService {
     this.showDuplicateNotice(
       skippedDuplicates > 0 || skippedNameTaken > 0 || !duplicateCheckAvailable,
     );
+    const previousShown = this.lifecycle.shown();
+    const runId = this.lifecycle.createRunId();
     const started: RestoreRunInfo = {
+      runId,
+      phase: 'running',
+      destructive: false,
       targetSetId: target.setId,
       expectedChannelName: target.expectedChannelName,
       resyncChannelName: target.resyncChannelName,
@@ -245,25 +326,27 @@ export class SevenTvRestoreService {
       setName: target.setName,
       ownerOrChannelLabel: target.ownerOrChannelLabel,
       result: null,
+      syncReport: 'idle',
+      syncReportReason: null,
+      resyncTrigger: 'idle',
     };
     const { queue, aliasByKey } = toRestoreQueue(emotes);
+    // Opened *before* the engine is asked to start — see the identical note in
+    // SevenTvDeleteService.startDelete (#256 review finding: a synchronous `onComplete` must always
+    // find its record already registered).
+    this.lifecycle.open(started);
     const engineStarted = this.engine.start(
       target.setId,
       queue,
       addOperation(aliasByKey),
-      (result) => this.onRunComplete(started, result),
+      (result) => this.onRunComplete(runId, result),
     );
     if (!engineStarted) {
-      // Refused (already running, empty list, no token) — leave every signal as it was, except
-      // skippedDuplicates, skippedNameTaken and duplicateCheckAvailable above: an all-skipped
-      // restore is a legitimate "refused" case whose counts (and whether they are even
-      // trustworthy) the caller still needs to see.
-      return;
+      // Refused (already running, empty list, no token) — leave the counts above (an all-skipped
+      // restore is a legitimate "refused" case whose counts the caller still needs to see), but
+      // take the just-opened record back and restore whatever was shown before it.
+      this.lifecycle.discardUnstarted(runId, previousShown);
     }
-    this.runState.set(started);
-    this.syncReport.set('idle');
-    this.syncReportReason.set(null);
-    this.resyncTrigger.set('idle');
   }
 
   cancel(): void {
@@ -271,25 +354,29 @@ export class SevenTvRestoreService {
   }
 
   reset(): void {
-    this.engine.reset();
-    this.syncReport.set('idle');
-    this.syncReportReason.set(null);
-    this.resyncTrigger.set('idle');
+    if (!this.engine.isRunning()) {
+      this.engine.reset();
+    }
+    this.lifecycle.detach();
     this.skippedDuplicates.set(0);
     this.skippedNameTaken.set(0);
     this.duplicateCheckAvailable.set(true);
     this.showDuplicateNotice(false);
-    this.runState.set(null);
   }
 
   /** Same page-follows-user reasoning as the delete service's counterpart — compared against the
    *  channel of the page the run was started on (`hostChannelName`, F7/E13), never against the
-   *  target: the layout calling this only knows its own page's channel, and a run into another
-   *  channel's set or an untracked set still belongs to the page it was started from (AK 20). A
-   *  running run is left alone, and a finished one's report has gone out regardless. */
+   *  target. Since #256 (Plan-256 Festlegung 13) this only fires for a `closed` run: a run still
+   *  reporting follows the user for the few seconds until its report reaches an end state —
+   *  dropping it mid-report would leave a later `failed` with no dock to show it and no retry to
+   *  reach it (Codex-Befund 2). */
   resetIfChannelChanged(pageChannelName: string): void {
-    const current = this.runState();
-    if (this.isRunning() || current === null || current.hostChannelName === pageChannelName) {
+    const current = this.run();
+    if (
+      current === null ||
+      current.phase !== 'closed' ||
+      current.hostChannelName === pageChannelName
+    ) {
       return;
     }
     this.reset();
@@ -299,56 +386,86 @@ export class SevenTvRestoreService {
    *  the bookkeeping call, never the resync (that followed the first report already). Safe to
    *  repeat: ids already un-archived still count as restored. Set, expected channel *and* keys come
    *  from the same record, so a retry can never mix one run's ids with another's target or with a
-   *  set chosen after the run started (R15, AK 71). */
+   *  set chosen after the run started (R15, AK 71). A retry on a closed run does not reopen it
+   *  (#256): it is a new report on a closed run, and neither the arbiter nor the unload guard sees
+   *  it. */
   retrySyncReport(): void {
-    const current = this.runState();
+    const current = this.run();
     if (
-      this.syncReport() === 'pending' ||
-      // addendum N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
-      // could only write the same mismatch again.
-      this.syncReportReason() === 'channelMismatch' ||
-      !current?.result ||
+      current === null ||
+      current.syncReport === 'pending' ||
+      // addendum N4, AK 40: either channel-mismatch reason is recorded and, for
+      // activeSetDiffers, its resync already runs — a retry could only write the same mismatch
+      // again.
+      isChannelMismatch(current.syncReportReason) ||
+      current.result === null ||
       current.result.doneKeys.length === 0
     ) {
       return;
     }
 
-    this.reportRestored(current, current.result);
+    this.reportRestored(current.runId, current.result);
   }
 
-  private onRunComplete(started: RestoreRunInfo, result: RunResult): void {
-    if (this.runState() !== started) {
-      // Only reachable via reset()/resetIfChannelChanged() during the run: the shown run is not
-      // this one any more, so neither its result nor its bookkeeping belong on screen.
+  /** Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
+   *  there is no early return for a run that is no longer shown; its confirmed adds are reported
+   *  all the same). `phase` and `syncReport` move together in one update so the lifecycle's
+   *  auto-close guard never sees a `reporting` record whose report has not been marked `pending`
+   *  yet — a run with nothing to report goes straight to `closed`. */
+  private onRunComplete(runId: string, result: RunResult): void {
+    const reportsRestored = result.doneKeys.length > 0;
+    const updated = this.lifecycle.update(runId, (run) => ({
+      ...run,
+      result,
+      phase: 'reporting',
+      syncReport: reportsRestored ? 'pending' : run.syncReport,
+      syncReportReason: reportsRestored ? null : run.syncReportReason,
+    }));
+    if (!this.lifecycle.isShown(runId)) {
+      // A run `reset()` detached while in flight has left its queue on the engine until now,
+      // because `finish()` builds this very result from it; nothing shows that queue any more.
+      this.engine.reset();
+    }
+    if (updated === null) {
+      // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
       return;
     }
 
-    const finished: RestoreRunInfo = { ...started, result };
-    this.runState.set(finished);
-
-    if (result.doneKeys.length === 0) {
-      return;
+    if (reportsRestored) {
+      // The expected channel is frozen at start and never re-read from the record after this: the
+      // resync helpers below take it as a plain parameter rather than looking the record up again,
+      // because a superseded, already-`closed` run can be pruned from the lifecycle's map by the
+      // time its resync answers — the resync itself is still owed to 7TV's state regardless
+      // (see `resyncAfterReport`'s own doc).
+      const expectedChannelName = updated.expectedChannelName;
+      this.reportRestored(runId, result, (resyncTriggered) =>
+        this.resyncAfterReport(runId, expectedChannelName, resyncTriggered),
+      );
     }
-    // The report first, the resync after it (spec 6.4, F15): only the report's answer says whether
-    // the backend already resynced the channel, and a second resync of ours would merely run into
-    // the cooldown.
-    this.reportRestored(finished, result, (resyncTriggered) =>
-      this.resyncAfterReport(finished, resyncTriggered),
-    );
   }
 
   /** `afterReport` runs once the report has settled either way — with the answer's
    *  `resyncTriggered` on success, with `null` once it has failed for good (the backend never
    *  reached its resync stage then, addendum N1). It runs even for a superseded run: the report and
-   *  the resync are owed to 7TV's state, not to what the dock shows; only the *state* each writes is
-   *  guarded (`applyIfCurrent`). */
+   *  the resync are owed to 7TV's state, not to what the dock shows.
+   *
+   *  Patches the record to `syncReport: 'pending'` first (#256 P2, Plan-256-Robustheit review) —
+   *  same fix and same reason as the identical line in `SevenTvDeleteService.reportDeleted`: a
+   *  manual `retrySyncReport()` call needs the record marked `'pending'` before its request goes
+   *  out, or the retry button stays up for a second click and a `closed`-but-pending record has
+   *  nothing to keep it in the lifecycle's map for a "Close" clicked mid-retry. `closed` itself
+   *  stays untouched — the lifecycle's one-way door does that. */
   private reportRestored(
-    run: RestoreRunInfo,
+    runId: string,
     result: RunResult,
     afterReport?: (resyncTriggered: readonly string[] | null) => void,
   ): void {
-    this.syncReport.set('pending');
-    this.syncReportReason.set(null);
+    const run = this.patchRun(runId, { syncReport: 'pending', syncReportReason: null });
+    if (run === null) {
+      // Unreachable in practice: called right after the update that put the run into `reporting`,
+      // or from a manual retry that just read the record — kept as a guard, not a silent no-op.
+      return;
+    }
     const sevenTvEmoteIds = doneSevenTvEmoteIds(result);
 
     this.emoteSetService
@@ -357,6 +474,19 @@ export class SevenTvRestoreService {
         expectedChannelName: run.expectedChannelName,
       })
       .pipe(
+        timeoutReportAttempt(),
+        // The threeway reading (`map`, not inside `next:`) lives ahead of `retry` so a malformed
+        // 200 answer that makes `classifySyncInSetResponse` throw ends the report like any other
+        // transient failure — an uncaught throw inside a `next:` callback would otherwise leave
+        // this run `reporting` forever, never `closed` (#256 review finding, same fix as the
+        // delete's and the import's own `sync-deleted`). `retry`'s `delay` below then also retries
+        // this throw (a plain `TypeError`, not an `HttpErrorResponse` — its `status` reads
+        // `undefined`, so neither branch of the 401/403 check matches): uncritical, because a
+        // retried `sync-restored` call is idempotent either way.
+        map((answer: SyncRestoredInSetResponse) => ({
+          outcome: classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
+          resyncTriggered: answer.resyncTriggered,
+        })),
         // Same policy as the delete's report: waiting can fix a 429/5xx, not a 401/403.
         retry({
           count: MAX_AUTOMATIC_SYNC_RETRIES,
@@ -367,87 +497,116 @@ export class SevenTvRestoreService {
         }),
       )
       .subscribe({
-        next: (answer: SyncRestoredInSetResponse) => {
+        next: ({ outcome, resyncTriggered }) => {
           // The threeway reading lives in one place for all three services (F8, E23, AK 15) —
           // never an `>=` of our own here.
-          this.applyIfCurrent(run, () =>
-            this.applyReportOutcome(classifySyncInSetResponse(answer, sevenTvEmoteIds.length)),
-          );
-          afterReport?.(answer.resyncTriggered);
+          this.endReport(runId, outcome);
+          afterReport?.(resyncTriggered);
         },
         error: (error: HttpErrorResponse) => {
           // A 404 (the set is gone) ends in 'failed'/'setNotFound' — never in 'succeeded' (#224).
-          this.applyIfCurrent(run, () =>
-            this.applyReportOutcome(classifySyncInSetFailure(error.status)),
-          );
+          this.endReport(runId, classifySyncInSetFailure(error.status));
           afterReport?.(null);
         },
       });
   }
 
-  /** E12, F15, AK 21/27, spec 6.4 and 4.4 point 11: a resync of our own only for a non-active set
-   *  of a tracked channel (`resyncChannelName`), and only when the report's answer does not already
-   *  name that channel in `resyncTriggered`. Whenever the answer names the channel this run is
-   *  about — `resyncChannelName`, or for an active set its `expectedChannelName` (also when it came
-   *  back unresolved, `activeSetDiffers`) — the dock says "being re-synced" (`'backendTriggered'`)
-   *  without a request of ours. An active set whose channel is not named (the cooldown was not
-   *  acquired, F15, or `notTracked`) and an untracked target (nothing to resync) leave
-   *  `resyncTrigger` on `'idle'`: no request, no resync line.
+  /** F15, AK 21/27, spec 6.4 and 4.4 point 11, operator decision 2026-09-25 (#255): a resync of our
+   *  own only ever for the target's **active** set (`expectedChannelName`) — a non-active tracked
+   *  target no longer gets a client resync at all, whatever the report's answer says or whether it
+   *  succeeded or failed for good. This replaces the former E12 (docs/superpowers/specs/
+   *  2026-09-24-restore-pro-set-253-design.md, §18 addendum, 2026-09-25): a non-active set's
+   *  channel resync only ever pulled the channel's *active* set view, never the set this run
+   *  actually wrote to — a request that could succeed while confirming nothing the user cares
+   *  about, exactly the reasoning the import's own `sendFollowUp` already followed
+   *  (`seven-tv-import.service.ts:657-671`). `resyncChannelName` still names a non-active tracked
+   *  target's channel, but only for `RestoreProgressSection`'s target-line label — never read here
+   *  any more.
    *
+   *  For the active set: the dock says "being re-synced" (`'backendTriggered'`) without a request
+   *  of ours whenever the answer already names the expected channel in `resyncTriggered` (also for
+   *  an unresolved expected channel, `activeSetDiffers`). Otherwise `resyncTrigger` simply stays
+   *  `'idle'` — no request, no resync line — because the backend's own resync (E17) covers the
+   *  active set unconditionally regardless of whether it happens to be visible in `resyncTriggered`;
+   *  unlike the removed non-active case, the client was never the one this success path depended on.
    *  `resyncTriggered === null` is a report that failed for good (addendum N1, AK 36) — any status,
-   *  or a network error, after the retries. The backend never reached its resync stage, so the
-   *  client stands in for it with `resyncChannelName ?? expectedChannelName`; the cooldown absorbs a
-   *  duplicate. Only after the first report of a run: a manual retry passes no `afterReport`. */
-  private resyncAfterReport(run: RestoreRunInfo, resyncTriggered: readonly string[] | null): void {
+   *  or a network error, after the retries; only then, because the backend never reached its resync
+   *  stage at all, does the client stand in for it with `expectedChannelName`, and only after the
+   *  *first* report of a run (a manual retry passes no `afterReport`); the cooldown absorbs a
+   *  duplicate.
+   *
+   *  Takes `expectedChannelName` as a parameter rather than re-reading it off the record (#256): a
+   *  superseded run that already ended `closed` can be pruned from the lifecycle's map by the time
+   *  this runs, but the resync it triggers is still owed to 7TV's state, not to whether anything
+   *  still shows the run — see `onRunComplete`. Whatever state this writes back onto the record via
+   *  `patchRun` below is a no-op once the record is gone, same as it was silently ignored under the
+   *  old per-object `applyIfCurrent` guard for a run nothing shows any more. */
+  private resyncAfterReport(
+    runId: string,
+    expectedChannelName: string | null,
+    resyncTriggered: readonly string[] | null,
+  ): void {
+    if (expectedChannelName === null) {
+      // Untracked, or a non-active tracked target (#255) — nothing of ours resyncs either way.
+      return;
+    }
     if (resyncTriggered === null) {
-      const fallbackChannel = run.resyncChannelName ?? run.expectedChannelName;
-      if (fallbackChannel !== null) {
-        this.triggerResync(run, fallbackChannel);
-      }
+      // N1 fallback: the report failed for good, so the backend never reached its own resync —
+      // active set only, same as the rest of this method.
+      this.triggerResync(runId, expectedChannelName);
       return;
     }
-    const channelName = run.resyncChannelName;
-    if (channelName === null) {
-      const expected = run.expectedChannelName;
-      if (expected !== null && includesChannel(resyncTriggered, expected)) {
-        this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
-      }
-      return;
+    if (includesChannel(resyncTriggered, expectedChannelName)) {
+      this.patchRun(runId, { resyncTrigger: 'backendTriggered' });
     }
-    if (includesChannel(resyncTriggered, channelName)) {
-      this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
-      return;
-    }
-    this.triggerResync(run, channelName);
+    // Not named: the backend's own resync (E17) covers the active set unconditionally regardless —
+    // nothing for the client to trigger itself, unlike the non-active case #255 removed. Stays
+    // `'idle'`.
   }
 
-  private triggerResync(run: RestoreRunInfo, channelName: string): void {
-    this.applyIfCurrent(run, () => this.resyncTrigger.set('pending'));
+  private triggerResync(runId: string, channelName: string): void {
+    this.patchRun(runId, { resyncTrigger: 'pending' });
     this.channelService.resync(channelName).subscribe({
-      next: () => this.applyIfCurrent(run, () => this.resyncTrigger.set('succeeded')),
+      next: () => this.patchRun(runId, { resyncTrigger: 'succeeded' }),
       error: (error: HttpErrorResponse) =>
         // 429 = the per-channel cooldown: a sync just ran or will run — "coming on its own",
         // reported as such rather than as an error.
-        this.applyIfCurrent(run, () =>
-          this.resyncTrigger.set(error.status === 429 ? 'cooldown' : 'failed'),
-        ),
+        this.patchRun(runId, { resyncTrigger: error.status === 429 ? 'cooldown' : 'failed' }),
     });
   }
 
-  private applyReportOutcome(outcome: SyncReportOutcome): void {
-    this.syncReport.set(outcome.state);
-    this.syncReportReason.set(outcome.reason);
-  }
-
-  /** The R15 guard in one place: an answer that belongs to a superseded run is dropped silently —
-   *  no error state, nothing written. The run it belongs to is not on screen any more, and the one
-   *  that is must not inherit its outcome. Shared by both closing calls (`sync-restored`, `resync`)
-   *  — each checks independently, so one settling does not gate the other. */
-  private applyIfCurrent(run: RestoreRunInfo, apply: () => void): void {
-    if (this.runState() !== run) {
+  /** Writes a report's end state onto its run's record — which closes the run once it was the last
+   *  (only) report out — and brings a run nobody shows back onto the dock when that end state is
+   *  not a success (Plan-256 Festlegung 13): a failed or partial report needs a place with its
+   *  reason and a retry. Shown again only when nothing else is shown and the engine is free;
+   *  otherwise the failure stays on the record and in the console.
+   *
+   *  `reshow` is attempted before `showFinishedRows` and rolled back with `detach()` if that then
+   *  refuses (#256 review finding, same fix as the delete's `endReport`). */
+  private endReport(runId: string, outcome: SyncReportOutcome): void {
+    const run = this.patchRun(runId, {
+      syncReport: outcome.state,
+      syncReportReason: outcome.reason,
+    });
+    if (run === null || outcome.state === 'succeeded' || this.lifecycle.isShown(runId)) {
       return;
     }
-    apply();
+    if (run.result !== null && !this.engine.isRunning() && this.lifecycle.reshow(run)) {
+      if (this.engine.showFinishedRows(run.result.items)) {
+        return;
+      }
+      this.lifecycle.detach();
+    }
+    console.warn('[EmotePurge] 7TV restore report of a run no longer shown did not succeed', {
+      runId,
+      state: outcome.state,
+      reason: outcome.reason,
+    });
+  }
+
+  /** Merges `patch` into the record of `runId` — see `SevenTvRunLifecycle.update`. */
+  private patchRun(runId: string, patch: Partial<RestoreRunInfo>): RestoreRunInfo | null {
+    return this.lifecycle.update(runId, (run) => ({ ...run, ...patch }));
   }
 
   /** #149 P2: `hasSomethingToReport` clears any earlier timer first — a second call within

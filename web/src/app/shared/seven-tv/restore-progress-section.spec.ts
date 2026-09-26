@@ -38,6 +38,9 @@ const DE_TRANSLATIONS = {
     syncFailedTitle: 'Rückmeldung an EmotePurge fehlgeschlagen',
     syncFailed:
       'Die Emotes sind bei 7TV wiederhergestellt, aber EmotePurge konnte es nicht vermerken.',
+    syncPartialTitle: 'Rückmeldung an EmotePurge unvollständig',
+    syncPartial:
+      'Die Emotes sind bei 7TV wiederhergestellt und bei EmotePurge vermerkt — aber nicht vollständig.',
     syncRetry: 'Erneut melden',
     syncRetrySucceeded: 'Rückmeldung erfolgreich.',
     summary: {
@@ -61,7 +64,9 @@ const DE_TRANSLATIONS = {
     forbidden: 'Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.',
     setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
     unavailable: 'Grund: EmotePurge oder 7TV war gerade nicht erreichbar.',
-    channelMismatch:
+    channelMismatchNotTracked:
+      'Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.',
+    channelMismatchActiveSetDiffers:
       'Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.',
     shortfall: 'Grund: Nicht alle Emotes waren in EmotePurge vermerkt.',
     other: 'Grund: Unerwarteter Fehler.',
@@ -70,6 +75,9 @@ const DE_TRANSLATIONS = {
 
 function runInfo(overrides: Partial<RestoreRunInfo> = {}): RestoreRunInfo {
   return {
+    runId: 'restore-1',
+    phase: 'running',
+    destructive: false,
     targetSetId: 'set-1',
     expectedChannelName: 'zielkanal',
     resyncChannelName: null,
@@ -77,6 +85,9 @@ function runInfo(overrides: Partial<RestoreRunInfo> = {}): RestoreRunInfo {
     setName: 'Set-1',
     ownerOrChannelLabel: 'zielkanal',
     result: null,
+    syncReport: 'idle',
+    syncReportReason: null,
+    resyncTrigger: 'idle',
     ...overrides,
   };
 }
@@ -365,5 +376,37 @@ describe('RestoreProgressSection', () => {
     const fixture = render();
 
     expect(fixture.nativeElement.textContent.trim()).toBe('');
+  });
+
+  // #256, Plan-256 Festlegung 13: Close is offered exactly once the run's own record is `closed`,
+  // not merely once the engine stops — a report still `reporting` must keep its dock (and its
+  // eventual retry) reachable.
+  describe('Schließen-Gate (#256)', () => {
+    it('offers no Close button while the run is only reporting, not yet closed', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem()]);
+      restoreService.run.set(runInfo({ phase: 'reporting', syncReport: 'pending' }));
+
+      const fixture = render();
+
+      const buttons = [...fixture.nativeElement.querySelectorAll('button')].map(
+        (button: HTMLElement) => button.textContent?.trim(),
+      );
+      expect(buttons).not.toContain('Schließen');
+      expect(fixture.nativeElement.textContent).toContain('Wird abgeschlossen…');
+    });
+
+    it('offers Close once the run has closed', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem()]);
+      restoreService.run.set(runInfo({ phase: 'closed', syncReport: 'succeeded' }));
+
+      const fixture = render();
+
+      const buttons = [...fixture.nativeElement.querySelectorAll('button')].map(
+        (button: HTMLElement) => button.textContent?.trim(),
+      );
+      expect(buttons).toContain('Schließen');
+    });
   });
 });

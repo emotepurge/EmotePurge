@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 
-import { Locator, Page, expect, test } from '@playwright/test';
+import { Locator, Page, Request, expect, test } from '@playwright/test';
 
 import {
   AUTH_USER,
   MockEmoteUsage,
   MockLeaderboardEmote,
+  SevenTvGqlRequest,
   SevenTvGqlRequestKind,
   emitLive,
   installLiveStub,
@@ -2354,6 +2355,349 @@ test.describe('running import: leaving the page', () => {
 });
 
 /**
+ * A route answered only once the test says so — and a promise that tells the test the request has
+ * actually arrived, which is what makes "the page is waiting for exactly this answer" observable.
+ * Holds the first request that `shouldHold` accepts; every other request on the same pattern, and
+ * the held one once released, goes to the handler registered *before* this one (`route.fallback`),
+ * so this must be registered after the mock it defers to. Same mechanism as {@link deferRoute}; the
+ * arrival signal is the addition.
+ */
+async function holdRoute(
+  page: Page,
+  url: string,
+  shouldHold: (request: Request) => boolean = () => true,
+): Promise<{ arrived: Promise<void>; release: () => void }> {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let arrive!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  let holding = false;
+  await page.route(url, async (route) => {
+    if (holding || !shouldHold(route.request())) {
+      await route.fallback();
+      return;
+    }
+    holding = true;
+    arrive();
+    await released;
+    await route.fallback();
+  });
+  return { arrived, release };
+}
+
+/**
+ * Whether the page's `beforeunload` listeners cancel an unload right now — read by dispatching a
+ * synthetic, cancelable `beforeunload` and checking `defaultPrevented`. The run arbiter's handler
+ * (`preventUnload`) calls `preventDefault()`, so this is `true` exactly while the guard is armed.
+ * The real prompt is checked once, through `page.close({ runBeforeUnload: true })`, below.
+ */
+function unloadPrevented(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+}
+
+/**
+ * #256 (Plan-256 T8): the run arbiter counts a run as busy until its reports have an end state,
+ * not only while the run engine is going, and it arms the tab's unload guard for as long as any
+ * destructive run is open. Both halves only exist between two answers — the post-run re-read of the
+ * target and the reports after it — so the window is held open by leaving exactly those routes
+ * unanswered (`holdRoute`), not by a fake clock: no step waits for a timer to fire, and the
+ * engine's short pacing delay (one row) simply runs in real time. The last two cases are delete
+ * runs — the arbiter's window is not the import's alone.
+ *
+ * What is not here: the "Nichts gestartet" notice. Its trigger is a confirmation given *before*
+ * another run starts behind the modal, which one browser tab cannot reach without constructing it;
+ * the unit specs of the start points carry it (Plan-256 T4).
+ */
+test.describe('running import: the settling window', () => {
+  const importTrigger = (page: Page) => page.locator('app-import-trigger').getByRole('button');
+  const importDock = (page: Page) => page.locator('app-import-progress-section');
+  const deleteDock = (page: Page) => page.locator('app-mass-delete-panel');
+
+  /**
+   * One replace row (CatJAM over the target's own CatJAM) whose ADD answer is lost in transport:
+   * the engine marks the row `unknown` and finishes, and the run is `settling` while it re-reads the
+   * target. That re-read, then the two reports it leads to (`sync-imported` for the add,
+   * set-centric `sync-deleted` for the removal), are each held until the test releases them.
+   */
+  async function startSettlingReplaceRun(page: Page) {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, [{ sevenTvEmoteId: 'target-a', name: 'CatJAM' }]);
+    await mockSyncImported(page, TARGET_CHANNEL);
+    await mockSyncDeletedInSet(page, 'target-set');
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+
+    // Before the run the target still holds its own CatJAM; the re-read after it finds the source
+    // under that name — the lost ADD did land, so the row settles green once the re-read answers.
+    let addAborted = false;
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload(
+            addAborted
+              ? [{ id: '7tv-1', aliases: ['CatJAM'] }]
+              : [{ id: 'target-a', aliases: ['CatJAM'] }],
+          );
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    // Registered after mockSevenTvGql, so it sees every call first (reverse registration order):
+    // the replace's ADD dies in transport — `unknown`, not `failed` (transportLossIsUnknown).
+    await page.route('https://7tv.io/v4/gql', async (route) => {
+      const body = route.request().postDataJSON() as SevenTvGqlRequest;
+      if (sevenTvGqlRequestKind(body) === 'addEmote') {
+        addAborted = true;
+        await route.abort();
+        return;
+      }
+      await route.fallback();
+    });
+    // The first read after the lost ADD is the settle re-read; the dialog's own reads before the
+    // run pass straight through.
+    const reRead = await holdRoute(
+      page,
+      'https://7tv.io/v4/gql',
+      (request) =>
+        addAborted &&
+        sevenTvGqlRequestKind(request.postDataJSON() as SevenTvGqlRequest) === 'setRead',
+    );
+    const importedReport = await holdRoute(
+      page,
+      `**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`,
+    );
+    const removalReport = await holdRoute(
+      page,
+      '**/api/seventv/emote-sets/target-set/sync-deleted',
+    );
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+
+    // Baseline: with no run anywhere, both entry points are live and the tab is unguarded — the
+    // lock and the guard asserted later are the window's, not the page's.
+    await expect(copyButton(page)).toBeEnabled();
+    await expect(importTrigger(page)).toBeEnabled();
+    expect(await unloadPrevented(page)).toBe(false);
+
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Namenskollisionen auflösen' }).click();
+    await confirm
+      .getByRole('radiogroup', { name: 'Aktion für CatJAM' })
+      .getByRole('radio', { name: 'Ziel ersetzen' })
+      .check();
+    await confirm.getByRole('button', { name: 'Übernehmen' }).click();
+
+    const downloadPromise = page.waitForEvent('download');
+    await confirm.getByRole('button', { name: 'Rückweg sichern' }).click();
+    await downloadPromise;
+
+    await confirm.getByRole('button', { name: 'Starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    return { reRead, importedReport, removalReport };
+  }
+
+  test('the copy and import triggers stay locked through the re-read and both reports, and unlock once both reports have answered', async ({
+    page,
+  }) => {
+    const { reRead, importedReport, removalReport } = await startSettlingReplaceRun(page);
+
+    // The engine is done (the re-read is only issued from `onRunComplete`), the run is not: no
+    // "Abbrechen" any more, "Wird abgeschlossen…" instead of "Schließen", and every start locked.
+    await reRead.arrived;
+    await expect(importDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+    await expect(importDock(page).getByRole('button', { name: 'Abbrechen' })).toHaveCount(0);
+    await expect(copyButton(page)).toBeDisabled();
+    await expect(importTrigger(page)).toBeDisabled();
+
+    // The re-read answers; both reports go out and are held — still the same window.
+    reRead.release();
+    await importedReport.arrived;
+    await removalReport.arrived;
+    await expect(importDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+    await expect(copyButton(page)).toBeDisabled();
+    await expect(importTrigger(page)).toBeDisabled();
+
+    // One report alone does not close the run — checked once its answer has actually landed.
+    const importedAnswered = page.waitForResponse(
+      `**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`,
+    );
+    importedReport.release();
+    await importedAnswered;
+    await expect(importDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+    await expect(copyButton(page)).toBeDisabled();
+    await expect(importTrigger(page)).toBeDisabled();
+
+    removalReport.release();
+    await expect(importDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    await expect(
+      importDock(page).getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
+    await expect(copyButton(page)).toBeEnabled();
+    await expect(importTrigger(page)).toBeEnabled();
+  });
+
+  test('the unload guard holds through the re-read and both reports, asks before the tab closes, and lets go at the end state', async ({
+    page,
+  }) => {
+    const { reRead, importedReport, removalReport } = await startSettlingReplaceRun(page);
+
+    await reRead.arrived;
+    await expect.poll(() => unloadPrevented(page)).toBe(true);
+
+    // The browser's own prompt, once: closing the tab with `runBeforeUnload` fires the real
+    // `beforeunload`, and Chromium answers the armed guard with its native dialog. Dismissing it
+    // keeps the page — and the run — alive. (A real navigation would need fresh user activation per
+    // prompt, which is why the synthetic event carries every other check here.)
+    const unloadDialog = page.waitForEvent('dialog');
+    await page.close({ runBeforeUnload: true });
+    const dialog = await unloadDialog;
+    expect(dialog.type()).toBe('beforeunload');
+    await dialog.dismiss();
+    expect(page.isClosed()).toBe(false);
+
+    reRead.release();
+    await importedReport.arrived;
+    await removalReport.arrived;
+    expect(await unloadPrevented(page)).toBe(true);
+
+    const importedAnswered = page.waitForResponse(
+      `**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`,
+    );
+    importedReport.release();
+    await importedAnswered;
+    await expect(importDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+    expect(await unloadPrevented(page)).toBe(true);
+
+    removalReport.release();
+    await expect(importDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    await expect.poll(() => unloadPrevented(page)).toBe(false);
+  });
+
+  /**
+   * A delete run on the usage-stats page: every delete row is destructive, so the unload guard
+   * holds from the start until `sync-deleted` has an end state (Plan-256 Festlegung Nr. 6) — the
+   * dock shows "Wird abgeschlossen…" for exactly that stretch.
+   */
+  async function startReportingDeleteRun(page: Page, reportAnswer: { status?: number } = {}) {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    // The delete's own target pre-check (`resolveEditableSet`) reads the same account/set list the
+    // copy picker does; the source account's `set-1` is editable there.
+    await mockTargetPicker(page);
+    await mockSetWarning(page, SOURCE_CHANNEL);
+    await mockChannelScopedResync(page, SOURCE_CHANNEL);
+    await mockSyncDeletedInSet(page, 'set-1', reportAnswer);
+    await mockSevenTvGql(page, (request) => {
+      switch (sevenTvGqlRequestKind(request)) {
+        case 'setRead':
+          return sevenTvSetReadPayload([{ id: '7tv-1', aliases: ['CatJAM'] }]);
+        case 'removeEmote':
+          return {
+            data: {
+              emoteSets: { emoteSet: { removeEmote: { id: request.variables['emoteId'] } } },
+            },
+          };
+        default:
+          throw new Error(`unexpected 7TV GQL request: ${request.query}`);
+      }
+    });
+    const deletedReport = await holdRoute(page, '**/api/seventv/emote-sets/set-1/sync-deleted');
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    expect(await unloadPrevented(page)).toBe(false);
+
+    await cell(page, 'CatJAM').click();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await deletedReport.arrived;
+    return deletedReport;
+  }
+
+  test('a delete run guards the tab until its sync-deleted report answers', async ({ page }) => {
+    const deletedReport = await startReportingDeleteRun(page);
+
+    await expect(deleteDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+    await expect.poll(() => unloadPrevented(page)).toBe(true);
+
+    deletedReport.release();
+    await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    await expect.poll(() => unloadPrevented(page)).toBe(false);
+  });
+
+  /**
+   * Plan-256 Festlegung Nr. 13, through a real channel change: a delete run whose report is still
+   * out follows the user to the next channel's page, and when that report then fails, the failure
+   * stays there with its retry. The #256 T2 review found this broken in a way only a live effect
+   * shows: the workspace layout's channel effect also tracked the run record, so the report's own
+   * end state re-ran it with the *same* channel and reset the now-closed run — the dock vanished at
+   * the very moment it had something to say. The route here leaves the channel workspace entirely
+   * (via the overview) and enters the other channel's, so the layout is built anew with that
+   * channel, the way a user gets there.
+   */
+  test('a channel change takes a reporting delete run along, and a failed report stays there with its retry', async ({
+    page,
+  }) => {
+    await mockMyChannels(page, [
+      { channelName: SOURCE_CHANNEL, isTracked: true, isBroadcaster: true },
+      { channelName: TARGET_CHANNEL, isTracked: true, isSevenTvEditor: true },
+    ]);
+    await mockWorkspace(page, TARGET_CHANNEL, TARGET_EMOTES, 'target-set');
+    // 403 is not retried (the right to the set is gone): the report fails at once.
+    const deletedReport = await startReportingDeleteRun(page, { status: 403 });
+
+    await page.getByRole('link', { name: 'Zurück zu Übersicht' }).click();
+    await page.getByRole('link', { name: `#${TARGET_CHANNEL}` }).click();
+    await page.waitForURL(`**/channels/${TARGET_CHANNEL}/usage-stats`);
+    await expect(cell(page, 'Sadge')).toBeVisible();
+
+    // Still reporting, and still here on the other channel's page.
+    await expect(deleteDock(page).getByText('Wird abgeschlossen…')).toBeVisible();
+
+    deletedReport.release();
+    await expect(
+      deleteDock(page).getByText('Rückmeldung an EmotePurge fehlgeschlagen'),
+    ).toBeVisible();
+    await expect(deleteDock(page).getByRole('button', { name: 'Erneut melden' })).toBeVisible();
+    await expect(deleteDock(page).getByRole('button', { name: 'Schließen' })).toBeVisible();
+    await expect.poll(() => unloadPrevented(page)).toBe(false);
+  });
+});
+
+/**
  * #132: the create-vote-session dialog used to freeze `emoteIds` at open time
  * (`openCreateVoteSession()`), so a silent reload that pruned a marked emote WHILE the dialog was
  * open went unnoticed there — the dialog kept offering the stale list, and the backend's
@@ -2708,6 +3052,9 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
     await page.addInitScript(() => {
       window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
     });
+    // #255: the confirmation's own open-time duplicate check now reads the target set's live
+    // entries before it ever opens — empty here, so nothing about the row it shows is filtered.
+    await mockSevenTvGql(page, () => sevenTvSetReadPayload([]));
     // The file step checks the set the protocol names against the target list (spec #253, 4.2) —
     // here the channel's own, non-active Halloween set, editable.
     await mockEmoteSetTargets(page, [
@@ -2966,7 +3313,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await page.clock.runFor(5000);
-    await expect(page.getByText('3 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    // The adopt (Pog) renames an existing target entry rather than copying one in, so it no longer
+    // counts as "kopiert" (spec #255) — the replace and the rename-under-KEKWv2 are the 2 copies.
+    await expect(
+      page.getByText('2 kopiert · 1 umbenannt · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
 
     // buildTransferPlan groups rows replace-then-adopt-then-add-then-rename (never source order,
     // `transfer-plan.ts`'s own doc) — with no untouched `add` row here the mutations run REMOVE,
@@ -3545,12 +3896,19 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       buffer: Buffer.from(finishedProtocolText, 'utf-8'),
     });
 
+    // #255: the confirmation's own open-time duplicate check (`loadRestoreConfirmPreview`) is a
+    // third `setRead` here, past the two the transfer run above already spent — so it, too, lands
+    // on `postRunTarget`, the same state the confirm-time re-check below still sees. CatJAM's row
+    // (target-a) is dropped before the dialog ever opens: target-a itself is gone, but 7tv-1 now
+    // holds the name 'CatJAM', so the row is skipped as name-taken (rule 4) rather than restored.
+    // KEKW's row (target-b) is genuinely missing, so it survives. The dialog therefore opens
+    // already counting and naming only the one row that will actually be sent.
     const restoreConfirm = page.getByRole('dialog');
     await expect(restoreConfirm.locator('#app-dialog-title')).toHaveText(
-      '2 Emotes wieder zum Set hinzufügen?',
+      '1 Emote wieder zum Set hinzufügen?',
     );
-    await expect(restoreConfirm.locator('app-name-preview-list')).toContainText('CatJAM');
     await expect(restoreConfirm.locator('app-name-preview-list')).toContainText('KEKW');
+    await expect(restoreConfirm.locator('app-name-preview-list')).not.toContainText('CatJAM');
     await restoreConfirm.getByRole('button', { name: 'Wiederherstellen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
@@ -4077,6 +4435,9 @@ test.describe('restore per set: the file names the target (#253)', () => {
     await page.addInitScript(() => {
       window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
     });
+    // #255: the confirmation's own open-time duplicate check reads the target set's live entries
+    // before it ever opens — empty here, so the row it shows is unfiltered.
+    await mockSevenTvGql(page, () => sevenTvSetReadPayload([]));
     const sevenTvRequests: string[] = [];
     page.on('request', (request) => {
       if (request.url().startsWith('https://7tv.io/')) {
@@ -4133,9 +4494,10 @@ test.describe('restore per set: the file names the target (#253)', () => {
     await expect(confirm.getByText('Dieses Set ist gerade nicht aktiv.')).toBeVisible();
     await expect(confirm.getByText('Diese Ansicht zeigt von diesem Lauf nichts.')).toBeVisible();
 
-    // A cancelled confirmation writes nothing.
+    // A cancelled confirmation writes nothing — the only 7TV traffic is the read-only open-time
+    // duplicate check (#255), never an `addEmote` mutation.
     await confirm.getByRole('button', { name: 'Abbrechen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    expect(sevenTvRequests).toEqual([]);
+    expect(sevenTvRequests).toEqual(['https://7tv.io/v4/gql']);
   });
 });

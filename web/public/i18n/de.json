@@ -588,12 +588,27 @@
       "userDelete": "Account gelöscht"
     },
     "details": {
-      "emoteCount": "{{count}} Emotes",
-      "removedEntries": "{{count}} Einträge entfernt",
+      "emoteCount": {
+        "one": "{{count}} Emote",
+        "other": "{{count}} Emotes"
+      },
+      "removedEntries": {
+        "one": "{{count}} Eintrag entfernt",
+        "other": "{{count}} Einträge entfernt"
+      },
       "title": "„{{title}}“",
-      "importedFromChannel": "{{count}} Emotes aus {{title}}",
-      "importedFromFile": "{{count}} Emotes aus einer Datei",
-      "importedFromLeaderboard": "{{count}} Emotes aus {{title}}",
+      "importedFromChannel": {
+        "one": "{{count}} Emote aus {{title}}",
+        "other": "{{count}} Emotes aus {{title}}"
+      },
+      "importedFromFile": {
+        "one": "{{count}} Emote aus einer Datei",
+        "other": "{{count}} Emotes aus einer Datei"
+      },
+      "importedFromLeaderboard": {
+        "one": "{{count}} Emote aus {{title}}",
+        "other": "{{count}} Emotes aus {{title}}"
+      },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
         "TOP_ALL_TIME": "7TV Top insgesamt"
@@ -908,12 +923,17 @@
     "button": "Emotes wiederherstellen",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Wiederherstellungsfortschritt",
+    "settling": "Wird abgeschlossen…",
     "deleteFailedFallback": "Wiederherstellen fehlgeschlagen",
     "unknownOutcome": "Unklar, ob wiederhergestellt — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "confirmTitle": {
       "one": "{{ count }} Emote wieder zum Set hinzufügen?",
       "other": "{{ count }} Emotes wieder zum Set hinzufügen?"
+    },
+    "confirmTitleUpTo": {
+      "one": "Bis zu {{ count }} Emote wieder zum Set hinzufügen?",
+      "other": "Bis zu {{ count }} Emotes wieder zum Set hinzufügen?"
     },
     "confirmSetLine": "In das Set „{{ setName }}“.",
     "confirmSetIdLine": "Set-ID: {{ emoteSetId }}",
@@ -923,16 +943,21 @@
     "confirmForeignToView": "Diese Ansicht zeigt von diesem Lauf nichts.",
     "confirmExecute": "Wiederherstellen",
     "capacityProjection": "Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.",
+    "capacityProjectionUpTo": "Das Set hätte danach bis zu {{ projected }} von {{ capacity }} Slots belegt.",
     "capacityWarning": "Das überschreitet die Kapazität — 7TV wird überzählige Emotes ablehnen.",
+    "capacityWarningUpTo": "Das könnte die Kapazität überschreiten — 7TV würde überzählige Emotes dann ablehnen.",
     "historyNote": "Die Nutzungshistorie bleibt unverändert.",
     "nothingRestored": "Nichts wiederhergestellt.",
     "errors": {
-      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht.",
-      "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
-      "targetCheckUnavailable": "Konnte gerade nicht geprüft werden — später erneut versuchen."
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+      "targetNotSelectable": "Das Set ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
+      "channelUnknown": "Der Kanal dieses Laufs ist nicht bekannt — Wiederherstellen ist deshalb gesperrt."
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV wiederhergestellt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "syncPartialTitle": "Rückmeldung an EmotePurge unvollständig",
+    "syncPartial": "Die Emotes sind bei 7TV wiederhergestellt und bei EmotePurge vermerkt — aber nicht vollständig.",
     "syncRetry": "Erneut melden",
     "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "summary": {
@@ -970,8 +995,8 @@
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
         "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",
         "targetNotEditable": "Das Set aus der Datei ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
-        "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set und lässt sich nicht wiederherstellen.",
-        "targetCheckUnavailable": "Das Ziel-Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
+        "targetNotSelectable": "Das Set aus der Datei ist kein normales Emote-Set.",
+        "targetCheckUnavailable": "Das Set aus der Datei konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
         "noTargetSetForCopy": "Diese Seite hat kein Set, in das kopiert werden könnte. Aus einer Datei lässt sich hier nur wiederherstellen."
       }
     },
@@ -1017,6 +1042,7 @@
     "clearSelection": "Auswahl aufheben",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Löschfortschritt",
+    "settling": "Wird abgeschlossen…",
     "deleteFailedFallback": "Löschen fehlgeschlagen",
     "unknownOutcome": "Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "confirmTitle": {
@@ -1041,8 +1067,10 @@
     "startDelete": "Löschen starten",
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "syncPartialTitle": "Rückmeldung an EmotePurge unvollständig",
+    "syncPartial": "Die Emotes sind bei 7TV gelöscht und bei EmotePurge vermerkt — aber nicht vollständig.",
     "syncRetry": "Erneut melden",
-    "syncRetrySucceeded": "Rückmeldung erfolgreich nachgeholt.",
+    "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
@@ -1056,9 +1084,9 @@
       "cancelledMidRow": "Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.",
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }}).",
-      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht.",
-      "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
-      "targetCheckUnavailable": "Konnte gerade nicht geprüft werden — später erneut versuchen."
+      "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
+      "targetNotSelectable": "Das Set ist kein normales Emote-Set.",
+      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",
     "setChangedDuringConfirm": "Inzwischen ist ein anderes Set ausgewählt.",
@@ -1077,14 +1105,14 @@
         "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig. Seite neu laden, um es erneut zu versuchen.",
         "loading": "Löschen gesperrt, bis die Mitgliederliste dieses Sets geladen ist."
       }
-    },
-    "anotherRunStarted": "Inzwischen hat ein anderer 7TV-Lauf begonnen."
+    }
   },
   "syncReportReason": {
     "forbidden": "Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.",
     "setNotFound": "Grund: Das Set gibt es bei 7TV nicht mehr.",
     "unavailable": "Grund: EmotePurge oder 7TV war gerade nicht erreichbar.",
-    "channelMismatch": "Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.",
+    "channelMismatchNotTracked": "Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.",
+    "channelMismatchActiveSetDiffers": "Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.",
     "shortfall": "Grund: Nicht alle Emotes waren in EmotePurge vermerkt.",
     "other": "Grund: Unerwarteter Fehler."
   },
@@ -1236,7 +1264,9 @@
       },
       "sameChannelFile": "Diese Liste stammt aus diesem Kanal.",
       "runNotice": "Das Hinzufügen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
+      "runNoticeRenameOnly": "Das Umbenennen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Einträgen.",
       "execute": "Kopieren",
+      "executeRenameOnly": "Angleichen",
       "removals": {
         "one": "{{ count }} Emote wird aus dem Zielset entfernt und durch das Quell-Emote ersetzt.",
         "other": "{{ count }} Emotes werden aus dem Zielset entfernt und durch die Quell-Emotes ersetzt."
@@ -1325,18 +1355,20 @@
       "nameTakenNow": "Der Name ist inzwischen im Zielset vergeben — diese Zeile wurde nicht übernommen.",
       "removedButNotAdded": "Das Ziel-Emote wurde entfernt, das neue aber nicht hinzugefügt — im Zielset fehlt jetzt dieser Name. Die Rückweg-Datei stellt das Ziel-Emote wieder her.",
       "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
-      "targetNotEditable": "Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht.",
+      "targetNotEditable": "Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
       "targetNotSelectable": "Das Zielset ist kein normales Emote-Set.",
       "targetCheckUnavailable": "Das Zielset konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
     "summary": {
       "counts": "{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "countsWithRenamed": "{{done}} kopiert · {{renamed}} umbenannt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
       "target": "Ziel: {{ channel }}",
       "targetWithSet": "Ziel: {{ channel }} · Set {{ setName }}",
       "targetSet": "Ziel: Set {{ setName }} von {{ owner }}",
       "openTarget": "Zielkanal öffnen",
       "copiedNotActive": "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      "renamedNotActive": "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde nach der ersten Zeile abgebrochen.",
       "removed": {
         "one": "{{ count }} Emote wurde aus dem Zielset entfernt.",
@@ -1350,6 +1382,10 @@
         "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
         "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
       },
+      "unknownRecordedIn": {
+        "one": "Bei {{ count }} Ersetzung ist unklar, ob das Ziel-Emote entfernt wurde — im Ergebnisprotokoll steht sie nicht als bestätigte Entfernung, nur die Rückweg-Datei deckt sie ab.",
+        "other": "Bei {{ count }} Ersetzungen ist unklar, ob die Ziel-Emotes entfernt wurden — im Ergebnisprotokoll stehen sie nicht als bestätigte Entfernung, nur die Rückweg-Datei deckt sie ab."
+      },
       "downloadProtocol": "Protokoll herunterladen",
       "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg."
     },
@@ -1359,6 +1395,8 @@
     "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "removalSyncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",
     "removalSyncFailed": "Die Emotes sind bei 7TV aus dem Zielset entfernt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "removalSyncPartialTitle": "Rückmeldung über die Entfernung unvollständig",
+    "removalSyncPartial": "Die Emotes sind bei 7TV aus dem Zielset entfernt und bei EmotePurge vermerkt — aber nicht vollständig.",
     "removalSyncRetry": "Erneut melden",
     "removalSyncSucceeded": "Rückmeldung über die Entfernung erfolgreich.",
     "resync": {
@@ -1377,10 +1415,21 @@
     },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
   },
+  "sevenTvRun": {
+    "notStarted": {
+      "running": "Nichts gestartet — {{ kind }} läuft noch.",
+      "settling": "Nichts gestartet — {{ kind }} wird noch abgeschlossen."
+    },
+    "kind": {
+      "delete": "der Löschlauf",
+      "restore": "die Wiederherstellung",
+      "import": "die Übertragung"
+    }
+  },
   "sevenTvToken": {
     "tokenSet": "7TV-Token gesetzt",
     "remove": "Entfernen",
-    "intro": "Zum Löschen brauchst du dein eigenes 7TV-Schreib-Token aus deiner eingeloggten 7tv.app-Session:",
+    "intro": "Für diese Aktion brauchst du dein eigenes 7TV-Schreib-Token aus deiner eingeloggten 7tv.app-Session:",
     "step1": "Auf 7tv.app einloggen (falls noch nicht geschehen).",
     "step2": "Entwicklertools öffnen (F12) → Tab \"Application\" (Chrome) bzw. \"Speicher\" (Firefox) → \"Local Storage\" → \"https://7tv.app\".",
     "step3Prefix": "Den Eintrag mit dem Schlüssel",

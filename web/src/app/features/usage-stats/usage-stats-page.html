@@ -99,8 +99,8 @@
            locked without one, shown with a reason rather than hidden
            (`import.source.noTargetSet`/`restore.import.errors.noTargetSetForCopy`, the same
            "disabled explains itself" idiom as every other locked control, §10).
-           Both write entry points carry the same two locks. ANY of the three 7TV-writing runs being
-           active (arbiter.activeRun(), not just the button's own kind) — the same rule the delete
+           Both write entry points carry the same two locks. ANY 7TV-writing run being active or
+           settling (arbiter.activeRun(), not just the button's own kind) — the same rule the delete
            trigger already follows, and the running progress in the dock is the only reason given
            for it (UI-Designsprache.md §4.2/§7). And the set status or the rows still belonging to
            the PREVIOUS channel: a channel switch inside this route (the import summary's "open
@@ -302,6 +302,22 @@
       @if (selectionPrunedFeedback(); as feedback) {
         <span aria-hidden="true" class="w-full text-xs text-fg-muted">
           {{ feedback.key | transloco: { count: feedback.count } }}
+        </span>
+      }
+      <!-- The transient "nothing started" notice (docs/UI-Designsprache.md §4.5, #256 contract P2)
+           for a confirmed push or import the arbiter refused because another 7TV run is running or
+           settling — same two-element split as the selection-pruned feedback above, and for the
+           same reason. No timer here: `refusedStartNotice` only mirrors
+           `SevenTvRunArbiter.refusedStart()`, which clears itself after
+           `REFUSED_START_FEEDBACK_MS`. -->
+      <span role="status" class="sr-only">
+        @if (refusedStartNotice(); as notice) {
+          {{ notice.messageKey | transloco: { kind: notice.kind } }}
+        }
+      </span>
+      @if (refusedStartNotice(); as notice) {
+        <span aria-hidden="true" class="w-full text-xs text-fg-muted">
+          {{ notice.messageKey | transloco: { kind: notice.kind } }}
         </span>
       }
     </div>

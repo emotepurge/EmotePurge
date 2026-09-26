@@ -24,17 +24,31 @@ const DE_TRANSLATIONS = {
     syncFailedTitle: 'Rückmeldung an EmotePurge fehlgeschlagen',
     syncFailed:
       'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.',
+    syncPartialTitle: 'Rückmeldung an EmotePurge unvollständig',
+    syncPartial:
+      'Die Emotes sind bei 7TV gelöscht und bei EmotePurge vermerkt — aber nicht vollständig.',
     syncRetry: 'Erneut melden',
-    syncRetrySucceeded: 'Rückmeldung erfolgreich nachgeholt.',
+    syncRetrySucceeded: 'Rückmeldung erfolgreich.',
     summary: {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+    },
+  },
+  import: {
+    progress: '{{ finished }} / {{ total }} kopiert',
+    progressBarLabel: 'Übertragungsfortschritt',
+    summary: {
+      counts: '{{done}} kopiert · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      countsWithRenamed:
+        '{{done}} kopiert · {{renamed}} umbenannt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
     },
   },
   syncReportReason: {
     forbidden: 'Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.',
     setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
     unavailable: 'Grund: EmotePurge oder 7TV war gerade nicht erreichbar.',
-    channelMismatch:
+    channelMismatchNotTracked:
+      'Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.',
+    channelMismatchActiveSetDiffers:
       'Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.',
     shortfall: 'Grund: Nicht alle Emotes waren in EmotePurge vermerkt.',
     other: 'Grund: Unerwarteter Fehler.',
@@ -92,6 +106,7 @@ function accessibleName(el: Element): string {
       [syncReportReason]="syncReportReason"
       [rateLimitPauseSeconds]="rateLimitPauseSeconds"
       [dismissible]="dismissible"
+      [renamedCount]="renamedCount"
       (cancelled)="cancelledCount = cancelledCount + 1"
       (dismissed)="dismissedCount = dismissedCount + 1"
       (syncRetryRequested)="syncRetryRequestedCount = syncRetryRequestedCount + 1"
@@ -112,6 +127,7 @@ class HostComponent {
   syncReportReason: SyncReportReason | null = null;
   rateLimitPauseSeconds: number | null = null;
   dismissible = true;
+  renamedCount: number | null = null;
   projectRunActions = false;
   cancelledCount = 0;
   dismissedCount = 0;
@@ -306,25 +322,40 @@ describe('RunProgressPanel', () => {
   });
 
   describe('sync-report hint mapping', () => {
-    it.each(['failed', 'partial'] as const)(
-      "shows the sync-failed notice (title, body, retry) for syncReport '%s'",
-      (syncReport) => {
-        const dialog = render({
-          items: [queueItem('a', 'done')],
-          isRunning: false,
-          syncReport,
-        });
+    it("shows the sync-failed notice (title, body, retry) for syncReport 'failed'", () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        syncReport: 'failed',
+      });
 
-        expect(dialog.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
-        expect(dialog.text()).toContain(
-          'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken.',
-        );
-        expect(dialog.button('Erneut melden')).not.toBeNull();
-        // 'partial' is documented (run-progress-panel.ts) as sharing this exact hint with 'failed' —
-        // same title, same body, same retry action, not merely "also something is shown".
-        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
-      },
-    );
+      expect(dialog.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+      expect(dialog.text()).toContain(
+        'Die Emotes sind bei 7TV gelöscht, aber EmotePurge konnte es nicht vermerken.',
+      );
+      expect(dialog.button('Erneut melden')).not.toBeNull();
+      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
+    });
+
+    // #255: 'partial' means the report *did* get through, just not completely — it now gets its
+    // own title/body ("vermerkt, aber …") rather than sharing 'failed'\'s "fehlgeschlagen …
+    // konnte es nicht vermerken", which was simply wrong for an outcome that was in fact recorded.
+    it("shows its own sync-partial notice (title, body, retry) for syncReport 'partial'", () => {
+      const dialog = render({
+        items: [queueItem('a', 'done')],
+        isRunning: false,
+        syncReport: 'partial',
+      });
+
+      expect(dialog.text()).toContain('Rückmeldung an EmotePurge unvollständig');
+      expect(dialog.text()).toContain(
+        'Die Emotes sind bei 7TV gelöscht und bei EmotePurge vermerkt — aber nicht vollständig.',
+      );
+      expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+      expect(dialog.text()).not.toContain('konnte es nicht vermerken');
+      expect(dialog.button('Erneut melden')).not.toBeNull();
+      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
+    });
 
     // Spec E23: the reason is its own line inside the report notice, one per reason — and no line
     // at all without one.
@@ -333,7 +364,8 @@ describe('RunProgressPanel', () => {
       ['failed', 'setNotFound'],
       ['failed', 'unavailable'],
       ['failed', 'other'],
-      ['partial', 'channelMismatch'],
+      ['partial', 'channelMismatchNotTracked'],
+      ['partial', 'channelMismatchActiveSetDiffers'],
       ['partial', 'shortfall'],
     ] as const)(
       "shows the reason line for syncReport '%s' with reason '%s', and none without a reason",
@@ -352,25 +384,33 @@ describe('RunProgressPanel', () => {
           syncReport,
           syncReportReason: null,
         });
-        expect(withoutReason.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
+        expect(withoutReason.text()).toContain(
+          syncReport === 'partial'
+            ? 'Rückmeldung an EmotePurge unvollständig'
+            : 'Rückmeldung an EmotePurge fehlgeschlagen',
+        );
         expect(withoutReason.text()).not.toContain('Grund:');
       },
     );
 
-    // addendum N4, AK 40: a channel mismatch keeps its notice but loses the retry action — a
-    // retry would only repeat the same mismatch; failed (any reason) and shortfall keep it.
-    it('offers no retry for partial/channelMismatch, but keeps the notice and its reason', () => {
-      const dialog = render({
-        items: [queueItem('a', 'done')],
-        isRunning: false,
-        syncReport: 'partial',
-        syncReportReason: 'channelMismatch',
-      });
+    // addendum N4, AK 40: either channel-mismatch reason keeps its notice but loses the retry
+    // action — a retry would only repeat the same mismatch; failed (any reason) and shortfall
+    // keep it.
+    it.each(['channelMismatchNotTracked', 'channelMismatchActiveSetDiffers'] as const)(
+      'offers no retry for partial/%s, but keeps the notice and its reason',
+      (syncReportReason) => {
+        const dialog = render({
+          items: [queueItem('a', 'done')],
+          isRunning: false,
+          syncReport: 'partial',
+          syncReportReason,
+        });
 
-      expect(dialog.text()).toContain('Rückmeldung an EmotePurge fehlgeschlagen');
-      expect(dialog.text()).toContain(DE_TRANSLATIONS.syncReportReason.channelMismatch);
-      expect(dialog.button('Erneut melden')).toBeNull();
-    });
+        expect(dialog.text()).toContain('Rückmeldung an EmotePurge unvollständig');
+        expect(dialog.text()).toContain(DE_TRANSLATIONS.syncReportReason[syncReportReason]);
+        expect(dialog.button('Erneut melden')).toBeNull();
+      },
+    );
 
     it.each([
       ['partial', 'shortfall'],
@@ -399,7 +439,7 @@ describe('RunProgressPanel', () => {
         syncReport: 'succeeded',
       });
 
-      expect(dialog.text()).toContain('Rückmeldung erfolgreich nachgeholt.');
+      expect(dialog.text()).toContain('Rückmeldung erfolgreich.');
       expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
       expect(dialog.button('Erneut melden')).toBeNull();
     });
@@ -411,7 +451,7 @@ describe('RunProgressPanel', () => {
         syncReport: 'succeeded',
       });
 
-      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+      expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
       expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
     });
 
@@ -424,7 +464,7 @@ describe('RunProgressPanel', () => {
           syncReport,
         });
 
-        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich nachgeholt.');
+        expect(dialog.text()).not.toContain('Rückmeldung erfolgreich.');
         expect(dialog.text()).not.toContain('Rückmeldung an EmotePurge fehlgeschlagen');
       },
     );
@@ -461,6 +501,45 @@ describe('RunProgressPanel', () => {
 
       expect(dialog.fixture.nativeElement.querySelector('[run-actions]')).not.toBeNull();
       expect(dialog.text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+    });
+  });
+
+  // Spec #255: an import run's adopted renames are a `done` row too, but not a copy — a host
+  // (currently only import) can split them out via `renamedCount` without touching what
+  // massDelete/restore ever showed.
+  describe('summary counts', () => {
+    it('reads "copied" alone when renamedCount is not passed, unaffected by the new field', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done')],
+        isRunning: false,
+        labelPrefix: 'massDelete',
+      });
+
+      expect(dialog.text()).toContain('2 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+      expect(dialog.text()).not.toContain('umbenannt');
+    });
+
+    it('reads "copied" alone when renamedCount is 0, even for a labelPrefix that has a renamed wording', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done')],
+        isRunning: false,
+        labelPrefix: 'import',
+        renamedCount: 0,
+      });
+
+      expect(dialog.text()).toContain('2 kopiert · 0 fehlgeschlagen · 0 abgebrochen');
+      expect(dialog.text()).not.toContain('umbenannt');
+    });
+
+    it('splits renamedCount out of "copied" into its own "renamed" count once it is positive', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), queueItem('b', 'done'), queueItem('c', 'done')],
+        isRunning: false,
+        labelPrefix: 'import',
+        renamedCount: 1,
+      });
+
+      expect(dialog.text()).toContain('2 kopiert · 1 umbenannt · 0 fehlgeschlagen · 0 abgebrochen');
     });
   });
 

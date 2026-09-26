@@ -376,9 +376,22 @@ export class SevenTvRunEngine {
     this.finish();
   }
 
-  /** Clears the queue after the owning service has torn down its own per-run state. */
+  /** Clears the queue after the owning service has torn down its own per-run state. Never called
+   *  while a run is in flight: `finish()` builds the run's result from this queue, and a run that is
+   *  merely no longer shown still has to report every row 7TV confirmed (#256). */
   reset(): void {
     this.queue.set([]);
+  }
+
+  /** Puts a finished run's rows back on the queue — the owning service showing a run again whose
+   *  queue was already cleared (#256: a detached run whose report did not succeed). Refused while
+   *  a run is in flight, whose live queue must not be overwritten. */
+  showFinishedRows(items: RunQueueItem[]): boolean {
+    if (this.isRunning()) {
+      return false;
+    }
+    this.queue.set(items);
+    return true;
   }
 
   /** Runs one row's steps from `step` on, strictly in order, and settles the row on the queue. Emits

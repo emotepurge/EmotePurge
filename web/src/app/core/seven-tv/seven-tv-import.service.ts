@@ -1,7 +1,7 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { DestroyRef, Service, Signal, computed, effect, inject, signal } from '@angular/core';
+import { Service, Signal, computed, inject, linkedSignal, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { catchError, of, retry, throwError, timeout, timer } from 'rxjs';
+import { catchError, map, of, retry, throwError, timeout, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteAdminService } from '../emotes/emote-admin.service';
@@ -15,6 +15,7 @@ import {
   MAX_AUTOMATIC_SYNC_RETRIES,
   REMOVE_EMOTE_MUTATION,
   SYNC_RETRY_DELAY_MS,
+  timeoutReportAttempt,
 } from './seven-tv-delete.service';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { ResyncTriggerState } from './seven-tv-restore.service';
@@ -25,6 +26,8 @@ import {
   RunResult,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
+import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
+import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
@@ -33,6 +36,7 @@ import {
   TargetCheckBlockReason,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  isChannelMismatch,
 } from './sync-report-outcome';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
@@ -141,21 +145,22 @@ export interface ImportRunResult extends RunResult {
  * whose snapshot has no `unknown` row settles the moment the engine completes; one with an
  * `unknown` row stays `pending` until the one live re-read of the target set has cleared up what
  * it can (`SevenTvImportService.onRunComplete`). Nothing is reported to our Api before `'settled'`.
+ * Set in lockstep with the run's `phase` since #256 — `settleRun` moves it to `'settled'` in the
+ * same `update()` call that moves the phase to `reporting`, not derived from the phase after the
+ * fact — and kept as its own field because the dock, the usage-stats page and #254 read it.
  */
 export type ImportSettlement = 'pending' | 'settled';
 
 /**
  * One import run, from the moment it starts to the moment its bookkeeping is done. Everything the
- * closing calls need hangs off *this* object, never off a field next to the service (R15, #72):
+ * closing calls need hangs off *this* record, never off a field next to the service (R15, #72):
  * the engine sets `isRunning` back to `false` inside `finish()`, i.e. *before* `onComplete` fires
- * the asynchronous follow-up, and the arbiter derives "a run is active" from exactly that signal —
- * so a second import can legitimately start while the first one's `sync-imported`/`resync` are
- * still in flight. With a target channel in one field and the reported keys in another, a late
- * answer (or a manual retry) of run 1 could be applied to run 2's target: emote rows pushed into a
- * third channel and an audit entry naming the wrong origin. Bound to the record, a late answer is
- * simply no longer `run()` and is dropped.
+ * the asynchronous follow-up, so a second import can legitimately start while the first one's
+ * re-read and reports are still out. Since #256 the record also carries its own phase and report
+ * states (`RunRecordBase`, `SevenTvRunLifecycle`): a late answer of run 1 lands on run 1's record —
+ * found by `runId` — and never on the dock's signals, which project whichever run is shown.
  */
-export interface ImportRunInfo {
+export interface ImportRunInfo extends RunRecordBase {
   /** `null` for a run into an *untracked* account's set (T2.6, spec 8.6) — there is no channel of
    *  ours to resync afterwards or to report the channel-scoped `sync-imported` against; see
    *  `reportImported` and `onRunComplete` for what each of the two cases does instead. */
@@ -193,9 +198,30 @@ export interface ImportRunInfo {
   removedCount: number;
   /** Rows whose outcome is still `unknown` in `result`. `0` while the run is in flight. */
   unknownCount: number;
+  /** Replace rows whose REMOVE is still `unknown` in `result` (`failedStep === 0`) — a subset of
+   *  `unknownCount` (#256, issue point 4): the re-read in `settleUnknownRow` always turns an
+   *  answered REMOVE into `failed@0`/`failed@1`, so this only survives a read that itself failed,
+   *  timed out or came back incomplete. Exactly the rows the result log never counts as a
+   *  confirmed removal — `import-progress-section.ts` names them so the recovery file is not the
+   *  only place that says so. `0` while the run is in flight. */
+  unknownRemovalCount: number;
   /** `null` while the run is in flight; the engine's snapshot once it completes, replaced by the
    *  settled outcome when `settlement` turns `'settled'`. */
   result: ImportRunResult | null;
+  /** This run's `sync-imported` report — `SevenTvImportService.syncReport` projects it for the
+   *  shown run. */
+  syncReport: SyncReportState;
+  /** This run's removal report (`sync-deleted`) — projected by `removalReport`. */
+  removalReport: SyncReportState;
+  /** Projected by `removalReportReason`. */
+  removalReportReason: SyncReportReason | null;
+  /** Projected by `resyncTrigger`. Not a report (#256, Plan-256 Festlegung 4): never holds the run
+   *  open. */
+  resyncTrigger: ResyncTriggerState;
+  /** Projected by `abortedForPrivileges`. */
+  abortedForPrivileges: boolean;
+  /** Projected by `protocolSaved`; set through `markProtocolSaved()`. */
+  protocolSaved: boolean;
 }
 
 /** Per-run state the run's operation and its settlement share, never exposed. */
@@ -217,7 +243,7 @@ interface ImportRunContext {
  *   longer the same as the channel it wrote into (a restore can target any set, tracked or not); an
  *   import writes into a *different* channel on purpose from the start, so resetting the run when
  *   the page follows the user would throw away the very run they started (R9).
- * - **The follow-up hangs off `run()`, not off loose fields** — see `ImportRunInfo`.
+ * - **The follow-up hangs off the run's own record, not off loose fields** — see `ImportRunInfo`.
  *
  * A run executes a `TransferPlan`: one queue row per plan row, and per action the mutations the
  * row needs — an ADD for `add`/`renameSource`, a REMOVE of the target and then an ADD for
@@ -227,14 +253,19 @@ interface ImportRunContext {
  * REMOVEs are reported through the set-centric `sync-deleted` next to the `sync-imported` of
  * the ADDs. A plan of `add` rows only runs exactly as a plain copy always did.
  *
- * It does not know the `SevenTvRunArbiter`, and does not report to it: the arbiter derives its
- * answer from this service's own `isRunning` signal (its third branch), exactly as it does for
- * delete and restore. Checking whether a run may start is the caller's job.
+ * Every run completes run-bound (#256, `SevenTvRunLifecycle`): `running → settling → reporting →
+ * closed` on its own record, whether or not the dock still shows it. `reset()` and a newer run only
+ * change what is shown. `isSettling` and `destructiveOpen` look across every open run of this
+ * service, not just the shown one.
+ *
+ * It registers itself with the `SevenTvRunArbiter` in its constructor (kind `'import'` plus
+ * `isRunning`, `isSettling`, `destructiveOpen`) and reports nothing else there: the arbiter derives
+ * "busy" and the tab's unload guard from those signals, exactly as it does for delete and restore.
+ * Checking whether a run may start is the caller's job.
  */
 @Service()
 export class SevenTvImportService {
   private readonly channelService = inject(ChannelService);
-  private readonly destroyRef = inject(DestroyRef);
   private readonly emoteAdminService = inject(EmoteAdminService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly httpClient = inject(HttpClient);
@@ -247,14 +278,31 @@ export class SevenTvImportService {
     this.translocoService,
   );
 
+  /** Every open run of this service, by id, plus the one the dock shows (#256). */
+  private readonly lifecycle = new SevenTvRunLifecycle<ImportRunInfo>(
+    'import',
+    (run) => run.syncReport === 'pending' || run.removalReport === 'pending',
+  );
+
   readonly queue = this.engine.queue;
   readonly isRunning = this.engine.isRunning;
   readonly rateLimitPauseSeconds = this.engine.rateLimitPauseSeconds;
   readonly progress = this.engine.progress;
 
-  /** The run this service is currently showing — in flight (`result === null`) or finished. The
-   *  identity of this object is what every asynchronous follow-up checks itself against. */
-  readonly run = signal<ImportRunInfo | null>(null);
+  /** The run this service is currently showing — in flight (`result === null`) or finished. Its
+   *  record is replaced by a new object on every change; `runId` is its identity. Writable because
+   *  specs drive the dock through it; production code only writes through the lifecycle. */
+  readonly run = this.lifecycle.shown;
+
+  /** True while any run of this service re-reads its unknown rows or waits for a report — shown or
+   *  not (#256, contract P1). */
+  readonly isSettling = this.lifecycle.isSettling;
+
+  /** True while any run whose plan deletes (a `replace` row) is not closed — running, re-reading or
+   *  reporting, shown or not (#256, contract P3). The arbiter's unload guard (the union over
+   *  every run service) reads it: until the run closes, the report of its confirmed REMOVEs has not been answered, and closing the tab then
+   *  could lose it. */
+  readonly destructiveOpen = this.lifecycle.destructiveOpen;
 
   /** The rows to show: the engine's live queue while a run is in flight, the shown run's own
    *  result once it is not. After a run this is the settled outcome of *that* run — never the
@@ -266,34 +314,50 @@ export class SevenTvImportService {
     return this.run()?.result?.items ?? [];
   });
 
-  /** True while a run that deletes (its plan has a `replace` row) is in flight *or* still waiting
-   *  for its re-read — what a `beforeunload` guard hangs off. The pending window counts: until the
-   *  run settles, the report of its confirmed REMOVEs has not gone out, and closing the tab then
-   *  would lose it. */
-  readonly destructiveRunActive = computed(() => {
-    const run = this.run();
-    const active = this.engine.isRunning() || run?.settlement === 'pending';
-    return active && (run?.plan.rows.some((row) => row.action === 'replace') ?? false);
-  });
+  /** How many of `items()` are a `done` adopt — an existing target entry renamed in place rather
+   *  than a new one added. What `RunProgressPanel.renamedCount` (spec #255) splits out of the
+   *  dock's "N kopiert" into its own "M umbenannt". */
+  readonly doneAdoptCount = computed(
+    () =>
+      this.items().filter(
+        (item) => item.status === 'done' && item.transfer.action === 'adoptSourceName',
+      ).length,
+  );
 
-  /** State of the closing sync-imported call. Never 'partial': the endpoint answers 204 without a
-   *  body, so there is no per-id outcome to compare against. */
-  readonly syncReport = signal<SyncReportState>('idle');
+  // The dock's signals below are projections of the shown run's record (#256, Plan-256
+  // Festlegung 14): `linkedSignal`, so they follow `run()` and stay writable for the specs that
+  // drive a dock directly. Production code never writes them — it writes the record.
 
-  /** State of the closing sync-deleted call for the replace rows' confirmed REMOVEs — the same
-   *  vocabulary and evaluation as the delete run's own report. Stays `'idle'` for a run without
-   *  a confirmed REMOVE. */
-  readonly removalReport = signal<SyncReportState>('idle');
+  /** State of the shown run's closing sync-imported call. Never 'partial': the endpoint answers
+   *  204 without a body, so there is no per-id outcome to compare against. */
+  readonly syncReport = linkedSignal<SyncReportState>(() => this.run()?.syncReport ?? 'idle');
+
+  /** State of the shown run's closing sync-deleted call for the replace rows' confirmed REMOVEs —
+   *  the same vocabulary and evaluation as the delete run's own report. Stays `'idle'` for a run
+   *  without a confirmed REMOVE. */
+  readonly removalReport = linkedSignal<SyncReportState>(() => this.run()?.removalReport ?? 'idle');
 
   /** Why `removalReport` is `'failed'`/`'partial'` (spec E23), `null` otherwise — the dock shows it
    *  as its own line under the removal-report notice. */
-  readonly removalReportReason = signal<SyncReportReason | null>(null);
+  readonly removalReportReason = linkedSignal<SyncReportReason | null>(
+    () => this.run()?.removalReportReason ?? null,
+  );
 
-  readonly resyncTrigger = signal<ResyncTriggerState>('idle');
+  readonly resyncTrigger = linkedSignal<ResyncTriggerState>(
+    () => this.run()?.resyncTrigger ?? 'idle',
+  );
 
-  /** True once a row failed for missing 7TV write privileges and the run gave up because of it —
-   *  the summary says so instead of listing every cancelled row as an ordinary failure. */
-  readonly abortedForPrivileges = signal(false);
+  /** True once a row of the shown run failed for missing 7TV write privileges and the run gave up
+   *  because of it — the summary says so instead of listing every cancelled row as an ordinary
+   *  failure. */
+  readonly abortedForPrivileges = linkedSignal<boolean>(
+    () => this.run()?.abortedForPrivileges ?? false,
+  );
+
+  /** Whether the shown run's transfer-run protocol was downloaded at least once — the reminder next
+   *  to the dock's Close button (`import.summary.protocolNotSaved`), since `reset()` leaves the
+   *  downloaded file as the only durable artifact. */
+  readonly protocolSaved = linkedSignal<boolean>(() => this.run()?.protocolSaved ?? false);
 
   /** How many rows the caller's fresh pre-run duplicate check (#149/T5, `already-present-filter.ts`,
    *  run from `import-flow.ts` right before this call) dropped on top of the dialog-time
@@ -336,31 +400,20 @@ export class SevenTvImportService {
    *  show the reason. Cleared by the next `startImport()` call, whatever it does, and by `reset()`. */
   readonly targetCheckBlockReason = signal<TargetCheckBlockReason | null>(null);
 
-  /** Whether the shown run's transfer-run protocol was downloaded at least once — the reminder next
-   *  to the dock's Close button (`import.summary.protocolNotSaved`), since `reset()` leaves the
-   *  downloaded file as the only durable artifact. Reset to `false` by every `startImport()` call
-   *  that actually starts a run and by `reset()`. */
-  readonly protocolSaved = signal(false);
-
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
   /** The plan rows of the shown run by queue key — what `items` attaches to the engine's rows. */
   private readonly transferRowsByKey = computed(() => indexPlanRows(this.run()?.plan ?? null));
 
   constructor() {
-    // The `beforeunload` guard: registered exactly while `destructiveRunActive` is
-    // `true`, removed the moment it flips back — never after the run (settlement clears it), never
-    // for a plan without a replace row. `preventUnload` is a module-level function, not a closure
-    // created here, so `removeEventListener` always targets the exact reference `addEventListener`
-    // registered; an inline arrow function would silently fail to remove itself.
-    effect(() => {
-      if (this.destructiveRunActive()) {
-        window.addEventListener('beforeunload', preventUnload);
-      } else {
-        window.removeEventListener('beforeunload', preventUnload);
-      }
+    // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
+    // tab's unload guard from these three signals; it does not know this service otherwise.
+    inject(SevenTvRunArbiter).register({
+      kind: 'import',
+      isRunning: this.isRunning,
+      isSettling: this.isSettling,
+      destructiveOpen: this.destructiveOpen,
     });
-    this.destroyRef.onDestroy(() => window.removeEventListener('beforeunload', preventUnload));
   }
 
   /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source id, validated —
@@ -381,7 +434,10 @@ export class SevenTvImportService {
    *  is set-centric (spec 6.5) regardless of whether the target is tracked, so there is nothing left
    *  here to refuse it for. The caller's own pre-check (`import-flow.ts`'s `start()`,
    *  {@link reportTargetCheckBlocked}) already kept an unreadable/inaccessible target from reaching
-   *  this call at all. */
+   *  this call at all.
+   *
+   *  A run that starts is shown at once; the run shown before it goes on to close on its own record
+   *  (#256). */
   startImport(
     target: {
       setId: string;
@@ -421,6 +477,9 @@ export class SevenTvImportService {
       gqlStatusByKey: new Map(),
     };
     const started: ImportRunInfo = {
+      runId: this.lifecycle.createRunId(),
+      phase: 'running',
+      destructive: deletes,
       targetChannelName: target.channelName,
       targetOwnerDisplayName: target.ownerDisplayName ?? null,
       targetSetId: target.setId,
@@ -431,53 +490,58 @@ export class SevenTvImportService {
       settlement: 'pending',
       removedCount: 0,
       unknownCount: 0,
+      unknownRemovalCount: 0,
       result: null,
+      syncReport: 'idle',
+      removalReport: 'idle',
+      removalReportReason: null,
+      resyncTrigger: 'idle',
+      abortedForPrivileges: false,
+      protocolSaved: false,
     };
 
+    // Opened *before* the engine is asked to start (#256 review finding): the engine answers
+    // asynchronously in practice, but only this ordering guarantees that a synchronous
+    // `onComplete` — however unlikely — always finds its record already registered, rather than
+    // updating a run the lifecycle does not know about yet, which would then never close.
+    const previousShown = this.lifecycle.shown();
+    this.lifecycle.open(started);
     if (
       !this.engine.start(
         target.setId,
         queueEmotes,
-        this.createOperation(context, deletes),
-        (result) => this.onRunComplete(started, context, result),
+        this.createOperation(started.runId, context, deletes),
+        (result) => this.onRunComplete(started.runId, context, result),
       )
     ) {
-      // Refused (already running, empty list, no token) — leave every signal as it was, except
-      // skippedDuplicates, duplicateCheckAvailable and replaceSkippedDrift above: an
-      // all-duplicates import is a legitimate "refused" case whose count (and whether it is even
-      // trustworthy) the caller still needs to see.
-      return;
+      // Refused (already running, empty list, no token) — take the just-opened record back and
+      // restore whatever was shown before it, which may be another run still settling its reports.
+      // Every signal above (skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift) stays
+      // as set: an all-duplicates import is a legitimate "refused" case whose count (and whether it
+      // is even trustworthy) the caller still needs to see.
+      this.lifecycle.discardUnstarted(started.runId, previousShown);
     }
-
-    this.run.set(started);
-    this.syncReport.set('idle');
-    this.removalReport.set('idle');
-    this.removalReportReason.set(null);
-    this.resyncTrigger.set('idle');
-    this.abortedForPrivileges.set(false);
-    this.protocolSaved.set(false);
   }
 
   cancel(): void {
     this.engine.cancel();
   }
 
-  /** Clears what the dock shows. A re-read still in flight for the run shown so far keeps going:
-   *  its outcome is not published any more, but its reports are still sent (see `settleRun`). */
+  /** Clears what the dock shows — and only that (#256, Plan-256 Festlegung 3). The shown run goes
+   *  on on its own record: a run still in flight runs to its end (never cancelled here: a request
+   *  7TV may already have applied must still be reported), a re-read still out settles it, and its
+   *  reports go out and are answered. The engine's queue belongs to a run in flight until
+   *  `finish()` has built its result from it, so it is cleared then (`onRunComplete`), not here. */
   reset(): void {
-    this.engine.reset();
-    this.run.set(null);
-    this.syncReport.set('idle');
-    this.removalReport.set('idle');
-    this.removalReportReason.set(null);
-    this.resyncTrigger.set('idle');
-    this.abortedForPrivileges.set(false);
+    if (!this.engine.isRunning()) {
+      this.engine.reset();
+    }
+    this.lifecycle.detach();
     this.skippedDuplicates.set(0);
     this.replaceSkippedDrift.set(0);
     this.duplicateCheckAvailable.set(true);
     this.targetCheckBlockReason.set(null);
     this.showDuplicateNotice(false);
-    this.protocolSaved.set(false);
   }
 
   /** Called by `import-flow.ts`'s `start()` when the shared pre-check (spec 4.2, 6.2) blocks a plan
@@ -496,42 +560,59 @@ export class SevenTvImportService {
     this.showDuplicateNotice(true);
   }
 
-  /** Manual retry for the closing report — the 7TV adds are long done, so this only re-sends the
-   *  bookkeeping call. Safe to repeat: the endpoint only writes an audit entry. Target *and* keys
-   *  come from the same record, so a retry can never mix one run's keys with another's channel. */
+  /** Records on the shown run that its transfer-run protocol was downloaded. */
+  markProtocolSaved(): void {
+    const shown = this.run();
+    if (shown !== null) {
+      this.lifecycle.update(shown.runId, (run) => ({ ...run, protocolSaved: true }));
+    }
+  }
+
+  /** Manual retry for the closing report of the shown run — the 7TV adds are long done, so this
+   *  only re-sends the bookkeeping call. Safe to repeat: the endpoint only writes an audit entry.
+   *  Target *and* keys come from the same record, so a retry can never mix one run's keys with
+   *  another's channel. A retry on a closed run does not reopen it (#256): it is a new report on a
+   *  closed run, and neither the arbiter nor the unload guard sees it. */
   retrySyncReport(): void {
     const current = this.run();
     if (
-      this.syncReport() === 'pending' ||
-      current?.settlement !== 'settled' ||
+      current === null ||
+      current.syncReport === 'pending' ||
+      current.settlement !== 'settled' ||
       importedKeys(current).length === 0
     ) {
       return;
     }
 
-    this.reportImported(current);
+    this.reportImported(current.runId);
   }
 
   /** Manual retry for the removal report — same rules as `retrySyncReport`, same record, and none
-   *  for a channel mismatch (addendum N4, AK 40): it is recorded and its resync already runs, so a
-   *  retry could only write the same mismatch again. */
+   *  for either channel-mismatch reason (addendum N4, AK 40): it is recorded and, for
+   *  activeSetDiffers, its resync already runs, so a retry could only write the same mismatch
+   *  again. */
   retryRemovalReport(): void {
     const current = this.run();
     if (
-      this.removalReport() === 'pending' ||
-      this.removalReportReason() === 'channelMismatch' ||
-      current?.settlement !== 'settled' ||
+      current === null ||
+      current.removalReport === 'pending' ||
+      isChannelMismatch(current.removalReportReason) ||
+      current.settlement !== 'settled' ||
       removedTargetIds(current).length === 0
     ) {
       return;
     }
 
-    this.reportRemoved(current);
+    this.reportRemoved(current.runId);
   }
 
   /** The operation for one run. Built per run rather than once per service: every request depends
-   *  on the row's plan entry, and `abortOn` records into this run's own context. */
-  private createOperation(context: ImportRunContext, deletes: boolean): RunOperation {
+   *  on the row's plan entry, and `abortOn` records into this run's own context and record. */
+  private createOperation(
+    runId: string,
+    context: ImportRunContext,
+    deletes: boolean,
+  ): RunOperation {
     const rowOf = (emote: RunQueueEmote): TransferRow =>
       transferRowOf(context.rowsByKey, emote.key);
     return {
@@ -545,7 +626,7 @@ export class SevenTvImportService {
         this.recordFailedStepStatus(context, failure.gqlStatus);
         const abort = abortsForMissingPrivileges(failure);
         if (abort) {
-          this.abortedForPrivileges.set(true);
+          this.lifecycle.update(runId, (run) => ({ ...run, abortedForPrivileges: true }));
         }
         return abort;
       },
@@ -565,32 +646,22 @@ export class SevenTvImportService {
   }
 
   /**
-   * Turns the engine's snapshot into the run's settled outcome before anything is reported.
+   * Turns the engine's snapshot into the run's settled outcome before anything is reported —
+   * always on the run's own record, whether or not the dock still shows it (#256: there is no early
+   * return for a run that is no longer shown; its confirmed changes are reported all the same).
    *
-   * Without an `unknown` row the snapshot settles at once. With one, the target set is read live
-   * once (tokenless, 7TV's global bucket) and each `unknown` row is cleared up on a *copy* of the
-   * snapshot's rows (`settleUnknownRow`); the settled rows and the reports are then published
-   * together. A read that fails, runs out of time (`SETTLE_READ_TIMEOUT_MS`) or comes back
-   * `complete: false` leaves those rows `unknown` — the result settles all the same.
+   * Without an `unknown` row the snapshot settles at once and the run goes straight to `reporting`
+   * (or `closed`). With one, the run is `settling` while the target set is read live once
+   * (tokenless, 7TV's global bucket) and each `unknown` row is cleared up on a *copy* of the
+   * snapshot's rows (`settleUnknownRow`). A read that fails, runs out of time
+   * (`SETTLE_READ_TIMEOUT_MS`) or comes back `complete: false` leaves those rows `unknown` — the
+   * result settles all the same.
    *
-   * The re-read is bound to this run, not to the service: when its answer arrives, the settled
-   * outcome replaces `run()` only if `run()` is still this run's pending record. A second import
-   * started in the meantime, or a `reset()`, keeps the outcome off the dock — but the reports are
-   * sent regardless, because they record 7TV changes that happened (a confirmed REMOVE always
-   * reaches the removal report), and their state signals are only ever written for the run on
-   * screen (`applyIfCurrent`).
+   * A run `reset()` detached while it was in flight has left its queue on the engine until now,
+   * because `finish()` builds this very result from it; nothing shows that queue any more, so it
+   * is cleared here.
    */
-  private onRunComplete(
-    started: ImportRunInfo,
-    context: ImportRunContext,
-    result: RunResult,
-  ): void {
-    if (this.run() !== started) {
-      // Only reachable via reset() during the run: the shown run is not this one any more, so
-      // neither its result nor its bookkeeping belong on screen.
-      return;
-    }
-
+  private onRunComplete(runId: string, context: ImportRunContext, result: RunResult): void {
     const snapshot: ImportRunResult = {
       ...result,
       items: result.items.map((item) => ({
@@ -598,45 +669,63 @@ export class SevenTvImportService {
         transfer: transferRowOf(context.rowsByKey, item.key),
       })),
     };
-    // A new object rather than a mutation, so consumers of `run()` actually see the result.
-    const pending: ImportRunInfo = { ...started, result: snapshot, ...outcomeCounts(snapshot) };
-    this.run.set(pending);
-
-    if (!snapshot.items.some((item) => item.status === 'unknown')) {
-      this.settleRun(pending, context, null);
+    const hasUnknown = snapshot.items.some((item) => item.status === 'unknown');
+    const pending = this.lifecycle.update(runId, (run) => ({
+      ...run,
+      result: snapshot,
+      ...outcomeCounts(snapshot),
+      phase: hasUnknown ? 'settling' : run.phase,
+    }));
+    if (!this.lifecycle.isShown(runId)) {
+      this.engine.reset();
+    }
+    if (pending === null) {
+      // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
       return;
     }
 
-    loadSevenTvSetEntries(this.httpClient, started.targetSetId)
+    if (!hasUnknown) {
+      this.settleRun(runId, context, null);
+      return;
+    }
+
+    loadSevenTvSetEntries(this.httpClient, pending.targetSetId)
       .pipe(
         timeout(SETTLE_READ_TIMEOUT_MS),
         catchError(() => of(null)),
       )
-      .subscribe((entries) => this.settleRun(pending, context, entries));
+      .subscribe((entries) => this.settleRun(runId, context, entries));
   }
 
+  /** Publishes the settled outcome on the run's record and opens its reports in the same step, so
+   *  the record goes from `settling`/`running` to `reporting` — or straight to `closed` when there
+   *  is nothing to report — without a moment in which it looks closed with a report still to come. */
   private settleRun(
-    pending: ImportRunInfo,
+    runId: string,
     context: ImportRunContext,
     entries: SevenTvSetEntries | null,
   ): void {
-    const snapshot = pending.result;
+    const snapshot = this.lifecycle.get(runId)?.result ?? null;
     if (snapshot === null) {
       return;
     }
     const translate = (key: string): string => this.translocoService.translate(key);
     const result = settleRunResult(snapshot, context, entries, translate);
-    const settled: ImportRunInfo = {
-      ...pending,
+    const reportsImported = importedKeysOf(result).length > 0;
+    const reportsRemoved = removedTargetIdsOf(result).length > 0;
+    const settled = this.lifecycle.update(runId, (run) => ({
+      ...run,
       result,
       settlement: 'settled',
+      phase: 'reporting',
       ...outcomeCounts(result),
-    };
-    if (this.run() === pending) {
-      // From here on this is the record the follow-up is bound to.
-      this.run.set(settled);
+      syncReport: reportsImported ? 'pending' : run.syncReport,
+      removalReport: reportsRemoved ? 'pending' : run.removalReport,
+      removalReportReason: reportsRemoved ? null : run.removalReportReason,
+    }));
+    if (settled !== null) {
+      this.sendFollowUp(settled);
     }
-    this.sendFollowUp(settled);
   }
 
   /** The reports and the resync of a settled run. `sync-imported` names every `done` row that
@@ -652,7 +741,7 @@ export class SevenTvImportService {
     // "which set did this land in" bookkeeping (`targetEmoteSetId`) are correct regardless of which
     // set that is.
     if (imported.length > 0) {
-      this.reportImported(run);
+      this.reportImported(run.runId);
     }
 
     // The resync is what actually pulls the changed emote rows into the *channel's active* set
@@ -675,33 +764,34 @@ export class SevenTvImportService {
       // every channel that report touched and names it in `resyncTriggered` — a second resync of
       // ours would only run into the per-channel cooldown. A failed report names nothing, so the
       // resync runs as it always did.
-      this.reportRemoved(run, (resyncTriggered) => {
+      this.reportRemoved(run.runId, (resyncTriggered) => {
         if (resyncChannel !== null && !includesChannel(resyncTriggered, resyncChannel)) {
-          this.triggerResync(run, resyncChannel);
+          this.triggerResync(run.runId, resyncChannel);
         }
       });
       return;
     }
     if (resyncChannel !== null) {
-      this.triggerResync(run, resyncChannel);
+      this.triggerResync(run.runId, resyncChannel);
     }
   }
 
-  private triggerResync(run: ImportRunInfo, channelName: string): void {
-    this.applyIfCurrent(run, () => this.resyncTrigger.set('pending'));
+  private triggerResync(runId: string, channelName: string): void {
+    this.patchRun(runId, { resyncTrigger: 'pending' });
     this.channelService.resync(channelName).subscribe({
-      next: () => this.applyIfCurrent(run, () => this.resyncTrigger.set('succeeded')),
+      next: () => this.patchRun(runId, { resyncTrigger: 'succeeded' }),
       error: (error: HttpErrorResponse) =>
         // 429 = the per-channel cooldown: a sync just ran or will run — "coming on its own",
         // reported as such rather than as an error.
-        this.applyIfCurrent(run, () =>
-          this.resyncTrigger.set(error.status === 429 ? 'cooldown' : 'failed'),
-        ),
+        this.patchRun(runId, { resyncTrigger: error.status === 429 ? 'cooldown' : 'failed' }),
     });
   }
 
-  private reportImported(run: ImportRunInfo): void {
-    this.applyIfCurrent(run, () => this.syncReport.set('pending'));
+  private reportImported(runId: string): void {
+    const run = this.patchRun(runId, { syncReport: 'pending' });
+    if (run === null) {
+      return;
+    }
 
     // Through the two exhaustive helpers, never through a `=== 'channel'`/`=== 'seventv-leaderboard'`
     // test: this call runs after the 7TV mutations, so a kind that silently loses its source name
@@ -730,9 +820,9 @@ export class SevenTvImportService {
           })
         : this.emoteSetService.reportImportedToSet(run.targetSetId, bodyBase);
 
-    report$.pipe(retryTransientSyncFailures()).subscribe({
-      next: () => this.applyIfCurrent(run, () => this.syncReport.set('succeeded')),
-      error: () => this.applyIfCurrent(run, () => this.syncReport.set('failed')),
+    report$.pipe(timeoutReportAttempt(), retryTransientSyncFailures()).subscribe({
+      next: () => this.endReport(runId, 'sync-imported', { syncReport: 'succeeded' }),
+      error: () => this.endReport(runId, 'sync-imported', { syncReport: 'failed' }),
     });
   }
 
@@ -740,42 +830,95 @@ export class SevenTvImportService {
    *  bookkeeping call — addressed to the set the run wrote into, tracked or not, with the target's
    *  channel as the expected hit only when that set is the channel's active one (E18).
    *  `afterReport` (the first report only, never a manual retry) runs once it has settled either
-   *  way, with the answer's `resyncTriggered` or, on failure, an empty list; it runs even for a
-   *  superseded run, only the state written here is guarded (`applyIfCurrent`). */
+   *  way, with the answer's `resyncTriggered` or, on failure, an empty list; it runs for a run that
+   *  is no longer shown just the same — its answer lands on its own record. */
   private reportRemoved(
-    run: ImportRunInfo,
+    runId: string,
     afterReport?: (resyncTriggered: readonly string[]) => void,
   ): void {
+    const run = this.patchRun(runId, { removalReport: 'pending', removalReportReason: null });
+    if (run === null) {
+      return;
+    }
     const sevenTvEmoteIds = [...new Set(removedTargetIds(run))];
-    this.applyIfCurrent(run, () => {
-      this.removalReport.set('pending');
-      this.removalReportReason.set(null);
-    });
 
     this.emoteSetService
       .reportDeletedInSet(run.targetSetId, {
         sevenTvEmoteIds,
         expectedChannelName: run.targetIsActiveSet ? run.targetChannelName : null,
       })
-      .pipe(retryTransientSyncFailures())
+      .pipe(
+        timeoutReportAttempt(),
+        // The threeway reading (`map`, not inside `next:`) lives ahead of `retryTransientSyncFailures`
+        // so a malformed 200 answer that makes `classifySyncInSetResponse` throw ends the report
+        // like any other transient failure — an uncaught throw inside a `next:` callback would
+        // otherwise leave this run `reporting` forever, never `closed` (#256 review finding).
+        // `retryTransientSyncFailures`'s `delay` then also retries this throw (a plain `TypeError`,
+        // not an `HttpErrorResponse` — its `status` reads `undefined`, so neither branch of the
+        // 401/403 check matches): uncritical, because a retried `sync-deleted` call is idempotent
+        // either way.
+        map((answer) => ({
+          outcome: classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
+          resyncTriggered: answer.resyncTriggered,
+        })),
+        retryTransientSyncFailures(),
+      )
       .subscribe({
-        next: (answer) => {
-          const outcome = classifySyncInSetResponse(answer, sevenTvEmoteIds.length);
-          this.applyIfCurrent(run, () => {
-            this.removalReport.set(outcome.state);
-            this.removalReportReason.set(outcome.reason);
+        next: ({ outcome, resyncTriggered }) => {
+          this.endReport(runId, 'sync-deleted', {
+            removalReport: outcome.state,
+            removalReportReason: outcome.reason,
           });
-          afterReport?.(answer.resyncTriggered);
+          afterReport?.(resyncTriggered);
         },
         error: (error: HttpErrorResponse) => {
           const outcome = classifySyncInSetFailure(error.status);
-          this.applyIfCurrent(run, () => {
-            this.removalReport.set(outcome.state);
-            this.removalReportReason.set(outcome.reason);
+          this.endReport(runId, 'sync-deleted', {
+            removalReport: outcome.state,
+            removalReportReason: outcome.reason,
           });
           afterReport?.([]);
         },
       });
+  }
+
+  /** Writes a report's end state onto its run's record — which closes the run once it was the last
+   *  report out — and brings a run nobody shows back onto the dock when that end state is not a
+   *  success (Plan-256 Festlegung 13): a failed or partial report needs a place with its reason and
+   *  a retry. Shown again only when nothing else is shown and no run is in flight; otherwise the
+   *  failure stays on the record and in the console.
+   *
+   *  `reshow` is attempted before `showFinishedRows` and rolled back with `detach()` if that then
+   *  refuses (#256 review finding): reshowing must not leave the dock pointing at a run whose queue
+   *  never actually reappeared, and checking `showFinishedRows` first would risk pushing a
+   *  to-be-rejected run's rows onto the engine's queue for an already-shown run to inherit. */
+  private endReport(
+    runId: string,
+    report: 'sync-imported' | 'sync-deleted',
+    patch: Pick<Partial<ImportRunInfo>, 'syncReport' | 'removalReport' | 'removalReportReason'>,
+  ): void {
+    const run = this.patchRun(runId, patch);
+    const state = report === 'sync-imported' ? run?.syncReport : run?.removalReport;
+    if (run === null || state === 'succeeded' || this.lifecycle.isShown(runId)) {
+      return;
+    }
+    if (run.result !== null && !this.engine.isRunning() && this.lifecycle.reshow(run)) {
+      if (this.engine.showFinishedRows(run.result.items)) {
+        return;
+      }
+      this.lifecycle.detach();
+    }
+    console.warn('[EmotePurge] 7TV import report of a run no longer shown did not succeed', {
+      runId,
+      report,
+      state,
+      reason: report === 'sync-deleted' ? run.removalReportReason : null,
+    });
+  }
+
+  /** Merges `patch` into the record of `runId` — see `SevenTvRunLifecycle.update`. */
+  private patchRun(runId: string, patch: Partial<ImportRunInfo>): ImportRunInfo | null {
+    return this.lifecycle.update(runId, (run) => ({ ...run, ...patch }));
   }
 
   /** The engine's live rows with their plan rows attached — the shape `items` promises. Total: a
@@ -787,16 +930,6 @@ export class SevenTvImportService {
       const transfer = rowsByKey.get(item.key);
       return transfer === undefined ? [] : [{ ...item, transfer }];
     });
-  }
-
-  /** The R15 guard in one place: an answer that belongs to a superseded run is dropped silently —
-   *  no error state, nothing written. The run it belongs to is not on screen any more, and the one
-   *  that is must not inherit its outcome. */
-  private applyIfCurrent(run: ImportRunInfo, apply: () => void): void {
-    if (this.run() !== run) {
-      return;
-    }
-    apply();
   }
 
   /** #149 P2: `hasSomethingToReport` clears any earlier timer first — a second call within
@@ -814,18 +947,6 @@ export class SevenTvImportService {
       DUPLICATE_NOTICE_MS,
     );
   }
-}
-
-/** The standard `beforeunload` incantation (MDN): calling `preventDefault()` and setting a
- *  non-undefined `returnValue` is what makes the browser show its own confirmation prompt — neither
- *  Chromium, Firefox nor Safari display a custom string any more, so the exact value assigned here
- *  is irrelevant, only that one is set. A plain module-level function, not a closure created inside
- *  the constructor's `effect()`, so `removeEventListener` always targets the exact function
- *  reference `addEventListener` registered — an inline arrow recreated on every effect run would
- *  silently fail to remove itself. */
-function preventUnload(event: BeforeUnloadEvent): void {
-  event.preventDefault();
-  event.returnValue = '';
 }
 
 /** Whether `channelName` is among the channels a report's answer says the backend resynced —
@@ -904,29 +1025,45 @@ function addRequest(
   return { query: ADD_EMOTE_MUTATION, variables: { setId, emoteId, alias } };
 }
 
-/** Source ids of every `done` row that added an emote — what `sync-imported` names. */
+/** Source ids of every `done` row of `run` that added an emote — what `sync-imported` names. */
 function importedKeys(run: ImportRunInfo): string[] {
-  return (run.result?.items ?? [])
+  return importedKeysOf(run.result);
+}
+
+function importedKeysOf(result: ImportRunResult | null): string[] {
+  return (result?.items ?? [])
     .filter((item) => item.status === 'done' && item.transfer.action !== 'adoptSourceName')
     .map((item) => item.key);
 }
 
-/** Target ids of every replace row whose REMOVE 7TV confirmed, whatever the row ended as — what
- *  the removal report names. */
+/** Target ids of every replace row of `run` whose REMOVE 7TV confirmed, whatever the row ended as
+ *  — what the removal report names. */
 function removedTargetIds(run: ImportRunInfo): string[] {
-  return (run.result?.items ?? []).flatMap((item) =>
+  return removedTargetIdsOf(run.result);
+}
+
+function removedTargetIdsOf(result: ImportRunResult | null): string[] {
+  return (result?.items ?? []).flatMap((item) =>
     item.transfer.action === 'replace' && item.completedSteps >= 1
       ? [item.transfer.target.sevenTvEmoteId]
       : [],
   );
 }
 
-function outcomeCounts(result: ImportRunResult): { removedCount: number; unknownCount: number } {
+function outcomeCounts(result: ImportRunResult): {
+  removedCount: number;
+  unknownCount: number;
+  unknownRemovalCount: number;
+} {
   return {
     removedCount: result.items.filter(
       (item) => item.transfer.action === 'replace' && item.completedSteps >= 1,
     ).length,
     unknownCount: result.items.filter((item) => item.status === 'unknown').length,
+    unknownRemovalCount: result.items.filter(
+      (item) =>
+        item.status === 'unknown' && item.transfer.action === 'replace' && item.failedStep === 0,
+    ).length,
   };
 }
 

@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, DestroyRef, computed, inject, input } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -159,12 +159,30 @@ export class ImportTrigger {
   private readonly tokenService = inject(SevenTvTokenService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
+  /** Handed to `startRestoreFlow` as `RestoreFlowDeps.destroyRef` (#255 P2a) — the flow has no
+   *  injection context of its own to pull one from. */
+  private readonly destroyRef = inject(DestroyRef);
 
-  protected readonly disabled = computed(() =>
-    importTriggerDisabled({
-      hasActiveRun: this.arbiter.activeRun() !== null,
-      importScopeCurrent: this.importScopeCurrent(),
-    }),
+  /** `startRestoreFlow`'s own `RestoreFlowDeps.previewPending` (#255 P2a): `true` while its
+   *  open-time duplicate check is out, right up until the confirmation opens (or the flow takes
+   *  its "everything already there" shortcut, or opens anyway on a failed/timed-out check) — see
+   *  that field's own doc. Folded into `disabled` below so a second click on this trigger cannot
+   *  start a second restore-flow read while the first is still out.
+   *
+   *  Aliases `SevenTvRestoreService.restorePreCheckPending` rather than holding a signal of its
+   *  own (#255 P2, Codex review): this trigger's restore-file door and `MassDeletePanel`'s restore
+   *  button mount together on the usage-stats page, and a component-local flag here only ever
+   *  guarded *this* button against itself — the other one stayed enabled for the whole read, and
+   *  could open a second confirmation stacked on the first. Reading the shared signal here means
+   *  `disabled` now also reflects a pre-check the *other* entry started. */
+  private readonly restorePreviewPending = this.restoreService.restorePreCheckPending;
+
+  protected readonly disabled = computed(
+    () =>
+      importTriggerDisabled({
+        hasActiveRun: this.arbiter.activeRun() !== null,
+        importScopeCurrent: this.importScopeCurrent(),
+      }) || this.restorePreviewPending(),
   );
 
   protected openDialog(): void {
@@ -195,6 +213,8 @@ export class ImportTrigger {
             tokenService: this.tokenService,
             restoreService: this.restoreService,
             arbiter: this.arbiter,
+            previewPending: this.restorePreviewPending,
+            destroyRef: this.destroyRef,
           },
           result.target,
           result.rows,

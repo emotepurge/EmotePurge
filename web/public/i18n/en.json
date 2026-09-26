@@ -588,12 +588,27 @@
       "userDelete": "Account deleted"
     },
     "details": {
-      "emoteCount": "{{count}} emotes",
-      "removedEntries": "{{count}} entries removed",
+      "emoteCount": {
+        "one": "{{count}} emote",
+        "other": "{{count}} emotes"
+      },
+      "removedEntries": {
+        "one": "{{count}} entry removed",
+        "other": "{{count}} entries removed"
+      },
       "title": "“{{title}}”",
-      "importedFromChannel": "{{count}} emotes from {{title}}",
-      "importedFromFile": "{{count}} emotes from a file",
-      "importedFromLeaderboard": "{{count}} emotes from {{title}}",
+      "importedFromChannel": {
+        "one": "{{count}} emote from {{title}}",
+        "other": "{{count}} emotes from {{title}}"
+      },
+      "importedFromFile": {
+        "one": "{{count}} emote from a file",
+        "other": "{{count}} emotes from a file"
+      },
+      "importedFromLeaderboard": {
+        "one": "{{count}} emote from {{title}}",
+        "other": "{{count}} emotes from {{title}}"
+      },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",
         "TOP_ALL_TIME": "7TV top overall"
@@ -908,12 +923,17 @@
     "button": "Restore emotes",
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Restore progress",
+    "settling": "Finishing…",
     "deleteFailedFallback": "Restore failed",
     "unknownOutcome": "Unclear whether it was restored — 7TV gave no clear answer. Please check the set.",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "confirmTitle": {
       "one": "Add {{ count }} emote back to the set?",
       "other": "Add {{ count }} emotes back to the set?"
+    },
+    "confirmTitleUpTo": {
+      "one": "Add up to {{ count }} emote back to the set?",
+      "other": "Add up to {{ count }} emotes back to the set?"
     },
     "confirmSetLine": "Into the set “{{ setName }}”.",
     "confirmSetIdLine": "Set ID: {{ emoteSetId }}",
@@ -923,16 +943,21 @@
     "confirmForeignToView": "This view shows nothing from this run.",
     "confirmExecute": "Restore",
     "capacityProjection": "The set would then hold {{ projected }} of {{ capacity }} slots.",
+    "capacityProjectionUpTo": "The set would then hold up to {{ projected }} of {{ capacity }} slots.",
     "capacityWarning": "That exceeds the capacity — 7TV will reject the surplus emotes.",
+    "capacityWarningUpTo": "That could exceed the capacity — 7TV would then reject the surplus emotes.",
     "historyNote": "The usage history stays unchanged.",
-    "nothingRestored": "Nothing restored.",
+    "nothingRestored": "Nothing was restored.",
     "errors": {
-      "targetNotEditable": "The set is not (or no longer) editable, or it does not exist.",
-      "targetNotSelectable": "This set is not a normal emote set.",
-      "targetCheckUnavailable": "Could not be checked right now — try again later."
+      "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
+      "targetNotSelectable": "The set is not a normal emote set.",
+      "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment.",
+      "channelUnknown": "This run's channel is unknown, so restoring is locked."
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were restored on 7TV, but EmotePurge could not record it. This usually resolves itself within a minute.",
+    "syncPartialTitle": "Reporting back to EmotePurge incomplete",
+    "syncPartial": "The emotes were restored on 7TV and recorded at EmotePurge — but not completely.",
     "syncRetry": "Report again",
     "syncRetrySucceeded": "Reported back successfully.",
     "summary": {
@@ -970,8 +995,8 @@
         "noRestorableRows": "The protocol contains no successfully deleted emotes to restore.",
         "transferRunNoRows": "This transfer file contains no removed emotes.",
         "targetNotEditable": "The set named in the file is not (or no longer) editable, or it no longer exists.",
-        "targetNotSelectable": "The set named in the file is not a normal emote set and cannot be restored into.",
-        "targetCheckUnavailable": "The target set could not be checked right now — please try again in a moment.",
+        "targetNotSelectable": "The set named in the file is not a normal emote set.",
+        "targetCheckUnavailable": "The set named in the file could not be checked right now — please try again in a moment.",
         "noTargetSetForCopy": "This page has no set to copy into. From a file, only a restore is possible here."
       }
     },
@@ -1017,6 +1042,7 @@
     "clearSelection": "Clear selection",
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Delete progress",
+    "settling": "Finishing…",
     "deleteFailedFallback": "Delete failed",
     "unknownOutcome": "Unclear whether it was deleted — 7TV gave no clear answer. Please check the set.",
     "confirmTitle": {
@@ -1041,6 +1067,8 @@
     "startDelete": "Start deleting",
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were deleted on 7TV, but EmotePurge could not record it. This usually resolves itself within a minute.",
+    "syncPartialTitle": "Reporting back to EmotePurge incomplete",
+    "syncPartial": "The emotes were deleted on 7TV and recorded at EmotePurge — but not completely.",
     "syncRetry": "Report again",
     "syncRetrySucceeded": "Reported back successfully.",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
@@ -1056,9 +1084,9 @@
       "cancelledMidRow": "Cancelled partway — 7TV had already carried out part of it.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }}).",
-      "targetNotEditable": "The set is not (or no longer) editable, or it does not exist.",
-      "targetNotSelectable": "This set is not a normal emote set.",
-      "targetCheckUnavailable": "Could not be checked right now — try again later."
+      "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
+      "targetNotSelectable": "The set is not a normal emote set.",
+      "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment."
     },
     "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
     "setChangedDuringConfirm": "A different set is selected now.",
@@ -1077,14 +1105,14 @@
         "truncated": "Deleting is locked: this set’s member list is incomplete. Reload the page to try again.",
         "loading": "Deleting is locked until this set’s member list has loaded."
       }
-    },
-    "anotherRunStarted": "Another 7TV run started in the meantime."
+    }
   },
   "syncReportReason": {
     "forbidden": "Reason: according to 7TV, your account may no longer edit this set.",
     "setNotFound": "Reason: the set no longer exists on 7TV.",
     "unavailable": "Reason: EmotePurge or 7TV could not be reached just now.",
-    "channelMismatch": "Reason: according to EmotePurge, the expected channel does not currently use this set as its active set.",
+    "channelMismatchNotTracked": "Reason: EmotePurge is not currently tracking the expected channel.",
+    "channelMismatchActiveSetDiffers": "Reason: according to EmotePurge, the expected channel does not currently use this set as its active set.",
     "shortfall": "Reason: not every emote was on record in EmotePurge.",
     "other": "Reason: unexpected error."
   },
@@ -1236,7 +1264,9 @@
       },
       "sameChannelFile": "This list comes from this channel.",
       "runNotice": "Adding then runs automatically, one emote at a time, with a short delay between each.",
+      "runNoticeRenameOnly": "Renaming then runs automatically, one entry at a time, with a short delay between each.",
       "execute": "Copy",
+      "executeRenameOnly": "Align",
       "removals": {
         "one": "{{ count }} emote will be removed from the target set and replaced by the source emote.",
         "other": "{{ count }} emotes will be removed from the target set and replaced by the source emotes."
@@ -1325,18 +1355,20 @@
       "nameTakenNow": "The name has been taken in the target set in the meantime — this row was not applied.",
       "removedButNotAdded": "The target emote was removed, but the new one was not added — the target set is now missing this name. The recovery file restores the target emote.",
       "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied.",
-      "targetNotEditable": "The target set is not (or no longer) editable, or it does not exist.",
+      "targetNotEditable": "The target set is not (or no longer) editable, or it no longer exists.",
       "targetNotSelectable": "The target set is not a normal emote set.",
       "targetCheckUnavailable": "The target set could not be checked right now — please try again in a moment."
     },
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
     "summary": {
       "counts": "{{done}} copied · {{failed}} failed · {{cancelled}} cancelled",
+      "countsWithRenamed": "{{done}} copied · {{renamed}} renamed · {{failed}} failed · {{cancelled}} cancelled",
       "target": "Target: {{ channel }}",
       "targetWithSet": "Target: {{ channel }} · set {{ setName }}",
       "targetSet": "Target: set {{ setName }} of {{ owner }}",
       "openTarget": "Open target channel",
       "copiedNotActive": "Copied into the set ‚{{ setName }}' — it isn't {{ channel }}'s active set, so the channel page won't show it.",
+      "renamedNotActive": "Renamed in the set ‚{{ setName }}' — it isn't {{ channel }}'s active set, so the channel page won't show it.",
       "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row.",
       "removed": {
         "one": "{{ count }} emote was removed from the target set.",
@@ -1350,6 +1382,10 @@
         "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
         "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
       },
+      "unknownRecordedIn": {
+        "one": "For {{ count }} replacement it is unclear whether the target emote was removed — the result log does not record it as a confirmed removal, only the recovery file covers it.",
+        "other": "For {{ count }} replacements it is unclear whether the target emotes were removed — the result log does not record them as confirmed removals, only the recovery file covers them."
+      },
       "downloadProtocol": "Download protocol",
       "protocolNotSaved": "Protocol not saved yet — it is gone once you close this."
     },
@@ -1359,6 +1395,8 @@
     "syncRetrySucceeded": "Reported back successfully.",
     "removalSyncFailedTitle": "Reporting the removal back to EmotePurge failed",
     "removalSyncFailed": "The emotes were removed from the target set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
+    "removalSyncPartialTitle": "Reporting the removal back to EmotePurge incomplete",
+    "removalSyncPartial": "The emotes were removed from the target set on 7TV and recorded at EmotePurge — but not completely.",
     "removalSyncRetry": "Report again",
     "removalSyncSucceeded": "Removal reported back successfully.",
     "resync": {
@@ -1377,10 +1415,21 @@
     },
     "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
   },
+  "sevenTvRun": {
+    "notStarted": {
+      "running": "Nothing started — {{ kind }} is still running.",
+      "settling": "Nothing started — {{ kind }} is still finishing."
+    },
+    "kind": {
+      "delete": "the deletion run",
+      "restore": "the restore",
+      "import": "the transfer"
+    }
+  },
   "sevenTvToken": {
     "tokenSet": "7TV token set",
     "remove": "Remove",
-    "intro": "To delete emotes you need your own 7TV write token from your logged-in 7tv.app session:",
+    "intro": "This action needs your own 7TV write token from your logged-in 7tv.app session:",
     "step1": "Log in on 7tv.app (if you haven't already).",
     "step2": "Open dev tools (F12) → the \"Application\" tab (Chrome) or \"Storage\" tab (Firefox) → \"Local Storage\" → \"https://7tv.app\".",
     "step3Prefix": "Find the entry with the key",

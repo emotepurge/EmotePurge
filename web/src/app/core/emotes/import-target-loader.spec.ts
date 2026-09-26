@@ -377,6 +377,52 @@ describe('loadImportTarget', () => {
 
       expect(result).toEqual({ status: 'failed' });
     });
+
+    // Issue #256 P2 (Codex): `reloadLive` in `import-flow.ts` used to land on this same live route
+    // without ever asking the backend to bypass its own 60 s preview cache — a reload inside that
+    // window got back the exact same drifted answer. `options.refresh` is what actually forces a
+    // fresh 7TV read instead of a cache hit; the two cases below pin that it reaches the request as
+    // a query parameter and, just as importantly, that an ordinary (non-refresh) load never sends
+    // it at all.
+    it('sends refresh=true on the live request when options.refresh is true', () => {
+      let result: ImportTargetLoadState | undefined;
+      loadImportTarget(
+        emoteAdminService,
+        emoteSetService,
+        { kind: 'trackedSet', channelName: 'sensitron', emoteSetId: 'set-halloween' },
+        { refresh: true },
+      ).subscribe((value) => (result = value));
+
+      const req = httpMock.expectOne(
+        (candidate) =>
+          candidate.url === LIVE_URL &&
+          candidate.params.get('emoteSetId') === 'set-halloween' &&
+          candidate.params.get('refresh') === 'true',
+      );
+      req.flush(LIVE_PREVIEW);
+      httpMock.expectOne((candidate) => candidate.url === WARNING_URL).flush(READY_WARNING);
+
+      expect(result).toMatchObject({ status: 'ready', setId: 'set-halloween' });
+    });
+
+    it('never sends a refresh parameter for the ordinary (non-refresh) load', () => {
+      let result: ImportTargetLoadState | undefined;
+      loadImportTarget(emoteAdminService, emoteSetService, {
+        kind: 'trackedSet',
+        channelName: 'sensitron',
+        emoteSetId: 'set-halloween',
+      }).subscribe((value) => (result = value));
+
+      const req = httpMock.expectOne(
+        (candidate) =>
+          candidate.url === LIVE_URL && candidate.params.get('emoteSetId') === 'set-halloween',
+      );
+      expect(req.request.params.has('refresh')).toBe(false);
+      req.flush(LIVE_PREVIEW);
+      httpMock.expectOne((candidate) => candidate.url === WARNING_URL).flush(READY_WARNING);
+
+      expect(result).toMatchObject({ status: 'ready' });
+    });
   });
 
   describe('untrackedSet — an account with no channel at all (spec 8.6, AK 36)', () => {

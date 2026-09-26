@@ -10,6 +10,569 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — The run arbiter takes registrations, counts settling as busy and owns the unload guard
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (`SevenTvRunParticipant`,
+`register`, `activeClaim`, `activeRun`, `destructiveOpen`, `refusedStart`, `noteRefusedStart`,
+`REFUSED_START_FEEDBACK_MS`, the `beforeunload` effect, and — since T4 —
+`SEVEN_TV_RUN_KIND_LABEL_KEY`/`refusedStartMessage`) ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (each: one `register(...)` in its
+constructor; the import loses its own `beforeunload` effect) · `docs/UI-Designsprache.md` (the
+"all start buttons are disabled" rule, and since T4 the confirmed-start notice) ·
+`web/src/app/shared/seven-tv/import-flow.ts`, `web/src/app/shared/seven-tv/restore-flow.ts` (T4:
+`noteRefusedStart` at every confirmed-start check), `web/src/app/features/usage-stats/usage-stats-page.ts`/`.html`
+(T4: `refusedStartNotice`, the §4.5 region), `web/src/app/shared/seven-tv/mass-delete-panel.ts` (T4:
+`abortNotice` reuses the same wording family via `activeClaim()`), `web/public/i18n/{de,en}.json`
+(T4: `sevenTvRun.*`, `massDelete.anotherRunStarted` removed) · `docs/plans/Plan-256-Robustheit.md`
+(T3, Festlegungen 1, 6, 7; T4, Festlegung 8).
+
+Issue #256 point 1, contract P2–P5 of the #254 spec (11.1); the arbiter half of it — the run-bound
+lifecycle behind the three signals is the entry "7TV runs complete run-bound" further down. Until now the arbiter injected the three run
+services and read their `isRunning` in a fixed order (delete, restore, import). That had three gaps:
+a run whose engine was done but whose re-read or report was still out counted as free, so a second
+run could start in exactly that window; the unload guard lived in the import service and saw only
+the import's runs; and a fourth run kind (#254's undo) would have meant another injected service
+and another branch.
+
+- **Services register; the arbiter knows no service.** Each run service calls
+  `inject(SevenTvRunArbiter).register({ kind, isRunning, isSettling, destructiveOpen })` in its
+  constructor. The arbiter holds these participants in a signal, so a service that registers after
+  a derivation was first read is still seen. This turns the DI edge of 2026-09-06 around (it was
+  arbiter → services, "the services do not know the arbiter"): it now runs service → arbiter only,
+  and the arbiter imports nothing but `@angular/core`, so there is still no cycle. A fourth kind is
+  one value in `SevenTvRunKind` and one `register(...)` call. Registration is lazy on purpose: a
+  service that was never constructed never started a run, so it has nothing to claim; no app
+  initializer is involved, which also keeps the run services and the import engine out of the
+  initial bundle. Rejected: a multi-provider token in the usage-stats routes — a root arbiter cannot
+  see route providers, and two arbiter instances would mean two unload guards. **Only a root
+  (`providedIn: 'root'`) service may call `register`**: there is no unregister, so a participant
+  belonging to a torn-down instance would keep counting toward `activeRun`/`destructiveOpen`
+  forever — the three run services all qualify, a route-scoped service never would.
+- **R1 (2026-09-05) is unchanged: derived, not locked.** `activeRun` is still a `computed` over the
+  participants' own signals, with no `tryAcquire`/`release`.
+- **Busy means running or settling.** `activeRun` is non-null while any participant runs **or**
+  settles; every start point already checks `activeRun() !== null`, so they are blocked through the
+  settling window without a change of their own. `activeClaim` gives the reason as `{ kind, phase:
+  'running' | 'settling' }`. With several claimants (constructed only — the start points prevent
+  it), a running one beats a settling one, otherwise registration order wins; the old fixed kind
+  order would have been a service list in disguise. The same kind registered twice is not refused.
+- **The unload guard is the union.** `destructiveOpen` is true while any participant reports a
+  destructive run open, and the `beforeunload` effect moved here from the import service, armed and
+  disarmed only on a transition and removed on destroy. A run no dock shows any more still holds
+  it. Visible change: **a delete run now protects the tab** from its start until its report has an
+  end state (Plan-256 Festlegung 6), as an import with a `replace` row already did; a restore never
+  does.
+- **Busy always resolves.** `isSettling`/`destructiveOpen` stay true only while a participant's own
+  report has no end state yet; every report a run opens (`sync-deleted`, `sync-imported`,
+  `sync-restored`) is guaranteed to reach `succeeded | partial | failed` within `REPORT_TIMEOUT_MS`
+  of its last attempt, because the response is classified (`map`) before `retry` ever sees it — a
+  throw reaching `retry` unclassified used to leave a run `reporting`, hence a claim here, forever
+  (fixed as part of #256 T1's review, Mitgabe 1). The arbiter holds no timer of its own; it only
+  ever reflects what the report chain has already resolved.
+- **One visible consequence: the delete dock's own restore button.** `mass-delete-panel.ts` shows it
+  only once `arbiter.activeRun() === null` — a finished delete run holds the claim through its
+  `reporting` phase, so the button appears only after `sync-deleted`'s answer reaches an end state,
+  not as soon as the deletion itself is done. The same fact reads the other way round too, **for a
+  run's first report**: a `sync-restored` report can never reach our Api before that run's own
+  `sync-deleted` has, because starting the restore run — the earliest point a `sync-restored` report
+  could go out — is gated on exactly that button. It does not extend to a *manual* retry: a delete's
+  `retrySyncReport()` (#256 P2 on the Plan-256-Robustheit review) re-sends `sync-deleted` for the same
+  ids at any later time, including after the set's own `sync-restored` has already answered — nothing
+  in the arbiter or either run's lifecycle blocks that ordering, since the delete run is `closed`
+  by then and the retry does not reopen it. Harmless in practice: the retry only repeats an audit
+  entry for ids already archived, and the worker's periodic resync (never the report itself) is what
+  reconciles the set's actual state regardless of which report answered last.
+- **The refusal notice is arbiter business.** `noteRefusedStart(attempted)` records what a start
+  point tried and what blocked it (`refusedStart`, cleared after `REFUSED_START_FEEDBACK_MS` = 4000
+  ms, §4.5; a second refusal restarts the window). On a free arbiter it notes nothing, so the notice
+  never names a reason that is not there. #256 T4 wires this up: `import-flow.ts` and
+  `restore-flow.ts` call it at every point where a *confirmed* run finds nothing to start, and
+  `usage-stats-page.ts` renders it as its own transient region (`refusedStartMessage`,
+  `SEVEN_TV_RUN_KIND_LABEL_KEY` — a `Record<SevenTvRunKind, string>`, not a key built from the kind,
+  so a future kind missing its noun is a compile error, not a silent unresolved key).
+  `mass-delete-panel.ts` reads `activeClaim()` directly for its own, already-persistent
+  `abortNotice` instead of calling `noteRefusedStart` itself — routing the same refusal through the
+  arbiter's transient notice too would announce it twice on a page that mounts both. The still-silent
+  locks (a disabled trigger outraced by a click, the confirm dialog's own `runBlocked`) are
+  unaffected — nothing has been confirmed yet at those points.
+
+---
+
+### 2026-09-26 — After a drifted replace target, reload reads the target live
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-flow.ts` (`reloadLive`, `toLiveTargetSelection`) ·
+`web/src/app/core/emotes/import-target-loader.ts` (`loadImportTarget`'s `options.refresh`,
+`fetchLiveTarget`) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts`
+(`ImportConfirmDialogData.reloadLive`, the `drifted` notice's own button) ·
+`docs/plans/Plan-256-Robustheit.md` (T6, Festlegung 9).
+
+Issue #256 point 2. The confirm dialog's `drifted` notice already comes out of a live read (the
+recovery-file check before a replace run) finding the confirmed target has moved on — its own
+"Ziel neu laden" button used to call the same `retry()` every other reason (`readFailed`, a failed
+or missing target) uses, which repeats the *original* load. For a tracked channel's active set that
+load is the Postgres-backed "today" path (`EmoteSetStatus`/`listEmotes`, AK 36 of #200) — the same
+kind of read that can already be a drift round behind 7TV, the very gap this notice exists to close.
+
+The button now calls a second function, `reloadLive`, that forces the loader's live branch
+(`loadEmoteSetPreview` via `'trackedSet'`/`'untrackedSet'`) for the `setId` the last `ready` answer
+already resolved — never re-derived from the target passed into the flow, so a stale id can never
+leak into the selection either. Without a `ready` answer yet, `reloadLive` falls back to the
+ordinary load rather than doing nothing (fail-closed). **AK 36 is unaffected: the *first* load of a
+tracked active set still takes the "today" path unchanged; only a drift-triggered reload takes the
+live one, and it costs the same 7TV preview-read budget any other live target read already does.**
+A non-active tracked or an untracked target already took the live branch on its first load, so
+`reloadLive` repeats the same call there — nothing changes for those besides a fresher answer.
+
+**2026-09-26 follow-up (Codex P2):** the first cut above still landed on `loadEmoteSetPreview`'s
+plain two-argument overload, which reads through the backend's own 60 s preview cache for the set-ID
+route (6.4) — the same cache `loadCachedEmoteSetPreview`'s doc describes as sitting behind the
+shared `ForeignEmoteLookup` limiter. A `reloadLive` call inside that 60 s window therefore got back
+the exact same drifted answer that triggered the notice in the first place, turning "Ziel neu laden"
+into a drift/reload loop instead of a fix. `reloadLive` now calls `performLoad` with
+`{ refresh: true }`, threaded through `loadImportTarget`'s new `options.refresh` parameter to
+`fetchLiveTarget`, which — only on that flag — calls `loadEmoteSetPreview(channelName, emoteSetId,
+{ refresh: true })` instead of the two-argument form; the query parameter this adds
+(`?refresh=true`) is what makes the backend bypass its cache for this one read. `load()` and `retry`
+never pass the flag, so neither the ordinary first load nor a `readFailed` retry changes cost. The
+cost this adds is exactly what Festlegung 9 already priced in — one `ForeignEmoteLookup` permit per
+drift reload (the same 10-permits/60 s bucket the set-list and every other live-preview read already
+share) — the fix closes the cache hit that made even that one permit come back with stale data, it
+does not add a second one.
+
+---
+
+### 2026-09-26 — 7TV runs complete run-bound — running → settling → reporting → closed; reset() detaches the display only
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase`, `RunRecordBase`,
+`SevenTvRunLifecycle`, incl. the `closed`-is-final guard in `update()` and `discardUnstarted()`) ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`ImportRunInfo`,
+`isSettling`, `destructiveOpen`, the dock projections, `reset`, `markProtocolSaved`;
+`destructiveRunActive` and `applyIfCurrent` removed) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (`DeleteRunInfo`, `run`, `lastRun`,
+`syncReport`, `syncReportReason`, `isSettling`, `destructiveOpen`, `REPORT_TIMEOUT_MS`,
+`timeoutReportAttempt`) · `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`RestoreRunInfo`,
+`run`, `syncReport`, `syncReportReason`, `resyncTrigger`, `isSettling`, `destructiveOpen`) ·
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`reset` doc, `showFinishedRows`) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts`,
+`web/src/app/shared/seven-tv/mass-delete-panel.ts`,
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (all three: `[dismissible]`; review round:
+`mass-delete-panel.ts`'s `openRestoreConfirm` also freezes `hostChannelName` to the finished run's
+own channel, see below) ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`dismissible` doc) ·
+`web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle`) ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` (review round: the
+channel-change effect reads `run()` `untracked`, see below) ·
+`web/public/i18n/{de,en}.json` (`massDelete.settling`, `restore.settling`, review round:
+`restore.errors.channelUnknown`) ·
+`docs/plans/Plan-256-Robustheit.md` (T1, T2, Festlegungen 2, 3, 4, 6, 13, 14, 15).
+
+Issue #256 point 1, contract P1/P6 of the #254 spec (11.1). Until now a run's closing work was
+bound to the *display*: `onRunComplete` returned early when `run()` was no longer the run that
+finished ("only reachable via reset() during the run"), and every report answer was written only
+if its run was still shown (`applyIfCurrent`). A `reset()` in the wrong moment therefore dropped
+the re-read and both reports of a run whose 7TV mutations had happened — the one outcome this
+feature must never allow. On top of that, `SevenTvRunEngine.reset()` during a run empties the
+queue `finish()` builds its result from, so even without the early return nothing would have been
+reported. And the arbiter and the unload guard read signals of the shown run only.
+
+A run is now a record with its own lifecycle, held by `SevenTvRunLifecycle` (one plain-class
+instance per run service, like the engine): `running` (the engine works) → `settling` (the
+re-read of `unknown` rows, import only) → `reporting` (at least one report without an end state)
+→ `closed` (every report opened has `succeeded | partial | failed`, or there was none). The rules:
+
+- **Identity is `runId`, not the object.** Records are replaced on every change so signals see it;
+  every late answer finds its record by id.
+- **Report states live on the record** (`syncReport`, `removalReport`, `removalReportReason`,
+  `resyncTrigger`, plus `abortedForPrivileges` and `protocolSaved`). The service signals the dock
+  reads keep their names and types but are `linkedSignal` projections of `run()` — writable, because
+  a large share of the existing spec suite drives a dock directly through `.set(...)` calls on
+  these very signals (a plain `computed` would break every one of them, unseen by any filtered
+  test run); production code never writes them, only the record (`markProtocolSaved()` replaces
+  the dock's direct `protocolSaved.set(true)`).
+- **`reset()` and a newer run only change what is shown.** A run in flight runs to its end — it is
+  deliberately *not* cancelled: without `transportLossIsUnknown` a cancelled request in flight would
+  end `cancelled` although 7TV may have applied it (Codex finding on the plan). The engine's queue is
+  cleared once `finish()` has built the result, not at `reset()`.
+- **`isSettling` and `destructiveOpen` span every open run of the service**, shown or not;
+  `destructiveOpen` holds from start to `closed`. The import's `beforeunload` guard hung off it here
+  until T3 (arbiter) of #256 moved it out: the guard now lives on the arbiter, as the union of
+  `destructiveOpen` across all three run services (see the entry above). `destructiveRunActive` is
+  gone.
+- **`closed` is final.** A manual retry is a new report on a closed run: it neither reopens it nor
+  brings back `isSettling`/`destructiveOpen`. A resync is not a report and never holds a run open.
+- **Every report attempt has a time budget** (`REPORT_TIMEOUT_MS = 30_000`, exported next to
+  `SYNC_RETRY_DELAY_MS`): a run out counts as a network failure, so the usual retries follow and then
+  `failed`/`unavailable`. Without it a report that never answers would keep its run open forever.
+- **Close waits for `closed`** (import dock: `[dismissible]` from `settlement === 'settled'` to
+  `phase === 'closed'`), so a failed report always has its dock with reason and retry. A run
+  detached by a programmatic `reset()` whose report then ends failed or partial is **shown again**
+  when nothing else is shown and no run is in flight (`reshow` plus the engine's
+  `showFinishedRows`, which puts its rows back so the dock mounts); otherwise the failure stays on
+  the record and goes to `console.warn`.
+
+One reader had to follow: the usage-stats page's `watchRunSettle` recognised a settle by the run
+object, which now changes with every report answer and would have reloaded a chosen non-active set's
+member list once per answer. It now dedupes on the settled `result` object, which does not change.
+`ImportSettlement` stays as its own field rather than a `computed` off the phase: `settleRun` sets it
+to `'settled'` in the same `update()` call that moves the phase to `reporting`, in lockstep, not
+derived from it after the fact — the two happen to agree (`'settled'` ⇔ `reporting | closed`)
+because both readings describe "the outcome is final", but the field is what the dock, that page and
+#254 actually read.
+
+Delete and restore (#256 T2) now run on the same building block. `run` becomes each service's own
+writable lifecycle signal (`lastRun` on the delete service stays its unchanged-shape projection of
+it); `syncReport`/`syncReportReason` on both, plus the restore's `resyncTrigger`, become the same
+kind of `linkedSignal` projection `run()` already gave the import. Neither ever sees `settling`:
+a delete/restore run has no re-read, so it goes straight from `running` to `reporting`. Two
+behaviour changes follow:
+
+- **Every delete row is destructive** (Plan-256 Festlegung 6) — a delete run's `destructiveOpen`
+  now correctly reads `true` from `startDelete` to `closed`, the same way an import's `replace` plan
+  drives its own; a restore's always stays `false` (only `ADD`s, `destructive: false` always). The
+  signal is what the tab's `beforeunload` guard hangs off, but the actual arming — the union of
+  `destructiveOpen` across delete, restore and import into one guard — was T3's arbiter's job, not
+  this step's; T3 has since landed (see the entry above).
+- **Schließen-Gate and channel switch now wait for `closed`** (Plan-256 Festlegung 13, Codex-Befund
+  2 on the plan): both docks bind `[dismissible]` to `run.phase === 'closed'` instead of "the engine
+  stopped", and `resetIfChannelChanged` now only resets a `closed` run — a run still reporting
+  follows the user to the next channel for the few seconds until its report reaches an end state,
+  rather than losing its dock (and its retry) to a channel switch mid-report; the host page's own
+  channel-change effect reads `run()` only `untracked()`, so the run reaching `closed` on the page it
+  now sits on does not itself retrigger the switch check (#256 review finding, P1) — only the next
+  actual channel change, or an explicit close, does. Losing its dock this way is a different case
+  from a run *detached* by a programmatic `reset()`: that one, should its report then end
+  `failed`/`partial`, shows itself again exactly like the import's — a channel switch never detaches
+  a still-reporting run in the first place, so this reshow path is not what carries it across pages.
+
+**Review round: the delete dock's restore entry now attributes to the run, not the page** (#256
+P3-3 on the Plan-256-Robustheit review). `mass-delete-panel.ts`'s `openRestoreConfirm` used to build
+`hostChannelName` from the panel's own live `channelName()` input — correct as long as the finished
+delete run and the page it is shown on agree, which the "Schließen-Gate…" bullet above establishes
+is no longer guaranteed: a `reporting` run follows the user to another channel, so the panel's input
+and the run's own frozen channel can drift apart while its dock is still visible there. Restoring
+against the live page in that case would attribute the restore to wherever the dock merely happened
+to still be mounted, not to the channel the delete actually ran on. This revises the "the page only
+supplies the host fields" entry above (2026-09-25, `hostChannelName`/E13, `hostSelectedSetId`/E21)
+for this one caller: the panel path now reads `hostChannelName` off `DeleteRunInfo.channelName` — the
+run's own frozen field — instead of the page's `channelName()`; the other entry point
+(`ImportTrigger`'s restore-file door) is untouched, since it never carries a delete run to begin
+with. `channelName` is a required field of `DeleteRunInfo` and never empty in practice, but the
+button now locks on it defensively (`restore.errors.channelUnknown`, de/en, provisional wording like
+every other reason in this family) rather than silently mis-attributing a future run shape that
+could ever lack one.
+
+---
+
+### 2026-09-26 — The restore confirmation hedges its count on a truncated read too, not only a failed one
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts`
+(`RestoreAlreadyPresentFilterResult.complete`, `filterAlreadyPresentForRestore`,
+`restoreConfirmPreviewUnavailable`) · `web/src/app/shared/seven-tv/restore-flow.ts`
+(`startRestoreFlow`) · `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(`handleRestoreConfirmPreview`) · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+(`RestoreConfirmDialogData.countIsUpperBound` doc) · `already-present-filter.spec.ts` ·
+`restore-flow.spec.ts` · `mass-delete-panel.spec.ts`.
+
+Codex review finding (P2) on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change: both
+restore confirmations already hedge their title and slot projection as "up to N" when the open-time
+duplicate check's own 7TV read fails outright (`available: false`). But `loadSevenTvSetEntries` can
+also come back `available: true` with `complete: false` — the read succeeded, but stopped at the
+10-page runaway guard, or 7TV's own `totalCount` did not match what the pages actually delivered
+(`SevenTvSetEntries.complete`). `filterAlreadyPresentForRestore` deliberately keeps filtering
+against a truncated read rather than failing the whole check open (see its own doc — a partial read
+still catches every duplicate genuinely inside the pages it saw), but its `available: true` result
+used to discard that read's own completeness signal entirely. Both confirmations therefore showed an
+exact-looking ADD count and an exact-looking slot projection built from a read that had not actually
+seen the whole set — silently more confident than the check itself was.
+
+**What changed.** `RestoreAlreadyPresentFilterResult` gains a `complete` field, carrying
+`SevenTvSetEntries.complete` through from `filterAlreadyPresentForRestore`'s own read (`false` on a
+failed fetch, same as `available`). `RestoreConfirmPreview` inherits it via
+`loadRestoreConfirmPreview`, unchanged otherwise. Both call sites now compute
+`countIsUpperBound: !preview.available || !preview.complete` instead of `!preview.available` alone.
+Nothing about *what* gets filtered changes — the aliases found present or name-taken in the pages
+the read did see are still dropped exactly as before, and the confirmation still names and counts
+exactly those survivors; only the *wording* now also hedges when the read was merely partial, not
+only when it failed outright.
+
+---
+
+### 2026-09-26 — A restore's confirm-time recheck can only narrow the confirmation, never widen it
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts` (`clipToShown`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (`handleRestoreConfirmPreview`) ·
+`web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Codex review finding on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change
+(2026-09-25 entry below): that change made both restore entry points run
+`filterAlreadyPresentForRestore` once, fresh, right before the confirmation opens, so its title and
+slot projection count what the run will actually send. The confirm-time re-check that already ran
+afterward, right before `startRestore`, kept querying the *original*, unfiltered row set every
+time — correct for *narrowing* the set further (that is the whole reason it re-reads instead of
+reusing the open-time answer), but it left a hole for *widening* it back: a row, or one alias of a
+row, the open-time check had already found present — and which the confirmation dialog therefore
+never named or counted — could come back as "missing" at confirm time if the live entry disappeared
+from the target set in the window between the two reads (another editor, or the confirmation simply
+left open a while). It would then be sent as an `ADD` the user never saw or agreed to, silently
+invalidating the capacity number the dialog had already committed to.
+
+**What changed.** The confirm-time check still queries `filterAlreadyPresentForRestore` with every
+row's full, original alias context — it has to, to keep applying that function's rule 2 correctly
+(a row whose input aliases were pre-trimmed to only what survived the open-time filter would make an
+alias that lives under a different, correctly-still-missing name of the *same* row look "foreign",
+and drop the row outright — the #74 duplicate-cell partial retry this filter exists to support).
+Its result is intersected through the new `clipToShown(rows, shown)` against the open-time
+preview's own `rows` — id by id, then alias by alias for whichever ids survive that — before it
+ever reaches `startRestore`. A row whose id was filtered out entirely at open time is dropped even
+if the confirm-time read now calls it missing; a row that only partially survived keeps at most the
+aliases the open-time answer still named for it. The invariant this establishes, and the reason for
+the two-step shape (query full, then clip) rather than querying the already-narrowed set directly:
+**the confirm-time check can only narrow what the confirmation showed, never widen it.** The skip
+counters (`skippedDuplicates`/`skippedNameTaken`) are unaffected — they still come straight from the
+confirm-time check's own fresh count, exactly as before this fix.
+
+---
+
+### 2026-09-26 — The shared restore pre-check gate now releases on the caller's own teardown too
+
+**Betrifft:** `web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`'s `previewPending`
+read) · `web/src/app/shared/seven-tv/mass-delete-panel.ts` (`openRestoreConfirm`,
+`openRestoreConfirmDialog`) · `web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Second Codex review finding on the 2026-09-26 "share the restore pre-check gate across both entry
+points" fix: moving `previewPending`/`restoreConfirmPending` onto the shared, root-level
+`SevenTvRestoreService.restorePreCheckPending` closed the race between the two restore entry
+points, but it also raised the cost of a gap that fixing entry-local flags had made harmless before
+it — every read in the pre-check chain (`resolveEditableSet`, then the open-time duplicate check)
+released the flag only from its own `next`/`error` branches. `takeUntilDestroyed` unsubscribes on
+the caller's teardown (a route change, a closed panel) without ever calling either, so tearing down
+mid-read left the flag `true` for good. Before the flag was shared this only ever disabled a
+component that no longer existed; once it lives on the service, the same gap disabled *both* restore
+entries, on whichever page they next mounted, until a full reload.
+
+**What changed.** Every read in the chain now releases the flag through `finalize` on its own pipe
+rather than a manual `.set(false)` inside `next`/`error`, so teardown releases it exactly like a
+settled answer does. `mass-delete-panel.ts`'s `openRestoreConfirm` has two chained reads sharing one
+flag; its `resolveEditableSet` pipe's `finalize` skips the release when a local `handedOff` flag is
+`true` — set right before the second read (`openRestoreConfirmDialog`) starts — so the flag stays
+held across the handoff instead of flickering to `false` between the two reads. The
+already-documented behaviour of releasing the flag while a token prompt is open in between is
+unchanged: that exit still sets `handedOff` to `false`, so it still releases. `restore-flow.ts` has
+only the one read, so its `finalize` releases unconditionally, same as `openRestoreConfirmDialog`'s
+own single read in `mass-delete-panel.ts`.
+
+---
+
+### 2026-09-26 — `channelMismatch` splits into two reasons, and `partial` gets its own wording
+
+**Betrifft:** `web/src/app/core/seven-tv/sync-report-outcome.ts` (`SyncReportReason`,
+`isChannelMismatch`, `classifySyncInSetResponse`) ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`syncReportTitleKey`/`syncReportTextKey`,
+`syncRetryOffered`) · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` (`UnresolvedChannel` doc) ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E18, E23, 4.4 Nr. 14, 6.4, N4,
+§18 addendum).
+
+Review finding on issue #255. `syncReportReason` used to fold both `UnresolvedChannel.reason`
+values (E18: `'notTracked'` — the expected channel is not currently tracked at all — and
+`'activeSetDiffers'` — it is tracked, but this set is not its active one right now) into one
+`'channelMismatch'` value, so the dock could never say *which* of the two applied, even though they
+call for different expectations (one never heals itself, the other heals over the resync that is
+already running for `activeSetDiffers`). `SyncReportReason` now carries
+`'channelMismatchNotTracked'`/`'channelMismatchActiveSetDiffers'` instead, and every producer
+(`classifySyncInSetResponse` in the shared `sync-report-outcome.ts`, used identically by the
+delete, import and restore services) and consumer picks the one that matches
+`UnresolvedChannel.reason`. `isChannelMismatch(reason)` folds both back into one boolean wherever a
+caller only needs "is this some channel-mismatch reason at all" — chiefly addendum N4's retry rule
+(`syncRetryOffered`, and the `retrySyncReport`/`retryRemovalReport` refusal in all three services),
+which treats both identically and would otherwise have had to enumerate them at every comparison
+site.
+
+Separately, but in the same commit because it touches the same notice: `partial` gets its own
+title and body text, distinct from `failed`. `RunProgressPanel.syncReportTitleKey`/
+`syncReportTextKey` (`labelPrefix() === 'restore' | 'massDelete'`) now switch on
+`syncReport() === 'partial'` to `.syncPartialTitle`/`.syncPartial` ("… recorded at EmotePurge — but
+not completely.") rather than reusing `.syncFailedTitle`/`.syncFailed` ("… reporting back to
+EmotePurge failed …"), which was simply wrong for a report that in fact went through, just not for
+every row. `import.syncPartialTitle`/`import.syncPartial` never had a way to be reached — the
+import's own `syncReport` (the sync-imported call) answers with a bodyless 204 and can never become
+`'partial'` — and are removed rather than kept dead; `import.removalSyncPartial*`, the unrelated
+pair for the *removal* report of a replace row's confirmed REMOVE (which can become `'partial'`),
+is untouched.
+
+---
+
+### 2026-09-26 — Adopts count as "renamed" in the dock, and a rename-only plan's button says "Align"
+
+**Betrifft:** `web/src/app/shared/seven-tv/run-progress-panel.ts` (`renamedCount` input,
+`summaryCountsKey`) · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`doneAdoptCount`) ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` (`executeLabelKey`, `titleIsRenameOnly`) ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (`copiedNotActiveNotice`,
+`renamedNotActiveNotice`) · `web/public/i18n/de.json` · `web/public/i18n/en.json`.
+
+Review findings on issue #255. An adopt (`adoptSourceName`) renames an existing target-set entry in
+place; it is not a copy. The dock's summary line used to count a `done` adopt the same as a `done`
+plain add ("N kopiert"), overstating what the run actually added — `RunProgressPanel` now accepts
+an optional `renamedCount` (fed from the import service's own `doneAdoptCount`, a count only the
+import run can ever produce) and splits it out of "kopiert" into its own "M umbenannt" segment,
+shown only once there is something to name. The same distinction reaches the two dock notices for a
+copy into a tracked but *not currently active* set (`copiedNotActiveNotice`): it now requires at
+least one `done` row that is not an adopt, and a rename-only outcome (every `done` row an adopt, at
+least one) gets its own `renamedNotActiveNotice` wording ("In Set '…' umbenannt — …") instead; a run
+where nothing at all succeeded gets neither.
+
+The confirm dialog's button follows the same distinction for a plan that is *exclusively* renames
+(`titleIsRenameOnly`, no `add`/`replace` row at all): "Kopieren" would misdescribe it exactly as
+"Hinzufügen läuft danach…" would, so both are replaced for that one case — the run notice with a
+sentence about renaming, and the button with a fourth word, "Angleichen"/"Align", matching the
+title it already used for this case (`import.confirm.titleAlign`, "N Namen im Zielset angleichen?").
+This corrects an earlier fix's own choice to reuse "Übertragen" for that button: the entry of
+2026-09-07 ("Ein Verb für die Übertragung", #92) reserves that verb for the header button/dock
+shortcut that opens the whole import flow (`import.copyButton`/`import.dockCopyButton`) — using it
+a second time, for a button inside the confirmation that flow leads to, would have reintroduced the
+exact ambiguity #92 exists to prevent (two controls, same word, in this case not even the same
+*step*). A plan that adds anything at all, mixed with adopts or not, keeps "Kopieren"/"Hinzufügen
+läuft danach…" unchanged — that wording is still literally true there.
+
+---
+
+### 2026-09-25 — A restore into a non-active target no longer triggers its own resync
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`resyncAfterReport`,
+`ResyncTriggerState` doc, `RestoreStartTarget`/`RestoreRunInfo` doc) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`restoreStartTarget` doc) ·
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (doc only) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.spec.ts` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E12, 6.4, §18 addendum).
+
+Part of task T1 of issue #255, itself a follow-up to the restore-per-set plan (#253). Before this,
+a restore into a **non-active** set of a tracked channel made the client trigger its own resync of
+that channel once the closing `sync-restored` report answered (the former E12 in the design doc,
+`resyncAfterReport` reading `resyncChannelName`) — the one case no backend resync covered, because
+the backend only resyncs a channel's active set. The reasoning at the time was that this at least
+reloaded *something*, but it never reloaded the *right* thing: a channel resync only pulls the
+channel's active-set view current, never a non-active set's member list, which is what the run
+actually changed. The request could succeed while confirming nothing the operator or the user
+watching the dock actually cared about — a resync line and a "being re-synced" state describing a
+list that never moves. The import already drew this conclusion for the identical situation and
+never resyncs a non-active target at all (`seven-tv-import.service.ts:657-671`); the restore now
+matches it.
+
+**What changed.** `SevenTvRestoreService.resyncAfterReport` now returns immediately whenever
+`expectedChannelName` is `null` — i.e. for any target that is not the tracked channel's active set,
+tracked or not — before even looking at the report's `resyncTriggered` answer. No
+`POST /api/channels/{channel}/resync` goes out, `resyncTrigger` stays `'idle'`, and the dock shows
+no resync line for that run. This applies uniformly: a successful report that names the channel in
+`resyncTriggered` no longer flips to `'backendTriggered'` either (there is no client resync left to
+suppress) — it simply stays `'idle'`, same as a report that names nothing. The **N1 fallback**
+(2026-09-25, addendum in the design doc's §18: a report that fails for good gets a client resync
+standing in for the backend's) is now active-set-only as well — it used to fall back to
+`resyncChannelName ?? expectedChannelName`, which is now just `expectedChannelName`, since
+`resyncChannelName` no longer feeds any resync decision.
+
+**What did not change.** The active set of a tracked channel keeps its full pre-#255 behaviour
+unchanged: the backend's own resync (E17) still covers it, `resyncTrigger` still becomes
+`'backendTriggered'` when the answer already names the expected channel (including the stale,
+`activeSetDiffers` case); when the answer names some other channel or none at all, `resyncTrigger`
+simply stays `'idle'` and no request of the client's own goes out — the backend's own resync
+already covers the active set unconditionally there, whatever `resyncTriggered` happens to list.
+The only client resync left for the active set is the N1 fallback, which still fires when the
+report fails for good. An untracked target still gets no client resync either, exactly as before —
+nothing there depended on `resyncChannelName`. `resyncChannelName` itself is not removed from
+`RestoreStartTarget`/
+`RestoreRunInfo`: it still names a non-active tracked target's channel for
+`RestoreProgressSection`'s target line (the "Target: *channel* · set *name*" wording versus the
+untracked "Target: set *name* of *owner*" one), a purely cosmetic use unrelated to resyncing
+anything — only `resyncAfterReport` stopped reading it. No i18n key became unreachable: every
+`restore.resync.*` string is still shown, just only ever from the active-set path now.
+
+---
+
+### 2026-09-25 — usage-stats becomes a lazy child route to keep the leave guard out of the initial bundle
+
+**Betrifft:** `web/src/app/app.routes.ts` (the `usage-stats` entry: `loadChildren` instead of
+`loadComponent`, `canDeactivate` removed) · `web/src/app/features/usage-stats/usage-stats.routes.ts`
+(new — the lazy child module, `component: UsageStatsPage` + `canDeactivate: [usageStatsLeaveGuard]`).
+The behavioral check for this split, `web/src/app/features/usage-stats/usage-stats.routes.spec.ts`,
+landed in a separate commit and is described there.
+
+Issue #264: `ng build --stats-json` after merging `main` into `feat/emote-sets-200` via PR #263
+(`chore/200-sync-main`) put the initial bundle at 510.4 kB, over the 500 kB warning budget — a
+genuine result of the merge, since neither branch alone was over it (epic branch 499.5 kB, main
+496.8 kB). By the time this fix started, `feat/emote-sets-200` had moved on to 992eef14 (after PR
+#270 merged further work), where the same build measured 513.14 kB — that later number is the
+baseline the fix below is actually measured against. The chain was `app.routes.ts`'s `usage-stats`
+route → its `canDeactivate: [usageStatsLeaveGuard]` →
+`usageStatsLeaveGuard`'s `SevenTvImportService` dependency, which pulls in the whole 7TV import
+engine (the run engine, the delete/restore services, the emote-set/emote-admin services) plus CDK
+Dialog, Overlay and Scrolling — roughly 127 kB, all of it eager because the guard sat on a
+`loadComponent` route and guards are resolved together with the route they guard. None of that
+belongs in every page's initial load — only in a navigation that actually reaches toward
+usage-stats (see the compromise on exactly when, below); before this fix it loaded on first paint
+regardless of which route a visitor landed on.
+
+**The fix (A2): split `usage-stats` into its own `loadChildren` module, with a plain static
+`component` inside it, not a nested `loadComponent`.** `app.routes.ts`'s `usage-stats` entry keeps
+`canActivate: [usageStatsAccessGuard]` (unaffected — it depends only on `AuthService`/
+`ChannelService`) and trades `loadComponent` + `canDeactivate` for a single
+`loadChildren: () => import('./features/usage-stats/usage-stats.routes').then((m) => m.USAGE_STATS_ROUTES)`.
+The new file's one entry (`path: ''`) carries `component: UsageStatsPage` directly rather than
+another `loadComponent` — a nested `loadComponent` would split `UsageStatsPage` into a *second*
+chunk for no size benefit (the `loadChildren` import already produces one chunk on its own) and
+would cost an extra network round trip before the page renders. Measured: 404.07 kB initial /
+106.39 kB transfer, with `usage-stats-routes` as its own 213.16 kB / 44.67 kB lazy chunk.
+
+**A conscious compromise: the chunk now loads before the guard runs, not after.** In Angular
+22.1.6, route recognition resolves `loadChildren` while expanding the route tree, and that happens
+before `checkGuards` (`_router-chunk.mjs`, the `recognize`/`checkGuards` stages of the navigation
+pipeline around lines 3202–3222 and 3903). So a visitor who cannot actually open usage-stats — a
+voter, or a logged-out visitor arriving via the `/channels/x` redirect — now downloads the
+`usage-stats-routes` chunk before `usageStatsAccessGuard` redirects them away, where the old flat
+`loadComponent` route only loaded the page after guards had already passed. Not a correctness bug —
+the chunk sits inert until something renders it, and the redirect still happens — but a real,
+accepted trade-off against the pre-#264 behavior. `canMatch` is not a free way around this: it
+re-evaluates on every navigation into the route, including every `listQueryState` query-param
+change the page itself makes while already open, not once per visit.
+
+**Why not the alternative sketched in the issue (a slimmer guard, keeping the flat route).** The
+issue also sketched making `usageStatsLeaveGuard` depend only on a small root signal ("an import is
+running") instead of `SevenTvImportService` directly, loading the confirmation dialog dynamically
+only when it actually needs to show one — sidestepping the `leadsToSameRoute` risk below entirely,
+since the route shape would never change. Measured at 406.56 kB initial — smaller than doing
+nothing, but larger than A2, and it would have introduced a new registration convention (something
+has to expose that root signal and keep it in sync with the real service) plus an async guard
+(dynamically importing the confirm dialog inside the guard itself) — A2 measured about 2.5 kB
+smaller than this alternative (404.07 kB against 406.56 kB). Not implemented.
+
+**The `leadsToSameRoute` risk the issue flagged, checked.** `usageStatsLeaveGuard`'s
+`leadsToSameRoute` helper tells a pure channel switch apart from a real navigation away by
+comparing `ActivatedRouteSnapshot.routeConfig` object identity — walking the next router state for
+a snapshot whose `routeConfig` is the same object as the current route's. Moving the route into a
+child `loadChildren` module changes which object plays that role, so this needed an explicit check,
+not just "the build still compiles" (the issue's own words). It still holds: Angular's router
+caches a `loadChildren` route's resolved array on the route object itself
+(`route._loadedRoutes`), and for a plain array export (no `NgModule`) this happens without a new
+child injector (`route._loadedInjector` stays `undefined`, confirmed by reading
+`_router-chunk.mjs`'s `loadChildren()`/`RouterConfigLoader.loadChildren()`) — so the `path: ''`
+entry inside `usage-stats.routes.ts` keeps the same object identity across every navigation after
+the first, exactly as a flat top-level route did, and DI still resolves against the current
+injector rather than a stale cached one. `usage-stats.routes.spec.ts` asserts this behaviorally
+(channel switch during a run: no dialog, same `UsageStatsPage` instance, the route param follows)
+rather than trusting the reasoning alone, and does it against the real `routes` export and the real
+`USAGE_STATS_ROUTES` array — not a hand-typed stand-in of their shape, so a future reshape of either
+file breaks this test instead of only the production build.
+
+---
+
 ### 2026-09-25 — The replace lock for an untracked target falls, and a shared pre-check comes first
 
 **Betrifft:** `web/src/app/shared/seven-tv/conflict-resolution.ts` (rule 7,

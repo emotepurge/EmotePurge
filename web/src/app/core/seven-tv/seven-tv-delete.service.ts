@@ -1,7 +1,7 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { inject, Injectable, signal } from '@angular/core';
+import { Injectable, inject, linkedSignal, signal, WritableSignal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { retry, throwError, timer } from 'rxjs';
+import { MonoTypeOperatorFunction, Observable, map, retry, throwError, timeout, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
@@ -14,6 +14,8 @@ import {
   RunResult,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
+import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
+import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportOutcome,
@@ -21,6 +23,7 @@ import {
   SyncReportState,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  isChannelMismatch,
 } from './sync-report-outcome';
 
 /** Kept under its historical name — the engine's constant is the same value. */
@@ -31,6 +34,31 @@ export const MAX_AUTOMATIC_SYNC_RETRIES = 2;
 // purpose: the deletions themselves are already done, the admin is waiting on a verdict, and a
 // manual retry button covers the cases a short backoff cannot.
 export const SYNC_RETRY_DELAY_MS = 2000;
+/** Time budget of one attempt of a closing report (`sync-imported`, `sync-deleted`,
+ *  `sync-restored`) — #256, Plan-256 Festlegung 15. A report that never answers would otherwise
+ *  keep its run open for good: never `closed`, never closable, and for a destructive run the tab's
+ *  unload guard armed forever. More generous than the 20 s re-read, because the report kicks off
+ *  server-side resync steps. An attempt that runs out counts as a transient failure (see
+ *  {@link timeoutReportAttempt}), so the same retries follow, then `failed`/`unavailable`. */
+export const REPORT_TIMEOUT_MS = 30_000;
+
+/** Ends one attempt of a closing report after {@link REPORT_TIMEOUT_MS} with a status-`0`
+ *  `HttpErrorResponse` — the shape of a network failure, so the retry policy retries it and
+ *  `classifySyncInSetFailure` reads it as `'unavailable'`. Placed *before* the retry operator, so
+ *  every attempt gets its own budget. */
+export function timeoutReportAttempt<T>(): MonoTypeOperatorFunction<T> {
+  return timeout<T, Observable<never>>({
+    first: REPORT_TIMEOUT_MS,
+    with: () =>
+      throwError(
+        () =>
+          new HttpErrorResponse({
+            status: 0,
+            statusText: `No answer within ${REPORT_TIMEOUT_MS} ms`,
+          }),
+      ),
+  });
+}
 
 /** How long a confirmed delete that never became a run keeps `confirmedRunPending` set, so the
  *  panel's abort notice ("Nothing was deleted." plus the reason) can still be read after the host's
@@ -85,17 +113,15 @@ export type DeleteItemStatus = RunItemStatus;
 export type DeleteQueueItem = RunQueueItem;
 
 /**
- * One delete run, from the moment it starts to the moment its closing report is done. Everything
- * the asynchronous follow-up needs hangs off *this* object, never off a field next to the service
- * (R15, #72, T12): the engine sets `isRunning` back to `false` inside `finish()`, i.e. *before*
- * `onRunComplete` fires the asynchronous `sync-deleted` call, and the arbiter derives "a run is
- * active" from exactly that signal — so a second delete can legitimately start while the first
- * one's report is still in flight. With the channel in one field and the reported ids in another, a
- * late answer (or a manual retry) of run 1 could be applied to run 2's channel. Bound to the
- * record, a late answer is simply no longer `this.run` and is dropped — see the identical note on
- * `ImportRunInfo` in `seven-tv-import.service.ts`.
+ * One delete run, from the moment it starts to the moment its closing report reaches an end state
+ * (#256, `SevenTvRunLifecycle`): `running → reporting → closed` on its own record — a delete never
+ * re-reads, so it never sees `settling`. `runId` is the identity a late answer or a manual retry
+ * finds it by; the record is replaced by a new object on every change, never mutated. `destructive`
+ * is always `true` (Plan-256 Festlegung 6): every delete row removes something from the set, so a
+ * delete run arms the tab's unload guard from `startDelete` until `closed`, the same way an
+ * import's `replace` plan does.
  */
-interface DeleteRunInfo {
+export interface DeleteRunInfo extends RunRecordBase {
   /** The channel of the page the run was started on — the purge protocol's envelope
    *  `channelName`, its filename and `resetIfChannelChanged` read it (spec 6.5). No longer the
    *  addressee of the report: that is the set (`setId`), with `expectedChannelName` beside it. */
@@ -110,6 +136,11 @@ interface DeleteRunInfo {
   setId: string;
   /** `null` while the run is in flight; set once the engine reports the run complete. */
   result: RunResult | null;
+  /** This run's `sync-deleted` report — `SevenTvDeleteService.syncReport` projects it for the
+   *  shown run. */
+  syncReport: SyncReportState;
+  /** Projected by `syncReportReason`. */
+  syncReportReason: SyncReportReason | null;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -125,27 +156,58 @@ export class SevenTvDeleteService {
     inject(TranslocoService),
   );
 
-  /** The run every asynchronous follow-up is bound to (R15) — not the same thing as `lastRun`,
-   *  which stays `null` for as long as this is in flight and only mirrors it once `result` lands. */
-  private run: DeleteRunInfo | null = null;
+  /** Every open run of this service, by id, plus the one the dock shows (#256). */
+  private readonly lifecycle = new SevenTvRunLifecycle<DeleteRunInfo>(
+    'delete',
+    (run) => run.syncReport === 'pending',
+  );
 
   readonly queue = this.engine.queue;
   readonly isRunning = this.engine.isRunning;
   readonly rateLimitPauseSeconds = this.engine.rateLimitPauseSeconds;
   readonly progress = this.engine.progress;
 
-  /** State of the closing sync-deleted call. Consumers must wait for a terminal value before
+  /** The run this service is currently showing — in flight (`result === null`) or finished. Its
+   *  record is replaced by a new object on every change; `runId` is its identity. Writable because
+   *  specs drive the dock through it; production code only writes through the lifecycle. */
+  readonly run: WritableSignal<DeleteRunInfo | null> = this.lifecycle.shown;
+
+  /** True while any run of this service reports — shown or not (#256, contract P1). A delete never
+   *  re-reads, so this is exactly "reporting", never "settling". */
+  readonly isSettling = this.lifecycle.isSettling;
+
+  /** True while any run of this service is not `closed` — every delete row is destructive (Plan-256
+   *  Festlegung 6), so this holds from `startDelete` to `closed`, shown or not (#256, contract P3).
+   *  The arbiter's unload guard (the union over every run service) reads it: until the run
+   *  closes, its report has not reached an end state, and closing the tab could lose it. */
+  readonly destructiveOpen = this.lifecycle.destructiveOpen;
+
+  /** State of the shown run's closing sync-deleted call. `linkedSignal` projection of the shown
+   *  record (#256, Plan-256 Festlegung 14) — writable so specs can drive a dock directly; production
+   *  code never writes it, only the record. Consumers must wait for a terminal value before
    *  optimistically removing rows: 'failed'/'partial' means the backend does not (fully) know about
    *  the deletion yet, so filtering the list client-side would show a state that isn't real. */
-  readonly syncReport = signal<SyncReportState>('idle');
+  readonly syncReport = linkedSignal<SyncReportState>(() => this.run()?.syncReport ?? 'idle');
 
   /** Why `syncReport` is `'failed'`/`'partial'` (spec E23), `null` otherwise — the dock shows it as
-   *  its own line under the report notice. */
-  readonly syncReportReason = signal<SyncReportReason | null>(null);
+   *  its own line under the report notice. Projection, like `syncReport`. */
+  readonly syncReportReason = linkedSignal<SyncReportReason | null>(
+    () => this.run()?.syncReportReason ?? null,
+  );
 
-  /** The finished run, kept for the summary/protocol UI (A6). Cleared on reset() — once the panel
-   *  is dismissed, the downloaded protocol file is the only remaining artifact, by design. */
-  readonly lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+  /** The finished run, kept for the summary/protocol UI (A6) — unchanged shape for
+   *  `mass-delete-panel.ts`/`usage-stats-page.ts` (#256 Naht 2.4). Projection of `run()`: `null`
+   *  while a run is in flight or nothing is shown, the frozen `{setId, channelName, result}` once
+   *  the shown run has a result — `result` keeps the identity `onRunComplete` gave it across every
+   *  later report patch, which is what `usage-stats-page.ts`'s `watchRunSettle` dedupes on. */
+  readonly lastRun = linkedSignal<{ setId: string; channelName: string; result: RunResult } | null>(
+    () => {
+      const shown = this.run();
+      return shown === null || shown.result === null
+        ? null
+        : { setId: shown.setId, channelName: shown.channelName, result: shown.result };
+    },
+  );
 
   /**
    * A delete the user is deciding on, or has decided on, that is not (yet) a run: `MassDeletePanel`
@@ -169,6 +231,17 @@ export class SevenTvDeleteService {
   readonly confirmedRunPending = signal(false);
 
   private confirmedRunTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  constructor() {
+    // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
+    // tab's unload guard from these three signals; it does not know this service otherwise.
+    inject(SevenTvRunArbiter).register({
+      kind: 'delete',
+      isRunning: this.isRunning,
+      isSettling: this.isSettling,
+      destructiveOpen: this.destructiveOpen,
+    });
+  }
 
   /** The delete confirmation is open — hold the dock (and the panel inside it) until one of the two
    *  releases below. Every exit of the confirmation has to reach one of them. */
@@ -214,54 +287,72 @@ export class SevenTvDeleteService {
   }
 
   /** `expectedChannelName` is `channelName` when `setId` is the page's active set, `null`
-   *  otherwise (spec 6.5) — the caller knows which, this service does not. */
+   *  otherwise (spec 6.5) — the caller knows which, this service does not. A run that starts is
+   *  shown at once; the run shown before it goes on to close on its own record (#256). */
   startDelete(
     setId: string,
     channelName: string,
     emotes: DeleteQueueEmote[],
     expectedChannelName: string | null,
   ): void {
-    const started: DeleteRunInfo = { channelName, expectedChannelName, setId, result: null };
+    const previousShown = this.lifecycle.shown();
+    const runId = this.lifecycle.createRunId();
+    const started: DeleteRunInfo = {
+      runId,
+      phase: 'running',
+      destructive: true,
+      channelName,
+      expectedChannelName,
+      setId,
+      result: null,
+      syncReport: 'idle',
+      syncReportReason: null,
+    };
+    // Opened *before* the engine is asked to start (#256 review finding): the engine answers
+    // asynchronously in practice, but only this ordering guarantees that a synchronous
+    // `onComplete` — however unlikely — always finds its record already registered, rather than
+    // updating a run the lifecycle does not know about yet, which would then never close.
+    this.lifecycle.open(started);
     const engineStarted = this.engine.start(
       setId,
       toDeleteQueue(emotes),
       REMOVE_OPERATION,
-      (result) => this.onRunComplete(started, result),
+      (result) => this.onRunComplete(runId, result),
     );
     if (!engineStarted) {
-      // Refused (already running, empty list, no token) — leave every signal as it was.
-      return;
+      // Refused (already running, empty list, no token) — take the just-opened record back and
+      // restore whatever was shown before it, which may be another run still settling its report.
+      this.lifecycle.discardUnstarted(runId, previousShown);
     }
-    this.run = started;
-    this.syncReport.set('idle');
-    this.syncReportReason.set(null);
-    this.lastRun.set(null);
   }
 
   cancel(): void {
     this.engine.cancel();
   }
 
-  /** Clears the panel after the admin has acknowledged a finished/cancelled run. Also drops the
-   *  run record: with the panel gone there is nothing left to retry against, and any answer still
-   *  in flight for it is no longer `this.run` (R15). */
+  /** Clears what the dock shows — and only that (#256, Plan-256 Festlegung 3). The shown run goes
+   *  on on its own record: a run still in flight runs to its end (never cancelled here: a request
+   *  7TV may already have applied must still be reported), and its report goes out and is answered.
+   *  The engine's queue belongs to a run in flight until `finish()` has built its result from it,
+   *  so it is cleared then (`onRunComplete`), not here. */
   reset(): void {
-    this.engine.reset();
-    this.syncReport.set('idle');
-    this.syncReportReason.set(null);
-    this.run = null;
-    this.lastRun.set(null);
+    if (!this.engine.isRunning()) {
+      this.engine.reset();
+    }
+    this.lifecycle.detach();
     // The restore service clears its own transient notice flag here for the same reason: whatever
     // this dock was still holding open, the user has dismissed it.
     this.clearConfirmedRun();
   }
 
   /** The panel is a root-service singleton, so a finished run used to follow the user into the
-   *  next channel's workspace, still showing the previous channel's counts. A *running* run is
-   *  deliberately left alone — hiding it would be worse than showing it on the wrong page, and it
-   *  still needs its channel for the closing sync call. */
+   *  next channel's workspace, still showing the previous channel's counts. Since #256 (Plan-256
+   *  Festlegung 13) this only fires for a `closed` run: a run still reporting follows the user for
+   *  the few seconds until its report reaches an end state — dropping it mid-report would leave a
+   *  later `failed` with no dock to show it and no retry to reach it (Codex-Befund 2). */
   resetIfChannelChanged(channelName: string): void {
-    if (this.isRunning() || this.run === null || this.run.channelName === channelName) {
+    const current = this.run();
+    if (current === null || current.phase !== 'closed' || current.channelName === channelName) {
       return;
     }
     this.reset();
@@ -270,50 +361,81 @@ export class SevenTvDeleteService {
   /** Manual retry for the closing report. The 7TV deletions are long done at this point, so this
    *  only re-sends the bookkeeping call — safe to repeat, ids already archived still count.
    *  Set, expected channel *and* keys come from the same record, so a retry can never mix one
-   *  run's ids with another's target or with a set chosen after the run started (R15, AK 71). */
+   *  run's ids with another's target or with a set chosen after the run started (R15, AK 71). A
+   *  retry on a closed run does not reopen it (#256): it is a new report on a closed run, and
+   *  neither the arbiter nor the unload guard sees it. */
   retrySyncReport(): void {
-    const current = this.run;
+    const current = this.run();
     if (
-      this.syncReport() === 'pending' ||
-      // addendum N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
-      // could only write the same mismatch again.
-      this.syncReportReason() === 'channelMismatch' ||
-      !current?.result ||
+      current === null ||
+      current.syncReport === 'pending' ||
+      // addendum N4, AK 40: either channel-mismatch reason is recorded and, for
+      // activeSetDiffers, its resync already runs — a retry could only write the same mismatch
+      // again.
+      isChannelMismatch(current.syncReportReason) ||
+      current.result === null ||
       current.result.doneKeys.length === 0
     ) {
       return;
     }
 
-    this.reportDeleted(current, current.result);
+    this.reportDeleted(current.runId, current.result.doneKeys);
   }
 
-  private onRunComplete(started: DeleteRunInfo, result: RunResult): void {
-    if (this.run !== started) {
-      // Only reachable via reset()/resetIfChannelChanged() during the run: the shown run is not
-      // this one any more, so neither its result nor its bookkeeping belong on screen.
+  /** Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
+   *  there is no early return for a run that is no longer shown; its confirmed removals are
+   *  reported all the same). `phase` and `syncReport` move together in one update so the
+   *  lifecycle's auto-close guard never sees a `reporting` record whose report has not been marked
+   *  `pending` yet — a run with nothing to report goes straight to `closed`. */
+  private onRunComplete(runId: string, result: RunResult): void {
+    const reportsDeleted = result.doneKeys.length > 0;
+    const updated = this.lifecycle.update(runId, (run) => ({
+      ...run,
+      result,
+      phase: 'reporting',
+      syncReport: reportsDeleted ? 'pending' : run.syncReport,
+      syncReportReason: reportsDeleted ? null : run.syncReportReason,
+    }));
+    if (!this.lifecycle.isShown(runId)) {
+      // A run `reset()` detached while in flight has left its queue on the engine until now,
+      // because `finish()` builds this very result from it; nothing shows that queue any more.
+      this.engine.reset();
+    }
+    if (updated === null) {
+      // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
       return;
     }
 
-    // A new object rather than a mutation, so consumers of `run` reading it back via `lastRun`
-    // actually see the result. From here on this is the record the follow-up is bound to.
-    const finished: DeleteRunInfo = { ...started, result };
-    this.run = finished;
-    this.lastRun.set({ setId: finished.setId, channelName: finished.channelName, result });
-
-    if (result.doneKeys.length > 0) {
-      this.reportDeleted(finished, result, () => this.fallbackResync(finished));
+    if (reportsDeleted) {
+      this.reportDeleted(runId, result.doneKeys, () => this.fallbackResync(updated));
     }
   }
 
   /** No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
    *  touched (E17), and the page lives off the resulting `channel.synced`. `afterFailure` runs once
    *  the report has failed for good — only the first report of a run passes one, never a manual
-   *  retry (addendum N1). */
-  private reportDeleted(run: DeleteRunInfo, result: RunResult, afterFailure?: () => void): void {
-    this.syncReport.set('pending');
-    this.syncReportReason.set(null);
-    // A delete run's keys are its 7TV ids (see toDeleteQueue) — one per cell, unique in the run.
-    const sevenTvEmoteIds = result.doneKeys;
+   *  retry (addendum N1).
+   *
+   *  Patches the record to `syncReport: 'pending'` first (#256 P2, Plan-256-Robustheit review),
+   *  the same way the import's `reportImported`/`reportRemoved` do — the first call after
+   *  `onRunComplete` finds it already `'pending'` (redundant but harmless), but a manual
+   *  `retrySyncReport()` call needs exactly this: without it, the record stayed on its previous
+   *  end state (e.g. `'failed'`) for the whole time the retry's request was out, so the retry
+   *  button stayed visible for a second click (a parallel, redundant report) and, once `closed`,
+   *  the record had nothing pending to keep it in the lifecycle's map for a late answer to find —
+   *  a "Close" clicked mid-retry then left the eventual answer with no record to land on: no
+   *  reshow, no `console.warn`. `syncReportReason` is cleared too, so a stale reason does not
+   *  flash next to the fresh `'pending'` state. `closed` itself is not reopened here — the
+   *  lifecycle's one-way door leaves the phase alone, and `reportsPending` (`syncReport ===
+   *  'pending'`) is what keeps a `closed`-but-pending record in the map until this new attempt
+   *  also reaches an end state. */
+  private reportDeleted(runId: string, sevenTvEmoteIds: string[], afterFailure?: () => void): void {
+    const run = this.patchRun(runId, { syncReport: 'pending', syncReportReason: null });
+    if (run === null) {
+      // Unreachable in practice: called right after the update that put the run into `reporting`,
+      // or from a manual retry that just read the record — kept as a guard, not a silent no-op.
+      return;
+    }
 
     this.emoteSetService
       .reportDeletedInSet(run.setId, {
@@ -321,6 +443,17 @@ export class SevenTvDeleteService {
         expectedChannelName: run.expectedChannelName,
       })
       .pipe(
+        timeoutReportAttempt(),
+        // The threeway reading (`map`, not inside `next:`) lives ahead of `retry` so a malformed
+        // 200 answer that makes `classifySyncInSetResponse` throw ends the report like any other
+        // transient failure — an uncaught throw inside a `next:` callback would otherwise leave
+        // this run `reporting` forever, never `closed` (#256 review finding). `retry`'s `delay`
+        // below then also retries this throw (a plain `TypeError`, not an `HttpErrorResponse` —
+        // its `status` reads `undefined`, so neither branch of the 401/403 check matches):
+        // uncritical, because a retried `sync-deleted` call is idempotent either way.
+        map((answer: SyncDeletedInSetResponse) =>
+          classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
+        ),
         // A 429 is the realistic case: sync-deleted shares a rate-limit budget with other calls, and
         // a swallowed 429 used to look exactly like success. A 401 (session expired during a long
         // run) or a 403 (the right to the set is gone) cannot be fixed by waiting, so neither is
@@ -336,16 +469,12 @@ export class SevenTvDeleteService {
       .subscribe({
         // The threeway reading lives in one place for all three services (F8, E23, AK 15): a
         // channel short of the reported ids is 'partial'/'shortfall', a missed expected channel
-        // 'partial'/'channelMismatch', a paper-only answer (`channels: []`) a plain success.
-        next: (answer: SyncDeletedInSetResponse) =>
-          this.applyIfCurrent(run, () =>
-            this.applyReportOutcome(classifySyncInSetResponse(answer, sevenTvEmoteIds.length)),
-          ),
+        // 'partial'/'channelMismatchNotTracked' or 'partial'/'channelMismatchActiveSetDiffers'
+        // (#255), a paper-only answer (`channels: []`) a plain success.
+        next: (outcome) => this.endReport(runId, outcome),
         // A 404 (the set is gone) ends in 'failed'/'setNotFound' — never in 'succeeded' (#224).
         error: (error: HttpErrorResponse) => {
-          this.applyIfCurrent(run, () =>
-            this.applyReportOutcome(classifySyncInSetFailure(error.status)),
-          );
+          this.endReport(runId, classifySyncInSetFailure(error.status));
           afterFailure?.();
         },
       });
@@ -366,19 +495,40 @@ export class SevenTvDeleteService {
     this.channelService.resync(channelName).subscribe({ error: () => undefined });
   }
 
-  private applyReportOutcome(outcome: SyncReportOutcome): void {
-    this.syncReport.set(outcome.state);
-    this.syncReportReason.set(outcome.reason);
-  }
-
-  /** The R15 guard in one place: an answer that belongs to a superseded run is dropped silently —
-   *  no error state, nothing written. The run it belongs to is not on screen any more, and the one
-   *  that is must not inherit its outcome. */
-  private applyIfCurrent(run: DeleteRunInfo, apply: () => void): void {
-    if (this.run !== run) {
+  /** Writes a report's end state onto its run's record — which closes the run once it was the last
+   *  (only) report out — and brings a run nobody shows back onto the dock when that end state is
+   *  not a success (Plan-256 Festlegung 13): a failed or partial report needs a place with its
+   *  reason and a retry. Shown again only when nothing else is shown and the engine is free;
+   *  otherwise the failure stays on the record and in the console.
+   *
+   *  `reshow` is attempted before `showFinishedRows` and rolled back with `detach()` if that then
+   *  refuses (#256 review finding: reshowing must not leave the dock pointing at a run whose queue
+   *  never actually reappeared) — never the other way round, which could otherwise push a
+   *  to-be-rejected run's rows onto the engine's queue where an already-shown run would inherit them. */
+  private endReport(runId: string, outcome: SyncReportOutcome): void {
+    const run = this.patchRun(runId, {
+      syncReport: outcome.state,
+      syncReportReason: outcome.reason,
+    });
+    if (run === null || outcome.state === 'succeeded' || this.lifecycle.isShown(runId)) {
       return;
     }
-    apply();
+    if (run.result !== null && !this.engine.isRunning() && this.lifecycle.reshow(run)) {
+      if (this.engine.showFinishedRows(run.result.items)) {
+        return;
+      }
+      this.lifecycle.detach();
+    }
+    console.warn('[EmotePurge] 7TV delete report of a run no longer shown did not succeed', {
+      runId,
+      state: outcome.state,
+      reason: outcome.reason,
+    });
+  }
+
+  /** Merges `patch` into the record of `runId` — see `SevenTvRunLifecycle.update`. */
+  private patchRun(runId: string, patch: Partial<DeleteRunInfo>): DeleteRunInfo | null {
+    return this.lifecycle.update(runId, (run) => ({ ...run, ...patch }));
   }
 }
 

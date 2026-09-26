@@ -117,7 +117,9 @@ const DE_TRANSLATIONS = {
       },
       sameChannelFile: 'Diese Liste stammt aus diesem Kanal.',
       runNotice: 'Das Hinzufügen läuft danach automatisch nacheinander.',
+      runNoticeRenameOnly: 'Das Umbenennen läuft danach automatisch nacheinander.',
       execute: 'Kopieren',
+      executeRenameOnly: 'Angleichen',
       removals: {
         one: '{{ count }} Emote wird aus dem Zielset entfernt.',
         other: '{{ count }} Emotes werden aus dem Zielset entfernt.',
@@ -370,11 +372,13 @@ describe('ImportConfirmDialog', () => {
   let dialogData: ImportConfirmDialogData;
   let closed: (ImportConfirmOutcome | undefined)[];
   let retryCalls: number;
+  let reloadLiveCalls: number;
   let panelClasses: Set<string>;
 
   beforeEach(async () => {
     closed = [];
     retryCalls = 0;
+    reloadLiveCalls = 0;
     panelClasses = new Set();
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
 
@@ -440,6 +444,9 @@ describe('ImportConfirmDialog', () => {
       target,
       retry: () => {
         retryCalls += 1;
+      },
+      reloadLive: () => {
+        reloadLiveCalls += 1;
       },
       runBlocked,
       httpClient: TestBed.inject(HttpClient),
@@ -1624,6 +1631,49 @@ describe('ImportConfirmDialog', () => {
         expect(dialog.element('import-confirm-removals')).toBeNull();
       });
 
+      // Spec #255: a rename-only plan adds nothing, so the ordinary "Kopieren" button and its
+      // "Hinzufügen läuft danach…" notice would both misdescribe the run — the button matches the
+      // title's own word ("Angleichen", import.confirm.titleAlign) instead of a fourth word for a
+      // run that, unlike every other plan here, does not add a thing. Review finding #255 P2-1: an
+      // earlier version of this fix reused "Übertragen" here, but DECISIONS 2026-09-07 ("Ein Verb
+      // für die Übertragung", #92) reserves that verb for the entry point that opens the whole
+      // import flow, not for a button inside the confirmation it leads to.
+      it('shows the "Angleichen" button and a matching run notice for a rename-only plan', async () => {
+        const dialog = render({
+          source: channelSource([row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.hasButton('Angleichen')).toBe(true);
+        expect(dialog.hasButton('Kopieren')).toBe(false);
+        expect(dialog.text()).toContain('Das Umbenennen läuft danach automatisch nacheinander.');
+        expect(dialog.text()).not.toContain(
+          'Das Hinzufügen läuft danach automatisch nacheinander.',
+        );
+      });
+
+      // The same plan, but with an ordinary add row beside the adopt (titleIsRenameOnly is false
+      // once addCount > 0) — the button and the notice both stay exactly as they were before #255.
+      it('keeps the "Kopieren" button and the "Hinzufügen" notice when the plan also adds', async () => {
+        const dialog = render({
+          source: channelSource([row('new-1', 'Kappa'), row('src-m', 'Pog')]),
+          target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
+        });
+        await openStep(dialog, 'aliasMismatch');
+        choose(dialog, 'Pog', 'adoptSourceName');
+        apply(dialog);
+
+        expect(dialog.hasButton(EXECUTE)).toBe(true);
+        expect(dialog.hasButton('Angleichen')).toBe(false);
+        expect(dialog.text()).toContain('Das Hinzufügen läuft danach automatisch nacheinander.');
+        expect(dialog.text()).not.toContain(
+          'Das Umbenennen läuft danach automatisch nacheinander.',
+        );
+      });
+
       it('keeps the add-counting title when the plan also adds, but still shows the rename line', async () => {
         const dialog = render({
           source: channelSource([row('new-1', 'Kappa'), row('src-m', 'Pog')]),
@@ -1799,8 +1849,12 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.hasButton(EXECUTE)).toBe(true);
       expect(dialog.hasButton('Starten')).toBe(false);
 
+      // Issue #256 point 2: a drifted target's own reload forces a live re-read (`reloadLive`),
+      // never the ordinary `retry` — the ordinary load is the Postgres-backed "today" read for a
+      // tracked active set, which can already be a drift round behind 7TV.
       dialog.button('Ziel neu laden').click();
-      expect(retryCalls).toBe(1);
+      expect(reloadLiveCalls).toBe(1);
+      expect(retryCalls).toBe(0);
 
       await openStep(dialog, 'nameCollision');
       expect(option(dialog, 'Collides', 'skip').checked).toBe(true);
@@ -1809,6 +1863,162 @@ describe('ImportConfirmDialog', () => {
       expect(collidesRow?.getAttribute('aria-label')).toBe(
         'Collides, im Ziel: Collides, CollidesToo',
       );
+    });
+
+    // Issue #256 point 2, differentiated from the drift case above: a failed or incomplete live
+    // read never got far enough to vouch for anything, so there is nothing for a forced live
+    // re-read to be fresher than — its own reload button stays the ordinary load.
+    it("still calls the ordinary retry, not reloadLive, from the readFailed notice's own button", async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      TestBed.inject(HttpTestingController).expectOne(GQL).error(new ProgressEvent('network'));
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset ließ sich gerade nicht vollständig lesen.',
+      );
+
+      dialog.button('Ziel neu laden').click();
+
+      expect(retryCalls).toBe(1);
+      expect(reloadLiveCalls).toBe(0);
+    });
+
+    // Issue #256 point 2 / plan §T6: a live reload after a drift replaces the target with a fresh
+    // `ready()` state exactly like any other target reload — the `linkedSignal` projections keyed
+    // on `preview` (`targetOverlays`, `targetCheckNotice`, `liveOccupiedSlots`) reset on that new
+    // reference regardless of which button asked for it (retry or reloadLive). This pins that the
+    // occupied-slot count shown after a live reload is the freshly loaded target's own count, not a
+    // number left over from the live read that found the drift in the first place.
+    it('clears the live-occupied-slot count from the drift check once a live reload replaces the target', async () => {
+      captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      // Same drift as "on a drifted target" above (tgt-a gained a second alias) — the live read's
+      // item count must equal its own totalCount for `verifyReplaceTargets` to see a *complete* read
+      // at all (`seven-tv-set-entries.ts`'s `collected === totalCount`), so this keeps the default,
+      // matching count rather than picking an arbitrary occupied-slot number.
+      await replaceAndSave(dialog, [
+        { id: 'tgt-a', alias: 'Collides' },
+        { id: 'tgt-a', alias: 'CollidesToo' },
+        ...LIVE_UNCHANGED.slice(1),
+      ]);
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset hat sich seit der Vorschau geändert: Collides.',
+      );
+      // The live check itself already adopted the read's own occupancy (5 live entries) before it
+      // found the drift — the unrelated Kappa add (the only other row in the plan) turns that into 6
+      // "danach" (net change +1, `onTargetRead`'s doc: every successful read updates
+      // `liveOccupiedSlots`, whichever branch follows).
+      expect(dialog.text()).toContain('Das Set hätte danach 6 von 1000 Slots belegt.');
+
+      dialog.button('Ziel neu laden').click();
+      expect(reloadLiveCalls).toBe(1);
+      expect(retryCalls).toBe(0);
+
+      // The flow's own `reloadLive` answers with a fresh live read (a new `ready()` object, the
+      // drifted target back at the shape it was confirmed against) — the same reset any other
+      // target reload already gets from the `linkedSignal`s keyed on `preview`, not a special case
+      // this task has to add: the drift notice clears, and the projection adopts the fresh load's
+      // own occupancy rather than the number the drift check left behind.
+      dialog.target.set(
+        readyTarget({
+          setId: 'set-9',
+          occupiedSlots: 20,
+          capacity: 1000,
+          emotes: [
+            emote('tgt-a', 'Collides'),
+            emote('tgt-b', 'Dup'),
+            emote('tgt-b', 'Dup2'),
+            emote('src-m', 'PogOld'),
+          ],
+        }),
+      );
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+      // 21, not a value left over from the drift check's own 6 (20 + the same net +1) — proof the
+      // reload's fresh target, not the stale live read, is what the projection now follows.
+      expect(dialog.text()).toContain('Das Set hätte danach 21 von 1000 Slots belegt.');
+    });
+
+    // Spec #255: the slot projection follows the last successful live read, not just the picker's
+    // own load — it stays current after "Rückweg sichern"'s own re-read, and only a reload of the
+    // target (never merely a decision change) puts it back.
+    it('uses the live occupied-slot count from the last successful live read, and a target reload resets it back', async () => {
+      captureDownloads();
+      const source = channelSource([row('src-a', 'Collides')]);
+      const freshTarget = () =>
+        readyTarget({
+          setId: 'set-slots',
+          occupiedSlots: 15,
+          capacity: 1000,
+          emotes: [emote('tgt-a', 'Collides')],
+        });
+      const dialog = render({ source, target: freshTarget() });
+
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      // The replace's own ADD cancels its own REMOVE (net delta 0) — the only thing that can move
+      // the projected number below is the live read's own occupancy, not the plan.
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      answerRead(dialog, setRead([{ id: 'tgt-a', alias: 'Collides' }], 16));
+
+      expect(dialog.text()).toContain('Das Set hätte danach 16 von 1000 Slots belegt.');
+
+      // A reload of the target (a fresh ready()/preview()) resets the live number — the same reset
+      // targetOverlays already gets, and for the same reason: it shows a fresh count of its own.
+      dialog.target.set(freshTarget());
+      dialog.detect();
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+    });
+
+    // #255 P3.2 (review finding): onTargetRead used to adopt a live read's occupancy number before
+    // checking whether the plan it was requested for was still current — a target reload while the
+    // read was still out reset the projection back to the picker-time count, and the stale answer
+    // then arriving overwrote that reset with its own, already-outdated number. The guard now runs
+    // first, so an answer for a plan that is already gone changes nothing.
+    it('ignores a live read answer for a plan the target has already reloaded past', async () => {
+      captureDownloads();
+      const source = channelSource([row('src-a', 'Collides')]);
+      const freshTarget = () =>
+        readyTarget({
+          setId: 'set-slots',
+          occupiedSlots: 15,
+          capacity: 1000,
+          emotes: [emote('tgt-a', 'Collides')],
+        });
+      const dialog = render({ source, target: freshTarget() });
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+
+      // The target reloads while the read above is still out — a fresh preview means a fresh
+      // `plan()`, so the read's own captured plan is now stale, and the reset already shows the
+      // picker-time count again.
+      dialog.target.set(freshTarget());
+      dialog.detect();
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+
+      // The old read's answer, carrying a number for the plan that is now gone, must not resurrect
+      // it.
+      answerRead(dialog, setRead([{ id: 'tgt-a', alias: 'Collides' }], 999));
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
     });
 
     it('releases nothing on a failed or incomplete read, keeping the decision for another try', async () => {

@@ -8,13 +8,17 @@ import { loadSevenTvSetEntries } from './seven-tv-set-entries';
 
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 
-function page(entries: { id: string; alias?: string; defaultName?: string }[], pageCount = 1) {
+function page(
+  entries: { id: string; alias?: string; defaultName?: string }[],
+  pageCount = 1,
+  totalCount = entries.length,
+) {
   return {
     data: {
       emoteSets: {
         emoteSet: {
           emotes: {
-            totalCount: entries.length,
+            totalCount,
             pageCount,
             items: entries.map(({ id, alias, defaultName }) => ({
               alias,
@@ -163,6 +167,49 @@ describe('loadSevenTvSetEntries', () => {
     const result = await result$;
     expect(result.defaultNameById.get('7tv-1')).toBe('Pog');
     expect(result.defaultNameById.get('7tv-2')).toBe('');
+  });
+
+  // Spec #255: the import confirm dialog's live slot projection reads this straight off the read,
+  // independent of `complete` — 7TV's own `totalCount` is authoritative regardless of whether this
+  // particular read's own page walk collected every entry.
+  it("reports the set's own totalCount as occupiedSlots, on a single page and across pages alike", async () => {
+    const single$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    httpMock.expectOne(GQL_ENDPOINT).flush(page([{ id: '7tv-1', alias: 'PogU' }]));
+    expect((await single$).occupiedSlots).toBe(1);
+
+    const paged$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: { totalCount: 5, pageCount: 2, items: [{ emote: { id: '7tv-1' } }] },
+          },
+        },
+      },
+    });
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: { totalCount: 5, pageCount: 2, items: [{ emote: { id: '7tv-2' } }] },
+          },
+        },
+      },
+    });
+    expect((await paged$).occupiedSlots).toBe(5);
+  });
+
+  // The runaway guard reports `complete: false` but still carries 7TV's own totalCount — the guard
+  // is about this read's own page walk, not about whether the number 7TV reported is trustworthy.
+  it('still reports occupiedSlots when the runaway guard stops the read incomplete', async () => {
+    const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    for (let requested = 1; requested <= 10; requested++) {
+      httpMock.expectOne(GQL_ENDPOINT).flush(page([], 11, 200));
+    }
+
+    const result = await result$;
+    expect(result.complete).toBe(false);
+    expect(result.occupiedSlots).toBe(200);
   });
 
   it('errors on a GraphQL-level rejection disguised as HTTP 200', async () => {

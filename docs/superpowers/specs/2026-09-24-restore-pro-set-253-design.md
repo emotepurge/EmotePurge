@@ -179,7 +179,7 @@ der adversarialen Zweitmeinung (Abschnitt 14).
 | E9 | Antwort-DTO der beiden neuen Routen | `{ reportedCount, channels: [{ channelName, archivedCount \| restoredCount, notFoundIds }], unresolvedChannel: { channelName, reason } \| null, resyncTriggered: string[] }` — `channels` leer **und** `unresolvedChannel` null heißt „nur Papier". Vertrag in 5.3 | Bestätigt; um `unresolvedChannel` (H2/E18) und `resyncTriggered` (H1/E17) erweitert, damit das Frontend dreiwertig liest und keinen zweiten Resync auslöst |
 | E10 | Wo läuft die Zielprüfung im Frontend? | Im **`FileImportStep`**, als dritter Prüfschritt nach Envelope und Parser, vor `picked`. Der Schritt zeigt den Fehler in seinem bestehenden Banner; der Dialog schließt erst mit einem geprüften Ziel | Bestätigt (Abschnitt 13, Punkt 7). Der Schritt „liest und prüft die Datei" (UI-Designsprache §7.3) und besitzt den einzigen Fehler-Ort dieser Kette. Er bekommt dafür `SevenTvEmoteSetService` injiziert (`shared/` darf aus `core/` importieren, nicht umgekehrt) und nutzt dessen gemeinsame Vorprüfung (E19) |
 | E11 | Datei mit persönlichem Set als Ziel | **Abgewiesen** (`kind !== 'NORMAL'`), mit eigenem Grund | Bestätigt. Kein Picker und kein Dropdown bietet ein persönliches Set an (Spec-200 §34, §35, §39), also kann EmotePurge nie eine Löschung daraus erzeugt haben |
-| E12 | Resync nach einem Restore (Frontend-Anteil) | Der **Backend-Resync** aus E17 deckt jeden getroffenen Kanal und den unaufgelösten erwarteten Kanal ab. Der Restore-Dienst stößt selbst **nur noch dann** einen Resync an, wenn das Ziel ein **nicht-aktives** Set eines getrackten Kanals ist — der Fall, den kein Backend-Resync trifft, und der, in dem der Resync die Mitgliederliste der nicht-aktiven Ansicht nachlädt (Spec-200 8.3). Kein Resync für ein ungetracktes Ziel. **Ausnahme (Nachtrag N1):** scheitert die Meldung endgültig, hat das Backend keinen Resync ausgelöst, und der Client stößt ersatzweise den des erwarteten bzw. des nicht-aktiven Kanals an | Bestätigt (Abschnitt 13, Punkt 5) und mit E17 zusammengeführt: **höchstens ein Resync je Kanal und Meldung**, weil das Backend den ausgelösten Resync in `resyncTriggered` sichtbar macht und der Client für einen dort genannten Kanal keinen zweiten anstößt |
+| E12 | Resync nach einem Restore (Frontend-Anteil) | Der **Backend-Resync** aus E17 deckt jeden getroffenen Kanal und den unaufgelösten erwarteten Kanal ab. Der Restore-Dienst stößt selbst **nur noch dann** einen Resync an, wenn das Ziel ein **nicht-aktives** Set eines getrackten Kanals ist — der Fall, den kein Backend-Resync trifft, und der, in dem der Resync die Mitgliederliste der nicht-aktiven Ansicht nachlädt (Spec-200 8.3). Kein Resync für ein ungetracktes Ziel. **Ausnahme (Nachtrag N1):** scheitert die Meldung endgültig, hat das Backend keinen Resync ausgelöst, und der Client stößt ersatzweise den des erwarteten bzw. des nicht-aktiven Kanals an (aufgehoben für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25) | Bestätigt (Abschnitt 13, Punkt 5) und mit E17 zusammengeführt: **höchstens ein Resync je Kanal und Meldung**, weil das Backend den ausgelösten Resync in `resyncTriggered` sichtbar macht und der Client für einen dort genannten Kanal keinen zweiten anstößt |
 | E13 | Was `RestoreRunInfo` trägt | `{ targetSetId, expectedChannelName: string \| null, resyncChannelName: string \| null, hostChannelName, result }` plus Anzeigefelder — das Ziel-Set, der erwartete Treffer (E18), der Kanal aus E12, und der Kanal der Seite, auf der der Lauf gestartet wurde | Bestätigt (Abschnitt 13, Punkt 3): `resetIfChannelChanged` vergleicht mit `hostChannelName`, weil das Layout nur den Kanal der Seite kennt (F7) |
 | E14 | Was mit `emote_set_id_empty` geschieht | **Entfällt** aus `ApiErrorCodes`, `api-error.ts` und beiden Locales | Der Code existiert nur für die entfallende Leiter (`EmoteEndpoints.cs:304`, `ApiErrorCodes.cs:102`, `api-error.ts:53`) |
 | E15 | Was mit `wrongChannel` und `wrongSet` geschieht | Beide Fehler und ihre Schlüssel **entfallen** aus beiden Parsern und beiden Locales; der Parser gibt das Ziel zurück statt es zu prüfen | Es gibt nach E1 keinen Weg mehr, der sie erzeugt. Die neuen Schlüssel stehen in 6.1; ihr Wortlaut ist vorläufig und gehört #255 |
@@ -190,7 +190,7 @@ der adversarialen Zweitmeinung (Abschnitt 14).
 | E20 | **H3 — kein vorautorisierter Nachmeldeweg** | Scheitert die Meldung trotz Vorprüfung (Rechteentzug mitten im Lauf), zeigt das Dock den Grund (`syncReportReason`, E23); es gibt **keinen** Weg, die Meldung unter einer früheren Autorisierung nachzureichen | Bewusst ausgelassen (Betreiber): das Mod-Team hat eigene Rechte, der Fall ist ein echter Entzug, und ein Nachmeldeweg wäre eine zweite Autorisierung neben der, die 7TV gerade zurückgenommen hat |
 | E21 | **M5 — Hinweis „Ziel ≠ Seite"** | Der Flow bekommt die **gewählte Set-ID der Seite** (`hostSelectedSetId: string \| null`). Der Hinweis entsteht beim Vergleich `target.emoteSetId !== hostSelectedSetId`, nie beim Kanalvergleich; die Bestätigung zeigt neben dem Set-Namen die **aufgelöste Set-ID** | Ein anderes Set desselben Kanals erzeugte sonst keinen Hinweis, und die Datei ist nicht vertrauenswürdig — die ID aus der Zielliste ist die geprüfte |
 | E22 | **M6 — Einstieg ohne gewähltes Set** | `ImportTrigger` verlässt das Gate `selectedEmoteSetId()` und steht nur noch hinter `!isCoarse()`; sein `setId` wird `string \| null`. Ohne Set sind im Quellschritt die drei Kopier-Türen mit Grund deaktiviert, der Datei-Zweig bleibt offen und liest nur Rückweg-Dateien. Das Restore-Dock zieht aus dem `MassDeletePanel` in eine eigene `RestoreProgressSection` **außerhalb** des Set-Gates, nach dem Muster von `ImportProgressSection` | Ein Host-Kanal ohne aktives Set (z. B. nach einem Replace ins Ungetrackte, oder ein Kanal vor dem ersten Sync) hätte sonst keinen Einstieg und kein Dock. Kein neuer Button: derselbe Einstieg bleibt sichtbar („keine neuen Dauer-Controls") |
-| E23 | Grund am Meldungszustand | `SyncReportState` bleibt; daneben `syncReportReason: 'forbidden' \| 'setNotFound' \| 'unavailable' \| 'channelMismatch' \| 'shortfall' \| 'other' \| null`, gesetzt bei `failed`/`partial`, vom Dock als eigene Zeile gezeigt. Bei `channelMismatch` bietet das Dock **kein** „Erneut melden" an (Nachtrag N4) | Ein nacktes `failed` sagt nicht, ob die Rechte weg sind oder 7TV nicht antwortet; H3 verlangt einen klaren Grund. Wortlaut #255 |
+| E23 | Grund am Meldungszustand | `SyncReportState` bleibt; daneben `syncReportReason: 'forbidden' \| 'setNotFound' \| 'unavailable' \| 'channelMismatch' \| 'shortfall' \| 'other' \| null` (`channelMismatch` seither in zwei Gründe gesplittet, s. 18, Nachtrag 2026-09-26), gesetzt bei `failed`/`partial`, vom Dock als eigene Zeile gezeigt. Bei `channelMismatch` bietet das Dock **kein** „Erneut melden" an (Nachtrag N4) | Ein nacktes `failed` sagt nicht, ob die Rechte weg sind oder 7TV nicht antwortet; H3 verlangt einen klaren Grund. Wortlaut #255 |
 | E24 | Antwort der Guid-Altform | `archivedCount`/`restoredCount` = Zahl der gemeldeten Guids, die als Zeile des Kanals **existieren** (unverändert gelassen), `notFoundIds` = Rest; kein `channel.synced` aus dem Endpunkt (nichts geändert), der Resync veröffentlicht es | **Festlegung** zu H4: das alte Frontend liest `archivedCount >= emoteIds.length` als `succeeded` und würde bei `0` fälschlich `partial` zeigen; die gefundene Zahl ist die ehrlichste, die die alte Antwortform tragen kann. Was der Audit-Eintrag dann behauptet, steht in 5.6 |
 
 ---
@@ -424,10 +424,10 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
 11. Resync: das Backend stößt ihn für jeden getroffenen und für den unaufgelösten erwarteten Kanal
     an (E17/E18) und nennt die Kanäle in `resyncTriggered`. Der Client stößt selbst nur noch für ein
     **nicht-aktives** Set eines getrackten Kanals einen an (E12), und nur, wenn dieser Kanal nicht
-    in `resyncTriggered` steht. Für ein ungetracktes Ziel keiner; das Dock zeigt dann auch keine
-    Resync-Zeile. **Scheitert die Meldung endgültig** (`failed` nach den Retries), gibt es kein
-    `resyncTriggered`, und der Client stößt ersatzweise den Resync des nicht-aktiven bzw. des
-    erwarteten Kanals an (Nachtrag N1).
+    in `resyncTriggered` steht (aufgehoben für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25). Für
+    ein ungetracktes Ziel keiner; das Dock zeigt dann auch keine Resync-Zeile. **Scheitert die
+    Meldung endgültig** (`failed` nach den Retries), gibt es kein `resyncTriggered`, und der Client
+    stößt ersatzweise den Resync des nicht-aktiven bzw. des erwarteten Kanals an (Nachtrag N1).
 12. Die Seite, auf der der Lauf gestartet wurde, ändert sich **nur**, wenn sie ein `channel.synced`
     für ihren eigenen Kanal bekommt (5.4, Resync). Ist das Ziel ein anderes Set, bleibt das Raster
     stehen; das Dock zeigt den Lauf mit einer Zielzeile (Set-Name, Kanal oder Besitzer), analog
@@ -439,8 +439,9 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
     hängen. Das Dock steht außerhalb des Set-Gates, also auch auf einer Seite ohne gewähltes Set.
 14. Der Meldungszustand im Dock trägt bei `failed`/`partial` einen Grund (E23): `forbidden`
     (403), `setNotFound` (404), `unavailable` (503/429/Netz nach den Retries), `channelMismatch`
-    (`unresolvedChannel`), `shortfall` (ein Kanal mit `notFoundIds`), `other`. Wortlaut #255. Bei
-    `channelMismatch` zeigt das Dock **keinen** „Erneut melden"-Knopf (Nachtrag N4).
+    (`unresolvedChannel` — seither `channelMismatchNotTracked`/`channelMismatchActiveSetDiffers`,
+    s. 18, Nachtrag 2026-09-26), `shortfall` (ein Kanal mit `notFoundIds`), `other`. Wortlaut #255.
+    Bei `channelMismatch` zeigt das Dock **keinen** „Erneut melden"-Knopf (Nachtrag N4).
 
 ### 4.5 Die Sperre fällt, die Vorprüfung kommt
 
@@ -805,10 +806,13 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   Retry-Policy unverändert (`MAX_AUTOMATIC_SYNC_RETRIES`, 401/403 ohne Retry).
 - `syncReport`/`syncReportReason` aus der Antwort (F8, E23): `succeeded`, wenn `unresolvedChannel`
   null ist **und** (`channels` leer ist **oder** für jeden Kanal `restoredCount === reportedCount`);
-  sonst `partial` mit `channelMismatch` bzw. `shortfall`; jeder HTTP-Fehler nach den Retries →
+  sonst `partial` mit `channelMismatch` (seither `channelMismatchNotTracked`/
+  `channelMismatchActiveSetDiffers`, s. 18, Nachtrag 2026-09-26, dort auch der eigene Wortlaut für
+  `partial`) bzw. `shortfall`; jeder HTTP-Fehler nach den Retries →
   `failed` mit `forbidden` (403), `setNotFound` (404), `unavailable` (429/503/Netz), sonst
   `other`. Ein 404 (Set inzwischen weg) endet damit in `failed`, was #224 im Frontend schließt.
-- Resync (E12): `channelService.resync(resyncChannelName)` nur bei `resyncChannelName !== null`
+- Resync (E12, aufgehoben für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25):
+  `channelService.resync(resyncChannelName)` nur bei `resyncChannelName !== null`
   **und** `!resyncTriggered.includes(resyncChannelName)`; Zustände `succeeded`/`cooldown`/`failed`
   wie heute; sonst bleibt `resyncTrigger` auf `idle`, das Dock zeigt keine Resync-Zeile — außer
   der Kanal steht in `resyncTriggered`, dann zeigt es „wird abgeglichen" ohne eigenen Request.
@@ -818,8 +822,9 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   `null` ist — mit denselben Zuständen im Dock; für ein ungetracktes Ziel (beide `null`) weiterhin
   keiner. Ein manueller Retry löst keinen zweiten Fallback aus.
 - „Erneut melden" (`retrySyncReport`) gibt es bei `failed` (jeder Grund) und bei
-  `partial`/`shortfall`, **nicht** bei `partial`/`channelMismatch` (Nachtrag N4): das Dock zeigt den
-  Knopf dort nicht, und der Dienst weist den Aufruf ab.
+  `partial`/`shortfall`, **nicht** bei `partial`/`channelMismatch` (Nachtrag N4; seither die zwei
+  gesplitteten Gründe, s. 18, Nachtrag 2026-09-26 — `isChannelMismatch` fasst beide für genau diese
+  Prüfung wieder zusammen): das Dock zeigt den Knopf dort nicht, und der Dienst weist den Aufruf ab.
 - `resetIfChannelChanged(pageChannelName)` vergleicht mit `run.hostChannelName` (E13).
 - Die Dock-Zielzeile (4.4, Punkt 12) liest `setName` und `ownerOrChannelLabel` aus dem
   Laufdatensatz (Anzeigefelder, nie verglichen).
@@ -980,8 +985,12 @@ Jedes Kriterium ist so formuliert, dass ein Test oder ein Handgriff es entscheid
     heute); seine Meldung ist trotzdem gesendet.
 21. Nach einem Restore in ein nicht-aktives Set eines getrackten Kanals löst der Client `POST
     /api/channels/{kanal}/resync` aus, sofern der Kanal nicht in `resyncTriggered` steht; nach einem
-    Restore in ein ungetracktes Set keinen. (Bleibt gültig; was bei endgültig gescheiterter Meldung
-    gilt, steht in AK 36.)
+    Restore in ein ungetracktes Set keinen. (Bleibt gültig für das ungetrackte Ziel; was bei
+    endgültig gescheiterter Meldung galt, stand in AK 36. **Aufgehoben für ein nicht-aktives,
+    getracktes Ziel, s. 18, Nachtrag 2026-09-25:** dort löst der Client seit diesem Nachtrag in
+    keinem Fall mehr einen Resync aus — weder im Erfolgsfall der Meldung noch im AK-36-Fallback
+    nach ihrem endgültigen Scheitern, da `resyncChannelName` seither in keine Resync-Entscheidung
+    mehr einfließt.)
 22. `wrongChannel`, `wrongSet`, `emote_set_id_empty` und beide Regel-7-Schlüssel existieren in
     keiner Locale, keinem Parser und keinem `ApiErrorCodes` mehr; `api-error-locales.spec.ts` bleibt
     grün.
@@ -1651,6 +1660,11 @@ Besitzerkanals. Ein Mismatch `notTracked` schreibt ihn ohne Kanal, mit `targetOw
 
 ### N4 — B3: kein „Erneut melden" bei `channelMismatch`
 
+> `channelMismatch` ist seit dem Nachtrag 2026-09-26 (Abschnitt 18, Ende) in
+> `channelMismatchNotTracked`/`channelMismatchActiveSetDiffers` gesplittet, mit einem eigenen
+> Helper `isChannelMismatch`, der beide für genau diese Retry-Regel wieder zusammenfasst — dieser
+> Nachtrag hier ist dadurch inhaltlich unverändert, nur der Bezeichner ist seither zwei statt einer.
+
 **Befund (T12, Punkt 5 und B3).** Bei `partial`/`channelMismatch` bot das Dock „Erneut melden" an.
 Ein erneuter Versuch schickt dieselbe Meldung: bei unverändertem Stand ein weiterer Mismatch, ein
 weiterer Papier-Eintrag, ein weiterer Resync-Versuch in den Cooldown — und der Resync, der den
@@ -1702,8 +1716,107 @@ bei `partial`/`shortfall` ist der Knopf vorhanden und löst genau eine erneute M
 
 | AK | Nachtrag | Kern |
 |---|---|---|
-| 36 | N1 | Fallback-Resync des Clients bei endgültig gescheiterter erster Meldung (Restore: `resyncChannelName ?? expectedChannelName`, Delete: `expectedChannelName`; Import unverändert) |
+| 36 | N1 | Fallback-Resync des Clients bei endgültig gescheiterter erster Meldung (Restore: `resyncChannelName ?? expectedChannelName`, Delete: `expectedChannelName`; Import unverändert) — Restore-Glied `resyncChannelName` aufgehoben, s. 18, Nachtrag 2026-09-25: gilt seither nur noch `expectedChannelName` |
 | 37 | N2 | Mitgliederliste des gewählten nicht-aktiven Ziel-Sets lädt beim Settle mit `refresh=true`; nicht gewähltes Ziel: Vormerkung für den nächsten Ladevorgang dieses Sets |
 | 38 | N3 | Papier-Eintrag trägt den Besitzerkanal (aktiv, ungesperrt, über Twitch-ID) mit `targetIsActiveSetOfChannel` (Flag = ist der Besitzerkanal selbst Treffer); sonst kanallos mit `targetOwner*`; nie beides |
 | 39 | N3 | Mismatch-Eintrag folgt derselben Regel (`activeSetDiffers` mit Kanal, `notTracked` ohne) |
 | 40 | N4 | Kein „Erneut melden" bei `channelMismatch`, in allen drei Docks und am Dienst |
+
+### Nachtrag 2026-09-25 — Kein Client-Resync mehr für ein nicht-aktives Restore-Ziel (#255)
+
+**Betreiberentscheidung (2026-09-25, Task T1 aus #255).** Ein Restore in ein **nicht-aktives**,
+getracktes Ziel-Set löst ab sofort **keinen** Client-Resync mehr aus — kein
+`POST /api/channels/{c}/resync`, keine Resync-Zeile im Dock/Announcer. Das Verhalten gleicht damit
+dem Import, der ein nicht-aktives Ziel schon vorher nie resynct hat
+(`seven-tv-import.service.ts:657-671`, dort aus demselben Grund: der Kanal-Resync zieht nur die
+Ansicht des Kanals **aktiven** Sets nach, nie ein anderes — ein Request, der erfolgreich sein
+kann, ohne irgendetwas zu bestätigen, das den Nutzer interessiert). Für das **aktive** Set eines
+getrackten Kanals ändert sich nichts: der Erfolgspfad (E12-Grundregel, `backendTriggered` bei
+genanntem Kanal, sonst bleibt `resyncTrigger` auf `'idle'` — der Backend-Resync deckt das aktive
+Set ohnehin ab, kein eigener Client-Resync) und der **N1-Fallback** bei endgültig gescheiterter
+Meldung (`channelService.resync(expectedChannelName)`) bleiben unverändert in Kraft — der Fallback
+zog vor diesem Nachtrag `resyncChannelName ?? expectedChannelName`; das `resyncChannelName`-Glied
+entfällt zusammen mit dem restlichen nicht-aktiven Pfad.
+
+**Damit aufgehoben:** E12 (Tabelle oben) und 6.4 in dem Teil, der einen Resync für ein
+nicht-aktives Ziel beschreibt — beide sind entsprechend mit einem Verweis auf diesen Absatz
+markiert, nicht umgeschrieben. `resyncChannelName` (`RestoreStartTarget`/`RestoreRunInfo`) bleibt
+im Code erhalten, aber nur noch für `RestoreProgressSection`s Zielzeile (nennt den Kanal statt des
+Besitzers) — `SevenTvRestoreService.resyncAfterReport` liest das Feld nicht mehr.
+
+**Verhältnis zu N2.** N2s Grenzfall-Absatz zum zurückgestellten Settle-während-Request-Fall nennt
+unter „Heilung" für Restore ausdrücklich auch „das `channel.synced` des E12-Resync" — dieser Pfad
+entfällt für ein nicht-aktives Ziel mit diesem Nachtrag. N2s eigentlicher Vertrag (der laute
+`refresh=true`-Reload beim Settle des Laufs, bzw. die Vormerkung für ein nicht gewähltes Ziel-Set)
+ist davon **nicht** betroffen — er hing nie am Resync, sondern am Settle des Restore-Dienstes
+selbst (`restoreService.run()` wechselt auf `result !== null`). Für ein nicht-aktives Ziel bleiben
+damit zwei der drei in N2 genannten Heilungswege bestehen (Aktualisieren-Knopf, Cache-Ablauf); nur
+der dritte (E12-Resync) fällt weg. Der in N2 als „bewusst nicht behoben" benannte Rest (ein
+Millisekundenfenster) wird dadurch für ein nicht-aktives Restore-Ziel geringfügig breiter, bleibt
+aber dieselbe Art Lücke, die N2 schon als hinnehmbar eingestuft hatte.
+
+**Betroffene Abschnitte.** E12, 4.4 Nr. 11, 6.4, AK 21, AK 36 (alle fünf mit Verweis „aufgehoben
+für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25"), N2 (Grenzfälle, Heilungsliste — Lesehinweis,
+kein Textwechsel dort). Neuer DECISIONS-Eintrag vom 2026-09-25, im selben Commit wie die
+Codeänderung.
+
+**Tests.** `seven-tv-restore.service.spec.ts`: ein nicht-aktives, getracktes Ziel löst nach der
+Meldung weder bei Erfolg (mit oder ohne genanntem Kanal in `resyncTriggered`) noch nach endgültig
+gescheiterter Meldung einen `POST /resync` aus — `resyncTrigger` bleibt `idle`. Das aktive Set und
+das ungetrackte Ziel sind unverändert abgedeckt.
+
+### Nachtrag 2026-09-26 — `channelMismatch` gesplittet, und `partial` bekommt einen eigenen Wortlaut (#255)
+
+**Befund (Review, #255).** E18/E23 und Nachtrag N4 kannten bislang einen einzigen
+`syncReportReason`-Wert `'channelMismatch'` für beide `UnresolvedChannel.reason`-Fälle
+(`'notTracked'` und `'activeSetDiffers'`, E18). Das Dock konnte damit nicht sagen, *welcher* der
+beiden Fälle vorlag — „der erwartete Kanal wird gerade nicht getrackt" und „der erwartete Kanal
+trackt gerade ein anderes Set" sind unterschiedliche Situationen mit unterschiedlichen nächsten
+Schritten (der eine heilt sich nie von selbst, der andere über den ohnehin laufenden Resync). Der
+Wortlaut bei `partial` fiel außerdem, wie N4 selbst schon vermerkte, in dieselbe „fehlgeschlagen …
+konnte es nicht vermerken"-Formulierung wie `failed` — falsch für einen Bericht, der tatsächlich
+vermerkt wurde, nur eben nicht vollständig.
+
+**Vertrag.**
+
+- `SyncReportReason` (`sync-report-outcome.ts`) trägt seither `'channelMismatchNotTracked'` und
+  `'channelMismatchActiveSetDiffers'` statt eines einzelnen `'channelMismatch'` — je nach
+  `UnresolvedChannel.reason` (`'notTracked'` bzw. `'activeSetDiffers'`, E18). Jede Stelle, die
+  bislang `'channelMismatch'` erzeugte oder damit verglich, unterscheidet jetzt die beiden Werte.
+- **`isChannelMismatch(reason)`** (`sync-report-outcome.ts`) fasst beide für jeden Vergleich wieder
+  zusammen, der die beiden Fälle ohnehin gleich behandelt — vor allem N4s Retry-Regel
+  (`syncRetryOffered`, `retrySyncReport`/`retryRemovalReport` an allen drei Diensten): kein
+  Vergleichsort im Code oder in dieser Spec muss beide Werte einzeln aufzählen, um „ist irgendein
+  Mismatch" zu prüfen.
+- **`partial` bekommt einen eigenen Titel/Text**, getrennt von `failed`: `RunProgressPanel` (Delete,
+  Restore) unterscheidet `syncReportFailed()`s Banner seither per `syncReport() === 'partial'` in
+  `.syncPartialTitle`/`.syncPartial` („… vermerkt, aber nicht vollständig.") gegenüber
+  `.syncFailedTitle`/`.syncFailed` („… fehlgeschlagen … konnte es nicht vermerken.") — je
+  `labelPrefix()`, also `restore.syncPartialTitle`/`massDelete.syncPartialTitle` (`import` nicht:
+  sein `syncReport`, der reinen sync-imported-Meldung, wird nie `'partial'`, s. u.). Dieselbe
+  Unterscheidung trifft `ImportProgressSection` für die **Löschmeldung** (`removalReport`, die bei
+  einer Replace-Zeile `partial` durchaus werden kann) mit den schon vorher bestehenden
+  `import.removalSyncPartialTitle`/`import.removalSyncPartial*`-Schlüsseln — die bleiben unverändert,
+  dieser Nachtrag ändert an ihnen nichts.
+- **`import.syncPartialTitle`/`import.syncPartial` existierten, waren aber unerreichbar** und sind
+  mit demselben Commit entfernt (P3.1, Review #255): `SevenTvImportService.syncReport` (die
+  sync-imported-Meldung, die dieses Locale-Paar allein bediente) beantwortet mit HTTP 204 ohne
+  Body, kann also nie `'partial'` werden — der Ternary in `RunProgressPanel.syncReportTitleKey`/
+  `syncReportTextKey` nahm für `labelPrefix() === 'import'` immer den `syncFailed*`-Zweig.
+  `import.removalSyncPartial*` (oben) ist ein anderes Schlüsselpaar für einen anderen Bericht und
+  bleibt bestehen.
+
+**Betroffene Abschnitte.** E18 (Grund unverändert, nur der `syncReportReason`-Bezeichner betroffen),
+E23, 4.4 Nr. 14, 6.4 (Retry-Regel und die `syncReport`/`syncReportReason`-Ableitung), N4 (Retry-Regel
+und AK 40) — alle mit Verweis hierher, nicht umgeschrieben. `seven-tv-emote-set.model.ts`:
+`UnresolvedChannel`s Kommentar aktualisiert. Neue DECISIONS-Einträge vom 2026-09-26, im selben
+Commit wie die Codeänderung.
+
+**Tests.** `sync-report-outcome.spec.ts`: `classifySyncInSetResponse` liefert
+`channelMismatchNotTracked`/`channelMismatchActiveSetDiffers` je nach `UnresolvedChannel.reason`,
+`isChannelMismatch` ist `true` für beide und `false` für jeden anderen Grund. Die drei
+Dienst-Specs (`seven-tv-delete.service.spec.ts`, `seven-tv-import.service.spec.ts`,
+`seven-tv-restore.service.spec.ts`): je ein Fall pro neuem Reason-Wert, plus der bestehende
+Retry-Abweisungstest, jetzt parametrisiert über beide Werte. `run-progress-panel.spec.ts`,
+`import-progress-section.spec.ts`, `restore-progress-section.spec.ts`: der `partial`-Titel/Text
+unterscheidet sich vom `failed`-Titel/Text, für beide Mismatch-Gründe und für `shortfall`.
