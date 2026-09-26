@@ -411,8 +411,6 @@ describe('startRestoreFlow', () => {
     });
   });
 
-  // #149/T5: restore never had any duplicate protection — these two pin the fix in from the flow
-  // layer down (the filtering logic itself is `already-present-filter.spec.ts`'s job).
   // #254 AK 20, E12: the undo's own protocol read back as a restore goes through the unchanged
   // filter — after a successful undo the source's name belongs to the target again (rule 4), after
   // an undo that removed the source but could not give the target back it re-adds exactly the source.
@@ -446,6 +444,8 @@ describe('startRestoreFlow', () => {
     });
   });
 
+  // #149/T5: restore never had any duplicate protection — these two pin the fix in from the flow
+  // layer down (the filtering logic itself is `already-present-filter.spec.ts`'s job).
   describe('duplicate protection (#149/T5)', () => {
     // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the check now also
     // runs once, fresh, before the confirmation opens (so its title/slot projection count what
