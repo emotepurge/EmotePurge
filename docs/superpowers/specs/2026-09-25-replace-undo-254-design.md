@@ -1681,3 +1681,11 @@ Abschnitt sagt, wo er nicht mehr stimmt.
     `'unproven'` — dieselbe Herkunftssperre und dieselbe Checkbox wie bei einer `planned`-Datei
     (17 K2). Grund: eine vom REMOVE bestätigte Zeile sagt nichts darüber, ob ihr eigener ADD-Teil
     je fertig wurde; der live Zustand belegt den Zustand, nicht die Dateistufe.
+12. **Das Dock nennt den belegten Namen nicht (7, Zeile „Ziel-Alias inzwischen von Dritten belegt")
+    — bewusst nicht nachgezogen.** Nur der Bestätigungsdialog nennt einen belegten Namen (die
+    übersprungene Zeile mit ihrem Live-Gegenstück); das Dock und das Ergebnisprotokoll zählen einen
+    `targetNameTaken` nur je Grund (`summary().skippedByReason`, wie jeden anderen Übersprung).
+    Ein `targetNameTaken`, das erst der Frischcheck vor einem REMOVE findet, erscheint dort
+    ohnehin nicht als eigener Grund, sondern als `skippedDrift` (die Klassifikation ändert sich,
+    der Frischcheck sagt nicht, wonach) — die Vorgabe würde also nur beim ersten Read vor dem Lauf
+    greifen können.
