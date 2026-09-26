@@ -949,7 +949,7 @@
     "nothingRestored": "Nichts wiederhergestellt.",
     "errors": {
       "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
-      "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
+      "targetNotSelectable": "Das Set ist kein normales Emote-Set.",
       "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
@@ -1082,7 +1082,7 @@
       "networkError": "Keine Verbindung zu 7TV möglich (Netzwerkfehler).",
       "genericStatus": "7TV-Fehler (Status {{ status }}).",
       "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
-      "targetNotSelectable": "Dieses Set ist kein normales Emote-Set.",
+      "targetNotSelectable": "Das Set ist kein normales Emote-Set.",
       "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
     },
     "abortedByLock": "Nichts gelöscht – die Ansicht hat sich geändert, während der Dialog offen war.",

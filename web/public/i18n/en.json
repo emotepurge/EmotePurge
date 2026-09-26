@@ -946,10 +946,10 @@
     "capacityWarning": "That exceeds the capacity — 7TV will reject the surplus emotes.",
     "capacityWarningUpTo": "That could exceed the capacity — 7TV would then reject the surplus emotes.",
     "historyNote": "The usage history stays unchanged.",
-    "nothingRestored": "Nothing restored.",
+    "nothingRestored": "Nothing was restored.",
     "errors": {
       "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
-      "targetNotSelectable": "This set is not a normal emote set.",
+      "targetNotSelectable": "The set is not a normal emote set.",
       "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment."
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
@@ -1082,7 +1082,7 @@
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }}).",
       "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
-      "targetNotSelectable": "This set is not a normal emote set.",
+      "targetNotSelectable": "The set is not a normal emote set.",
       "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment."
     },
     "abortedByLock": "Nothing was deleted – the view changed while the dialog was open.",
