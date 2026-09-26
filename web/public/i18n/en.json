@@ -1576,7 +1576,7 @@
       },
       "skipped": "{{ count }} skipped: {{ reason }}",
       "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped and the token was removed.",
-      "downloadProtocol": "Save result log",
+      "downloadProtocol": "Download result log",
       "protocolNotSaved": "Result log not saved yet — it is gone once you close this."
     }
   },

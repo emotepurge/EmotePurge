@@ -1576,7 +1576,7 @@
       },
       "skipped": "{{ count }} übersprungen: {{ reason }}",
       "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde abgebrochen und das Token entfernt.",
-      "downloadProtocol": "Ergebnisprotokoll speichern",
+      "downloadProtocol": "Ergebnisprotokoll herunterladen",
       "protocolNotSaved": "Ergebnisprotokoll noch nicht gespeichert — nach dem Schließen ist es weg."
     }
   },

@@ -253,7 +253,7 @@ describe('UndoProgressSection', () => {
     const { fixture, text } = render();
 
     expect(text()).toContain('2 / 3 verarbeitet');
-    expect(button(fixture, 'Ergebnisprotokoll speichern')).toBeUndefined();
+    expect(button(fixture, 'Ergebnisprotokoll herunterladen')).toBeUndefined();
     expect(button(fixture, 'Abbrechen')).toBeDefined();
   });
 
@@ -333,7 +333,7 @@ describe('UndoProgressSection', () => {
     it('offers the protocol from settled on and keeps the not-saved hint until it was saved', () => {
       settle([item('1')], { phase: 'reporting', removalReport: 'pending' });
       const reporting = render();
-      expect(button(reporting.fixture, 'Ergebnisprotokoll speichern')).toBeDefined();
+      expect(button(reporting.fixture, 'Ergebnisprotokoll herunterladen')).toBeDefined();
       expect(reporting.text()).toContain('Ergebnisprotokoll noch nicht gespeichert');
       // Close waits for the run to close — a report is still out.
       expect(button(reporting.fixture, 'Schließen')).toBeUndefined();
@@ -370,7 +370,7 @@ describe('UndoProgressSection', () => {
       });
 
       const { fixture } = render();
-      button(fixture, 'Ergebnisprotokoll speichern')?.click();
+      button(fixture, 'Ergebnisprotokoll herunterladen')?.click();
 
       expect(clicked).toHaveLength(1);
       expect(clicked[0]).toMatch(/^emotepurge_kanal_t_transfer-undo_.*\.json$/);
