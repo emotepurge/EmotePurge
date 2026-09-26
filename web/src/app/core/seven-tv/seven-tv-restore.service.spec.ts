@@ -1081,6 +1081,118 @@ describe('SevenTvRestoreService', () => {
     });
   });
 
+  // #256 P2 (Plan-256-Robustheit review, branch-review round): a manual retry used to leave the
+  // record on its previous end state until the retry's own answer came in — the retry button stayed
+  // up for a second, parallel report, and a `closed`-but-nothing-pending record could not survive a
+  // "Close" click mid-retry. `reportRestored` now patches the record to `pending` before sending,
+  // mirroring the import's `reportImported`/`reportRemoved` — same fix as the delete service's.
+  describe('#256 P2: a manual retry marks the record pending before sending', () => {
+    it('retrySyncReport() patches the record to pending before the request goes out', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+      expect(service.syncReport()).toBe('failed');
+
+      service.retrySyncReport();
+
+      // Neither 'failed' nor 'partial' — run-progress-panel's `syncReportFailed` computed reads
+      // this and hides the retry button/reason line the moment it is not one of those two.
+      expect(service.syncReport()).toBe('pending');
+      expect(service.syncReportReason()).toBeNull();
+
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('a second click while the retry is out sends nothing', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+
+      service.retrySyncReport(); // no-op: syncReport is already 'pending'
+      httpMock.expectNone(SYNC_RESTORED_ENDPOINT);
+
+      retryReq.flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('isSettling and destructiveOpen stay false while a closed run’s retry is out', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+      expect(service.run()?.phase).toBe('closed');
+
+      service.retrySyncReport();
+
+      // `closed` is a one-way door (#256): the retry never reopens the phase, so neither signal —
+      // both derived from the phase, not from `syncReport` — sees this run as busy again. Restore's
+      // destructiveOpen is always false anyway, checked here for parity with the delete service.
+      expect(service.isSettling()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
+
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+    });
+
+    it('reshows a run whose manual retry fails after the dock was closed mid-retry', () => {
+      runOneRestoreToReport(target({ active: false })).flush(
+        {},
+        {
+          status: 403,
+          statusText: 'Forbidden',
+        },
+      );
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      // Without the pending patch, this record had already left the lifecycle's map (`closed`,
+      // nothing pending) the moment reset() detached it, and this answer would have found no
+      // record at all — no reshow, no console.warn.
+      retryReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+    });
+  });
+
+  // #256 P3 (Plan-256-Robustheit review, branch-review round): the success-path counterpart to
+  // "reset() while running lets the engine finish and still reports an ADD that was in flight" —
+  // this one detaches while the *report itself* (not the engine) is in flight, and the report
+  // succeeds.
+  it('#256 P3: reset() while the report is in flight still lands a successful answer on the record exactly once, closing isSettling only after', () => {
+    const reportReq = runOneRestoreToReport(target({ active: true }));
+    expect(service.isSettling()).toBe(true);
+
+    service.reset();
+    expect(service.run()).toBeNull();
+    expect(service.isSettling()).toBe(true); // still open — the report has not answered yet
+
+    reportReq.flush(restoredAnswer());
+
+    // httpMock's own afterEach.verify() proves the answer landed exactly once (no leftover, no
+    // second request); a success needs no reshow.
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBeNull();
+  });
+
   // R15 (#72, T12): finish() flips isRunning() to false *before* the two closing calls resolve, so
   // a second run can legitimately start while the first one's report/resync are still in flight.
   // Their late answers must not land on the second run's state.

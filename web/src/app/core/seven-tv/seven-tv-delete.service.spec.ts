@@ -547,6 +547,97 @@ describe('SevenTvDeleteService', () => {
     });
   });
 
+  // #256 P2 (Plan-256-Robustheit review, branch-review round): a manual retry used to leave the
+  // record on its previous end state until the retry's own answer came in — the retry button stayed
+  // up for a second, parallel report, and a `closed`-but-nothing-pending record could not survive a
+  // "Close" click mid-retry. `reportDeleted` now patches the record to `pending` before sending,
+  // mirroring the import's `reportImported`/`reportRemoved`.
+  describe('#256 P2: a manual retry marks the record pending before sending', () => {
+    it('retrySyncReport() patches the record to pending before the request goes out', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+      expect(service.syncReport()).toBe('failed');
+
+      service.retrySyncReport();
+
+      // Neither 'failed' nor 'partial' — run-progress-panel's `syncReportFailed` computed reads
+      // this and hides the retry button/reason line the moment it is not one of those two.
+      expect(service.syncReport()).toBe('pending');
+      expect(service.syncReportReason()).toBeNull();
+
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('a second click while the retry is out sends nothing', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
+
+      service.retrySyncReport(); // no-op: syncReport is already 'pending'
+      httpMock.expectNone(SYNC_ENDPOINT);
+
+      retryReq.flush(deletedAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('isSettling and destructiveOpen stay false while a closed run’s retry is out', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+      expect(service.run()?.phase).toBe('closed');
+
+      service.retrySyncReport();
+
+      // `closed` is a one-way door (#256): the retry never reopens the phase, so neither signal —
+      // both derived from the phase, not from `syncReport` — sees this run as busy again.
+      expect(service.isSettling()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
+
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('reshows a run whose manual retry fails after the dock was closed mid-retry', () => {
+      runOneDeleteToSyncRequest().flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      service.retrySyncReport();
+      const retryReq = httpMock.expectOne(SYNC_ENDPOINT);
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      // Without the pending patch, this record had already left the lifecycle's map (`closed`,
+      // nothing pending) the moment reset() detached it, and this answer would have found no
+      // record at all — no reshow, no console.warn.
+      retryReq.flush(null, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+    });
+  });
+
+  // #256 P3 (Plan-256-Robustheit review, branch-review round): the success-path counterpart to
+  // "reset() while running lets the engine finish and still reports a REMOVE that was in flight" —
+  // this one detaches while the *report itself* (not the engine) is in flight, and the report
+  // succeeds.
+  it('#256 P3: reset() while the report is in flight still lands a successful answer on the record exactly once, closing isSettling only after', () => {
+    const syncReq = runOneDeleteToSyncRequest();
+    expect(service.isSettling()).toBe(true);
+
+    service.reset();
+    expect(service.run()).toBeNull();
+    expect(service.isSettling()).toBe(true); // still open — the report has not answered yet
+
+    syncReq.flush(deletedAnswer());
+
+    // httpMock's own afterEach.verify() proves the answer landed exactly once (no leftover, no
+    // second request); a success needs no reshow.
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBeNull();
+  });
+
   // A closed run's own record — never goes through the engine, so it leaves `queue()` untouched;
   // only stands in for whatever the dock already shows when a *second* start is refused, below.
   const PREVIOUS_CLOSED_RUN: DeleteRunInfo = {

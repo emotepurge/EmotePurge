@@ -447,13 +447,20 @@ export class SevenTvRestoreService {
   /** `afterReport` runs once the report has settled either way — with the answer's
    *  `resyncTriggered` on success, with `null` once it has failed for good (the backend never
    *  reached its resync stage then, addendum N1). It runs even for a superseded run: the report and
-   *  the resync are owed to 7TV's state, not to what the dock shows. */
+   *  the resync are owed to 7TV's state, not to what the dock shows.
+   *
+   *  Patches the record to `syncReport: 'pending'` first (#256 P2, Plan-256-Robustheit review) —
+   *  same fix and same reason as the identical line in `SevenTvDeleteService.reportDeleted`: a
+   *  manual `retrySyncReport()` call needs the record marked `'pending'` before its request goes
+   *  out, or the retry button stays up for a second click and a `closed`-but-pending record has
+   *  nothing to keep it in the lifecycle's map for a "Close" clicked mid-retry. `closed` itself
+   *  stays untouched — the lifecycle's one-way door does that. */
   private reportRestored(
     runId: string,
     result: RunResult,
     afterReport?: (resyncTriggered: readonly string[] | null) => void,
   ): void {
-    const run = this.lifecycle.get(runId);
+    const run = this.patchRun(runId, { syncReport: 'pending', syncReportReason: null });
     if (run === null) {
       // Unreachable in practice: called right after the update that put the run into `reporting`,
       // or from a manual retry that just read the record — kept as a guard, not a silent no-op.

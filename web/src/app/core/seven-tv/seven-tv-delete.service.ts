@@ -414,9 +414,23 @@ export class SevenTvDeleteService {
   /** No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
    *  touched (E17), and the page lives off the resulting `channel.synced`. `afterFailure` runs once
    *  the report has failed for good — only the first report of a run passes one, never a manual
-   *  retry (addendum N1). */
+   *  retry (addendum N1).
+   *
+   *  Patches the record to `syncReport: 'pending'` first (#256 P2, Plan-256-Robustheit review),
+   *  the same way the import's `reportImported`/`reportRemoved` do — the first call after
+   *  `onRunComplete` finds it already `'pending'` (redundant but harmless), but a manual
+   *  `retrySyncReport()` call needs exactly this: without it, the record stayed on its previous
+   *  end state (e.g. `'failed'`) for the whole time the retry's request was out, so the retry
+   *  button stayed visible for a second click (a parallel, redundant report) and, once `closed`,
+   *  the record had nothing pending to keep it in the lifecycle's map for a late answer to find —
+   *  a "Close" clicked mid-retry then left the eventual answer with no record to land on: no
+   *  reshow, no `console.warn`. `syncReportReason` is cleared too, so a stale reason does not
+   *  flash next to the fresh `'pending'` state. `closed` itself is not reopened here — the
+   *  lifecycle's one-way door leaves the phase alone, and `reportsPending` (`syncReport ===
+   *  'pending'`) is what keeps a `closed`-but-pending record in the map until this new attempt
+   *  also reaches an end state. */
   private reportDeleted(runId: string, sevenTvEmoteIds: string[], afterFailure?: () => void): void {
-    const run = this.lifecycle.get(runId);
+    const run = this.patchRun(runId, { syncReport: 'pending', syncReportReason: null });
     if (run === null) {
       // Unreachable in practice: called right after the update that put the run into `reporting`,
       // or from a manual retry that just read the record — kept as a guard, not a silent no-op.
