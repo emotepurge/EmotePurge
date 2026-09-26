@@ -699,20 +699,21 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 
 ### 7.4 Export dialog (purpose instead of format)
 
-- **What applies:** `ExportDialog` (`shared/export/export-dialog.ts`, `openExportDialog`) has three
-  callers — usage statistics, voting detail page, delete protocol —, but only one of them
-  orders its options by purpose instead of by format. The dialog itself no longer hard-wires anything
-  for that: the option list comes from the caller (`ExportDialogData.options`), the dialog treats
-  every `id` as opaque and never switches on it itself.
+- **What applies:** `ExportDialog` (`shared/export/export-dialog.ts`, `openExportDialog`) has five
+  callers — usage statistics, voting detail page, and the three run-protocol exports (delete/purge,
+  transfer, transfer-undo) —, but only one of them orders its options by purpose instead of by
+  format. The dialog itself no longer hard-wires anything for that: the option list comes from the
+  caller (`ExportDialogData.options`), the dialog treats every `id` as opaque and never switches on
+  it itself.
 - **Row order in the body:**
   1. Scope radio group `visible`/`selection` (`export.scopeLabel`) — only if a grid selection
      exists (`selectionCount > 0`); if the selection is empty but the concept is present
      (`selectionCount === 0`), the muted hint
      `export.scopeNoSelectionHint` (#144) stands in the same place instead, explaining the absence rather than leaving it
      uncommented. If the caller has no grid-selection concept at all (`selectionCount === null` — voting
-     detail page, delete protocol: the set that gets exported is not up for choice there),
-     **both** are dropped at this spot, radio group as well as hint — Codex review on PR #145,
-     see DECISIONS.
+     detail page, the three run-protocol exports: the set that gets exported is not up for choice
+     there), **both** are dropped at this spot, radio group as well as hint — Codex review on
+     PR #145, see DECISIONS.
   2. Option group — the legend is `optionsLegendKey`, per option `labelKey` on the first line,
      below it `hintKey`, if set.
   3. Row count (`export.rowCount`, follows the selected scope) plus `filteredHint` if the
@@ -720,18 +721,20 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   4. Notice banners (`noticeKeys`) — explanations for missing columns (secret vote, usage figures
      visible only to managers).
   5. Cancel / Export.
-- **`options[0]` is the default — the only default rule.** There is no second
-  notion of a default in the dialog. That keeps "CSV first" for the two unchanged callers (via the
-  shared constant `FORMAT_EXPORT_OPTIONS`) and makes "Analyse the numbers" (= CSV) the default
-  of the usage statistics, without the dialog knowing what a "format" is.
+- **`options[0]` is the default — the only default rule.** There is no second notion of a default
+  in the dialog. The three run-protocol exports (delete/purge, transfer, transfer-undo) list JSON
+  first (`FORMAT_EXPORT_OPTIONS_JSON_FIRST`) — the JSON file is the only one that can be read back
+  in (file-import step, restore), so it must be the default (decided 2026-09-26, see DECISIONS).
+  The voting export keeps CSV first (`FORMAT_EXPORT_OPTIONS`) — its file is a report, never read
+  back in. The usage statistics default to "Analyse the numbers" (= CSV). The dialog itself knows
+  none of this; it only ever preselects `options[0]`.
 - **The purpose ordering of the usage statistics is a wording contract** (`export.purposeLabel` as the
   legend), in this order:
   - "Analyse the numbers" / "Usage statistics as CSV"
   - "Process the numbers further" / "Usage statistics as JSON"
   - "Import the emotes again later" / "Emote list as JSON"
-  Voting detail page and delete protocol stay with CSV/JSON (`export.formatLabel`,
-  `FORMAT_EXPORT_OPTIONS`) — the purpose list applies only where more than one purpose sits behind the same
-  action.
+  The voting detail page keeps CSV first (`export.formatLabel`, `FORMAT_EXPORT_OPTIONS`); the
+  purpose list applies only where more than one purpose sits behind the same action.
 - **The hint line stands inside the `<label>` and is thereby part of the accessible name**
   ("Analyse the numbers Usage statistics as CSV") — intention, not accident. The target picker from §7.2
   hangs "(channel has to join first)" into its name in the same way, and an E2E case there already matches

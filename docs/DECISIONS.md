@@ -10,6 +10,23 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
+
+**Betrifft:** `web/src/app/shared/export/export-dialog.ts` (new constant
+`FORMAT_EXPORT_OPTIONS_JSON_FIRST`) · `web/src/app/shared/seven-tv/mass-delete-panel.ts`,
+`import-progress-section.ts`, `undo-progress-section.ts` (switched from `FORMAT_EXPORT_OPTIONS` to
+the new constant) · `docs/UI-Designsprache.md` §7.4.
+
+Issue #282, found in local testing. After a run (delete, transfer, transfer-undo), "Protokoll
+herunterladen" / "Ergebnisprotokoll herunterladen" opened the export dialog with CSV preselected
+and listed first — but only the JSON protocol can be read back in (the file-import step, restore).
+`ExportDialog` has exactly one default rule, `options[0]` (§7.4), and treats the option list as an
+opaque, caller-supplied constant; the fix is a second such constant, JSON first, for the three
+run-protocol exports (purge/delete, transfer, transfer-undo) — restore has no protocol download of
+its own yet. The voting export and the usage-statistics purpose list keep their existing order:
+the voting file is a report, never read back in, and usage statistics already default to "Analyse
+the numbers" (CSV) for the header's own spreadsheet export.
+
 ### 2026-09-26 — The undo's dock: a host-supplied tally, a removal report under `undo.sync*`, lasting skip lines, and a second report region
 
 **Betrifft:** `web/src/app/shared/seven-tv/run-progress-panel.ts` (new optional input `tally`,

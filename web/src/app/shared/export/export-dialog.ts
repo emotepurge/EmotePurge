@@ -44,8 +44,9 @@ export interface ExportDialogData<TId extends string = string> {
    * cannot carry it.
    */
   noticeKeys: readonly string[];
-  /** Legend of the option radiogroup — 'export.formatLabel' for the two unchanged callers,
-   *  'export.purposeLabel' for usage-stats' purpose-sorted list. */
+  /** Legend of the option radiogroup — 'export.formatLabel' for the four callers that choose a
+   *  format (voting, and the three run-protocol exports), 'export.purposeLabel' for usage-stats'
+   *  purpose-sorted list. */
   optionsLegendKey: string;
   /** Display order is the radio order; `options[0]` is the preselection — no second default
    *  concept lives anywhere else in this dialog. */
@@ -59,7 +60,8 @@ export interface ExportChoice<TId extends string = string> {
 
 /**
  * The CSV/JSON pair the dialog used to hardwire, now a caller-supplied constant so the wording
- * stays in one place for the two callers that keep it (voting export, delete protocol export).
+ * stays in one place for the callers that keep this order (voting export — its file is a report,
+ * never read back in).
  */
 export const FORMAT_EXPORT_OPTIONS: readonly ExportDialogOption[] = [
   { id: 'csv', labelKey: 'export.formatCsv' },
@@ -67,13 +69,25 @@ export const FORMAT_EXPORT_OPTIONS: readonly ExportDialogOption[] = [
 ];
 
 /**
+ * Same CSV/JSON pair, JSON first — for run-protocol exports (purge, transfer, transfer-undo),
+ * where the JSON file is the only one that can be read back in (file-import step, restore).
+ * `options[0]` is this dialog's one preselection concept (see `ExportDialog.optionId` below), so
+ * reordering the constant is the whole fix; nothing else about the dialog changes.
+ */
+export const FORMAT_EXPORT_OPTIONS_JSON_FIRST: readonly ExportDialogOption[] = [
+  { id: 'json', labelKey: 'export.formatJson' },
+  { id: 'csv', labelKey: 'export.formatCsv' },
+];
+
+/**
  * Closes with the chosen option id + scope, or `undefined` on cancel/Escape/backdrop.
  *
  * The option list used to be hardwired CSV/JSON. It is caller-supplied now (§7.4): the dialog
- * treats `data.options` as opaque and pre-selects `options[0]`, which keeps "CSV first" for the
- * two callers that still choose a format while letting usage-stats offer a purpose-sorted list
- * instead. It was a radio group before this change too, matching the scope choice directly above
- * it, and the footer states one action.
+ * treats `data.options` as opaque and pre-selects `options[0]`, which lets each of the four
+ * callers that choose a format pick its own order — CSV first for voting, JSON first for the
+ * three run-protocol exports — while letting usage-stats offer a purpose-sorted list instead. It
+ * was a radio group before this change too, matching the scope choice directly above it, and the
+ * footer states one action.
  */
 @Component({
   selector: 'app-export-dialog',
@@ -188,9 +202,10 @@ export class ExportDialog {
       ? 'selection'
       : 'visible',
   );
-  // options[0] is the preselection (E1) — no second default concept lives here. This keeps "CSV
-  // first" for the two callers that pass FORMAT_EXPORT_OPTIONS without the dialog knowing what a
-  // "format" is.
+  // options[0] is the preselection (E1) — no second default concept lives here. That lets each
+  // caller pick its own default: CSV first via FORMAT_EXPORT_OPTIONS for voting, JSON first via
+  // FORMAT_EXPORT_OPTIONS_JSON_FIRST for the three run-protocol exports — without the dialog
+  // knowing what a "format" is.
   protected readonly optionId = signal<string>(this.data.options[0].id);
 
   // Doubles as the submit button's lock (see the template): a scope resolving to zero rows would
