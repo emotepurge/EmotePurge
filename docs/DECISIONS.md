@@ -189,7 +189,7 @@ straight into the `transfer-undo` file it eventually produces (`UndoCandidate.pr
 `TransferUndoExecutedRow.provenance`), so the paper trail keeps saying how proven a removal was, all
 the way through.
 
-**Review-Nachbesserung (2026-09-26): a confirmed REMOVE alone is not enough for `'confirmed'`.** A
+**Review follow-up (2026-09-26): a confirmed REMOVE alone is not enough for `'confirmed'`.** A
 `finished` row is `provenance: 'confirmed'` only when its own `status` also settled `'done'` —
 `failed`, `unknown`, `cancelled` and a stamped `pending` all keep it `'unproven'` and behind the same
 origin lock as a `planned` row, because 7TV having taken the REMOVE says nothing about whether the
