@@ -1720,3 +1720,10 @@ Abschnitt sagt, wo er nicht mehr stimmt.
 19. **`sevenTvRun.kind.undo` und sein Eintrag in `SEVEN_TV_RUN_KIND_LABEL_KEY`** kommen aus #256s
     Vertrag (Plan Abschnitt 11), nicht aus dieser Spec — der Compiler erzwingt beides, sobald der
     Arbiter eine vierte Laufart kennt.
+20. **`SevenTvUndoService` ist auch in `channel-workspace-layout.ts` injiziert** (der
+    `resetIfChannelChanged`-Aufruf im `untracked`-Zweig), genau wie Delete und Restore dort schon
+    (#256-Muster, Plan Abschnitt 11/T7). Der initiale Bundle bleibt unverändert; auf anderen
+    Kanalseiten als usage-stats (z. B. `/vote-sessions`, `/activity`) wächst der Layout-eigene
+    Lauf-Dienste-Chunk dadurch um rund 20 kB roh / 5 kB gzip. Codex meldete das als Bruch der
+    Lazy-Grenze; Fable hat als Schiedsrichter entschieden, es so zu lassen — eine Isolierung nur für
+    den Undo würde das #256-Muster für alle drei Dienste ändern.
