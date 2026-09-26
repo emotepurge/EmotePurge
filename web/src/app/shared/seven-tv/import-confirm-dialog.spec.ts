@@ -1892,6 +1892,43 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
     });
 
+    // #255 P3.2 (review finding): onTargetRead used to adopt a live read's occupancy number before
+    // checking whether the plan it was requested for was still current — a target reload while the
+    // read was still out reset the projection back to the picker-time count, and the stale answer
+    // then arriving overwrote that reset with its own, already-outdated number. The guard now runs
+    // first, so an answer for a plan that is already gone changes nothing.
+    it('ignores a live read answer for a plan the target has already reloaded past', async () => {
+      captureDownloads();
+      const source = channelSource([row('src-a', 'Collides')]);
+      const freshTarget = () =>
+        readyTarget({
+          setId: 'set-slots',
+          occupiedSlots: 15,
+          capacity: 1000,
+          emotes: [emote('tgt-a', 'Collides')],
+        });
+      const dialog = render({ source, target: freshTarget() });
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+
+      // The target reloads while the read above is still out — a fresh preview means a fresh
+      // `plan()`, so the read's own captured plan is now stale, and the reset already shows the
+      // picker-time count again.
+      dialog.target.set(freshTarget());
+      dialog.detect();
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+
+      // The old read's answer, carrying a number for the plan that is now gone, must not resurrect
+      // it.
+      answerRead(dialog, setRead([{ id: 'tgt-a', alias: 'Collides' }], 999));
+      expect(dialog.text()).toContain('Das Set hätte danach 15 von 1000 Slots belegt.');
+    });
+
     it('releases nothing on a failed or incomplete read, keeping the decision for another try', async () => {
       const downloads = captureDownloads();
       const dialog = render({ source: conflictSource(), target: conflictTarget() });

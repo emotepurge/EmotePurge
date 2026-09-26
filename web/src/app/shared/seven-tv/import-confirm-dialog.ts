@@ -1265,17 +1265,24 @@ export class ImportConfirmDialog {
   }
 
   private onTargetRead(target: ReadyTarget, plan: TransferPlan, entries: SevenTvSetEntries): void {
-    // Every call here is a successful live read (a failed one never reaches this method, see
-    // `verifyAndSave`'s `error` handler) — the slot projection adopts its occupancy number
-    // unconditionally, before the plan-staleness check below: the target itself has not reloaded,
-    // only the decisions might have, so the number is good regardless of which branch follows.
-    this.liveOccupiedSlots.set(entries.occupiedSlots);
     // The plan changed while the read was running (a reload of the target) — this answer is about
-    // a plan that is gone.
+    // a plan that is gone. Checked *before* the slot projection below (#255 P3.2, review finding):
+    // a target reload resets `liveOccupiedSlots` (see that field's own doc), and a read that was
+    // requested against the *old* plan — this one — must not overwrite that fresh reset with a
+    // number that may already belong to a target the user has since moved past. A drifted or
+    // failed-verification answer below is still current by this same check, so it still updates
+    // the projection.
     if (this.plan() !== plan) {
       this.rawActionState.set(IDLE);
       return;
     }
+    // Every call here is a successful live read (a failed one never reaches this method, see
+    // `verifyAndSave`'s `error` handler) against the plan that is still current — the slot
+    // projection adopts its occupancy number regardless of which branch follows below (an
+    // unavailable verification, a drift, or a clean save): the target itself has not reloaded,
+    // only the decisions about it might, and none of those branches make this number any less
+    // true.
+    this.liveOccupiedSlots.set(entries.occupiedSlots);
     const verification = verifyReplaceTargets(entries, plan);
     if (!verification.available) {
       this.rawActionState.set(IDLE);
