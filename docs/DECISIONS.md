@@ -10,6 +10,60 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — The undo's dock: a host-supplied tally, a removal report under `undo.sync*`, lasting skip lines, and a second report region
+
+**Betrifft:** `web/src/app/shared/seven-tv/run-progress-panel.ts` (new optional input `tally`,
+type `RunProgressTally`; `labelPrefix` gains `'undo'`) ·
+`web/src/app/shared/seven-tv/undo-progress-section.ts` (new) ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (`resyncNoticeKey` family `'undo'`,
+`undoSkippedLines`, `undoSkippedNotice`) · `web/public/i18n/{de,en}.json` (`undo.sync*`,
+`undo.restoreSync*`, `undo.summary.*`, `undo.resync.*`, `undo.progress*`,
+`undo.leaveWhileRunning.*`) — consumes `web/src/app/core/seven-tv/seven-tv-undo.service.ts`
+(`progress`, `summary`, `summarizeUndoRun`).
+
+Issue #254 (spec 4.7, 6.6, plan Festlegung 3 and 5). Four decisions about how the undo run is shown;
+the run itself is the entry below.
+
+**(a) `RunProgressPanel.tally` — a host may hand the panel its own counts.** The panel counted its
+bar (`finished`) and its summary sentence (`done`/`failed`/`cancelled`) from each row's engine
+status. The undo's recheck before a REMOVE (E19) skips a row through the engine's `beforeStep` hook,
+and the engine records that row as `cancelled`: counted by status, the bar never reached the end
+(the panel does not count `cancelled` as finished) and the row appeared twice — once as a
+cancellation in the sentence and once under its skip reason. The undo section therefore passes
+`{ finished, done, failed, cancelled }` from the service's `progress()` and `summary()`, where a
+recheck skip is finished and counted only in `skippedInRun`/`skippedByReason`, and a `partial` row is
+`done`. `tally` is optional and defaults to `null`; with `null` the panel counts `items` by status
+exactly as before, so delete, restore and import are unchanged. `total` and the failure list keep
+reading `items` for every host.
+
+**(b) The panel's removal report speaks `undo.sync*`.** The panel carries one report (Festlegung 3:
+the removal, `sync-deleted`, the destructive fact) and derives its keys from `labelPrefix`
+(`${labelPrefix}.syncFailedTitle`, `.syncPartial`, `.syncRetry`, …) — the same mechanism that makes
+the import's panel report speak `import.sync*`. The undo's removal report is therefore worded under
+`undo.sync*`, not under the `undo.removalSync*` the plan's locale list named; the restore report,
+which the section renders itself, is `undo.restoreSync*`.
+
+**(c) Skipped-per-reason lines persist in the run summary; only the pre-run notice is transient.**
+Spec 4.7 calls the undo's skipped lines "transient". Two kinds of skip exist: candidates a start
+left out before anything ran (dialog, freshness check, the service's own locks — `run.skipped`) and
+rows the recheck skipped during the run. The second kind is not a cancellation (a) and has no other
+place in the dock; a transient line would make it vanish from every count after four seconds while
+the protocol still lists it. So the settled summary shows one line per reason from
+`summary().skippedByReason`, for as long as the run is shown. The transient notice
+(`noticePending`/`noticeSkipped`) remains for a start that ran nothing — its only voice — and gives
+way once the run it started has stopped running, since the summary then names the same candidates;
+no candidate is named twice.
+
+**(d) The restore report is its own live region, below the panel.** `sync-restored` is rendered by
+the section as a banner directly below the panel, so the two reports read in the order they are
+sent (F8: removal first). Placed inside the panel's projected run-actions it would appear before the
+panel's removal banner. Outside the panel it is also outside the panel's `role="status"`; a banner
+that mounts together with its failure text announces nothing (docs/UI-Designsprache.md §4.4, §4.5),
+so the restore report sits in its own `role="status" aria-atomic="false"` container that mounts with
+the run, and the failure, its reason and its retry enter an already standing region.
+
+---
+
 ### 2026-09-26 — A replace can be undone from its transfer file — a fourth destructive run with the replace's safeguards
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-undo.service.ts` (new: `SevenTvUndoService`,
