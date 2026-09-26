@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { Component, DestroyRef, computed, inject, input } from '@angular/core';
+import { Component, DestroyRef, computed, inject, input, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -9,12 +9,14 @@ import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.servic
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import { Button } from '../ui/button';
 import { startForeignChannelImportFlow, startLeaderboardImportFlow } from './foreign-import-flow';
 import { importTriggerDisabled } from './import-trigger-gate';
 import { openImportSourceDialog } from './import-source-dialog';
 import { ImportFlowTarget, startImportFlow } from './import-flow';
 import { startRestoreFlow } from './restore-flow';
+import { startUndoFlow } from './undo-flow';
 
 /**
  * The channel's active set as far as this trigger may assume it: an *omitted* input (`undefined` —
@@ -68,8 +70,9 @@ function toImportTarget(
 /**
  * The header button that opens the import path — **all of it** (#91, #147). It freezes
  * `channelName`/`setId` at the moment of the click, opens `ImportSourceDialog`, and hands whatever
- * comes back to the chain that fits: `startRestoreFlow` for a restore file (purge-run protocol or
- * transfer-run file),
+ * comes back to the chain that fits: `startRestoreFlow` for a restore file (purge-run protocol,
+ * transfer-undo file, or a transfer-run file the user chose to close the gaps of),
+ * `startUndoFlow` for a transfer-run file whose replacements the user chose to undo (#254),
  * `startImportFlow` for an emote list or usage export read from a file, and
  * `startForeignChannelImportFlow` for emotes picked out of another channel's 7TV set.
  *
@@ -97,11 +100,12 @@ function toImportTarget(
  *
  * **The three copy doors target `setId` itself (spec 8.6, T4.5)** — the page's *selected* set,
  * active or not (`toImportTarget` above); `null` when the page has none (spec #253, E22), in which
- * case `ImportSourceDialog` disables all three doors with a reason and only a `'restore'` result
- * can ever come back. **A restore file targets whatever set it names** (spec #253, E1):
- * `FileImportStep` reads the set from the file, clears it through the shared pre-check
- * (`resolveEditableSet`, E19) and hands back a `ResolvedRestoreTarget` that this trigger passes to
- * `startRestoreFlow` unchanged — it neither builds nor adjusts a restore target itself, and a
+ * case `ImportSourceDialog` disables all three doors with a reason and only a `'restore'` or a
+ * `'transfer-undo'` result can ever come back. **A restore file targets whatever set it names**
+ * (spec #253, E1), and so does an undo (#254, E4): `FileImportStep` reads the set from the file,
+ * clears it through the shared pre-check (`resolveEditableSet`, E19) and hands back a
+ * `ResolvedRestoreTarget` that this trigger passes to `startRestoreFlow` or `startUndoFlow`
+ * unchanged — it neither builds nor adjusts that target itself, and a
  * blocked check never reaches it (the step keeps the dialog open with its own banner). The page's
  * frozen `setId` only goes along as the step's `hostSelectedSetId` — `null` included — for the
  * confirmation's "not the set on screen" hint (E21). Restore books its un-archive through the
@@ -159,6 +163,9 @@ export class ImportTrigger {
   private readonly tokenService = inject(SevenTvTokenService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
+  /** The undo's run service (#254). Injected only here, in the usage-stats page's lazy chunk, never
+   *  from an eagerly loaded file (F9) — injecting it is also what registers it with the arbiter. */
+  private readonly undoService = inject(SevenTvUndoService);
   /** Handed to `startRestoreFlow` as `RestoreFlowDeps.destroyRef` (#255 P2a) — the flow has no
    *  injection context of its own to pull one from. */
   private readonly destroyRef = inject(DestroyRef);
@@ -177,12 +184,20 @@ export class ImportTrigger {
    *  `disabled` now also reflects a pre-check the *other* entry started. */
   private readonly restorePreviewPending = this.restoreService.restorePreCheckPending;
 
+  /** `startUndoFlow`'s `UndoFlowDeps.firstReadPending`: `true` while the undo's first read of its
+   *  target is out, so a second click cannot start a second undo flow whose confirmation would
+   *  stack on the first. The undo has no second entry point, so a signal of this trigger's own
+   *  covers it (unlike `restorePreviewPending` above). */
+  private readonly undoReadPending = signal(false);
+
   protected readonly disabled = computed(
     () =>
       importTriggerDisabled({
         hasActiveRun: this.arbiter.activeRun() !== null,
         importScopeCurrent: this.importScopeCurrent(),
-      }) || this.restorePreviewPending(),
+      }) ||
+      this.restorePreviewPending() ||
+      this.undoReadPending(),
   );
 
   protected openDialog(): void {
@@ -221,9 +236,26 @@ export class ImportTrigger {
         );
         return;
       }
+      if (result.kind === 'transfer-undo') {
+        // Same as a restore file: the target is the file's, already resolved and cleared by the
+        // file step before its switch (spec 4.1, 6.1) — passed on as it came.
+        startUndoFlow(
+          {
+            dialog: this.dialog,
+            httpClient: this.httpClient,
+            tokenService: this.tokenService,
+            undoService: this.undoService,
+            arbiter: this.arbiter,
+            firstReadPending: this.undoReadPending,
+            destroyRef: this.destroyRef,
+          },
+          result,
+        );
+        return;
+      }
       // The three copy doors are disabled without a target set (`ImportSourceDialogData.setId:
       // null`, spec #253, E22) — a dialog opened with one can therefore never close with anything
-      // but a `'restore'` result, already handled above. This narrows `setId` for `toImportTarget`
+      // but a `'restore'` or `'transfer-undo'` result, both already handled above. This narrows `setId` for `toImportTarget`
       // below rather than asserting it, so a dialog defect that somehow returned a copy result
       // anyway is refused here instead of silently building a target around `null`.
       if (setId === null) {

@@ -14,6 +14,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { ImportSource } from '../../core/seven-tv/import-source';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import { UndoCandidate, UndoSourceFileInfo } from '../../core/seven-tv/undo-candidate';
 import { ExportKind } from '../export/export-envelope';
 import { parseImportSource } from '../export/import-source-parser';
 import { RestoreFileTarget, RestoreRow, parsePurgeRunProtocol } from '../export/purge-run-export';
@@ -25,13 +26,25 @@ import { ResolvedRestoreTarget } from './restore-flow';
 
 /**
  * What the file step reports once a file has been read and understood. The discriminant tells the
- * caller which chain to run next — `startRestoreFlow` for `'restore'`, `startImportFlow` for
- * `'import'`; this step starts neither itself and picks no import target. A `'restore'` result
- * always carries a target the shared pre-check has already cleared (spec #253, 6.1): the set the
- * file names, as the target list describes it, plus the two host fields of the page it was read on.
+ * caller which chain to run next — `startRestoreFlow` for `'restore'`, `startUndoFlow` for
+ * `'transfer-undo'`, `startImportFlow` for `'import'`; this step starts none of them itself and
+ * picks no import target. A `'restore'` and a `'transfer-undo'` result always carry a target the
+ * shared pre-check has already cleared (spec #253, 6.1): the set the file names, as the target list
+ * describes it, plus the two host fields of the page it was read on.
+ *
+ * `'transfer-undo'` (#254, spec 6.1) is what a transfer-run file becomes when the user picks "undo
+ * the replacements" at the switch: its undo candidates (`parseTransferRunForUndo`) and where the
+ * file came from, carried into the undo's recovery file and protocol (F6). The name is the undo's,
+ * not the file's: a `transfer-undo` *file* is read back as a plain `'restore'` result.
  */
 export type FileImportResult =
   | { kind: 'restore'; rows: RestoreRow[]; target: ResolvedRestoreTarget }
+  | {
+      kind: 'transfer-undo';
+      candidates: UndoCandidate[];
+      target: ResolvedRestoreTarget;
+      sourceFile: UndoSourceFileInfo;
+    }
   | { kind: 'import'; source: ImportSource };
 
 /** The copy sorts (`import-source-parser.ts`) — the two a page without a selected set refuses up
