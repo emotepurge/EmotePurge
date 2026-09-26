@@ -29,6 +29,7 @@ import en from '../../../../public/i18n/en.json';
  */
 
 const GQL = 'https://7tv.io/v4/gql';
+const INITIAL_READ_AT = Date.parse('2026-09-26T08:00:00.000Z');
 const SAVE = 'Rückweg sichern';
 const START = 'Starten';
 const CANCEL = 'Abbrechen';
@@ -155,6 +156,7 @@ interface RenderOptions {
   target?: ResolvedRestoreTarget;
   sourceFile?: UndoSourceFileInfo;
   initialRead?: SevenTvSetEntries | null;
+  initialReadAt?: number;
   capacity?: number | null;
 }
 
@@ -233,6 +235,7 @@ describe('UndoConfirmDialog', () => {
       target: options.target ?? resolvedTarget(),
       sourceFile: options.sourceFile ?? FINISHED_FILE,
       initialRead: options.initialRead === undefined ? setRead([fullLive(1)]) : options.initialRead,
+      initialReadAt: options.initialReadAt ?? INITIAL_READ_AT,
     };
 
     const fixture = TestBed.createComponent(UndoConfirmDialog);
@@ -480,6 +483,40 @@ describe('UndoConfirmDialog', () => {
       ).not.toBeNull();
     });
 
+    it('dates the file by when the classified read arrived, not by the click that saved it', async () => {
+      const downloads = captureDownloads();
+      const dialog = render();
+
+      click(dialog, executor(dialog));
+
+      const record = await savedRecord(downloads[0]);
+      expect(record.meta.verifiedAt).toBe('2026-09-26T08:00:00.000Z');
+      expect(downloads[0].filename).toContain('_transfer-undo-plan_2026-09-26-0800.json');
+    });
+
+    it('starts with the reloaded read, and dates the file by that read’s arrival', async () => {
+      const downloads = captureDownloads();
+      const initial = setRead([fullLive(1)]);
+      const dialog = render({ initialRead: initial });
+      const now = vi.spyOn(Date, 'now');
+
+      click(dialog, dialog.button(RELOAD));
+      now.mockReturnValue(Date.parse('2026-09-26T09:15:00.000Z'));
+      http()
+        .expectOne(GQL)
+        .flush(gqlAnswer([fullLive(1), { id: 'unrelated', alias: 'Other' }]));
+      dialog.detect();
+      now.mockReturnValue(Date.parse('2026-09-26T09:45:00.000Z'));
+      click(dialog, executor(dialog));
+      click(dialog, executor(dialog));
+
+      expect((await savedRecord(downloads[0])).meta.verifiedAt).toBe('2026-09-26T09:15:00.000Z');
+      const read = closed[0]?.read;
+      expect(read).not.toBe(initial);
+      expect(read?.occupiedSlots).toBe(2);
+      expect(read?.aliasesById.has('unrelated')).toBe(true);
+    });
+
     it('closes with null on cancel', () => {
       const dialog = render();
 
@@ -588,6 +625,66 @@ describe('UndoConfirmDialog', () => {
       expect(executor(dialog).textContent?.trim()).toBe(SAVE);
     });
 
+    it('keeps the confirmation across a reload', () => {
+      captureDownloads();
+      const { candidates, read } = mixedPlanned();
+      const dialog = render({ candidates, initialRead: read, sourceFile: PLANNED_FILE });
+
+      toggleAcknowledgement(dialog);
+      click(dialog, dialog.button(RELOAD));
+      http()
+        .expectOne(GQL)
+        .flush(gqlAnswer([fullLive(1)]));
+      dialog.detect();
+
+      expect(dialog.checkbox()?.checked).toBe(true);
+      expect(executor(dialog).textContent?.trim()).toBe(SAVE);
+      click(dialog, executor(dialog));
+      click(dialog, executor(dialog));
+      expect(closed[0]?.acknowledgedUnproven).toBe(true);
+      expect(closed[0]?.skipped).toEqual([]);
+    });
+
+    it('does not report a confirmation that no longer covers an unproven full row', () => {
+      const { candidates, read } = mixedPlanned();
+      const dialog = render({ candidates, initialRead: read, sourceFile: PLANNED_FILE });
+
+      toggleAcknowledgement(dialog);
+      // The source has gone since: every row only adds back, nothing unproven is removed.
+      click(dialog, dialog.button(RELOAD));
+      http().expectOne(GQL).flush(gqlAnswer([]));
+      dialog.detect();
+      expect(dialog.checkbox()).toBeNull();
+      click(dialog, executor(dialog));
+
+      expect(closed[0]?.runnable.map((row) => row.mode)).toEqual(['addOnly', 'addOnly']);
+      expect(closed[0]?.acknowledgedUnproven).toBe(false);
+    });
+
+    it('hands the skipped rows over in file order, lock and classification interleaved', () => {
+      const candidates = [
+        candidate(1, { provenance: 'unproven' }),
+        candidate(2, { provenance: 'unproven' }),
+        candidate(3, { provenance: 'unproven' }),
+        candidate(4, { provenance: 'unproven' }),
+      ];
+      const dialog = render({
+        candidates,
+        sourceFile: PLANNED_FILE,
+        // 1 and 3 look like finished replaces, 2's source has another name now, 4 only adds back.
+        initialRead: setRead([fullLive(1), { id: 'src-2', alias: 'Renamed' }, fullLive(3)]),
+      });
+
+      click(dialog, executor(dialog));
+
+      expect(closed[0]?.skipped.map((row) => [row.candidate, row.reason])).toEqual([
+        [candidates[0], 'skippedUnproven'],
+        [candidates[1], 'sourceUnderOtherName'],
+        [candidates[2], 'skippedUnproven'],
+      ]);
+      expect(closed[0]?.runnable.map((row) => row.candidate)).toEqual([candidates[3]]);
+    });
+
     it('shows neither mark nor confirmation for a finished file', () => {
       const dialog = render();
 
@@ -620,8 +717,28 @@ describe('UndoConfirmDialog', () => {
         expect(row.querySelectorAll('img')).toHaveLength(1);
         expect(row.querySelector('[data-target-placeholder] img')).toBeNull();
       }
-      // The aliasless entry is shown under the file's default name.
-      expect(withoutFlag.textContent?.replace(/\s+/g, ' ')).toContain('Alias3 · Target3');
+    });
+
+    it('names an aliasless target entry by the file’s default name in the target column', () => {
+      const dialog = render({
+        candidates: [candidate(1, { target: { entries: [{ alias: 'Alias1' }, { alias: null }] } })],
+      });
+
+      // The target column itself — the "Kommt zurück als" line names the same ADDs.
+      const column = dialog.rows()[0].querySelector('[data-target-column]');
+      const text = column?.textContent?.replace(/\s+/g, ' ') ?? '';
+      expect(text).toContain('Alias1 · Target1');
+      expect(text).not.toContain('(ohne Namen)');
+    });
+
+    it('shows what the target holds now next to an addOnly row’s foreign entry', () => {
+      // Source gone, the target back under a name the file does not know.
+      const dialog = render({ initialRead: setRead([{ id: 'tgt-1', alias: 'Foreign' }]) });
+
+      const text = dialog.rows()[0].textContent?.replace(/\s+/g, ' ') ?? '';
+      expect(text).toContain('Nur Ziel zurück');
+      expect(text).toContain('Das Ziel trägt schon einen Eintrag, den die Datei nicht kennt');
+      expect(text).toContain('Jetzt im Set — Quelle: nicht im Set — Ziel: Foreign');
     });
 
     it('keeps the file’s order and shows a skipped row in place, naming the entry it left out', () => {

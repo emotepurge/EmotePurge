@@ -3,12 +3,13 @@ import { HttpClient } from '@angular/common/http';
 import { Component, DestroyRef, Signal, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, of, tap, throwError } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
+import { ImportOrigin } from '../../core/seven-tv/import-source';
 import { LEADERBOARD_SORT_LABEL_KEYS } from '../../core/seven-tv/leaderboard.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
@@ -58,6 +59,9 @@ export interface UndoConfirmDialogData {
    * `complete: false` is treated the same way.
    */
   initialRead: SevenTvSetEntries | null;
+  /** When `initialRead` arrived (epoch ms) — the `verifiedAt` of a recovery file saved from it: the
+   *  file vouches for the moment the classified read was taken, not for the click that saved it. */
+  initialReadAt: number;
 }
 
 /**
@@ -84,6 +88,8 @@ export interface UndoConfirmOutcome {
  */
 interface EffectiveUndoPlan {
   read: SevenTvSetEntries;
+  /** When `read` arrived (epoch ms) — the recovery file's `verifiedAt`. */
+  readAt: number;
   runnable: UndoPlanRow[];
   /** In file order, the origin lock's `skippedUnproven` rows included. */
   skipped: UndoSkippedRow[];
@@ -265,7 +271,7 @@ const SPRITE_PX = 40;
 
               <!-- The target is in no set after a successful replace, so there is no picture to
                    show: the resolution step's empty plate, with the name and entries beside it. -->
-              <div class="flex min-w-0 items-center gap-2">
+              <div data-target-column class="flex min-w-0 items-center gap-2">
                 <span
                   data-target-placeholder
                   aria-hidden="true"
@@ -518,19 +524,29 @@ export class UndoConfirmDialog {
     { initialValue: null },
   );
 
+  /** When each read a reload delivered arrived — stamped as it comes in, before the gate sees it. */
+  private readonly readArrivals = new WeakMap<SevenTvSetEntries, number>();
+
   private readonly candidateOrder = new Map(
     this.data.candidates.map((candidate, index) => [candidate, index]),
   );
 
   /** The classification of the gate's current read — `null` while there is no complete one. The
    *  completeness check comes first: `classifyUndoRows` refuses an incomplete read (T2). */
-  private readonly classification: Signal<{ read: SevenTvSetEntries; plan: UndoPlan } | null> =
-    computed(() => {
-      const read = this.gate.lastRead();
-      return read === null || !read.complete
-        ? null
-        : { read, plan: classifyUndoRows(this.data.candidates, read) };
-    });
+  private readonly classification: Signal<{
+    read: SevenTvSetEntries;
+    readAt: number;
+    plan: UndoPlan;
+  } | null> = computed(() => {
+    const read = this.gate.lastRead();
+    return read === null || !read.complete
+      ? null
+      : {
+          read,
+          readAt: this.readArrivals.get(read) ?? this.data.initialReadAt,
+          plan: classifyUndoRows(this.data.candidates, read),
+        };
+  });
 
   /** The plan the gate holds and "Starten" closes with. No custom `equal`: see
    *  {@link EffectiveUndoPlan}. */
@@ -538,12 +554,7 @@ export class UndoConfirmDialog {
     const classification = this.classification();
     return classification === null
       ? null
-      : effectiveUndoPlan(
-          classification.plan,
-          classification.read,
-          this.acknowledged(),
-          this.candidateOrder,
-        );
+      : effectiveUndoPlan(classification, this.acknowledged(), this.candidateOrder);
   });
 
   private readonly gate: UndoRecoveryGate = new RecoveryFileGate({
@@ -551,7 +562,10 @@ export class UndoConfirmDialog {
     noticeResetSource: this.plan,
     destroyRef: this.destroyRef,
     initialRead: this.data.initialRead?.complete === true ? this.data.initialRead : null,
-    read: (target) => loadSevenTvSetEntries(this.httpClient, target.emoteSetId),
+    read: (target) =>
+      loadSevenTvSetEntries(this.httpClient, target.emoteSetId).pipe(
+        tap((read) => this.readArrivals.set(read, Date.now())),
+      ),
     // The file is built from the read the plan was classified from: no second request, and nothing
     // newer to drift against — the undo re-checks at the start and before every REMOVE (E14, E19).
     verifyRead: () => this.heldRead(),
@@ -631,7 +645,7 @@ export class UndoConfirmDialog {
     return this.gate.state().kind === 'saved' ? 'undo.confirm.start' : 'undo.confirm.saveRecovery';
   });
 
-  protected readonly origin = computed<OriginView>(() => originView(this.data.sourceFile));
+  protected readonly origin = computed<OriginView>(() => originView(this.data.sourceFile.origin));
 
   protected readonly leaderboardSortKey = computed(() => {
     const origin = this.origin();
@@ -691,14 +705,15 @@ export class UndoConfirmDialog {
   }
 
   /** The `planned` transfer-undo file (spec 6.4, AK 6): the running rows only, each `full` row's
-   *  source entries from the read. Throws when the browser refuses the download — the gate then
-   *  settles on `saveFailed` and stays `idle`. */
+   *  source entries from the read, `verifiedAt` the moment that read arrived (not the gate's save
+   *  time). Throws when the browser refuses the download — the gate then settles on `saveFailed`
+   *  and stays `idle`. */
   private saveRecoveryFile({
     target,
     stampedPlan,
     read,
-    verifiedAt,
   }: RecoveryFileSave<ResolvedRestoreTarget, EffectiveUndoPlan, SevenTvSetEntries>): void {
+    const verifiedAt = stampedPlan.readAt;
     const record = buildTransferUndoPlanRecord({
       targetEmoteSetId: target.emoteSetId,
       targetChannelName: target.trackedChannelName,
@@ -742,8 +757,7 @@ function isUnprovenFull(row: UndoPlanRow): boolean {
  * is left. `acknowledgedUnproven` is only `true` when the confirmation covered such a row.
  */
 function effectiveUndoPlan(
-  plan: UndoPlan,
-  read: SevenTvSetEntries,
+  { plan, read, readAt }: { plan: UndoPlan; read: SevenTvSetEntries; readAt: number },
   acknowledged: boolean,
   candidateOrder: ReadonlyMap<UndoCandidate, number>,
 ): EffectiveUndoPlan {
@@ -759,6 +773,7 @@ function effectiveUndoPlan(
   const position = (row: UndoSkippedRow) => candidateOrder.get(row.candidate) ?? 0;
   return {
     read,
+    readAt,
     runnable,
     skipped: [...plan.skipped, ...lockedRows].sort((a, b) => position(a) - position(b)),
     acknowledgedUnproven: acknowledged && unprovenFull.length > 0,
@@ -835,10 +850,12 @@ function skippedView(row: UndoSkippedRow, read: SevenTvSetEntries): UndoRowView 
 }
 
 /** Where the undone transfer's rows came from — `origin` is `null` when the file does not say (or
- *  says something unreadable, T1). */
-function originView(sourceFile: UndoSourceFileInfo): OriginView {
-  const origin = sourceFile.origin;
-  switch (origin?.kind) {
+ *  says something unreadable, T1); every real origin is named, exhaustively. */
+function originView(origin: ImportOrigin | null): OriginView {
+  if (origin === null) {
+    return { kind: 'unknown' };
+  }
+  switch (origin.kind) {
     case 'channel':
     case 'seventv-channel':
       return { kind: 'channel', channel: origin.channelName };
@@ -847,6 +864,12 @@ function originView(sourceFile: UndoSourceFileInfo): OriginView {
     case 'seventv-leaderboard':
       return { kind: 'leaderboard', sortKey: LEADERBOARD_SORT_LABEL_KEYS[origin.sortBy] };
     default:
-      return { kind: 'unknown' };
+      return unreachableOrigin(origin);
   }
+}
+
+/** Reached only when a new {@link ImportOrigin} member skipped the `switch` above — the `never`
+ *  parameter makes that a build error instead of a silent "unknown". */
+function unreachableOrigin(origin: never): never {
+  throw new Error(`Unknown import origin: ${JSON.stringify(origin)}`);
 }
