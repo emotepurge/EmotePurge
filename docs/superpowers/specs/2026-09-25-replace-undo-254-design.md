@@ -1622,3 +1622,47 @@ gelaufen sind; `counts.skipped` kommt dazu. Der Restore-Parser der `transfer-und
 die übrigen Spalten einer übersprungenen Zeile leer. Die Festlegung gehört vor die Umsetzung des
 Dateiformats (Plan T1), mit Tests für `duplicateInFile` und die übrigen Übersprünge vor der
 Klassifikation.
+
+---
+
+## 18. Nachtrag: Wo die Umsetzung vom Spec-Text abweicht (2026-09-26)
+
+Festgehalten nach T8 (E2E und Doku). Die Umsetzung gilt; der Text oben bleibt stehen, dieser
+Abschnitt sagt, wo er nicht mehr stimmt.
+
+1. **„Ergebnisprotokoll herunterladen" statt „speichern" (4.7 Nr. 18, 9.5 Punkt 2).** Der Knopf im
+   Dock heißt wie beim Löschen und beim Import „herunterladen" (Wortwahl des Orchestrators). Der
+   stille Hinweis `protocolNotSaved` spricht weiter von „gespeichert". Der Live-Schritt 9.5 benutzt
+   den Knopf unter diesem Namen.
+2. **Übersprungen-Zeilen sind nur vor dem Lauf transient (4.7 Nr. 18).** Die Notiz eines Starts
+   (4 s) nennt die übersprungenen Kandidaten je Grund, auch wenn nichts startet (AK 5, 21). Sobald
+   der gestartete Lauf nicht mehr läuft, nennt seine Zusammenfassung dieselben Kandidaten je Grund
+   und bleibt stehen, solange der Lauf gezeigt wird; die Notiz weicht ihr. Beide stehen nie
+   gleichzeitig, kein Kandidat wird doppelt genannt.
+3. **Schlüssel der Löschmeldung: `undo.sync*`, nicht `undo.removalSync*` (6.7).** Das
+   `RunProgressPanel` bildet seine Meldungsschlüssel aus `labelPrefix` (`undo.syncFailedTitle`,
+   `undo.syncRetry` usw.); die Löschmeldung sitzt im Panel und erbt diese Form. Die
+   Wiederherstellungsmeldung heißt wie geplant `undo.restoreSync*`. Einen Schlüssel
+   `undo.summary.gapsHint` gibt es nicht; der Hinweis steht in `undo.summary.gaps.*` selbst.
+4. **Token-Löschung bei `LACKING_PRIVILEGES`: E13 widerspricht 4.9 Nr. 23 und AK 10.** E13 nennt
+   die Token-Löschung „Import-Muster"; der Import löscht das Token bei `LACKING_PRIVILEGES` aber
+   nicht (nur die Engine bei 401/403). Umgesetzt ist 4.9 Nr. 23 / AK 10: der Undo löscht es auch
+   bei `LACKING_PRIVILEGES`.
+5. **N1-Fallback bei nur einer gesendeten Meldung (AK 14, 4.9 Nr. 24).** Schickt ein Lauf nur eine
+   Meldung (etwa ein reiner `addOnly`-Lauf nur `sync-restored`) und scheitert sie endgültig, läuft
+   der Fallback-Resync für `expectedChannelName`. Lesart von „scheitern beide": keine Meldung hat
+   die Resync-Stufe des Backends erreicht. „Scheitert nur eine, keiner" gilt für einen Lauf mit
+   zwei Meldungen.
+6. **`undo-plan.ts` und `undo-candidate.ts` liegen in `core/seven-tv/` (14).** 14 legt
+   `undo-plan.ts` nach `shared/seven-tv/`. Der Dienst in `core/` konsumiert es zur Laufzeit, und
+   `core/` darf nicht aus `shared/` importieren. Deshalb liegen die Klassifikation und die
+   Kandidatentypen (`UndoCandidate`, `UndoCandidateTargetEntry`, `UndoSourceFileInfo`) in `core/`.
+   `transfer-run-export.ts` reicht die Typen weiter. `buildUndoRunProtocol` liegt in
+   `shared/export/transfer-undo-export.ts`, nicht im Dienst.
+7. **`removedSource` im Ergebnisprotokoll (6.4, F13).** Die Quell-Einträge einer `full`-Zeile
+   kommen aus dem letzten Read vor ihrem REMOVE. Antwortete vor ihr kein Read (Lesefehler, Abbruch
+   vor dem Read), steht der gestempelte Stand `[{ alias }]` darin. Eine Zeile mit `confirmed:
+   false` und `entries: [{ alias }]` sagt deshalb nicht, ob ein Read genau das zeigte oder keiner
+   antwortete; die Datei unterscheidet die beiden Fälle nicht.
+8. **Slot-Delta im E2E-Hauptweg (9.4).** „Slot-Delta +1" passt nicht zur ADD-Liste daneben: zwei
+   REMOVEs und vier ADDs (`T1, a`; `T2, a`; `T2, b`; `T2, D`) ergeben +2. Der E2E-Fall prüft +2.

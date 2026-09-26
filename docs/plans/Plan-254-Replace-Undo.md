@@ -1203,3 +1203,8 @@ Hilfsfunktionen ist aus dem Dienst heraus nach `web/src/app/shared/export/transf
 gewandert. `web/src/app/shared/export/transfer-run-export.ts` importiert die Kandidatentypen jetzt
 per `import type` aus `core/` und reicht sie per `export type` an ihre bisherigen Importierer weiter,
 sodass an deren Stellen nichts geändert werden musste.
+
+**Nachtrag 2026-09-26 (T8, Wortlaut).** Der Dock-Knopf, den T7 unter „Ergebnisprotokoll
+speichern" plant (Dateiliste von T7), heißt in der Umsetzung „Ergebnisprotokoll herunterladen" —
+wie beim Löschen und beim Import. Der stille Hinweis `protocolNotSaved` bleibt beim „gespeichert".
+Die Abweichungen der Umsetzung vom Spec-Text stehen gesammelt in Spec Abschnitt 18.
