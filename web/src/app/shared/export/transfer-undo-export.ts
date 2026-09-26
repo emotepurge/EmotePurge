@@ -224,8 +224,17 @@ interface TransferUndoRowInputBase {
  *  conditionally required. */
 export type TransferUndoRunnableInput = TransferUndoRowInputBase & { mode: 'full' | 'addOnly' };
 
+/** The statuses a settled run's row can actually stop at. Deliberately excludes `pending`/
+ *  `in-progress` — those only ever apply to a row still queued or in flight, and the `finished`
+ *  builder only ever sees rows a run has already settled. Narrowing this, rather than reusing the
+ *  broader `RunItemStatus | 'partial'` the file row type itself carries (a `planned` row genuinely
+ *  is `'pending'`), is what makes `TransferUndoCountsFinished`'s "the five sub-counters sum to
+ *  `requested`" true by construction rather than by convention: these five values are exactly its
+ *  five buckets, so every {@link TransferUndoExecutedInput} lands in exactly one. */
+export type TransferUndoSettledStatus = 'done' | 'failed' | 'cancelled' | 'unknown' | 'partial';
+
 interface TransferUndoExecutedInputBase extends TransferUndoRowInputBase {
-  status: RunItemStatus | 'partial';
+  status: TransferUndoSettledStatus;
   failedStep: number | null;
   completedSteps: number;
   errorMessage: string | null;

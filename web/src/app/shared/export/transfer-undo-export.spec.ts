@@ -695,9 +695,13 @@ describe('parseTransferUndoForRestore', () => {
     'excludes a kind: skipped row in the %s stage even with a manipulated removedSource next to it — the kind check alone must decide',
     (stage) => {
       // Hand-built rather than through the builders: a real `kind: 'skipped'` row can never carry
-      // `removedSource` at all, so this is the only way to prove the parser's exclusion rests on the
-      // `kind` check itself and not merely on `removedSource` happening to be absent. Removing the
-      // `row['kind'] !== 'executed'` guard would let this row through and turn the test red.
+      // `mode`/`removedSource` at all, so this is the only way to prove the parser's exclusion rests
+      // on the `kind` check itself. The manipulated row carries *both* `mode: 'full'` and a confirmed
+      // `removedSource` — with only `removedSource` forged, the separate `mode === 'full'` check
+      // would already exclude it (it has no `mode` at all, so `undefined !== 'full'`), and removing
+      // the `kind !== 'executed'` guard would then change nothing this test can see. Both fields
+      // forged together isolate the `kind` guard as the one thing this test actually exercises;
+      // removing it now genuinely turns this red.
       const envelope = {
         source: 'emotepurge',
         kind: 'transfer-undo',
@@ -759,8 +763,8 @@ describe('parseTransferUndoForRestore', () => {
             targetSevenTvEmoteId: 'tgt-2',
             provenance: 'confirmed',
             skippedReason: 'nothingToDo',
-            // Manipulated: a genuine skipped row never has this field. If the parser's exclusion
-            // only worked because `removedSource` was absent, this row would now sneak through.
+            // Manipulated: a genuine skipped row never has either of these fields.
+            mode: 'full',
             removedSource: { confirmed: true },
           },
         ],

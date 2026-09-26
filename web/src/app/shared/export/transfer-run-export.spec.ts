@@ -1086,4 +1086,121 @@ describe('parseTransferRunForUndo', () => {
       'src-kappa',
     ]);
   });
+
+  // The four real ImportOrigin shapes every writer in this codebase actually produces, so
+  // readImportOrigin (transfer-run-export.ts) is checked against real payloads, not a hand-typed
+  // approximation of them.
+  const REAL_ORIGINS: { label: string; origin: ImportOrigin }[] = [
+    // usage-stats-page.ts:2640 (startImportFromChoice) — the tracked-channel grid source.
+    { label: 'channel', origin: { kind: 'channel', channelName: 'quellkanal' } },
+    // foreign-import-flow.ts:45 (buildForeignImportSource) — a foreign Twitch login's live set.
+    { label: 'seventv-channel', origin: { kind: 'seventv-channel', channelName: 'fremdkanal' } },
+    // foreign-import-flow.ts:92 (buildLeaderboardImportSource) — a 7TV leaderboard pick.
+    {
+      label: 'seventv-leaderboard',
+      origin: { kind: 'seventv-leaderboard', sortBy: 'TRENDING_DAILY' },
+    },
+    // import-source-parser.ts:94 (parseImportSource) — a file re-read back in.
+    {
+      label: 'file',
+      origin: {
+        kind: 'file',
+        fileName: 'emotes.json',
+        exportedAt: '2026-09-01T00:00:00Z',
+        channelName: 'quellkanal',
+        envelopeKind: 'emote-list',
+      },
+    },
+  ];
+
+  it.each(REAL_ORIGINS)(
+    'round-trips the real $label origin shape through readImportOrigin unchanged',
+    ({ origin }) => {
+      const text = transferRunJson(
+        buildTransferPlanRecord({
+          ...TARGET,
+          origin,
+          verifiedAt: 0,
+          plan: { rows: [replaceRow(SOURCE_KAPPA, 'tgt-1')] },
+          entries: setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }),
+          defaultNameById: new Map(),
+        }),
+      );
+
+      const result = parseTransferRunForUndo(text);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.sourceFile.origin).toEqual(origin);
+    },
+  );
+
+  it('drops a candidate whose own alias is an empty string', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+        ],
+      }),
+    );
+    const record = JSON.parse(text) as { rows: Record<string, unknown>[] };
+    record.rows[0]['alias'] = '';
+
+    expect(parseTransferRunForUndo(JSON.stringify(record))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.transferRunNoRows',
+    });
+  });
+
+  it('drops a candidate whose target has neither a readable entries array nor a named aliases list to fall back to', () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+        ],
+      }),
+    );
+    const record = JSON.parse(text) as { rows: { removedTarget: Record<string, unknown> }[] };
+    record.rows[0].removedTarget['entries'] = [];
+    record.rows[0].removedTarget['aliases'] = [];
+
+    expect(parseTransferRunForUndo(JSON.stringify(record))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.transferRunNoRows',
+    });
+  });
+
+  it("falls fileStatus back to 'pending' for a status string outside the known RunItemStatus values", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({
+            transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
+            status: 'done',
+            completedSteps: 2,
+          }),
+        ],
+      }),
+    );
+    const record = JSON.parse(text) as { rows: Record<string, unknown>[] };
+    record.rows[0]['status'] = 'not-a-real-status';
+
+    const result = parseTransferRunForUndo(JSON.stringify(record));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates[0].fileStatus).toBe('pending');
+  });
 });
