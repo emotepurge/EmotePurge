@@ -1419,6 +1419,89 @@
     },
     "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
   },
+  "undo": {
+    "confirm": {
+      "title": {
+        "one": "Undo {{ count }} replacement from the file?",
+        "other": "Undo {{ count }} replacements from the file?"
+      },
+      "fileLine": {
+        "planned": "From a recovery file of the transfer, written on {{ date }} — before its first step.",
+        "finished": "From the result protocol of the transfer of {{ date }}."
+      },
+      "origin": {
+        "channel": "The transfer came from the channel {{ channel }}.",
+        "file": "The transfer came from the file {{ fileName }}.",
+        "leaderboard": "The transfer came from 7TV's leaderboard: {{ sort }}.",
+        "unknown": "The file does not say where the transfer came from."
+      },
+      "setLine": "In the set “{{ setName }}”.",
+      "removals": {
+        "one": "{{ count }} source emote will be removed from the set.",
+        "other": "{{ count }} source emotes will be removed from the set."
+      },
+      "readNote": "Checked against the target set as it is now; it is read again before the start and before every removal.",
+      "reloadTarget": "Reload target",
+      "listLabel": "Replacements from the file",
+      "sourceAlias": "as “{{ alias }}”",
+      "targetUnnamed": "Target without a default name",
+      "unnamedEntry": "(unnamed)",
+      "mode": {
+        "full": "Source out, target back",
+        "addOnly": "Target back only"
+      },
+      "skippedRow": "Skipped: {{ reason }}",
+      "reason": {
+        "duplicateInFile": "duplicated in the file",
+        "sourceUnderOtherName": "the source now has a different name",
+        "sourceHasMoreEntries": "the source now has further entries",
+        "targetNameUnverifiable": "an unnamed target entry cannot be checked",
+        "targetHasForeignEntries": "the target carries an entry the file does not know",
+        "targetNameTaken": "a target name is taken by another emote",
+        "inconsistent": "file and set do not match",
+        "nothingToDo": "nothing to do",
+        "skippedUnproven": "unproven and not confirmed",
+        "skippedDrift": "changed since the check",
+        "recheckUnavailable": "could not be rechecked"
+      },
+      "unproven": "unproven",
+      "adds": "Comes back as: {{ names }}",
+      "omitted": {
+        "targetNameTaken": "“{{ alias }}” is left out — the name is taken by another emote.",
+        "targetNameUnverifiable": "An unnamed entry is left out — the file names no default name."
+      },
+      "foreignNote": "The target already carries an entry the file does not know — it stays untouched.",
+      "liveSource": "Now in the set — source:",
+      "liveTarget": "target:",
+      "liveAbsent": "not in the set",
+      "modeCounts": "Source out, target back: {{ full }} · target back only: {{ addOnly }} · skipped: {{ skipped }}",
+      "additions": {
+        "one": "{{ count }} target entry comes back.",
+        "other": "{{ count }} target entries come back."
+      },
+      "alreadyPresent": {
+        "one": "{{ count }} target entry from the file is already in the set.",
+        "other": "{{ count }} target entries from the file are already in the set."
+      },
+      "omittedCount": {
+        "one": "{{ count }} target entry does not come back because its name is taken or cannot be checked.",
+        "other": "{{ count }} target entries do not come back because their names are taken or cannot be checked."
+      },
+      "skippedCount": "{{ count }} skipped: {{ reason }}",
+      "reading": "Reading the target set…",
+      "readFailed": "The target set could not be read completely. Without a complete picture nothing is released.",
+      "saveFailed": "The browser refused to download the recovery file. Without that file no run that removes anything starts.",
+      "acknowledgeUnproven": "The loaded file was written before the transfer and does not prove that it ran. I have checked that the source emotes shown come from this transfer.",
+      "acknowledgeHint": {
+        "one": "Without the confirmation, the row marked as unproven is skipped.",
+        "other": "Without the confirmation, the {{ count }} rows marked as unproven are skipped."
+      },
+      "blockedUnproven": "No row runs without the confirmation above.",
+      "blockedNothing": "No row runs — every one is skipped.",
+      "saveRecovery": "Save recovery file",
+      "start": "Start"
+    }
+  },
   "sevenTvRun": {
     "notStarted": {
       "running": "Nothing started — {{ kind }} is still running.",
