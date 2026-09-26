@@ -10,6 +10,40 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — The restore confirmation hedges its count on a truncated read too, not only a failed one
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts`
+(`RestoreAlreadyPresentFilterResult.complete`, `filterAlreadyPresentForRestore`,
+`restoreConfirmPreviewUnavailable`) · `web/src/app/shared/seven-tv/restore-flow.ts`
+(`startRestoreFlow`) · `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(`handleRestoreConfirmPreview`) · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+(`RestoreConfirmDialogData.countIsUpperBound` doc) · `already-present-filter.spec.ts` ·
+`restore-flow.spec.ts` · `mass-delete-panel.spec.ts`.
+
+Codex review finding (P2) on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change: both
+restore confirmations already hedge their title and slot projection as "up to N" when the open-time
+duplicate check's own 7TV read fails outright (`available: false`). But `loadSevenTvSetEntries` can
+also come back `available: true` with `complete: false` — the read succeeded, but stopped at the
+10-page runaway guard, or 7TV's own `totalCount` did not match what the pages actually delivered
+(`SevenTvSetEntries.complete`). `filterAlreadyPresentForRestore` deliberately keeps filtering
+against a truncated read rather than failing the whole check open (see its own doc — a partial read
+still catches every duplicate genuinely inside the pages it saw), but its `available: true` result
+used to discard that read's own completeness signal entirely. Both confirmations therefore showed an
+exact-looking ADD count and an exact-looking slot projection built from a read that had not actually
+seen the whole set — silently more confident than the check itself was.
+
+**What changed.** `RestoreAlreadyPresentFilterResult` gains a `complete` field, carrying
+`SevenTvSetEntries.complete` through from `filterAlreadyPresentForRestore`'s own read (`false` on a
+failed fetch, same as `available`). `RestoreConfirmPreview` inherits it via
+`loadRestoreConfirmPreview`, unchanged otherwise. Both call sites now compute
+`countIsUpperBound: !preview.available || !preview.complete` instead of `!preview.available` alone.
+Nothing about *what* gets filtered changes — the aliases found present or name-taken in the pages
+the read did see are still dropped exactly as before, and the confirmation still names and counts
+exactly those survivors; only the *wording* now also hedges when the read was merely partial, not
+only when it failed outright.
+
+---
+
 ### 2026-09-26 — A restore's confirm-time recheck can only narrow the confirmation, never widen it
 
 **Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts` (`clipToShown`) ·

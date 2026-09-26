@@ -766,6 +766,47 @@ describe('startRestoreFlow', () => {
     expect(confirmData(dialogOpen).countIsUpperBound).toBe(false);
   });
 
+  // #255 P2 (Codex review): a read that succeeds but only sees part of the target set
+  // (`SevenTvSetEntries.complete: false` — here, 7TV's own `totalCount` promising one more entry
+  // than this single page delivered) must not let the confirmation claim an exact count it never
+  // verified. The filtering itself is unaffected — the found-present row still drops out, the
+  // genuinely-missing one still shows — only the wording changes, same as a failed read.
+  it('marks the count an upper bound, while still filtering rows normally, when the open-time read is truncated', () => {
+    const { deps, dialogOpen, httpPost } = setup();
+    // '7tv-1' (PogU, from rows()) is already in the target set; a second, genuinely missing row is
+    // not — same setup as the test above, but the read's own totalCount does not match what this
+    // page delivered.
+    httpPost.mockReturnValue(
+      of({
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: 2,
+                pageCount: 1,
+                items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+              },
+            },
+          },
+        },
+      }),
+    );
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+    expect(confirmData(dialogOpen).addCount).toBe(1);
+    expect(confirmData(dialogOpen).countIsUpperBound).toBe(true);
+  });
+
   // A removed transfer target without a named alias: listed under its default name, and its one
   // entry without an alias is an ADD like any other.
   it('counts an entry without an alias as an ADD and lists its row under the default name', () => {

@@ -2833,6 +2833,68 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
     expect(data.countIsUpperBound).toBe(false);
   });
 
+  // #255 P2 (Codex review): a read that succeeds but only sees part of the target set
+  // (`SevenTvSetEntries.complete: false` — here, 7TV's own `totalCount` promising one more entry
+  // than this single page delivered) must not let the confirmation claim an exact count it never
+  // verified — same hedge as a failed read, but the filtering itself is unaffected: the
+  // found-present row still drops out, the genuinely-missing one still shows.
+  it('marks the count an upper bound, while still filtering rows normally, when the open-time read is truncated', () => {
+    lastRun.set({
+      setId: 'set-1',
+      channelName: RUN_CHANNEL,
+      result: {
+        doneKeys: ['7tv-1', '7tv-2'],
+        items: [
+          {
+            key: '7tv-1',
+            emoteId: 'e1',
+            sevenTvEmoteId: '7tv-1',
+            name: 'PogU',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+          {
+            key: '7tv-2',
+            emoteId: 'e2',
+            sevenTvEmoteId: '7tv-2',
+            name: 'KEKW',
+            status: 'done' as const,
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: Date.parse('2026-09-01T12:00:00Z'),
+        finishedAt: Date.parse('2026-09-01T12:05:00Z'),
+      },
+    });
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+
+    // 7tv-1 (PogU) is already back in the target set under its own alias; 7tv-2 (KEKW) is not —
+    // same setup as the test above, but the read's own totalCount does not match what this single
+    // page delivered.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 2,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+    const data = dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+    expect(data.names).toEqual(['KEKW']);
+    expect(data.addCount).toBe(1);
+    expect(data.countIsUpperBound).toBe(true);
+  });
+
   // #255 P1 (Codex review): a row the open-time check already found present is hidden from the
   // confirmation entirely — it must stay hidden from the run too, even if it goes missing from the
   // target set again before the user confirms (another editor, or the confirmation simply left open

@@ -825,7 +825,11 @@ export class MassDeletePanel {
     const data: RestoreConfirmDialogData = {
       names: preview.names,
       addCount: preview.addCount,
-      countIsUpperBound: !preview.available,
+      // #255 P2, Codex review: same hedge as `restore-flow.ts`'s `startRestoreFlow` — a read that
+      // stopped short of the whole target set (`SevenTvSetEntries.complete: false`) still filters
+      // `preview.rows` against whatever it saw, but the title and slot projection would otherwise
+      // claim an exact number a partial read never verified.
+      countIsUpperBound: !preview.available || !preview.complete,
       slots: this.restoreSlots.asReadonly(),
       setName: target.setName,
       isActiveSet: target.isActiveSet,

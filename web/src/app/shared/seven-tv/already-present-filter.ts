@@ -106,6 +106,17 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
    *  Kept apart from `skipped` ("already present"): the entry is not back, it cannot come back under
    *  that name. Always `0` when `available` is `false`. */
   skippedNameTaken: number;
+  /** `SevenTvSetEntries.complete` from the read this result was computed from (#255 P2, Codex
+   *  review) — `false` when the read stopped at the runaway guard or a `totalCount` mismatch even
+   *  though the fetch itself succeeded (`available: true`). This does **not** change what gets
+   *  filtered: `filterAlreadyPresentForRestore`'s own doc explains why a truncated read still filters
+   *  against whatever it saw rather than failing the whole check open. It exists so a caller that
+   *  turns this result into an exact-sounding count — the restore confirmation's title and slot
+   *  projection (`loadRestoreConfirmPreview`) — can tell "verified against the whole set" apart from
+   *  "verified against only part of it" and hedge its wording accordingly, the same way it already
+   *  hedges on `available: false`. Always `false` when `available` is `false`: a failed fetch saw
+   *  nothing at all, complete or otherwise. */
+  complete: boolean;
 }
 
 /**
@@ -154,6 +165,13 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
  * already-accepted gap (a window remains, always has, between any read — complete or not — and each
  * individual `addEmote` call); it does not create a new one. Restore only ever fails open
  * (available: false, nothing filtered) on an actual fetch/GraphQL error.
+ *
+ * The read's own `complete` flag is still passed through on the result (#255 P2, Codex review),
+ * separately from this filtering decision — a caller that turns `rows`/`skipped` into an
+ * exact-sounding count (the restore confirmation, `loadRestoreConfirmPreview`) needs to know when
+ * that count was only ever checked against part of the set, so it can say "up to N" instead of a
+ * number it cannot actually vouch for. What is filtered does not change; only what a caller may
+ * claim about the result does.
  */
 export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   httpClient: HttpClient,
@@ -161,7 +179,7 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
   rows: readonly T[],
 ): Observable<RestoreAlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
-    map(({ aliasesById, aliaslessIds }) => {
+    map(({ aliasesById, aliaslessIds, complete }) => {
       const heldNames = new Set([...aliasesById.values()].flat());
       const kept: T[] = [];
       let skipped = 0;
@@ -181,9 +199,11 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
           kept.push({ ...row, aliases: free });
         }
       }
-      return { rows: kept, skipped, skippedNameTaken, available: true };
+      return { rows: kept, skipped, skippedNameTaken, available: true, complete };
     }),
-    catchError(() => of({ rows: [...rows], skipped: 0, skippedNameTaken: 0, available: false })),
+    catchError(() =>
+      of({ rows: [...rows], skipped: 0, skippedNameTaken: 0, available: false, complete: false }),
+    ),
   );
 }
 
@@ -252,12 +272,17 @@ export interface RestoreConfirmPreview<
    *  order `filterAlreadyPresentForRestore` returned them. Unfiltered (every input row's name) when
    *  `available` is `false`: a failed check fails open, so nothing was actually dropped from `rows`
    *  either, only the *reason* to trust that count differs (see `countIsUpperBound` on
-   *  `RestoreConfirmDialogData`). */
+   *  `RestoreConfirmDialogData`). Still filtered, and still worth showing, when `complete` is
+   *  `false`: a truncated read only ever widens `rows` (an id it never saw counts as missing), never
+   *  narrows it — see `filterAlreadyPresentForRestore`'s doc on why that stays fail-*open*, not a
+   *  reason to discard the list. */
   names: string[];
   /** The confirmation's ADD count (spec #200, 7.2) — aliases, not rows, computed over the *filtered*
    *  `rows` rather than the caller's original input, so it reports what the run will actually send
    *  once it starts (operator decision 2026-09-25, #255). Same caveat as `names` when `available` is
-   *  `false`. */
+   *  `false`, and the same "still meaningful, just not guaranteed exact" caveat when `complete` is
+   *  `false` — a caller renders both as an upper bound rather than an exact count in either case
+   *  (`countIsUpperBound` on `RestoreConfirmDialogData` is `!available || !complete`). */
   addCount: number;
 }
 
@@ -322,6 +347,7 @@ export function restoreConfirmPreviewUnavailable<T extends RestoreFilterRow>(
     skipped: 0,
     skippedNameTaken: 0,
     available: false,
+    complete: false,
     names: rows.map((row) => row.name),
     addCount: restoreAddCount(rows),
   };

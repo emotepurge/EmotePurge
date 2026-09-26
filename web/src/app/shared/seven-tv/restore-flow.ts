@@ -224,7 +224,13 @@ export function startRestoreFlow(
       const data: RestoreConfirmDialogData = {
         names: preview.names,
         addCount: preview.addCount,
-        countIsUpperBound: !preview.available,
+        // #255 P2, Codex review: a read that stopped short of the whole target set
+        // (`SevenTvSetEntries.complete: false` — the 10-page runaway guard, or a `totalCount`
+        // mismatch) still filters `preview.rows` against whatever it saw (see
+        // `filterAlreadyPresentForRestore`'s doc for why that stays fail-*open*, not a reason to
+        // discard the count), but the resulting title and slot projection would otherwise claim an
+        // exact number a partial read never verified. Hedged the same way a failed read already is.
+        countIsUpperBound: !preview.available || !preview.complete,
         slots: slots.asReadonly(),
         setName: target.setName,
         isActiveSet: target.isActiveSet,
