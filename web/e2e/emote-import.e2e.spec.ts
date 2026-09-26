@@ -5111,10 +5111,11 @@ test.describe('replace undo (#254)', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     // AK 12: the removal report goes out first, and the restore report waits for its answer — not
-    // merely for its request. Real time only while it is held: no clock step can time it out.
+    // merely for its request. Two seconds on the clock while it is held fire any timer that could
+    // send it early, and stay far below the 30 s report timeout.
     await runClockUntil(page, () => reports.reportOrder.length > 0);
     expect(reports.reportOrder).toEqual(['sync-deleted']);
-    await page.waitForTimeout(750);
+    await page.clock.runFor(2000);
     expect(reports.reportOrder).toEqual(['sync-deleted']);
     releaseSyncDeleted();
     await runClockUntilVisible(page, restoreReported(page));

@@ -1673,4 +1673,4 @@ Abschnitt sagt, wo er nicht mehr stimmt.
    dieselbe Lücke; ein Folge-Issue für beide entscheidet der Betreiber.
 10. **„Rückweg sichern gesperrt" (AK 28, 9.4).** Ohne Bestätigung gibt es keinen gesperrten Knopf
     „Rückweg sichern": die unbelegten `full`-Zeilen sind `skippedUnproven`, der Knopf fehlt, und
-    „Starten" ist mit Grund gesperrt, solange nichts läuft (17 K2).
+    „Starten" ist mit Grund gesperrt, solange keine Zeile laufen kann (17 K2).
