@@ -997,6 +997,69 @@ describe('startImportFlow', () => {
       );
     });
   });
+
+  // Issue #256 point 2: the confirm dialog's drifted-target notice reloads through this, not
+  // through the plain `retry` a failed/loading/no-set target still uses (0.2 Nr. 7 of the plan this
+  // closes). `reloadLive` never asks `target` itself for a set id — only the last `ready` answer's
+  // own `setId` — so a stale target could never leak into the selection either.
+  describe('reloadLive', () => {
+    it('forces the live branch for a tracked active target once it has answered ready, instead of repeating getSetStatus/listEmotes', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-9' }));
+      statusSubjects[0].complete();
+      loadEmoteSetPreview.mockReturnValue(
+        of(liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9' })),
+      );
+
+      confirmData(dialogOpen).reloadLive();
+
+      // The reload takes 7TV's live branch for the *same* set the "today" path already resolved —
+      // not another getSetStatus/listEmotes round (AK 36 pins only the *first* load's requests).
+      expect(statusSubjects).toHaveLength(1);
+      expect(loadEmoteSetPreview).toHaveBeenCalledTimes(1);
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('target-channel', 'set-9');
+      expect(confirmData(dialogOpen).target()).toMatchObject({ status: 'ready', setId: 'set-9' });
+    });
+
+    it('falls back to the ordinary load without a known ready state yet — fail-closed rather than reloading nothing', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      // The first getSetStatus has not answered yet — target() is still 'loading'.
+
+      confirmData(dialogOpen).reloadLive();
+
+      expect(statusSubjects).toHaveLength(2);
+      expect(loadEmoteSetPreview).not.toHaveBeenCalled();
+    });
+
+    it('drops a stale reloadLive answer once a newer reload has started', () => {
+      const { deps, dialogOpen, statusSubjects, loadEmoteSetPreview } = setup();
+      startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+      statusSubjects[0].next(readyStatus({ activeEmoteSetId: 'set-9' }));
+      statusSubjects[0].complete();
+
+      const first = new Subject<ForeignEmoteSetResponse>();
+      const second = new Subject<ForeignEmoteSetResponse>();
+      loadEmoteSetPreview.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      const data = confirmData(dialogOpen);
+
+      data.reloadLive();
+      data.reloadLive();
+
+      // The newer reload answers first — it applies.
+      second.next(
+        liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9', totalCount: 2 }),
+      );
+      second.complete();
+      expect(data.target()).toMatchObject({ status: 'ready', occupiedSlots: 2 });
+
+      // The stale (first) reload's answer lands after — it must change nothing.
+      first.next(liveTarget({ channelName: 'target-channel', emoteSetId: 'set-9', totalCount: 1 }));
+      first.complete();
+      expect(data.target()).toMatchObject({ status: 'ready', occupiedSlots: 2 });
+    });
+  });
 });
 
 describe('recheckTransferPlan', () => {

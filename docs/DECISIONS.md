@@ -10,6 +10,31 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — After a drifted replace target, reload reads the target live
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-flow.ts` (`reloadLive`, `toLiveTargetSelection`) ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` (`ImportConfirmDialogData.reloadLive`, the
+`drifted` notice's own button) · `docs/plans/Plan-256-Robustheit.md` (T6, Festlegung 9).
+
+Issue #256 point 2. The confirm dialog's `drifted` notice already comes out of a live read (the
+recovery-file check before a replace run) finding the confirmed target has moved on — its own
+"Ziel neu laden" button used to call the same `retry()` every other reason (`readFailed`, a failed
+or missing target) uses, which repeats the *original* load. For a tracked channel's active set that
+load is the Postgres-backed "today" path (`EmoteSetStatus`/`listEmotes`, AK 36 of #200) — the same
+kind of read that can already be a drift round behind 7TV, the very gap this notice exists to close.
+
+The button now calls a second function, `reloadLive`, that forces the loader's live branch
+(`loadEmoteSetPreview` via `'trackedSet'`/`'untrackedSet'`) for the `setId` the last `ready` answer
+already resolved — never re-derived from the target passed into the flow, so a stale id can never
+leak into the selection either. Without a `ready` answer yet, `reloadLive` falls back to the
+ordinary load rather than doing nothing (fail-closed). **AK 36 is unaffected: the *first* load of a
+tracked active set still takes the "today" path unchanged; only a drift-triggered reload takes the
+live one, and it costs the same 7TV preview-read budget any other live target read already does.**
+A non-active tracked or an untracked target already took the live branch on its first load, so
+`reloadLive` repeats the same call there — nothing changes for those besides a fresher answer.
+
+---
+
 ### 2026-09-26 — 7TV runs complete run-bound — running → settling → reporting → closed; reset() detaches the display only
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase`, `RunRecordBase`,

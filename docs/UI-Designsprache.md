@@ -361,7 +361,8 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   renamed", only while the plan holds at least one adopted rename) → **target-check banner**
   (error, only after a live read did not release the run: the drifted rows by name, or the failed read, or a refused
   download; notice action "Reload target" for the drifted and failed-read cases, absent for a
-  refused download — and, in the same banner, the committed decisions a
+  refused download — the drifted case's own reload reads the target live (#256 point 2), while the
+  failed-read case's reload repeats the ordinary load — and, in the same banner, the committed decisions a
   reload of the target no longer fits, by name) → slot projection (overflow as a warning banner,
   otherwise quiet text; net change of the plan, so a replace counts its removed entries) →
   stale notice if the last sync of the target failed → "already in the target set" row →

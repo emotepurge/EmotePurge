@@ -372,11 +372,13 @@ describe('ImportConfirmDialog', () => {
   let dialogData: ImportConfirmDialogData;
   let closed: (ImportConfirmOutcome | undefined)[];
   let retryCalls: number;
+  let reloadLiveCalls: number;
   let panelClasses: Set<string>;
 
   beforeEach(async () => {
     closed = [];
     retryCalls = 0;
+    reloadLiveCalls = 0;
     panelClasses = new Set();
     vi.stubGlobal('ResizeObserver', FakeResizeObserver);
 
@@ -442,6 +444,9 @@ describe('ImportConfirmDialog', () => {
       target,
       retry: () => {
         retryCalls += 1;
+      },
+      reloadLive: () => {
+        reloadLiveCalls += 1;
       },
       runBlocked,
       httpClient: TestBed.inject(HttpClient),
@@ -1844,8 +1849,12 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.hasButton(EXECUTE)).toBe(true);
       expect(dialog.hasButton('Starten')).toBe(false);
 
+      // Issue #256 point 2: a drifted target's own reload forces a live re-read (`reloadLive`),
+      // never the ordinary `retry` — the ordinary load is the Postgres-backed "today" read for a
+      // tracked active set, which can already be a drift round behind 7TV.
       dialog.button('Ziel neu laden').click();
-      expect(retryCalls).toBe(1);
+      expect(reloadLiveCalls).toBe(1);
+      expect(retryCalls).toBe(0);
 
       await openStep(dialog, 'nameCollision');
       expect(option(dialog, 'Collides', 'skip').checked).toBe(true);
@@ -1854,6 +1863,89 @@ describe('ImportConfirmDialog', () => {
       expect(collidesRow?.getAttribute('aria-label')).toBe(
         'Collides, im Ziel: Collides, CollidesToo',
       );
+    });
+
+    // Issue #256 point 2, differentiated from the drift case above: a failed or incomplete live
+    // read never got far enough to vouch for anything, so there is nothing for a forced live
+    // re-read to be fresher than — its own reload button stays the ordinary load.
+    it("still calls the ordinary retry, not reloadLive, from the readFailed notice's own button", async () => {
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'Collides', 'replaceTarget');
+      apply(dialog);
+
+      dialog.button('Rückweg sichern').click();
+      dialog.detect();
+      TestBed.inject(HttpTestingController).expectOne(GQL).error(new ProgressEvent('network'));
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset ließ sich gerade nicht vollständig lesen.',
+      );
+
+      dialog.button('Ziel neu laden').click();
+
+      expect(retryCalls).toBe(1);
+      expect(reloadLiveCalls).toBe(0);
+    });
+
+    // Issue #256 point 2 / plan §T6: a live reload after a drift replaces the target with a fresh
+    // `ready()` state exactly like any other target reload — the `linkedSignal` projections keyed
+    // on `preview` (`targetOverlays`, `targetCheckNotice`, `liveOccupiedSlots`) reset on that new
+    // reference regardless of which button asked for it (retry or reloadLive). This pins that the
+    // occupied-slot count shown after a live reload is the freshly loaded target's own count, not a
+    // number left over from the live read that found the drift in the first place.
+    it('clears the live-occupied-slot count from the drift check once a live reload replaces the target', async () => {
+      captureDownloads();
+      const dialog = render({ source: conflictSource(), target: conflictTarget() });
+
+      // Same drift as "on a drifted target" above (tgt-a gained a second alias) — the live read's
+      // item count must equal its own totalCount for `verifyReplaceTargets` to see a *complete* read
+      // at all (`seven-tv-set-entries.ts`'s `collected === totalCount`), so this keeps the default,
+      // matching count rather than picking an arbitrary occupied-slot number.
+      await replaceAndSave(dialog, [
+        { id: 'tgt-a', alias: 'Collides' },
+        { id: 'tgt-a', alias: 'CollidesToo' },
+        ...LIVE_UNCHANGED.slice(1),
+      ]);
+
+      expect(dialog.element('import-confirm-target-check')?.textContent).toContain(
+        'Das Zielset hat sich seit der Vorschau geändert: Collides.',
+      );
+      // The live check itself already adopted the read's own occupancy (5 live entries) before it
+      // found the drift — the unrelated Kappa add (the only other row in the plan) turns that into 6
+      // "danach" (net change +1, `onTargetRead`'s doc: every successful read updates
+      // `liveOccupiedSlots`, whichever branch follows).
+      expect(dialog.text()).toContain('Das Set hätte danach 6 von 1000 Slots belegt.');
+
+      dialog.button('Ziel neu laden').click();
+      expect(reloadLiveCalls).toBe(1);
+      expect(retryCalls).toBe(0);
+
+      // The flow's own `reloadLive` answers with a fresh live read (a new `ready()` object, the
+      // drifted target back at the shape it was confirmed against) — the same reset any other
+      // target reload already gets from the `linkedSignal`s keyed on `preview`, not a special case
+      // this task has to add: the drift notice clears, and the projection adopts the fresh load's
+      // own occupancy rather than the number the drift check left behind.
+      dialog.target.set(
+        readyTarget({
+          setId: 'set-9',
+          occupiedSlots: 20,
+          capacity: 1000,
+          emotes: [
+            emote('tgt-a', 'Collides'),
+            emote('tgt-b', 'Dup'),
+            emote('tgt-b', 'Dup2'),
+            emote('src-m', 'PogOld'),
+          ],
+        }),
+      );
+      dialog.detect();
+
+      expect(dialog.element('import-confirm-target-check')).toBeNull();
+      // 21, not a value left over from the drift check's own 6 (20 + the same net +1) — proof the
+      // reload's fresh target, not the stale live read, is what the projection now follows.
+      expect(dialog.text()).toContain('Das Set hätte danach 21 von 1000 Slots belegt.');
     });
 
     // Spec #255: the slot projection follows the last successful live read, not just the picker's

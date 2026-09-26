@@ -101,6 +101,13 @@ export interface ImportConfirmDialogData {
   target: Signal<ImportTargetLoadState>;
   /** Re-runs the target load; the flow owns the request, the dialog only asks for it. */
   retry: () => void;
+  /** Forces a live re-read of the already-resolved target (Issue #256 point 2) — what the
+   *  `drifted` notice's own reload button asks for, instead of {@link retry}'s ordinary path: for a
+   *  tracked active set, that path is the Postgres-backed "today" read (AK 36), which can already
+   *  be a drift round behind 7TV — the very read that just reported the drift this notice shows.
+   *  `retry` stays what `readFailed` and every other reason asks for; a load that never resolved a
+   *  target has nothing yet for this to force live for. */
+  reloadLive: () => void;
   /** True while any 7TV run (delete, restore, import) is active — locks the executor without a
    *  reason text, because the running progress in the same dock already is the reason (§4.2). */
   runBlocked: Signal<boolean>;
@@ -396,14 +403,26 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
                 }
               </span>
               <!-- A reload answers a changed or unreadable target; a refused download it cannot,
-                   and after a reload there is nothing left to reload. -->
-              @if (
-                targetCheckNotice()?.kind === 'drifted' ||
-                targetCheckNotice()?.kind === 'readFailed'
-              ) {
-                <button notice-action type="button" appButton="outline" (click)="data.retry()">
-                  {{ 'import.confirm.reloadTarget' | transloco }}
-                </button>
+                   and after a reload there is nothing left to reload. A drift already came out of a
+                   live read, so its own reload forces another one (Issue #256 point 2) rather than
+                   the ordinary load a readFailed notice still asks for — that load never got far
+                   enough to have found anything live to force. -->
+              @switch (targetCheckNotice()?.kind) {
+                @case ('drifted') {
+                  <button
+                    notice-action
+                    type="button"
+                    appButton="outline"
+                    (click)="data.reloadLive()"
+                  >
+                    {{ 'import.confirm.reloadTarget' | transloco }}
+                  </button>
+                }
+                @case ('readFailed') {
+                  <button notice-action type="button" appButton="outline" (click)="data.retry()">
+                    {{ 'import.confirm.reloadTarget' | transloco }}
+                  </button>
+                }
               }
             </app-notice-banner>
           }
