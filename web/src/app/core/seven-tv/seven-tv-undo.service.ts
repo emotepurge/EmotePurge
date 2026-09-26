@@ -441,6 +441,18 @@ export class SevenTvUndoService {
     const allSkipped = [...skipped, ...lockedOut];
     this.showNotice(allSkipped);
 
+    // The protocol's own doc (`TransferUndoMetaBase.acknowledgedUnproven`): `false` when every
+    // runnable row was already `confirmed`, or the run was `addOnly`-only. The dialog's own flag
+    // already answers that at classification time (`unprovenFull.length > 0`), but the freshness
+    // check right before this call can still drop every unproven `full` row it stamped
+    // (`skippedDrift`/`recheckUnavailable`) — recomputed here, against the rows that actually queue,
+    // so a caller's stale `true` can never survive into a run that ran no unproven `full` row.
+    const ranUnprovenFull = rows.some(
+      (row) =>
+        row.mode === 'full' &&
+        (row.provenance === 'unproven' || row.candidate.provenance === 'unproven'),
+    );
+
     const previousShown = this.lifecycle.shown();
     const runId = this.lifecycle.createRunId();
     const started: UndoRunInfo = {
@@ -455,7 +467,7 @@ export class SevenTvUndoService {
       trackedChannelName: target.trackedChannelName,
       ownerDisplayName: target.ownerDisplayName,
       sourceFile: target.sourceFile,
-      acknowledgedUnproven,
+      acknowledgedUnproven: acknowledgedUnproven && ranUnprovenFull,
       rows,
       skipped: allSkipped,
       recheck: {},

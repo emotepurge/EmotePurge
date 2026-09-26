@@ -114,7 +114,11 @@ export interface TransferUndoExecutedRow {
   status: RunItemStatus | 'partial';
   failedStep: number | null;
   completedSteps: number;
-  /** `null` in `planned`; 7TV's own raw text in `finished`. */
+  /** `null` in `planned`. In `finished`, 7TV's own raw text for a step that actually failed a
+   *  mutation — but a row the recheck skipped before a REMOVE (`skippedDrift`/`recheckUnavailable`)
+   *  never called 7TV for that step, so this is the translated UI text of `undo.errors.${reason}`
+   *  instead (`toExecutedInput`'s `sevenTvErrorMessage ?? errorMessage`, same convention as
+   *  `ImportRunItem`); `skippedReason` below already carries that reason untranslated. */
   errorMessage: string | null;
   /** Set only for a row the run itself skipped mid-flight (a drift the per-REMOVE recheck found, or
    *  the recheck becoming unavailable) — `null` otherwise, including for every `planned` row. A

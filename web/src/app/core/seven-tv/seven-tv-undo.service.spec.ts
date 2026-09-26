@@ -427,6 +427,19 @@ describe('SevenTvUndoService', () => {
       expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
     });
 
+    it('records acknowledgedUnproven false on the run when the caller sends it true but no unproven full row is among the rows that queue (spec §18)', () => {
+      // The flow's freshness check can drop every unproven full row it stamped between the dialog
+      // and this call (`skippedDrift`/`recheckUnavailable`), yet still hand the dialog's original
+      // flag through unchanged (undo-flow.ts). The record must not carry a stale `true` into a run
+      // that ran no unproven full row — `buildUndoRunProtocol`'s meta reads this field verbatim.
+      start([fullRow('1')], { acknowledgedUnproven: true });
+
+      runFull('1');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+      expect(service.run()?.acknowledgedUnproven).toBe(false);
+    });
+
     it('locks a full row whose candidate is unproven even when the row claims otherwise (fail-closed)', () => {
       const tampered: UndoPlanRow = { ...unprovenFull(), provenance: 'confirmed' };
       start([tampered], { acknowledgedUnproven: false });
