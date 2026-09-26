@@ -1491,7 +1491,7 @@
       "reading": "Das Zielset wird gelesen…",
       "readFailed": "Das Zielset ließ sich nicht vollständig lesen. Ohne vollständigen Stand wird nichts freigegeben.",
       "saveFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
-      "acknowledgeUnproven": "Die eingelesene Datei wurde vor der Übertragung geschrieben und belegt nicht, dass sie gelaufen ist. Ich habe geprüft, dass die gezeigten Quell-Emotes aus dieser Übertragung stammen.",
+      "acknowledgeUnproven": "Die eingelesene Datei wurde vor der Übertragung geschrieben und belegt nicht, dass die Übertragung gelaufen ist. Ich habe geprüft, dass die gezeigten Quell-Emotes aus dieser Übertragung stammen.",
       "acknowledgeHint": {
         "one": "Ohne Bestätigung wird die als unbelegt markierte Zeile übersprungen.",
         "other": "Ohne Bestätigung werden die {{ count }} als unbelegt markierten Zeilen übersprungen."
@@ -1500,6 +1500,15 @@
       "blockedNothing": "Keine Zeile läuft — alle sind übersprungen.",
       "saveRecovery": "Rückweg sichern",
       "start": "Starten"
+    },
+    "settling": "Wird abgeschlossen — Nachlesen und Rückmeldungen laufen noch…",
+    "errors": {
+      "removedButNotRestored": "Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig zurückgeholt — im Set fehlt jetzt ein Eintrag. Dieselbe Rücknahme aus derselben Datei noch einmal starten, um die Lücke zu schließen.",
+      "cancelledMidRow": "Abgebrochen, nachdem das Quell-Emote schon entfernt war — das Ziel ist nicht vollständig zurück. Dieselbe Rücknahme noch einmal starten, um die Lücke zu schließen.",
+      "restoreIncomplete": "Nicht alle Einträge des Ziels wurden zurückgeholt. Dieselbe Rücknahme noch einmal starten, um den Rest nachzuholen.",
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
+      "skippedDrift": "Übersprungen — das Set hat sich seit der Bestätigung verändert; an dieser Zeile wurde nichts geändert.",
+      "recheckUnavailable": "Übersprungen — das Set ließ sich unmittelbar vor dem Entfernen nicht lesen; an dieser Zeile wurde nichts geändert."
     }
   },
   "sevenTvRun": {
@@ -1512,17 +1521,6 @@
       "restore": "die Wiederherstellung",
       "import": "die Übertragung",
       "undo": "die Rücknahme der Ersetzungen"
-    }
-  },
-  "undo": {
-    "settling": "Wird abgeschlossen — Nachlesen und Rückmeldungen laufen noch…",
-    "errors": {
-      "removedButNotRestored": "Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig zurückgeholt — im Set fehlt jetzt ein Eintrag. Dieselbe Rücknahme aus derselben Datei noch einmal starten, um die Lücke zu schließen.",
-      "cancelledMidRow": "Abgebrochen, nachdem das Quell-Emote schon entfernt war — das Ziel ist nicht vollständig zurück. Dieselbe Rücknahme noch einmal starten, um die Lücke zu schließen.",
-      "restoreIncomplete": "Nicht alle Einträge des Ziels wurden zurückgeholt. Dieselbe Rücknahme noch einmal starten, um den Rest nachzuholen.",
-      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
-      "skippedDrift": "Übersprungen — das Set hat sich seit der Bestätigung verändert; an dieser Zeile wurde nichts geändert.",
-      "recheckUnavailable": "Übersprungen — das Set ließ sich unmittelbar vor dem Entfernen nicht lesen; an dieser Zeile wurde nichts geändert."
     }
   },
   "sevenTvToken": {

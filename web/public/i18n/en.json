@@ -1491,7 +1491,7 @@
       "reading": "Reading the target set…",
       "readFailed": "The target set could not be read completely. Without a complete picture nothing is released.",
       "saveFailed": "The browser refused to download the recovery file. Without that file no run that removes anything starts.",
-      "acknowledgeUnproven": "The loaded file was written before the transfer and does not prove that it ran. I have checked that the source emotes shown come from this transfer.",
+      "acknowledgeUnproven": "The loaded file was written before the transfer and does not prove that the transfer ran. I have checked that the source emotes shown come from this transfer.",
       "acknowledgeHint": {
         "one": "Without the confirmation, the row marked as unproven is skipped.",
         "other": "Without the confirmation, the {{ count }} rows marked as unproven are skipped."
@@ -1500,6 +1500,15 @@
       "blockedNothing": "No row runs — every one is skipped.",
       "saveRecovery": "Save recovery file",
       "start": "Start"
+    },
+    "settling": "Finishing — the re-read and the reports are still running…",
+    "errors": {
+      "removedButNotRestored": "The source emote was removed, but the target was not fully brought back — the set is now missing an entry. Run the same undo from the same file again to close the gap.",
+      "cancelledMidRow": "Cancelled after the source emote had already been removed — the target is not fully back. Run the same undo again to close the gap.",
+      "restoreIncomplete": "Not every entry of the target was brought back. Run the same undo again to add the rest.",
+      "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied.",
+      "skippedDrift": "Skipped — the set changed since you confirmed; nothing on this row was touched.",
+      "recheckUnavailable": "Skipped — the set could not be read right before the removal; nothing on this row was touched."
     }
   },
   "sevenTvRun": {
@@ -1512,17 +1521,6 @@
       "restore": "the restore",
       "import": "the transfer",
       "undo": "the replace undo"
-    }
-  },
-  "undo": {
-    "settling": "Finishing — the re-read and the reports are still running…",
-    "errors": {
-      "removedButNotRestored": "The source emote was removed, but the target was not fully brought back — the set is now missing an entry. Run the same undo from the same file again to close the gap.",
-      "cancelledMidRow": "Cancelled after the source emote had already been removed — the target is not fully back. Run the same undo again to close the gap.",
-      "restoreIncomplete": "Not every entry of the target was brought back. Run the same undo again to add the rest.",
-      "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied.",
-      "skippedDrift": "Skipped — the set changed since you confirmed; nothing on this row was touched.",
-      "recheckUnavailable": "Skipped — the set could not be read right before the removal; nothing on this row was touched."
     }
   },
   "sevenTvToken": {
