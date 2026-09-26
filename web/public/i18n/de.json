@@ -1419,6 +1419,89 @@
     },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
   },
+  "undo": {
+    "confirm": {
+      "title": {
+        "one": "{{ count }} Ersetzung rückgängig machen?",
+        "other": "{{ count }} Ersetzungen rückgängig machen?"
+      },
+      "fileLine": {
+        "planned": "Aus einer Rückweg-Datei der Übertragung, geschrieben am {{ date }} — vor ihrem ersten Schritt.",
+        "finished": "Aus dem Ergebnisprotokoll der Übertragung vom {{ date }}."
+      },
+      "origin": {
+        "channel": "Die Übertragung kam aus dem Kanal {{ channel }}.",
+        "file": "Die Übertragung kam aus der Datei {{ fileName }}.",
+        "leaderboard": "Die Übertragung kam aus 7TVs Bestenliste: {{ sort }}.",
+        "unknown": "Woher die Übertragung kam, nennt die Datei nicht."
+      },
+      "setLine": "Im Set „{{ setName }}“.",
+      "removals": {
+        "one": "{{ count }} Quell-Emote wird aus dem Set entfernt.",
+        "other": "{{ count }} Quell-Emotes werden aus dem Set entfernt."
+      },
+      "readNote": "Geprüft gegen den aktuellen Stand des Zielsets; vor dem Start und vor jeder Entfernung wird erneut gelesen.",
+      "reloadTarget": "Ziel neu laden",
+      "listLabel": "Ersetzungen aus der Datei",
+      "sourceAlias": "unter „{{ alias }}“",
+      "targetUnnamed": "Ziel ohne Standardnamen",
+      "unnamedEntry": "(ohne Namen)",
+      "mode": {
+        "full": "Quelle raus, Ziel zurück",
+        "addOnly": "Nur Ziel zurück"
+      },
+      "skippedRow": "Übersprungen: {{ reason }}",
+      "reason": {
+        "duplicateInFile": "doppelt in der Datei",
+        "sourceUnderOtherName": "die Quelle heißt inzwischen anders",
+        "sourceHasMoreEntries": "die Quelle hat inzwischen weitere Einträge",
+        "targetNameUnverifiable": "ein Ziel-Eintrag ohne Namen lässt sich nicht prüfen",
+        "targetHasForeignEntries": "das Ziel trägt einen Eintrag, den die Datei nicht kennt",
+        "targetNameTaken": "ein Ziel-Name ist von einem anderen Emote belegt",
+        "inconsistent": "Datei und Set passen nicht zusammen",
+        "nothingToDo": "nichts zu tun",
+        "skippedUnproven": "unbelegt und nicht bestätigt",
+        "skippedDrift": "hat sich seit der Prüfung geändert",
+        "recheckUnavailable": "ließ sich nicht erneut prüfen"
+      },
+      "unproven": "unbelegt",
+      "adds": "Kommt zurück als: {{ names }}",
+      "omitted": {
+        "targetNameTaken": "„{{ alias }}“ bleibt aus — der Name ist von einem anderen Emote belegt.",
+        "targetNameUnverifiable": "Ein Eintrag ohne Namen bleibt aus — die Datei nennt keinen Standardnamen."
+      },
+      "foreignNote": "Das Ziel trägt schon einen Eintrag, den die Datei nicht kennt — er bleibt unangetastet.",
+      "liveSource": "Jetzt im Set — Quelle:",
+      "liveTarget": "Ziel:",
+      "liveAbsent": "nicht im Set",
+      "modeCounts": "Quelle raus, Ziel zurück: {{ full }} · nur Ziel zurück: {{ addOnly }} · übersprungen: {{ skipped }}",
+      "additions": {
+        "one": "{{ count }} Ziel-Eintrag kommt zurück.",
+        "other": "{{ count }} Ziel-Einträge kommen zurück."
+      },
+      "alreadyPresent": {
+        "one": "{{ count }} Ziel-Eintrag aus der Datei ist schon im Set (über alle Zeilen, auch übersprungene).",
+        "other": "{{ count }} Ziel-Einträge aus der Datei sind schon im Set (über alle Zeilen, auch übersprungene)."
+      },
+      "omittedCount": {
+        "one": "{{ count }} Ziel-Eintrag bleibt in laufenden Zeilen aus.",
+        "other": "{{ count }} Ziel-Einträge bleiben in laufenden Zeilen aus."
+      },
+      "skippedCount": "Übersprungen, {{ reason }}: {{ count }}",
+      "reading": "Das Zielset wird gelesen…",
+      "readFailed": "Das Zielset ließ sich nicht vollständig lesen. Ohne vollständigen Stand wird nichts freigegeben.",
+      "saveFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
+      "acknowledgeUnproven": "Diese Rückweg-Datei belegt nicht, dass die Übertragung gelaufen ist; ich habe geprüft, dass die gezeigten Quell-Emotes aus ihr stammen.",
+      "acknowledgeHint": {
+        "one": "Ohne Bestätigung wird die als unbelegt markierte Zeile übersprungen.",
+        "other": "Ohne Bestätigung werden die {{ count }} als unbelegt markierten Zeilen übersprungen."
+      },
+      "blockedUnproven": "Ohne die Bestätigung oben läuft keine Zeile.",
+      "blockedNothing": "Keine Zeile läuft — alle sind übersprungen.",
+      "saveRecovery": "Rückweg sichern",
+      "start": "Starten"
+    }
+  },
   "sevenTvRun": {
     "notStarted": {
       "running": "Nichts gestartet — {{ kind }} läuft noch.",
