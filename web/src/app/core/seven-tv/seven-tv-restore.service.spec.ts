@@ -1162,8 +1162,8 @@ describe('SevenTvRestoreService', () => {
     });
   });
 
-  // The arbiter (#70, Task 4) has no lock of its own — it reads this service's own isRunning
-  // signal, so these cases pin the invariants a hand-kept tryAcquire/release could not have
+  // The arbiter (#70, Task 4) has no lock of its own — it reads the signals this service registers
+  // with it (#256: isRunning, isSettling, destructiveOpen), so these cases pin the invariants a hand-kept tryAcquire/release could not have
   // guaranteed (see R1 in docs/DECISIONS.md): the derived state can never outlive the run it
   // describes, not even across cancel(), a start the engine itself refused, or a hand-off to the
   // sibling delete service once this run has ended.
@@ -1188,17 +1188,21 @@ describe('SevenTvRestoreService', () => {
       expect(arbiter.activeRun()).toBeNull();
     });
 
-    it('clears the active run once cancel() ends it', () => {
+    it('clears the active run once a run ended by cancel() has had its report answered', () => {
       service.startRestore(target(), EMOTES);
       httpMock.expectOne(GQL_ENDPOINT).flush({});
 
       service.cancel();
 
-      expect(arbiter.activeRun()).toBeNull();
+      // #256 (contract P2): the confirmed row is still being reported — the arbiter counts that
+      // settling window as busy, and frees up only once the report has an end state. #255: no
+      // resync follows a plain success that names nothing.
+      expect(service.isRunning()).toBe(false);
+      expect(arbiter.activeRun()).toBe('restore');
 
-      // Drain the closing sync-restored call so afterEach's httpMock.verify() stays green — #255:
-      // no resync follows a plain success that names nothing.
       httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+
+      expect(arbiter.activeRun()).toBeNull();
     });
 
     it('leaves no active run when the engine refuses the start for a cleared token', () => {

@@ -1,14 +1,5 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import {
-  DestroyRef,
-  Service,
-  Signal,
-  computed,
-  effect,
-  inject,
-  linkedSignal,
-  signal,
-} from '@angular/core';
+import { Service, Signal, computed, inject, linkedSignal, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { catchError, map, of, retry, throwError, timeout, timer } from 'rxjs';
 
@@ -35,6 +26,7 @@ import {
   RunResult,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
+import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
@@ -265,14 +257,14 @@ interface ImportRunContext {
  * change what is shown. `isSettling` and `destructiveOpen` look across every open run of this
  * service, not just the shown one.
  *
- * It does not know the `SevenTvRunArbiter`, and does not report to it: the arbiter derives its
- * answer from this service's own `isRunning` signal (its third branch), exactly as it does for
- * delete and restore. Checking whether a run may start is the caller's job.
+ * It registers itself with the `SevenTvRunArbiter` in its constructor (kind `'import'` plus
+ * `isRunning`, `isSettling`, `destructiveOpen`) and reports nothing else there: the arbiter derives
+ * "busy" and the tab's unload guard from those signals, exactly as it does for delete and restore.
+ * Checking whether a run may start is the caller's job.
  */
 @Service()
 export class SevenTvImportService {
   private readonly channelService = inject(ChannelService);
-  private readonly destroyRef = inject(DestroyRef);
   private readonly emoteAdminService = inject(EmoteAdminService);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly httpClient = inject(HttpClient);
@@ -306,8 +298,8 @@ export class SevenTvImportService {
   readonly isSettling = this.lifecycle.isSettling;
 
   /** True while any run whose plan deletes (a `replace` row) is not closed — running, re-reading or
-   *  reporting, shown or not (#256, contract P3). What the `beforeunload` guard hangs off: until the
-   *  run closes, the report of its confirmed REMOVEs has not been answered, and closing the tab then
+   *  reporting, shown or not (#256, contract P3). The arbiter's unload guard (the union over
+   *  every run service) reads it: until the run closes, the report of its confirmed REMOVEs has not been answered, and closing the tab then
    *  could lose it. */
   readonly destructiveOpen = this.lifecycle.destructiveOpen;
 
@@ -413,19 +405,14 @@ export class SevenTvImportService {
   private readonly transferRowsByKey = computed(() => indexPlanRows(this.run()?.plan ?? null));
 
   constructor() {
-    // The `beforeunload` guard: registered exactly while `destructiveOpen` is `true`, removed the
-    // moment it flips back — never after every destructive run has closed, never for a plan
-    // without a replace row. `preventUnload` is a module-level function, not a closure created
-    // here, so `removeEventListener` always targets the exact reference `addEventListener`
-    // registered; an inline arrow function would silently fail to remove itself.
-    effect(() => {
-      if (this.destructiveOpen()) {
-        window.addEventListener('beforeunload', preventUnload);
-      } else {
-        window.removeEventListener('beforeunload', preventUnload);
-      }
+    // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
+    // tab's unload guard from these three signals; it does not know this service otherwise.
+    inject(SevenTvRunArbiter).register({
+      kind: 'import',
+      isRunning: this.isRunning,
+      isSettling: this.isSettling,
+      destructiveOpen: this.destructiveOpen,
     });
-    this.destroyRef.onDestroy(() => window.removeEventListener('beforeunload', preventUnload));
   }
 
   /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source id, validated —
@@ -959,18 +946,6 @@ export class SevenTvImportService {
       DUPLICATE_NOTICE_MS,
     );
   }
-}
-
-/** The standard `beforeunload` incantation (MDN): calling `preventDefault()` and setting a
- *  non-undefined `returnValue` is what makes the browser show its own confirmation prompt — neither
- *  Chromium, Firefox nor Safari display a custom string any more, so the exact value assigned here
- *  is irrelevant, only that one is set. A plain module-level function, not a closure created inside
- *  the constructor's `effect()`, so `removeEventListener` always targets the exact function
- *  reference `addEventListener` registered — an inline arrow recreated on every effect run would
- *  silently fail to remove itself. */
-function preventUnload(event: BeforeUnloadEvent): void {
-  event.preventDefault();
-  event.returnValue = '';
 }
 
 /** Whether `channelName` is among the channels a report's answer says the backend resynced —

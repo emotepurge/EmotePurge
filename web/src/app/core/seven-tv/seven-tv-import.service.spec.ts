@@ -2038,57 +2038,19 @@ describe('SevenTvImportService', () => {
     });
   });
 
-  // A tab that dies between REMOVE and ADD leaves a gap no protocol was written for yet — the
-  // back-out file alone cannot say *which* row it was. `TestBed.tick()` flushes the constructor's
-  // effect, the same pattern `LiveQuotaService`'s own spec uses for its effects.
-  describe('beforeunload guard', () => {
-    it('registers a handler exactly while destructiveOpen is true, removed once the run closes', () => {
-      const addSpy = vi.spyOn(window, 'addEventListener');
-      const removeSpy = vi.spyOn(window, 'removeEventListener');
+  // The unload guard itself lives in the arbiter now (#256, contract P3) and is tested
+  // there; this service only has to tell the truth about `destructiveOpen` — see also "counts a
+  // replace run as destructive until it has closed" and the run-bound cases above.
+  it('never reports destructiveOpen for an add-only run, in flight or reporting', () => {
+    service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+    expect(service.destructiveOpen()).toBe(false);
 
-      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
-        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
-      });
-      TestBed.tick();
-      expect(service.destructiveOpen()).toBe(true);
-      expect(addSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
-      expect(removeSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    runTwoRowsToDone();
 
-      // Three mutations run back to back: the replace row's REMOVE, its own ADD, then the plain
-      // add row's ADD — see the identical drain in "sends a replace row as REMOVE of the target,
-      // then ADD of the source, back to back on one set" above.
-      answerNext({});
-      answerNext({});
-      answerNext({});
-      TestBed.tick();
-
-      // Settled, but its reports are still out: the guard holds (#256).
-      expect(service.destructiveOpen()).toBe(true);
-      expect(removeSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
-
-      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
-      httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
-      TestBed.tick();
-
-      expect(service.destructiveOpen()).toBe(false);
-      expect(removeSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
-      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
-    });
-
-    it('never registers a handler for an add-only run', () => {
-      const addSpy = vi.spyOn(window, 'addEventListener');
-
-      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
-      TestBed.tick();
-
-      expect(service.destructiveOpen()).toBe(false);
-      expect(addSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
-
-      runTwoRowsToDone();
-      TestBed.tick();
-      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
-      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
-      expect(addSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
-    });
+    expect(service.isSettling()).toBe(true);
+    expect(service.destructiveOpen()).toBe(false);
+    httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+    httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    expect(service.destructiveOpen()).toBe(false);
   });
 });

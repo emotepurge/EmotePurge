@@ -14,6 +14,7 @@ import {
   RunResult,
   SevenTvRunEngine,
 } from './seven-tv-run-engine';
+import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
@@ -177,8 +178,8 @@ export class SevenTvDeleteService {
 
   /** True while any run of this service is not `closed` — every delete row is destructive (Plan-256
    *  Festlegung 6), so this holds from `startDelete` to `closed`, shown or not (#256, contract P3).
-   *  What the `beforeunload` guard hangs off (moved to the arbiter in T3): until the run closes,
-   *  its report has not reached an end state, and closing the tab could lose it. */
+   *  The arbiter's unload guard (the union over every run service) reads it: until the run
+   *  closes, its report has not reached an end state, and closing the tab could lose it. */
   readonly destructiveOpen = this.lifecycle.destructiveOpen;
 
   /** State of the shown run's closing sync-deleted call. `linkedSignal` projection of the shown
@@ -230,6 +231,17 @@ export class SevenTvDeleteService {
   readonly confirmedRunPending = signal(false);
 
   private confirmedRunTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  constructor() {
+    // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
+    // tab's unload guard from these three signals; it does not know this service otherwise.
+    inject(SevenTvRunArbiter).register({
+      kind: 'delete',
+      isRunning: this.isRunning,
+      isSettling: this.isSettling,
+      destructiveOpen: this.destructiveOpen,
+    });
+  }
 
   /** The delete confirmation is open — hold the dock (and the panel inside it) until one of the two
    *  releases below. Every exit of the confirmation has to reach one of them. */

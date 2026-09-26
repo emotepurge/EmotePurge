@@ -10,6 +10,59 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — The run arbiter takes registrations, counts settling as busy and owns the unload guard
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (`SevenTvRunParticipant`,
+`register`, `activeClaim`, `activeRun`, `destructiveOpen`, `refusedStart`, `noteRefusedStart`,
+`REFUSED_START_FEEDBACK_MS`, the `beforeunload` effect) ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` (each: one `register(...)` in its
+constructor; the import loses its own `beforeunload` effect) · `docs/UI-Designsprache.md` (the
+"all start buttons are disabled" rule) · `docs/plans/Plan-256-Robustheit.md` (T3, Festlegungen 1, 6,
+7).
+
+Issue #256 point 1, contract P2–P5 of the #254 spec (11.1); the arbiter half of it — the run-bound
+lifecycle behind the three signals is the entry "7TV runs complete run-bound" further down. Until now the arbiter injected the three run
+services and read their `isRunning` in a fixed order (delete, restore, import). That had three gaps:
+a run whose engine was done but whose re-read or report was still out counted as free, so a second
+run could start in exactly that window; the unload guard lived in the import service and saw only
+the import's runs; and a fourth run kind (#254's undo) would have meant another injected service
+and another branch.
+
+- **Services register; the arbiter knows no service.** Each run service calls
+  `inject(SevenTvRunArbiter).register({ kind, isRunning, isSettling, destructiveOpen })` in its
+  constructor. The arbiter holds these participants in a signal, so a service that registers after
+  a derivation was first read is still seen. This turns the DI edge of 2026-09-06 around (it was
+  arbiter → services, "the services do not know the arbiter"): it now runs service → arbiter only,
+  and the arbiter imports nothing but `@angular/core`, so there is still no cycle. A fourth kind is
+  one value in `SevenTvRunKind` and one `register(...)` call. Registration is lazy on purpose: a
+  service that was never constructed never started a run, so it has nothing to claim; no app
+  initializer is involved, which also keeps the run services and the import engine out of the
+  initial bundle. Rejected: a multi-provider token in the usage-stats routes — a root arbiter cannot
+  see route providers, and two arbiter instances would mean two unload guards.
+- **R1 (2026-09-05) is unchanged: derived, not locked.** `activeRun` is still a `computed` over the
+  participants' own signals, with no `tryAcquire`/`release`.
+- **Busy means running or settling.** `activeRun` is non-null while any participant runs **or**
+  settles; every start point already checks `activeRun() !== null`, so they are blocked through the
+  settling window without a change of their own. `activeClaim` gives the reason as `{ kind, phase:
+  'running' | 'settling' }`. With several claimants (constructed only — the start points prevent
+  it), a running one beats a settling one, otherwise registration order wins; the old fixed kind
+  order would have been a service list in disguise. The same kind registered twice is not refused.
+- **The unload guard is the union.** `destructiveOpen` is true while any participant reports a
+  destructive run open, and the `beforeunload` effect moved here from the import service, armed and
+  disarmed only on a transition and removed on destroy. A run no dock shows any more still holds
+  it. Visible change: **a delete run now protects the tab** from its start until its report has an
+  end state (Plan-256 Festlegung 6), as an import with a `replace` row already did; a restore never
+  does.
+- **The refusal notice is arbiter business.** `noteRefusedStart(attempted)` records what a start
+  point tried and what blocked it (`refusedStart`, cleared after `REFUSED_START_FEEDBACK_MS` = 4000
+  ms, §4.5; a second refusal restarts the window). On a free arbiter it notes nothing, so the notice
+  never names a reason that is not there. Wiring the start points to it, and showing it, is a later
+  step of #256.
+
+---
+
 ### 2026-09-26 — After a drifted replace target, reload reads the target live
 
 **Betrifft:** `web/src/app/shared/seven-tv/import-flow.ts` (`reloadLive`, `toLiveTargetSelection`) ·

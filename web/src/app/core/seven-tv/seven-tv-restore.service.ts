@@ -13,6 +13,7 @@ import {
 import { SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { RunOperation, RunQueueEmote, RunResult, SevenTvRunEngine } from './seven-tv-run-engine';
+import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
@@ -279,6 +280,17 @@ export class SevenTvRestoreService {
   readonly restorePreCheckPending: WritableSignal<boolean> = signal(false);
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
+
+  constructor() {
+    // The one run-service → arbiter edge (#256, contract P4): the arbiter derives "busy" and the
+    // tab's unload guard from these three signals; it does not know this service otherwise.
+    inject(SevenTvRunArbiter).register({
+      kind: 'restore',
+      isRunning: this.isRunning,
+      isSettling: this.isSettling,
+      destructiveOpen: this.destructiveOpen,
+    });
+  }
 
   /** `target` is where the run goes and whom it tells — see `RestoreStartTarget`; frozen into the
    *  run record here and never read again from the caller. `skippedDuplicates` is the caller's own

@@ -1066,8 +1066,8 @@ describe('SevenTvDeleteService', () => {
     httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
   });
 
-  // The arbiter (#70, Task 4) has no lock of its own — it reads this service's own isRunning
-  // signal, so these three cases pin the invariants a hand-kept tryAcquire/release could not have
+  // The arbiter (#70, Task 4) has no lock of its own — it reads the signals this service registers
+  // with it (#256: isRunning, isSettling, destructiveOpen), so these three cases pin the invariants a hand-kept tryAcquire/release could not have
   // guaranteed (see R1 in docs/DECISIONS.md): the derived state can never outlive the run it
   // describes, not even across cancel() or a start the engine itself refused.
   describe('run arbiter', () => {
@@ -1089,16 +1089,20 @@ describe('SevenTvDeleteService', () => {
       expect(arbiter.activeRun()).toBeNull();
     });
 
-    it('clears the active run once cancel() ends it', () => {
+    it('clears the active run once a run ended by cancel() has had its report answered', () => {
       service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
       httpMock.expectOne(GQL_ENDPOINT).flush({});
 
       service.cancel();
 
-      expect(arbiter.activeRun()).toBeNull();
+      // #256 (contract P2): the confirmed row is still being reported — the arbiter counts that
+      // settling window as busy, and frees up only once the report has an end state.
+      expect(service.isRunning()).toBe(false);
+      expect(arbiter.activeRun()).toBe('delete');
 
-      // Drain the closing sync-deleted call so afterEach's httpMock.verify() stays green.
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+
+      expect(arbiter.activeRun()).toBeNull();
     });
 
     it('leaves no active run when the engine refuses the start for a cleared token', () => {
