@@ -93,8 +93,20 @@ const DE_TRANSLATIONS = {
   },
 };
 
+/** A settled fixture defaults to a closed run (every report answered) and a pending one to a
+ *  settling run — the two pairings the service produces; a test that needs a settled run still
+ *  reporting says `phase: 'reporting'` itself. */
 function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
   return {
+    runId: 'import-1',
+    phase: overrides.settlement === 'settled' ? 'closed' : 'settling',
+    destructive: false,
+    syncReport: 'idle',
+    removalReport: 'idle',
+    removalReportReason: null,
+    resyncTrigger: 'idle',
+    abortedForPrivileges: false,
+    protocolSaved: false,
     targetChannelName: 'zielkanal',
     targetOwnerDisplayName: null,
     targetSetId: 'set-1',
@@ -137,6 +149,7 @@ interface FakeImportService {
   duplicateNoticePending: WritableSignal<boolean>;
   targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
   protocolSaved: WritableSignal<boolean>;
+  markProtocolSaved: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   reset: ReturnType<typeof vi.fn>;
   retrySyncReport: ReturnType<typeof vi.fn>;
@@ -163,6 +176,7 @@ function createFakeImportService(): FakeImportService {
     duplicateNoticePending: signal(false),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     protocolSaved: signal(false),
+    markProtocolSaved: vi.fn(),
     cancel: vi.fn(),
     reset: vi.fn(),
     retrySyncReport: vi.fn(),
@@ -675,6 +689,26 @@ describe('ImportProgressSection', () => {
       // yet settled must not be closable, since Close (reset()) would drop the run's unload cover
       // and its protocol before either one exists.
       expect(findButton(fixture, 'Schließen')).toBeUndefined();
+    });
+
+    // #256: Close waits for the run to close — a settled run whose report is still out, or whose
+    // re-read is still running, is not closable; once every report has an end state, a failed one
+    // included, it is.
+    it('offers Close only once the run is closed, a failed report included', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', phase: 'reporting' }));
+      importService.syncReport.set('pending');
+
+      const reporting = render();
+      expect(findButton(reporting, 'Schließen')).toBeUndefined();
+      expect(findButton(reporting, 'Protokoll herunterladen')).toBeDefined();
+
+      importService.run.set(runInfo({ settlement: 'settled', phase: 'closed' }));
+      importService.syncReport.set('failed');
+
+      const closed = render();
+      expect(findButton(closed, 'Schließen')).toBeDefined();
     });
 
     it('shows the protocolNotSaved hint until the protocol has been saved, once settled', () => {

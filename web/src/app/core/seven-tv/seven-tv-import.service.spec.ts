@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ImportOrigin, ImportRow } from './import-source';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
+import { REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
 import { SevenTvImportService } from './seven-tv-import.service';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
@@ -698,9 +699,12 @@ describe('SevenTvImportService', () => {
 
   // R15: the engine sets isRunning false *before* the closing calls go out, so a second run can be
   // started while the first one's follow-up is still in flight. Everything the follow-up needs hangs
-  // off the run record it closed over, and a late answer that no longer matches run() is dropped.
-  it('drops the follow-up answers of a superseded run and retries the current one instead', () => {
+  // off the run's own record — and since #256 so do its answers: a late answer of run 1 is booked on
+  // run 1's record, never on the dock's projections of run 2.
+  it("books a superseded run's late answers on its own record and retries the current one instead", () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+    const firstRunId = service.run()?.runId;
     runTwoRowsToDone();
 
     const staleReport = httpMock.expectOne(SYNC_IMPORTED_B);
@@ -724,7 +728,8 @@ describe('SevenTvImportService', () => {
     expect(service.syncReport()).toBe('succeeded');
     expect(service.resyncTrigger()).toBe('succeeded');
 
-    // Run 1 answers late, and badly — without the guard this would flip both signals of run 2.
+    // Run 1 answers late, and badly — it must not flip either signal of run 2.
+    expect(service.isSettling()).toBe(true);
     staleReport.flush({}, { status: 401, statusText: 'Unauthorized' });
     staleResync.flush({ errorCode: 'resync_cooldown_active' }, { status: 429, statusText: 'Too' });
 
@@ -732,6 +737,13 @@ describe('SevenTvImportService', () => {
     expect(service.resyncTrigger()).toBe('succeeded');
     expect(service.run()?.targetChannelName).toBe('kanal_c');
     expect(service.run()?.result?.doneKeys).toEqual(['7tv-9']);
+    // Run 1 closed on its failed report; with run 2 on screen it is not shown again — its failure
+    // stays on its record and in the console.
+    expect(service.isSettling()).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('did not succeed'),
+      expect.objectContaining({ runId: firstRunId, report: 'sync-imported', state: 'failed' }),
+    );
 
     // And a retry now belongs to run 2: run 2's keys, run 2's channel — never run 1's.
     service.retrySyncReport();
@@ -839,7 +851,7 @@ describe('SevenTvImportService', () => {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
 
-      expect(service.destructiveRunActive()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
       const remove = nextMutation();
       expect(remove.request.body.query).toContain('removeEmote(id: { emoteId: $emoteId })');
       expect(remove.request.body.variables).toEqual({ setId: 'set-b', emoteId: 'tgt-x' });
@@ -866,9 +878,11 @@ describe('SevenTvImportService', () => {
       next.flush({});
       vi.advanceTimersByTime(RUN_DELAY_MS);
 
-      expect(service.destructiveRunActive()).toBe(false);
+      // Destructive until closed (#256): the removal report still has to be answered.
+      expect(service.destructiveOpen()).toBe(true);
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
+      expect(service.destructiveOpen()).toBe(false);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1150,7 +1164,8 @@ describe('SevenTvImportService', () => {
       });
       retry.flush(deletedAnswer());
       expect(service.removalReport()).toBe('succeeded');
-      expect(service.run()).toBe(record);
+      // The same run — its record is a new object after every answer, its id is its identity.
+      expect(service.run()?.runId).toBe(record?.runId);
       httpMock.expectNone(SYNC_IMPORTED_B);
     });
 
@@ -1290,6 +1305,7 @@ describe('SevenTvImportService', () => {
     });
 
     it('settles and reports a run whose re-read outlives a second startImport, without ever showing it again', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
@@ -1330,6 +1346,9 @@ describe('SevenTvImportService', () => {
       expect(service.syncReport()).toBe('idle');
       expect(service.removalReport()).toBe('idle');
       expect(service.resyncTrigger()).toBe('idle');
+      // Both failures of run 1 are logged, not shown over run 2.
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(service.run()).toBe(second);
 
       answerNext({});
       expect(service.run()?.plan).toBe(secondPlan);
@@ -1372,7 +1391,7 @@ describe('SevenTvImportService', () => {
         expect.objectContaining({ key: 'src-x', status: 'in-progress' }),
       ]);
       expect(service.items()[0].transfer.action).toBe('adoptSourceName');
-      expect(service.destructiveRunActive()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
       // Not `done` yet — doneAdoptCount only counts a settled adopt (spec #255).
       expect(service.doneAdoptCount()).toBe(0);
 
@@ -1437,10 +1456,11 @@ describe('SevenTvImportService', () => {
       service.run.set({ ...shown, plan: { rows: [] } });
 
       expect(service.items()).toEqual([]);
-      // The record on screen is no longer the one the run started with, so its completion is
-      // dropped like any superseded run's.
+      // #256: the run completes on its own record, whatever the display holds — its confirmed ADD
+      // is reported all the same.
       answerNext({});
-      httpMock.expectNone(SYNC_IMPORTED_B);
+      expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
     it('keeps an unknown ADD unknown when the re-read finds the source id under another name', () => {
@@ -1591,7 +1611,9 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
-    it('counts a replace run as destructive until its re-read has settled it', () => {
+    // #256: destructive until *closed* — through the re-read and until the removal report has an
+    // answer, since closing the tab before that could lose the report of a confirmed REMOVE.
+    it('counts a replace run as destructive until it has closed, reports included', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
@@ -1602,14 +1624,316 @@ describe('SevenTvImportService', () => {
 
       expect(service.isRunning()).toBe(false);
       expect(service.run()?.settlement).toBe('pending');
-      expect(service.destructiveRunActive()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
 
       httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'unavailable' }] });
 
-      expect(service.destructiveRunActive()).toBe(false);
+      expect(service.run()?.settlement).toBe('settled');
+      expect(service.destructiveOpen()).toBe(true);
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+      expect(service.destructiveOpen()).toBe(true);
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
+      expect(service.destructiveOpen()).toBe(false);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+  });
+
+  // #256 (contract P1/P6 of the #254 spec, 11.1): a run is a record with its own lifecycle —
+  // running → settling → reporting → closed — and completes on that record whatever the dock shows.
+  describe('run-bound completion (#256)', () => {
+    const SYNC_DELETED_SET_U_OK = deletedAnswer();
+
+    /** True when nothing of this service holds the arbiter any more. */
+    function serviceIsFree(): boolean {
+      return !service.isRunning() && !service.isSettling() && !service.destructiveOpen();
+    }
+
+    it('goes from running straight to reporting without a re-read, settling only while a report is out', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
+      expect(service.run()?.phase).toBe('running');
+      expect(service.isSettling()).toBe(false);
+
+      answerNext({});
+
+      expect(service.run()?.phase).toBe('reporting');
+      expect(service.isSettling()).toBe(true);
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(serviceIsFree()).toBe(true);
+    });
+
+    it('closes at once when nothing is to be reported, and a resync does not hold it open', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [adoptRow(SOURCE_X, 'KappaOld')] });
+
+      answerNext({});
+
+      // An adopt reports nothing; the resync it triggers is not a report (Festlegung 4).
+      const resync = httpMock.expectOne(RESYNC_B);
+      expect(service.resyncTrigger()).toBe('pending');
+      expect(service.run()?.phase).toBe('closed');
+      expect(serviceIsFree()).toBe(true);
+      resync.flush(null, { status: 202, statusText: 'Accepted' });
+      expect(service.resyncTrigger()).toBe('succeeded');
+    });
+
+    it('settles while the re-read runs and reports afterwards, settling across both phases', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
+      answerNext({});
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 502, statusText: 'Bad Gateway' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(service.run()?.phase).toBe('settling');
+      expect(service.isSettling()).toBe(true);
+      httpMock.expectOne(GQL_ENDPOINT).flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+
+      expect(service.run()?.phase).toBe('reporting');
+      expect(service.isSettling()).toBe(true);
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+      expect(service.isSettling()).toBe(true);
+      httpMock.expectOne(SYNC_DELETED_SET_U).flush(SYNC_DELETED_SET_U_OK);
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(serviceIsFree()).toBe(true);
+    });
+
+    it('closes a run whose report ends failed after the retries, and frees the arbiter', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
+      answerNext({});
+
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 503, statusText: 'Down' });
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 503, statusText: 'Down' });
+      vi.advanceTimersByTime(4000);
+      expect(service.isSettling()).toBe(true);
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 503, statusText: 'Down' });
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.run()?.phase).toBe('closed');
+      expect(serviceIsFree()).toBe(true);
+    });
+
+    it('never reopens a closed run for a manual retry', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
+      answerNext({});
+      answerNext({});
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_SET_U).flush({}, { status: 403, statusText: 'Forbidden' });
+      expect(service.run()?.phase).toBe('closed');
+
+      service.retryRemovalReport();
+
+      expect(service.removalReport()).toBe('pending');
+      expect(service.run()?.phase).toBe('closed');
+      expect(serviceIsFree()).toBe(true);
+      httpMock.expectOne(SYNC_DELETED_SET_U).flush(SYNC_DELETED_SET_U_OK);
+      expect(service.removalReport()).toBe('succeeded');
+      expect(service.run()?.phase).toBe('closed');
+    });
+
+    it('keeps destructiveOpen for a replace plan across reset() and a newer run, never for an add-only one', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
+      expect(service.destructiveOpen()).toBe(true);
+      answerNext({});
+      answerNext({});
+      const imported = httpMock.expectOne(SYNC_IMPORTED_SET_U);
+      const removed = httpMock.expectOne(SYNC_DELETED_SET_U);
+
+      service.reset();
+      expect(service.destructiveOpen()).toBe(true);
+
+      service.startImport(TARGET_C, CHANNEL_ORIGIN, addPlan([SOURCE_Y]));
+      expect(service.destructiveOpen()).toBe(true);
+
+      imported.flush(null, { status: 204, statusText: 'OK' });
+      removed.flush(SYNC_DELETED_SET_U_OK);
+      // Only the add-only run is left, and it never counts.
+      expect(service.destructiveOpen()).toBe(false);
+
+      answerNext({});
+      httpMock.expectOne(SYNC_IMPORTED_C).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(RESYNC_C).flush(null, { status: 202, statusText: 'Accepted' });
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    // Festlegung 3 and Codex finding 1: reset() during the run must not cancel it — a REMOVE in
+    // flight may be applied by 7TV, and its answer must still make it into sync-deleted.
+    it('lets reset() during running run to the end and reports the REMOVE that was in flight', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
+      });
+      const remove = nextMutation();
+
+      service.reset();
+
+      expect(service.run()).toBeNull();
+      expect(service.isRunning()).toBe(true);
+      // The engine still builds its result from this queue — cleared only after finish().
+      expect(service.queue()).toHaveLength(2);
+      expect(remove.cancelled).toBe(false);
+
+      remove.flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      answerNext({}); // the replace row's ADD
+      answerNext({}); // the pending add row runs too
+
+      expect(service.isRunning()).toBe(false);
+      expect(service.queue()).toEqual([]);
+      expect(service.isSettling()).toBe(true);
+      const imported = httpMock.expectOne(SYNC_IMPORTED_B);
+      expect(imported.request.body.sevenTvEmoteIds).toEqual(['src-x', 'src-y']);
+      const removed = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removed.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      imported.flush(null, { status: 204, statusText: 'OK' });
+      removed.flush(deletedAnswer());
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+      expect(service.run()).toBeNull();
+      expect(service.syncReport()).toBe('idle');
+      expect(service.removalReport()).toBe('idle');
+      expect(service.resyncTrigger()).toBe('idle');
+      expect(serviceIsFree()).toBe(true);
+      httpMock.expectNone(SYNC_IMPORTED_B);
+      httpMock.expectNone(SYNC_DELETED_B);
+    });
+
+    it('lets reset() during settling finish the re-read and send both reports exactly once', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
+      });
+      answerNext({});
+      answerNext({});
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      const read = httpMock.expectOne(GQL_ENDPOINT);
+
+      service.reset();
+      expect(service.isSettling()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
+      read.flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_SET_U).flush(SYNC_DELETED_SET_U_OK);
+
+      expect(service.run()).toBeNull();
+      expect(service.syncReport()).toBe('idle');
+      expect(service.removalReport()).toBe('idle');
+      expect(serviceIsFree()).toBe(true);
+      httpMock.expectNone(SYNC_IMPORTED_SET_U);
+      httpMock.expectNone(SYNC_DELETED_SET_U);
+    });
+
+    it('lets reset() during reporting land the answer on the record, and settles only after it', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
+      answerNext({});
+      const report = httpMock.expectOne(SYNC_IMPORTED_SET_U);
+
+      service.reset();
+
+      expect(service.run()).toBeNull();
+      expect(service.syncReport()).toBe('idle');
+      expect(service.isSettling()).toBe(true);
+      report.flush(null, { status: 204, statusText: 'OK' });
+
+      expect(service.run()).toBeNull();
+      expect(serviceIsFree()).toBe(true);
+      httpMock.expectNone(SYNC_IMPORTED_SET_U);
+    });
+
+    // Festlegung 13: a report that fails after the dock let go of its run needs a place with its
+    // reason and a retry — the run comes back when nothing else is shown.
+    it('shows a detached run again when its report fails, with the dock queue and a working retry', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
+      const runId = service.run()?.runId;
+      answerNext({});
+      const report = httpMock.expectOne(SYNC_IMPORTED_SET_U);
+      service.reset();
+      expect(service.queue()).toEqual([]);
+
+      // 403 is not retried automatically.
+      report.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()?.runId).toBe(runId);
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.syncReport()).toBe('failed');
+      // What keeps the dock mounted (`import-progress-section`, `dockVisible`).
+      expect(service.queue().map((item) => item.key)).toEqual(['src-x']);
+      expect(service.items().map((item) => item.status)).toEqual(['done']);
+
+      service.retrySyncReport();
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('shows a detached run again when its removal report ends partial, with its reason', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
+      answerNext({});
+      answerNext({});
+      const imported = httpMock.expectOne(SYNC_IMPORTED_SET_U);
+      const removed = httpMock.expectOne(SYNC_DELETED_SET_U);
+      service.reset();
+
+      imported.flush(null, { status: 204, statusText: 'OK' });
+      expect(service.run()).toBeNull();
+      removed.flush(
+        deletedAnswer({
+          channels: [{ channelName: 'kanal_b', archivedCount: 0, notFoundIds: ['tgt-x'] }],
+        }),
+      );
+
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.removalReport()).toBe('partial');
+      expect(service.removalReportReason()).toBe('shortfall');
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    // Festlegung 15: a report that never answers must not keep its run open for good.
+    it('gives up a report without an answer after REPORT_TIMEOUT_MS per attempt and closes the run', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
+      answerNext({});
+      answerNext({});
+
+      for (const pause of [2000, 4000, 0]) {
+        const imported = httpMock.expectOne(SYNC_IMPORTED_SET_U);
+        const removed = httpMock.expectOne(SYNC_DELETED_SET_U);
+        vi.advanceTimersByTime(REPORT_TIMEOUT_MS - 1);
+        expect(imported.cancelled).toBe(false);
+        expect(service.run()?.phase).toBe('reporting');
+        vi.advanceTimersByTime(1);
+        expect(imported.cancelled).toBe(true);
+        expect(removed.cancelled).toBe(true);
+        vi.advanceTimersByTime(pause);
+      }
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.removalReport()).toBe('failed');
+      expect(service.removalReportReason()).toBe('unavailable');
+      expect(service.run()?.phase).toBe('closed');
+      expect(serviceIsFree()).toBe(true);
+    });
+
+    it('records the protocol download on the shown run, and drops it with the display', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
+      answerNext({});
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+      expect(service.protocolSaved()).toBe(false);
+
+      service.markProtocolSaved();
+
+      expect(service.protocolSaved()).toBe(true);
+      expect(service.run()?.protocolSaved).toBe(true);
+      service.reset();
+      expect(service.protocolSaved()).toBe(false);
     });
   });
 
@@ -1617,7 +1941,7 @@ describe('SevenTvImportService', () => {
   // back-out file alone cannot say *which* row it was. `TestBed.tick()` flushes the constructor's
   // effect, the same pattern `LiveQuotaService`'s own spec uses for its effects.
   describe('beforeunload guard', () => {
-    it('registers a handler exactly while destructiveRunActive is true, removed once the run settles', () => {
+    it('registers a handler exactly while destructiveOpen is true, removed once the run closes', () => {
       const addSpy = vi.spyOn(window, 'addEventListener');
       const removeSpy = vi.spyOn(window, 'removeEventListener');
 
@@ -1625,7 +1949,7 @@ describe('SevenTvImportService', () => {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
       TestBed.tick();
-      expect(service.destructiveRunActive()).toBe(true);
+      expect(service.destructiveOpen()).toBe(true);
       expect(addSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
       expect(removeSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
 
@@ -1637,11 +1961,16 @@ describe('SevenTvImportService', () => {
       answerNext({});
       TestBed.tick();
 
-      expect(service.destructiveRunActive()).toBe(false);
-      expect(removeSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      // Settled, but its reports are still out: the guard holds (#256).
+      expect(service.destructiveOpen()).toBe(true);
+      expect(removeSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
 
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
+      TestBed.tick();
+
+      expect(service.destructiveOpen()).toBe(false);
+      expect(removeSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1651,7 +1980,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
       TestBed.tick();
 
-      expect(service.destructiveRunActive()).toBe(false);
+      expect(service.destructiveOpen()).toBe(false);
       expect(addSpy).not.toHaveBeenCalledWith('beforeunload', expect.any(Function));
 
       runTwoRowsToDone();

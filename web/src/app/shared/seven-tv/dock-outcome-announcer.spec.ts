@@ -333,6 +333,15 @@ describe('DockOutcomeAnnouncer', () => {
    *  notices below (#255 P2-2) — with `items` the only thing each test varies. */
   function nonActiveRun(items: ImportRunItem[]): ImportRunInfo {
     return {
+      runId: 'import-1',
+      phase: 'closed',
+      destructive: false,
+      syncReport: 'idle',
+      removalReport: 'idle',
+      removalReportReason: null,
+      resyncTrigger: 'idle',
+      abortedForPrivileges: false,
+      protocolSaved: false,
       targetChannelName: 'zielkanal',
       targetOwnerDisplayName: null,
       targetSetId: 'set-1',

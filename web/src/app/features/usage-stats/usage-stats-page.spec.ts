@@ -3541,9 +3541,13 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
 
   function settleImport(setId: string, doneKeys: string[]): void {
     TestBed.inject(SevenTvImportService).run.set({
+      runId: 'import-1',
+      phase: 'reporting',
+      destructive: false,
       targetSetId: setId,
       settlement: 'settled',
       result: runResult(doneKeys),
+      syncReport: 'pending',
     } as unknown as ImportRunInfo);
   }
 
@@ -3581,6 +3585,33 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(reloaded[0].request.params.get('refresh')).toBe('true');
     },
   );
+
+  // #256: a run's report states live on its record, so each report answer replaces the record
+  // while the settled result stays the same object — one settle, one reload.
+  it('reloads once per settled import, not again for each report answer on the same run', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+    });
+    const importService = TestBed.inject(SevenTvImportService);
+
+    settleImport('set-b', ['7tv-y']);
+    await settle();
+    const reloaded = liveListRequests();
+    expect(reloaded).toHaveLength(1);
+    reloaded[0].flush(memberList([member('7tv-x', 'PumpkinX'), member('7tv-y', 'PumpkinY')]));
+    await settle();
+
+    const settled = importService.run();
+    if (settled === null) {
+      throw new Error('run expected');
+    }
+    importService.run.set({ ...settled, phase: 'closed', syncReport: 'succeeded' });
+    await settle();
+
+    expect(liveListRequests()).toHaveLength(0);
+  });
 
   it('sends nothing for a run without a done row, or one into the active set', async () => {
     await openView({

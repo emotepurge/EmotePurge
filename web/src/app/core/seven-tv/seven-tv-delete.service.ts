@@ -1,7 +1,7 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { retry, throwError, timer } from 'rxjs';
+import { MonoTypeOperatorFunction, Observable, retry, throwError, timeout, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
@@ -32,6 +32,31 @@ export const MAX_AUTOMATIC_SYNC_RETRIES = 2;
 // purpose: the deletions themselves are already done, the admin is waiting on a verdict, and a
 // manual retry button covers the cases a short backoff cannot.
 export const SYNC_RETRY_DELAY_MS = 2000;
+/** Time budget of one attempt of a closing report (`sync-imported`, `sync-deleted`,
+ *  `sync-restored`) — #256, Plan-256 Festlegung 15. A report that never answers would otherwise
+ *  keep its run open for good: never `closed`, never closable, and for a destructive run the tab's
+ *  unload guard armed forever. More generous than the 20 s re-read, because the report kicks off
+ *  server-side resync steps. An attempt that runs out counts as a transient failure (see
+ *  {@link timeoutReportAttempt}), so the same retries follow, then `failed`/`unavailable`. */
+export const REPORT_TIMEOUT_MS = 30_000;
+
+/** Ends one attempt of a closing report after {@link REPORT_TIMEOUT_MS} with a status-`0`
+ *  `HttpErrorResponse` — the shape of a network failure, so the retry policy retries it and
+ *  `classifySyncInSetFailure` reads it as `'unavailable'`. Placed *before* the retry operator, so
+ *  every attempt gets its own budget. */
+export function timeoutReportAttempt<T>(): MonoTypeOperatorFunction<T> {
+  return timeout<T, Observable<never>>({
+    first: REPORT_TIMEOUT_MS,
+    with: () =>
+      throwError(
+        () =>
+          new HttpErrorResponse({
+            status: 0,
+            statusText: `No answer within ${REPORT_TIMEOUT_MS} ms`,
+          }),
+      ),
+  });
+}
 
 /** How long a confirmed delete that never became a run keeps `confirmedRunPending` set, so the
  *  panel's abort notice ("Nothing was deleted." plus the reason) can still be read after the host's

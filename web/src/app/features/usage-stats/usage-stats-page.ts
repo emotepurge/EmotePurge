@@ -2825,6 +2825,10 @@ export class UsageStatsPage {
    * report: the 7TV mutations are done by then, and waiting for the report would never reload after
    * a failed one. Set ids are globally unique, so no channel comparison is needed. A run that had
    * already settled before this page mounted is not replayed.
+   *
+   * A settle is recognised by its settled `result` object, not by the run record around it: since
+   * #256 a run's report states live on its record, so every report answer replaces the record while
+   * the result stays the same object — and must not reload the list once per answer.
    */
   private watchOwnRunSettles(): void {
     this.watchRunSettle(
@@ -2853,14 +2857,15 @@ export class UsageStatsPage {
     source: () => T | null,
     settledTarget: (run: T) => { setId: string; result: RunResult } | null,
   ): void {
-    let seen = untracked(source);
+    const settledOf = (run: T | null) => (run === null ? null : settledTarget(run));
+    let seen = untracked(() => settledOf(source()))?.result ?? null;
     effect(() => {
-      const run = source();
-      if (run === seen) {
+      const settled = settledOf(source());
+      const result = settled?.result ?? null;
+      if (result === seen) {
         return;
       }
-      seen = run;
-      const settled = run === null ? null : settledTarget(run);
+      seen = result;
       if (settled !== null && settled.result.doneKeys.length > 0) {
         untracked(() => this.onOwnRunSettled(settled.setId));
       }
