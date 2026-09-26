@@ -3086,7 +3086,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       await router.navigate([], { queryParams: { emoteSetId: options.emoteSetId } });
     }
     if (options.presettledRestoreRun) {
-      TestBed.inject(SevenTvRestoreService)['runState'].set(options.presettledRestoreRun);
+      TestBed.inject(SevenTvRestoreService).run.set(options.presettledRestoreRun);
     }
 
     fixture = TestBed.createComponent(UsageStatsPage);
@@ -3528,6 +3528,9 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
   /** Settles a restore run into `setId` the way `SevenTvRestoreService.onRunComplete` does. */
   function settleRestore(setId: string, doneKeys: string[]): void {
     const run: RestoreRunInfo = {
+      runId: 'restore-1',
+      phase: 'reporting',
+      destructive: false,
       targetSetId: setId,
       expectedChannelName: null,
       resyncChannelName: 'a',
@@ -3535,8 +3538,11 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       setName: setId,
       ownerOrChannelLabel: 'a',
       result: runResult(doneKeys),
+      syncReport: 'pending',
+      syncReportReason: null,
+      resyncTrigger: 'idle',
     };
-    TestBed.inject(SevenTvRestoreService)['runState'].set(run);
+    TestBed.inject(SevenTvRestoreService).run.set(run);
   }
 
   function settleImport(setId: string, doneKeys: string[]): void {
@@ -3686,6 +3692,9 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     await openView({
       totals: [],
       presettledRestoreRun: {
+        runId: 'restore-presettled',
+        phase: 'closed',
+        destructive: false,
         targetSetId: 'set-b',
         expectedChannelName: null,
         resyncChannelName: 'a',
@@ -3693,6 +3702,9 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
         setName: 'set-b',
         ownerOrChannelLabel: 'a',
         result: runResult(['7tv-y']),
+        syncReport: 'succeeded',
+        syncReportReason: null,
+        resyncTrigger: 'idle',
       },
     });
 

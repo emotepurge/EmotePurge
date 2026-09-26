@@ -923,6 +923,7 @@
     "button": "Restore emotes",
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Restore progress",
+    "settling": "Finishing…",
     "deleteFailedFallback": "Restore failed",
     "unknownOutcome": "Unclear whether it was restored — 7TV gave no clear answer. Please check the set.",
     "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
@@ -1040,6 +1041,7 @@
     "clearSelection": "Clear selection",
     "progress": "{{ finished }} / {{ total }} processed",
     "progressBarLabel": "Delete progress",
+    "settling": "Finishing…",
     "deleteFailedFallback": "Delete failed",
     "unknownOutcome": "Unclear whether it was deleted — 7TV gave no clear answer. Please check the set.",
     "confirmTitle": {

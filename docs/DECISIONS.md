@@ -38,15 +38,22 @@ A non-active tracked or an untracked target already took the live branch on its 
 ### 2026-09-26 — 7TV runs complete run-bound — running → settling → reporting → closed; reset() detaches the display only
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts` (`RunPhase`, `RunRecordBase`,
-`SevenTvRunLifecycle`) · `web/src/app/core/seven-tv/seven-tv-import.service.ts` (`ImportRunInfo`,
+`SevenTvRunLifecycle`, incl. the `closed`-is-final guard in `update()` and `discardUnstarted()`) ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`ImportRunInfo`,
 `isSettling`, `destructiveOpen`, the dock projections, `reset`, `markProtocolSaved`;
 `destructiveRunActive` and `applyIfCurrent` removed) ·
+`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (`DeleteRunInfo`, `run`, `lastRun`,
+`syncReport`, `syncReportReason`, `isSettling`, `destructiveOpen`, `REPORT_TIMEOUT_MS`,
+`timeoutReportAttempt`) · `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`RestoreRunInfo`,
+`run`, `syncReport`, `syncReportReason`, `resyncTrigger`, `isSettling`, `destructiveOpen`) ·
 `web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`reset` doc, `showFinishedRows`) ·
-`web/src/app/core/seven-tv/seven-tv-delete.service.ts` (`REPORT_TIMEOUT_MS`,
-`timeoutReportAttempt`) · `web/src/app/shared/seven-tv/import-progress-section.ts`
-(`[dismissible]`) · `web/src/app/shared/seven-tv/run-progress-panel.ts` (`dismissible` doc) ·
+`web/src/app/shared/seven-tv/import-progress-section.ts`,
+`web/src/app/shared/seven-tv/mass-delete-panel.ts`,
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (all three: `[dismissible]`) ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`dismissible` doc) ·
 `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle`) ·
-`docs/plans/Plan-256-Robustheit.md` (T1, Festlegungen 2, 3, 4, 13, 14, 15).
+`web/public/i18n/{de,en}.json` (`massDelete.settling`, `restore.settling`) ·
+`docs/plans/Plan-256-Robustheit.md` (T1, T2, Festlegungen 2, 3, 4, 6, 13, 14, 15).
 
 Issue #256 point 1, contract P1/P6 of the #254 spec (11.1). Until now a run's closing work was
 bound to the *display*: `onRunComplete` returned early when `run()` was no longer the run that
@@ -67,15 +74,17 @@ re-read of `unknown` rows, import only) → `reporting` (at least one report wit
 - **Report states live on the record** (`syncReport`, `removalReport`, `removalReportReason`,
   `resyncTrigger`, plus `abortedForPrivileges` and `protocolSaved`). The service signals the dock
   reads keep their names and types but are `linkedSignal` projections of `run()` — writable, because
-  108 spec lines drive a dock through them; production code never writes them, only the record
-  (`markProtocolSaved()` replaces the dock's direct `protocolSaved.set(true)`).
+  a large share of the existing spec suite drives a dock directly through `.set(...)` calls on
+  these very signals (a plain `computed` would break every one of them, unseen by any filtered
+  test run); production code never writes them, only the record (`markProtocolSaved()` replaces
+  the dock's direct `protocolSaved.set(true)`).
 - **`reset()` and a newer run only change what is shown.** A run in flight runs to its end — it is
   deliberately *not* cancelled: without `transportLossIsUnknown` a cancelled request in flight would
   end `cancelled` although 7TV may have applied it (Codex finding on the plan). The engine's queue is
   cleared once `finish()` has built the result, not at `reset()`.
 - **`isSettling` and `destructiveOpen` span every open run of the service**, shown or not;
   `destructiveOpen` holds from start to `closed`. The import's `beforeunload` guard hangs off it
-  (it moves into the arbiter with the next step of #256). `destructiveRunActive` is gone.
+  (it moves into the arbiter with T3 (arbiter) of #256). `destructiveRunActive` is gone.
 - **`closed` is final.** A manual retry is a new report on a closed run: it neither reopens it nor
   brings back `isSettling`/`destructiveOpen`. A resync is not a report and never holds a run open.
 - **Every report attempt has a time budget** (`REPORT_TIMEOUT_MS = 30_000`, exported next to
@@ -91,11 +100,28 @@ re-read of `unknown` rows, import only) → `reporting` (at least one report wit
 One reader had to follow: the usage-stats page's `watchRunSettle` recognised a settle by the run
 object, which now changes with every report answer and would have reloaded a chosen non-active set's
 member list once per answer. It now dedupes on the settled `result` object, which does not change.
-`ImportSettlement` stays as a field, derived from the phase (`'settled'` ⇔ `reporting | closed`),
-because the dock, that page and #254 read it.
+`ImportSettlement` stays as its own field rather than a `computed` off the phase: `settleRun` sets it
+to `'settled'` in the same `update()` call that moves the phase to `reporting`, in lockstep, not
+derived from it after the fact — the two happen to agree (`'settled'` ⇔ `reporting | closed`)
+because both readings describe "the outcome is final", but the field is what the dock, that page and
+#254 actually read.
 
-Delete and restore follow in the next step of #256 on the same building block; this entry's
-`Betrifft:` line is extended then.
+Delete and restore (#256 T2) now run on the same building block. `run` becomes each service's own
+writable lifecycle signal (`lastRun` on the delete service stays its unchanged-shape projection of
+it); `syncReport`/`syncReportReason` on both, plus the restore's `resyncTrigger`, become the same
+kind of `linkedSignal` projection `run()` already gave the import. Neither ever sees `settling`:
+a delete/restore run has no re-read, so it goes straight from `running` to `reporting`. Two
+behaviour changes follow:
+
+- **Every delete row is destructive** (Plan-256 Festlegung 6) — a delete run now arms the
+  `beforeunload` guard from `startDelete` to `closed`, the same way an import's `replace` plan does;
+  a restore never does (only `ADD`s, `destructive: false` always).
+- **Schließen-Gate and channel switch now wait for `closed`** (Plan-256 Festlegung 13, Codex-Befund
+  2 on the plan): both docks bind `[dismissible]` to `run.phase === 'closed'` instead of "the engine
+  stopped", and `resetIfChannelChanged` now only resets a `closed` run — a run still reporting
+  follows the user to the next channel for the few seconds until its report reaches an end state,
+  rather than losing its dock (and its retry) to a channel switch mid-report. A run detached this
+  way whose report then ends `failed`/`partial` shows itself again, exactly like the import's.
 
 ---
 

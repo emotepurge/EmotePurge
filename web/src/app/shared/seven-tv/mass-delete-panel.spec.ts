@@ -8,7 +8,7 @@ import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
-import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { DeleteRunInfo, SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import {
   EditableSetTarget,
   EmoteSetTargetsResponse,
@@ -80,12 +80,20 @@ const DE_TRANSLATIONS = {
   massDelete: {
     deleteButton: 'Löschen ({{ count }})',
     clearSelection: 'Auswahl aufheben',
+    progress: '{{ finished }} / {{ total }} verarbeitet',
+    progressBarLabel: 'Löschfortschritt',
+    settling: 'Wird abgeschlossen…',
+    summary: {
+      counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+    },
   },
   // Real text (matches public/i18n/de.json) — needed for the "and N more" tail
   // `missingRowsReasonParams` builds via `TranslocoService.translate` directly, not the template
   // pipe, so a missing key here would not fall back to a key string the way the pipe's own missing
   // translations do elsewhere in this spec file.
   common: {
+    cancel: 'Abbrechen',
+    close: 'Schließen',
     andMore: {
       one: '… und 1 weiteres',
       other: '… und {{count}} weitere',
@@ -424,6 +432,7 @@ type DeleteServiceFake = Pick<
   SevenTvDeleteService,
   | 'isRunning'
   | 'queue'
+  | 'run'
   | 'syncReport'
   | 'syncReportReason'
   | 'rateLimitPauseSeconds'
@@ -438,6 +447,10 @@ function fakeDeleteService(overrides: Partial<DeleteServiceFake> = {}): DeleteSe
   return {
     isRunning: signal(false),
     queue: signal<RunQueueItem[]>([]),
+    // #256: `[dismissible]` reads `run()?.phase` directly (`lastRun` keeps its own, phase-less
+    // shape for the summary slot) — no test in this file exercises Close on the delete panel today,
+    // so this defaults to `null`; the dedicated Schließen-Gate block below sets it explicitly.
+    run: signal<DeleteRunInfo | null>(null),
     syncReport: signal<SyncReportState>('idle'),
     syncReportReason: signal<SyncReportReason | null>(null),
     rateLimitPauseSeconds: signal<number | null>(null),
@@ -848,6 +861,96 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     fixture.detectChanges();
 
     expect(deleted).toEqual([['e1'], ['e2']]);
+  });
+});
+
+/**
+ * #256, Plan-256 Festlegung 13: Close is offered exactly once the delete run's own record is
+ * `closed`, not merely once the engine stops — a report still `reporting` must keep its dock (and
+ * its eventual retry) reachable through a channel switch or a page reload attempt.
+ */
+describe('MassDeletePanel — Schließen-Gate (#256)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let isRunning: WritableSignal<boolean>;
+  let queue: WritableSignal<RunQueueItem[]>;
+  let run: WritableSignal<DeleteRunInfo | null>;
+
+  function closeButton(): HTMLButtonElement | undefined {
+    return Array.from(fixture.nativeElement.querySelectorAll('button')).find(
+      (candidate) => (candidate as HTMLButtonElement).textContent?.trim() === 'Schließen',
+    ) as HTMLButtonElement | undefined;
+  }
+
+  beforeEach(async () => {
+    isRunning = signal(false);
+    queue = signal<RunQueueItem[]>([
+      {
+        key: 'e1',
+        emoteId: 'guid-e1',
+        sevenTvEmoteId: 'e1',
+        name: 'e1',
+        status: 'done',
+        completedSteps: 1,
+        failedStep: null,
+      },
+    ]);
+    run = signal<DeleteRunInfo | null>(null);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({
+        deleteService: fakeDeleteService({ isRunning, queue, run }),
+      }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  it('offers no Close button while the run is only reporting, not yet closed', () => {
+    run.set({
+      runId: 'delete-1',
+      phase: 'reporting',
+      destructive: true,
+      channelName: 'somechannel',
+      expectedChannelName: 'somechannel',
+      setId: 'set-1',
+      result: { doneKeys: ['e1'], items: queue(), startedAt: 0, finishedAt: 1 },
+      syncReport: 'pending',
+      syncReportReason: null,
+    });
+    fixture.detectChanges();
+
+    expect(closeButton()).toBeUndefined();
+    expect(fixture.nativeElement.textContent).toContain('Wird abgeschlossen…');
+  });
+
+  it('offers Close once the run has closed', () => {
+    run.set({
+      runId: 'delete-1',
+      phase: 'closed',
+      destructive: true,
+      channelName: 'somechannel',
+      expectedChannelName: 'somechannel',
+      setId: 'set-1',
+      result: { doneKeys: ['e1'], items: queue(), startedAt: 0, finishedAt: 1 },
+      syncReport: 'succeeded',
+      syncReportReason: null,
+    });
+    fixture.detectChanges();
+
+    expect(closeButton()).toBeDefined();
   });
 });
 

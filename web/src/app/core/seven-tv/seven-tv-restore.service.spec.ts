@@ -870,6 +870,127 @@ describe('SevenTvRestoreService', () => {
     });
   });
 
+  // #256, Plan-256 Festlegungen 3, 6, 13: the run-bound lifecycle. `run`/`isSettling`/
+  // `destructiveOpen` are the lifecycle's own signals; the report keeps going on the run's own
+  // record whether or not the dock shows it.
+  describe('#256 run lifecycle', () => {
+    it('destructiveOpen stays false for a restore — only ADDs, never destructive', () => {
+      expect(service.destructiveOpen()).toBe(false);
+
+      service.startRestore(target({ active: true }), [EMOTES[0]]);
+      expect(service.destructiveOpen()).toBe(false);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      expect(service.destructiveOpen()).toBe(false); // reporting, but still never destructive
+
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    it('isSettling is true while the report is out, false once it closes', () => {
+      expect(service.isSettling()).toBe(false);
+      const reportReq = runOneRestoreToReport(target({ active: true }));
+      expect(service.isSettling()).toBe(true);
+
+      reportReq.flush(restoredAnswer());
+      expect(service.isSettling()).toBe(false);
+    });
+
+    // Codex-Befund 1 on the plan: `reset()` during `running` must not cancel the engine — an ADD
+    // already in flight when the display detaches can still be confirmed by 7TV afterwards, and the
+    // run must still report it, even though nothing shows it any more.
+    it('reset() while running lets the engine finish and still reports an ADD that was in flight', () => {
+      service.startRestore(target({ active: true }), EMOTES);
+      const inFlightReq = httpMock.expectOne(GQL_ENDPOINT);
+
+      service.reset();
+
+      expect(service.run()).toBeNull();
+      expect(service.isRunning()).toBe(true); // the engine itself was not touched
+
+      inFlightReq.flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      const reportReq = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(reportReq.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+        expectedChannelName: 'sensitron',
+      });
+      reportReq.flush(restoredAnswer());
+
+      expect(service.run()).toBeNull(); // still nothing shown — a success needs no reshow
+    });
+
+    // Festlegung 13, Codex-Befund 2: a channel switch mid-report must not drop a run whose report
+    // could still fail — only a `closed` run follows resetIfChannelChanged's old "engine stopped"
+    // rule. Non-active target: no resync noise to flush, the report alone is the point here.
+    it('resetIfChannelChanged() during reporting leaves the run shown until it closes', () => {
+      const reportReq = runOneRestoreToReport(target({ active: false }));
+
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('pending');
+
+      reportReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      // Only now, once closed, does a channel switch actually reset it.
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).toBeNull();
+    });
+
+    // Festlegung 13: a programmatic reset() detaches a run whose report has not answered yet; if
+    // that report then does not succeed, the run shows itself again so its reason and retry stay
+    // reachable — unless something else is shown by then, in which case the failure only reaches
+    // the console.
+    it('shows a detached run again once its report fails, and lets a retry send from there', () => {
+      const reportReq = runOneRestoreToReport(target({ active: false }));
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      reportReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      service.retrySyncReport();
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('does not reshow a failed report once a newer run is shown, and logs it instead', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const reportReq = runOneRestoreToReport(target({ active: false }));
+      service.reset();
+
+      service.startRestore(target({ setId: 'set-2', channel: 'other-channel', active: false }), [
+        EMOTES[1],
+      ]);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      const run2ReportReq = httpMock.expectOne(SYNC_RESTORED_SET_2);
+      expect(service.isRunning()).toBe(false); // run 2's engine work is done, only its report is out
+      expect(service.run()?.targetSetId).toBe('set-2');
+
+      reportReq.flush({}, { status: 403, statusText: 'Forbidden' });
+
+      expect(service.run()?.targetSetId).toBe('set-2'); // run 1's failure did not take the dock back
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[EmotePurge] 7TV restore report of a run no longer shown did not succeed',
+        expect.objectContaining({ state: 'failed', reason: 'forbidden' }),
+      );
+
+      run2ReportReq.flush(restoredAnswer());
+    });
+  });
+
   // R15 (#72, T12): finish() flips isRunning() to false *before* the two closing calls resolve, so
   // a second run can legitimately start while the first one's report/resync are still in flight.
   // Their late answers must not land on the second run's state.

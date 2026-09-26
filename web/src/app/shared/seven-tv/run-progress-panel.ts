@@ -138,11 +138,12 @@ export class RunProgressPanel {
   readonly syncReportReason = input<SyncReportReason | null>(null);
   /** Seconds left on a 7TV rate-limit pause, null while running normally. */
   readonly rateLimitPauseSeconds = input<number | null>(null);
-  /** Whether Close is offered once the run stops running. A host binds this to its run's lifecycle
-   *  (import: `run.phase === 'closed'`, #256) so Close cannot end a run whose protocol does not
-   *  exist yet or whose report is still unanswered — see `import-progress-section.ts` for why that
-   *  window matters. Defaults to `true`: delete and restore never pass it, so they keep the panel's
-   *  original behaviour of offering Close the moment the run stops. */
+  /** Whether Close is offered once the run stops running. Every host binds this to its run's
+   *  lifecycle (`run.phase === 'closed'`, #256) so Close cannot end a run whose report is still
+   *  unanswered — the import additionally cannot end one whose protocol does not exist yet, see
+   *  `import-progress-section.ts` for why that window matters there. Defaults to `true` only for a
+   *  caller that has no run record to bind it to (there is none left in this app since #256 T2
+   *  moved delete and restore onto the same lifecycle as the import). */
   readonly dismissible = input(true);
   /** Rows counted `done` that are not a copy — today only an import run's adopted renames (an
    *  existing target entry renamed in place, not a new entry added, spec #255). Subtracted out of

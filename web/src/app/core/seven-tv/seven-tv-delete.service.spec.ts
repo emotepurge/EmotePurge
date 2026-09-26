@@ -367,6 +367,135 @@ describe('SevenTvDeleteService', () => {
     });
   });
 
+  // #256, Plan-256 Festlegungen 3, 6, 13: the run-bound lifecycle. `run`/`isSettling`/
+  // `destructiveOpen` are the lifecycle's own signals; the report keeps going on the run's own
+  // record whether or not the dock shows it.
+  describe('#256 run lifecycle', () => {
+    it('holds destructiveOpen from startDelete to closed — every delete row is destructive', () => {
+      expect(service.destructiveOpen()).toBe(false);
+
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      expect(service.destructiveOpen()).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      expect(service.destructiveOpen()).toBe(true); // reporting — not closed yet
+
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    it('isSettling is true while the report is out, false once it closes', () => {
+      expect(service.isSettling()).toBe(false);
+      const syncReq = runOneDeleteToSyncRequest();
+      expect(service.isSettling()).toBe(true);
+
+      syncReq.flush(deletedAnswer());
+      expect(service.isSettling()).toBe(false);
+    });
+
+    // Codex-Befund 1 on the plan: `reset()` during `running` must not cancel the engine — a REMOVE
+    // already in flight when the display detaches can still be confirmed by 7TV afterwards, and the
+    // run must still report it, even though nothing shows it any more.
+    it('reset() while running lets the engine finish and still reports a REMOVE that was in flight', () => {
+      service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
+      const inFlightReq = httpMock.expectOne(GQL_ENDPOINT);
+
+      service.reset();
+
+      expect(service.run()).toBeNull(); // detached at once
+      expect(service.isRunning()).toBe(true); // the engine itself was not touched
+      expect(service.destructiveOpen()).toBe(true); // the run is still open, just not shown
+
+      // 7TV confirms the request that was in flight when reset() was called.
+      inFlightReq.flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      // The confirmed removals are reported all the same, on the run's own record.
+      const syncReq = httpMock.expectOne(SYNC_ENDPOINT);
+      expect(syncReq.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1', '7tv-2'],
+        expectedChannelName: 'sensitron',
+      });
+      syncReq.flush(deletedAnswer());
+
+      expect(service.run()).toBeNull(); // still nothing shown — a success needs no reshow
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    // Festlegung 13, Codex-Befund 2: a channel switch mid-report must not drop a run whose report
+    // could still fail — only a `closed` run follows resetIfChannelChanged's old "engine stopped"
+    // rule.
+    it('resetIfChannelChanged() during reporting leaves the run shown until it closes', () => {
+      const syncReq = runOneDeleteToSyncRequest();
+
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('pending');
+
+      syncReq.flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      // Ended failed — stays visible with its reason and a retry, not swept away mid-report.
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      // Only now, once closed, does a channel switch actually reset it.
+      service.resetIfChannelChanged('other-channel');
+      expect(service.run()).toBeNull();
+    });
+
+    // Festlegung 13: a programmatic reset() detaches a run whose report has not answered yet; if
+    // that report then does not succeed, the run shows itself again so its reason and retry stay
+    // reachable — unless something else is shown by then, in which case the failure only reaches
+    // the console.
+    it('shows a detached run again once its report fails, and lets a retry send from there', () => {
+      const syncReq = runOneDeleteToSyncRequest();
+      service.reset();
+      expect(service.run()).toBeNull();
+
+      syncReq.flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      expect(service.run()).not.toBeNull();
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('forbidden');
+
+      service.retrySyncReport();
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('does not reshow a failed report once a newer run is shown, and logs it instead', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const syncReq = runOneDeleteToSyncRequest();
+      service.reset();
+
+      service.startDelete('set-2', 'other-channel', [EMOTES[1]], 'other-channel');
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      const run2SyncReq = httpMock.expectOne(SYNC_ENDPOINT_SET_2);
+      expect(service.isRunning()).toBe(false); // run 2's engine work is done, only its report is out
+      expect(service.run()?.setId).toBe('set-2');
+
+      syncReq.flush(null, { status: 403, statusText: 'Forbidden' });
+      flushFallbackResync();
+
+      expect(service.run()?.setId).toBe('set-2'); // run 1's failure did not take the dock back
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[EmotePurge] 7TV delete report of a run no longer shown did not succeed',
+        expect.objectContaining({ state: 'failed', reason: 'forbidden' }),
+      );
+
+      run2SyncReq.flush(deletedAnswer());
+    });
+  });
+
   it('does nothing without a stored token', () => {
     tokenService.clearToken();
 

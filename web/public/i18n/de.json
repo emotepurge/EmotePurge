@@ -923,6 +923,7 @@
     "button": "Emotes wiederherstellen",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Wiederherstellungsfortschritt",
+    "settling": "Wird abgeschlossen…",
     "deleteFailedFallback": "Wiederherstellen fehlgeschlagen",
     "unknownOutcome": "Unklar, ob wiederhergestellt — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
@@ -1040,6 +1041,7 @@
     "clearSelection": "Auswahl aufheben",
     "progress": "{{ finished }} / {{ total }} verarbeitet",
     "progressBarLabel": "Löschfortschritt",
+    "settling": "Wird abgeschlossen…",
     "deleteFailedFallback": "Löschen fehlgeschlagen",
     "unknownOutcome": "Unklar, ob gelöscht — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
     "confirmTitle": {

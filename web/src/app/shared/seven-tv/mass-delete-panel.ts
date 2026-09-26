@@ -244,6 +244,7 @@ export interface DeletableEmote {
         <app-run-progress-panel
           [items]="deleteService.queue()"
           [isRunning]="deleteService.isRunning()"
+          [dismissible]="deleteService.run()?.phase === 'closed'"
           [syncReport]="deleteService.syncReport()"
           [syncReportReason]="deleteService.syncReportReason()"
           [rateLimitPauseSeconds]="deleteService.rateLimitPauseSeconds()"

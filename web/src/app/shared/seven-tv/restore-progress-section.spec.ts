@@ -75,6 +75,9 @@ const DE_TRANSLATIONS = {
 
 function runInfo(overrides: Partial<RestoreRunInfo> = {}): RestoreRunInfo {
   return {
+    runId: 'restore-1',
+    phase: 'running',
+    destructive: false,
     targetSetId: 'set-1',
     expectedChannelName: 'zielkanal',
     resyncChannelName: null,
@@ -82,6 +85,9 @@ function runInfo(overrides: Partial<RestoreRunInfo> = {}): RestoreRunInfo {
     setName: 'Set-1',
     ownerOrChannelLabel: 'zielkanal',
     result: null,
+    syncReport: 'idle',
+    syncReportReason: null,
+    resyncTrigger: 'idle',
     ...overrides,
   };
 }
@@ -370,5 +376,37 @@ describe('RestoreProgressSection', () => {
     const fixture = render();
 
     expect(fixture.nativeElement.textContent.trim()).toBe('');
+  });
+
+  // #256, Plan-256 Festlegung 13: Close is offered exactly once the run's own record is `closed`,
+  // not merely once the engine stops — a report still `reporting` must keep its dock (and its
+  // eventual retry) reachable.
+  describe('Schließen-Gate (#256)', () => {
+    it('offers no Close button while the run is only reporting, not yet closed', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem()]);
+      restoreService.run.set(runInfo({ phase: 'reporting', syncReport: 'pending' }));
+
+      const fixture = render();
+
+      const buttons = [...fixture.nativeElement.querySelectorAll('button')].map(
+        (button: HTMLElement) => button.textContent?.trim(),
+      );
+      expect(buttons).not.toContain('Schließen');
+      expect(fixture.nativeElement.textContent).toContain('Wird abgeschlossen…');
+    });
+
+    it('offers Close once the run has closed', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem()]);
+      restoreService.run.set(runInfo({ phase: 'closed', syncReport: 'succeeded' }));
+
+      const fixture = render();
+
+      const buttons = [...fixture.nativeElement.querySelectorAll('button')].map(
+        (button: HTMLElement) => button.textContent?.trim(),
+      );
+      expect(buttons).toContain('Schließen');
+    });
   });
 });

@@ -88,6 +88,7 @@ import { RunProgressPanel } from './run-progress-panel';
           <app-run-progress-panel
             [items]="restoreService.queue()"
             [isRunning]="restoreService.isRunning()"
+            [dismissible]="run.phase === 'closed'"
             labelPrefix="restore"
             [syncReport]="restoreService.syncReport()"
             [syncReportReason]="restoreService.syncReportReason()"
