@@ -27,6 +27,10 @@ import { UndoCandidate } from '../export/transfer-run-export';
  * classified at all (spec 4.3, last paragraph) — a partial read could hide the second alias that
  * makes a source unsafe to remove. This module never sees a failed read and does not look at
  * `complete`.
+ *
+ * A name can sit under more than one id in the same set (DECISIONS 2026-08-04: 7TV's origin-set
+ * merging can leave the same alias on two emotes), so "who holds a name" is always a set of ids:
+ * a missing name is free only when every id holding it is the source, whose REMOVE frees it.
  */
 
 /** Why the classification itself leaves a candidate alone (spec 4.3 / 6.2) — one reason per row. */
@@ -205,8 +209,9 @@ export interface UndoPlanSummary {
 /** A read, indexed once for the lookups the table needs. */
 interface ReadIndex {
   read: SevenTvSetEntries;
-  /** Reverse of `aliasesById`: which id holds a name as an alias (`held(name)`, spec 4.3). */
-  holderByName: Map<string, string>;
+  /** Reverse of `aliasesById`: every id that holds a name as an alias (`held(name)`, spec 4.3) —
+   *  more than one when 7TV's set merging left the same alias on two emotes. */
+  holdersByName: Map<string, Set<string>>;
 }
 
 /** One candidate's classification plus its step-4 count, which the plan totals. */
@@ -518,7 +523,8 @@ function sourcePart(
 
 /**
  * Spec 4.3 steps 2–5 on the normalised names — never on the raw entries (F18). A name is free when
- * nobody holds it or the source does (the REMOVE frees it, E6); a third id holding it is E8.
+ * nobody holds it or only the source does (the REMOVE frees it, E6); any third id holding it — even
+ * next to the source — is E8, because it still holds the name after the REMOVE.
  */
 function targetFindings(candidate: UndoCandidate, index: ReadIndex): TargetFindings {
   const { read } = index;
@@ -535,10 +541,10 @@ function targetFindings(candidate: UndoCandidate, index: ReadIndex): TargetFindi
     taken: [],
   };
   for (const name of normalized.names) {
-    const holder = index.holderByName.get(name);
+    const holders = index.holdersByName.get(name) ?? new Set<string>();
     if (isPresentOnTarget(name, candidate, normalized, index)) {
       findings.alreadyPresent += 1;
-    } else if (holder === undefined || holder === candidate.sourceSevenTvEmoteId) {
+    } else if ([...holders].every((id) => id === candidate.sourceSevenTvEmoteId)) {
       findings.adds.push({ alias: name });
     } else {
       findings.taken.push({ alias: name, reason: 'targetNameTaken' });
@@ -568,15 +574,15 @@ function isPresentOnTarget(
 }
 
 function indexRead(read: SevenTvSetEntries): ReadIndex {
-  const holderByName = new Map<string, string>();
+  const holdersByName = new Map<string, Set<string>>();
   for (const [id, aliases] of read.aliasesById) {
     for (const alias of aliases) {
-      if (!holderByName.has(alias)) {
-        holderByName.set(alias, id);
-      }
+      const holders = holdersByName.get(alias) ?? new Set<string>();
+      holders.add(id);
+      holdersByName.set(alias, holders);
     }
   }
-  return { read, holderByName };
+  return { read, holdersByName };
 }
 
 /** `entriesOf(id)` from spec 4.3: the named aliases, then `null` once if the id has an aliasless

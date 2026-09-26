@@ -510,6 +510,50 @@ describe('classifyUndoRows — step 5, whether the name is free', () => {
   });
 });
 
+describe('classifyUndoRows — step 5, a name under two ids (DECISIONS 2026-08-04)', () => {
+  it.each([
+    {
+      order: 'source first',
+      entries: [
+        { id: S, alias: 'A' },
+        { id: THIRD, alias: 'A' },
+      ],
+    },
+    {
+      order: 'third id first',
+      entries: [
+        { id: THIRD, alias: 'A' },
+        { id: S, alias: 'A' },
+      ],
+    },
+  ])(
+    'step 5: A held by the source and a third id skips a full row as targetNameTaken ($order)',
+    ({ entries }) => {
+      // The REMOVE would free A only on S; THIRD still holds it, so ADD T{A} would 409 with S gone.
+      const skipped = onlySkipped(classifyUndoRows([candidate()], read(entries)));
+
+      expect(skipped.reason).toBe('targetNameTaken');
+      expect(skipped.omittedEntries).toEqual([{ alias: 'A', reason: 'targetNameTaken' }]);
+    },
+  );
+
+  it('step 5: a name two third ids hold is omitted from an addOnly row as targetNameTaken', () => {
+    const row = onlyRow(
+      classifyUndoRows(
+        [candidate({ target: { entries: [{ alias: 'A' }, { alias: 'B' }] } })],
+        read([
+          { id: THIRD, alias: 'A' },
+          { id: 'third-2', alias: 'A' },
+        ]),
+      ),
+    );
+
+    expect(row.mode).toBe('addOnly');
+    expect(row.adds).toEqual([{ alias: 'B' }]);
+    expect(row.omittedEntries).toEqual([{ alias: 'A', reason: 'targetNameTaken' }]);
+  });
+});
+
 describe('classifyUndoRows — step 6, the row', () => {
   it('step 6: REMOVE plus ADDs is full with stepCount 1 + ADDs', () => {
     const row = onlyRow(
