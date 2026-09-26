@@ -561,7 +561,12 @@ function readUndoCandidate(value: unknown, stage: TransferRunMeta['stage']): Und
     alias,
     fileStatus,
     target: { sevenTvEmoteId, entries: targetEntries, defaultName: knownDefaultName },
-    provenance: stage === 'planned' ? 'unproven' : 'confirmed',
+    // `confirmed` above only says 7TV took the target's REMOVE; it says nothing about whether the
+    // row's own ADD (giving the source its alias) ever completed. A `finished` row is `confirmed`
+    // only when its own run settled `done` — `failed`/`unknown`/`cancelled`/a stamped `pending` all
+    // mean the live state does not provably match the file, so the row gets the same origin lock and
+    // checkbox as a `planned` one (spec §18: live state proves state, not origin).
+    provenance: stage === 'planned' || fileStatus !== 'done' ? 'unproven' : 'confirmed',
   };
 }
 

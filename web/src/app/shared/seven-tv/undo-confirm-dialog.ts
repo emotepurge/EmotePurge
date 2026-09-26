@@ -165,11 +165,14 @@ const SPRITE_PX = 40;
  * with a `full` row downloads the `planned` transfer-undo file first and only then offers
  * "Starten"; a plan of `addOnly` rows only removes nothing and starts directly (4.2 Nr. 8).
  *
- * **Origin lock (F17, spec 17 K2).** A candidate from a `planned` transfer-run file is unproven:
- * nothing shows its run ever started. Its `full` rows are marked, and without the file-wide
- * confirmation they are skipped as `skippedUnproven`, the action row following what is left — the
- * service checks the same once more (T4). A `finished` file has no unproven candidate and shows
- * neither the mark nor the confirmation.
+ * **Origin lock (F17, spec 17 K2; tightened spec §18).** A candidate from a `planned` transfer-run
+ * file is unproven: nothing shows its run ever started. A `finished` file's own candidate is
+ * unproven too when its row did not settle `done` (`failed`/`unknown`/`cancelled`/a stamped
+ * `pending`) — live state proves state, not the file's stage, the same gap K2 closed for `planned`.
+ * A candidate's `full` rows are marked either way, and without the file-wide confirmation they are
+ * skipped as `skippedUnproven`, the action row following what is left — the service checks the same
+ * once more (T4). Only a file whose every candidate settled confirmed shows neither the mark nor
+ * the confirmation.
  *
  * Requests: none of its own at open; one live read per "Ziel neu laden"; the slot preview
  * (`loadRestoreSlotPreview`, #253 4.3 Nr. 8).

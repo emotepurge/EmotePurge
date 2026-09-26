@@ -768,7 +768,7 @@ describe('parseTransferRunForUndo', () => {
     expect(result.candidates.every((candidate) => candidate.provenance === 'unproven')).toBe(true);
   });
 
-  it("turns only confirmed-REMOVE rows of a finished file into candidates, marked 'confirmed'", () => {
+  it("turns only confirmed-REMOVE rows of a finished file into candidates — 'unproven' when the row itself did not settle 'done' (spec §18)", () => {
     const text = transferRunJson(
       buildTransferRunProtocol({
         ...TARGET,
@@ -776,7 +776,8 @@ describe('parseTransferRunForUndo', () => {
         startedAt: 0,
         finishedAt: 1,
         items: [
-          // REMOVE confirmed, ADD failed — still a candidate.
+          // REMOVE confirmed, ADD failed — still a candidate, but its own run did not settle
+          // 'done', so live state does not provably match the file (spec §18): 'unproven'.
           item({
             transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']),
             status: 'failed',
@@ -801,7 +802,35 @@ describe('parseTransferRunForUndo', () => {
     expect(result.stage).toBe('finished');
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0].sourceSevenTvEmoteId).toBe('src-kappa');
-    expect(result.candidates[0].provenance).toBe('confirmed');
+    expect(result.candidates[0].provenance).toBe('unproven');
+  });
+
+  it("marks a finished row 'confirmed' only when it settled 'done'; 'unknown' and 'cancelled' are 'unproven' (spec §18)", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), status: 'done' }),
+          item({ transfer: replaceRow(SOURCE_POG, 'tgt-2', ['Pog']), status: 'unknown' }),
+          item({ transfer: replaceRow(SOURCE_LUL, 'tgt-3', ['LUL']), status: 'cancelled' }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(
+      result.candidates.map((candidate) => [candidate.sourceSevenTvEmoteId, candidate.provenance]),
+    ).toEqual([
+      ['src-kappa', 'confirmed'],
+      ['src-pog', 'unproven'],
+      ['src-lul', 'unproven'],
+    ]);
   });
 
   it('keeps a finished row whose REMOVE was confirmed but whose ADD answer was lost (status unknown) as a candidate', () => {

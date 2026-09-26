@@ -1674,3 +1674,10 @@ Abschnitt sagt, wo er nicht mehr stimmt.
 10. **„Rückweg sichern gesperrt" (AK 28, 9.4).** Ohne Bestätigung gibt es keinen gesperrten Knopf
     „Rückweg sichern": die unbelegten `full`-Zeilen sind `skippedUnproven`, der Knopf fehlt, und
     „Starten" ist mit Grund gesperrt, solange keine Zeile laufen kann (17 K2).
+11. **Ein `finished`-Ergebnisprotokoll beweist die Herkunft nicht mehr allein durch seine Stufe
+    (Review-Nachbesserung, 2026-09-26).** `parseTransferRunForUndo` markiert eine Zeile aus einer
+    `finished`-Datei nur dann `provenance: 'confirmed'`, wenn ihr eigener `status` `'done'` ist;
+    jeder andere Wert (`failed`, `unknown`, `cancelled`, ein gestempeltes `pending`) macht sie
+    `'unproven'` — dieselbe Herkunftssperre und dieselbe Checkbox wie bei einer `planned`-Datei
+    (17 K2). Grund: eine vom REMOVE bestätigte Zeile sagt nichts darüber, ob ihr eigener ADD-Teil
+    je fertig wurde; der live Zustand belegt den Zustand, nicht die Dateistufe.

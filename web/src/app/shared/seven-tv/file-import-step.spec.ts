@@ -583,7 +583,10 @@ describe('FileImportStep', () => {
 
     it.each([
       ['planned', 'unproven'],
-      ['finished', 'confirmed'],
+      // The shared `transferRunText('finished')` fixture's one row settles `status: 'failed'` (its
+      // REMOVE confirmed, its ADD not) — so its candidate is 'unproven' too (spec §18: a finished
+      // row is 'confirmed' only once it settled 'done'), not merely by virtue of the file's stage.
+      ['finished', 'unproven'],
     ] as const)(
       'reports a transfer-undo result for a %s file once "undo the replacements" is picked — its candidates (%s), the resolved target and where the file came from',
       async (stage, provenance) => {

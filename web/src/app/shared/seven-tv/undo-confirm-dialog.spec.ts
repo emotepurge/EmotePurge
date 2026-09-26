@@ -691,6 +691,27 @@ describe('UndoConfirmDialog', () => {
       expect(dialog.checkbox()).toBeNull();
       expect(dialog.text()).not.toContain('unbelegt');
     });
+
+    it('shows the mark and the confirmation for a finished file whose full row is unproven, and locks the action row the same way a planned file would (spec §18: live state proves state, not origin)', () => {
+      // The parser (`transfer-run-export.ts`) only marks a finished-file candidate 'confirmed'
+      // when its own row settled 'done'; a `full` row of an 'unproven' candidate carries the same
+      // origin lock here regardless of which file kind it came from — the dialog reads
+      // `row.provenance`, never `sourceFile.stage`, directly.
+      const candidates = [candidate(1, { provenance: 'unproven' })];
+      const dialog = render({
+        candidates,
+        sourceFile: FINISHED_FILE,
+        initialRead: setRead([fullLive(1)]),
+      });
+
+      expect(dialog.rows()[0].textContent).toContain('unbelegt');
+      expect(dialog.checkbox()).not.toBeNull();
+      expect(executor(dialog).disabled).toBe(true);
+      expect(executor(dialog).getAttribute('aria-describedby')).toBe('undo-confirm-blocked');
+
+      click(dialog, executor(dialog));
+      expect(closed).toEqual([]);
+    });
   });
 
   describe('rows (K1, Festlegung 7)', () => {
