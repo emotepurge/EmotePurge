@@ -10,6 +10,78 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — A replace can be undone from its transfer file — a fourth destructive run with the replace's safeguards
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-undo.service.ts` (new: `SevenTvUndoService`,
+`UndoRunTarget`, `UndoRunInfo`, `UndoRunItem`, `UndoRunResult`, `UndoSettlement`, `UndoRunSummary`,
+`buildUndoRunProtocol`, `summarizeUndoRun`) · `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts`
+(`SevenTvRunKind` gains `'undo'`, `SEVEN_TV_RUN_KIND_LABEL_KEY.undo`) · `web/public/i18n/{de,en}.json`
+(`sevenTvRun.kind.undo`, `undo.settling`, `undo.errors.*`) — built on
+`web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`RunOperation.beforeStep`),
+`web/src/app/core/seven-tv/seven-tv-run-lifecycle.ts`, `web/src/app/shared/seven-tv/undo-plan.ts`
+and `web/src/app/shared/export/transfer-undo-export.ts`; consumed from #254's later tasks:
+`web/src/app/shared/seven-tv/undo-confirm-dialog.ts` (the effective plan and the confirmation it
+hands over), `web/src/app/shared/seven-tv/undo-flow.ts`, `web/src/app/shared/seven-tv/file-import-step.ts`
+and `web/src/app/shared/seven-tv/import-trigger.ts` (the switch that reaches `startUndo`),
+`web/src/app/shared/seven-tv/undo-progress-section.ts`, `web/src/app/shared/seven-tv/run-progress-panel.ts`,
+`web/src/app/features/usage-stats/usage-stats-page.ts`,
+`web/src/app/features/usage-stats/usage-stats-leave.guard.ts` and
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` (dock, settle effect, guard,
+`resetIfChannelChanged`).
+
+Issue #254 (spec `docs/superpowers/specs/2026-09-25-replace-undo-254-design.md`, E1, E2, E5–E7,
+E9–E11, E15–E17, E19, E22–E24, spec 17 K2/K4): a successful "replace target" (#230) could only be
+reversed by hand — the restore reached none of its rows (its filter throws out every name the source
+still holds) and carries none of the safeguards a removal needs. The undo is therefore **one door, one
+switch, its own action** (E1): a transfer-run file offers "undo the replacements" next to "fill the
+gaps", and behind it runs a fourth destructive 7TV run — `SevenTvUndoService`, its own engine
+instance like delete, restore and import — registered with the run arbiter as `'undo'`. It holds no
+start lock of its own: busy/settling and the tab's unload guard are the arbiter's (#256), exactly as
+for the three runs before it.
+
+**Every row is an undo pair, and only "exactly `{ alias }`" is removed (E2, E5).** A candidate is one
+`replace` row of the file (`planned`: every row, `unproven`; `finished`: only confirmed REMOVEs). The
+source is removed only when its live entries are exactly one named entry, ordinally equal to the
+collision alias — a REMOVE takes *every* entry of an id, so a second alias somebody gave it since
+would go with it, unrecorded. Anything else skips the row with its live counterpart. A source that is
+already gone makes the row `addOnly`: it re-adds the target's missing entries and so closes the gaps
+the replace run itself left (E7).
+
+**REMOVE first, then one ADD per missing entry, always under an explicit alias (E6, E21).** The
+collision alias belongs to the source until its REMOVE frees it; an entry the file names without an
+alias goes back under the file's `defaultName`. A step that fails ends the row: no auto-rollback, the
+gap is named in the dock and the protocol, and the same undo from the same file closes it — the row
+is then `addOnly` (E9). `partial` replaces only a `done` of an `addOnly` row that left entries out;
+`failed`, `unknown` and `cancelled` keep their status with the omissions next to them (E23, F19).
+The set's slot limit is a warning in the confirm dialog, not a lock (E17): a single-entry `full` row
+is net zero because its REMOVE runs first; only a #74 duplicate cell adds slots.
+
+**The replace's safeguards, and one more (E10, E14, E19, spec 17 K2).** Every lost answer is `unknown`
+and cleared up by one re-read after the run, by the operation of its step, never its number (E24); a
+cancel while a request is in flight ends that row `unknown` too. The recovery file (`transfer-undo`,
+`planned`) is mandatory before the first REMOVE (see the entry below). Beyond the replace: **before
+every REMOVE attempt** — a rate-limit retry included — the service reads the target set afresh and
+classifies that one row again, through the engine's `beforeStep` hook; only an unchanged
+classification sends the REMOVE. A failed or incomplete read skips the row (fail-closed); after three
+failed reads in a row every remaining `full` row is skipped without reading, `addOnly` rows run on.
+The service also repeats the dialog's **origin lock**: without the confirmation for an unproven
+(`planned`) file, no `full` row from it becomes a queue row, whatever the caller hands in.
+
+**Two reports, in order, no client resync on success (E11, E16, F8).** `sync-deleted` names the source
+of every confirmed REMOVE (also of a row whose later ADD stayed `unknown`), then `sync-restored` the
+target of every row with a confirmed ADD — set-centric, no backend change, the existing audit entries.
+The dock shows `backendTriggered` when either answer names the expected channel. The N1 fallback
+resyncs the expected channel only when every report the run sent failed for good — then no report
+reached the backend's own resync; a non-active or untracked target never gets one.
+
+**Layering exception, flagged.** The service lives in `core/seven-tv/` (spec 14) but needs the pure
+classification (`shared/seven-tv/undo-plan.ts`) at run time and the candidate and file types from
+`shared/export/` — the first `core/` → `shared/` import. Moving those pure modules into `core/`, as
+`transfer-plan.ts` already is, would restore the rule; left to review because the confirm dialog
+builds on the same modules in parallel.
+
+---
+
 ### 2026-09-26 — Every recovery file restores what its own run removed — the transfer-undo file
 
 **Betrifft:** `web/src/app/shared/export/export-envelope.ts` (`ExportKind` gains `'transfer-undo'`) ·

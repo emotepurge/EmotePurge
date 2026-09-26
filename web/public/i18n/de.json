@@ -1427,7 +1427,19 @@
     "kind": {
       "delete": "der Löschlauf",
       "restore": "die Wiederherstellung",
-      "import": "die Übertragung"
+      "import": "die Übertragung",
+      "undo": "die Rücknahme der Ersetzungen"
+    }
+  },
+  "undo": {
+    "settling": "Wird abgeschlossen — Nachlesen und Rückmeldungen laufen noch…",
+    "errors": {
+      "removedButNotRestored": "Das Quell-Emote wurde entfernt, das Ziel aber nicht vollständig zurückgeholt — im Set fehlt jetzt ein Eintrag. Dieselbe Rücknahme aus derselben Datei noch einmal starten, um die Lücke zu schließen.",
+      "cancelledMidRow": "Abgebrochen, nachdem das Quell-Emote schon entfernt war — das Ziel ist nicht vollständig zurück. Dieselbe Rücknahme noch einmal starten, um die Lücke zu schließen.",
+      "restoreIncomplete": "Nicht alle Einträge des Ziels wurden zurückgeholt. Dieselbe Rücknahme noch einmal starten, um den Rest nachzuholen.",
+      "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
+      "skippedDrift": "Übersprungen — das Set hat sich seit der Bestätigung verändert; an dieser Zeile wurde nichts geändert.",
+      "recheckUnavailable": "Übersprungen — das Set ließ sich unmittelbar vor dem Entfernen nicht lesen; an dieser Zeile wurde nichts geändert."
     }
   },
   "sevenTvToken": {
