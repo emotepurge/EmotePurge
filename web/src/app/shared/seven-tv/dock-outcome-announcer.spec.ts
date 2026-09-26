@@ -4,7 +4,11 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import {
+  ImportRunInfo,
+  ImportRunItem,
+  SevenTvImportService,
+} from '../../core/seven-tv/seven-tv-import.service';
 import {
   ResyncTriggerState,
   SevenTvRestoreService,
@@ -68,6 +72,8 @@ const DE_TRANSLATIONS = {
     summary: {
       copiedNotActive:
         "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      renamedNotActive:
+        "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       replaceSkippedDrift: {
         one: '{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
         other:
@@ -307,11 +313,26 @@ describe('DockOutcomeAnnouncer', () => {
     ]);
   });
 
-  // Finding 3 (Live-Verifikation K2 2026-09-21): a copy into a tracked non-active set never sets
-  // resyncTrigger away from 'idle' (SevenTvImportService.onRunComplete skips the call outright) —
-  // this notice takes the resync acknowledgement's own slot in the reading order instead.
-  it('speaks the copied-not-active notice in the resync slot when the run settled on a non-active target', () => {
-    importService.run.set({
+  /** Minimal `ImportRunItem` fixture for the copied/renamed-not-active tests below — only
+   *  `status` and `transfer.action` are what `hasAddDone`/`hasAdoptDone` (`dock-outcome-
+   *  announcer.ts`) read, so the rest is filled in with values that satisfy the type without
+   *  meaning anything on their own. */
+  function doneItem(action: 'add' | 'adoptSourceName'): ImportRunItem {
+    return {
+      key: '7tv-1',
+      sevenTvEmoteId: '7tv-1',
+      name: 'PogU',
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+      transfer: { action, source: {}, alias: 'PogU', target: {} },
+    } as unknown as ImportRunItem;
+  }
+
+  /** A settled run into a tracked non-active target — the one case that fires either of the two
+   *  notices below (#255 P2-2) — with `items` the only thing each test varies. */
+  function nonActiveRun(items: ImportRunItem[]): ImportRunInfo {
+    return {
       targetChannelName: 'zielkanal',
       targetOwnerDisplayName: null,
       targetSetId: 'set-1',
@@ -322,14 +343,46 @@ describe('DockOutcomeAnnouncer', () => {
       settlement: 'settled',
       removedCount: 0,
       unknownCount: 0,
-      result: { doneKeys: ['7tv-1'], items: [], startedAt: 0, finishedAt: 1 },
-    });
+      result: { doneKeys: items.map((item) => item.key), items, startedAt: 0, finishedAt: 1 },
+    };
+  }
+
+  // Finding 3 (Live-Verifikation K2 2026-09-21): a copy into a tracked non-active set never sets
+  // resyncTrigger away from 'idle' (SevenTvImportService.onRunComplete skips the call outright) —
+  // this notice takes the resync acknowledgement's own slot in the reading order instead. Needs at
+  // least one done ADD (#255 P2-2, review finding) — a run with only a plain `add` qualifies.
+  it('speaks the copied-not-active notice in the resync slot when the run settled on a non-active target with a done add', () => {
+    importService.run.set(nonActiveRun([doneItem('add')]));
     importService.resyncTrigger.set('idle');
     fixture.detectChanges();
 
     expect(spoken()).toEqual([
       "In Set ‚wegwerf' kopiert — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
     ]);
+  });
+
+  // #255 P2-2 (review finding): a rename-only run (every done row an adopt, no ADD at all) copied
+  // nothing in, so the "kopiert" notice above would misdescribe it — a run into a non-active
+  // target gets its own "umbenannt" wording instead, in the same resync slot.
+  it('speaks the renamed-not-active notice instead when every done row is an adopt', () => {
+    importService.run.set(nonActiveRun([doneItem('adoptSourceName')]));
+    importService.resyncTrigger.set('idle');
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual([
+      "In Set ‚wegwerf' umbenannt — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
+    ]);
+  });
+
+  // #255 P2-2 (review finding): a run where nothing at all succeeded has nothing true to say about
+  // what landed in the target set — neither notice fires, and the resync slot stays empty (the
+  // resync itself never ran either, since onRunComplete skips it for a non-active target).
+  it('speaks neither notice when the run settled on a non-active target with nothing done', () => {
+    importService.run.set(nonActiveRun([]));
+    importService.resyncTrigger.set('idle');
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual([]);
   });
 
   it('adds a later outcome without replacing the node of one already standing', () => {

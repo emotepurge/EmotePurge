@@ -21,6 +21,7 @@ import { NoticeBanner } from '../ui/notice-banner';
 import {
   copiedNotActiveNotice,
   importTargetCheckBlockedKey,
+  renamedNotActiveNotice,
   resyncNoticeKey,
 } from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
@@ -200,13 +201,20 @@ import { RunProgressPanel } from './run-progress-panel';
                 </span>
               }
               <!-- A tracked *non*-active target never gets the resync notice (onRunComplete skips
-                   the resync itself, finding 3, Live-Verifikation K2 2026-09-21) — this notice takes
-                   its place, naming what actually happened instead of claiming a channel-page update
-                   that never comes. aria-hidden for the same reason as the duplicate notices above,
-                   and as the resync notice it replaces. -->
+                   the resync itself, finding 3, Live-Verifikation K2 2026-09-21) — one of the next
+                   two notices takes its place, naming what actually happened instead of claiming a
+                   channel-page update that never comes. Split in two since #255 P2-2: "kopiert"
+                   only when at least one done row actually added something, "umbenannt" for a run
+                   whose done rows are exclusively renames-in-place, and neither when nothing at all
+                   succeeded. aria-hidden for the same reason as the duplicate notices above, and as
+                   the resync notice they replace. -->
               @if (copiedNotActiveNotice(); as notActive) {
                 <span aria-hidden="true" class="text-xs text-fg-muted">
                   {{ 'import.summary.copiedNotActive' | transloco: notActive }}
+                </span>
+              } @else if (renamedNotActiveNotice(); as notActive) {
+                <span aria-hidden="true" class="text-xs text-fg-muted">
+                  {{ 'import.summary.renamedNotActive' | transloco: notActive }}
                 </span>
               } @else if (resyncNoticeKey(); as noticeKey) {
                 <span aria-hidden="true" class="text-xs text-fg-muted">
@@ -312,6 +320,11 @@ export class ImportProgressSection {
   /** Same params the page's DockOutcomeAnnouncer speaks — see `copiedNotActiveNotice`. */
   protected readonly copiedNotActiveNotice = computed(() =>
     copiedNotActiveNotice(this.importService.run()),
+  );
+
+  /** Same params the page's DockOutcomeAnnouncer speaks — see `renamedNotActiveNotice`. */
+  protected readonly renamedNotActiveNotice = computed(() =>
+    renamedNotActiveNotice(this.importService.run()),
   );
 
   /** The `finished`-stage transfer-run protocol — offered after every settled run, mirroring

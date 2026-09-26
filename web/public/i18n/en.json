@@ -1366,6 +1366,7 @@
       "targetSet": "Target: set {{ setName }} of {{ owner }}",
       "openTarget": "Open target channel",
       "copiedNotActive": "Copied into the set ‚{{ setName }}' — it isn't {{ channel }}'s active set, so the channel page won't show it.",
+      "renamedNotActive": "Renamed in the set ‚{{ setName }}' — it isn't {{ channel }}'s active set, so the channel page won't show it.",
       "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped after the first row.",
       "removed": {
         "one": "{{ count }} emote was removed from the target set.",

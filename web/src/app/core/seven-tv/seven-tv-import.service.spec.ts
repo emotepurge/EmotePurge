@@ -1405,6 +1405,28 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
+    // #255 P3.5 (review finding): doneAdoptCount filters on `status === 'done'`, not merely on the
+    // action — a failed adopt (a name conflict on the UPDATE, say) must not inflate the "M
+    // umbenannt" segment the dock derives from this count.
+    it('counts a done adopt but not a failed one, in the same run', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [adoptRow(SOURCE_X, 'KappaOld'), adoptRow(SOURCE_Y, 'PogOld')],
+      });
+      expect(service.doneAdoptCount()).toBe(0);
+
+      answerNext(gqlRejection('BAD_REQUEST emote name conflict', 409));
+      answerNext({});
+
+      const [failedAdopt, doneAdopt] = service.run()?.result?.items ?? [];
+      expect(failedAdopt.status).toBe('failed');
+      expect(doneAdopt.status).toBe('done');
+      expect(service.doneAdoptCount()).toBe(1);
+
+      // Adopts report nothing to sync-imported (only the resync pulls the renamed entry in).
+      httpMock.expectNone(SYNC_IMPORTED_B);
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
     it('leaves out a queue row the shown plan does not know instead of throwing', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([SOURCE_X]));
       const shown = service.run();

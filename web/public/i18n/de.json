@@ -1366,6 +1366,7 @@
       "targetSet": "Ziel: Set {{ setName }} von {{ owner }}",
       "openTarget": "Zielkanal öffnen",
       "copiedNotActive": "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      "renamedNotActive": "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde nach der ersten Zeile abgebrochen.",
       "removed": {
         "one": "{{ count }} Emote wurde aus dem Zielset entfernt.",

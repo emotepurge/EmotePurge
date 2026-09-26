@@ -59,6 +59,8 @@ const DE_TRANSLATIONS = {
       openTarget: 'Zielkanal öffnen',
       copiedNotActive:
         "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      renamedNotActive:
+        "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       insufficientPrivileges: 'Das 7TV-Token hat im Zielset kein Schreibrecht.',
       downloadProtocol: 'Protokoll herunterladen',
       protocolNotSaved: 'Protokoll noch nicht gespeichert.',
@@ -324,24 +326,17 @@ describe('ImportProgressSection', () => {
       ).toBe(false);
     });
 
-    it('shows the copied-not-active notice instead of a resync notice once the run has settled', () => {
+    // Needs at least one done ADD (#255 P2-2, review finding) — `doneItem()`'s default
+    // `SOURCE_A_TRANSFER` is a plain `add`, so this stays the "copied" case.
+    it('shows the copied-not-active notice instead of a resync notice once the run has settled with a done add', () => {
       importService.isRunning.set(false);
-      importService.queue.set([
-        {
-          key: 'a',
-          sevenTvEmoteId: '7tv-a',
-          name: 'A',
-          status: 'done',
-          completedSteps: 1,
-          failedStep: null,
-        },
-      ]);
+      importService.queue.set([doneItem()]);
       importService.run.set(
         runInfo({
           targetChannelName: 'zielkanal',
           targetSetName: 'wegwerf',
           targetIsActiveSet: false,
-          result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+          result: { doneKeys: ['7tv-a'], items: [doneItem()], startedAt: 0, finishedAt: 1 },
         }),
       );
       // The service never sets resyncTrigger away from 'idle' for a non-active target
@@ -355,6 +350,69 @@ describe('ImportProgressSection', () => {
         "In Set ‚wegwerf' kopiert — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
       );
       expect(fixture.nativeElement.textContent).not.toContain('Abgleich');
+    });
+
+    // #255 P2-2 (review finding): a rename-only run (every done row an adopt, no ADD at all)
+    // copied nothing in, so the notice above would misdescribe it — the section shows its own
+    // "umbenannt" wording in the same slot instead.
+    it('shows the renamed-not-active notice instead when every done row is an adopt', () => {
+      const adoptItem = doneItem({
+        transfer: {
+          action: 'adoptSourceName',
+          source: SOURCE_A_TRANSFER.source,
+          alias: 'A',
+          target: {
+            sevenTvEmoteId: '7tv-a-old',
+            aliases: ['AOld'],
+            hasAliaslessEntry: false,
+            defaultName: null,
+          },
+        },
+      });
+      importService.isRunning.set(false);
+      importService.queue.set([adoptItem]);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: ['7tv-a'], items: [adoptItem], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      importService.resyncTrigger.set('idle');
+
+      const fixture = render();
+
+      const notice = fixture.nativeElement.querySelector('[aria-hidden="true"]');
+      expect(notice?.textContent.trim()).toBe(
+        "In Set ‚wegwerf' umbenannt — es ist nicht das aktive Set von zielkanal, die Kanalseite zeigt es deshalb nicht.",
+      );
+      expect(fixture.nativeElement.textContent).not.toContain('Abgleich');
+    });
+
+    // #255 P2-2 (review finding): a run where nothing at all succeeded has nothing true to say
+    // about what landed in the target set — neither notice fires.
+    it('shows neither notice when the run has settled with nothing done', () => {
+      // A non-empty, all-failed queue: the panel's own visibility gate is `isRunning() ||
+      // queue().length > 0` — an *empty* queue here would hide the whole section and let this test
+      // pass for the wrong reason, without ever exercising the notice guard at all.
+      const failedItem = doneItem({ status: 'failed', failedStep: 0 });
+      importService.isRunning.set(false);
+      importService.queue.set([failedItem]);
+      importService.run.set(
+        runInfo({
+          targetChannelName: 'zielkanal',
+          targetSetName: 'wegwerf',
+          targetIsActiveSet: false,
+          result: { doneKeys: [], items: [failedItem], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+      importService.resyncTrigger.set('idle');
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('kopiert —');
+      expect(fixture.nativeElement.textContent).not.toContain('umbenannt —');
     });
 
     it('shows nothing yet while the run is still in flight (no settled result)', () => {

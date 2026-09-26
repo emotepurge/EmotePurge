@@ -43,15 +43,14 @@ export function resyncNoticeKey(
   return state === 'idle' ? null : `${family}.resync.${state}`;
 }
 
-/** The `import.summary.copiedNotActive` transloco params, or `null` while the notice does not apply
- *  (finding 3, Live-Verifikation K2 2026-09-21) — shared by this announcer and the visible (but
- *  aria-hidden) notice it speaks for (`ImportProgressSection`), same reason as {@link resyncNoticeKey}
- *  above. A copy into a tracked *non*-active set never fires `SevenTvImportService.onRunComplete`'s
- *  resync (there is nothing for `resyncTrigger` to become but 'idle'), so this notice fills the gap
- *  that would otherwise leave the run's actual outcome unstated once it settles. `run.result !==
- *  null` gates it to a *settled* run, mirroring `resyncTrigger`'s own only-set-after-completion
- *  timing — a run still in flight has nothing to report here yet. */
-export function copiedNotActiveNotice(
+/** The two settled-run notices below (`copiedNotActiveNotice`, `renamedNotActiveNotice`) share this
+ *  gate: a *settled* (`result !== null`) run into a tracked, non-active set — the case
+ *  `SevenTvImportService.onRunComplete`'s resync never fires for at all (there is nothing for
+ *  `resyncTrigger` to become but 'idle'), so one of these two notices fills the gap that would
+ *  otherwise leave the run's actual outcome unstated once it settles. Returns `null` for a run that
+ *  is untracked, still active, still in flight, or fully failed (nothing to report either way —
+ *  #255 P2-2 narrowed this from "any settled run" to "a settled run with something to show"). */
+function notActiveNoticeParams(
   run: ImportRunInfo | null,
 ): { channel: string; setName: string } | null {
   if (
@@ -63,6 +62,50 @@ export function copiedNotActiveNotice(
     return null;
   }
   return { channel: run.targetChannelName, setName: run.targetSetName };
+}
+
+/** Whether `run.result` has at least one `done` row whose action actually adds an entry to the
+ *  target set (`'add'`, `'replace'`, `'renameSource'` — everything but `'adoptSourceName'`, the one
+ *  action that renames an existing target entry in place instead, see `TransferRow`'s own doc). A
+ *  run in flight (`result === null`) or with no items at all answers `false`. */
+function hasAddDone(run: ImportRunInfo | null): boolean {
+  const items = run?.result?.items ?? [];
+  return items.some((item) => item.status === 'done' && item.transfer.action !== 'adoptSourceName');
+}
+
+/** The `'adoptSourceName'` counterpart to {@link hasAddDone} — at least one `done` rename-in-place. */
+function hasAdoptDone(run: ImportRunInfo | null): boolean {
+  const items = run?.result?.items ?? [];
+  return items.some((item) => item.status === 'done' && item.transfer.action === 'adoptSourceName');
+}
+
+/** The `import.summary.copiedNotActive` transloco params, or `null` while the notice does not apply
+ *  (finding 3, Live-Verifikation K2 2026-09-21) — shared by this announcer and the visible (but
+ *  aria-hidden) notice it speaks for (`ImportProgressSection`), same reason as {@link resyncNoticeKey}
+ *  above.
+ *
+ *  Requires at least one `done` ADD (#255 P2-2, review finding): a rename-only run (every `done`
+ *  row an adopt, none an ADD) copied nothing in, so "kopiert" would misdescribe it the same way the
+ *  confirm dialog's "Kopieren" button would — {@link renamedNotActiveNotice} covers that case with
+ *  its own wording instead, and a run where nothing at all succeeded gets neither notice. */
+export function copiedNotActiveNotice(
+  run: ImportRunInfo | null,
+): { channel: string; setName: string } | null {
+  return hasAddDone(run) ? notActiveNoticeParams(run) : null;
+}
+
+/** The `import.summary.renamedNotActive` transloco params, or `null` while the notice does not
+ *  apply (#255 P2-2, review finding) — the rename-only counterpart to {@link copiedNotActiveNotice}:
+ *  fires only for a settled run into a tracked non-active set whose `done` rows are *exclusively*
+ *  adopts (at least one, none an ADD). A mixed run (at least one ADD *and* at least one adopt done)
+ *  still gets the "kopiert" notice above — same rule the confirm dialog's title/button already
+ *  follow (`titleIsRenameOnly`, `import-confirm-dialog.ts`): mixed reads as "copied", never
+ *  "renamed", because it did in fact add something. A run where nothing at all succeeded (every row
+ *  failed) gets neither notice — there is nothing true to say about what landed in the target set. */
+export function renamedNotActiveNotice(
+  run: ImportRunInfo | null,
+): { channel: string; setName: string } | null {
+  return !hasAddDone(run) && hasAdoptDone(run) ? notActiveNoticeParams(run) : null;
 }
 
 /** Translation key for the dock's "n of them hidden by the filter" line, shared by this announcer
@@ -189,6 +232,8 @@ export function markedCountNoticeKey(count: number): string {
       }
       @if (importCopiedNotActive(); as notActive) {
         <p>{{ 'import.summary.copiedNotActive' | transloco: notActive }}</p>
+      } @else if (importRenamedNotActive(); as notActive) {
+        <p>{{ 'import.summary.renamedNotActive' | transloco: notActive }}</p>
       } @else if (importResyncKey(); as key) {
         <p>{{ key | transloco }}</p>
       }
@@ -240,5 +285,8 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importCopiedNotActive = computed(() =>
     copiedNotActiveNotice(this.importService.run()),
+  );
+  protected readonly importRenamedNotActive = computed(() =>
+    renamedNotActiveNotice(this.importService.run()),
   );
 }
