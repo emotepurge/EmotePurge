@@ -1264,7 +1264,7 @@
       "runNotice": "Das Hinzufügen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Emotes.",
       "runNoticeRenameOnly": "Das Umbenennen läuft danach automatisch nacheinander mit kurzer Verzögerung zwischen den Einträgen.",
       "execute": "Kopieren",
-      "executeRenameOnly": "Übertragen",
+      "executeRenameOnly": "Angleichen",
       "removals": {
         "one": "{{ count }} Emote wird aus dem Zielset entfernt und durch das Quell-Emote ersetzt.",
         "other": "{{ count }} Emotes werden aus dem Zielset entfernt und durch die Quell-Emotes ersetzt."

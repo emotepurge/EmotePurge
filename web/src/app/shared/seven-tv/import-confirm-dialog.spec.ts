@@ -119,7 +119,7 @@ const DE_TRANSLATIONS = {
       runNotice: 'Das Hinzufügen läuft danach automatisch nacheinander.',
       runNoticeRenameOnly: 'Das Umbenennen läuft danach automatisch nacheinander.',
       execute: 'Kopieren',
-      executeRenameOnly: 'Übertragen',
+      executeRenameOnly: 'Angleichen',
       removals: {
         one: '{{ count }} Emote wird aus dem Zielset entfernt.',
         other: '{{ count }} Emotes werden aus dem Zielset entfernt.',
@@ -1627,10 +1627,13 @@ describe('ImportConfirmDialog', () => {
       });
 
       // Spec #255: a rename-only plan adds nothing, so the ordinary "Kopieren" button and its
-      // "Hinzufügen läuft danach…" notice would both misdescribe the run — the button reuses the
-      // one established main-action verb ("Übertragen", DECISIONS #92) instead of a fourth word,
-      // and the notice swaps to a matching sentence about the renames.
-      it('shows the "Übertragen" button and a matching run notice for a rename-only plan', async () => {
+      // "Hinzufügen läuft danach…" notice would both misdescribe the run — the button matches the
+      // title's own word ("Angleichen", import.confirm.titleAlign) instead of a fourth word for a
+      // run that, unlike every other plan here, does not add a thing. Review finding #255 P2-1: an
+      // earlier version of this fix reused "Übertragen" here, but DECISIONS 2026-09-07 ("Ein Verb
+      // für die Übertragung", #92) reserves that verb for the entry point that opens the whole
+      // import flow, not for a button inside the confirmation it leads to.
+      it('shows the "Angleichen" button and a matching run notice for a rename-only plan', async () => {
         const dialog = render({
           source: channelSource([row('src-m', 'Pog')]),
           target: readyTarget({ emotes: [emote('src-m', 'PogOld')] }),
@@ -1639,7 +1642,7 @@ describe('ImportConfirmDialog', () => {
         choose(dialog, 'Pog', 'adoptSourceName');
         apply(dialog);
 
-        expect(dialog.hasButton('Übertragen')).toBe(true);
+        expect(dialog.hasButton('Angleichen')).toBe(true);
         expect(dialog.hasButton('Kopieren')).toBe(false);
         expect(dialog.text()).toContain('Das Umbenennen läuft danach automatisch nacheinander.');
         expect(dialog.text()).not.toContain(
@@ -1659,7 +1662,7 @@ describe('ImportConfirmDialog', () => {
         apply(dialog);
 
         expect(dialog.hasButton(EXECUTE)).toBe(true);
-        expect(dialog.hasButton('Übertragen')).toBe(false);
+        expect(dialog.hasButton('Angleichen')).toBe(false);
         expect(dialog.text()).toContain('Das Hinzufügen läuft danach automatisch nacheinander.');
         expect(dialog.text()).not.toContain(
           'Das Umbenennen läuft danach automatisch nacheinander.',

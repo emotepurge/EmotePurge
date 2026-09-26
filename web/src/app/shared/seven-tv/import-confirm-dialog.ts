@@ -1001,9 +1001,13 @@ export class ImportConfirmDialog {
   protected readonly isVerifying = computed(() => this.actionState().kind === 'verifying');
 
   // A rename-only plan (titleIsRenameOnly) copies nothing in, so "Kopieren" would be as wrong on
-  // the button as it would be in the title — this matches the title's own word instead, reusing
-  // the one established main-action verb (docs/DECISIONS.md "Ein Verb für die Übertragung", #92)
-  // rather than a fourth word for a run that, unlike every other plan here, does not add a thing.
+  // the button as it would be in the title — this matches the title's own word instead
+  // ("import.confirm.titleAlign" → "Angleichen"/"Align"), a fourth word rather than reusing
+  // "Übertragen" for a second control: DECISIONS 2026-09-07 ("Ein Verb für die Übertragung", #92)
+  // reserves that verb for the entry point that opens the whole import flow
+  // (`import.copyButton`/`import.dockCopyButton`), not for a button inside the confirmation it
+  // leads to — review finding #255 P2-1 corrected an earlier version of this comment (and the
+  // button) that reused it here.
   // A rename-only plan never carries a `replace` row (adoptCount > 0 implies removeCount === 0,
   // `conflict-resolution.ts`'s `summarizeTransferPlan`), so this check never competes with the
   // removal branch below. Without a removal the ordinary label is today's "Kopieren", unchanged
