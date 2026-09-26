@@ -1082,7 +1082,7 @@
       "rateLimited": "Too many requests to 7TV (rate limit) — try again later.",
       "rateLimitedGaveUp": "7TV rate limit still active after several waits — emote skipped.",
       "cancelledMidRow": "Cancelled partway — 7TV had already carried out part of it.",
-      "beforeStepFailed": "Skipped – the check before this step failed.",
+      "beforeStepFailed": "Skipped — the check before this step failed.",
       "networkError": "Couldn't connect to 7TV (network error).",
       "genericStatus": "7TV error (status {{ status }}).",
       "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",

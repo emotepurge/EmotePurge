@@ -30,7 +30,7 @@ const DE_TRANSLATIONS = {
       rateLimitedGaveUp:
         '7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.',
       cancelledMidRow: 'Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.',
-      beforeStepFailed: 'Übersprungen – die Prüfung vor dem Schritt ist fehlgeschlagen.',
+      beforeStepFailed: 'Übersprungen — die Prüfung vor dem Schritt ist fehlgeschlagen.',
     },
   },
 };
@@ -783,16 +783,21 @@ describe('SevenTvRunEngine', () => {
       expect(engine.isRunning()).toBe(false);
     });
 
-    it('sends exactly one request when the hook observable emits twice synchronously', () => {
-      const first: StepGate = { kind: 'proceed' };
-      const second: StepGate = { kind: 'skip', errorMessage: 'ignored' };
-      const beforeStep = vi.fn().mockReturnValue(of(first, second));
+    it('sends exactly one request when the hook observable emits proceed twice synchronously', () => {
+      const proceed: StepGate = { kind: 'proceed' };
+      const beforeStep = vi.fn().mockReturnValue(of(proceed, proceed));
       const operation: RunOperation = { ...TEST_OPERATION, beforeStep };
       expect(start([EMOTES[0]], operation)).toBe(true);
 
-      // expectOne itself proves there is exactly one outstanding request, not two.
+      // `concatMap` inside runGatedOne serialises rather than duplicates outright, so an
+      // `expectOne` taken right after `start()` would pass even without take(1): the second
+      // `proceed` would just be queued behind the first request, not sent alongside it. The actual
+      // proof is that no *second* request follows once the first one's answer lets the chain move
+      // on — that is where an un-gated double emission would send its duplicate REMOVE.
       httpMock.expectOne(GQL_ENDPOINT).flush({});
+      httpMock.expectNone(GQL_ENDPOINT);
       vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectNone(GQL_ENDPOINT);
 
       expect(engine.queue()[0].status).toBe('done');
     });
