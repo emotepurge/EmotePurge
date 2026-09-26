@@ -951,7 +951,8 @@
     "errors": {
       "targetNotEditable": "The set is not (or no longer) editable, or it no longer exists.",
       "targetNotSelectable": "The set is not a normal emote set.",
-      "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment."
+      "targetCheckUnavailable": "The set could not be checked right now — please try again in a moment.",
+      "channelUnknown": "This run's channel is unknown, so restoring is locked."
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were restored on 7TV, but EmotePurge could not record it. This usually resolves itself within a minute.",

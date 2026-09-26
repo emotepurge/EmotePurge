@@ -421,7 +421,10 @@ export class SevenTvDeleteService {
         // The threeway reading (`map`, not inside `next:`) lives ahead of `retry` so a malformed
         // 200 answer that makes `classifySyncInSetResponse` throw ends the report like any other
         // transient failure — an uncaught throw inside a `next:` callback would otherwise leave
-        // this run `reporting` forever, never `closed` (#256 review finding).
+        // this run `reporting` forever, never `closed` (#256 review finding). `retry`'s `delay`
+        // below then also retries this throw (a plain `TypeError`, not an `HttpErrorResponse` —
+        // its `status` reads `undefined`, so neither branch of the 401/403 check matches):
+        // uncritical, because a retried `sync-deleted` call is idempotent either way.
         map((answer: SyncDeletedInSetResponse) =>
           classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
         ),

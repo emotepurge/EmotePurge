@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { Router, RouterOutlet } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
@@ -151,15 +151,29 @@ export class ChannelWorkspaceLayout {
   constructor() {
     effect(() => {
       const channelName = this.channelName();
-      // A finished mass-delete or restore run from another channel must not follow the user in here.
-      this.deleteService.resetIfChannelChanged(channelName);
-      this.restoreService.resetIfChannelChanged(channelName);
-      // Its own call, not part of the reset above: `resetIfChannelChanged` deliberately returns
-      // early when there is no run record at all, which is exactly the state a confirmed-but-not-yet
-      // started delete is in. Its dock claim would otherwise survive the channel change and hold
-      // this channel's dock open — empty — for the length of its notice window.
-      this.deleteService.clearConfirmedRun();
-      this.loadPermissions(channelName);
+      // #256 P1 (Plan-256 review): everything below must run only when `channelName` itself
+      // changes, never when a run's own signal does. `resetIfChannelChanged` (both services) has
+      // read `run()`/`phase` since #256 T2 — without `untracked`, that read makes this effect a
+      // dependent of the very record it inspects, so the moment a carried-over run's report reaches
+      // `closed` (Plan-256 Festlegung 13 lets it follow the user here while still `reporting`), the
+      // effect reruns with the *same* `channelName` and immediately resets it — the dock and its
+      // retry vanish the instant the run finishes, with no `console.warn` and no chance for the user
+      // to ever see the outcome. `untracked` is what keeps a channel *switch* as the only trigger;
+      // a run reaching `closed` on the page it now sits on then waits for the next switch (or an
+      // explicit close) exactly as Festlegung 13 intends.
+      untracked(() => {
+        // A finished mass-delete or restore run from another channel must not follow the user in
+        // here.
+        this.deleteService.resetIfChannelChanged(channelName);
+        this.restoreService.resetIfChannelChanged(channelName);
+        // Its own call, not part of the reset above: `resetIfChannelChanged` deliberately returns
+        // early when there is no run record at all, which is exactly the state a
+        // confirmed-but-not-yet started delete is in. Its dock claim would otherwise survive the
+        // channel change and hold this channel's dock open — empty — for the length of its notice
+        // window.
+        this.deleteService.clearConfirmedRun();
+        this.loadPermissions(channelName);
+      });
     });
 
     // The 202 only means "the worker was told". This is what turns "angestoßen" into

@@ -113,15 +113,23 @@ kind of `linkedSignal` projection `run()` already gave the import. Neither ever 
 a delete/restore run has no re-read, so it goes straight from `running` to `reporting`. Two
 behaviour changes follow:
 
-- **Every delete row is destructive** (Plan-256 Festlegung 6) — a delete run now arms the
-  `beforeunload` guard from `startDelete` to `closed`, the same way an import's `replace` plan does;
-  a restore never does (only `ADD`s, `destructive: false` always).
+- **Every delete row is destructive** (Plan-256 Festlegung 6) — a delete run's `destructiveOpen`
+  now correctly reads `true` from `startDelete` to `closed`, the same way an import's `replace` plan
+  drives its own; a restore's always stays `false` (only `ADD`s, `destructive: false` always). The
+  signal is what the tab's `beforeunload` guard will hang off, but the actual arming — the union of
+  `destructiveOpen` across delete, restore and import into one guard — is T3's arbiter, not this
+  step.
 - **Schließen-Gate and channel switch now wait for `closed`** (Plan-256 Festlegung 13, Codex-Befund
   2 on the plan): both docks bind `[dismissible]` to `run.phase === 'closed'` instead of "the engine
   stopped", and `resetIfChannelChanged` now only resets a `closed` run — a run still reporting
   follows the user to the next channel for the few seconds until its report reaches an end state,
-  rather than losing its dock (and its retry) to a channel switch mid-report. A run detached this
-  way whose report then ends `failed`/`partial` shows itself again, exactly like the import's.
+  rather than losing its dock (and its retry) to a channel switch mid-report; the host page's own
+  channel-change effect reads `run()` only `untracked()`, so the run reaching `closed` on the page it
+  now sits on does not itself retrigger the switch check (#256 review finding, P1) — only the next
+  actual channel change, or an explicit close, does. Losing its dock this way is a different case
+  from a run *detached* by a programmatic `reset()`: that one, should its report then end
+  `failed`/`partial`, shows itself again exactly like the import's — a channel switch never detaches
+  a still-reporting run in the first place, so this reshow path is not what carries it across pages.
 
 ---
 

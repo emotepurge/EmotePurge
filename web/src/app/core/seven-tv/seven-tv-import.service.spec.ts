@@ -1121,6 +1121,33 @@ describe('SevenTvImportService', () => {
       httpMock.expectNone(RESYNC_C);
     });
 
+    // #256 P2-1 (Plan-256 review): a malformed 200 answer makes `classifySyncInSetResponse` throw
+    // inside the `map` ahead of `retryTransientSyncFailures` — this proves that throw is retried
+    // exactly like an HTTP failure (the comment beside that `map` call explains why: a plain
+    // `TypeError`, not an `HttpErrorResponse`, so the 401/403 check never matches it) and, once the
+    // retries are exhausted, still reaches an end state rather than leaving the run `reporting`
+    // forever. Same case as `seven-tv-delete.service.spec.ts`'s and
+    // `seven-tv-restore.service.spec.ts`'s own versions of this test, here for the import's
+    // `sync-deleted` removal report.
+    it('retries a malformed 200 removal answer that makes the classification throw, and closes the run once the retries are exhausted', () => {
+      service.startImport(TARGET_UNTRACKED, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x')],
+      });
+      answerNext({}); // REMOVE
+      answerNext({}); // ADD
+
+      httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+      httpMock.expectOne(SYNC_DELETED_SET_U).flush(null);
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_DELETED_SET_U).flush(null);
+      vi.advanceTimersByTime(4000);
+      httpMock.expectOne(SYNC_DELETED_SET_U).flush(null);
+
+      expect(service.removalReport()).toBe('failed');
+      expect(service.removalReportReason()).toBe('other');
+      expect(service.run()?.phase).toBe('closed');
+    });
+
     it('sends no removal report when no REMOVE was confirmed — and no ADD after a failed REMOVE', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],

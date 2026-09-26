@@ -655,6 +655,26 @@ export class MassDeletePanel {
     if (doneItems.length === 0) {
       return;
     }
+    // #256 P3-3 (Plan-256 review): the delete service is a root singleton, so its finished run can
+    // still be the one shown here after the workspace has moved to a different channel (Plan-256
+    // Festlegung 13 lets a reporting run follow the user; this panel's own `channelName()` input
+    // then updates to the new page while `run` keeps pointing at the old one). Attributing the
+    // restore to the *live* page in that case — the pre-#256 behaviour, back when a run's `channelName`
+    // and the panel's own input could never drift apart — would tag a run whose actual removals
+    // happened on `run.channelName` as belonging to wherever the dock was merely still visible.
+    // Fail-closed: use the run's own frozen channel, which is exactly the live page's value in the
+    // ordinary case (nothing has been "taken along") and only differs in the carried-over one, where
+    // it is the correct answer. `channelName` is a required field of `DeleteRunInfo`, never empty in
+    // practice — the guard below only exists so a future run shape that cannot supply one locks the
+    // button instead of silently mis-attributing it.
+    const hostChannelName = run.channelName;
+    if (!hostChannelName) {
+      this.abortNotice.set({
+        leadKey: 'restore.nothingRestored',
+        reasonKey: 'restore.errors.channelUnknown',
+      });
+      return;
+    }
     this.restoreConfirmPending.set(true);
 
     // #255 P2 (Codex review, second finding): `handedOff` is `true` exactly when this read's own
@@ -687,12 +707,16 @@ export class MassDeletePanel {
             });
             return;
           }
-          // The panel's own inputs are the host fields (spec 6.3): the page this restore starts
-          // from, not the delete run's frozen channel — a restore into a non-active or foreign set
-          // must still be attributed to whichever page the button was clicked on (E13, E21).
+          // `hostChannelName` is the delete run's own frozen channel, not necessarily this panel's
+          // live `channelName()` input (spec 6.3, E13/E21 — revised by #256 P3-3): in the ordinary
+          // case, where nothing has moved the dock to another channel since the delete started,
+          // the two are the same value, so this still attributes a restore into a non-active or
+          // foreign set to whichever page the delete itself ran on. `hostSelectedSetId` stays the
+          // live dropdown value — it only feeds `RestoreProgressSection`'s "this view shows nothing
+          // from this run" line, which is about the set currently on screen, not about ownership.
           const target: ResolvedRestoreTarget = {
             ...resolution.target,
-            hostChannelName: this.channelName(),
+            hostChannelName,
             hostSelectedSetId: this.setId(),
           };
           if (!this.tokenService.hasToken()) {

@@ -951,7 +951,8 @@
     "errors": {
       "targetNotEditable": "Das Set ist nicht (mehr) bearbeitbar oder existiert nicht mehr.",
       "targetNotSelectable": "Das Set ist kein normales Emote-Set.",
-      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen."
+      "targetCheckUnavailable": "Das Set konnte gerade nicht geprüft werden — bitte gleich noch einmal versuchen.",
+      "channelUnknown": "Der Kanal dieses Laufs ist nicht bekannt — Wiederherstellen ist deshalb gesperrt."
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV wiederhergestellt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",

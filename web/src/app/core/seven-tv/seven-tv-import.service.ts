@@ -865,6 +865,10 @@ export class SevenTvImportService {
         // so a malformed 200 answer that makes `classifySyncInSetResponse` throw ends the report
         // like any other transient failure — an uncaught throw inside a `next:` callback would
         // otherwise leave this run `reporting` forever, never `closed` (#256 review finding).
+        // `retryTransientSyncFailures`'s `delay` then also retries this throw (a plain `TypeError`,
+        // not an `HttpErrorResponse` — its `status` reads `undefined`, so neither branch of the
+        // 401/403 check matches): uncritical, because a retried `sync-deleted` call is idempotent
+        // either way.
         map((answer) => ({
           outcome: classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
           resyncTriggered: answer.resyncTriggered,

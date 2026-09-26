@@ -2561,7 +2561,7 @@ function targetsResponse(setId: string, trackedChannel: string): EmoteSetTargets
   };
 }
 
-describe('MassDeletePanel — the restore-confirm path resolves its target fresh and attributes the dock to the live page (#253 spec E13/E16)', () => {
+describe("MassDeletePanel — the restore-confirm path resolves its target fresh and attributes the dock to the delete run's own channel (#253 spec E13/E16, revised by #256 P3-3)", () => {
   let fixture: ComponentFixture<MassDeletePanel>;
   let httpMock: HttpTestingController;
   let getSetStatus: ReturnType<typeof vi.fn>;
@@ -2582,10 +2582,17 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
   // The tracked channel the fresh pre-check resolves `set-1` to — deliberately equal to the
   // delete run's own frozen `channelName` (a realistic case: the account that owns the target set
   // is the same one that ran the delete), and deliberately distinct from `LIVE_CHANNEL` so a test
-  // that asserted the *pre-#253* value would still fail if this leaked in by accident. `LIVE_CHANNEL`
-  // is the panel's current page — since #253 that is `hostChannelName`, no longer the mutation's
-  // expected channel (spec 6.3: `hostChannelName = channelName()`, `expectedChannelName` comes from
-  // the resolved target instead).
+  // that asserted the wrong one would still fail if it leaked in by accident. `expectedChannelName`
+  // comes from the resolved target (spec 6.3), never from either of these two.
+  //
+  // `LIVE_CHANNEL` stands in for the panel's current page having moved on from `RUN_CHANNEL` since
+  // the delete itself ran there — the delete service is a root singleton, so its finished run can
+  // still be the one this panel shows after a channel switch (Plan-256 Festlegung 13, #256 P3-3).
+  // Before #256, `hostChannelName` followed this live value unconditionally (#253 spec E13/E16); a
+  // carried-over run then had its restore attributed to `LIVE_CHANNEL`, a channel its own removals
+  // never touched. `hostChannelName` now comes from the run's own `channelName` instead — the same
+  // value as `LIVE_CHANNEL` in the ordinary case where the two never diverge, and the correct one in
+  // this carried-over case, which every test below now deliberately provokes.
   const RUN_CHANNEL = 'runchannel';
   const LIVE_CHANNEL = 'livechannel';
 
@@ -2678,7 +2685,7 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
     expect(getSetStatus).not.toHaveBeenCalledWith(LIVE_CHANNEL);
   });
 
-  it('starts the restore against the resolved target, attributing the dock to the live page', () => {
+  it("starts the restore against the resolved target, attributing the dock to the delete run's own channel even though the panel has since moved to a different one", () => {
     fixture.componentInstance['openRestoreConfirm']();
     flushTargetsResponse();
 
@@ -2695,17 +2702,39 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
     // The mutation target (expectedChannelName/resyncChannelName/ownerOrChannelLabel) comes from
     // the fresh pre-check (spec 6.2/6.4), never from the panel's live channelName — its set is the
     // resolved account's active one here, so its channel is the expected hit and there is no
-    // client resync. `hostChannelName` is the live page instead (spec 6.3, E13): the dock belongs
-    // to wherever the button was actually clicked, not to the delete run's frozen channel.
+    // client resync. `hostChannelName` is the delete run's own `channelName` (spec 6.3, E13,
+    // revised by #256 P3-3) — `RUN_CHANNEL`, not the panel's live `LIVE_CHANNEL` input: the dock
+    // belongs to wherever the delete itself actually ran, which this test deliberately makes a
+    // different page than the one the restore button was clicked on.
     expect(startRestore.mock.calls[0][0]).toEqual({
       setId: 'set-1',
       expectedChannelName: RUN_CHANNEL,
       resyncChannelName: null,
-      hostChannelName: LIVE_CHANNEL,
+      hostChannelName: RUN_CHANNEL,
       setName: 'set-1',
       ownerOrChannelLabel: RUN_CHANNEL,
     });
   });
+
+  // #256 P3-3, fail-closed: `DeleteRunInfo.channelName` is a required field and never empty in
+  // practice, but the button must not silently mis-attribute a restore if some future run shape
+  // ever left it unset — this locks the button with a reason instead, before the pre-check chain
+  // (and its 7TV read) even starts.
+  it('shows the abort notice and starts nothing when the finished run carries no channel', () => {
+    lastRun.set({ ...lastRun()!, channelName: '' });
+
+    fixture.componentInstance['openRestoreConfirm']();
+
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'restore.errors.channelUnknown',
+    });
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+    httpMock.expectNone('/api/seventv/me/emote-set-targets');
+  });
+
   // Operator decision 2026-09-22 ("middle rule"): the restore offered from a finished run runs the
   // same per-alias check as the file restore — here, the run's one alias is already back. #255:
   // since that is also the *only* row, the open-time check already leaves nothing to confirm, so
@@ -2730,7 +2759,7 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
 
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(startRestore).toHaveBeenCalledWith(
-      expect.objectContaining({ setId: 'set-1', hostChannelName: LIVE_CHANNEL }),
+      expect.objectContaining({ setId: 'set-1', hostChannelName: RUN_CHANNEL }),
       [],
       1,
       true,
@@ -3066,7 +3095,7 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
     // 'PogU' (7tv-1) never appeared in the confirmation and must not appear in the run either,
     // however the confirm-time read now classifies it.
     expect(startRestore).toHaveBeenCalledWith(
-      expect.objectContaining({ setId: 'set-1', hostChannelName: LIVE_CHANNEL }),
+      expect.objectContaining({ setId: 'set-1', hostChannelName: RUN_CHANNEL }),
       [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: ['KEKW'] }],
       0,
       true,

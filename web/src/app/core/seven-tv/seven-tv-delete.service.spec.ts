@@ -9,6 +9,8 @@ import {
   ABORTED_DELETE_NOTICE_MS,
   DELETE_DELAY_MS,
   DeleteQueueEmote,
+  DeleteRunInfo,
+  REPORT_TIMEOUT_MS,
   SevenTvDeleteService,
 } from './seven-tv-delete.service';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
@@ -270,6 +272,55 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReport()).toBe('failed');
     });
 
+    // #256 P2-1 (Plan-256 review): a malformed 200 answer makes `classifySyncInSetResponse` throw
+    // inside the `map` ahead of `retry` — this proves that throw is retried exactly like an HTTP
+    // failure (the comment beside that `map` call explains why: a plain `TypeError`, not an
+    // `HttpErrorResponse`, so `retry`'s 401/403 check never matches it) and, once the retries are
+    // exhausted, still reaches an end state rather than leaving the run `reporting` forever.
+    it('retries a malformed 200 answer that makes the classification throw, and closes the run once the retries are exhausted', () => {
+      runOneDeleteToSyncRequest().flush(null);
+
+      vi.advanceTimersByTime(2000);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null);
+
+      vi.advanceTimersByTime(4000);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(null);
+      flushFallbackResync();
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('other');
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
+    // #256 P2-2 (Plan-256 review, Festlegung 15): a report that never answers must not keep its run
+    // open for good — same contract and constant as the import's own version of this test
+    // (seven-tv-import.service.spec.ts).
+    it('gives up a report without an answer after REPORT_TIMEOUT_MS per attempt and closes the run', () => {
+      const firstAttempt = runOneDeleteToSyncRequest();
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS - 1);
+      expect(firstAttempt.cancelled).toBe(false);
+      expect(service.run()?.phase).toBe('reporting');
+      vi.advanceTimersByTime(1);
+      expect(firstAttempt.cancelled).toBe(true);
+
+      vi.advanceTimersByTime(2000);
+      const secondAttempt = httpMock.expectOne(SYNC_ENDPOINT);
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+      expect(secondAttempt.cancelled).toBe(true);
+
+      vi.advanceTimersByTime(4000);
+      const thirdAttempt = httpMock.expectOne(SYNC_ENDPOINT);
+      vi.advanceTimersByTime(REPORT_TIMEOUT_MS);
+      expect(thirdAttempt.cancelled).toBe(true);
+      flushFallbackResync();
+
+      expect(service.syncReport()).toBe('failed');
+      expect(service.syncReportReason()).toBe('unavailable');
+      expect(service.run()?.phase).toBe('closed');
+      expect(service.destructiveOpen()).toBe(false);
+    });
+
     it('does not retry a 401 — an expired session cannot be fixed by waiting', () => {
       runOneDeleteToSyncRequest().flush(null, { status: 401, statusText: 'Unauthorized' });
       flushFallbackResync();
@@ -496,19 +547,49 @@ describe('SevenTvDeleteService', () => {
     });
   });
 
+  // A closed run's own record — never goes through the engine, so it leaves `queue()` untouched;
+  // only stands in for whatever the dock already shows when a *second* start is refused, below.
+  const PREVIOUS_CLOSED_RUN: DeleteRunInfo = {
+    runId: 'delete-previous',
+    phase: 'closed',
+    destructive: true,
+    channelName: 'sensitron',
+    expectedChannelName: 'sensitron',
+    setId: 'set-2',
+    result: { doneKeys: ['7tv-9'], items: [], startedAt: 0, finishedAt: 1 },
+    syncReport: 'succeeded',
+    syncReportReason: null,
+  };
+
   it('does nothing without a stored token', () => {
+    // #256 P3-1 (Plan-256 review, "open() vor start()"): a previous, already-closed run is shown
+    // on the dock when this refused start comes in. `startDelete` opens its own record *before*
+    // asking the engine to start (#256 review finding) — a refused start must take that record back
+    // (`discardUnstarted`) rather than leave it dangling in the lifecycle's map, or this run's
+    // `destructive: true` would leak into `destructiveOpen` forever and the previous run's dock
+    // would be silently replaced.
+    service.run.set(PREVIOUS_CLOSED_RUN);
     tokenService.clearToken();
 
     service.startDelete('set-1', 'sensitron', EMOTES, 'sensitron');
 
     expect(service.isRunning()).toBe(false);
     expect(service.queue()).toEqual([]);
+    expect(service.destructiveOpen()).toBe(false);
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBe(PREVIOUS_CLOSED_RUN);
   });
 
   it('does nothing when the emote list is empty', () => {
+    // #256 P3-1 — same reasoning as the no-token case above.
+    service.run.set(PREVIOUS_CLOSED_RUN);
+
     service.startDelete('set-1', 'sensitron', [], 'sensitron');
 
     expect(service.isRunning()).toBe(false);
+    expect(service.destructiveOpen()).toBe(false);
+    expect(service.isSettling()).toBe(false);
+    expect(service.run()).toBe(PREVIOUS_CLOSED_RUN);
   });
 
   it('keys every queue row by its 7TV id', () => {
@@ -822,6 +903,12 @@ describe('SevenTvDeleteService', () => {
     staleSyncReq.flush(deletedAnswer());
     expect(service.syncReport()).toBe('idle');
     expect(service.lastRun()).toBeNull();
+    // #256 P3-4 (Plan-256 review): run 1's late answer is still verbucht on *its own* record and
+    // closes it (Plan-256 Festlegung 2, identity by `runId`) — `isSettling`/`destructiveOpen` here
+    // read run 2's own state, not a stale leftover of run 1's: run 2 is still `running` (not yet
+    // reporting) but destructive, so `isSettling` is false and `destructiveOpen` is true.
+    expect(service.isSettling()).toBe(false);
+    expect(service.destructiveOpen()).toBe(true);
 
     // Run 2 finishes normally afterwards — the guard must not have swallowed its own terminal
     // flank along with the stale one.
