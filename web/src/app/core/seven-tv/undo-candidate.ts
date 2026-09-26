@@ -12,13 +12,15 @@ export interface UndoCandidateTargetEntry {
 /**
  * One `replace` row's REMOVE, read back out as something a #254 undo might reverse: the source
  * emote to bring back, and the target entries it once held. `provenance` says how much trust the
- * *file itself* — as opposed to a live re-check — puts in the row (F17, Codex-Befund 2): a
- * `finished` file only ever names a row 7TV actually confirmed the REMOVE for, so its candidates are
- * `'confirmed'`; a `planned` file is written *before* the first REMOVE and proves nothing about
- * whether its run ever started, so every one of its candidates is `'unproven'` until a human
- * confirms the source shown really is the one that vanished (spec 17 K1/K2, the undo confirm
- * dialog's checkbox). Classification (#254 T2) reads this through unchanged; it is not something
- * the live check can derive.
+ * *file itself* — as opposed to a live re-check — puts in the row (F17, Codex-Befund 2; tightened
+ * spec §18): a `finished` file names a row 7TV actually confirmed the REMOVE for, but that
+ * confirmation alone is not enough — the row's own `fileStatus` also has to have settled `'done'`
+ * for its candidate to be `'confirmed'`, since a confirmed REMOVE says nothing about whether the
+ * rest of that row's own run (its ADD) ever finished. A `planned` file is written *before* the first
+ * REMOVE and proves nothing about whether its run ever started, so every one of its candidates is
+ * `'unproven'` too, until a human confirms the source shown really is the one that vanished (spec 17
+ * K1/K2, the undo confirm dialog's checkbox). Classification (#254 T2) reads this through unchanged;
+ * it is not something the live check can derive.
  */
 export interface UndoCandidate {
   sourceSevenTvEmoteId: string;

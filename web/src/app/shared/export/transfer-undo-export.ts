@@ -155,9 +155,10 @@ interface TransferUndoMetaBase {
   /** Provenance of the transfer-run file this undo reverses (F6) — lets a human follow the paper
    *  trail from the undo back to the transfer it undoes. */
   undoneFile: UndoSourceFileInfo;
-  /** Whether the person confirmed an unproven (`planned`-sourced) `full` row before it ran — the
-   *  Herkunftssperre's own paper trail (spec 17 K2). `false` when every runnable row was already
-   *  `provenance: 'confirmed'`, or when the run was `addOnly`-only. */
+  /** Whether the person confirmed an unproven `full` row before it ran — the Herkunftssperre's own
+   *  paper trail (spec 17 K2). Unproven is not only a `planned` file's candidates any more: a
+   *  `finished` row whose own status never settled `'done'` is unproven too (spec §18). `false` when
+   *  every runnable row was already `provenance: 'confirmed'`, or when the run was `addOnly`-only. */
   acknowledgedUnproven: boolean;
 }
 
