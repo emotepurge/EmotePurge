@@ -205,6 +205,13 @@ export interface ImportRunInfo extends RunRecordBase {
   removedCount: number;
   /** Rows whose outcome is still `unknown` in `result`. `0` while the run is in flight. */
   unknownCount: number;
+  /** Replace rows whose REMOVE is still `unknown` in `result` (`failedStep === 0`) — a subset of
+   *  `unknownCount` (#256, issue point 4): the re-read in `settleUnknownRow` always turns an
+   *  answered REMOVE into `failed@0`/`failed@1`, so this only survives a read that itself failed,
+   *  timed out or came back incomplete. Exactly the rows the result log never counts as a
+   *  confirmed removal — `import-progress-section.ts` names them so the recovery file is not the
+   *  only place that says so. `0` while the run is in flight. */
+  unknownRemovalCount: number;
   /** `null` while the run is in flight; the engine's snapshot once it completes, replaced by the
    *  settled outcome when `settlement` turns `'settled'`. */
   result: ImportRunResult | null;
@@ -495,6 +502,7 @@ export class SevenTvImportService {
       settlement: 'pending',
       removedCount: 0,
       unknownCount: 0,
+      unknownRemovalCount: 0,
       result: null,
       syncReport: 'idle',
       removalReport: 'idle',
@@ -1046,12 +1054,20 @@ function removedTargetIdsOf(result: ImportRunResult | null): string[] {
   );
 }
 
-function outcomeCounts(result: ImportRunResult): { removedCount: number; unknownCount: number } {
+function outcomeCounts(result: ImportRunResult): {
+  removedCount: number;
+  unknownCount: number;
+  unknownRemovalCount: number;
+} {
   return {
     removedCount: result.items.filter(
       (item) => item.transfer.action === 'replace' && item.completedSteps >= 1,
     ).length,
     unknownCount: result.items.filter((item) => item.status === 'unknown').length,
+    unknownRemovalCount: result.items.filter(
+      (item) =>
+        item.status === 'unknown' && item.transfer.action === 'replace' && item.failedStep === 0,
+    ).length,
   };
 }
 

@@ -76,6 +76,11 @@ const DE_TRANSLATIONS = {
         one: 'Bei {{ count }} Zeile unklar, ob übernommen.',
         other: 'Bei {{ count }} Zeilen unklar, ob übernommen.',
       },
+      unknownRecordedIn: {
+        one: 'Bei {{ count }} Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+        other:
+          'Bei {{ count }} Ersetzungen unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      },
     },
     resync: {
       pending: 'Abgleich des Zielkanals wird angestoßen…',
@@ -119,6 +124,7 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     settlement: 'pending',
     removedCount: 0,
     unknownCount: 0,
+    unknownRemovalCount: 0,
     result: null,
     ...overrides,
   };
@@ -764,6 +770,34 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(fixture.nativeElement.textContent).toContain('Bei 1 Zeile unklar, ob übernommen.');
+    });
+
+    // #256 issue point 4: the dock says where an unconfirmed REMOVE is recorded — under the
+    // existing unknown-rows line, only the recovery file covers it.
+    it('shows the unknown-removal row when the settled run has a replace REMOVE 7TV never clarified', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(
+        runInfo({ settlement: 'settled', unknownCount: 1, unknownRemovalCount: 1 }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Bei 1 Ersetzung unklar, ob entfernt — nur die Rückweg-Datei deckt sie ab.',
+      );
+    });
+
+    it('shows no unknown-removal row when nothing is an unconfirmed removal', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem({ status: 'unknown' })]);
+      importService.run.set(
+        runInfo({ settlement: 'settled', unknownCount: 1, unknownRemovalCount: 0 }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('Rückweg-Datei deckt sie ab.');
     });
 
     it('shows the drift notice for a run that still queued something', () => {

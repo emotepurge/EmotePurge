@@ -1380,6 +1380,10 @@
         "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
         "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
       },
+      "unknownRecordedIn": {
+        "one": "For {{ count }} replacement it is unclear whether the target emote was removed — the result log does not record it as a confirmed removal, only the recovery file covers it.",
+        "other": "For {{ count }} replacements it is unclear whether the target emotes were removed — the result log does not record them as confirmed removals, only the recovery file covers them."
+      },
       "downloadProtocol": "Download protocol",
       "protocolNotSaved": "Protocol not saved yet — it is gone once you close this."
     },

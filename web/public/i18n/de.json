@@ -1380,6 +1380,10 @@
         "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
         "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
       },
+      "unknownRecordedIn": {
+        "one": "Bei {{ count }} Ersetzung ist unklar, ob das Ziel-Emote entfernt wurde — im Ergebnisprotokoll steht sie nicht als bestätigte Entfernung, nur die Rückweg-Datei deckt sie ab.",
+        "other": "Bei {{ count }} Ersetzungen ist unklar, ob die Ziel-Emotes entfernt wurden — im Ergebnisprotokoll stehen sie nicht als bestätigte Entfernung, nur die Rückweg-Datei deckt sie ab."
+      },
       "downloadProtocol": "Protokoll herunterladen",
       "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg."
     },

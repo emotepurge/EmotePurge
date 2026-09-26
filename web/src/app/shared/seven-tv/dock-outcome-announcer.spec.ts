@@ -352,6 +352,7 @@ describe('DockOutcomeAnnouncer', () => {
       settlement: 'settled',
       removedCount: 0,
       unknownCount: 0,
+      unknownRemovalCount: 0,
       result: { doneKeys: items.map((item) => item.key), items, startedAt: 0, finishedAt: 1 },
     };
   }

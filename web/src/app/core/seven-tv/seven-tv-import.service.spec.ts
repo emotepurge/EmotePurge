@@ -1242,6 +1242,8 @@ describe('SevenTvImportService', () => {
       expect(row).toMatchObject({ status: 'failed', completedSteps: 1, failedStep: 1 });
       expect(row.errorMessage).toBe('Entfernt, aber nicht hinzugefügt.');
       expect(service.run()?.removedCount).toBe(1);
+      // #256 issue point 4: the removal is confirmed and reported — not an unconfirmed one.
+      expect(service.run()?.unknownRemovalCount).toBe(0);
 
       httpMock.expectNone(SYNC_IMPORTED_B);
       const removalReq = httpMock.expectOne(SYNC_DELETED_B);
@@ -1269,6 +1271,9 @@ describe('SevenTvImportService', () => {
         settlement: 'settled',
         unknownCount: 1,
         removedCount: 1,
+        // #256 issue point 4: this row's REMOVE is confirmed (failedStep 1 is the ADD) — it does
+        // not count as an unconfirmed removal, even while still `unknown` overall.
+        unknownRemovalCount: 0,
       });
 
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-y']);
@@ -1282,6 +1287,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],
       });
+      // #256 issue point 4: zero in flight, before the engine has even produced an unknown row.
+      expect(service.run()?.unknownRemovalCount).toBe(0);
       answerNext({});
       answerNext({});
       httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
@@ -1483,6 +1490,9 @@ describe('SevenTvImportService', () => {
       expect(add?.status).toBe('unknown');
       expect(add?.sevenTvErrorMessage).toBeUndefined();
       expect(service.run()?.unknownCount).toBe(1);
+      // #256 issue point 4: an unanswered ADD is not an unanswered REMOVE — it never counts here,
+      // whatever the REMOVE it follows did.
+      expect(service.run()?.unknownRemovalCount).toBe(0);
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
@@ -1508,9 +1518,71 @@ describe('SevenTvImportService', () => {
       expect(replace.errorMessage).toBe('Laut Nachlesen nicht übernommen. (7TV-Fehler (503).)');
       expect(replace.sevenTvErrorMessage).toBe('7TV-Fehler (503).');
       expect(service.run()?.removedCount).toBe(0);
+      // #256 issue point 4: the re-read settled it (to `failed`), so it is no longer `unknown` and
+      // does not count as an unconfirmed removal.
+      expect(service.run()?.unknownRemovalCount).toBe(0);
 
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-y']);
       httpMock.expectNone(SYNC_DELETED_B);
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('counts a replace row whose REMOVE stays unknown when the re-read itself fails (#256 issue point 4)', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [replaceRow(SOURCE_X, 'tgt-x')] });
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      // Unlike the two tests above, the re-read itself never comes back readable — nothing settles
+      // the REMOVE, so it stays exactly as unresolved as it was when the run finished.
+      httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('error'));
+
+      const [row] = service.run()?.result?.items ?? [];
+      expect(row).toMatchObject({ status: 'unknown', failedStep: 0, completedSteps: 0 });
+      expect(service.run()).toMatchObject({
+        settlement: 'settled',
+        unknownCount: 1,
+        unknownRemovalCount: 1,
+        removedCount: 0,
+      });
+
+      // Nothing 7TV confirmed, so nothing is reported or resynced — the recovery file is the only
+      // place this removal is covered, which is exactly what the dock now says (import-progress-
+      // section.ts).
+      httpMock.expectNone(SYNC_IMPORTED_B);
+      httpMock.expectNone(SYNC_DELETED_B);
+      httpMock.expectNone(RESYNC_B);
+    });
+
+    it('counts each of two replace rows whose REMOVE stays unknown after a failed re-read', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), replaceRow(SOURCE_Y, 'tgt-y')],
+      });
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('error'));
+
+      expect(service.run()).toMatchObject({
+        settlement: 'settled',
+        unknownCount: 2,
+        unknownRemovalCount: 2,
+      });
+
+      httpMock.expectNone(SYNC_IMPORTED_B);
+      httpMock.expectNone(SYNC_DELETED_B);
+      httpMock.expectNone(RESYNC_B);
+    });
+
+    it('starts a fresh run at zero unconfirmed removals, in flight and once it is done', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [addRow(SOURCE_X)] });
+      // #256 issue point 4: zero while in flight, before the engine has produced any outcome at
+      // all — a run without a single replace row never counts one either.
+      expect(service.run()?.unknownRemovalCount).toBe(0);
+
+      answerNext({});
+
+      expect(service.run()).toMatchObject({ settlement: 'settled', unknownRemovalCount: 0 });
+      expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -1530,6 +1602,8 @@ describe('SevenTvImportService', () => {
 
       expect(service.run()).toMatchObject({ settlement: 'settled', unknownCount: 1 });
       expect(service.run()?.result?.items[1].status).toBe('unknown');
+      // #256 issue point 4: the row left unknown here is the plain add, not a replace's REMOVE.
+      expect(service.run()?.unknownRemovalCount).toBe(0);
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });

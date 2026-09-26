@@ -163,6 +163,11 @@ import { RunProgressPanel } from './run-progress-panel';
                   {{ unknownRowsKey() | transloco: { count: run.unknownCount } }}
                 </span>
               }
+              @if (run.unknownRemovalCount > 0) {
+                <span class="text-xs text-fg-muted">
+                  {{ unknownRemovalCountKey() | transloco: { count: run.unknownRemovalCount } }}
+                </span>
+              }
               <!-- The removal report (set-centric sync-deleted) — mirrors RunProgressPanel's own
                    syncReport banner+retry one level up, which only ever speaks for the ADD report
                    (sync-imported). A replace run needs both, distinguishably, since either can fail
@@ -287,6 +292,17 @@ export class ImportProgressSection {
    *  (`ImportRunInfo.unknownCount`) — never read as `failed` by anything downstream. */
   protected readonly unknownRowsKey = computed(() =>
     pluralKey(this.importService.run()?.unknownCount ?? 0, 'import.summary.unknownRows'),
+  );
+
+  /** Wording for the settled run's replace rows whose REMOVE stayed `unknown`
+   *  (`ImportRunInfo.unknownRemovalCount`) — issue point 4: those rows are not among the confirmed
+   *  removals `removedCountKey` names, and the result log does not record them either; only the
+   *  recovery file covers them. */
+  protected readonly unknownRemovalCountKey = computed(() =>
+    pluralKey(
+      this.importService.run()?.unknownRemovalCount ?? 0,
+      'import.summary.unknownRecordedIn',
+    ),
   );
 
   /** The removal report's title/text key — `.removalSyncPartialTitle`/`.removalSyncPartial` while
