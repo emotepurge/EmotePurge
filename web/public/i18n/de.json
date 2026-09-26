@@ -1385,8 +1385,6 @@
     },
     "syncFailedTitle": "Rückmeldung an EmotePurge fehlgeschlagen",
     "syncFailed": "Die Emotes sind bei 7TV hinzugefügt, aber EmotePurge konnte es nicht vermerken. Der Zielkanal übernimmt sie beim nächsten Abgleich trotzdem.",
-    "syncPartialTitle": "Rückmeldung an EmotePurge unvollständig",
-    "syncPartial": "Die Emotes sind bei 7TV hinzugefügt und bei EmotePurge vermerkt — aber nicht vollständig.",
     "syncRetry": "Erneut melden",
     "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "removalSyncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",

@@ -1385,8 +1385,6 @@
     },
     "syncFailedTitle": "Reporting back to EmotePurge failed",
     "syncFailed": "The emotes were added on 7TV, but EmotePurge could not record it. The target channel still picks them up on its next sync.",
-    "syncPartialTitle": "Reporting back to EmotePurge incomplete",
-    "syncPartial": "The emotes were added on 7TV and recorded at EmotePurge — but not completely.",
     "syncRetry": "Report again",
     "syncRetrySucceeded": "Reported back successfully.",
     "removalSyncFailedTitle": "Reporting the removal back to EmotePurge failed",
