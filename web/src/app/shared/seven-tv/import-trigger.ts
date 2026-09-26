@@ -1,6 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
-import { Component, DestroyRef, computed, inject, input, signal } from '@angular/core';
+import { Component, DestroyRef, computed, inject, input } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -167,8 +167,15 @@ export class ImportTrigger {
    *  open-time duplicate check is out, right up until the confirmation opens (or the flow takes
    *  its "everything already there" shortcut, or opens anyway on a failed/timed-out check) — see
    *  that field's own doc. Folded into `disabled` below so a second click on this trigger cannot
-   *  start a second restore-flow read while the first is still out. */
-  private readonly restorePreviewPending = signal(false);
+   *  start a second restore-flow read while the first is still out.
+   *
+   *  Aliases `SevenTvRestoreService.restorePreCheckPending` rather than holding a signal of its
+   *  own (#255 P2, Codex review): this trigger's restore-file door and `MassDeletePanel`'s restore
+   *  button mount together on the usage-stats page, and a component-local flag here only ever
+   *  guarded *this* button against itself — the other one stayed enabled for the whole read, and
+   *  could open a second confirmation stacked on the first. Reading the shared signal here means
+   *  `disabled` now also reflects a pre-check the *other* entry started. */
+  private readonly restorePreviewPending = this.restoreService.restorePreCheckPending;
 
   protected readonly disabled = computed(
     () =>

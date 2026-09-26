@@ -79,7 +79,15 @@ export interface RestoreFlowDeps {
    *  opened anyway with an upper-bound count. Never left `true` on any exit; `openConfirm` also
    *  refuses to start a second read of its own while this is already `true`, so the flow guards
    *  itself even if a caller's own disabled button outraces a click. The caller reads it to
-   *  disable whatever button opens this flow — `ImportTrigger` is the only one today. */
+   *  disable whatever button opens this flow — `ImportTrigger` is the only one today.
+   *
+   *  `ImportTrigger` passes its `SevenTvRestoreService.restorePreCheckPending` here, not a signal
+   *  of its own (#255 P2, Codex review): `MassDeletePanel`'s restore button runs the identical
+   *  pre-check chain through its own code path (it does not call this function) and mounts on the
+   *  same page, so two component-local flags left the *other* entry's button enabled for the
+   *  whole read — a click there could open a second confirmation stacked on this one. This
+   *  interface still just asks for *a* `WritableSignal<boolean>`; which instance a caller shares
+   *  it with is that caller's choice, not this function's. */
   previewPending: WritableSignal<boolean>;
   /** Torn down together with whatever component owns this flow — `startRestoreFlow` has no
    *  injection context of its own to pull one from (see the class doc on this interface), so every

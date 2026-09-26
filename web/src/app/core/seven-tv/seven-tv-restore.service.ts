@@ -1,5 +1,5 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { inject, Injectable, signal } from '@angular/core';
+import { inject, Injectable, signal, WritableSignal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { retry, throwError, timer } from 'rxjs';
 
@@ -224,6 +224,23 @@ export class SevenTvRestoreService {
    *  button to attach to, and a persistent flag would otherwise be able to sit next to an unrelated
    *  *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
+
+  /** Whether a restore's shared open-time pre-check chain (`resolveEditableSet`, then the open-time
+   *  duplicate check) is out right now, from *either* of the two entry points a restore can start
+   *  from — `ImportTrigger`'s restore-file door (`startRestoreFlow`, `restore-flow.ts`) or
+   *  `MassDeletePanel`'s restore button (`openRestoreConfirm`). Root-level and shared on purpose
+   *  (#255 P2, Codex review): the two entries used to keep separate, component-local pending flags,
+   *  which guarded each button against a second click on *itself* but left the other entry's button
+   *  fully enabled while the first's read was still out — both mount together on the usage-stats
+   *  page (`usage-stats-page.html`), so a click there while the other's pre-check chain was in
+   *  flight could open a second confirmation stacked on the first, with a duplicate
+   *  `app-dialog-title` id. Both entries now read and set this same signal instead of a field of
+   *  their own — see `ImportTrigger.restorePreviewPending`/`RestoreFlowDeps.previewPending` and
+   *  `MassDeletePanel.restoreConfirmPending`, both of which alias this signal rather than holding
+   *  their own. Exposed writable (not `.asReadonly()`), like `RestoreFlowDeps.previewPending`
+   *  already was before this fix: both call sites are the ones setting it, this only moves *where*
+   *  the shared instance lives. */
+  readonly restorePreCheckPending: WritableSignal<boolean> = signal(false);
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 

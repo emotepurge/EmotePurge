@@ -167,6 +167,10 @@ describe('MassDeletePanel row composition', () => {
             skippedNameTaken: signal(0),
             duplicateCheckAvailable: signal(true),
             duplicateNoticePending: signal(false),
+            // #255 P2 (Codex review): the shared cross-entry pre-check gate `restoreConfirmPending`
+            // now aliases — read as soon as the component is constructed, not just once a restore
+            // pre-check actually starts.
+            restorePreCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
@@ -320,6 +324,10 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
             skippedNameTaken: signal(0),
             duplicateCheckAvailable: signal(true),
             duplicateNoticePending: signal(false),
+            // #255 P2 (Codex review): the shared cross-entry pre-check gate `restoreConfirmPending`
+            // now aliases — read as soon as the component is constructed, not just once a restore
+            // pre-check actually starts.
+            restorePreCheckPending: signal(false),
           } as unknown as SevenTvRestoreService,
         },
         {
@@ -459,6 +467,7 @@ type RestoreServiceFake = Pick<
   | 'skippedNameTaken'
   | 'duplicateCheckAvailable'
   | 'duplicateNoticePending'
+  | 'restorePreCheckPending'
 >;
 
 function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): RestoreServiceFake {
@@ -473,6 +482,10 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
     skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    // #255 P2 (Codex review): defaults to its own fresh signal, same as every other flag here — a
+    // test that wants to simulate the *other* restore entry already holding this gate overrides it
+    // with a shared instance (see "ignores a click while the other restore entry's own pre-check…").
+    restorePreCheckPending: signal(false),
     ...overrides,
   };
 }
@@ -2452,6 +2465,13 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
   let startRestore: ReturnType<typeof vi.fn>;
   let dialogOpen: ReturnType<typeof vi.fn>;
   let closed: Subject<boolean | undefined>;
+  /** Hoisted so the shared cross-entry pre-check gate test below can reach the very same signal
+   *  instance the panel's own `restoreConfirmPending` aliases (#255 P2, Codex review) — writing to
+   *  it here stands in for `ImportTrigger`'s restore-file door already having claimed it.
+   *  `startRestore` is not part of `RestoreServiceFake` itself (`fakeRestoreService()`'s own
+   *  return type) — it is spread on top in `beforeEach` below, same as every other test in this
+   *  block already did before this field was hoisted. */
+  let restoreService: RestoreServiceFake & { startRestore: ReturnType<typeof vi.fn> };
   /** Hoisted out of `beforeEach` (unlike most fields there) so individual tests can reshape the
    *  finished run — #255 P3(11)'s partial-filtering test needs a second done row. */
   let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
@@ -2499,7 +2519,7 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
         finishedAt: Date.parse('2026-09-01T12:05:00Z'),
       },
     });
-    const restoreService = { ...fakeRestoreService(), startRestore };
+    restoreService = { ...fakeRestoreService(), startRestore };
     const emoteAdminService = { getSetStatus } as unknown as Partial<EmoteAdminService>;
     const providers = panelProviders({
       deleteService: fakeDeleteService({ lastRun }),
@@ -2876,6 +2896,31 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
 
     fixture.componentInstance['openRestoreConfirm']();
 
+    httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
+
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // #255 P2 (Codex review): the two restore entries — this panel's own button and
+  // `ImportTrigger`'s restore-file door — used to keep separate pending flags, so a click on
+  // *this* panel while the *other* entry's pre-check chain was still out was not caught by either
+  // guard: this panel's own `restoreConfirmPending` was still `false`, and the click landed before
+  // any request of this panel's own ever went out. `restoreConfirmPending` now aliases
+  // `SevenTvRestoreService.restorePreCheckPending`, so the fix closes the gap by making the two
+  // entries share the very same flag — setting it here, without going through this panel's own
+  // `openRestoreConfirm` at all, stands in for `ImportTrigger` having claimed it first.
+  it("ignores a click while the other restore entry's own pre-check already holds the shared gate", () => {
+    restoreService.restorePreCheckPending.set(true);
+
+    fixture.componentInstance['openRestoreConfirm']();
+
+    httpMock.expectNone('/api/seventv/me/emote-set-targets');
+    expect(dialogOpen).not.toHaveBeenCalled();
+
+    // Released once the other entry's own chain settles — the panel's button works normally again.
+    restoreService.restorePreCheckPending.set(false);
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
     httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);

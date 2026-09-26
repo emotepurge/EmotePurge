@@ -470,8 +470,16 @@ export class MassDeletePanel {
    *  right up until the confirmation opens (or one of the two shortcuts fires instead: the abort
    *  notice, or the "everything already there" restore). `false` again while a token prompt is
    *  open in between the two reads — that dialog already blocks the background on its own, same
-   *  reasoning as every other CDK-modal gap in this file. */
-  protected readonly restoreConfirmPending = signal(false);
+   *  reasoning as every other CDK-modal gap in this file.
+   *
+   *  Aliases `SevenTvRestoreService.restorePreCheckPending` rather than holding a signal of its
+   *  own (#255 P2, Codex review): this panel's restore button and `ImportTrigger`'s restore-file
+   *  door mount together on the usage-stats page, and a component-local flag here only ever
+   *  guarded *this* button against itself — a click on `ImportTrigger` while this panel's own read
+   *  was out (or the reverse) could open a second confirmation stacked on the first, with a
+   *  duplicate `app-dialog-title` id. Reading the shared signal here closes that window: the
+   *  button's own `[disabled]` binding now also reflects a pre-check the *other* entry started. */
+  protected readonly restoreConfirmPending = this.restoreService.restorePreCheckPending;
   private destroyed = false;
 
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next

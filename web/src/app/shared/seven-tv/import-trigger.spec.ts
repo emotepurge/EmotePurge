@@ -187,7 +187,14 @@ describe('ImportTrigger', () => {
         { provide: HttpClient, useValue: { post: httpPost } as unknown as HttpClient },
         {
           provide: SevenTvRestoreService,
-          useValue: { startRestore } as unknown as SevenTvRestoreService,
+          // restorePreCheckPending (#255 P2, Codex review): the shared cross-entry pre-check gate
+          // this trigger's own `restorePreviewPending` now aliases — needed here because it is
+          // read as soon as the component is constructed (folded into `disabled`), not just once a
+          // restore actually starts.
+          useValue: {
+            startRestore,
+            restorePreCheckPending: signal(false),
+          } as unknown as SevenTvRestoreService,
         },
         {
           provide: SevenTvImportService,
