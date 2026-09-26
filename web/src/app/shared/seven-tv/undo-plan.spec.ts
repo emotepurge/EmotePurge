@@ -154,6 +154,46 @@ describe('classifyUndoRows — step 0, duplicates in the file', () => {
   });
 });
 
+describe('classifyUndoRows — step 0, fail-closed beyond the table', () => {
+  it('step 0: skips a candidate whose source is its own target as duplicateInFile', () => {
+    const plan = classifyUndoRows(
+      [candidate({ target: { sevenTvEmoteId: S, entries: [{ alias: 'A' }, { alias: 'B' }] } })],
+      read([{ id: S, alias: 'A' }]),
+    );
+
+    expect(onlySkipped(plan).reason).toBe('duplicateInFile');
+  });
+
+  it("step 0: skips both candidates when one's source is the other's target, and only them", () => {
+    const first = candidate({ target: { sevenTvEmoteId: 'tgt-shared' } });
+    const second = candidate({
+      sourceSevenTvEmoteId: 'tgt-shared',
+      alias: 'B',
+      target: { sevenTvEmoteId: 'tgt-2', entries: [{ alias: 'B' }] },
+    });
+    const unrelated = candidate({
+      sourceSevenTvEmoteId: 'src-3',
+      alias: 'C',
+      target: { sevenTvEmoteId: 'tgt-3', entries: [{ alias: 'C' }] },
+    });
+
+    const plan = classifyUndoRows(
+      [first, second, unrelated],
+      read([
+        { id: S, alias: 'A' },
+        { id: 'tgt-shared', alias: 'B' },
+        { id: 'src-3', alias: 'C' },
+      ]),
+    );
+
+    expect(plan.skipped.map((row) => [row.candidate, row.reason])).toEqual([
+      [first, 'duplicateInFile'],
+      [second, 'duplicateInFile'],
+    ]);
+    expect(plan.rows.map((row) => row.candidate)).toEqual([unrelated]);
+  });
+});
+
 describe('classifyUndoRows — step 1, the source', () => {
   it('step 1: a source holding exactly { A } becomes a REMOVE (full row)', () => {
     const row = onlyRow(classifyUndoRows([candidate()], read([{ id: S, alias: 'A' }])));
@@ -631,6 +671,48 @@ describe('classifyUndoRows — step 6, the row', () => {
     expect(row.adds).toEqual([{ alias: 'X' }, { alias: 'Y' }, { alias: 'Z' }]);
     expect(row.stepCount).toBe(4);
     expect(summarizeUndoPlan(plan).slotDelta).toBe(2);
+  });
+});
+
+describe('classifyUndoRows — the step-4 count on rows skipped after step 4', () => {
+  it.each([
+    {
+      reason: 'targetNameTaken',
+      entries: [{ alias: 'A' }, { alias: 'B' }, { alias: 'P' }],
+      live: [
+        { id: S, alias: 'A' },
+        { id: T, alias: 'P' },
+        { id: THIRD, alias: 'B' },
+      ],
+    },
+    {
+      reason: 'inconsistent',
+      entries: [{ alias: 'P' }],
+      live: [
+        { id: S, alias: 'A' },
+        { id: T, alias: 'P' },
+      ],
+    },
+  ] as const)(
+    'counts the present entry of a $reason skip in alreadyPresent',
+    ({ reason, entries, live }) => {
+      const plan = classifyUndoRows(
+        [candidate({ target: { entries: [...entries] } })],
+        read([...live]),
+      );
+
+      expect(onlySkipped(plan).reason).toBe(reason);
+      expect(plan.counts.alreadyPresent).toBe(1);
+    },
+  );
+});
+
+describe('classifyUndoRows / classifyUndoRow — incomplete read', () => {
+  it('throws instead of classifying against a read with complete: false', () => {
+    const partial = { ...read([{ id: S, alias: 'A' }]), complete: false };
+
+    expect(() => classifyUndoRows([candidate()], partial)).toThrow(/incomplete/);
+    expect(() => classifyUndoRow(candidate(), partial)).toThrow(/incomplete/);
   });
 });
 

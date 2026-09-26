@@ -25,8 +25,11 @@ import { UndoCandidate } from '../export/transfer-run-export';
  *
  * The caller owns the read's validity: a failed read or one with `complete: false` must not be
  * classified at all (spec 4.3, last paragraph) — a partial read could hide the second alias that
- * makes a source unsafe to remove. This module never sees a failed read and does not look at
- * `complete`.
+ * makes a source unsafe to remove. Callers check `complete` first and decide what an unusable read
+ * means for them (the dialog shows its error state, the flow and the recheck skip `full` rows as
+ * `recheckUnavailable`). `classifyUndoRow` and `classifyUndoRows` nevertheless **throw** on
+ * `complete: false`: an assertion, so a caller that forgets the check fails loudly instead of
+ * authorizing a REMOVE from half a set.
  *
  * A name can sit under more than one id in the same set (DECISIONS 2026-08-04: 7TV's origin-set
  * merging can leave the same alias on two emotes), so "who holds a name" is always a set of ids:
@@ -272,6 +275,7 @@ export function classifyUndoRow(
   candidate: UndoCandidate,
   read: SevenTvSetEntries,
 ): UndoPlanRow | UndoSkippedRow<Exclude<UndoClassificationSkipReason, 'duplicateInFile'>> {
+  assertCompleteRead(read, 'classifyUndoRow');
   return classifyIndexed(candidate, indexRead(read)).result;
 }
 
@@ -279,14 +283,17 @@ export function classifyUndoRow(
  * Every candidate against one read (spec 4.3 steps 0–6, 6.2). Step 0 first: candidates sharing a
  * source id or a target id — only a manipulated file can have them, the writer deduplicates both —
  * are all skipped `duplicateInFile`, the target untouched, before any of them is looked at further.
+ * Fail-closed beyond the table: a candidate whose source is its own target, or whose source id is
+ * another candidate's target id (and that other candidate with it), is skipped the same way — one
+ * row's REMOVE would pull the emote another row restores.
  */
 export function classifyUndoRows(
   candidates: readonly UndoCandidate[],
   read: SevenTvSetEntries,
 ): UndoPlan {
+  assertCompleteRead(read, 'classifyUndoRows');
   const index = indexRead(read);
-  const sourceCount = countBy(candidates, (candidate) => candidate.sourceSevenTvEmoteId);
-  const targetCount = countBy(candidates, (candidate) => candidate.target.sevenTvEmoteId);
+  const isDuplicateInFile = duplicateInFileCheck(candidates);
   const rows: UndoPlanRow[] = [];
   const skipped: UndoSkippedRow<UndoClassificationSkipReason>[] = [];
   const counts: UndoPlanCounts = {
@@ -301,10 +308,7 @@ export function classifyUndoRows(
   };
 
   for (const candidate of candidates) {
-    if (
-      (sourceCount.get(candidate.sourceSevenTvEmoteId) ?? 0) > 1 ||
-      (targetCount.get(candidate.target.sevenTvEmoteId) ?? 0) > 1
-    ) {
+    if (isDuplicateInFile(candidate)) {
       skipped.push(skippedRow(candidate, 'duplicateInFile', index.read, []));
       counts.skippedByReason.duplicateInFile += 1;
       continue;
@@ -583,6 +587,28 @@ function indexRead(read: SevenTvSetEntries): ReadIndex {
     }
   }
   return { read, holdersByName };
+}
+
+function assertCompleteRead(read: SevenTvSetEntries, caller: string): void {
+  if (!read.complete) {
+    throw new Error(`${caller}: refusing to classify against an incomplete set read`);
+  }
+}
+
+/**
+ * Step 0 as a predicate over one candidate list: a shared source id, a shared target id, or a
+ * source id that is also a target id anywhere in the list (a candidate's own included).
+ */
+function duplicateInFileCheck(
+  candidates: readonly UndoCandidate[],
+): (candidate: UndoCandidate) => boolean {
+  const sourceCount = countBy(candidates, (candidate) => candidate.sourceSevenTvEmoteId);
+  const targetCount = countBy(candidates, (candidate) => candidate.target.sevenTvEmoteId);
+  return (candidate) =>
+    (sourceCount.get(candidate.sourceSevenTvEmoteId) ?? 0) > 1 ||
+    (targetCount.get(candidate.target.sevenTvEmoteId) ?? 0) > 1 ||
+    targetCount.has(candidate.sourceSevenTvEmoteId) ||
+    sourceCount.has(candidate.target.sevenTvEmoteId);
 }
 
 /** `entriesOf(id)` from spec 4.3: the named aliases, then `null` once if the id has an aliasless
