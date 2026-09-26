@@ -7,7 +7,7 @@ import {
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { Subject, firstValueFrom, of, throwError } from 'rxjs';
+import { EMPTY, Subject, firstValueFrom, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -30,6 +30,7 @@ const DE_TRANSLATIONS = {
       rateLimitedGaveUp:
         '7TV-Rate-Limit auch nach mehreren Wartezyklen aktiv — Emote übersprungen.',
       cancelledMidRow: 'Mittendrin abgebrochen — 7TV hatte einen Teil davon schon ausgeführt.',
+      beforeStepFailed: 'Übersprungen – die Prüfung vor dem Schritt ist fehlgeschlagen.',
     },
   },
 };
@@ -643,6 +644,9 @@ describe('SevenTvRunEngine', () => {
 
       httpMock.expectNone(GQL_ENDPOINT);
       expect(engine.queue()[0].status).toBe('cancelled');
+      expect(engine.queue()[0].errorMessage).toBe(
+        DE_TRANSLATIONS.massDelete.errors.beforeStepFailed,
+      );
       expect(console.error).toHaveBeenCalledTimes(1);
 
       vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -662,6 +666,9 @@ describe('SevenTvRunEngine', () => {
 
       httpMock.expectNone(GQL_ENDPOINT);
       expect(engine.queue()[0].status).toBe('cancelled');
+      expect(engine.queue()[0].errorMessage).toBe(
+        DE_TRANSLATIONS.massDelete.errors.beforeStepFailed,
+      );
       expect(console.error).toHaveBeenCalledTimes(1);
 
       vi.advanceTimersByTime(RUN_DELAY_MS);
@@ -685,6 +692,126 @@ describe('SevenTvRunEngine', () => {
       gate.next({ kind: 'proceed' });
       httpMock.expectNone(GQL_ENDPOINT);
       expect(engine.queue()[0].status).toBe('cancelled');
+    });
+
+    it('skips the retry after a 429 without ever sending it, ending the row cancelled with the pause already cleared', () => {
+      const beforeStep = vi
+        .fn()
+        .mockReturnValueOnce(of<StepGate>({ kind: 'proceed' }))
+        .mockReturnValueOnce(of<StepGate>({ kind: 'skip', errorMessage: 'drifted mid-retry' }));
+      const operation: RunOperation = { ...TEST_OPERATION, beforeStep };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30));
+      expect(engine.rateLimitPauseSeconds()).toBe(31);
+
+      vi.advanceTimersByTime(30_500);
+      expect(beforeStep).toHaveBeenCalledTimes(2);
+      httpMock.expectNone(GQL_ENDPOINT);
+      expect(engine.rateLimitPauseSeconds()).toBeNull();
+      expect(engine.queue()[0]).toMatchObject({
+        status: 'cancelled',
+        errorMessage: 'drifted mid-retry',
+      });
+
+      // The 429 answer re-paced the run from 7TV's own numbers, so the post-row pacing delay is no
+      // longer RUN_DELAY_MS — generously past whatever it became now, as the rate-limit tests above do.
+      vi.advanceTimersByTime(1000);
+      expect(engine.isRunning()).toBe(false);
+    });
+
+    it('cancel() during a pending hook ends the row cancelled, not unknown, even on an operation with transportLossIsUnknown — after a 429 retry', () => {
+      const gate = new Subject<StepGate>();
+      const beforeStep = vi
+        .fn()
+        .mockReturnValueOnce(of<StepGate>({ kind: 'proceed' }))
+        .mockReturnValueOnce(gate);
+      const operation: RunOperation = {
+        ...TEST_OPERATION,
+        transportLossIsUnknown: true,
+        beforeStep,
+      };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30));
+      vi.advanceTimersByTime(30_500);
+      expect(beforeStep).toHaveBeenCalledTimes(2);
+      // The retry's hook is pending — no request is out, so `inFlight` is null even though this
+      // operation asks for `unknown` on a request in flight.
+      httpMock.expectNone(GQL_ENDPOINT);
+
+      engine.cancel();
+
+      expect(engine.isRunning()).toBe(false);
+      expect(engine.queue()[0].status).toBe('cancelled');
+
+      // Late, ignored — the chain is already torn down.
+      gate.next({ kind: 'proceed' });
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('sends no request while an async hook is still pending, then exactly one once it resolves proceed', () => {
+      const gate = new Subject<StepGate>();
+      const beforeStep = vi.fn().mockReturnValue(gate);
+      const operation: RunOperation = { ...TEST_OPERATION, beforeStep };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      httpMock.expectNone(GQL_ENDPOINT);
+      expect(engine.queue()[0].status).toBe('in-progress');
+
+      gate.next({ kind: 'proceed' });
+      gate.complete();
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(engine.queue()[0].status).toBe('done');
+    });
+
+    it('treats an EMPTY hook observable as skip with the fallback message, and the run continues', () => {
+      const beforeStep = vi.fn().mockReturnValue(EMPTY);
+      const operation: RunOperation = { ...TEST_OPERATION, beforeStep };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      httpMock.expectNone(GQL_ENDPOINT);
+      expect(engine.queue()[0].status).toBe('cancelled');
+      expect(engine.queue()[0].errorMessage).toBe(
+        DE_TRANSLATIONS.massDelete.errors.beforeStepFailed,
+      );
+
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      expect(engine.isRunning()).toBe(false);
+    });
+
+    it('sends exactly one request when the hook observable emits twice synchronously', () => {
+      const first: StepGate = { kind: 'proceed' };
+      const second: StepGate = { kind: 'skip', errorMessage: 'ignored' };
+      const beforeStep = vi.fn().mockReturnValue(of(first, second));
+      const operation: RunOperation = { ...TEST_OPERATION, beforeStep };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      // expectOne itself proves there is exactly one outstanding request, not two.
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(engine.queue()[0].status).toBe('done');
+    });
+
+    it('finishes the row on the first emission even when the hook observable never completes', () => {
+      const gate = new Subject<StepGate>();
+      const beforeStep = vi.fn().mockReturnValue(gate);
+      const operation: RunOperation = { ...TEST_OPERATION, beforeStep };
+      expect(start([EMOTES[0]], operation)).toBe(true);
+
+      gate.next({ kind: 'proceed' });
+      // Deliberately never completed or errored — take(1) must still let the row (and the run)
+      // finish instead of hanging on a source that stays open forever.
+
+      httpMock.expectOne(GQL_ENDPOINT).flush({});
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(engine.queue()[0].status).toBe('done');
+      expect(engine.isRunning()).toBe(false);
     });
 
     it('sends the request immediately with no detour when the operation does not set beforeStep', () => {
