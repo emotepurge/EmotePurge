@@ -1422,8 +1422,8 @@
   "undo": {
     "confirm": {
       "title": {
-        "one": "{{ count }} Ersetzung rückgängig machen?",
-        "other": "{{ count }} Ersetzungen rückgängig machen?"
+        "one": "{{ count }} Ersetzung aus der Datei rückgängig machen?",
+        "other": "{{ count }} Ersetzungen aus der Datei rückgängig machen?"
       },
       "fileLine": {
         "planned": "Aus einer Rückweg-Datei der Übertragung, geschrieben am {{ date }} — vor ihrem ersten Schritt.",
@@ -1461,8 +1461,8 @@
         "inconsistent": "Datei und Set passen nicht zusammen",
         "nothingToDo": "nichts zu tun",
         "skippedUnproven": "unbelegt und nicht bestätigt",
-        "skippedDrift": "hat sich seit der Prüfung geändert",
-        "recheckUnavailable": "ließ sich nicht erneut prüfen"
+        "skippedDrift": "seit der Prüfung geändert",
+        "recheckUnavailable": "nicht erneut prüfbar"
       },
       "unproven": "unbelegt",
       "adds": "Kommt zurück als: {{ names }}",
@@ -1480,18 +1480,18 @@
         "other": "{{ count }} Ziel-Einträge kommen zurück."
       },
       "alreadyPresent": {
-        "one": "{{ count }} Ziel-Eintrag aus der Datei ist schon im Set (über alle Zeilen, auch übersprungene).",
-        "other": "{{ count }} Ziel-Einträge aus der Datei sind schon im Set (über alle Zeilen, auch übersprungene)."
+        "one": "{{ count }} Ziel-Eintrag aus der Datei ist schon im Set.",
+        "other": "{{ count }} Ziel-Einträge aus der Datei sind schon im Set."
       },
       "omittedCount": {
-        "one": "{{ count }} Ziel-Eintrag bleibt in laufenden Zeilen aus.",
-        "other": "{{ count }} Ziel-Einträge bleiben in laufenden Zeilen aus."
+        "one": "{{ count }} Ziel-Eintrag kommt nicht zurück, weil sein Name belegt oder nicht prüfbar ist.",
+        "other": "{{ count }} Ziel-Einträge kommen nicht zurück, weil ihr Name belegt oder nicht prüfbar ist."
       },
-      "skippedCount": "Übersprungen, {{ reason }}: {{ count }}",
+      "skippedCount": "{{ count }} übersprungen: {{ reason }}",
       "reading": "Das Zielset wird gelesen…",
       "readFailed": "Das Zielset ließ sich nicht vollständig lesen. Ohne vollständigen Stand wird nichts freigegeben.",
       "saveFailed": "Der Browser hat den Download der Rückweg-Datei verweigert. Ohne diese Datei startet kein Lauf, der etwas entfernt.",
-      "acknowledgeUnproven": "Diese Rückweg-Datei belegt nicht, dass die Übertragung gelaufen ist; ich habe geprüft, dass die gezeigten Quell-Emotes aus ihr stammen.",
+      "acknowledgeUnproven": "Die eingelesene Datei wurde vor der Übertragung geschrieben und belegt nicht, dass sie gelaufen ist. Ich habe geprüft, dass die gezeigten Quell-Emotes aus dieser Übertragung stammen.",
       "acknowledgeHint": {
         "one": "Ohne Bestätigung wird die als unbelegt markierte Zeile übersprungen.",
         "other": "Ohne Bestätigung werden die {{ count }} als unbelegt markierten Zeilen übersprungen."

@@ -1422,8 +1422,8 @@
   "undo": {
     "confirm": {
       "title": {
-        "one": "Undo {{ count }} replacement?",
-        "other": "Undo {{ count }} replacements?"
+        "one": "Undo {{ count }} replacement from the file?",
+        "other": "Undo {{ count }} replacements from the file?"
       },
       "fileLine": {
         "planned": "From a recovery file of the transfer, written on {{ date }} — before its first step.",
@@ -1462,7 +1462,7 @@
         "nothingToDo": "nothing to do",
         "skippedUnproven": "unproven and not confirmed",
         "skippedDrift": "changed since the check",
-        "recheckUnavailable": "could not be checked again"
+        "recheckUnavailable": "could not be rechecked"
       },
       "unproven": "unproven",
       "adds": "Comes back as: {{ names }}",
@@ -1480,18 +1480,18 @@
         "other": "{{ count }} target entries come back."
       },
       "alreadyPresent": {
-        "one": "{{ count }} target entry from the file is already in the set (across all rows, skipped ones included).",
-        "other": "{{ count }} target entries from the file are already in the set (across all rows, skipped ones included)."
+        "one": "{{ count }} target entry from the file is already in the set.",
+        "other": "{{ count }} target entries from the file are already in the set."
       },
       "omittedCount": {
-        "one": "{{ count }} target entry is left out of running rows.",
-        "other": "{{ count }} target entries are left out of running rows."
+        "one": "{{ count }} target entry does not come back because its name is taken or cannot be checked.",
+        "other": "{{ count }} target entries do not come back because their names are taken or cannot be checked."
       },
-      "skippedCount": "Skipped, {{ reason }}: {{ count }}",
+      "skippedCount": "{{ count }} skipped: {{ reason }}",
       "reading": "Reading the target set…",
       "readFailed": "The target set could not be read completely. Without a complete picture nothing is released.",
       "saveFailed": "The browser refused to download the recovery file. Without that file no run that removes anything starts.",
-      "acknowledgeUnproven": "This recovery file does not prove that the transfer ran; I have checked that the source emotes shown come from it.",
+      "acknowledgeUnproven": "The loaded file was written before the transfer and does not prove that it ran. I have checked that the source emotes shown come from this transfer.",
       "acknowledgeHint": {
         "one": "Without the confirmation, the row marked as unproven is skipped.",
         "other": "Without the confirmation, the {{ count }} rows marked as unproven are skipped."

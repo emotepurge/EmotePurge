@@ -533,7 +533,7 @@ describe('UndoConfirmDialog', () => {
 
       const box = dialog.checkbox();
       expect(box?.closest('label')?.textContent).toContain(
-        'Diese Rückweg-Datei belegt nicht, dass die Übertragung gelaufen ist',
+        'Die eingelesene Datei wurde vor der Übertragung geschrieben',
       );
       const hintId = box?.getAttribute('aria-describedby') ?? '';
       expect(dialog.element(hintId)?.textContent).toContain('übersprungen');
@@ -689,16 +689,14 @@ describe('UndoConfirmDialog', () => {
       expect(executor(dialog).disabled).toBe(false);
     });
 
-    it('labels entries already present as counted over every row, skipped ones included', () => {
+    it('counts entries already present over every row, skipped ones included', () => {
       const dialog = render({
         candidates: [candidate(1), candidate(2)],
         // Row 2: source gone, target entry already back — nothing to do, but still counted.
         initialRead: setRead([fullLive(1), { id: 'tgt-2', alias: 'Alias2' }]),
       });
 
-      expect(dialog.text()).toContain(
-        '1 Ziel-Eintrag aus der Datei ist schon im Set (über alle Zeilen, auch übersprungene).',
-      );
+      expect(dialog.text()).toContain('1 Ziel-Eintrag aus der Datei ist schon im Set.');
     });
   });
 
