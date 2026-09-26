@@ -103,8 +103,10 @@ and another branch.
 ### 2026-09-26 — After a drifted replace target, reload reads the target live
 
 **Betrifft:** `web/src/app/shared/seven-tv/import-flow.ts` (`reloadLive`, `toLiveTargetSelection`) ·
-`web/src/app/shared/seven-tv/import-confirm-dialog.ts` (`ImportConfirmDialogData.reloadLive`, the
-`drifted` notice's own button) · `docs/plans/Plan-256-Robustheit.md` (T6, Festlegung 9).
+`web/src/app/core/emotes/import-target-loader.ts` (`loadImportTarget`'s `options.refresh`,
+`fetchLiveTarget`) · `web/src/app/shared/seven-tv/import-confirm-dialog.ts`
+(`ImportConfirmDialogData.reloadLive`, the `drifted` notice's own button) ·
+`docs/plans/Plan-256-Robustheit.md` (T6, Festlegung 9).
 
 Issue #256 point 2. The confirm dialog's `drifted` notice already comes out of a live read (the
 recovery-file check before a replace run) finding the confirmed target has moved on — its own
@@ -122,6 +124,22 @@ tracked active set still takes the "today" path unchanged; only a drift-triggere
 live one, and it costs the same 7TV preview-read budget any other live target read already does.**
 A non-active tracked or an untracked target already took the live branch on its first load, so
 `reloadLive` repeats the same call there — nothing changes for those besides a fresher answer.
+
+**2026-09-26 follow-up (Codex P2):** the first cut above still landed on `loadEmoteSetPreview`'s
+plain two-argument overload, which reads through the backend's own 60 s preview cache for the set-ID
+route (6.4) — the same cache `loadCachedEmoteSetPreview`'s doc describes as sitting behind the
+shared `ForeignEmoteLookup` limiter. A `reloadLive` call inside that 60 s window therefore got back
+the exact same drifted answer that triggered the notice in the first place, turning "Ziel neu laden"
+into a drift/reload loop instead of a fix. `reloadLive` now calls `performLoad` with
+`{ refresh: true }`, threaded through `loadImportTarget`'s new `options.refresh` parameter to
+`fetchLiveTarget`, which — only on that flag — calls `loadEmoteSetPreview(channelName, emoteSetId,
+{ refresh: true })` instead of the two-argument form; the query parameter this adds
+(`?refresh=true`) is what makes the backend bypass its cache for this one read. `load()` and `retry`
+never pass the flag, so neither the ordinary first load nor a `readFailed` retry changes cost. The
+cost this adds is exactly what Festlegung 9 already priced in — one `ForeignEmoteLookup` permit per
+drift reload (the same 10-permits/60 s bucket the set-list and every other live-preview read already
+share) — the fix closes the cache hit that made even that one permit come back with stale data, it
+does not add a second one.
 
 ---
 

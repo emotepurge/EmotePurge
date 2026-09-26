@@ -1024,8 +1024,28 @@ describe('startImportFlow', () => {
       // not another getSetStatus/listEmotes round (AK 36 pins only the *first* load's requests).
       expect(statusSubjects).toHaveLength(1);
       expect(loadEmoteSetPreview).toHaveBeenCalledTimes(1);
-      expect(loadEmoteSetPreview).toHaveBeenCalledWith('target-channel', 'set-9');
+      // Codex P2 fix: `reloadLive` must bypass the backend's 60 s preview cache, or a reload inside
+      // that window would answer with the exact same drifted data (the drift/reload loop this fix
+      // closes) — `{ refresh: true }` is what makes that a live 7TV read instead of a cache hit.
+      expect(loadEmoteSetPreview).toHaveBeenCalledWith('target-channel', 'set-9', {
+        refresh: true,
+      });
       expect(confirmData(dialogOpen).target()).toMatchObject({ status: 'ready', setId: 'set-9' });
+    });
+
+    it('never forces a refresh for the ordinary first load or a plain retry — only reloadLive does', () => {
+      const { deps, dialogOpen, loadEmoteSetPreview } = setup();
+      loadEmoteSetPreview.mockReturnValue(of(liveTarget()));
+
+      // A `'chosen'` non-active tracked target already takes the live branch on its *first* load
+      // (spec F5) — the case most likely to be confused with `reloadLive` forcing a refresh, since
+      // both call the very same `loadEmoteSetPreview`.
+      startImportFlow(deps, source(), { kind: 'chosen', choice: choice() });
+      expect(loadEmoteSetPreview).toHaveBeenNthCalledWith(1, 'handofblood', 'set-halloween');
+
+      confirmData(dialogOpen).retry();
+      expect(loadEmoteSetPreview).toHaveBeenNthCalledWith(2, 'handofblood', 'set-halloween');
+      expect(loadEmoteSetPreview).toHaveBeenCalledTimes(2);
     });
 
     it('falls back to the ordinary load without a known ready state yet — fail-closed rather than reloading nothing', () => {

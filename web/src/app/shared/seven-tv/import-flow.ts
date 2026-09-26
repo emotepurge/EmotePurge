@@ -324,18 +324,23 @@ export function startImportFlow(
   const titleSetName: string | null =
     !isActiveSet && target.kind === 'chosen' ? target.choice.setName : null;
 
-  const performLoad = (selection: ImportTargetSelection): void => {
+  const performLoad = (
+    selection: ImportTargetSelection,
+    options: { refresh?: boolean } = {},
+  ): void => {
     const mine = ++generation;
     targetState.set({ status: 'loading' });
-    loadImportTarget(deps.emoteAdminService, deps.emoteSetService, selection).subscribe((state) => {
-      if (mine === generation) {
-        const named = withChosenSetName(state, activeSetName);
-        if (named.status === 'ready') {
-          lastReadySetId = named.setId;
+    loadImportTarget(deps.emoteAdminService, deps.emoteSetService, selection, options).subscribe(
+      (state) => {
+        if (mine === generation) {
+          const named = withChosenSetName(state, activeSetName);
+          if (named.status === 'ready') {
+            lastReadySetId = named.setId;
+          }
+          targetState.set(named);
         }
-        targetState.set(named);
-      }
-    });
+      },
+    );
   };
 
   const load = (): void => performLoad(toTargetSelection(target));
@@ -348,6 +353,13 @@ export function startImportFlow(
    * Postgres-backed "today" read (AK 36) — the very kind of read that is already a drift round
    * behind 7TV — instead of the fresher live read {@link toLiveTargetSelection} forces.
    *
+   * `{ refresh: true }` (Codex P2 fix, 2026-09-26) is what actually makes that read fresh:
+   * `loadEmoteSetPreview` sits behind the backend's own 60 s preview cache (same TTL as the
+   * `ForeignEmoteLookup` permit bucket it guards), so without this flag a reload landing inside that
+   * window would get back the *same* cached answer that just drifted — the drift/reload loop this
+   * task exists to close. `load()`/`retry` never pass it: the first load and a plain retry after a
+   * failed read are not asking to force a live re-read, only `reloadLive` is.
+   *
    * Fails closed without a known `ready` state yet (nothing to force live for that would not just
    * repeat {@link load} under a different name): falls back to the ordinary load rather than doing
    * nothing.
@@ -357,7 +369,7 @@ export function startImportFlow(
       load();
       return;
     }
-    performLoad(toLiveTargetSelection(target, lastReadySetId));
+    performLoad(toLiveTargetSelection(target, lastReadySetId), { refresh: true });
   };
 
   const start = (outcome: ImportConfirmOutcome): void => {
