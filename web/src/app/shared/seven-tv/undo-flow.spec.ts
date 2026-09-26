@@ -14,6 +14,7 @@ import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service'
 import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import { UndoCandidate, UndoSourceFileInfo } from '../../core/seven-tv/undo-candidate';
 import { UndoSkippedRow, classifyUndoRows } from '../../core/seven-tv/undo-plan';
+import { LIVE_READ_TIMEOUT_MS } from './recovery-file-gate';
 import { ResolvedRestoreTarget } from './restore-flow';
 import { UndoConfirmDialogData, UndoConfirmOutcome } from './undo-confirm-dialog';
 import { TransferUndoFileResult, UndoFlowDeps, startUndoFlow, undoRunTarget } from './undo-flow';
@@ -341,6 +342,24 @@ describe('startUndoFlow', () => {
       expect(h.dialogOpen).toHaveBeenCalledTimes(1);
     });
 
+    it('gives up on a first read that hangs past its timeout: releases the pending mark and opens the confirmation with no read', () => {
+      vi.useFakeTimers();
+      try {
+        const h = setup();
+        h.httpPost.mockReturnValue(new Subject<unknown>());
+
+        startUndoFlow(h.deps, result([cand('1')]));
+        expect(h.firstReadPending()).toBe(true);
+        vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+        expect(h.firstReadPending()).toBe(false);
+        expect(h.dialogOpen).toHaveBeenCalledTimes(1);
+        expect(dataAt(h.dialogOpen, 0).initialRead).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('drops a first read that answers after the caller is gone, and clears the pending mark', () => {
       const h = setup();
       const pending = new Subject<unknown>();
@@ -538,6 +557,90 @@ describe('startUndoFlow', () => {
     });
   });
 
+  describe('what the freshness check lets run (E14, spec 17 K2)', () => {
+    // The central safety property: only rows the dialog let run can run. A candidate the dialog
+    // skipped for any reason stays out, even when the fresh read would now classify it `full`.
+    it('never starts a candidate the dialog skipped, even when the fresh read would now make it a full row', () => {
+      const h = setup();
+      const candidates = [cand('1'), cand('2')];
+      // 1 runs full; 2 is skipped in the dialog — its source holds a second name.
+      const live: LiveEntry[] = [
+        ...fullState('1'),
+        ...fullState('2'),
+        { id: 'src-2', alias: 'Second' },
+      ];
+      const outcome = outcomeFor(candidates, live);
+      expect(outcome.skipped.map((row) => [row.candidate.alias, row.reason])).toEqual([
+        ['A2', 'sourceHasMoreEntries'],
+      ]);
+      // By the start, the second name is gone: 2 alone would now classify `full`.
+      const fresh = [...fullState('1'), ...fullState('2')];
+      h.httpPost.mockReturnValueOnce(of(readPage(live))).mockReturnValueOnce(of(readPage(fresh)));
+
+      startUndoFlow(h.deps, result(candidates));
+      closedAt<UndoConfirmOutcome>(h.dialogOpen, 0).next(outcome);
+
+      const [, runnable, skipped] = h.startUndo.mock.calls[0];
+      expect(runnable.map((row: { candidate: UndoCandidate }) => row.candidate.alias)).toEqual([
+        'A1',
+      ]);
+      expect((skipped as UndoSkippedRow[]).map((row) => [row.candidate.alias, row.reason])).toEqual(
+        [['A2', 'sourceHasMoreEntries']],
+      );
+    });
+
+    it('starts nothing but the service notice when every confirmed row drifted', () => {
+      const h = setup();
+      const candidates = [cand('1'), cand('2')];
+      const live = [...fullState('1'), ...fullState('2')];
+      const fresh: LiveEntry[] = [
+        ...live,
+        { id: 'src-1', alias: 'Other1' },
+        { id: 'src-2', alias: 'Other2' },
+      ];
+      h.httpPost.mockReturnValueOnce(of(readPage(live))).mockReturnValueOnce(of(readPage(fresh)));
+      const file = result(candidates);
+
+      startUndoFlow(h.deps, file);
+      closedAt<UndoConfirmOutcome>(h.dialogOpen, 0).next(outcomeFor(candidates, live, true));
+
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+      const [runTarget, runnable, skipped, acknowledged] = h.startUndo.mock.calls[0];
+      expect(runTarget).toEqual(undoRunTarget(file.target, SOURCE_FILE));
+      expect(runnable).toEqual([]);
+      expect((skipped as UndoSkippedRow[]).map((row) => [row.candidate.alias, row.reason])).toEqual(
+        [
+          ['A1', 'skippedDrift'],
+          ['A2', 'skippedDrift'],
+        ],
+      );
+      expect(acknowledged).toBe(true);
+    });
+
+    it('asks for the token again when it was cleared while the freshness read was out, and reads fresh once more after it', () => {
+      const h = setup();
+      const freshRead = new Subject<unknown>();
+      h.httpPost
+        .mockReturnValueOnce(of(readPage(fullState('1'))))
+        .mockReturnValueOnce(freshRead)
+        .mockReturnValueOnce(of(readPage(fullState('1'))));
+      startUndoFlow(h.deps, result([cand('1')]));
+      closedAt<UndoConfirmOutcome>(h.dialogOpen, 0).next(outcomeFor([cand('1')], fullState('1')));
+
+      h.hasToken.set(false);
+      freshRead.next(readPage(fullState('1')));
+
+      expect(h.startUndo).not.toHaveBeenCalled();
+      expect(h.dialogOpen).toHaveBeenCalledTimes(2);
+
+      h.hasToken.set(true);
+      closedAt<boolean>(h.dialogOpen, 1).next(true);
+
+      expect(h.httpPost).toHaveBeenCalledTimes(3);
+      expect(h.startUndo).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // Spec 6.5: the restore's target derivation without `resyncChannelName`, plus the protocol's three.
   describe('undoRunTarget', () => {
     it('expects the tracked channel for its active set', () => {
@@ -637,13 +740,17 @@ describe('startUndoFlow with the real undo service (spec 17 K2)', () => {
   const candidates = [cand('1', 'unproven'), cand('2', 'unproven')];
   const live = fullState('1');
 
-  /** Answers the first read, confirms with `outcome`, answers the freshness read, and runs the
-   *  engine to its end — every ADD accepted, every report answered. Returns every mutation sent. */
-  function runThrough(outcome: UndoConfirmOutcome): string[] {
-    startUndoFlow(deps, result(candidates));
-    httpMock.expectOne(isRead).flush(readPage(live));
+  /** Answers the first read with `options.live`, confirms with `outcome`, answers the freshness
+   *  read with `options.fresh`, and runs the engine to its end — every ADD accepted, every report
+   *  answered, and no REMOVE (nor its recheck read) expected. Returns every mutation sent. */
+  function runThrough(
+    outcome: UndoConfirmOutcome,
+    options: { candidates?: UndoCandidate[]; live?: LiveEntry[]; fresh?: LiveEntry[] } = {},
+  ): string[] {
+    startUndoFlow(deps, result(options.candidates ?? candidates));
+    httpMock.expectOne(isRead).flush(readPage(options.live ?? live));
     closedAt<UndoConfirmOutcome>(dialogOpen, 0).next(outcome);
-    httpMock.expectOne(isRead).flush(readPage(live));
+    httpMock.expectOne(isRead).flush(readPage(options.fresh ?? options.live ?? live));
 
     const sent: string[] = [];
     for (let step = 0; step < 5; step += 1) {
@@ -689,6 +796,35 @@ describe('startUndoFlow with the real undo service (spec 17 K2)', () => {
       'add tgt-2 A2',
       `report /api/seventv/emote-sets/${SET_ID}/sync-restored`,
     ]);
+    // The dialog's own skip reaches the run once — the service's lock does not add a second one.
+    expect(deps.undoService.run()?.skipped.map((row) => [row.candidate.alias, row.reason])).toEqual(
+      [['A1', 'skippedUnproven']],
+    );
+  });
+
+  it('sends no REMOVE for a candidate the dialog skipped, even when the fresh read would now make it a full row', () => {
+    // 1 runs addOnly (source and target gone); 2's source holds a second name in the dialog's read
+    // and is skipped — by the freshness read that name is gone, and 2 alone would classify `full`.
+    const confirmed = [cand('1'), cand('2')];
+    const dialogLive: LiveEntry[] = [...fullState('2'), { id: 'src-2', alias: 'Second' }];
+    const outcome = outcomeFor(confirmed, dialogLive);
+    expect(outcome.runnable.map((row) => [row.candidate.alias, row.mode])).toEqual([
+      ['A1', 'addOnly'],
+    ]);
+
+    const sent = runThrough(outcome, {
+      candidates: confirmed,
+      live: dialogLive,
+      fresh: fullState('2'),
+    });
+
+    expect(sent).toEqual([
+      'add tgt-1 A1',
+      `report /api/seventv/emote-sets/${SET_ID}/sync-restored`,
+    ]);
+    expect(deps.undoService.run()?.skipped.map((row) => [row.candidate.alias, row.reason])).toEqual(
+      [['A2', 'sourceHasMoreEntries']],
+    );
   });
 
   it('still sends no REMOVE when the dialog wrongly hands the unproven full row over as runnable', () => {
