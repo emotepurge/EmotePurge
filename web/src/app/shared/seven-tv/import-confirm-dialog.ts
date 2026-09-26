@@ -543,7 +543,7 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
           </p>
         }
 
-        <p class="text-xs text-fg-muted">{{ 'import.confirm.runNotice' | transloco }}</p>
+        <p class="text-xs text-fg-muted">{{ runNoticeKey() | transloco }}</p>
       }
 
       <!-- Only the loading and the verifying state still have their own text here: neither has a
@@ -712,6 +712,16 @@ export class ImportConfirmDialog {
     TargetCheckNotice | null
   >({ source: this.preview, computation: () => null });
 
+  /** The target's occupied-slot count as of the last successful live read (`onTargetRead`) — spec
+   *  #255: the picker-time count (`ready().occupiedSlots`) can already be stale by the time a
+   *  replace plan's "Rückweg sichern" reads the target live, and every read after that one is
+   *  fresher still. `null` until the first read answers, same reset as `targetOverlays`: a reload
+   *  of the target already shows a fresh `ready().occupiedSlots` of its own. */
+  private readonly liveOccupiedSlots = linkedSignal<ImportPreview | null, number | null>({
+    source: this.preview,
+    computation: () => null,
+  });
+
   /** The preview with every drifted replace target replaced by its live counterpart, so the plan's
    *  removal count and its verification both work from the target as it now is. */
   private readonly effectivePreview = computed(() => {
@@ -810,6 +820,14 @@ export class ImportConfirmDialog {
     const summary = this.summary();
     return summary !== null && summary.addCount === 0 && summary.adoptCount > 0;
   });
+
+  // A rename-only plan adds nothing, so the ordinary notice — which claims "Hinzufügen" runs
+  // automatically afterwards — would misdescribe the run entirely (spec #255). Swapped for a
+  // matching sentence about the renames instead; a plan that adds at least one row, mixed with
+  // adopts or not, keeps the original wording unchanged, since it is still literally true there.
+  protected readonly runNoticeKey = computed(() =>
+    this.titleIsRenameOnly() ? 'import.confirm.runNoticeRenameOnly' : 'import.confirm.runNotice',
+  );
 
   // Two base keys, chosen by `targetIsActiveSet` (finding 1, Live-Verifikation K2 2026-09-21) —
   // "nach {channel}" for the active-set target (today's one-click path, unchanged), "in Set
@@ -919,7 +937,8 @@ export class ImportConfirmDialog {
   });
 
   // Net change, not the ADD count: a replace frees every entry of its target before it adds one
-  // back (AK 21).
+  // back (AK 21). Occupancy itself prefers the last successful live read (spec #255) over the
+  // picker-time count, once there is one — see `liveOccupiedSlots`'s own doc for why.
   protected readonly projection = computed(() => {
     const target = this.ready();
     const summary = this.summary();
@@ -927,7 +946,7 @@ export class ImportConfirmDialog {
       return null;
     }
     return projectSlots(
-      target.occupiedSlots,
+      this.liveOccupiedSlots() ?? target.occupiedSlots,
       target.capacity,
       summary.addCount - summary.removedEntryCount,
     );
@@ -981,8 +1000,22 @@ export class ImportConfirmDialog {
 
   protected readonly isVerifying = computed(() => this.actionState().kind === 'verifying');
 
-  // Without a removal the label is today's "Kopieren", unchanged (AK 2, 5).
+  // A rename-only plan (titleIsRenameOnly) copies nothing in, so "Kopieren" would be as wrong on
+  // the button as it would be in the title — this matches the title's own word instead
+  // ("import.confirm.titleAlign" → "Angleichen"/"Align"), a fourth word rather than reusing
+  // "Übertragen" for a second control: DECISIONS 2026-09-07 ("Ein Verb für die Übertragung", #92)
+  // reserves that verb for the entry point that opens the whole import flow
+  // (`import.copyButton`/`import.dockCopyButton`), not for a button inside the confirmation it
+  // leads to — review finding #255 P2-1 corrected an earlier version of this comment (and the
+  // button) that reused it here.
+  // A rename-only plan never carries a `replace` row (adoptCount > 0 implies removeCount === 0,
+  // `conflict-resolution.ts`'s `summarizeTransferPlan`), so this check never competes with the
+  // removal branch below. Without a removal the ordinary label is today's "Kopieren", unchanged
+  // (AK 2, 5).
   protected readonly executeLabelKey = computed(() => {
+    if (this.titleIsRenameOnly()) {
+      return 'import.confirm.executeRenameOnly';
+    }
     if (this.removeCount() === 0) {
       return 'import.confirm.execute';
     }
@@ -1233,11 +1266,23 @@ export class ImportConfirmDialog {
 
   private onTargetRead(target: ReadyTarget, plan: TransferPlan, entries: SevenTvSetEntries): void {
     // The plan changed while the read was running (a reload of the target) — this answer is about
-    // a plan that is gone.
+    // a plan that is gone. Checked *before* the slot projection below (#255 P3.2, review finding):
+    // a target reload resets `liveOccupiedSlots` (see that field's own doc), and a read that was
+    // requested against the *old* plan — this one — must not overwrite that fresh reset with a
+    // number that may already belong to a target the user has since moved past. A drifted or
+    // failed-verification answer below is still current by this same check, so it still updates
+    // the projection.
     if (this.plan() !== plan) {
       this.rawActionState.set(IDLE);
       return;
     }
+    // Every call here is a successful live read (a failed one never reaches this method, see
+    // `verifyAndSave`'s `error` handler) against the plan that is still current — the slot
+    // projection adopts its occupancy number regardless of which branch follows below (an
+    // unavailable verification, a drift, or a clean save): the target itself has not reloaded,
+    // only the decisions about it might, and none of those branches make this number any less
+    // true.
+    this.liveOccupiedSlots.set(entries.occupiedSlots);
     const verification = verifyReplaceTargets(entries, plan);
     if (!verification.available) {
       this.rawActionState.set(IDLE);

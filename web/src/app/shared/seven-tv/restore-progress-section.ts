@@ -139,8 +139,9 @@ export class RestoreProgressSection {
   /** The tracked channel a settled or running run expects to touch, or `null` for an untracked
    *  target — decides which of the two target-line wordings the template shows (see its own
    *  comment). `expectedChannelName` is set for a tracked *active* target (E18), `resyncChannelName`
-   *  for a tracked *non*-active one (E12); the two are mutually exclusive by construction
-   *  (`restoreStartTarget`, `restore-flow.ts`), so at most one is ever non-null. */
+   *  for a tracked *non*-active one — display only since #255 (`seven-tv-restore.service.ts`'s
+   *  `resyncAfterReport` no longer reads it, only this label does); the two are mutually exclusive
+   *  by construction (`restoreStartTarget`, `restore-flow.ts`), so at most one is ever non-null. */
   protected targetChannelName(run: {
     expectedChannelName: string | null;
     resyncChannelName: string | null;

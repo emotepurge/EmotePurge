@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { SyncDeletedInSetResponse, SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
-import { classifySyncInSetFailure, classifySyncInSetResponse } from './sync-report-outcome';
+import {
+  classifySyncInSetFailure,
+  classifySyncInSetResponse,
+  isChannelMismatch,
+} from './sync-report-outcome';
 
 function deletedResponse(
   overrides: Partial<SyncDeletedInSetResponse> = {},
@@ -68,15 +72,46 @@ describe('classifySyncInSetResponse — AK 15', () => {
     });
   });
 
-  it('reads an unresolvedChannel as partial/channelMismatch even when every resolved channel was complete', () => {
+  it('reads an unresolvedChannel with reason activeSetDiffers as partial/channelMismatchActiveSetDiffers even when every resolved channel was complete', () => {
     const response = deletedResponse({
       channels: [{ channelName: 'handofblood', archivedCount: 2, notFoundIds: [] }],
       unresolvedChannel: { channelName: 'othermod', reason: 'activeSetDiffers' },
     });
     expect(classifySyncInSetResponse(response, 2)).toEqual({
       state: 'partial',
-      reason: 'channelMismatch',
+      reason: 'channelMismatchActiveSetDiffers',
     });
+  });
+
+  // #255: the two unresolvedChannel reasons must not collapse into one — a channel EmotePurge
+  // does not track at all reads differently to a user than one that is tracked but currently
+  // active under a different set.
+  it('reads an unresolvedChannel with reason notTracked as partial/channelMismatchNotTracked', () => {
+    const response = deletedResponse({
+      unresolvedChannel: { channelName: 'othermod', reason: 'notTracked' },
+    });
+    expect(classifySyncInSetResponse(response, 2)).toEqual({
+      state: 'partial',
+      reason: 'channelMismatchNotTracked',
+    });
+  });
+});
+
+describe('isChannelMismatch', () => {
+  it('is true for both channel-mismatch reasons', () => {
+    expect(isChannelMismatch('channelMismatchNotTracked')).toBe(true);
+    expect(isChannelMismatch('channelMismatchActiveSetDiffers')).toBe(true);
+  });
+
+  it.each(['forbidden', 'setNotFound', 'unavailable', 'shortfall', 'other'] as const)(
+    'is false for %s',
+    (reason) => {
+      expect(isChannelMismatch(reason)).toBe(false);
+    },
+  );
+
+  it('is false for null', () => {
+    expect(isChannelMismatch(null)).toBe(false);
   });
 });
 

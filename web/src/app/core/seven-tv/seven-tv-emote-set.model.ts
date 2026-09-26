@@ -109,8 +109,9 @@ export interface EmoteSetTargetsResponse {
  *  changed row (spec 5.2 step 3, 5.3, E18/H2) — a missing, inactive or excluded channel
  *  (`'notTracked'`, the block kept deliberately vague) or one that is active under a *different*
  *  set right now (`'activeSetDiffers'`, a stale `Channel.ActiveEmoteSetId`, F13). Either reason
- *  keeps the report at `partial` (`sync-report-outcome.ts`'s `channelMismatch`), never `succeeded`,
- *  even when every resolved channel was complete. */
+ *  keeps the report at `partial` (`sync-report-outcome.ts`'s `channelMismatchNotTracked`/
+ *  `channelMismatchActiveSetDiffers` — see `isChannelMismatch` there for the pair as a whole),
+ *  never `succeeded`, even when every resolved channel was complete. */
 export interface UnresolvedChannel {
   channelName: string;
   reason: 'notTracked' | 'activeSetDiffers';

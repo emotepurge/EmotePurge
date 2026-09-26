@@ -150,8 +150,10 @@ describe('SevenTvDeleteService', () => {
       expect(service.syncReportReason()).toBe('shortfall');
     });
 
-    // AK 15, E18: the expected channel was not hit (stale active set) — partial/channelMismatch.
-    it('treats an unresolved expected channel as partial/channelMismatch', () => {
+    // AK 15, E18: the expected channel was not hit because it is tracked but currently active
+    // under a different set (stale active set) — partial/channelMismatchActiveSetDiffers (#255:
+    // kept apart from the notTracked case below, they read differently to a user).
+    it('treats an unresolved expected channel with reason activeSetDiffers as partial/channelMismatchActiveSetDiffers', () => {
       runOneDeleteToSyncRequest().flush(
         deletedAnswer({
           unresolvedChannel: { channelName: 'sensitron', reason: 'activeSetDiffers' },
@@ -160,23 +162,40 @@ describe('SevenTvDeleteService', () => {
       );
 
       expect(service.syncReport()).toBe('partial');
-      expect(service.syncReportReason()).toBe('channelMismatch');
+      expect(service.syncReportReason()).toBe('channelMismatchActiveSetDiffers');
     });
 
-    // addendum N4, AK 40: nothing a retry could improve — the service refuses it, no request.
-    it('refuses a manual retry of a report that ended partial/channelMismatch', () => {
+    // AK 15, E18: the expected channel was not hit because EmotePurge does not currently track it
+    // at all — partial/channelMismatchNotTracked.
+    it('treats an unresolved expected channel with reason notTracked as partial/channelMismatchNotTracked', () => {
       runOneDeleteToSyncRequest().flush(
         deletedAnswer({
-          unresolvedChannel: { channelName: 'sensitron', reason: 'activeSetDiffers' },
-          resyncTriggered: ['sensitron'],
+          unresolvedChannel: { channelName: 'sensitron', reason: 'notTracked' },
         }),
       );
 
-      service.retrySyncReport();
-
-      httpMock.expectNone(SYNC_ENDPOINT);
       expect(service.syncReport()).toBe('partial');
+      expect(service.syncReportReason()).toBe('channelMismatchNotTracked');
     });
+
+    // addendum N4, AK 40: nothing a retry could improve — the service refuses it, no request, for
+    // either channel-mismatch reason.
+    it.each(['activeSetDiffers', 'notTracked'] as const)(
+      'refuses a manual retry of a report that ended partial/channelMismatch (%s)',
+      (reason) => {
+        runOneDeleteToSyncRequest().flush(
+          deletedAnswer({
+            unresolvedChannel: { channelName: 'sensitron', reason },
+            resyncTriggered: reason === 'activeSetDiffers' ? ['sensitron'] : [],
+          }),
+        );
+
+        service.retrySyncReport();
+
+        httpMock.expectNone(SYNC_ENDPOINT);
+        expect(service.syncReport()).toBe('partial');
+      },
+    );
 
     it('still allows a manual retry of a report that ended partial/shortfall', () => {
       runOneDeleteToSyncRequest().flush(

@@ -1,5 +1,5 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { inject, Injectable, signal } from '@angular/core';
+import { inject, Injectable, signal, WritableSignal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { retry, throwError, timer } from 'rxjs';
 
@@ -19,6 +19,7 @@ import {
   SyncReportState,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  isChannelMismatch,
 } from './sync-report-outcome';
 
 /** Same shape as the delete's REMOVE, with `addEmote` and the alias to restore under. `alias`
@@ -73,10 +74,11 @@ const DUPLICATE_NOTICE_MS = 4000;
 
 /** Outcome of the closing resync trigger. 'cooldown' is not a failure: the per-channel cooldown
  *  (429) means a sync just ran or is about to — the periodic worker heals the view within its
- *  60s tick either way. `'backendTriggered'` (restore only, spec 6.4/E12/F15) means the report's
- *  own answer named the channel in `resyncTriggered`: the backend already started the resync, so
- *  no request of ours went out — the dock says "being re-synced" all the same. The import never
- *  takes this value; its resync skips such a channel and stays `'idle'`. */
+ *  60s tick either way. `'backendTriggered'` (restore only, active set only since #255, spec
+ *  6.4/F15) means the report's own answer named the channel in `resyncTriggered`: the backend
+ *  already started the resync, so no request of ours went out — the dock says "being re-synced"
+ *  all the same. The import never takes this value; its resync skips such a channel and stays
+ *  `'idle'`. */
 export type ResyncTriggerState =
   'idle' | 'pending' | 'succeeded' | 'cooldown' | 'failed' | 'backendTriggered';
 
@@ -88,9 +90,12 @@ export type ResyncTriggerState =
  * - `setId` — the 7TV set every `ADD`, the report and every retry name.
  * - `expectedChannelName` — the tracked channel the report expects to touch: the target account's
  *   tracked channel when the target is its *active* set, otherwise `null` (E18).
- * - `resyncChannelName` — the tracked channel whose resync the client itself may trigger: set only
- *   for a *non-active* set of a tracked channel, otherwise `null` (E12). No backend resync covers
- *   that case, and it is what reloads the non-active set's member list (spec #200, 8.3).
+ * - `resyncChannelName` — the tracked channel of a *non-active* set, otherwise `null`; display only
+ *   since the operator decision 2026-09-25 (#255) — `RestoreProgressSection`'s target line reads it
+ *   to name the channel, but `resyncAfterReport` no longer does. Before #255 this also named the
+ *   one case no backend resync covered and triggered the client's own resync for it (former E12) —
+ *   dropped because that resync only ever reloaded the channel's *active* set view, never the
+ *   non-active set the run actually wrote to (design doc §18 addendum, 2026-09-25).
  * - `hostChannelName` — the channel of the page the run was started on; only
  *   `resetIfChannelChanged` compares against it (F7).
  * - `setName`, `ownerOrChannelLabel` — display only, never compared (the dock's target line, 4.4
@@ -119,7 +124,8 @@ export interface RestoreRunInfo {
   targetSetId: string;
   /** See `RestoreStartTarget.expectedChannelName` — sent with every report and retry. */
   expectedChannelName: string | null;
-  /** See `RestoreStartTarget.resyncChannelName`. */
+  /** See `RestoreStartTarget.resyncChannelName` — display only since #255, read by
+   *  `RestoreProgressSection`'s target line, never by `resyncAfterReport`. */
   resyncChannelName: string | null;
   /** See `RestoreStartTarget.hostChannelName`. */
   hostChannelName: string;
@@ -140,11 +146,15 @@ export interface RestoreRunInfo {
  * bookkeeping call that un-archives the rows of every tracked channel whose active set this is
  * and — the reason it exists at all — writes the `emotes.syncRestored` audit entry, for any
  * target, tracked or not. The backend resyncs every channel it touched (E17) and says so in
- * `resyncTriggered`; this service only follows up with its own resync for a non-active set of a
- * tracked channel (E12), and only once the report has answered, so a channel is never resynced
- * twice for one report (F15, AK 27). A first report that fails for good gets a resync of
- * `resyncChannelName ?? expectedChannelName` instead, since the backend never reached its own
- * (addendum N1, AK 36).
+ * `resyncTriggered`; a **successful** report never makes this service trigger a resync of its own —
+ * for the target's active set the backend's own coverage (E17) is unconditional, so only the dock's
+ * `'backendTriggered'` display depends on whether the answer happens to name it, and a non-active
+ * tracked target gets no client resync at all any more (operator decision 2026-09-25, #255, same as
+ * the import, `seven-tv-import.service.ts:657-671`). Only the **first** report of a run that fails
+ * for good, and only for the active set, makes the client stand in with its own resync of
+ * `expectedChannelName`, since the backend never reached its own resync stage then (addendum N1,
+ * AK 36); the cooldown (F15) absorbs a duplicate against a resync the backend or an earlier run
+ * already triggered.
  */
 @Injectable({ providedIn: 'root' })
 export class SevenTvRestoreService {
@@ -214,6 +224,23 @@ export class SevenTvRestoreService {
    *  button to attach to, and a persistent flag would otherwise be able to sit next to an unrelated
    *  *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
+
+  /** Whether a restore's shared open-time pre-check chain (`resolveEditableSet`, then the open-time
+   *  duplicate check) is out right now, from *either* of the two entry points a restore can start
+   *  from — `ImportTrigger`'s restore-file door (`startRestoreFlow`, `restore-flow.ts`) or
+   *  `MassDeletePanel`'s restore button (`openRestoreConfirm`). Root-level and shared on purpose
+   *  (#255 P2, Codex review): the two entries used to keep separate, component-local pending flags,
+   *  which guarded each button against a second click on *itself* but left the other entry's button
+   *  fully enabled while the first's read was still out — both mount together on the usage-stats
+   *  page (`usage-stats-page.html`), so a click there while the other's pre-check chain was in
+   *  flight could open a second confirmation stacked on the first, with a duplicate
+   *  `app-dialog-title` id. Both entries now read and set this same signal instead of a field of
+   *  their own — see `ImportTrigger.restorePreviewPending`/`RestoreFlowDeps.previewPending` and
+   *  `MassDeletePanel.restoreConfirmPending`, both of which alias this signal rather than holding
+   *  their own. Exposed writable (not `.asReadonly()`), like `RestoreFlowDeps.previewPending`
+   *  already was before this fix: both call sites are the ones setting it, this only moves *where*
+   *  the shared instance lives. */
+  readonly restorePreCheckPending: WritableSignal<boolean> = signal(false);
 
   private duplicateNoticeTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -304,9 +331,10 @@ export class SevenTvRestoreService {
     const current = this.runState();
     if (
       this.syncReport() === 'pending' ||
-      // addendum N4, AK 40: a channel mismatch is recorded and its resync already runs — a retry
-      // could only write the same mismatch again.
-      this.syncReportReason() === 'channelMismatch' ||
+      // addendum N4, AK 40: either channel-mismatch reason is recorded and, for
+      // activeSetDiffers, its resync already runs — a retry could only write the same mismatch
+      // again.
+      isChannelMismatch(this.syncReportReason()) ||
       !current?.result ||
       current.result.doneKeys.length === 0
     ) {
@@ -385,40 +413,47 @@ export class SevenTvRestoreService {
       });
   }
 
-  /** E12, F15, AK 21/27, spec 6.4 and 4.4 point 11: a resync of our own only for a non-active set
-   *  of a tracked channel (`resyncChannelName`), and only when the report's answer does not already
-   *  name that channel in `resyncTriggered`. Whenever the answer names the channel this run is
-   *  about — `resyncChannelName`, or for an active set its `expectedChannelName` (also when it came
-   *  back unresolved, `activeSetDiffers`) — the dock says "being re-synced" (`'backendTriggered'`)
-   *  without a request of ours. An active set whose channel is not named (the cooldown was not
-   *  acquired, F15, or `notTracked`) and an untracked target (nothing to resync) leave
-   *  `resyncTrigger` on `'idle'`: no request, no resync line.
+  /** F15, AK 21/27, spec 6.4 and 4.4 point 11, operator decision 2026-09-25 (#255): a resync of our
+   *  own only ever for the target's **active** set (`expectedChannelName`) — a non-active tracked
+   *  target no longer gets a client resync at all, whatever the report's answer says or whether it
+   *  succeeded or failed for good. This replaces the former E12 (docs/superpowers/specs/
+   *  2026-09-24-restore-pro-set-253-design.md, §18 addendum, 2026-09-25): a non-active set's
+   *  channel resync only ever pulled the channel's *active* set view, never the set this run
+   *  actually wrote to — a request that could succeed while confirming nothing the user cares
+   *  about, exactly the reasoning the import's own `sendFollowUp` already followed
+   *  (`seven-tv-import.service.ts:657-671`). `resyncChannelName` still names a non-active tracked
+   *  target's channel, but only for `RestoreProgressSection`'s target-line label — never read here
+   *  any more.
    *
+   *  For the active set: the dock says "being re-synced" (`'backendTriggered'`) without a request
+   *  of ours whenever the answer already names the expected channel in `resyncTriggered` (also for
+   *  an unresolved expected channel, `activeSetDiffers`). Otherwise `resyncTrigger` simply stays
+   *  `'idle'` — no request, no resync line — because the backend's own resync (E17) covers the
+   *  active set unconditionally regardless of whether it happens to be visible in `resyncTriggered`;
+   *  unlike the removed non-active case, the client was never the one this success path depended on.
    *  `resyncTriggered === null` is a report that failed for good (addendum N1, AK 36) — any status,
-   *  or a network error, after the retries. The backend never reached its resync stage, so the
-   *  client stands in for it with `resyncChannelName ?? expectedChannelName`; the cooldown absorbs a
-   *  duplicate. Only after the first report of a run: a manual retry passes no `afterReport`. */
+   *  or a network error, after the retries; only then, because the backend never reached its resync
+   *  stage at all, does the client stand in for it with `expectedChannelName`, and only after the
+   *  *first* report of a run (a manual retry passes no `afterReport`); the cooldown absorbs a
+   *  duplicate. */
   private resyncAfterReport(run: RestoreRunInfo, resyncTriggered: readonly string[] | null): void {
+    const expected = run.expectedChannelName;
+    if (expected === null) {
+      // Untracked, or a non-active tracked target (#255) — nothing of ours resyncs either way.
+      return;
+    }
     if (resyncTriggered === null) {
-      const fallbackChannel = run.resyncChannelName ?? run.expectedChannelName;
-      if (fallbackChannel !== null) {
-        this.triggerResync(run, fallbackChannel);
-      }
+      // N1 fallback: the report failed for good, so the backend never reached its own resync —
+      // active set only, same as the rest of this method.
+      this.triggerResync(run, expected);
       return;
     }
-    const channelName = run.resyncChannelName;
-    if (channelName === null) {
-      const expected = run.expectedChannelName;
-      if (expected !== null && includesChannel(resyncTriggered, expected)) {
-        this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
-      }
-      return;
-    }
-    if (includesChannel(resyncTriggered, channelName)) {
+    if (includesChannel(resyncTriggered, expected)) {
       this.applyIfCurrent(run, () => this.resyncTrigger.set('backendTriggered'));
-      return;
     }
-    this.triggerResync(run, channelName);
+    // Not named: the backend's own resync (E17) covers the active set unconditionally regardless —
+    // nothing for the client to trigger itself, unlike the non-active case #255 removed. Stays
+    // `'idle'`.
   }
 
   private triggerResync(run: RestoreRunInfo, channelName: string): void {
