@@ -1689,3 +1689,34 @@ Abschnitt sagt, wo er nicht mehr stimmt.
     ohnehin nicht als eigener Grund, sondern als `skippedDrift` (die Klassifikation ändert sich,
     der Frischcheck sagt nicht, wonach) — die Vorgabe würde also nur beim ersten Read vor dem Lauf
     greifen können.
+13. **`firstReadPending` sperrt einen zweiten Klick, solange der erste Read (17 K3) offen ist
+    (`undo-flow.ts`, `import-trigger.ts`).** Ohne die Sperre könnte ein zweiter Klick auf denselben
+    Auslöser einen zweiten Flow starten, dessen Dialog sich auf den ersten stapelt, bevor die erste
+    Klassifikation überhaupt zurück ist. Weder 6.3 noch 17 K3 nennen dieses Signal; es liegt neben
+    Arbiter und Token als dritte Sperre am Einstieg.
+14. **Das Token wird zweimal mehr geprüft als 6.3 aufzählt.** 6.3 nennt die Token-Prüfung einmal, vor
+    dem Öffnen des Dialogs. Umgesetzt ist sie zusätzlich nach der Bestätigung im Dialog (bevor der
+    Frischcheck liest) und noch einmal nach dem Frischcheck (bevor der Lauf startet) — beide Male mit
+    erneutem Prompt, falls das Token in der Zwischenzeit gelöscht wurde, und beide Male gefolgt von
+    einer erneuten Arbiter-Prüfung (`undo-flow.ts`, `confirmStart`/`startChecked`).
+15. **Die Weiche bekommt einen eigenen Nichtverfügbarkeits-Schlüssel, `restore.import.choice.undo.unavailable`**,
+    statt den generischen `editable | notSelectable | notEditable | unavailable`-Zustand aus 6.1 nur
+    intern zu tragen — die Wahl „Ersetzungen rückgängig machen" erklärt sich selbst, wenn sie
+    ausgegraut ist.
+16. **`restore.import.sorts.transferRun` ist umformuliert, nicht nur um `transferUndo` ergänzt (6.7).**
+    6.7 sah nur einen neuen Schlüssel für die vierte Einlesesorte vor; der bestehende Sortierlabel für
+    eine Übertragungsdatei nennt jetzt auch „Ersetzungen rückgängig machen", weil dieselbe Datei seit
+    T6 beide Wege bedient.
+17. **Vier `undo.errors.*`-Schlüssel, die 6.7 nicht auflistet:** `restoreIncomplete`, `unknownOutcome`
+    (beide für einen verlorenen ADD ohne verwertbares Nachlesen, F20/E24) sowie `skippedDrift` und
+    `recheckUnavailable` (die Fehlertexte des Frischchecks vor einem REMOVE, E19) — `undo.errors.${reason}`
+    liest jeden `UndoInRunSkipReason`/verlorenen Ausgang generisch, nicht nur die in 6.7 benannten.
+18. **`UndoRunTarget` trägt drei Felder mehr als 6.5 aufzählt: `trackedChannelName`,
+    `ownerDisplayName`, `sourceFile`.** 6.5 nennt nur `setId`, `expectedChannelName`,
+    `hostChannelName`, `setName`, `ownerOrChannelLabel` — Anzeige und Lauf-Adressierung. Die drei
+    weiteren tragen ausschließlich Werte, die erst das `finished`-Protokoll (`buildUndoRunProtocol`)
+    braucht und die nach dem Start niemand sonst mehr hereinreichen könnte (`meta.targetChannelName`,
+    `meta.targetOwnerDisplayName`, `meta.undoneFile`).
+19. **`sevenTvRun.kind.undo` und sein Eintrag in `SEVEN_TV_RUN_KIND_LABEL_KEY`** kommen aus #256s
+    Vertrag (Plan Abschnitt 11), nicht aus dieser Spec — der Compiler erzwingt beides, sobald der
+    Arbiter eine vierte Laufart kennt.
