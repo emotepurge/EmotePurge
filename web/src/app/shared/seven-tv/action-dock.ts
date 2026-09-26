@@ -1,10 +1,10 @@
 /**
  * The usage-stats action dock is not one block: it renders a *marking* half (the marked count, the
  * mass-delete panel and the vote-session button projected into it), an *import* half
- * (`app-import-progress-section`) and, since #253/T9, a *restore* half (`app-restore-progress-
- * section`), each with its own gate in the template. The marking half needs this channel to have an
- * active 7TV set — there is nothing to mark slots against without one — while the import and
- * restore halves deliberately do not: a copy run writes into *another* channel's set and has to
+ * (`app-import-progress-section`), since #253/T9 a *restore* half (`app-restore-progress-
+ * section`) and since #254 an *undo* half (`app-undo-progress-section`), each with its own gate in
+ * the template. The marking half needs this channel to have an active 7TV set — there is nothing
+ * to mark slots against without one — while the import and restore halves deliberately do not: a copy run writes into *another* channel's set and has to
  * stay visible, Cancel button included, on every usage-stats page it is opened from (R9), and a
  * restore reached via `ImportTrigger`'s file branch can start on a page with no selected set at all
  * and write into whatever set the file names (spec E22, AK 33).
@@ -57,6 +57,14 @@ export interface ActionDockState {
    *  reached via `ImportTrigger`, which need not have anything marked in this channel's grid at
    *  all). */
   readonly restoreNoticePending: boolean;
+  /** An undo run (#254) is shown — in flight, settling, reporting or settled until Close. Independent
+   *  of `hasActiveSet` like the import and the restore: an undo writes into the set its transfer
+   *  file names, whichever set this page shows (spec 6.6). */
+  readonly undoShown: boolean;
+  /** The undo's transient skipped notice (`SevenTvUndoService.noticePending`) — a start that skipped
+   *  every candidate leaves no run behind, and this is what mounts the dock for its notice, same
+   *  reasoning as `importNoticePending`. */
+  readonly undoNoticePending: boolean;
 }
 
 export function actionDockHasContent(state: ActionDockState): boolean {
@@ -71,6 +79,8 @@ export function actionDockHasContent(state: ActionDockState): boolean {
     state.restoreShown ||
     state.importShown ||
     state.importNoticePending ||
-    state.restoreNoticePending
+    state.restoreNoticePending ||
+    state.undoShown ||
+    state.undoNoticePending
   );
 }

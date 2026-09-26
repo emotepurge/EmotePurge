@@ -43,6 +43,7 @@ import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.serv
 import { refusedStartMessage, SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import {
   CreateVoteSessionDialogData,
   openCreateVoteSessionDialog,
@@ -133,6 +134,7 @@ import {
 import { ImportTrigger } from '../../shared/seven-tv/import-trigger';
 import { DeletableEmote, MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
 import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
+import { UndoProgressSection } from '../../shared/seven-tv/undo-progress-section';
 import { ListSelection } from '../../shared/selection/list-selection';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -279,6 +281,7 @@ function sortableLastUsed(lastUsedDate: string | null): number {
     ImportProgressSection,
     MassDeletePanel,
     RestoreProgressSection,
+    UndoProgressSection,
     ImportTrigger,
     SlotBudgetBar,
     DateRangeMenu,
@@ -311,6 +314,9 @@ export class UsageStatsPage {
   private readonly deleteService = inject(SevenTvDeleteService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly importService = inject(SevenTvImportService);
+  /** Injected here, not only in the dock section, so the service exists — and has registered with
+   *  the run arbiter — from the moment this (lazily loaded) page does (#254, F9). */
+  private readonly undoService = inject(SevenTvUndoService);
   private readonly tokenService = inject(SevenTvTokenService);
   /** Read here only for the header button's lock (#72, R1) — the template needs it too, hence
    *  `protected` rather than `private`, mirroring the same choice on the mass-delete panel and the
@@ -1531,6 +1537,10 @@ export class UsageStatsPage {
         (this.importService.isRunning() || this.importService.queue().length > 0),
       importNoticePending: this.importService.duplicateNoticePending(),
       restoreNoticePending: this.restoreService.duplicateNoticePending(),
+      // `app-undo-progress-section`'s own gate: it draws for a shown run whatever phase it is in,
+      // and for the transient skipped notice of a start that left no run (#254).
+      undoShown: this.undoService.run() !== null,
+      undoNoticePending: this.undoService.noticePending(),
     }),
   );
 
@@ -2863,6 +2873,15 @@ export class UsageStatsPage {
     );
     this.watchRunSettle(
       () => this.importService.run(),
+      (run) =>
+        run.settlement !== 'settled' || run.result === null
+          ? null
+          : { setId: run.targetSetId, result: run.result },
+    );
+    // The undo (#254) as the import: its `result` exists before its re-read settles it. A `partial`
+    // row is `done` in `doneKeys`, so a run that only partly restored an entry still reloads.
+    this.watchRunSettle(
+      () => this.undoService.run(),
       (run) =>
         run.settlement !== 'settled' || run.result === null
           ? null

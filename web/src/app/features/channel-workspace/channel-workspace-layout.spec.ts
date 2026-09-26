@@ -36,6 +36,7 @@ import {
   RestoreRunInfo,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { ChannelWorkspaceLayout } from './channel-workspace-layout';
 
 /** jsdom ships no EventSource — same stand-in as usage-stats-page.spec.ts and
@@ -94,6 +95,42 @@ function reportingRestoreRun(hostChannelName: string): RestoreRunInfo {
     syncReport: 'pending',
     syncReportReason: null,
     resyncTrigger: 'idle',
+  };
+}
+
+/** A settled undo (#254) started on `hostChannelName`, its removal report still out. */
+function reportingUndoRun(hostChannelName: string): UndoRunInfo {
+  return {
+    runId: 'undo-1',
+    phase: 'reporting',
+    destructive: true,
+    targetSetId: 'set-1',
+    expectedChannelName: hostChannelName,
+    hostChannelName,
+    setName: 'set-1',
+    ownerOrChannelLabel: hostChannelName,
+    trackedChannelName: hostChannelName,
+    ownerDisplayName: null,
+    sourceFile: {
+      stage: 'finished',
+      exportedAt: '2026-09-25T10:00:00.000Z',
+      verifiedAt: null,
+      finishedAt: '2026-09-25T10:00:00.000Z',
+      origin: null,
+    },
+    acknowledgedUnproven: false,
+    rows: [],
+    skipped: [],
+    recheck: {},
+    settlement: 'settled',
+    result: { ...DONE_RESULT, items: [] },
+    removalReport: 'pending',
+    removalReportReason: null,
+    restoreReport: 'idle',
+    restoreReportReason: null,
+    resyncTrigger: 'idle',
+    abortedForPrivileges: false,
+    protocolSaved: false,
   };
 }
 
@@ -195,5 +232,29 @@ describe('ChannelWorkspaceLayout — a carried-over run must not be dropped the 
     fixture.componentRef.setInput('channelName', 'c');
     fixture.detectChanges();
     expect(restoreService.run()).toBeNull();
+  });
+
+  // #254: the undo is the fourth service reset from the same `untracked` block — same rule.
+  it('keeps a reporting undo run visible across a channel switch, still shows it once it closes failed, and only drops it on the next switch', () => {
+    const undoService = TestBed.inject(SevenTvUndoService);
+    undoService.run.set(reportingUndoRun('a'));
+
+    fixture.componentRef.setInput('channelName', 'b');
+    fixture.detectChanges();
+    expect(undoService.run()?.runId).toBe('undo-1');
+
+    undoService.run.set({
+      ...undoService.run()!,
+      phase: 'closed',
+      removalReport: 'failed',
+      removalReportReason: 'unavailable',
+    });
+    TestBed.tick();
+    expect(undoService.run()?.phase).toBe('closed');
+    expect(undoService.run()?.removalReportReason).toBe('unavailable');
+
+    fixture.componentRef.setInput('channelName', 'c');
+    fixture.detectChanges();
+    expect(undoService.run()).toBeNull();
   });
 });

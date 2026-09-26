@@ -12,6 +12,8 @@ function state(overrides: Partial<ActionDockState> = {}): ActionDockState {
     importShown: false,
     importNoticePending: false,
     restoreNoticePending: false,
+    undoShown: false,
+    undoNoticePending: false,
     ...overrides,
   };
 }
@@ -76,6 +78,19 @@ describe('actionDockHasContent', () => {
       true,
     );
     expect(actionDockHasContent(state({ hasActiveSet: false, restoreNoticePending: true }))).toBe(
+      true,
+    );
+  });
+
+  // #254 spec 6.6: an undo writes into the set its transfer file names, whichever set the page
+  // shows — so, like the import and the restore, its half has no set gate.
+  it('shows an undo run without an active set, in whatever phase it is shown', () => {
+    expect(actionDockHasContent(state({ hasActiveSet: false, undoShown: true }))).toBe(true);
+  });
+
+  // A start that skipped every candidate leaves no run: its transient notice alone mounts the dock.
+  it('shows a pending undo notice without an active set and without a run', () => {
+    expect(actionDockHasContent(state({ hasActiveSet: false, undoNoticePending: true }))).toBe(
       true,
     );
   });

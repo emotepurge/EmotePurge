@@ -2,11 +2,12 @@ import { Dialog } from '@angular/cdk/dialog';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRouteSnapshot, provideRouter, Route, RouterStateSnapshot } from '@angular/router';
-import { TranslocoTestingModule } from '@jsverse/transloco';
+import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom, Observable, of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import { usageStatsLeaveGuard } from './usage-stats-leave.guard';
 
 // Two distinct route-definition objects, standing in for the real `usage-stats` and
@@ -32,14 +33,22 @@ const DE_TRANSLATIONS = {
       confirm: 'Verlassen',
     },
   },
+  undo: {
+    leaveWhileRunning: {
+      message: 'Die Rücknahme der Ersetzungen läuft noch.',
+      confirm: 'Trotzdem verlassen',
+    },
+  },
 };
 
 describe('usageStatsLeaveGuard', () => {
   let isRunning: ReturnType<typeof signal<boolean>>;
+  let undoRunning: ReturnType<typeof signal<boolean>>;
   let dialogOpen: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     isRunning = signal(false);
+    undoRunning = signal(false);
     dialogOpen = vi.fn();
 
     TestBed.configureTestingModule({
@@ -52,6 +61,7 @@ describe('usageStatsLeaveGuard', () => {
       providers: [
         provideRouter([]),
         { provide: SevenTvImportService, useValue: { isRunning } },
+        { provide: SevenTvUndoService, useValue: { isRunning: undoRunning } },
         { provide: Dialog, useValue: { open: dialogOpen } },
       ],
     });
@@ -106,5 +116,22 @@ describe('usageStatsLeaveGuard', () => {
 
     expect(await firstValueFrom(runGuard(USAGE_STATS_ROUTE, OTHER_ROUTE))).toBe(true);
     expect(dialogOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // #254 spec 6.5: a running undo asks too, in its own words; should both ever run at once (the
+  // arbiter starts one run at a time), the import's wording wins (plan Festlegung 8).
+  it('asks in the undo wording while an undo runs, and in the import wording while both do', async () => {
+    await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
+    undoRunning.set(true);
+    dialogOpen.mockReturnValue({ closed: of(false) });
+
+    expect(await firstValueFrom(runGuard())).toBe(false);
+    expect(dialogOpen.mock.calls[0][1].data.message).toBe(
+      'Die Rücknahme der Ersetzungen läuft noch.',
+    );
+
+    isRunning.set(true);
+    await firstValueFrom(runGuard());
+    expect(dialogOpen.mock.calls[1][1].data.message).toBe('Der Kopierlauf läuft noch.');
   });
 });
