@@ -1,5 +1,6 @@
 import { RunItemStatus } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
+import { UndoSkipReason } from '../seven-tv/undo-plan';
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, buildEnvelope } from './export-envelope';
 import { sanitizeFilenamePart } from './file-download';
@@ -111,7 +112,7 @@ export interface TransferUndoExecutedRow {
    *  the recheck becoming unavailable) — `null` otherwise, including for every `planned` row. A
    *  candidate skipped *before* it ever became a row (in the dialog, the pre-run recheck, or the
    *  origin lock) is a {@link TransferUndoSkippedRow} instead, never this. */
-  skippedReason: string | null;
+  skippedReason: UndoSkipReason | null;
 }
 
 /**
@@ -129,7 +130,7 @@ export interface TransferUndoSkippedRow {
   alias: string;
   targetSevenTvEmoteId: string;
   provenance: 'confirmed' | 'unproven';
-  skippedReason: string;
+  skippedReason: UndoSkipReason;
 }
 
 export type TransferUndoRow = TransferUndoExecutedRow | TransferUndoSkippedRow;
@@ -238,7 +239,7 @@ interface TransferUndoExecutedInputBase extends TransferUndoRowInputBase {
   failedStep: number | null;
   completedSteps: number;
   errorMessage: string | null;
-  skippedReason: string | null;
+  skippedReason: UndoSkipReason | null;
 }
 
 /**
@@ -264,7 +265,7 @@ export type TransferUndoExecutedInput =
 /** One candidate the run never turned into a row — see {@link TransferUndoSkippedRow}. */
 export interface TransferUndoSkippedInput {
   candidate: UndoCandidate;
-  skippedReason: string;
+  skippedReason: UndoSkipReason;
 }
 
 function transferUndoExecutedRow(
@@ -274,7 +275,7 @@ function transferUndoExecutedRow(
   status: RunItemStatus | 'partial',
   failedStep: number | null,
   errorMessage: string | null,
-  skippedReason: string | null,
+  skippedReason: UndoSkipReason | null,
 ): TransferUndoExecutedRow {
   const { candidate, mode, adds, omittedEntries, notes } = input;
   // Step 0 is the REMOVE on a `full` row; `addOnly` skips straight to its ADDs at step 0.

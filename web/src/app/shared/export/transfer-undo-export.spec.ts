@@ -436,7 +436,7 @@ describe('buildTransferUndoProtocol', () => {
     'targetNameTaken',
     'skippedDrift',
     'skippedUnproven',
-  ])(
+  ] as const)(
     'records a candidate skipped for %s as its own kind: skipped row, never kind: executed',
     (reason) => {
       const skippedInput: TransferUndoSkippedInput = {
