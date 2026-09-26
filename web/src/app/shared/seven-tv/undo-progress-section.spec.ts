@@ -2,7 +2,7 @@ import { Dialog } from '@angular/cdk/dialog';
 import { Signal, WritableSignal, computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom, of } from 'rxjs';
+import { Subject, firstValueFrom, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ResyncTriggerState } from '../../core/seven-tv/seven-tv-restore.service';
@@ -330,6 +330,44 @@ describe('UndoProgressSection', () => {
   });
 
   describe('protocol and Close', () => {
+    /** Spies on the two seams `downloadFile` touches (same approach as the confirm dialogs' specs). */
+    function captureDownloads(): { blobs: Blob[]; clicked: string[] } {
+      if (!('createObjectURL' in URL)) {
+        Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
+      }
+      const blobs: Blob[] = [];
+      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+        blobs.push(blob as Blob);
+        return 'blob:test';
+      });
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+      const clicked: string[] = [];
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+        this: HTMLAnchorElement,
+      ) {
+        clicked.push(this.download);
+      });
+      return { blobs, clicked };
+    }
+
+    // A report of an older run can put that run back on show (`reshow`) while the export dialog is
+    // open — the file is the run captured at the click, and only that run may be marked saved.
+    it('does not mark a run saved that is no longer shown when the export dialog closes', () => {
+      settle([item('1')]);
+      const closed = new Subject<{ optionId: string; scope: string } | undefined>();
+      dialogOpen.mockReturnValue({ closed });
+      const { clicked } = captureDownloads();
+
+      const { fixture } = render();
+      button(fixture, 'Ergebnisprotokoll herunterladen')?.click();
+      undo.run.set(runInfo({ runId: 'undo-0' }));
+      closed.next({ optionId: 'json', scope: 'all' });
+      closed.complete();
+
+      expect(clicked).toHaveLength(1);
+      expect(undo.markProtocolSaved).not.toHaveBeenCalled();
+    });
+
     it('offers the protocol from settled on and keeps the not-saved hint until it was saved', () => {
       settle([item('1')], { phase: 'reporting', removalReport: 'pending' });
       const reporting = render();
@@ -353,21 +391,7 @@ describe('UndoProgressSection', () => {
     it('saves the finished protocol as JSON under the target channel and marks it saved', async () => {
       settle([item('1')]);
       dialogOpen.mockReturnValue({ closed: of({ optionId: 'json', scope: 'all' }) });
-      if (!('createObjectURL' in URL)) {
-        Object.assign(URL, { createObjectURL: () => '', revokeObjectURL: () => undefined });
-      }
-      const blobs: Blob[] = [];
-      vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
-        blobs.push(blob as Blob);
-        return 'blob:test';
-      });
-      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
-      const clicked: string[] = [];
-      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
-        this: HTMLAnchorElement,
-      ) {
-        clicked.push(this.download);
-      });
+      const { blobs, clicked } = captureDownloads();
 
       const { fixture } = render();
       button(fixture, 'Ergebnisprotokoll herunterladen')?.click();
@@ -418,6 +442,29 @@ describe('UndoProgressSection', () => {
 
       undo.run.set({ ...undo.run()!, restoreReportReason: 'channelMismatchActiveSetDiffers' });
       expect(button(render().fixture, 'Wiederherstellung erneut melden')).toBeUndefined();
+    });
+
+    // §4.4/§4.5: a status region created together with its text announces nothing. The restore
+    // report's region stands from the moment the run is shown; its failure and retry enter it.
+    it('announces the restore report through a live region that stood before the report ended', () => {
+      settle([item('1')], { phase: 'reporting', restoreReport: 'pending' });
+      const { fixture } = render();
+      const root = fixture.nativeElement as HTMLElement;
+      const standing = Array.from(root.querySelectorAll('[role="status"][aria-atomic="false"]'));
+
+      undo.run.set({ ...undo.run()!, restoreReport: 'failed', restoreReportReason: 'unavailable' });
+      fixture.detectChanges();
+
+      const title = Array.from(root.querySelectorAll('span')).find(
+        (span) =>
+          span.textContent?.trim() === 'Rückmeldung über die Wiederherstellung fehlgeschlagen',
+      );
+      const retry = button(fixture, 'Wiederherstellung erneut melden');
+      const region = standing.find((candidate) => title !== undefined && candidate.contains(title));
+      expect(region).toBeDefined();
+      expect(region?.contains(retry ?? null)).toBe(true);
+      // Its own region, not the panel's (which holds the bar and the removal report).
+      expect(region?.querySelector('[role="progressbar"]')).toBeNull();
     });
 
     it('offers no report line for a run that confirmed nothing to report', () => {

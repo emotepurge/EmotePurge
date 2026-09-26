@@ -43,7 +43,8 @@ import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
  * **Two reports** (Festlegung 3): the panel carries the removal report (`sync-deleted`, the
  * destructive fact) with its reason and retry; this section shows the restore report
  * (`sync-restored`) as its own banner right below the panel, so the two read in the order they are
- * sent (F8). Both retries follow the service's own locks, mirrored here rather than left to a
+ * sent (F8) — inside a live region of its own that mounts with the run, so its failure and retry
+ * are announced when they appear (docs/UI-Designsprache.md §4.4, §4.5). Both retries follow the service's own locks, mirrored here rather than left to a
  * silent refusal: never while a report is pending (no banner then), never for a channel mismatch,
  * and only for a settled run that confirmed something to report.
  */
@@ -135,30 +136,36 @@ import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
             }
           </ng-container>
         </app-run-progress-panel>
-        <!-- The restore report (sync-restored), second in line after the panel's removal report. -->
-        @if (restoreReportFailed()) {
-          <app-notice-banner variant="warning">
-            <span class="flex flex-col gap-1">
-              <span class="font-medium">{{ restoreSyncTitleKey() | transloco }}</span>
-              <span>{{ restoreSyncTextKey() | transloco }}</span>
-              @if (undoService.restoreReportReason(); as reason) {
-                <span>{{ 'syncReportReason.' + reason | transloco }}</span>
+        <!-- The restore report (sync-restored), second in line after the panel's removal report
+             (F8). Its own live region, mounted together with the run rather than with the report's
+             end state: a status region created in the same pass as its text announces nothing
+             (docs/UI-Designsprache.md §4.4, §4.5), and the panel's region above does not reach down
+             here. Non-atomic like the panel's, so only the changed line is read. -->
+        <div role="status" aria-atomic="false">
+          @if (restoreReportFailed()) {
+            <app-notice-banner variant="warning">
+              <span class="flex flex-col gap-1">
+                <span class="font-medium">{{ restoreSyncTitleKey() | transloco }}</span>
+                <span>{{ restoreSyncTextKey() | transloco }}</span>
+                @if (undoService.restoreReportReason(); as reason) {
+                  <span>{{ 'syncReportReason.' + reason | transloco }}</span>
+                }
+              </span>
+              @if (restoreRetryOffered()) {
+                <button
+                  notice-action
+                  type="button"
+                  appButton="outline"
+                  (click)="undoService.retryRestoreReport()"
+                >
+                  {{ 'undo.restoreSyncRetry' | transloco }}
+                </button>
               }
-            </span>
-            @if (restoreRetryOffered()) {
-              <button
-                notice-action
-                type="button"
-                appButton="outline"
-                (click)="undoService.retryRestoreReport()"
-              >
-                {{ 'undo.restoreSyncRetry' | transloco }}
-              </button>
-            }
-          </app-notice-banner>
-        } @else if (restoreReportShown() === 'succeeded') {
-          <p class="text-sm text-fg-muted">{{ 'undo.restoreSyncSucceeded' | transloco }}</p>
-        }
+            </app-notice-banner>
+          } @else if (restoreReportShown() === 'succeeded') {
+            <p class="text-sm text-fg-muted">{{ 'undo.restoreSyncSucceeded' | transloco }}</p>
+          }
+        </div>
       </div>
     }
   `,
