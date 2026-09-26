@@ -74,10 +74,16 @@ and another branch.
 - **One visible consequence: the delete dock's own restore button.** `mass-delete-panel.ts` shows it
   only once `arbiter.activeRun() === null` — a finished delete run holds the claim through its
   `reporting` phase, so the button appears only after `sync-deleted`'s answer reaches an end state,
-  not as soon as the deletion itself is done. The same fact reads the other way round too: a
-  `sync-restored` report can never reach our Api before `sync-deleted` has, because starting the
-  restore run — the earliest point a `sync-restored` report could go out — is gated on exactly that
-  button.
+  not as soon as the deletion itself is done. The same fact reads the other way round too, **for a
+  run's first report**: a `sync-restored` report can never reach our Api before that run's own
+  `sync-deleted` has, because starting the restore run — the earliest point a `sync-restored` report
+  could go out — is gated on exactly that button. It does not extend to a *manual* retry: a delete's
+  `retrySyncReport()` (#256 P2 on the Plan-256-Robustheit review) re-sends `sync-deleted` for the same
+  ids at any later time, including after the set's own `sync-restored` has already answered — nothing
+  in the arbiter or either run's lifecycle blocks that ordering, since the delete run is `closed`
+  by then and the retry does not reopen it. Harmless in practice: the retry only repeats an audit
+  entry for ids already archived, and the worker's periodic resync (never the report itself) is what
+  reconciles the set's actual state regardless of which report answered last.
 - **The refusal notice is arbiter business.** `noteRefusedStart(attempted)` records what a start
   point tried and what blocked it (`refusedStart`, cleared after `REFUSED_START_FEEDBACK_MS` = 4000
   ms, §4.5; a second refusal restarts the window). On a free arbiter it notes nothing, so the notice
@@ -133,10 +139,15 @@ A non-active tracked or an untracked target already took the live branch on its 
 `web/src/app/core/seven-tv/seven-tv-run-engine.ts` (`reset` doc, `showFinishedRows`) ·
 `web/src/app/shared/seven-tv/import-progress-section.ts`,
 `web/src/app/shared/seven-tv/mass-delete-panel.ts`,
-`web/src/app/shared/seven-tv/restore-progress-section.ts` (all three: `[dismissible]`) ·
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (all three: `[dismissible]`; review round:
+`mass-delete-panel.ts`'s `openRestoreConfirm` also freezes `hostChannelName` to the finished run's
+own channel, see below) ·
 `web/src/app/shared/seven-tv/run-progress-panel.ts` (`dismissible` doc) ·
 `web/src/app/features/usage-stats/usage-stats-page.ts` (`watchRunSettle`) ·
-`web/public/i18n/{de,en}.json` (`massDelete.settling`, `restore.settling`) ·
+`web/src/app/features/channel-workspace/channel-workspace-layout.ts` (review round: the
+channel-change effect reads `run()` `untracked`, see below) ·
+`web/public/i18n/{de,en}.json` (`massDelete.settling`, `restore.settling`, review round:
+`restore.errors.channelUnknown`) ·
 `docs/plans/Plan-256-Robustheit.md` (T1, T2, Festlegungen 2, 3, 4, 6, 13, 14, 15).
 
 Issue #256 point 1, contract P1/P6 of the #254 spec (11.1). Until now a run's closing work was
@@ -167,8 +178,10 @@ re-read of `unknown` rows, import only) → `reporting` (at least one report wit
   end `cancelled` although 7TV may have applied it (Codex finding on the plan). The engine's queue is
   cleared once `finish()` has built the result, not at `reset()`.
 - **`isSettling` and `destructiveOpen` span every open run of the service**, shown or not;
-  `destructiveOpen` holds from start to `closed`. The import's `beforeunload` guard hangs off it
-  (it moves into the arbiter with T3 (arbiter) of #256). `destructiveRunActive` is gone.
+  `destructiveOpen` holds from start to `closed`. The import's `beforeunload` guard hung off it here
+  until T3 (arbiter) of #256 moved it out: the guard now lives on the arbiter, as the union of
+  `destructiveOpen` across all three run services (see the entry above). `destructiveRunActive` is
+  gone.
 - **`closed` is final.** A manual retry is a new report on a closed run: it neither reopens it nor
   brings back `isSettling`/`destructiveOpen`. A resync is not a report and never holds a run open.
 - **Every report attempt has a time budget** (`REPORT_TIMEOUT_MS = 30_000`, exported next to
@@ -200,9 +213,9 @@ behaviour changes follow:
 - **Every delete row is destructive** (Plan-256 Festlegung 6) — a delete run's `destructiveOpen`
   now correctly reads `true` from `startDelete` to `closed`, the same way an import's `replace` plan
   drives its own; a restore's always stays `false` (only `ADD`s, `destructive: false` always). The
-  signal is what the tab's `beforeunload` guard will hang off, but the actual arming — the union of
-  `destructiveOpen` across delete, restore and import into one guard — is T3's arbiter, not this
-  step.
+  signal is what the tab's `beforeunload` guard hangs off, but the actual arming — the union of
+  `destructiveOpen` across delete, restore and import into one guard — was T3's arbiter's job, not
+  this step's; T3 has since landed (see the entry above).
 - **Schließen-Gate and channel switch now wait for `closed`** (Plan-256 Festlegung 13, Codex-Befund
   2 on the plan): both docks bind `[dismissible]` to `run.phase === 'closed'` instead of "the engine
   stopped", and `resetIfChannelChanged` now only resets a `closed` run — a run still reporting
@@ -214,6 +227,23 @@ behaviour changes follow:
   from a run *detached* by a programmatic `reset()`: that one, should its report then end
   `failed`/`partial`, shows itself again exactly like the import's — a channel switch never detaches
   a still-reporting run in the first place, so this reshow path is not what carries it across pages.
+
+**Review round: the delete dock's restore entry now attributes to the run, not the page** (#256
+P3-3 on the Plan-256-Robustheit review). `mass-delete-panel.ts`'s `openRestoreConfirm` used to build
+`hostChannelName` from the panel's own live `channelName()` input — correct as long as the finished
+delete run and the page it is shown on agree, which the "Schließen-Gate…" bullet above establishes
+is no longer guaranteed: a `reporting` run follows the user to another channel, so the panel's input
+and the run's own frozen channel can drift apart while its dock is still visible there. Restoring
+against the live page in that case would attribute the restore to wherever the dock merely happened
+to still be mounted, not to the channel the delete actually ran on. This revises the "the page only
+supplies the host fields" entry above (2026-09-25, `hostChannelName`/E13, `hostSelectedSetId`/E21)
+for this one caller: the panel path now reads `hostChannelName` off `DeleteRunInfo.channelName` — the
+run's own frozen field — instead of the page's `channelName()`; the other entry point
+(`ImportTrigger`'s restore-file door) is untouched, since it never carries a delete run to begin
+with. `channelName` is a required field of `DeleteRunInfo` and never empty in practice, but the
+button now locks on it defensively (`restore.errors.channelUnknown`, de/en, provisional wording like
+every other reason in this family) rather than silently mis-attributing a future run shape that
+could ever lack one.
 
 ---
 

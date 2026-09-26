@@ -145,8 +145,9 @@ export interface ImportRunResult extends RunResult {
  * whose snapshot has no `unknown` row settles the moment the engine completes; one with an
  * `unknown` row stays `pending` until the one live re-read of the target set has cleared up what
  * it can (`SevenTvImportService.onRunComplete`). Nothing is reported to our Api before `'settled'`.
- * Derived from the run's `phase` since #256 — `'settled'` exactly while it is `reporting` or
- * `closed` — and kept as its own field because the dock, the usage-stats page and #254 read it.
+ * Set in lockstep with the run's `phase` since #256 — `settleRun` moves it to `'settled'` in the
+ * same `update()` call that moves the phase to `reporting`, not derived from the phase after the
+ * fact — and kept as its own field because the dock, the usage-stats page and #254 read it.
  */
 export type ImportSettlement = 'pending' | 'settled';
 
