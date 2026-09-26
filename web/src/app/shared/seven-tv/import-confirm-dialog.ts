@@ -13,9 +13,7 @@ import {
   linkedSignal,
   signal,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { Subscription, timeout } from 'rxjs';
 
 import { normalizeChannelName } from '../../core/channels/channel-name';
 import { EmoteSetWarning } from '../../core/emotes/emote-admin.service';
@@ -67,6 +65,7 @@ import {
   violationMessages,
 } from './import-conflict-resolution-step';
 import { ImportPreview, TargetOverlay, buildImportPreview, overlayPreview } from './import-preview';
+import { RecoveryFileGate, RecoveryFileSave } from './recovery-file-gate';
 import { projectSlots } from './slot-projection';
 
 export interface ImportConfirmDialogData {
@@ -136,32 +135,11 @@ type BlockReason = string | null;
 
 type ReadyTarget = Extract<ImportTargetLoadState, { status: 'ready' }>;
 
-/**
- * The executor's state for a plan that removes target entries (`removeCount > 0`) — three states,
- * one button: `idle` offers to save the recovery file, `verifying` reads the target set live, and
- * `saved` means the file was handed to the browser and the button now starts the run. `verifying`
- * and `saved` hold the plan they were entered for; once the current plan is a different one, the
- * state reads as `idle` again (see `actionState`) — the file on disk describes the old plan.
- */
-type ActionState =
-  | { kind: 'idle' }
-  | { kind: 'verifying'; plan: TransferPlan }
-  | { kind: 'saved'; plan: TransferPlan; stampedPlan: TransferPlan };
-
-/** Why the last live read did not release the run — rendered as one `error` banner. */
+/** The recovery gate's notice as the banner renders it — a drift names its source rows. */
 type TargetCheckNotice =
-  /** At least one replace target changed; `rows` names the source rows concerned. */
-  | { kind: 'drifted'; rows: string }
-  /** The read failed or stopped short of the whole set — nothing it says can vouch for a removal. */
-  | { kind: 'readFailed' }
-  /** The browser refused the download, so no recovery file exists. */
-  | { kind: 'saveFailed' };
+  { kind: 'drifted'; rows: string } | { kind: 'readFailed' } | { kind: 'saveFailed' };
 
-const IDLE: ActionState = { kind: 'idle' };
 const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
-/** Same budget as the other live reads of a set before a destructive step (`mass-delete-panel.ts`,
- *  `seven-tv-import.service.ts`). */
-const LIVE_READ_TIMEOUT_MS = 20_000;
 
 /**
  * The screen where the copy is decided: what would be added, into which set, and everything that
@@ -194,9 +172,10 @@ const LIVE_READ_TIMEOUT_MS = 20_000;
  * **A plan that removes target entries changes the action row** (`removeCount > 0`): the executor
  * first reads the target set live and checks every replace target against what the user confirmed
  * (`verifyReplaceTargets`), then downloads the recovery file built from that read, and only then
- * turns into "Starten". A target that drifted sends the row back to `idle`: its row falls back to
- * skip, and the step shows the live counterpart in place of the stale one, so the user confirms
- * against what is actually there. A read that fails or stops short releases nothing.
+ * turns into "Starten". That state machine and its rules live in `RecoveryFileGate`; this dialog
+ * only supplies the read, the check, the file and what a drift means here — the drifted row falls
+ * back to skip, and the step shows the live counterpart in place of the stale one, so the user
+ * confirms against what is actually there. A read that fails or stops short releases nothing.
  */
 @Component({
   selector: 'app-import-confirm-dialog',
@@ -670,10 +649,6 @@ export class ImportConfirmDialog {
   /** Edits made in the second step and not yet committed; kept across "Zurück". */
   private readonly draftDecisions = signal<ResolutionDecisions>(new Map());
 
-  private readonly rawActionState = signal<ActionState>(IDLE);
-  /** The live read in flight, if any — cancelled when a newer one starts. */
-  private targetRead: Subscription | null = null;
-
   /**
    * The source channel this copy came from, for both channel-shaped origins — a tracked channel and
    * a foreign 7TV one read the same way here on purpose: the sentence "aus Kanal X" is equally true
@@ -725,13 +700,8 @@ export class ImportConfirmDialog {
     computation: () => new Map(),
   });
 
-  /** Why the last live read did not release the run. Cleared by the next read and by a reload. */
-  protected readonly targetCheckNotice = linkedSignal<
-    ImportPreview | null,
-    TargetCheckNotice | null
-  >({ source: this.preview, computation: () => null });
-
-  /** The target's occupied-slot count as of the last successful live read (`onTargetRead`) — spec
+  /** The target's occupied-slot count as of the last successful live read (the gate's
+   *  `onLiveRead`) — spec
    *  #255: the picker-time count (`ready().occupiedSlots`) can already be stale by the time a
    *  replace plan's "Rückweg sichern" reads the target live, and every read after that one is
    *  fresher still. `null` until the first read answers, same reset as `targetOverlays`: a reload
@@ -787,6 +757,40 @@ export class ImportConfirmDialog {
   protected readonly plan = computed<TransferPlan | null>(() => {
     const preview = this.effectivePreview();
     return preview === null ? null : buildTransferPlan(preview, this.planDecisions());
+  });
+
+  /** Verify-and-save for a plan with a replace row. Declared after `plan`, which it follows; a
+   *  reload of the target (a new `preview`) clears its notice, as it clears the overlays. */
+  private readonly recoveryGate = new RecoveryFileGate<
+    TransferPlan,
+    ReplaceTargetDrift,
+    ReadyTarget,
+    SevenTvSetEntries
+  >({
+    plan: this.plan,
+    noticeResetSource: this.preview,
+    destroyRef: this.destroyRef,
+    read: (target) => loadSevenTvSetEntries(this.data.httpClient, target.setId),
+    verify: verifyReplaceTargets,
+    stamp: stampReplaceTargets,
+    save: (file) => this.saveRecoveryFile(file),
+    onDrift: (drifted) => this.applyDrift(drifted),
+    // Every read that still belongs to the current plan is fresher than the picker-time count,
+    // whichever branch follows (see `liveOccupiedSlots`).
+    onLiveRead: (entries) => this.liveOccupiedSlots.set(entries.occupiedSlots),
+  });
+
+  /** Why the last live read did not release the run. Cleared by the next read and by a reload. */
+  protected readonly targetCheckNotice = computed<TargetCheckNotice | null>(() => {
+    const notice = this.recoveryGate.notice();
+    if (notice?.kind !== 'drifted') {
+      return notice;
+    }
+    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
+    return {
+      kind: 'drifted',
+      rows: notice.drifted.map((drift) => names.get(drift.key) ?? drift.key).join(', '),
+    };
   });
 
   private readonly summary = computed(() => {
@@ -1011,13 +1015,7 @@ export class ImportConfirmDialog {
 
   protected readonly isLoading = computed(() => this.data.target().status === 'loading');
 
-  /** `verifying`/`saved` only hold while the plan they were entered for is still the current one. */
-  protected readonly actionState = computed<ActionState>(() => {
-    const state = this.rawActionState();
-    return state.kind !== 'idle' && state.plan !== this.plan() ? IDLE : state;
-  });
-
-  protected readonly isVerifying = computed(() => this.actionState().kind === 'verifying');
+  protected readonly isVerifying = this.recoveryGate.isVerifying;
 
   // A rename-only plan (titleIsRenameOnly) copies nothing in, so "Kopieren" would be as wrong on
   // the button as it would be in the title — this matches the title's own word instead
@@ -1038,7 +1036,7 @@ export class ImportConfirmDialog {
     if (this.removeCount() === 0) {
       return 'import.confirm.execute';
     }
-    return this.actionState().kind === 'saved'
+    return this.recoveryGate.state().kind === 'saved'
       ? 'import.confirm.start'
       : 'import.confirm.saveRecovery';
   });
@@ -1185,11 +1183,11 @@ export class ImportConfirmDialog {
     if (this.executeDisabled()) {
       return;
     }
-    const state = this.actionState();
+    const state = this.recoveryGate.state();
     if (state.kind === 'saved') {
       this.close(target, state.stampedPlan);
     } else if (state.kind === 'idle') {
-      this.verifyAndSave(target, plan);
+      this.recoveryGate.verifyAndSave(target, plan);
     }
   }
 
@@ -1247,74 +1245,15 @@ export class ImportConfirmDialog {
     });
   }
 
-  /** Reads the target set live, verifies every replace target against it and, if they all still
-   *  match, saves the recovery file (docs/plans/Plan-230-Namenskonflikte.md, section 2).
-   *
-   *  Only the newest read may answer: starting one cancels the one before it (closing the dialog
-   *  cancels it too), and each answer first checks that the `verifying` state it set is still the
-   *  current one — an answer that lands after anything else moved the state on changes nothing. */
-  private verifyAndSave(target: ReadyTarget, plan: TransferPlan): void {
-    this.targetRead?.unsubscribe();
-    const verifying: ActionState = { kind: 'verifying', plan };
-    const isCurrent = () => this.rawActionState() === verifying;
-    this.targetCheckNotice.set(null);
-    this.rawActionState.set(verifying);
-    this.targetRead = loadSevenTvSetEntries(this.data.httpClient, target.setId)
-      .pipe(timeout(LIVE_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (entries) => {
-          if (isCurrent()) {
-            this.onTargetRead(target, plan, entries);
-          }
-        },
-        // A failed read vouches for nothing, so it releases nothing. The decisions stay as they
-        // are: which target changed, if any, is exactly what the read could not tell.
-        error: () => {
-          if (!isCurrent()) {
-            return;
-          }
-          this.rawActionState.set(IDLE);
-          // Mirrors onTargetRead's guard: the plan can have moved on (a target reload) while this
-          // read was still in flight. An error about a plan that is gone names nothing.
-          if (this.plan() === plan) {
-            this.targetCheckNotice.set({ kind: 'readFailed' });
-          }
-        },
-      });
-  }
-
-  private onTargetRead(target: ReadyTarget, plan: TransferPlan, entries: SevenTvSetEntries): void {
-    // The plan changed while the read was running (a reload of the target) — this answer is about
-    // a plan that is gone. Checked *before* the slot projection below (#255 P3.2, review finding):
-    // a target reload resets `liveOccupiedSlots` (see that field's own doc), and a read that was
-    // requested against the *old* plan — this one — must not overwrite that fresh reset with a
-    // number that may already belong to a target the user has since moved past. A drifted or
-    // failed-verification answer below is still current by this same check, so it still updates
-    // the projection.
-    if (this.plan() !== plan) {
-      this.rawActionState.set(IDLE);
-      return;
-    }
-    // Every call here is a successful live read (a failed one never reaches this method, see
-    // `verifyAndSave`'s `error` handler) against the plan that is still current — the slot
-    // projection adopts its occupancy number regardless of which branch follows below (an
-    // unavailable verification, a drift, or a clean save): the target itself has not reloaded,
-    // only the decisions about it might, and none of those branches make this number any less
-    // true.
-    this.liveOccupiedSlots.set(entries.occupiedSlots);
-    const verification = verifyReplaceTargets(entries, plan);
-    if (!verification.available) {
-      this.rawActionState.set(IDLE);
-      this.targetCheckNotice.set({ kind: 'readFailed' });
-      return;
-    }
-    if (verification.drifted.length > 0) {
-      this.applyDrift(verification.drifted);
-      return;
-    }
-
-    const stampedPlan = stampReplaceTargets(plan, entries);
-    const verifiedAt = Date.now();
+  /** The recovery file for a verified plan, built from the same read that vouched for it
+   *  (docs/plans/Plan-230-Namenskonflikte.md, section 2). Throws when the browser refuses the
+   *  download — the gate then settles on `saveFailed`. */
+  private saveRecoveryFile({
+    target,
+    stampedPlan,
+    read,
+    verifiedAt,
+  }: RecoveryFileSave<ReadyTarget, TransferPlan, SevenTvSetEntries>): void {
     const record = buildTransferPlanRecord({
       targetEmoteSetId: target.setId,
       targetChannelName: this.data.targetChannelName,
@@ -1322,29 +1261,22 @@ export class ImportConfirmDialog {
       origin: this.data.source.origin,
       verifiedAt,
       plan: stampedPlan,
-      entries,
-      defaultNameById: entries.defaultNameById,
+      entries: read,
+      defaultNameById: read.defaultNameById,
     });
-    try {
-      downloadFile(
-        transferPlanFilename(
-          this.data.targetChannelName ?? target.setId,
-          new Date(verifiedAt).toISOString(),
-        ),
-        transferRunJson(record),
-        JSON_MIME,
-      );
-    } catch {
-      this.rawActionState.set(IDLE);
-      this.targetCheckNotice.set({ kind: 'saveFailed' });
-      return;
-    }
-    this.rawActionState.set({ kind: 'saved', plan, stampedPlan });
+    downloadFile(
+      transferPlanFilename(
+        this.data.targetChannelName ?? target.setId,
+        new Date(verifiedAt).toISOString(),
+      ),
+      transferRunJson(record),
+      JSON_MIME,
+    );
   }
 
-  /** Lays each drifted target's live counterpart over its row, sets the row back to skip (committed
-   *  and draft alike) and names the rows in the banner. The other decisions stay; `planDecisions`
-   *  re-validates them against the new state. */
+  /** The gate's drift callback: lays each drifted target's live counterpart over its row and sets
+   *  the row back to skip (committed and draft alike); the gate then sets the `drifted` notice the
+   *  banner names the rows from. The other decisions stay; `planDecisions` re-validates them. */
   private applyDrift(drifted: readonly ReplaceTargetDrift[]): void {
     const keys = new Set(drifted.map((drift) => drift.key));
     this.targetOverlays.update((overlays) => {
@@ -1358,13 +1290,6 @@ export class ImportConfirmDialog {
       new Map([...decisions].filter(([key]) => !keys.has(key)));
     this.appliedDecisions.update(withoutDrifted);
     this.draftDecisions.update(withoutDrifted);
-
-    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
-    this.targetCheckNotice.set({
-      kind: 'drifted',
-      rows: drifted.map((drift) => names.get(drift.key) ?? drift.key).join(', '),
-    });
-    this.rawActionState.set(IDLE);
   }
 
   private formatExportDate(exportedAt: string | null, locale: string): string {
