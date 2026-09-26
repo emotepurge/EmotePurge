@@ -412,6 +412,7 @@ describe('SevenTvUndoService', () => {
       start([unprovenFull(), unprovenAddOnly()], { acknowledgedUnproven: true });
 
       expect(service.run()?.destructive).toBe(true);
+      expect(service.run()?.acknowledgedUnproven).toBe(true);
       runFull('1');
       runAddOnly('2');
       expectReport(SYNC_DELETED, ['src-1']).flush(answer());
