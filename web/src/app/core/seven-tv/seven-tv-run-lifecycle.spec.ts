@@ -95,7 +95,9 @@ describe('SevenTvRunLifecycle', () => {
     expect(lifecycle.isSettling()).toBe(true);
 
     lifecycle.update(run.runId, (current) => ({ ...current, report: 'succeeded' }));
-    expect(lifecycle.get(run.runId)).toBeNull();
+    // Still shown, so still gettable by id even though `records` itself dropped it once closed —
+    // see the dedicated "still finds a closed run through get()" test below for why that matters.
+    expect(lifecycle.get(run.runId)).not.toBeNull();
     expect(lifecycle.shown()?.phase).toBe('closed');
     expect(lifecycle.isSettling()).toBe(false);
   });
@@ -140,6 +142,69 @@ describe('SevenTvRunLifecycle', () => {
 
     const answered = lifecycle.update(run.runId, (current) => ({ ...current, report: 'failed' }));
     expect(answered?.phase).toBe('closed');
+  });
+
+  // #256 review finding: `closed` is a one-way door even against a change function that explicitly
+  // returns a different phase, not only against one that leaves phase untouched.
+  it('forces phase back to closed even when a change tries to move it backward', () => {
+    const lifecycle = createLifecycle();
+    const run = openRun(lifecycle);
+    lifecycle.update(run.runId, (current) => ({ ...current, phase: 'closed' }));
+
+    // Superseded by a second run — now dropped, since it is closed, nothing is pending, and it is
+    // no longer shown.
+    const stillShown = openRun(lifecycle, { destructive: true });
+    expect(lifecycle.get(run.runId)).toBeNull();
+
+    // A change function that explicitly returns a different phase must not un-close a run that is
+    // still shown, only one whose change leaves phase untouched (the other test above) —
+    // `update` on an id with no record at all returns null and changes nothing, so the guard needs
+    // a still-shown closed run to prove it against.
+    lifecycle.update(stillShown.runId, (current) => ({ ...current, phase: 'reporting' }));
+    lifecycle.update(stillShown.runId, (current) => ({ ...current, report: 'succeeded' }));
+    expect(lifecycle.shown()?.phase).toBe('closed');
+
+    const forced = lifecycle.update(stillShown.runId, (current) => ({
+      ...current,
+      phase: 'running',
+      report: 'idle',
+    }));
+
+    expect(forced?.phase).toBe('closed');
+    expect(lifecycle.shown()?.phase).toBe('closed');
+  });
+
+  it('discardUnstarted removes the record and restores whatever was shown before', () => {
+    const lifecycle = createLifecycle();
+    const first = openRun(lifecycle);
+    const previousShown = lifecycle.shown();
+
+    const runId = lifecycle.createRunId();
+    lifecycle.open({
+      runId,
+      phase: 'running',
+      destructive: false,
+      report: 'idle',
+      label: 'rejected',
+    });
+    expect(lifecycle.shown()?.runId).toBe(runId);
+
+    lifecycle.discardUnstarted(runId, previousShown);
+
+    expect(lifecycle.get(runId)).toBeNull();
+    expect(lifecycle.shown()).toBe(first);
+  });
+
+  it('discardUnstarted does nothing to the display when a newer run has since taken it over', () => {
+    const lifecycle = createLifecycle();
+    const runId = lifecycle.createRunId();
+    lifecycle.open({ runId, phase: 'running', destructive: false, report: 'idle', label: 'a' });
+    const other = openRun(lifecycle);
+
+    lifecycle.discardUnstarted(runId, null);
+
+    expect(lifecycle.get(runId)).toBeNull();
+    expect(lifecycle.shown()).toBe(other); // never overwritten — it was not runId being shown
   });
 
   it('holds destructiveOpen from start to close for a destructive run, never for another one', () => {
@@ -216,6 +281,25 @@ describe('SevenTvRunLifecycle', () => {
     // The caller still gets the final record, to decide whether it has to be shown again.
     expect(closed).toMatchObject({ phase: 'closed', report: 'failed' });
     expect(lifecycle.get(run.runId)).toBeNull();
+  });
+
+  // #256 review fallout: a manual retry (`retrySyncReport`) reads the shown run through `get()`
+  // before sending a new report — it must still find a closed run as long as it is shown, even
+  // though `records` itself has already dropped it (same shown-fallback `update()` gives `current`).
+  it('still finds a closed run through get() as long as it is shown', () => {
+    const lifecycle = createLifecycle();
+    const run = openRun(lifecycle);
+    lifecycle.update(run.runId, (current) => ({
+      ...current,
+      phase: 'reporting',
+      report: 'pending',
+    }));
+
+    const closed = lifecycle.update(run.runId, (current) => ({ ...current, report: 'succeeded' }));
+
+    expect(closed?.phase).toBe('closed');
+    expect(lifecycle.shown()?.runId).toBe(run.runId);
+    expect(lifecycle.get(run.runId)).toBe(closed);
   });
 
   it('shows a detached run again when nothing else is shown', () => {

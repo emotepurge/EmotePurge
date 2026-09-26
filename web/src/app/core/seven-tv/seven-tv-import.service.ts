@@ -10,7 +10,7 @@ import {
   signal,
 } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { catchError, of, retry, throwError, timeout, timer } from 'rxjs';
+import { catchError, map, of, retry, throwError, timeout, timer } from 'rxjs';
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteAdminService } from '../emotes/emote-admin.service';
@@ -512,8 +512,12 @@ export class SevenTvImportService {
       protocolSaved: false,
     };
 
-    // The engine answers asynchronously (every request goes out over HttpClient), so neither
-    // `abortOn` nor `onComplete` can reach the record before `open` below registers it.
+    // Opened *before* the engine is asked to start (#256 review finding): the engine answers
+    // asynchronously in practice, but only this ordering guarantees that a synchronous
+    // `onComplete` — however unlikely — always finds its record already registered, rather than
+    // updating a run the lifecycle does not know about yet, which would then never close.
+    const previousShown = this.lifecycle.shown();
+    this.lifecycle.open(started);
     if (
       !this.engine.start(
         target.setId,
@@ -522,14 +526,13 @@ export class SevenTvImportService {
         (result) => this.onRunComplete(started.runId, context, result),
       )
     ) {
-      // Refused (already running, empty list, no token) — leave every signal as it was, except
-      // skippedDuplicates, duplicateCheckAvailable and replaceSkippedDrift above: an
-      // all-duplicates import is a legitimate "refused" case whose count (and whether it is even
-      // trustworthy) the caller still needs to see.
-      return;
+      // Refused (already running, empty list, no token) — take the just-opened record back and
+      // restore whatever was shown before it, which may be another run still settling its reports.
+      // Every signal above (skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift) stays
+      // as set: an all-duplicates import is a legitimate "refused" case whose count (and whether it
+      // is even trustworthy) the caller still needs to see.
+      this.lifecycle.discardUnstarted(started.runId, previousShown);
     }
-
-    this.lifecycle.open(started);
   }
 
   cancel(): void {
@@ -856,15 +859,25 @@ export class SevenTvImportService {
         sevenTvEmoteIds,
         expectedChannelName: run.targetIsActiveSet ? run.targetChannelName : null,
       })
-      .pipe(timeoutReportAttempt(), retryTransientSyncFailures())
+      .pipe(
+        timeoutReportAttempt(),
+        // The threeway reading (`map`, not inside `next:`) lives ahead of `retryTransientSyncFailures`
+        // so a malformed 200 answer that makes `classifySyncInSetResponse` throw ends the report
+        // like any other transient failure — an uncaught throw inside a `next:` callback would
+        // otherwise leave this run `reporting` forever, never `closed` (#256 review finding).
+        map((answer) => ({
+          outcome: classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
+          resyncTriggered: answer.resyncTriggered,
+        })),
+        retryTransientSyncFailures(),
+      )
       .subscribe({
-        next: (answer) => {
-          const outcome = classifySyncInSetResponse(answer, sevenTvEmoteIds.length);
+        next: ({ outcome, resyncTriggered }) => {
           this.endReport(runId, 'sync-deleted', {
             removalReport: outcome.state,
             removalReportReason: outcome.reason,
           });
-          afterReport?.(answer.resyncTriggered);
+          afterReport?.(resyncTriggered);
         },
         error: (error: HttpErrorResponse) => {
           const outcome = classifySyncInSetFailure(error.status);
@@ -881,7 +894,12 @@ export class SevenTvImportService {
    *  report out — and brings a run nobody shows back onto the dock when that end state is not a
    *  success (Plan-256 Festlegung 13): a failed or partial report needs a place with its reason and
    *  a retry. Shown again only when nothing else is shown and no run is in flight; otherwise the
-   *  failure stays on the record and in the console. */
+   *  failure stays on the record and in the console.
+   *
+   *  `reshow` is attempted before `showFinishedRows` and rolled back with `detach()` if that then
+   *  refuses (#256 review finding): reshowing must not leave the dock pointing at a run whose queue
+   *  never actually reappeared, and checking `showFinishedRows` first would risk pushing a
+   *  to-be-rejected run's rows onto the engine's queue for an already-shown run to inherit. */
   private endReport(
     runId: string,
     report: 'sync-imported' | 'sync-deleted',
@@ -892,13 +910,11 @@ export class SevenTvImportService {
     if (run === null || state === 'succeeded' || this.lifecycle.isShown(runId)) {
       return;
     }
-    if (
-      run.result !== null &&
-      !this.engine.isRunning() &&
-      this.lifecycle.reshow(run) &&
-      this.engine.showFinishedRows(run.result.items)
-    ) {
-      return;
+    if (run.result !== null && !this.engine.isRunning() && this.lifecycle.reshow(run)) {
+      if (this.engine.showFinishedRows(run.result.items)) {
+        return;
+      }
+      this.lifecycle.detach();
     }
     console.warn('[EmotePurge] 7TV import report of a run no longer shown did not succeed', {
       runId,
