@@ -44,9 +44,10 @@ import { RunProgressPanel, RunProgressTally } from './run-progress-panel';
  * destructive fact) with its reason and retry; this section shows the restore report
  * (`sync-restored`) as its own banner right below the panel, so the two read in the order they are
  * sent (F8) — inside a live region of its own that mounts with the run, so its failure and retry
- * are announced when they appear (docs/UI-Designsprache.md §4.4, §4.5). Both retries follow the service's own locks, mirrored here rather than left to a
- * silent refusal: never while a report is pending (no banner then), never for a channel mismatch,
- * and only for a settled run that confirmed something to report.
+ * are announced when they appear (docs/UI-Designsprache.md §4.4, §4.5). Both retries follow the
+ * service's own locks, mirrored here rather than left to a silent refusal: never while a report is
+ * pending (no banner then), never for a channel mismatch, and only for a settled run that confirmed
+ * something to report.
  */
 @Component({
   selector: 'app-undo-progress-section',
