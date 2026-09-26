@@ -6,6 +6,7 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { UndoPlanRow, classifyUndoRows } from '../../shared/seven-tv/undo-plan';
 import { ImportOrigin, ImportRow } from './import-source';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { DELETE_DELAY_MS, DeleteQueueEmote, SevenTvDeleteService } from './seven-tv-delete.service';
@@ -21,6 +22,7 @@ import {
 } from './seven-tv-run-arbiter';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { SevenTvTokenService } from './seven-tv-token.service';
+import { SevenTvUndoService, UndoRunTarget } from './seven-tv-undo.service';
 import { TransferPlan } from './transfer-plan';
 
 /** A registered participant whose three signals a case sets by hand (contract P5). */
@@ -301,6 +303,50 @@ const REPLACE_PLAN: TransferPlan = {
   ],
 };
 
+// An undo of one replace (#254): the source `undo-src` stands exactly under `Kappa`, the target
+// `undo-tgt` it replaced is gone — one `full` row, REMOVE then ADD.
+const UNDO_TARGET: UndoRunTarget = {
+  setId: 'set-u',
+  expectedChannelName: null,
+  hostChannelName: 'sensitron',
+  setName: 'Set U',
+  ownerOrChannelLabel: 'Stranger',
+  trackedChannelName: null,
+  ownerDisplayName: 'Stranger',
+  sourceFile: {
+    stage: 'finished',
+    exportedAt: '2026-09-25T10:00:00.000Z',
+    verifiedAt: null,
+    finishedAt: '2026-09-25T10:00:00.000Z',
+    origin: null,
+  },
+};
+const SYNC_RESTORED_SET_U = '/api/seventv/emote-sets/set-u/sync-restored';
+
+function undoFullRow(): UndoPlanRow {
+  const plan = classifyUndoRows(
+    [
+      {
+        sourceSevenTvEmoteId: 'undo-src',
+        sourceName: 'Kappa',
+        alias: 'Kappa',
+        fileStatus: 'done',
+        target: { sevenTvEmoteId: 'undo-tgt', entries: [{ alias: 'Kappa' }], defaultName: null },
+        provenance: 'confirmed',
+      },
+    ],
+    {
+      aliasesById: new Map([['undo-src', ['Kappa']]]),
+      aliaslessIds: new Set(),
+      defaultNameById: new Map([['undo-src', 'Kappa']]),
+      animatedById: new Map([['undo-src', false]]),
+      occupiedSlots: 1,
+      complete: true,
+    },
+  );
+  return plan.rows[0];
+}
+
 function deletedAnswer(): SyncDeletedInSetResponse {
   return { reportedCount: 1, channels: [], unresolvedChannel: null, resyncTriggered: [] };
 }
@@ -327,6 +373,7 @@ describe('SevenTvRunArbiter with the real run services', () => {
   let deleteService: SevenTvDeleteService;
   let restoreService: SevenTvRestoreService;
   let importService: SevenTvImportService;
+  let undoService: SevenTvUndoService;
   let tokenService: SevenTvTokenService;
   let httpMock: HttpTestingController;
 
@@ -346,10 +393,11 @@ describe('SevenTvRunArbiter with the real run services', () => {
     });
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
     arbiter = TestBed.inject(SevenTvRunArbiter);
-    // Injected in this order, so the services register delete → restore → import.
+    // Injected in this order, so the services register delete → restore → import → undo.
     deleteService = TestBed.inject(SevenTvDeleteService);
     restoreService = TestBed.inject(SevenTvRestoreService);
     importService = TestBed.inject(SevenTvImportService);
+    undoService = TestBed.inject(SevenTvUndoService);
     tokenService = TestBed.inject(SevenTvTokenService);
     httpMock = TestBed.inject(HttpTestingController);
     tokenService.setToken('write-token');
@@ -479,6 +527,61 @@ describe('SevenTvRunArbiter with the real run services', () => {
     expect(arbiter.destructiveOpen()).toBe(false);
   });
 
+  // #254 (spec 9.3, AK 16, 32): the undo is the fourth kind — registered by its own constructor.
+  it('reports "undo" while an undo runs and arms the unload guard for its full row', () => {
+    undoService.startUndo(UNDO_TARGET, [undoFullRow()], [], false);
+
+    expect(arbiter.activeClaim()).toEqual({ kind: 'undo', phase: 'running' });
+    expect(arbiter.destructiveOpen()).toBe(true);
+
+    // Cancelled while its recheck read is out: nothing was sent, nothing to report.
+    undoService.cancel();
+
+    expect(arbiter.activeRun()).toBeNull();
+    expect(arbiter.destructiveOpen()).toBe(false);
+  });
+
+  it('holds "undo" while it settles — through both reports — and frees only after the last answer', () => {
+    undoService.startUndo(UNDO_TARGET, [undoFullRow()], [], false);
+    httpMock.expectOne(GQL_ENDPOINT).flush(setEntriesPage([{ id: 'undo-src', alias: 'Kappa' }]));
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    expect(undoService.isRunning()).toBe(false);
+    expect(arbiter.activeClaim()).toEqual({ kind: 'undo', phase: 'settling' });
+    httpMock.expectOne(SYNC_DELETED_SET_U).flush(deletedAnswer());
+    expect(arbiter.activeClaim()).toEqual({ kind: 'undo', phase: 'settling' });
+    expect(arbiter.destructiveOpen()).toBe(true);
+    httpMock.expectOne(SYNC_RESTORED_SET_U).flush(deletedAnswer());
+
+    expect(arbiter.activeRun()).toBeNull();
+    expect(arbiter.destructiveOpen()).toBe(false);
+  });
+
+  it('refuses an undo start while an import settles and names the import as the reason', () => {
+    importService.startImport(TARGET_UNTRACKED, IMPORT_ORIGIN, REPLACE_PLAN);
+    httpMock.expectOne(GQL_ENDPOINT).flush({});
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 502, statusText: 'Bad Gateway' });
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    expect(arbiter.activeClaim()).toEqual({ kind: 'import', phase: 'settling' });
+
+    // What the undo flow's start point does when the arbiter is busy (spec 6.3): note, no start.
+    arbiter.noteRefusedStart('undo');
+
+    expect(arbiter.refusedStart()).toEqual({
+      attempted: 'undo',
+      blockedBy: { kind: 'import', phase: 'settling' },
+    });
+    expect(undoService.isRunning()).toBe(false);
+    httpMock.expectOne(GQL_ENDPOINT).flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+    httpMock.expectOne(SYNC_IMPORTED_SET_U).flush(null, { status: 204, statusText: 'OK' });
+    httpMock.expectOne(SYNC_DELETED_SET_U).flush(deletedAnswer());
+    expect(arbiter.activeRun()).toBeNull();
+  });
+
   // The unload guard moved here from the import service (#256, contract P3). A tab that dies
   // between REMOVE and ADD, or before a removal is reported, leaves a gap no protocol was written
   // for yet. `TestBed.tick()` flushes the arbiter's effect.
@@ -582,7 +685,7 @@ describe('refusedStartMessage', () => {
   });
 
   it('has an entry for every SevenTvRunKind, so the compiler catches a future one going missing', () => {
-    const kinds: SevenTvRunKind[] = ['delete', 'restore', 'import'];
+    const kinds: SevenTvRunKind[] = ['delete', 'restore', 'import', 'undo'];
     for (const kind of kinds) {
       expect(SEVEN_TV_RUN_KIND_LABEL_KEY[kind]).toBe(`sevenTvRun.kind.${kind}`);
     }
