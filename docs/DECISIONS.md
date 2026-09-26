@@ -48,6 +48,37 @@ confirm-time check's own fresh count, exactly as before this fix.
 
 ---
 
+### 2026-09-26 — The shared restore pre-check gate now releases on the caller's own teardown too
+
+**Betrifft:** `web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`'s `previewPending`
+read) · `web/src/app/shared/seven-tv/mass-delete-panel.ts` (`openRestoreConfirm`,
+`openRestoreConfirmDialog`) · `web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Second Codex review finding on the 2026-09-26 "share the restore pre-check gate across both entry
+points" fix: moving `previewPending`/`restoreConfirmPending` onto the shared, root-level
+`SevenTvRestoreService.restorePreCheckPending` closed the race between the two restore entry
+points, but it also raised the cost of a gap that fixing entry-local flags had made harmless before
+it — every read in the pre-check chain (`resolveEditableSet`, then the open-time duplicate check)
+released the flag only from its own `next`/`error` branches. `takeUntilDestroyed` unsubscribes on
+the caller's teardown (a route change, a closed panel) without ever calling either, so tearing down
+mid-read left the flag `true` for good. Before the flag was shared this only ever disabled a
+component that no longer existed; once it lives on the service, the same gap disabled *both* restore
+entries, on whichever page they next mounted, until a full reload.
+
+**What changed.** Every read in the chain now releases the flag through `finalize` on its own pipe
+rather than a manual `.set(false)` inside `next`/`error`, so teardown releases it exactly like a
+settled answer does. `mass-delete-panel.ts`'s `openRestoreConfirm` has two chained reads sharing one
+flag; its `resolveEditableSet` pipe's `finalize` skips the release when a local `handedOff` flag is
+`true` — set right before the second read (`openRestoreConfirmDialog`) starts — so the flag stays
+held across the handoff instead of flickering to `false` between the two reads. The
+already-documented behaviour of releasing the flag while a token prompt is open in between is
+unchanged: that exit still sets `handedOff` to `false`, so it still releases. `restore-flow.ts` has
+only the one read, so its `finalize` releases unconditionally, same as `openRestoreConfirmDialog`'s
+own single read in `mass-delete-panel.ts`.
+
+---
+
 ### 2026-09-26 — `channelMismatch` splits into two reasons, and `partial` gets its own wording
 
 **Betrifft:** `web/src/app/core/seven-tv/sync-report-outcome.ts` (`SyncReportReason`,

@@ -479,7 +479,14 @@ export class MassDeletePanel {
    *  guarded *this* button against itself — a click on `ImportTrigger` while this panel's own read
    *  was out (or the reverse) could open a second confirmation stacked on the first, with a
    *  duplicate `app-dialog-title` id. Reading the shared signal here closes that window: the
-   *  button's own `[disabled]` binding now also reflects a pre-check the *other* entry started. */
+   *  button's own `[disabled]` binding now also reflects a pre-check the *other* entry started.
+   *
+   *  Because it is shared and root-level, `openRestoreConfirm`/`openRestoreConfirmDialog` release
+   *  it via `finalize` on every read's own pipe rather than a manual `.set(false)` in each outcome
+   *  branch (#255 P2, second Codex finding): `takeUntilDestroyed` tears a pipe down silently on
+   *  this panel's own destroy, calling neither `next` nor `error`, so a manual reset reachable only
+   *  from those never ran — and left both restore entries disabled until a full page reload, not
+   *  just this panel's own button, since the flag they share outlives the component. */
   protected readonly restoreConfirmPending = this.restoreService.restorePreCheckPending;
   private destroyed = false;
 
@@ -649,13 +656,30 @@ export class MassDeletePanel {
     }
     this.restoreConfirmPending.set(true);
 
+    // #255 P2 (Codex review, second finding): `handedOff` is `true` exactly when this read's own
+    // `next` branch goes on to start the *next* stage of the same shared pre-check chain
+    // (`openRestoreConfirmDialog`) without releasing the gate first — every other exit (not
+    // editable, the request itself failing, or the caller tearing this panel down mid-read) must
+    // release it right here instead. `finalize` is what makes teardown release it too:
+    // `takeUntilDestroyed` unsubscribes silently, calling neither `next` nor `error`, so a reset
+    // living only inside those branches never ran for that exit — and since this gate is the
+    // shared, root-level `restorePreCheckPending`, leaving it `true` there left both restore
+    // entries disabled until a full page reload, not just this panel's own button.
+    let handedOff = false;
     this.emoteSetService
       .resolveEditableSet(run.setId)
-      .pipe(timeout(LIVE_ALIAS_READ_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
+      .pipe(
+        timeout(LIVE_ALIAS_READ_TIMEOUT_MS),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => {
+          if (!handedOff) {
+            this.restoreConfirmPending.set(false);
+          }
+        }),
+      )
       .subscribe({
         next: (resolution) => {
           if (resolution.status !== 'editable') {
-            this.restoreConfirmPending.set(false);
             this.abortNotice.set({
               leadKey: 'restore.nothingRestored',
               reasonKey: restoreTargetCheckReasonKey(resolution.status),
@@ -671,10 +695,10 @@ export class MassDeletePanel {
             hostSelectedSetId: this.setId(),
           };
           if (!this.tokenService.hasToken()) {
-            // Released while the token prompt is open — a CDK modal already blocks the button
+            // Released while the token prompt is open (via this pipe's own `finalize` above, since
+            // `handedOff` stays `false` on this exit) — a CDK modal already blocks the button
             // behind it, same as every other token-prompt gap in this file — and reclaimed right
             // before the next read starts, whichever way the prompt closes.
-            this.restoreConfirmPending.set(false);
             openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
               if (saved) {
                 this.restoreConfirmPending.set(true);
@@ -683,12 +707,12 @@ export class MassDeletePanel {
             });
             return;
           }
+          handedOff = true;
           this.openRestoreConfirmDialog(target, doneItems);
         },
         // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
         // allowed" (F3) — the same distinction `openConfirmDialog`'s own pre-check makes.
         error: () => {
-          this.restoreConfirmPending.set(false);
           this.abortNotice.set({
             leadKey: 'restore.nothingRestored',
             reasonKey: restoreTargetCheckReasonKey('unavailable'),
@@ -723,8 +747,19 @@ export class MassDeletePanel {
     // error lands outside `loadRestoreConfirmPreview`'s own `catchError`, so it is treated exactly
     // like the fetch failure that filter already fails open on: `restoreConfirmPreviewUnavailable`
     // builds the identical "could not verify" shape by hand.
+    //
+    // #255 P2 (Codex review, second finding): this is the last stage of the shared pre-check chain
+    // — whatever happens next (the "everything already there" shortcut, the confirmation opening,
+    // or nothing at all) no longer needs `restoreConfirmPending` held, so `finalize` releases it
+    // unconditionally on every exit, teardown included, rather than the single manual reset that
+    // used to sit at the top of `handleRestoreConfirmPreview` and could not run when
+    // `takeUntilDestroyed` tore this down first.
     loadRestoreConfirmPreview(this.httpClient, target.emoteSetId, emotes)
-      .pipe(timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS), takeUntilDestroyed(this.destroyRef))
+      .pipe(
+        timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.restoreConfirmPending.set(false)),
+      )
       .subscribe({
         next: (preview) => this.handleRestoreConfirmPreview(target, emotes, preview),
         error: () =>
@@ -748,7 +783,6 @@ export class MassDeletePanel {
     emotes: readonly DeleteQueueEmote[],
     preview: RestoreConfirmPreview<DeleteQueueEmote>,
   ): void {
-    this.restoreConfirmPending.set(false);
     if (preview.available && preview.rows.length === 0) {
       // Nothing survives the filter — same "everything already there" shortcut `startRestoreFlow`
       // takes, reusing the existing notice instead of a dialog that could only ever show zero

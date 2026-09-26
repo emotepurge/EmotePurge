@@ -2,7 +2,7 @@ import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
 import { DestroyRef, WritableSignal, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { timeout } from 'rxjs';
+import { finalize, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
@@ -77,10 +77,17 @@ export interface RestoreFlowDeps {
   /** Set to `true` right before the open-time duplicate check (`loadRestoreConfirmPreview`, #255
    *  P2a) starts, and back to `false` once it has settled — the confirmation opened, the
    *  "everything already there" shortcut taken, or the read failed/timed out and the confirmation
-   *  opened anyway with an upper-bound count. Never left `true` on any exit; `openConfirm` also
-   *  refuses to start a second read of its own while this is already `true`, so the flow guards
-   *  itself even if a caller's own disabled button outraces a click. The caller reads it to
-   *  disable whatever button opens this flow — `ImportTrigger` is the only one today.
+   *  opened anyway with an upper-bound count. Never left `true` on any exit — including the
+   *  caller's own teardown mid-read (#255 P2, Codex review): `takeUntilDestroyed` unsubscribes
+   *  without ever calling `next` or `error`, so the reset used to live only in `handlePreview`,
+   *  reachable from neither. A `finalize` on the read's own pipe now covers exit by teardown the
+   *  same way the `next`/`error` branches already covered a settled answer — otherwise, since this
+   *  aliases the *shared*, root-level `SevenTvRestoreService.restorePreCheckPending`, tearing down
+   *  the flow mid-read (a route change, a closed panel) left both restore entries disabled until a
+   *  full page reload, not just this one caller's own button. `openConfirm` also refuses to start a
+   *  second read of its own while this is already `true`, so the flow guards itself even if a
+   *  caller's own disabled button outraces a click. The caller reads it to disable whatever button
+   *  opens this flow — `ImportTrigger` is the only one today.
    *
    *  `ImportTrigger` passes its `SevenTvRestoreService.restorePreCheckPending` here, not a signal
    *  of its own (#255 P2, Codex review): `MassDeletePanel`'s restore button runs the identical
@@ -154,15 +161,27 @@ export function startRestoreFlow(
     // `timeout` error lands outside `loadRestoreConfirmPreview`'s own `catchError`, so it is
     // treated exactly like the fetch failure that filter already fails open on:
     // `restoreConfirmPreviewUnavailable` builds the identical "could not verify" shape by hand.
+    //
+    // #255 P2 (Codex review): `finalize` is what actually clears `previewPending` now, on every
+    // exit — a settled answer (`next`/`error`, still handled inside `handlePreview` below for the
+    // outcome, not the flag any more) and, the gap this closes, the caller's own teardown, which
+    // `takeUntilDestroyed` unsubscribes silently with neither callback ever firing. Left as a
+    // manual reset only inside `handlePreview`, that exit never ran it — and since this flag
+    // aliases the shared, root-level `restorePreCheckPending` (see the field doc), a route change
+    // or a closed panel mid-read left *both* restore entries disabled until a full page reload, not
+    // just this caller's own.
     loadRestoreConfirmPreview(deps.httpClient, target.emoteSetId, emotes)
-      .pipe(timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS), takeUntilDestroyed(deps.destroyRef))
+      .pipe(
+        timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
+        takeUntilDestroyed(deps.destroyRef),
+        finalize(() => deps.previewPending.set(false)),
+      )
       .subscribe({
         next: (preview) => handlePreview(preview),
         error: () => handlePreview(restoreConfirmPreviewUnavailable(emotes)),
       });
 
     function handlePreview(preview: RestoreConfirmPreview<RestoreQueueEmote>): void {
-      deps.previewPending.set(false);
       if (preview.available && preview.rows.length === 0) {
         // Nothing survives the filter — every row is already back (or its alias is taken) and
         // there is nothing left to confirm. A dialog with zero names and a button that could only

@@ -2768,6 +2768,11 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
 
     expect(req.cancelled).toBe(true);
     expect(startRestore).not.toHaveBeenCalled();
+    // #255 P2 (Codex review, second finding): `takeUntilDestroyed` unsubscribes here without ever
+    // calling `next` or `error`, so a reset reachable only from those never ran — and since this
+    // flag aliases the shared, root-level `restorePreCheckPending`, leaving it `true` would have
+    // disabled both restore entries until a full page reload, not just this destroyed panel.
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
   });
 
   // #255 P3(11): a run with more than one done row, where the open-time check finds only some of
@@ -2943,6 +2948,9 @@ describe('MassDeletePanel — the restore-confirm path resolves its target fresh
 
     expect(req.cancelled).toBe(true);
     expect(dialogOpen).not.toHaveBeenCalled();
+    // #255 P2 (Codex review, second finding): same gap, the second read in the chain — teardown
+    // must release the shared gate here too, not just from a settled answer.
+    expect(fixture.componentInstance['restoreConfirmPending']()).toBe(false);
   });
 
   // #255 P2a: a second click while the pre-check chain (this method's own `resolveEditableSet`

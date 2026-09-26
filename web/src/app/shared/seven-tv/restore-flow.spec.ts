@@ -824,6 +824,23 @@ describe('startRestoreFlow', () => {
       expect(dialogOpen).not.toHaveBeenCalled();
     });
 
+    // #255 P2 (Codex review, second finding): `takeUntilDestroyed` tears the read down silently —
+    // neither `next` nor `error` fires — so a reset reachable only from those never ran, and this
+    // flag aliases `SevenTvRestoreService.restorePreCheckPending`, shared with `MassDeletePanel`'s
+    // own restore button: leaving it `true` here left *both* restore entries disabled until a full
+    // page reload, not just this caller's own.
+    it('clears previewPending once the caller tears down mid-read, not just on a settled answer', () => {
+      const { deps, httpPost, previewPending, destroyRef } = setup();
+      httpPost.mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+      startRestoreFlow(deps, target(), rows());
+      expect(previewPending()).toBe(true);
+
+      destroyRef.triggerDestroy();
+
+      expect(previewPending()).toBe(false);
+    });
+
     it('refuses a second open-time read while the first is still out, so only one confirmation ever opens', () => {
       const { deps, dialogOpen, httpPost } = setup();
       const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
