@@ -39,6 +39,7 @@ import {
   TestRequest,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
+import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
@@ -63,6 +64,7 @@ import {
   RestoreRunInfo,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { REFUSED_START_FEEDBACK_MS } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -1453,6 +1455,114 @@ describe('UsageStatsPage — header export/transfer locks ask about the union, n
 
     expect(component['exportButtonDisabled']()).toBe(true);
     expect(component['transferButtonDisabled']()).toBe(true);
+  });
+});
+
+/**
+ * `refusedStartNotice` (#256 T4) is the page's own projection of `SevenTvRunArbiter.refusedStart()`
+ * — asserted on the signal directly (Regel 12, "Verhalten ja, Vorlage nein"), like every other
+ * transient-feedback signal in this file. `component['arbiter']` is the real, root-provided
+ * `SevenTvRunArbiter` (nothing in this spec file overrides it); a bare stub participant registered
+ * directly through its public `register()` is enough to give it something to be busy with, without
+ * driving a real delete/restore/import run through HTTP.
+ */
+describe("UsageStatsPage — refusedStartNotice projects the arbiter's transient notice (#256 T4)", () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('is null while the arbiter is free', () => {
+    expect(component['refusedStartNotice']()).toBeNull();
+  });
+
+  it("projects a refused start into the message key by phase and the blocking kind's noun", () => {
+    component['arbiter'].register({
+      kind: 'delete',
+      isRunning: signal(true),
+      isSettling: signal(false),
+      destructiveOpen: signal(false),
+    });
+
+    component['arbiter'].noteRefusedStart('import');
+
+    // Untranslated fallback (`langs: { de: {} }`), same idiom as every other missing-translation
+    // assertion in this file — the point here is which keys `refusedStartMessage` picks, not their
+    // German wording (Regel 12).
+    expect(component['refusedStartNotice']()).toEqual({
+      messageKey: 'sevenTvRun.notStarted.running',
+      kind: 'sevenTvRun.kind.delete',
+    });
+  });
+
+  it('names the settling phase once the blocking run has stopped running but not yet reported', () => {
+    component['arbiter'].register({
+      kind: 'restore',
+      isRunning: signal(false),
+      isSettling: signal(true),
+      destructiveOpen: signal(false),
+    });
+
+    component['arbiter'].noteRefusedStart('delete');
+
+    expect(component['refusedStartNotice']()).toEqual({
+      messageKey: 'sevenTvRun.notStarted.settling',
+      kind: 'sevenTvRun.kind.restore',
+    });
+  });
+
+  it("clears itself once the arbiter's own REFUSED_START_FEEDBACK_MS window elapses — no timer of this page's own", () => {
+    component['arbiter'].register({
+      kind: 'import',
+      isRunning: signal(true),
+      isSettling: signal(false),
+      destructiveOpen: signal(false),
+    });
+    component['arbiter'].noteRefusedStart('delete');
+    expect(component['refusedStartNotice']()).not.toBeNull();
+
+    vi.advanceTimersByTime(REFUSED_START_FEEDBACK_MS - 1);
+    expect(component['refusedStartNotice']()).not.toBeNull();
+
+    vi.advanceTimersByTime(1);
+    expect(component['refusedStartNotice']()).toBeNull();
   });
 });
 

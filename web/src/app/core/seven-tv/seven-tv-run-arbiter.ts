@@ -172,6 +172,38 @@ function sameClaim(a: SevenTvRunClaim | null, b: SevenTvRunClaim | null): boolea
   return a === b || (a !== null && b !== null && a.kind === b.kind && a.phase === b.phase);
 }
 
+/** Translation key for a run kind's own noun (`sevenTvRun.kind.*`, #256 contract P2) — a `Record`,
+ *  not a key built from the kind at the call site (T3 review, P3-7): the compiler then flags a
+ *  missing branch the moment a new `SevenTvRunKind` value appears (#254 adds `'undo'`), instead of
+ *  silently producing an unresolved key at runtime. */
+export const SEVEN_TV_RUN_KIND_LABEL_KEY: Record<SevenTvRunKind, string> = {
+  delete: 'sevenTvRun.kind.delete',
+  restore: 'sevenTvRun.kind.restore',
+  import: 'sevenTvRun.kind.import',
+};
+
+/** The transient status message for a refused start (contract P2, `docs/UI-Designsprache.md`
+ *  §4.5) — the message key (by phase) plus the blocking kind's noun, already translated:
+ *  transloco's own interpolation only substitutes a param's literal text, never a second, nested
+ *  key, so the noun has to be resolved before it becomes a param. `translate` is the caller's own
+ *  `TranslocoService.translate`, taken as a parameter rather than injected — this file otherwise
+ *  imports nothing beyond `@angular/core` (contract P4's DI-edge doc above) — and both renderers
+ *  that show this message (`usage-stats-page.ts`'s own transient region, `mass-delete-panel.ts`'s
+ *  `abortNotice`) share it, so the sentence and the kind noun cannot drift between them. Takes the
+ *  claim directly rather than a `SevenTvRefusedStart`: `mass-delete-panel.ts` reads `activeClaim()`
+ *  for its own, panel-local notice and never calls `noteRefusedStart` itself (its `abortNotice` is
+ *  already the visible, persistent explanation — routing the same refusal through the arbiter's
+ *  4-second transient notice too would announce it twice on a page that mounts both). */
+export function refusedStartMessage(
+  claim: SevenTvRunClaim,
+  translate: (key: string) => string,
+): { messageKey: string; kind: string } {
+  return {
+    messageKey: `sevenTvRun.notStarted.${claim.phase}`,
+    kind: translate(SEVEN_TV_RUN_KIND_LABEL_KEY[claim.kind]),
+  };
+}
+
 /** The standard `beforeunload` incantation (MDN): calling `preventDefault()` and setting a
  *  non-undefined `returnValue` is what makes the browser show its own confirmation prompt — neither
  *  Chromium, Firefox nor Safari display a custom string any more, so the exact value assigned here

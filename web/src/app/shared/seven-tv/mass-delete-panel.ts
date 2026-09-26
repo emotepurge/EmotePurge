@@ -23,7 +23,11 @@ import {
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
-import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import {
+  refusedStartMessage,
+  SevenTvRunArbiter,
+  SevenTvRunClaim,
+} from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
@@ -561,10 +565,11 @@ export class MassDeletePanel {
       return;
     }
     // Same shape, same reason, for the mutual-exclusion contract (design doc §4.3): the button is
-    // disabled while any of the three 7TV-writing runs holds the arbiter, and this catches the
-    // click that outraces such a run starting elsewhere on the page. Silent, like the lock guard
-    // above — nothing has been confirmed yet, and the run that got there first is already visible
-    // in the dock. The re-check in `startDelete` is what covers the far side of the dialog.
+    // disabled while any 7TV-writing run holds the arbiter, running or settling, and this catches
+    // the click that outraces such a run starting elsewhere on the page. Silent, like the lock guard
+    // above — nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2), so this stays
+    // quiet the same way `openRestoreConfirm`'s own pre-dialog guard does. The re-check in
+    // `startDelete` is what covers the far side of the dialog, and it does show a reason (#256 T4).
     if (this.arbiter.activeRun() !== null) {
       return;
     }
@@ -647,6 +652,12 @@ export class MassDeletePanel {
       return;
     }
     const run = this.deleteService.lastRun();
+    // The button that calls this is already hidden while the arbiter is busy (the template's own
+    // `arbiter.activeRun() === null` guard around it) — this only catches a click outracing such a
+    // run starting elsewhere on the page, same shape and same reason as `openConfirm`'s own
+    // pre-dialog guard above: nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2),
+    // so it stays quiet. The re-checks further down, once a restore actually has something to
+    // confirm, do show a reason (#256 T4).
     if (!run || this.arbiter.activeRun() !== null) {
       return;
     }
@@ -817,8 +828,13 @@ export class MassDeletePanel {
       // a run exactly as much as the regular path's does, so it needs the same mutual-exclusion
       // check right before it — another 7TV-writing run could have claimed the arbiter while this
       // read was out, a window the regular path already closes just above its own `startRestore`
-      // call.
-      if (this.arbiter.activeRun() !== null) {
+      // call. #256 contract P2, Festlegung Nr. 8: this shortcut only runs once the open-time check
+      // found nothing left to confirm — a confirmed start finding nothing to start, same as the
+      // regular path below, so it shows the abort notice with the blocking kind rather than
+      // vanishing, as it used to.
+      const directStartClaim = this.arbiter.activeClaim();
+      if (directStartClaim !== null) {
+        this.abortNotice.set(this.refusedStartNotice(directStartClaim, 'restore.nothingRestored'));
         return;
       }
       this.restoreService.startRestore(
@@ -884,9 +900,14 @@ export class MassDeletePanel {
           // even opened — well outside the mutual-exclusion contract (design doc §4.3) it exists
           // to enforce, since a delete or import can start while the confirm dialog is open and
           // this fetch is in flight. Re-checked here, right before the only remaining call that
-          // actually starts anything; silent on a block, same reasoning as elsewhere in this
-          // file — the run that got there first is already visible in the dock.
-          if (this.arbiter.activeRun() !== null) {
+          // actually starts anything — a *confirmed* start finding nothing to start (#256 contract
+          // P2, Festlegung Nr. 8), so it shows the abort notice with the blocking kind instead of
+          // vanishing, as this used to.
+          const confirmTimeClaim = this.arbiter.activeClaim();
+          if (confirmTimeClaim !== null) {
+            this.abortNotice.set(
+              this.refusedStartNotice(confirmTimeClaim, 'restore.nothingRestored'),
+            );
             return;
           }
           // #255 P3(7): a failed confirm-time check normally means every row goes out unfiltered
@@ -1192,16 +1213,13 @@ export class MassDeletePanel {
     // modal the user can leave open for minutes, and a run started from anywhere else on the page
     // lands just as well behind it. Qualifying this on `liveAliases !== null` left the no-read
     // branch relying on `deleteService.startDelete`'s own refusal, which is silent, so a confirmed
-    // delete in a non-active view simply evaporated. Unlike the restore paths' identical re-check
-    // (silent there — the run that got there first is always the one whose progress panel is
-    // already mounted in *this* same dock), this abort is visible: the competing run can be any of
-    // the three 7TV-writing kinds, started from anywhere on the page, and this panel's own dock
-    // would otherwise show nothing at all to explain why a confirmed delete just vanished.
-    if (this.arbiter.activeRun() !== null) {
-      this.abortNotice.set({
-        leadKey: 'massDelete.nothingDeleted',
-        reasonKey: 'massDelete.anotherRunStarted',
-      });
+    // delete in a non-active view simply evaporated. This abort is visible, and — since #256 T4 —
+    // so is the restore paths' identical re-check above: the competing run can be any 7TV-writing
+    // kind, running or settling, started from anywhere on the page, and this panel's own dock would
+    // otherwise show nothing at all to explain why a confirmed delete (or restore) just vanished.
+    const claim = this.arbiter.activeClaim();
+    if (claim !== null) {
+      this.abortNotice.set(this.refusedStartNotice(claim, 'massDelete.nothingDeleted'));
       return;
     }
     // The third way `deleteService.startDelete` can refuse without a word — the other two, a run
@@ -1333,5 +1351,21 @@ export class MassDeletePanel {
       count: remaining,
     });
     return { names: `${joined} ${tail}` };
+  }
+
+  /** This panel's own `abortNotice` for a confirmed start the arbiter refused (#256 contract P2,
+   *  Festlegung Nr. 8) — the shared `sevenTvRun.notStarted.*` family with the blocking kind's own,
+   *  already-translated noun, the same wording `usage-stats-page.ts`'s transient region shows for
+   *  the two flows that have no notice of their own. Every call site below reads `activeClaim()`
+   *  itself, right before this, and only calls this once it is non-null. Deliberately does **not**
+   *  call `SevenTvRunArbiter.noteRefusedStart()`: this panel's `abortNotice` is already the visible,
+   *  persistent explanation for as long as the panel stays mounted, so routing the same refusal
+   *  through the arbiter's own 4-second transient notice too would announce it twice on a page that
+   *  mounts both (`usage-stats-page.html`). */
+  private refusedStartNotice(claim: SevenTvRunClaim, leadKey: string): DeleteAbortNotice {
+    const { messageKey, kind } = refusedStartMessage(claim, (key) =>
+      this.translocoService.translate(key),
+    );
+    return { leadKey, reasonKey: messageKey, reasonParams: { kind } };
   }
 }

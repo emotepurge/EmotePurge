@@ -1,7 +1,14 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { Component, EnvironmentProviders, Provider, WritableSignal, signal } from '@angular/core';
+import {
+  Component,
+  EnvironmentProviders,
+  Provider,
+  WritableSignal,
+  computed,
+  signal,
+} from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { Subject, of } from 'rxjs';
@@ -16,7 +23,11 @@ import {
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
-import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
+import {
+  SevenTvRunArbiter,
+  SevenTvRunClaim,
+  SevenTvRunKind,
+} from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
@@ -87,10 +98,24 @@ const DE_TRANSLATIONS = {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
     },
   },
-  // Real text (matches public/i18n/de.json) — needed for the "and N more" tail
-  // `missingRowsReasonParams` builds via `TranslocoService.translate` directly, not the template
-  // pipe, so a missing key here would not fall back to a key string the way the pipe's own missing
-  // translations do elsewhere in this spec file.
+  // Real text (matches public/i18n/de.json), unlike the other abort-notice families in this fixture
+  // (`massDelete.nothingDeleted` et al. stay out, so their bare key is what the tests below match
+  // on): `refusedStartNotice` builds the blocking kind's noun via `TranslocoService.translate`
+  // directly (#256 T4), and the template's own `transloco` pipe then interpolates it as `{{ kind }}`
+  // into `notStarted.*` — a missing `notStarted.*` key would drop that interpolation entirely rather
+  // than falling back to the raw key string the way a *param-less* missing translation does
+  // elsewhere in this file, so both halves need real text for the assertions below to mean anything.
+  sevenTvRun: {
+    notStarted: {
+      running: 'Nichts gestartet — {{ kind }} läuft noch.',
+      settling: 'Nichts gestartet — {{ kind }} wird noch abgeschlossen.',
+    },
+    kind: {
+      delete: 'der Löschlauf',
+      restore: 'die Wiederherstellung',
+      import: 'die Übertragung',
+    },
+  },
   common: {
     cancel: 'Abbrechen',
     close: 'Schließen',
@@ -505,12 +530,24 @@ function fakeRestoreService(overrides: Partial<RestoreServiceFake> = {}): Restor
 
 interface RunArbiterFake {
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  activeClaim: () => SevenTvRunClaim | null;
+  noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
+/** `activeClaim` is derived from `activeRun` as a `'running'` claim — good enough for this panel's
+ *  own tests, which never distinguish `running` from `settling` (that distinction is the arbiter's
+ *  own spec's job, `seven-tv-run-arbiter.spec.ts`). `noteRefusedStart` is a spy only: #256 T4 has
+ *  this panel build its own `abortNotice` from `activeClaim()` directly rather than routing through
+ *  the arbiter's transient notice (see `refusedStartNotice`'s own doc on the component) — every
+ *  test below that expects an abort notice asserts on `abortNotice()`, never on this spy. */
 function fakeRunArbiter(
   activeRun: WritableSignal<SevenTvRunKind | null> = signal(null),
 ): RunArbiterFake {
-  return { activeRun };
+  const activeClaim = computed<SevenTvRunClaim | null>(() => {
+    const kind = activeRun();
+    return kind === null ? null : { kind, phase: 'running' };
+  });
+  return { activeRun, activeClaim, noteRefusedStart: vi.fn() };
 }
 
 /** A resolved target every editable-stub answer carries — irrelevant to the delete confirmation
@@ -1975,10 +2012,11 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(statusText()).toContain('massDelete.setChangedDuringConfirm');
   });
 
-  // K5 fix round item 4: this re-check used to abort silently, like the restore paths' identical
-  // one — but there, the run that got there first is always visible in the *same* dock. Here the
-  // competing run can be any of the three 7TV-writing kinds, started from elsewhere on the page, so
-  // a silent return left nothing on screen explaining why a confirmed delete just vanished.
+  // K5 fix round item 4: this re-check used to abort silently. The competing run can be any
+  // 7TV-writing kind, started from elsewhere on the page, so a silent return left nothing on
+  // screen explaining why a confirmed delete just vanished. Since #256 T4 the reason names the
+  // blocking kind through the shared `sevenTvRun.notStarted.*` family — the fixed, kind-agnostic
+  // reason key this describe block used before T4 is gone.
   it('starts nothing when another run claimed the arbiter while the read was out, and says so', () => {
     confirm();
     activeRun.set('import');
@@ -1987,7 +2025,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
 
     expect(startDelete).not.toHaveBeenCalled();
     expect(statusText()).toContain('massDelete.nothingDeleted');
-    expect(statusText()).toContain('massDelete.anotherRunStarted');
+    expect(statusText()).toContain('Nichts gestartet — die Übertragung läuft noch.');
   });
 
   // Codex P3, K5 fix round 2: the same re-check, on the branch that has no read to hide behind. It
@@ -2006,13 +2044,13 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     httpMock.expectNone(GQL);
     expect(startDelete).not.toHaveBeenCalled();
     expect(statusText()).toContain('massDelete.nothingDeleted');
-    expect(statusText()).toContain('massDelete.anotherRunStarted');
+    expect(statusText()).toContain('Nichts gestartet — die Wiederherstellung läuft noch.');
   });
 
   // The near side of the same contract: the button is already disabled while a run holds the
   // arbiter, so this only catches a click that outraces one starting — silently, like the host-lock
-  // guard next to it, since nothing has been confirmed yet and the winning run is already visible
-  // in the dock.
+  // guard next to it, since nothing has been confirmed yet (Festlegung Nr. 8, #256 contract P2) and
+  // the winning run is already visible in the dock.
   it('does not even open the confirmation while another 7TV run holds the arbiter', () => {
     activeRun.set('import');
 
@@ -2021,6 +2059,7 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(dialogOpen).not.toHaveBeenCalled();
     httpMock.expectNone(GQL);
     expect(startDelete).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toBeNull();
   });
 
   // Opus review P3-2: the third way deleteService.startDelete refuses in silence. A 401 from any
@@ -2578,6 +2617,9 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
   /** Hoisted out of `beforeEach` (unlike most fields there) so individual tests can reshape the
    *  finished run — #255 P3(11)'s partial-filtering test needs a second done row. */
   let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+  /** Hoisted so the two #256 T4 tests below can claim the arbiter from another kind mid-chain,
+   *  same pattern as the "an active-set delete" block above. */
+  let activeRun: WritableSignal<SevenTvRunKind | null>;
 
   // The tracked channel the fresh pre-check resolves `set-1` to — deliberately equal to the
   // delete run's own frozen `channelName` (a realistic case: the account that owns the target set
@@ -2630,10 +2672,12 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
       },
     });
     restoreService = { ...fakeRestoreService(), startRestore };
+    activeRun = signal<SevenTvRunKind | null>(null);
     const emoteAdminService = { getSetStatus } as unknown as Partial<EmoteAdminService>;
     const providers = panelProviders({
       deleteService: fakeDeleteService({ lastRun }),
       restoreService,
+      arbiter: fakeRunArbiter(activeRun),
       dialogOpen,
       emoteAdminService,
       // This block drives resolveEditableSet through the real service and HttpTestingController
@@ -3202,6 +3246,72 @@ describe("MassDeletePanel — the restore-confirm path resolves its target fresh
     httpMock.expectOne('https://7tv.io/v4/gql').error(new ProgressEvent('error'));
 
     expect(dialogOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // #256 T4: the open-time "everything already there" shortcut (`handleRestoreConfirmPreview`)
+  // used to abort silently when another run claimed the arbiter while its own read was out — same
+  // gap `restore-flow.ts`'s identical shortcut had (Plan-256 0.2 Nr. 6). It now shows the panel's
+  // own abort notice with the blocking kind, the same `sevenTvRun.notStarted.*` family the page's
+  // transient region and the delete path above both use.
+  it('shows the abort notice and starts nothing when another run claims the arbiter while the open-time "everything already there" check was out', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    const req = httpMock.expectOne('https://7tv.io/v4/gql');
+
+    // A delete run starts elsewhere while the open-time check is still awaiting 7TV. The response
+    // below would otherwise take the "everything already there" shortcut (the run's only row,
+    // 7tv-1, is already present) and start a restore straight away.
+    activeRun.set('delete');
+    req.flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 1,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(dialogOpen).not.toHaveBeenCalled();
+    expect(startRestore).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'sevenTvRun.notStarted.running',
+      reasonParams: { kind: 'der Löschlauf' },
+    });
+  });
+
+  // #256 T4: the confirm-time re-check (after the dialog itself confirms) used to abort silently
+  // too — this is the panel's own counterpart to the check `restore-flow.ts`'s `startRestoreFlow`
+  // makes right before its own `startRestore` call.
+  it('shows the abort notice and starts nothing when another run claims the arbiter behind the confirmation dialog', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    flushTargetsResponse();
+    // 7tv-2 is missing, so the confirmation opens rather than taking the empty-preview shortcut.
+    httpMock.expectOne('https://7tv.io/v4/gql').flush({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+    });
+    expect(dialogOpen).toHaveBeenCalledTimes(1);
+
+    closed.next(true);
+    const req = httpMock.expectOne('https://7tv.io/v4/gql');
+
+    // An import run starts elsewhere while the confirm-time re-check is still awaiting 7TV.
+    activeRun.set('import');
+    req.flush({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+    });
+
+    expect(startRestore).not.toHaveBeenCalled();
+    expect(fixture.componentInstance['abortNotice']()).toEqual({
+      leadKey: 'restore.nothingRestored',
+      reasonKey: 'sevenTvRun.notStarted.running',
+      reasonParams: { kind: 'die Übertragung' },
+    });
   });
 });
 

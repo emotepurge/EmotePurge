@@ -14,13 +14,19 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-run-arbiter.ts` (`SevenTvRunParticipant`,
 `register`, `activeClaim`, `activeRun`, `destructiveOpen`, `refusedStart`, `noteRefusedStart`,
-`REFUSED_START_FEEDBACK_MS`, the `beforeunload` effect) ·
+`REFUSED_START_FEEDBACK_MS`, the `beforeunload` effect, and — since T4 —
+`SEVEN_TV_RUN_KIND_LABEL_KEY`/`refusedStartMessage`) ·
 `web/src/app/core/seven-tv/seven-tv-import.service.ts`,
 `web/src/app/core/seven-tv/seven-tv-delete.service.ts`,
 `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (each: one `register(...)` in its
 constructor; the import loses its own `beforeunload` effect) · `docs/UI-Designsprache.md` (the
-"all start buttons are disabled" rule) · `docs/plans/Plan-256-Robustheit.md` (T3, Festlegungen 1, 6,
-7).
+"all start buttons are disabled" rule, and since T4 the confirmed-start notice) ·
+`web/src/app/shared/seven-tv/import-flow.ts`, `web/src/app/shared/seven-tv/restore-flow.ts` (T4:
+`noteRefusedStart` at every confirmed-start check), `web/src/app/features/usage-stats/usage-stats-page.ts`/`.html`
+(T4: `refusedStartNotice`, the §4.5 region), `web/src/app/shared/seven-tv/mass-delete-panel.ts` (T4:
+`abortNotice` reuses the same wording family via `activeClaim()`), `web/public/i18n/{de,en}.json`
+(T4: `sevenTvRun.*`, `massDelete.anotherRunStarted` removed) · `docs/plans/Plan-256-Robustheit.md`
+(T3, Festlegungen 1, 6, 7; T4, Festlegung 8).
 
 Issue #256 point 1, contract P2–P5 of the #254 spec (11.1); the arbiter half of it — the run-bound
 lifecycle behind the three signals is the entry "7TV runs complete run-bound" further down. Until now the arbiter injected the three run
@@ -58,8 +64,16 @@ and another branch.
 - **The refusal notice is arbiter business.** `noteRefusedStart(attempted)` records what a start
   point tried and what blocked it (`refusedStart`, cleared after `REFUSED_START_FEEDBACK_MS` = 4000
   ms, §4.5; a second refusal restarts the window). On a free arbiter it notes nothing, so the notice
-  never names a reason that is not there. Wiring the start points to it, and showing it, is a later
-  step of #256.
+  never names a reason that is not there. #256 T4 wires this up: `import-flow.ts` and
+  `restore-flow.ts` call it at every point where a *confirmed* run finds nothing to start, and
+  `usage-stats-page.ts` renders it as its own transient region (`refusedStartMessage`,
+  `SEVEN_TV_RUN_KIND_LABEL_KEY` — a `Record<SevenTvRunKind, string>`, not a key built from the kind,
+  so a future kind missing its noun is a compile error, not a silent unresolved key).
+  `mass-delete-panel.ts` reads `activeClaim()` directly for its own, already-persistent
+  `abortNotice` instead of calling `noteRefusedStart` itself — routing the same refusal through the
+  arbiter's transient notice too would announce it twice on a page that mounts both. The still-silent
+  locks (a disabled trigger outraced by a click, the confirm dialog's own `runBlocked`) are
+  unaffected — nothing has been confirmed yet at those points.
 
 ---
 

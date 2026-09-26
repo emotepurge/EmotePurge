@@ -13,6 +13,8 @@ import { SevenTvImportService } from './seven-tv-import.service';
 import { RestoreStartTarget, SevenTvRestoreService } from './seven-tv-restore.service';
 import {
   REFUSED_START_FEEDBACK_MS,
+  refusedStartMessage,
+  SEVEN_TV_RUN_KIND_LABEL_KEY,
   SevenTvRunArbiter,
   SevenTvRunKind,
   SevenTvRunParticipant,
@@ -557,5 +559,32 @@ describe('SevenTvRunArbiter with the real run services', () => {
 
       expect(unloadCalls(addSpy)).toEqual([]);
     });
+  });
+});
+
+// #256 T4: the pure helper both renderers of the refused-start notice share (`usage-stats-page.ts`,
+// `mass-delete-panel.ts`) — no TestBed needed, `translate` is a plain function.
+describe('refusedStartMessage', () => {
+  const translate = (key: string): string => `t(${key})`;
+
+  it('builds the running-phase message key and translates the blocking kind through the Record', () => {
+    expect(refusedStartMessage({ kind: 'delete', phase: 'running' }, translate)).toEqual({
+      messageKey: 'sevenTvRun.notStarted.running',
+      kind: 't(sevenTvRun.kind.delete)',
+    });
+  });
+
+  it('builds the settling-phase message key for a different kind', () => {
+    expect(refusedStartMessage({ kind: 'import', phase: 'settling' }, translate)).toEqual({
+      messageKey: 'sevenTvRun.notStarted.settling',
+      kind: 't(sevenTvRun.kind.import)',
+    });
+  });
+
+  it('has an entry for every SevenTvRunKind, so the compiler catches a future one going missing', () => {
+    const kinds: SevenTvRunKind[] = ['delete', 'restore', 'import'];
+    for (const kind of kinds) {
+      expect(SEVEN_TV_RUN_KIND_LABEL_KEY[kind]).toBe(`sevenTvRun.kind.${kind}`);
+    }
   });
 });

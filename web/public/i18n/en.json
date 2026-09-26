@@ -1105,8 +1105,7 @@
         "truncated": "Deleting is locked: this set’s member list is incomplete. Reload the page to try again.",
         "loading": "Deleting is locked until this set’s member list has loaded."
       }
-    },
-    "anotherRunStarted": "Another 7TV run started in the meantime."
+    }
   },
   "syncReportReason": {
     "forbidden": "Reason: according to 7TV, your account may no longer edit this set.",
@@ -1415,6 +1414,17 @@
       "other": "{{ count }} emotes were already in the target set by the time the run started and were skipped."
     },
     "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
+  },
+  "sevenTvRun": {
+    "notStarted": {
+      "running": "Nothing started — {{ kind }} is still running.",
+      "settling": "Nothing started — {{ kind }} is still finishing."
+    },
+    "kind": {
+      "delete": "the deletion run",
+      "restore": "the restore",
+      "import": "the transfer"
+    }
   },
   "sevenTvToken": {
     "tokenSet": "7TV token set",

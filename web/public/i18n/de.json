@@ -1105,8 +1105,7 @@
         "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig. Seite neu laden, um es erneut zu versuchen.",
         "loading": "Löschen gesperrt, bis die Mitgliederliste dieses Sets geladen ist."
       }
-    },
-    "anotherRunStarted": "Inzwischen hat ein anderer 7TV-Lauf begonnen."
+    }
   },
   "syncReportReason": {
     "forbidden": "Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.",
@@ -1415,6 +1414,17 @@
       "other": "{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen."
     },
     "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
+  },
+  "sevenTvRun": {
+    "notStarted": {
+      "running": "Nichts gestartet — {{ kind }} läuft noch.",
+      "settling": "Nichts gestartet — {{ kind }} wird noch abgeschlossen."
+    },
+    "kind": {
+      "delete": "der Löschlauf",
+      "restore": "die Wiederherstellung",
+      "import": "die Übertragung"
+    }
   },
   "sevenTvToken": {
     "tokenSet": "7TV-Token gesetzt",

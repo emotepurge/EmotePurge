@@ -161,6 +161,7 @@ interface Harness {
   startImport: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  noteRefusedStart: ReturnType<typeof vi.fn>;
 }
 
 function setup(): Harness {
@@ -223,7 +224,8 @@ function setup(): Harness {
   } as unknown as SevenTvImportService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
-  const arbiter = { activeRun } as unknown as SevenTvRunArbiter;
+  const noteRefusedStart = vi.fn();
+  const arbiter = { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
@@ -249,6 +251,7 @@ function setup(): Harness {
     startImport,
     hasToken,
     activeRun,
+    noteRefusedStart,
   };
 }
 
@@ -634,9 +637,10 @@ describe('startImportFlow', () => {
   // duplicate check's async fetch — a second run could start in that window and would have
   // overlapped this one. Pinned as behaviour, not implementation: confirming while the fetch is
   // still in flight, then having another run claim the arbiter before it answers, must abandon
-  // this start.
-  it('abandons the start when another run claims the arbiter while the fresh check is still in flight', () => {
-    const { deps, dialogOpen, startImport, httpPost, activeRun } = setup();
+  // this start. #256 T4: this is a *confirmed* start finding nothing to start, so it also notes
+  // the refusal (Festlegung Nr. 8) instead of vanishing without a word, as it used to.
+  it('abandons the start and notes the refusal when another run claims the arbiter while the fresh check is still in flight', () => {
+    const { deps, dialogOpen, startImport, httpPost, activeRun, noteRefusedStart } = setup();
     const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
     httpPost.mockReturnValue(fetch);
     startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
@@ -653,6 +657,7 @@ describe('startImportFlow', () => {
     fetch.complete();
 
     expect(startImport).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('import');
   });
 
   it('starts nothing when the confirm dialog is dismissed without an outcome', () => {
@@ -665,8 +670,8 @@ describe('startImportFlow', () => {
     expect(dialogOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('silently drops a confirmed outcome while another 7TV run is already active', () => {
-    const { deps, dialogOpen, startImport, activeRun } = setup();
+  it('notes a refused start instead of silently dropping a confirmed outcome while another 7TV run is already active', () => {
+    const { deps, dialogOpen, startImport, activeRun, noteRefusedStart } = setup();
     activeRun.set('delete');
     startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
@@ -677,6 +682,7 @@ describe('startImportFlow', () => {
     });
 
     expect(startImport).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('import');
   });
 
   it('prompts for a 7TV token when none is stored, and starts only once the prompt confirms', () => {

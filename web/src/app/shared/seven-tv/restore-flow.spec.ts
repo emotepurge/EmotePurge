@@ -172,6 +172,7 @@ interface Harness {
   startRestore: ReturnType<typeof vi.fn>;
   hasToken: WritableSignal<boolean>;
   activeRun: WritableSignal<SevenTvRunKind | null>;
+  noteRefusedStart: ReturnType<typeof vi.fn>;
   /** `RestoreFlowDeps.previewPending` (#255 P2a) — read directly by tests that check the flow's own
    *  re-entrancy guard, rather than only its externally visible effects. */
   previewPending: WritableSignal<boolean>;
@@ -196,7 +197,8 @@ function setup(): Harness {
   const restoreService = { startRestore } as unknown as SevenTvRestoreService;
 
   const activeRun = signal<SevenTvRunKind | null>(null);
-  const arbiter = { activeRun } as unknown as SevenTvRunArbiter;
+  const noteRefusedStart = vi.fn();
+  const arbiter = { activeRun, noteRefusedStart } as unknown as SevenTvRunArbiter;
 
   const dialogOpen = vi.fn(() => ({ closed: new Subject<unknown>() }));
   const dialog = { open: dialogOpen } as unknown as Dialog;
@@ -225,6 +227,7 @@ function setup(): Harness {
     startRestore,
     hasToken,
     activeRun,
+    noteRefusedStart,
   };
 }
 
@@ -538,9 +541,11 @@ describe('startRestoreFlow', () => {
   // #149 P2 (independent review): the arbiter's mutual-exclusion check ran before the fresh
   // duplicate check's async fetch — a second run could start in that window and would have
   // overlapped this one. The open-time check (#255) resolves synchronously here (its default
-  // mock) so the confirmation opens normally; only the *confirm-time* check hangs.
-  it('abandons the start when another run claims the arbiter while the confirm-time check is still in flight', () => {
-    const { deps, dialogOpen, httpPost, startRestore, activeRun } = setup();
+  // mock) so the confirmation opens normally; only the *confirm-time* check hangs. #256 T4: this
+  // is a confirmed start finding nothing to start, so it also notes the refusal (Festlegung Nr. 8)
+  // instead of vanishing without a word, as it used to.
+  it('abandons the start and notes the refusal when another run claims the arbiter while the confirm-time check is still in flight', () => {
+    const { deps, dialogOpen, httpPost, startRestore, activeRun, noteRefusedStart } = setup();
     httpPost.mockReturnValueOnce(of(emoteSetPage()));
     const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
     httpPost.mockReturnValueOnce(fetch);
@@ -554,6 +559,7 @@ describe('startRestoreFlow', () => {
     fetch.complete();
 
     expect(startRestore).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
   });
 
   it('never opens the confirmation and never runs when the token prompt is cancelled', () => {
@@ -577,14 +583,15 @@ describe('startRestoreFlow', () => {
     expect(startRestore).not.toHaveBeenCalled();
   });
 
-  it('silently drops a confirmed outcome while another 7TV run is already active', () => {
-    const { deps, dialogOpen, startRestore, activeRun } = setup();
+  it('notes a refused start instead of silently dropping a confirmed outcome while another 7TV run is already active', () => {
+    const { deps, dialogOpen, startRestore, activeRun, noteRefusedStart } = setup();
     activeRun.set('import');
 
     startRestoreFlow(deps, target(), rows());
     firstClosed<boolean>(dialogOpen).next(true);
 
     expect(startRestore).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
   });
 
   it('projects the answered slot numbers into the confirmation', () => {
@@ -904,9 +911,11 @@ describe('startRestoreFlow', () => {
 
   // #255 P2b (the #149 P2 fix's own reasoning, applied to the open-time "everything already
   // there" shortcut too): that shortcut starts a run exactly as much as the regular confirmed path
-  // does, so it needs the same arbiter check right before it.
-  it('drops the open-time "everything already there" shortcut when another run claims the arbiter while the check was out', () => {
-    const { deps, dialogOpen, httpPost, startRestore, activeRun } = setup();
+  // does, so it needs the same arbiter check right before it. #256 T4: the direct start at an empty
+  // preview is confirmed too (there is nothing else left to confirm), so it notes the refusal here
+  // as well (Festlegung Nr. 8).
+  it('drops the open-time "everything already there" shortcut and notes the refusal when another run claims the arbiter while the check was out', () => {
+    const { deps, dialogOpen, httpPost, startRestore, activeRun, noteRefusedStart } = setup();
     const fetch = new Subject<ReturnType<typeof emoteSetPage>>();
     httpPost.mockReturnValueOnce(fetch);
 
@@ -921,6 +930,7 @@ describe('startRestoreFlow', () => {
 
     expect(dialogOpen).not.toHaveBeenCalled();
     expect(startRestore).not.toHaveBeenCalled();
+    expect(noteRefusedStart).toHaveBeenCalledExactlyOnceWith('restore');
   });
 
   // #255 P3(7): a confirm-time check that fails outright must not undo the open-time check's own,

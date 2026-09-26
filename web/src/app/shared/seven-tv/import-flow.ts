@@ -361,10 +361,13 @@ export function startImportFlow(
   };
 
   const start = (outcome: ImportConfirmOutcome): void => {
-    // The engine only refuses *its own* second run; a delete or restore running elsewhere is
-    // invisible to it, so the cross-kind check happens here — silently, because the progress of
-    // that other run is already on screen and saying it twice would be the louder mistake.
+    // The engine only refuses *its own* second run; a delete or restore running or settling
+    // elsewhere is invisible to it, so the cross-kind check happens here. This is a *confirmed*
+    // start finding nothing to start (Festlegung Nr. 8, #256 contract P2) — unlike the still-silent
+    // locks ahead of the confirmation (an unconfirmed click outracing a lock, or the dialog's own
+    // runBlocked), so it notes why instead of vanishing quietly.
     if (deps.arbiter.activeRun() !== null) {
+      deps.arbiter.noteRefusedStart('import');
       return;
     }
     // Spec 4.5 point 17: a plan with at least one replace row runs the shared pre-check
@@ -406,10 +409,13 @@ export function startImportFlow(
         // exclusion contract (design doc §4.3, the SevenTvRunArbiter paragraph) does not actually
         // cover — a delete or restore can start in that window and this would otherwise start a
         // second, overlapping run against the same set. Re-checked here, right before the only
-        // remaining call that actually starts anything. Silent on a block, same reasoning as the
-        // pre-fetch check above: whichever run got there first is already visible in the dock, so
-        // there is something on screen explaining what happened — just not from this confirmation.
+        // remaining call that actually starts anything — same reasoning as the pre-fetch check
+        // above (#256 contract P2, Festlegung Nr. 8): a confirmed start finding nothing to start
+        // notes why, so it fires `noteRefusedStart` again rather than assuming the first call above
+        // already said enough — the arbiter's own claim can have changed kind or phase in the
+        // meantime, and the notice always reflects the most recent refusal.
         if (deps.arbiter.activeRun() !== null) {
+          deps.arbiter.noteRefusedStart('import');
           return;
         }
         deps.importService.startImport(
