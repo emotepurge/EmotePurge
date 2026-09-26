@@ -242,9 +242,16 @@ describe('SevenTvUndoService', () => {
   });
 
   afterEach(() => {
-    httpMock.verify();
-    vi.useRealTimers();
-    vi.restoreAllMocks();
+    // `httpMock.verify()` throws on a leftover open request — a real failure in the test above, not
+    // a fixture bug. But if it runs first and throws, the two lines after it never run, and fake
+    // timers stay installed for every test that follows: one red test then cascades into dozens.
+    // `finally` keeps teardown unconditional while still surfacing the `verify()` failure itself.
+    try {
+      httpMock.verify();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   function start(
@@ -451,6 +458,33 @@ describe('SevenTvUndoService', () => {
       ]);
       runAddOnly('3');
       expectReport(SYNC_RESTORED, ['tgt-3']).flush(answer());
+    });
+
+    it('takes a row whose source id equals its own target id out as duplicateInFile too — defence in depth beyond the classification', () => {
+      const selfLinked: UndoPlanRow = {
+        ...fullRow('1'),
+        candidate: { ...cand('1'), target: { ...cand('1').target, sevenTvEmoteId: 'src-1' } },
+      };
+      start([selfLinked, addOnlyRow('3')]);
+
+      expect(service.run()?.skipped.map((skipped) => skipped.reason)).toEqual(['duplicateInFile']);
+      runAddOnly('3');
+      expectReport(SYNC_RESTORED, ['tgt-3']).flush(answer());
+    });
+
+    it("takes a row whose source id equals another runnable row's target id out as duplicateInFile too", () => {
+      const first = fullRow('1'); // target tgt-1
+      const crossLinked: UndoPlanRow = {
+        ...addOnlyRow('2'),
+        candidate: { ...cand('2'), sourceSevenTvEmoteId: 'tgt-1' },
+      };
+      start([first, crossLinked, addOnlyRow('3')]);
+
+      expect(service.run()?.skipped.map((skipped) => skipped.reason)).toEqual(['duplicateInFile']);
+      runFull('1');
+      runAddOnly('3');
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      expectReport(SYNC_RESTORED, ['tgt-1', 'tgt-3']).flush(answer());
     });
   });
 
@@ -807,6 +841,22 @@ describe('SevenTvUndoService', () => {
       httpMock.expectNone(SYNC_DELETED);
     });
 
+    it('leaves an unanswered REMOVE unknown when the settle re-read comes back incomplete — never treats a partial read as readable', () => {
+      removeUnanswered();
+      // A single page whose own totalCount disagrees with what it carried — `complete: false`,
+      // resolved without a second request (see `readPage`'s own doc).
+      expectRead().flush(readPage([{ id: 'src-1', alias: 'A1' }], false));
+
+      expect(service.items()[0]).toMatchObject({
+        status: 'unknown',
+        failedStep: 0,
+        completedSteps: 0,
+      });
+      expect(service.settlement()).toBe('settled');
+      httpMock.expectNone(SYNC_DELETED);
+      httpMock.expectNone(SYNC_RESTORED);
+    });
+
     it('confirms an unanswered ADD found on the target — the ADDs after it never ran, so the row is a gap', () => {
       firstAddUnanswered();
       expectRead().flush(readPage([{ id: 'tgt-1', alias: 'A1' }]));
@@ -850,6 +900,20 @@ describe('SevenTvUndoService', () => {
         completedSteps: 1,
         errorMessage: T.removedButNotRestored,
       });
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
+      httpMock.expectNone(SYNC_RESTORED);
+    });
+
+    it('counts an ADD left unknown after a confirmed REMOVE in unknownCount, but not in unknownRemovalCount', () => {
+      firstAddUnanswered();
+      expectRead().error(new ProgressEvent('error'));
+
+      expect(service.items()[0]).toMatchObject({
+        status: 'unknown',
+        completedSteps: 1,
+        failedStep: 1,
+      });
+      expect(service.summary()).toMatchObject({ unknownCount: 1, unknownRemovalCount: 0 });
       expectReport(SYNC_DELETED, ['src-1']).flush(answer());
       httpMock.expectNone(SYNC_RESTORED);
     });
@@ -1079,6 +1143,35 @@ describe('SevenTvUndoService', () => {
       httpMock.expectNone(SYNC_DELETED);
       deleted.flush(answer());
       expectReport(SYNC_RESTORED, ['tgt-1']).flush(answer());
+    });
+
+    it('does nothing for either retry during the settling window — the run already has a result there, only not a settled one', () => {
+      // The engine's snapshot lands on the run record as soon as it completes (`onRunComplete`),
+      // before the settle re-read resolves — so `current.result === null` alone would not refuse a
+      // retry here; only the explicit `settlement !== 'settled'` check does. The REMOVE is already
+      // confirmed here (`completedSteps: 1` in the raw, unsettled snapshot), so a retry that skipped
+      // that check would find a non-empty id list and actually send the report early — unlike a row
+      // whose REMOVE itself is still unknown, where the raw snapshot's `completedSteps: 0` alone
+      // would keep the id list empty and hide the missing guard.
+      // A full row with two ADDs whose first ADD goes unanswered (mirrors `firstAddUnanswered()`,
+      // local to the settling describe block above): the REMOVE is confirmed before the ADD stalls.
+      start([fullRow('1', { entries: ['A1', 'B1'] })]);
+      answerRead([{ id: 'src-1', alias: 'A1' }]);
+      expectRemove('src-1').flush({});
+      next();
+      expectAdd('tgt-1', 'A1').flush('boom', { status: 502, statusText: 'Bad Gateway' });
+      next();
+      expect(service.run()?.result).not.toBeNull();
+      expect(service.run()?.result?.items[0].completedSteps).toBe(1);
+      expect(service.settlement()).toBe('pending');
+
+      service.retryRemovalReport();
+      service.retryRestoreReport();
+      httpMock.expectNone(SYNC_DELETED);
+      httpMock.expectNone(SYNC_RESTORED);
+
+      expectRead().flush(readPage([]));
+      expectReport(SYNC_DELETED, ['src-1']).flush(answer());
     });
 
     it('triggers no resync on success and shows backendTriggered from the first answer', () => {

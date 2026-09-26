@@ -1001,6 +1001,15 @@ function abortsForMissingPrivileges(failure: RunFailure): boolean {
  * `unproven` — on the row or on its candidate, fail-closed — runs only with `acknowledgedUnproven`;
  * a source id that occurs twice is the queue key twice, so every row carrying it is left out. What
  * a lock takes out carries no live counterpart: the service holds no read.
+ *
+ * Defence in depth beyond a duplicate source id (Codex review, T4 follow-up): the classification's
+ * own step 0 (`duplicateInFileCheck` in `undo-plan.ts`) already refuses a candidate whose source is
+ * its own target, or whose source id is another candidate's target id — but `runnable` here is
+ * whatever the caller hands `startUndo` (spec 17 K2: the dialog's effective plan after its own
+ * origin lock), not necessarily something that went through that check on this exact set. A row
+ * whose REMOVE would take the very id another row's ADD is about to restore to (or its own) is
+ * locked out the same way, as `duplicateInFile` — one row's REMOVE must never pull the emote
+ * another row (or itself) is restoring.
  */
 function applyServiceLocks(
   runnable: readonly UndoPlanRow[],
@@ -1010,13 +1019,15 @@ function applyServiceLocks(
   for (const row of runnable) {
     keyCount.set(queueKey(row), (keyCount.get(queueKey(row)) ?? 0) + 1);
   }
+  const targetIds = new Set(runnable.map((row) => row.candidate.target.sevenTvEmoteId));
   const rows: UndoPlanRow[] = [];
   const lockedOut: UndoSkippedRow[] = [];
   for (const row of runnable) {
     const unproven = row.provenance === 'unproven' || row.candidate.provenance === 'unproven';
+    const crossLinked = targetIds.has(row.candidate.sourceSevenTvEmoteId);
     if (row.mode === 'full' && unproven && !acknowledgedUnproven) {
       lockedOut.push(lockedOutRow(row, 'skippedUnproven'));
-    } else if ((keyCount.get(queueKey(row)) ?? 0) > 1) {
+    } else if ((keyCount.get(queueKey(row)) ?? 0) > 1 || crossLinked) {
       lockedOut.push(lockedOutRow(row, 'duplicateInFile'));
     } else {
       rows.push(row);
