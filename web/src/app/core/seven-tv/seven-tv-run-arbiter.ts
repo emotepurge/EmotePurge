@@ -72,6 +72,14 @@ export const REFUSED_START_FEEDBACK_MS = 4000;
  * — so the order is a display rule, not an exclusion rule; the same kind registered twice is not
  * refused, both simply count.
  *
+ * **Busy always resolves (contract P6).** `isSettling`/`destructiveOpen` are derived, so "busy" is
+ * only ever as live as the report chain behind it: every report a run opens (`sync-deleted`,
+ * `sync-imported`, `sync-restored`) is guaranteed to reach `succeeded | partial | failed` within
+ * `REPORT_TIMEOUT_MS` of its last attempt, because the response is classified (`map`) *before*
+ * `retry` sees it — a throw reaching `retry` unclassified used to leave a run `reporting` forever,
+ * which is exactly the gap that would have kept a claim here past any window. The arbiter itself
+ * holds no timer; it only ever reflects what the report chain has already resolved.
+ *
  * **One unload guard for all runs (contract P3).** `destructiveOpen` is the union over every
  * participant, and the `beforeunload` guard hangs off it — armed while *any* service has a
  * destructive run open, whether or not a dock still shows that run (it used to live in the import
@@ -143,9 +151,14 @@ export class SevenTvRunArbiter {
     });
   }
 
-  /** Adds a run service to the arbiter. Called once, from the service's own constructor. The write
-   *  is `untracked`, since a service can be constructed while a template or `computed` is being
-   *  evaluated — the registration must not be read as part of that. */
+  /** Adds a run service to the arbiter. Called once, from the service's own constructor, and only
+   *  by a root (`providedIn: 'root'`) run service — there is no unregister, so a participant from a
+   *  torn-down instance would stay registered, and keep counting toward `activeRun`/
+   *  `destructiveOpen`, forever. The write is wrapped in `untracked` defensively, not because
+   *  construction itself needs it: Angular's DI already builds a provider outside any reactive
+   *  consumer, so this call was never actually at risk of being read as a dependency of an
+   *  enclosing `computed`/`effect` — the wrapper costs nothing and keeps that guarantee explicit
+   *  should a future caller ever invoke `register` from somewhere other than a constructor. */
   register(participant: SevenTvRunParticipant): void {
     untracked(() => this.participants.update((current) => [...current, participant]));
   }

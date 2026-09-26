@@ -46,7 +46,10 @@ and another branch.
   service that was never constructed never started a run, so it has nothing to claim; no app
   initializer is involved, which also keeps the run services and the import engine out of the
   initial bundle. Rejected: a multi-provider token in the usage-stats routes — a root arbiter cannot
-  see route providers, and two arbiter instances would mean two unload guards.
+  see route providers, and two arbiter instances would mean two unload guards. **Only a root
+  (`providedIn: 'root'`) service may call `register`**: there is no unregister, so a participant
+  belonging to a torn-down instance would keep counting toward `activeRun`/`destructiveOpen`
+  forever — the three run services all qualify, a route-scoped service never would.
 - **R1 (2026-09-05) is unchanged: derived, not locked.** `activeRun` is still a `computed` over the
   participants' own signals, with no `tryAcquire`/`release`.
 - **Busy means running or settling.** `activeRun` is non-null while any participant runs **or**
@@ -61,6 +64,20 @@ and another branch.
   it. Visible change: **a delete run now protects the tab** from its start until its report has an
   end state (Plan-256 Festlegung 6), as an import with a `replace` row already did; a restore never
   does.
+- **Busy always resolves.** `isSettling`/`destructiveOpen` stay true only while a participant's own
+  report has no end state yet; every report a run opens (`sync-deleted`, `sync-imported`,
+  `sync-restored`) is guaranteed to reach `succeeded | partial | failed` within `REPORT_TIMEOUT_MS`
+  of its last attempt, because the response is classified (`map`) before `retry` ever sees it — a
+  throw reaching `retry` unclassified used to leave a run `reporting`, hence a claim here, forever
+  (fixed as part of #256 T1's review, Mitgabe 1). The arbiter holds no timer of its own; it only
+  ever reflects what the report chain has already resolved.
+- **One visible consequence: the delete dock's own restore button.** `mass-delete-panel.ts` shows it
+  only once `arbiter.activeRun() === null` — a finished delete run holds the claim through its
+  `reporting` phase, so the button appears only after `sync-deleted`'s answer reaches an end state,
+  not as soon as the deletion itself is done. The same fact reads the other way round too: a
+  `sync-restored` report can never reach our Api before `sync-deleted` has, because starting the
+  restore run — the earliest point a `sync-restored` report could go out — is gated on exactly that
+  button.
 - **The refusal notice is arbiter business.** `noteRefusedStart(attempted)` records what a start
   point tried and what blocked it (`refusedStart`, cleared after `REFUSED_START_FEEDBACK_MS` = 4000
   ms, §4.5; a second refusal restarts the window). On a free arbiter it notes nothing, so the notice
