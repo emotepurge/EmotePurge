@@ -1666,3 +1666,11 @@ Abschnitt sagt, wo er nicht mehr stimmt.
    antwortete; die Datei unterscheidet die beiden Fälle nicht.
 8. **Slot-Delta im E2E-Hauptweg (9.4).** „Slot-Delta +1" passt nicht zur ADD-Liste daneben: zwei
    REMOVEs und vier ADDs (`T1, a`; `T2, a`; `T2, b`; `T2, D`) ergeben +2. Der E2E-Fall prüft +2.
+9. **Mitgliederliste eines gewählten, nicht-aktiven Sets nach dem Settle (19, N2).** Die Seite lädt
+   sie nur neu, wenn der gesettelte Lauf `doneKeys.length > 0` hat (`watchRunSettle` in
+   `usage-stats-page.ts`). Ein Lauf, in dem jede Zeile nach bestätigtem REMOVE `failed` endet, hat
+   das Set verändert, aber keinen `done`-Schlüssel — die Liste bleibt veraltet. Der Import hat
+   dieselbe Lücke; ein Folge-Issue für beide entscheidet der Betreiber.
+10. **„Rückweg sichern gesperrt" (AK 28, 9.4).** Ohne Bestätigung gibt es keinen gesperrten Knopf
+    „Rückweg sichern": die unbelegten `full`-Zeilen sind `skippedUnproven`, der Knopf fehlt, und
+    „Starten" ist mit Grund gesperrt, solange nichts läuft (17 K2).
