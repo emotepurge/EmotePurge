@@ -34,6 +34,7 @@ function setEntries(overrides: Partial<SevenTvSetEntries> = {}): SevenTvSetEntri
     aliasesById: new Map(),
     aliaslessIds: new Set(),
     defaultNameById: new Map(),
+    animatedById: new Map(),
     occupiedSlots: 0,
     complete: true,
     ...overrides,

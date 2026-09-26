@@ -190,6 +190,7 @@ function transferRunText(
           aliasesById: new Map([['tgt-1', ['KappaOld']]]),
           aliaslessIds: new Set(),
           defaultNameById: new Map([['tgt-1', 'KappaDefault']]),
+          animatedById: new Map([['tgt-1', false]]),
           occupiedSlots: 1,
           complete: true,
         },

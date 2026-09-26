@@ -9,7 +9,7 @@ import { loadSevenTvSetEntries } from './seven-tv-set-entries';
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 
 function page(
-  entries: { id: string; alias?: string; defaultName?: string }[],
+  entries: { id: string; alias?: string; defaultName?: string; animated?: boolean }[],
   pageCount = 1,
   totalCount = entries.length,
 ) {
@@ -20,9 +20,13 @@ function page(
           emotes: {
             totalCount,
             pageCount,
-            items: entries.map(({ id, alias, defaultName }) => ({
+            items: entries.map(({ id, alias, defaultName, animated }) => ({
               alias,
-              emote: { id, defaultName },
+              emote: {
+                id,
+                defaultName,
+                ...(animated === undefined ? {} : { flags: { animated } }),
+              },
             })),
           },
         },
@@ -167,6 +171,35 @@ describe('loadSevenTvSetEntries', () => {
     const result = await result$;
     expect(result.defaultNameById.get('7tv-1')).toBe('Pog');
     expect(result.defaultNameById.get('7tv-2')).toBe('');
+  });
+
+  // #254 spec 17 K1: the undo confirm dialog builds a source's still image url from this flag.
+  it("captures each id's animated flag from emote.flags.animated", async () => {
+    const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    const request = httpMock.expectOne(GQL_ENDPOINT);
+    expect(request.request.body.query).toContain('flags { animated }');
+    request.flush(
+      page([
+        { id: '7tv-1', alias: 'PogU', animated: true },
+        { id: '7tv-2', alias: 'KEKW', animated: false },
+      ]),
+    );
+
+    const result = await result$;
+    expect([...result.animatedById]).toEqual([
+      ['7tv-1', true],
+      ['7tv-2', false],
+    ]);
+  });
+
+  // Same guard as the backend's `dto.Emote?.Flags?.Animated ?? false`: 4x.webp exists for every
+  // emote, 4x_static.webp only for an animated one.
+  it('records a missing animated flag as false', async () => {
+    const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+    httpMock.expectOne(GQL_ENDPOINT).flush(page([{ id: '7tv-1', alias: 'PogU' }]));
+
+    const result = await result$;
+    expect(result.animatedById.get('7tv-1')).toBe(false);
   });
 
   // Spec #255: the import confirm dialog's live slot projection reads this straight off the read,

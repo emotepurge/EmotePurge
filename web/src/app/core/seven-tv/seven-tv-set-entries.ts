@@ -10,15 +10,19 @@ const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 // (`src/EmotePurge.Infrastructure/SevenTv/SevenTvApiClient.cs`): 500 per page keeps even a
 // subscriber-sized set (capacity can exceed 1000) at a handful of requests, and the 10-page cap is
 // a runaway guard, not an expected limit — nothing in this codebase has ever seen a set anywhere
-// near 5000 entries. `alias`, `emote.id` and `emote.defaultName` are requested: unlike the
-// backend's preview query (which also needs scores for a human-facing list), the readers here only
-// compare ids and the aliases each id sits under — `defaultName` is the one exception, needed by the
-// transfer-run protocol (shared/export/transfer-run-export.ts) to name an aliasless entry.
+// near 5000 entries. `alias`, `emote.id`, `emote.defaultName` and `emote.flags.animated` are
+// requested: unlike the backend's preview query (which also needs scores for a human-facing list),
+// the readers here mostly compare ids and the aliases each id sits under. Two exceptions:
+// `defaultName`, needed by the transfer-run protocol (shared/export/transfer-run-export.ts) to name an
+// aliasless entry, and `flags { animated }` — the very field the backend preview query reads
+// (`GqlEmoteSetPreviewQuery`) — so the undo confirm dialog (#254, spec 17 K1) can show a source
+// emote's still image without a second request. `Emote.images` stays deliberately unread, as in the
+// backend: the url is built from the id and this flag (`BuildForeignImageUrl`).
 const SET_ENTRIES_PER_PAGE = 500;
 const MAX_SET_ENTRY_PAGES = 10;
 
 const GQL_EMOTE_SET_ENTRIES_QUERY =
-  'query($id: Id!, $page: Int!, $perPage: Int!) { emoteSets { emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { totalCount pageCount items { alias emote { id defaultName } } } } } }';
+  'query($id: Id!, $page: Int!, $perPage: Int!) { emoteSets { emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { totalCount pageCount items { alias emote { id defaultName flags { animated } } } } } } }';
 
 interface SevenTvGqlEmoteSetEntriesResponse {
   data?: {
@@ -27,7 +31,14 @@ interface SevenTvGqlEmoteSetEntriesResponse {
         emotes?: {
           totalCount: number;
           pageCount: number;
-          items: { alias?: string | null; emote: { id: string; defaultName?: string | null } }[];
+          items: {
+            alias?: string | null;
+            emote: {
+              id: string;
+              defaultName?: string | null;
+              flags?: { animated?: boolean | null } | null;
+            };
+          }[];
         } | null;
       } | null;
     } | null;
@@ -61,6 +72,13 @@ export interface SevenTvSetEntries {
    *  id. Read by the transfer-run protocol (`shared/export/transfer-run-export.ts`) to name an
    *  aliasless target entry, which otherwise has no name a human would recognise. */
   defaultNameById: Map<string, string>;
+  /** Every 7TV emote id in the set, mapped to whether 7TV flags it as animated
+   *  (`emote.flags.animated`) — filled for every id, like `defaultNameById`. A missing flag is
+   *  recorded as `false`, the same guard the backend applies (`SevenTvApiClient.cs`,
+   *  `dto.Emote?.Flags?.Animated ?? false`): the still rendition `4x.webp` exists for every emote,
+   *  whereas `4x_static.webp` 404s for a static one (measured 2026-09-09). Read by the undo confirm
+   *  dialog (#254, spec 17 K1) to build a source emote's still image url. */
+  animatedById: Map<string, boolean>;
   /** The set's own `totalCount` as of this read — its live occupied-slot count, independent of how
    *  many pages this read itself collected or whether it came back `complete`. Read by the import
    *  confirm dialog (spec #255) to keep the slot projection current after a live re-read, rather
@@ -115,6 +133,7 @@ export function loadSevenTvSetEntries(
   const aliasesById = new Map<string, string[]>();
   const aliaslessIds = new Set<string>();
   const defaultNameById = new Map<string, string>();
+  const animatedById = new Map<string, boolean>();
   let collected = 0;
 
   function loadPage(page: number): Observable<SevenTvSetEntries> {
@@ -135,6 +154,7 @@ export function loadSevenTvSetEntries(
           }
           aliasesById.set(item.emote.id, aliases);
           defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
+          animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
         }
         collected += emotes.items.length;
         if (page >= emotes.pageCount) {
@@ -142,6 +162,7 @@ export function loadSevenTvSetEntries(
             aliasesById,
             aliaslessIds,
             defaultNameById,
+            animatedById,
             occupiedSlots: emotes.totalCount,
             complete: collected === emotes.totalCount,
           });
@@ -151,6 +172,7 @@ export function loadSevenTvSetEntries(
             aliasesById,
             aliaslessIds,
             defaultNameById,
+            animatedById,
             occupiedSlots: emotes.totalCount,
             complete: false,
           });

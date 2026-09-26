@@ -194,6 +194,10 @@ describe('filterAlreadyPresent', () => {
           ['7tv-1', ''],
           ['7tv-999', ''],
         ]),
+        animatedById: new Map([
+          ['7tv-1', false],
+          ['7tv-999', false],
+        ]),
         occupiedSlots: 2,
         complete: true,
       },
@@ -785,6 +789,7 @@ function setEntries(entries: { id: string; alias: string | null }[]): SevenTvSet
     aliasesById,
     aliaslessIds,
     defaultNameById: new Map(),
+    animatedById: new Map(),
     occupiedSlots: entries.length,
     complete: true,
   };
