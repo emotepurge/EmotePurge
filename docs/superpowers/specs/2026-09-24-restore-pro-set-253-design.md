@@ -190,7 +190,7 @@ der adversarialen Zweitmeinung (Abschnitt 14).
 | E20 | **H3 — kein vorautorisierter Nachmeldeweg** | Scheitert die Meldung trotz Vorprüfung (Rechteentzug mitten im Lauf), zeigt das Dock den Grund (`syncReportReason`, E23); es gibt **keinen** Weg, die Meldung unter einer früheren Autorisierung nachzureichen | Bewusst ausgelassen (Betreiber): das Mod-Team hat eigene Rechte, der Fall ist ein echter Entzug, und ein Nachmeldeweg wäre eine zweite Autorisierung neben der, die 7TV gerade zurückgenommen hat |
 | E21 | **M5 — Hinweis „Ziel ≠ Seite"** | Der Flow bekommt die **gewählte Set-ID der Seite** (`hostSelectedSetId: string \| null`). Der Hinweis entsteht beim Vergleich `target.emoteSetId !== hostSelectedSetId`, nie beim Kanalvergleich; die Bestätigung zeigt neben dem Set-Namen die **aufgelöste Set-ID** | Ein anderes Set desselben Kanals erzeugte sonst keinen Hinweis, und die Datei ist nicht vertrauenswürdig — die ID aus der Zielliste ist die geprüfte |
 | E22 | **M6 — Einstieg ohne gewähltes Set** | `ImportTrigger` verlässt das Gate `selectedEmoteSetId()` und steht nur noch hinter `!isCoarse()`; sein `setId` wird `string \| null`. Ohne Set sind im Quellschritt die drei Kopier-Türen mit Grund deaktiviert, der Datei-Zweig bleibt offen und liest nur Rückweg-Dateien. Das Restore-Dock zieht aus dem `MassDeletePanel` in eine eigene `RestoreProgressSection` **außerhalb** des Set-Gates, nach dem Muster von `ImportProgressSection` | Ein Host-Kanal ohne aktives Set (z. B. nach einem Replace ins Ungetrackte, oder ein Kanal vor dem ersten Sync) hätte sonst keinen Einstieg und kein Dock. Kein neuer Button: derselbe Einstieg bleibt sichtbar („keine neuen Dauer-Controls") |
-| E23 | Grund am Meldungszustand | `SyncReportState` bleibt; daneben `syncReportReason: 'forbidden' \| 'setNotFound' \| 'unavailable' \| 'channelMismatch' \| 'shortfall' \| 'other' \| null`, gesetzt bei `failed`/`partial`, vom Dock als eigene Zeile gezeigt. Bei `channelMismatch` bietet das Dock **kein** „Erneut melden" an (Nachtrag N4) | Ein nacktes `failed` sagt nicht, ob die Rechte weg sind oder 7TV nicht antwortet; H3 verlangt einen klaren Grund. Wortlaut #255 |
+| E23 | Grund am Meldungszustand | `SyncReportState` bleibt; daneben `syncReportReason: 'forbidden' \| 'setNotFound' \| 'unavailable' \| 'channelMismatch' \| 'shortfall' \| 'other' \| null` (`channelMismatch` seither in zwei Gründe gesplittet, s. 18, Nachtrag 2026-09-26), gesetzt bei `failed`/`partial`, vom Dock als eigene Zeile gezeigt. Bei `channelMismatch` bietet das Dock **kein** „Erneut melden" an (Nachtrag N4) | Ein nacktes `failed` sagt nicht, ob die Rechte weg sind oder 7TV nicht antwortet; H3 verlangt einen klaren Grund. Wortlaut #255 |
 | E24 | Antwort der Guid-Altform | `archivedCount`/`restoredCount` = Zahl der gemeldeten Guids, die als Zeile des Kanals **existieren** (unverändert gelassen), `notFoundIds` = Rest; kein `channel.synced` aus dem Endpunkt (nichts geändert), der Resync veröffentlicht es | **Festlegung** zu H4: das alte Frontend liest `archivedCount >= emoteIds.length` als `succeeded` und würde bei `0` fälschlich `partial` zeigen; die gefundene Zahl ist die ehrlichste, die die alte Antwortform tragen kann. Was der Audit-Eintrag dann behauptet, steht in 5.6 |
 
 ---
@@ -439,8 +439,9 @@ Replace-Zeile hat — die Picker-Wahl trug `editable` schon, die drei Seiten-Tü
     hängen. Das Dock steht außerhalb des Set-Gates, also auch auf einer Seite ohne gewähltes Set.
 14. Der Meldungszustand im Dock trägt bei `failed`/`partial` einen Grund (E23): `forbidden`
     (403), `setNotFound` (404), `unavailable` (503/429/Netz nach den Retries), `channelMismatch`
-    (`unresolvedChannel`), `shortfall` (ein Kanal mit `notFoundIds`), `other`. Wortlaut #255. Bei
-    `channelMismatch` zeigt das Dock **keinen** „Erneut melden"-Knopf (Nachtrag N4).
+    (`unresolvedChannel` — seither `channelMismatchNotTracked`/`channelMismatchActiveSetDiffers`,
+    s. 18, Nachtrag 2026-09-26), `shortfall` (ein Kanal mit `notFoundIds`), `other`. Wortlaut #255.
+    Bei `channelMismatch` zeigt das Dock **keinen** „Erneut melden"-Knopf (Nachtrag N4).
 
 ### 4.5 Die Sperre fällt, die Vorprüfung kommt
 
@@ -805,7 +806,9 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   Retry-Policy unverändert (`MAX_AUTOMATIC_SYNC_RETRIES`, 401/403 ohne Retry).
 - `syncReport`/`syncReportReason` aus der Antwort (F8, E23): `succeeded`, wenn `unresolvedChannel`
   null ist **und** (`channels` leer ist **oder** für jeden Kanal `restoredCount === reportedCount`);
-  sonst `partial` mit `channelMismatch` bzw. `shortfall`; jeder HTTP-Fehler nach den Retries →
+  sonst `partial` mit `channelMismatch` (seither `channelMismatchNotTracked`/
+  `channelMismatchActiveSetDiffers`, s. 18, Nachtrag 2026-09-26, dort auch der eigene Wortlaut für
+  `partial`) bzw. `shortfall`; jeder HTTP-Fehler nach den Retries →
   `failed` mit `forbidden` (403), `setNotFound` (404), `unavailable` (429/503/Netz), sonst
   `other`. Ein 404 (Set inzwischen weg) endet damit in `failed`, was #224 im Frontend schließt.
 - Resync (E12, aufgehoben für nicht-aktive Ziele, s. 18, Nachtrag 2026-09-25):
@@ -819,8 +822,9 @@ Antwort auf H3: sie trifft **dieselbe** Entscheidung wie das Backend, weil sie `
   `null` ist — mit denselben Zuständen im Dock; für ein ungetracktes Ziel (beide `null`) weiterhin
   keiner. Ein manueller Retry löst keinen zweiten Fallback aus.
 - „Erneut melden" (`retrySyncReport`) gibt es bei `failed` (jeder Grund) und bei
-  `partial`/`shortfall`, **nicht** bei `partial`/`channelMismatch` (Nachtrag N4): das Dock zeigt den
-  Knopf dort nicht, und der Dienst weist den Aufruf ab.
+  `partial`/`shortfall`, **nicht** bei `partial`/`channelMismatch` (Nachtrag N4; seither die zwei
+  gesplitteten Gründe, s. 18, Nachtrag 2026-09-26 — `isChannelMismatch` fasst beide für genau diese
+  Prüfung wieder zusammen): das Dock zeigt den Knopf dort nicht, und der Dienst weist den Aufruf ab.
 - `resetIfChannelChanged(pageChannelName)` vergleicht mit `run.hostChannelName` (E13).
 - Die Dock-Zielzeile (4.4, Punkt 12) liest `setName` und `ownerOrChannelLabel` aus dem
   Laufdatensatz (Anzeigefelder, nie verglichen).
@@ -1656,6 +1660,11 @@ Besitzerkanals. Ein Mismatch `notTracked` schreibt ihn ohne Kanal, mit `targetOw
 
 ### N4 — B3: kein „Erneut melden" bei `channelMismatch`
 
+> `channelMismatch` ist seit dem Nachtrag 2026-09-26 (Abschnitt 18, Ende) in
+> `channelMismatchNotTracked`/`channelMismatchActiveSetDiffers` gesplittet, mit einem eigenen
+> Helper `isChannelMismatch`, der beide für genau diese Retry-Regel wieder zusammenfasst — dieser
+> Nachtrag hier ist dadurch inhaltlich unverändert, nur der Bezeichner ist seither zwei statt einer.
+
 **Befund (T12, Punkt 5 und B3).** Bei `partial`/`channelMismatch` bot das Dock „Erneut melden" an.
 Ein erneuter Versuch schickt dieselbe Meldung: bei unverändertem Stand ein weiterer Mismatch, ein
 weiterer Papier-Eintrag, ein weiterer Resync-Versuch in den Cooldown — und der Resync, der den
@@ -1755,3 +1764,59 @@ Codeänderung.
 Meldung weder bei Erfolg (mit oder ohne genanntem Kanal in `resyncTriggered`) noch nach endgültig
 gescheiterter Meldung einen `POST /resync` aus — `resyncTrigger` bleibt `idle`. Das aktive Set und
 das ungetrackte Ziel sind unverändert abgedeckt.
+
+### Nachtrag 2026-09-26 — `channelMismatch` gesplittet, und `partial` bekommt einen eigenen Wortlaut (#255)
+
+**Befund (Review, #255).** E18/E23 und Nachtrag N4 kannten bislang einen einzigen
+`syncReportReason`-Wert `'channelMismatch'` für beide `UnresolvedChannel.reason`-Fälle
+(`'notTracked'` und `'activeSetDiffers'`, E18). Das Dock konnte damit nicht sagen, *welcher* der
+beiden Fälle vorlag — „der erwartete Kanal wird gerade nicht getrackt" und „der erwartete Kanal
+trackt gerade ein anderes Set" sind unterschiedliche Situationen mit unterschiedlichen nächsten
+Schritten (der eine heilt sich nie von selbst, der andere über den ohnehin laufenden Resync). Der
+Wortlaut bei `partial` fiel außerdem, wie N4 selbst schon vermerkte, in dieselbe „fehlgeschlagen …
+konnte es nicht vermerken"-Formulierung wie `failed` — falsch für einen Bericht, der tatsächlich
+vermerkt wurde, nur eben nicht vollständig.
+
+**Vertrag.**
+
+- `SyncReportReason` (`sync-report-outcome.ts`) trägt seither `'channelMismatchNotTracked'` und
+  `'channelMismatchActiveSetDiffers'` statt eines einzelnen `'channelMismatch'` — je nach
+  `UnresolvedChannel.reason` (`'notTracked'` bzw. `'activeSetDiffers'`, E18). Jede Stelle, die
+  bislang `'channelMismatch'` erzeugte oder damit verglich, unterscheidet jetzt die beiden Werte.
+- **`isChannelMismatch(reason)`** (`sync-report-outcome.ts`) fasst beide für jeden Vergleich wieder
+  zusammen, der die beiden Fälle ohnehin gleich behandelt — vor allem N4s Retry-Regel
+  (`syncRetryOffered`, `retrySyncReport`/`retryRemovalReport` an allen drei Diensten): kein
+  Vergleichsort im Code oder in dieser Spec muss beide Werte einzeln aufzählen, um „ist irgendein
+  Mismatch" zu prüfen.
+- **`partial` bekommt einen eigenen Titel/Text**, getrennt von `failed`: `RunProgressPanel` (Delete,
+  Restore) unterscheidet `syncReportFailed()`s Banner seither per `syncReport() === 'partial'` in
+  `.syncPartialTitle`/`.syncPartial` („… vermerkt, aber nicht vollständig.") gegenüber
+  `.syncFailedTitle`/`.syncFailed` („… fehlgeschlagen … konnte es nicht vermerken.") — je
+  `labelPrefix()`, also `restore.syncPartialTitle`/`massDelete.syncPartialTitle` (`import` nicht:
+  sein `syncReport`, der reinen sync-imported-Meldung, wird nie `'partial'`, s. u.). Dieselbe
+  Unterscheidung trifft `ImportProgressSection` für die **Löschmeldung** (`removalReport`, die bei
+  einer Replace-Zeile `partial` durchaus werden kann) mit den schon vorher bestehenden
+  `import.removalSyncPartialTitle`/`import.removalSyncPartial*`-Schlüsseln — die bleiben unverändert,
+  dieser Nachtrag ändert an ihnen nichts.
+- **`import.syncPartialTitle`/`import.syncPartial` existierten, waren aber unerreichbar** und sind
+  mit demselben Commit entfernt (P3.1, Review #255): `SevenTvImportService.syncReport` (die
+  sync-imported-Meldung, die dieses Locale-Paar allein bediente) beantwortet mit HTTP 204 ohne
+  Body, kann also nie `'partial'` werden — der Ternary in `RunProgressPanel.syncReportTitleKey`/
+  `syncReportTextKey` nahm für `labelPrefix() === 'import'` immer den `syncFailed*`-Zweig.
+  `import.removalSyncPartial*` (oben) ist ein anderes Schlüsselpaar für einen anderen Bericht und
+  bleibt bestehen.
+
+**Betroffene Abschnitte.** E18 (Grund unverändert, nur der `syncReportReason`-Bezeichner betroffen),
+E23, 4.4 Nr. 14, 6.4 (Retry-Regel und die `syncReport`/`syncReportReason`-Ableitung), N4 (Retry-Regel
+und AK 40) — alle mit Verweis hierher, nicht umgeschrieben. `seven-tv-emote-set.model.ts`:
+`UnresolvedChannel`s Kommentar aktualisiert. Neue DECISIONS-Einträge vom 2026-09-26, im selben
+Commit wie die Codeänderung.
+
+**Tests.** `sync-report-outcome.spec.ts`: `classifySyncInSetResponse` liefert
+`channelMismatchNotTracked`/`channelMismatchActiveSetDiffers` je nach `UnresolvedChannel.reason`,
+`isChannelMismatch` ist `true` für beide und `false` für jeden anderen Grund. Die drei
+Dienst-Specs (`seven-tv-delete.service.spec.ts`, `seven-tv-import.service.spec.ts`,
+`seven-tv-restore.service.spec.ts`): je ein Fall pro neuem Reason-Wert, plus der bestehende
+Retry-Abweisungstest, jetzt parametrisiert über beide Werte. `run-progress-panel.spec.ts`,
+`import-progress-section.spec.ts`, `restore-progress-section.spec.ts`: der `partial`-Titel/Text
+unterscheidet sich vom `failed`-Titel/Text, für beide Mismatch-Gründe und für `shortfall`.

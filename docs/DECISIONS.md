@@ -10,6 +10,83 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — `channelMismatch` splits into two reasons, and `partial` gets its own wording
+
+**Betrifft:** `web/src/app/core/seven-tv/sync-report-outcome.ts` (`SyncReportReason`,
+`isChannelMismatch`, `classifySyncInSetResponse`) ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`syncReportTitleKey`/`syncReportTextKey`,
+`syncRetryOffered`) · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` (`UnresolvedChannel` doc) ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E18, E23, 4.4 Nr. 14, 6.4, N4,
+§18 addendum).
+
+Review finding on issue #255. `syncReportReason` used to fold both `UnresolvedChannel.reason`
+values (E18: `'notTracked'` — the expected channel is not currently tracked at all — and
+`'activeSetDiffers'` — it is tracked, but this set is not its active one right now) into one
+`'channelMismatch'` value, so the dock could never say *which* of the two applied, even though they
+call for different expectations (one never heals itself, the other heals over the resync that is
+already running for `activeSetDiffers`). `SyncReportReason` now carries
+`'channelMismatchNotTracked'`/`'channelMismatchActiveSetDiffers'` instead, and every producer
+(`classifySyncInSetResponse` in the shared `sync-report-outcome.ts`, used identically by the
+delete, import and restore services) and consumer picks the one that matches
+`UnresolvedChannel.reason`. `isChannelMismatch(reason)` folds both back into one boolean wherever a
+caller only needs "is this some channel-mismatch reason at all" — chiefly addendum N4's retry rule
+(`syncRetryOffered`, and the `retrySyncReport`/`retryRemovalReport` refusal in all three services),
+which treats both identically and would otherwise have had to enumerate them at every comparison
+site.
+
+Separately, but in the same commit because it touches the same notice: `partial` gets its own
+title and body text, distinct from `failed`. `RunProgressPanel.syncReportTitleKey`/
+`syncReportTextKey` (`labelPrefix() === 'restore' | 'massDelete'`) now switch on
+`syncReport() === 'partial'` to `.syncPartialTitle`/`.syncPartial` ("… recorded at EmotePurge — but
+not completely.") rather than reusing `.syncFailedTitle`/`.syncFailed` ("… reporting back to
+EmotePurge failed …"), which was simply wrong for a report that in fact went through, just not for
+every row. `import.syncPartialTitle`/`import.syncPartial` never had a way to be reached — the
+import's own `syncReport` (the sync-imported call) answers with a bodyless 204 and can never become
+`'partial'` — and are removed rather than kept dead; `import.removalSyncPartial*`, the unrelated
+pair for the *removal* report of a replace row's confirmed REMOVE (which can become `'partial'`),
+is untouched.
+
+---
+
+### 2026-09-26 — Adopts count as "renamed" in the dock, and a rename-only plan's button says "Align"
+
+**Betrifft:** `web/src/app/shared/seven-tv/run-progress-panel.ts` (`renamedCount` input,
+`summaryCountsKey`) · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`doneAdoptCount`) ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` (`executeLabelKey`, `titleIsRenameOnly`) ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (`copiedNotActiveNotice`,
+`renamedNotActiveNotice`) · `web/public/i18n/de.json` · `web/public/i18n/en.json`.
+
+Review findings on issue #255. An adopt (`adoptSourceName`) renames an existing target-set entry in
+place; it is not a copy. The dock's summary line used to count a `done` adopt the same as a `done`
+plain add ("N kopiert"), overstating what the run actually added — `RunProgressPanel` now accepts
+an optional `renamedCount` (fed from the import service's own `doneAdoptCount`, a count only the
+import run can ever produce) and splits it out of "kopiert" into its own "M umbenannt" segment,
+shown only once there is something to name. The same distinction reaches the two dock notices for a
+copy into a tracked but *not currently active* set (`copiedNotActiveNotice`): it now requires at
+least one `done` row that is not an adopt, and a rename-only outcome (every `done` row an adopt, at
+least one) gets its own `renamedNotActiveNotice` wording ("In Set '…' umbenannt — …") instead; a run
+where nothing at all succeeded gets neither.
+
+The confirm dialog's button follows the same distinction for a plan that is *exclusively* renames
+(`titleIsRenameOnly`, no `add`/`replace` row at all): "Kopieren" would misdescribe it exactly as
+"Hinzufügen läuft danach…" would, so both are replaced for that one case — the run notice with a
+sentence about renaming, and the button with a fourth word, "Angleichen"/"Align", matching the
+title it already used for this case (`import.confirm.titleAlign`, "N Namen im Zielset angleichen?").
+This corrects an earlier fix's own choice to reuse "Übertragen" for that button: the entry of
+2026-09-07 ("Ein Verb für die Übertragung", #92) reserves that verb for the header button/dock
+shortcut that opens the whole import flow (`import.copyButton`/`import.dockCopyButton`) — using it
+a second time, for a button inside the confirmation that flow leads to, would have reintroduced the
+exact ambiguity #92 exists to prevent (two controls, same word, in this case not even the same
+*step*). A plan that adds anything at all, mixed with adopts or not, keeps "Kopieren"/"Hinzufügen
+läuft danach…" unchanged — that wording is still literally true there.
+
+---
+
 ### 2026-09-25 — A restore into a non-active target no longer triggers its own resync
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`resyncAfterReport`,
