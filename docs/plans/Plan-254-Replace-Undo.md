@@ -1146,3 +1146,50 @@ in Fassung 2 eingearbeitet. Eine weitere Codex-Runde auf den Plan gibt es nicht 
 | 1 | high | Über den Mischdatei-Pfad kann eine unbelegte `planned`-Löschung durchrutschen: K2 ließ `addOnly` ohne Häkchen starten, T5 gab nur „Plan plus Flag" zurück, weder T6 noch T4 verlangten das Herausfiltern unbelegter `full`-Zeilen an der Grenze, T8 prüfte nur den gesperrten Download | Zutreffend: die erste Fassung hatte die Sperre nur im Dialog und keinen Test über die Naht Dialog → Flow → Dienst | Dialog-Ergebnis mit expliziten `runnable`/`skipped`; zweite Herkunftssperre im Dienst vor dem Queue-Aufbau; Unit-Test mit dem echten Dienst (T6) und E2E (T8, Fall 12) verfolgen eine gemischte `planned`-Datei über „Starten" und belegen null REMOVEs — **Betreiber: K2 so entschieden** | 0.5, 1, 2.5, T4, T5, T6, T8, Abschnitt 7 K2, Spec 17 K2 |
 | 2 | high | K4 lässt sich in der freigegebenen Zeilenform nicht abbilden: `TransferUndoRow` verlangt `mode` und `restoredTarget`, ein vor der Klassifikation übersprungener Kandidat hat beides nicht; T1 hätte den Builder vor der Entscheidung gebaut | Zutreffend: 6.4 kennt nur gelaufene Zeilen; `duplicateInFile` entsteht in Schritt 0 vor jedem Modus | Eigene Zeilenart `kind: 'skipped'` (ohne `mode`/`restoredTarget`), Restore-Parser lässt sie aus, `counts.requested` nur gelaufene; **vor T1** festgelegt, mit Tests für `duplicateInFile` und je einen Dialog-, Frischcheck- und Dienst-Grund — **Betreiber: K4 so entschieden** | 0.5, 1, T1, T4, Abschnitt 7 K4, Spec 17 K4 |
 | 3 | high | K1 schlug ein Bildfeld vor, das die Vorschau-Query nicht liest: `SevenTvApiClient.cs` liest `flags.animated` und baut die URL getrennt, `Emote.images` absichtlich nicht; ein falsches GraphQL-Feld bräche jeden Set-Read; T5 verbot die Ableitung und gab dem Ziel nur einen Platzhalter | Zutreffend: `SevenTvApiClient.cs:71` (`flags { animated }`), `:1272-1280` (`BuildForeignImageUrl`), `emote-url.ts` (keine Ableitung aus der ID im Frontend) | Live-Read += `flags { animated }`; Quelle über `emoteStillUrl(id, animated)` nach der Backend-Regel (`4x_static.webp` nur bei `animated`, sonst `4x.webp`); Ziel Platzhalter mit Name und Aliasen; Tests für statisch und animiert — **Betreiber: K1 so entschieden** | 0.2, 0.5, T5, Abschnitt 7 K1, Spec 17 K1 |
+
+---
+
+## 11. Nachtrag: Stand nach #256 (T0, 2026-09-26)
+
+T0 hat `origin/feat/emote-sets-200` (`ac8c2ec5`, mit #264, #255 und #256) per Merge in den Branch
+geholt und den Vertrag aus Spec 11.1 am Code geprüft: **P1–P6 sind erfüllt.** Belege je Punkt,
+die tatsächlichen Namen und die Bundle-Baseline (Initial total 404.08 kB) stehen im Ledger
+(Abschnitt 9). Dieser Nachtrag hält fest, was #256 (und #255) an diesem Plan ändert. Wo er einer
+früheren Stelle widerspricht, gilt der Nachtrag; die Spec bleibt die Vertragsquelle.
+
+**Festlegung Nr. 9 entfällt.** #256 Punkt 5 ist gelandet: die Maschine `idle → verifying → saved`
+liegt als `RecoveryFileGate` in `shared/seven-tv/recovery-file-gate.ts`, mit `initialRead`,
+`reload(target)`, `lastRead` und `verifyRead` eigens für den Undo-Dialog (Klassendoku dort). Spec
+11.3 „konsumieren, wenn extrahiert" greift. Der Undo-Dialog baut keine eigene Maschine.
+
+**Die Platzhalter aus 0.2, 0.5, 0.6 und 2.3 sind aufgelöst.** Registrierung im Konstruktor über
+`register` mit `kind`, `isRunning`, `isSettling`, `destructiveOpen`; Union `SevenTvRunKind`; Grund
+`activeClaim` mit Sorte und Phase; Notiz über `noteRefusedStart` und `refusedStart`, die die
+Nutzungsseite schon zeigt; Schutz-Signal `destructiveOpen`, Union und einziger `beforeunload` im
+Arbiter. Zwei Pflichten, die der Vertrag nicht nennt: der Dienst muss **root** sein (es gibt keine
+Abmeldung), und der Compiler verlangt einen Eintrag in `SEVEN_TV_RUN_KIND_LABEL_KEY` samt
+`sevenTvRun.kind.undo` in beiden Locales.
+
+**Der „Satz offener Läufe" aus T4 ist `SevenTvRunLifecycle`.** Import, Delete und Restore bauen
+darauf; `isSettling` und `destructiveOpen` sind dessen Projektionen. Der Undo-Dienst baut ebenfalls
+darauf, statt eine eigene Buchführung zu führen. Die Verweise in 0.2 auf modulprivate Funktionen
+des Imports sind teilweise veraltet: `applyIfCurrent` gibt es nicht mehr, an seine Stelle treten
+`update` und `patchRun` am Lifecycle.
+
+| Task | Änderung durch #256 / #255 | Was der Brief anders sagen muss |
+|---|---|---|
+| T1 | keine inhaltliche | typisierte Live-Reads brauchen `occupiedSlots` (#255) |
+| T2 | keine inhaltliche | dito |
+| T3 | Engine hat `showFinishedRows` und den `reset()`-Vorbehalt | Hook berührt beides nicht; `seven-tv-run-lifecycle.spec.ts` läuft als Regressionsschutz mit |
+| T4 | Lifecycle, Registrierung, Meldungs-Zeitrahmen, `reshow`, geänderte `resetIfChannelChanged`-Semantik, geteilter `channelMismatch` | Laufdatensatz erweitert den Lifecycle-Basistyp, `destructive` = mindestens eine `full`-Zeile nach der Herkunftssperre; Muster aus #256 T1/T2 übernehmen: `open` vor dem Engine-Start und Rücknahme bei Ablehnung, Klassifizierung vor dem Retry, Zeitrahmen je Meldungsversuch, Queue erst nach dem Lauf leeren, aus `closed` keine Phasenänderung, abgelösten Lauf bei gescheiterter Meldung wieder zeigen; `resetIfChannelChanged` löst nur einen geschlossenen Lauf, ein meldender folgt dem Kanalwechsel (Plan-256 Festlegung 13); Retry-Sperre über `isChannelMismatch`; REMOVE und ADD mit `transportLossIsUnknown`, ein Request in der Luft beim Abbruch ist `unknown` (Spec 4.4 Nr. 11) — der offene Fehler aus #275 darf nicht übernommen werden; Arbiter-Spec +3 gegen den Stub-Block bzw. die echten Dienste |
+| T5 | `RecoveryFileGate` statt eigener Maschine; `occupiedSlots` im Read | Gate mit dem Read des Flows als `initialRead`, „Ziel neu laden" über `reload`, Klassifikation aus `lastRead`, Sichern ohne zweiten Request über `verifyRead` aus dem gehaltenen Read, keine Drift-Prüfung im Gate. **Planidentität:** das Gate vergleicht Pläne per Identität — der effektive Plan ist ein `computed` ohne eigenen Gleichheitsvergleich und liest den Read **und** das Häkchen, sonst bleibt `saved` nach Neuladen oder Umschalten stehen (AK 6, K2). Slot-Belegung nach Neuladen aus dem Read wie im Import-Dialog. Der Dialog-Spec prüft die Verdrahtung, nicht die Maschine (das Gate hat eigene Fälle); die Zahl „≥ 18" darf sinken, wenn Maschinenfälle entfallen — im Bericht nennen |
+| T6 | Notiz-Mechanik des Arbiters; Arbiter-Stubs ohne `register` | Ablehnung über `noteRefusedStart('undo')` wie der Import-Flow, keine eigene Notiz; Specs mit Arbiter-Stub (z. B. `import-trigger.spec.ts`) brauchen einen Stub des Undo-Dienstes oder `register` am Stub; F10-Stellen sind verschoben — per Suche nach der Übertragungsdatei statt nach Zeilennummern |
+| T7 | Schließen erst bei `closed`; Partial-Texte am Panel; `untracked`-Block im Layout; `unknownRecordedIn` des Imports | Section bietet Schließen nur für einen geschlossenen Lauf; Panel-Familie braucht die Partial-Schlüssel neben den Failed-Schlüsseln; `resetIfChannelChanged` des Undo **innerhalb** des `untracked`-Blocks; `undo.summary.unknownRecordedIn` spiegelt Aufbau und Stelle des Import-Hinweises; keine eigene Notiz für abgewiesene Starts; Leave-Guard bleibt bei `isRunning` |
+| T8 | E2E-Bestand 194 Fälle; #256-Fälle zu Settling-Fenster und Unload-Schutz | die #256-Fälle sind das Muster für einen Undo-Fall „Start während der Undo settelt" und „Tab-Schutz bis zur zweiten Meldung" |
+| T9 | Baseline 404.08 kB | unverändert |
+
+**Nebenbefund, zu entscheiden vor Welle 2.** T5 macht den Live-Read um ein Pflichtfeld für die
+Animiertheit reicher (K1), während T4 parallel Specs mit typisierten Reads schreibt; T2 tut es
+davor. Nach dem Zusammenführen bräche die Typprüfung der Specs. Empfehlung: die Read-Erweiterung
+samt Fixture-Nachzug vor Welle 2 ziehen (an T2 oder als eigener kleiner Schritt), sodass T4 und T5
+auf dem erweiterten Typ bauen.
