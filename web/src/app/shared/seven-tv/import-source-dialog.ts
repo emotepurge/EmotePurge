@@ -38,7 +38,7 @@ export interface ImportSourceDialogData {
 }
 
 /**
- * What the dialog closes with on success. The two file outcomes are unchanged (`FileImportResult`);
+ * What the dialog closes with on success. The three file outcomes are `FileImportResult`'s own;
  * `'foreign'` is a foreign channel's set and `'leaderboard'` is 7TV's network-wide ranking.
  * `undefined` on cancel, Escape or a backdrop click, same as every other dialog in the app.
  */
