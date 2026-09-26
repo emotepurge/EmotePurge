@@ -12,6 +12,11 @@ import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.serv
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { PurgeRunRow, RestoreRow } from '../export/purge-run-export';
+import {
+  buildTransferUndoProtocol,
+  parseTransferUndoForRestore,
+  transferUndoJson,
+} from '../export/transfer-undo-export';
 import { RestoreConfirmDialogData } from './restore-confirm-dialog';
 import { ResolvedRestoreTarget, RestoreFlowDeps, startRestoreFlow } from './restore-flow';
 
@@ -75,6 +80,59 @@ function emoteSetEntriesPage(entries: { id: string; alias: string }[]) {
       },
     },
   };
+}
+
+/**
+ * The restore rows of the `finished` protocol of an undo (#254, E12): one `full` row that removed
+ * `src-1` (the replace's source, under `Kappa`) and tried to give `tgt-1` back under `Kappa`. `done`
+ * — the target came back; `failed` at its ADD — the source is gone and the target is not back.
+ * Read through the real parser, the way the file step reads such a file.
+ */
+function undoProtocolRows(outcome: 'done' | 'failedAtAdd'): RestoreRow[] {
+  const done = outcome === 'done';
+  const protocol = buildTransferUndoProtocol({
+    targetEmoteSetId: SET_ID,
+    targetChannelName: CHANNEL,
+    targetOwnerDisplayName: null,
+    sourceFile: {
+      stage: 'finished',
+      exportedAt: '2026-09-25T10:00:00.000Z',
+      verifiedAt: null,
+      finishedAt: '2026-09-25T10:00:00.000Z',
+      origin: null,
+    },
+    startedAt: 0,
+    finishedAt: 1,
+    acknowledgedUnproven: false,
+    executed: [
+      {
+        candidate: {
+          sourceSevenTvEmoteId: 'src-1',
+          sourceName: 'Kappa',
+          alias: 'Kappa',
+          fileStatus: 'done',
+          target: { sevenTvEmoteId: 'tgt-1', entries: [{ alias: 'Kappa' }], defaultName: null },
+          provenance: 'confirmed',
+        },
+        mode: 'full',
+        adds: [{ alias: 'Kappa' }],
+        omittedEntries: [],
+        notes: [],
+        status: done ? 'done' : 'failed',
+        failedStep: done ? null : 1,
+        completedSteps: done ? 2 : 1,
+        errorMessage: done ? null : 'emote alias already in use',
+        skippedReason: null,
+        sourceEntriesAtRemove: [{ alias: 'Kappa' }],
+      },
+    ],
+    skipped: [],
+  });
+  const parsed = parseTransferUndoForRestore(transferUndoJson(protocol));
+  if (!parsed.ok) {
+    throw new Error(`undo protocol fixture did not parse: ${parsed.errorKey}`);
+  }
+  return parsed.rows;
 }
 
 function duplicateCellRow(): PurgeRunRow {
@@ -355,6 +413,39 @@ describe('startRestoreFlow', () => {
 
   // #149/T5: restore never had any duplicate protection — these two pin the fix in from the flow
   // layer down (the filtering logic itself is `already-present-filter.spec.ts`'s job).
+  // #254 AK 20, E12: the undo's own protocol read back as a restore goes through the unchanged
+  // filter — after a successful undo the source's name belongs to the target again (rule 4), after
+  // an undo that removed the source but could not give the target back it re-adds exactly the source.
+  describe('restoring from a transfer-undo file (#254, AK 20)', () => {
+    it('sends nothing after a successful undo — the source’s name belongs to the restored target again', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: 'tgt-1', alias: 'Kappa' }])));
+
+      startRestoreFlow(deps, target(), undoProtocolRows('done'));
+
+      expect(dialogOpen).not.toHaveBeenCalled();
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      const [, queued, , , nameTaken] = startRestore.mock.calls[0];
+      expect(queued).toEqual([]);
+      expect(nameTaken).toBe(1);
+    });
+
+    it('re-adds exactly the source under its alias after an undo whose ADD failed — source gone, target not back', () => {
+      const { deps, dialogOpen, httpPost, startRestore } = setup();
+      httpPost.mockReturnValue(of(emoteSetEntriesPage([])));
+
+      startRestoreFlow(deps, target(), undoProtocolRows('failedAtAdd'));
+      firstClosed<boolean>(dialogOpen).next(true);
+
+      expect(startRestore).toHaveBeenCalledTimes(1);
+      const [, queued, skipped, available, nameTaken] = startRestore.mock.calls[0];
+      expect(queued).toEqual([
+        expect.objectContaining({ sevenTvEmoteId: 'src-1', name: 'Kappa', aliases: ['Kappa'] }),
+      ]);
+      expect([skipped, available, nameTaken]).toEqual([0, true, 0]);
+    });
+  });
+
   describe('duplicate protection (#149/T5)', () => {
     // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the check now also
     // runs once, fresh, before the confirmation opens (so its title/slot projection count what
