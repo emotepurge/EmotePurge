@@ -4712,16 +4712,23 @@ test.describe('replace undo (#254)', () => {
       options.afterApply?.(call, fake);
     };
 
-    /** 7TV's own refusal: an ADD under a name a different id already holds. */
+    /** 7TV's own refusal: an ADD under a name a different id already holds — as a named alias, or
+     *  (spec §18, undo-plan.ts's `aliaslessDefaultNameHolders`) as an aliasless entry whose default
+     *  name is that alias. */
     const nameConflict = (call: GqlCall): FakeAnswer | undefined => {
       if (call.kind !== 'addEmote') {
         return undefined;
       }
       const id = String(call.variables['emoteId']);
-      const alias = call.variables['alias'];
-      const taken = [...state].some(
-        ([holder, aliases]) => holder !== id && aliases.includes(alias as string),
-      );
+      const alias = call.variables['alias'] as string;
+      const taken = [...state].some(([holder, aliases]) => {
+        if (holder === id) {
+          return false;
+        }
+        return (
+          aliases.includes(alias) || (aliases.includes(null) && defaultNames.get(holder) === alias)
+        );
+      });
       return taken ? { reject: 409 } : undefined;
     };
 

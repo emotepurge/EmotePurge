@@ -215,6 +215,13 @@ interface ReadIndex {
   /** Reverse of `aliasesById`: every id that holds a name as an alias (`held(name)`, spec 4.3) —
    *  more than one when 7TV's set merging left the same alias on two emotes. */
   holdersByName: Map<string, Set<string>>;
+  /** Reverse of `defaultNameById`, restricted to ids with an aliasless entry (`aliaslessIds`): 7TV
+   *  shows such an entry under its own default name (MEMORY "7TV legt keine aliaslosen Einträge
+   *  mehr an — ADD ohne Alias landet unter Standardnamen"), so that name is occupied in the set's
+   *  naming space exactly as if it were an alias, even though no `aliasesById` entry records it.
+   *  Folded into `held(name)` by {@link targetFindings}, which excludes the row's own source and
+   *  target ids — not this map, which knows nothing about which row is asking. */
+  aliaslessDefaultNameHolders: Map<string, Set<string>>;
 }
 
 /** One candidate's classification plus its step-4 count, which the plan totals. */
@@ -533,6 +540,7 @@ function sourcePart(
 function targetFindings(candidate: UndoCandidate, index: ReadIndex): TargetFindings {
   const { read } = index;
   const target = candidate.target.sevenTvEmoteId;
+  const source = candidate.sourceSevenTvEmoteId;
   const normalized = normalizeTargetEntries(candidate.target);
   const hasForeignEntry =
     (read.aliasesById.get(target) ?? []).some((alias) => !normalized.names.includes(alias)) ||
@@ -545,16 +553,33 @@ function targetFindings(candidate: UndoCandidate, index: ReadIndex): TargetFindi
     taken: [],
   };
   for (const name of normalized.names) {
-    const holders = index.holdersByName.get(name) ?? new Set<string>();
     if (isPresentOnTarget(name, candidate, normalized, index)) {
       findings.alreadyPresent += 1;
-    } else if ([...holders].every((id) => id === candidate.sourceSevenTvEmoteId)) {
+    } else if (heldBy(name, index, source, target).size === 0) {
       findings.adds.push({ alias: name });
     } else {
       findings.taken.push({ alias: name, reason: 'targetNameTaken' });
     }
   }
   return findings;
+}
+
+/**
+ * Every id that holds `name`, `source` and `target` themselves excluded: `source` is freed by its
+ * own REMOVE (E6), and `target`'s own aliasless entry is `isPresentOnTarget`'s or `hasForeignEntry`'s
+ * business, not this one's. A holder is either a live alias (`holdersByName`) or — for any *other*
+ * id — an aliasless entry whose default name is `name` (`aliaslessDefaultNameHolders`, spec §18): a
+ * name 7TV would show a bare emote under is occupied for the purposes of this table exactly as if it
+ * were an alias, even though no `aliasesById` entry records it.
+ */
+function heldBy(name: string, index: ReadIndex, source: string, target: string): Set<string> {
+  const holders = new Set(index.holdersByName.get(name) ?? []);
+  for (const id of index.aliaslessDefaultNameHolders.get(name) ?? []) {
+    holders.add(id);
+  }
+  holders.delete(source);
+  holders.delete(target);
+  return holders;
 }
 
 /** Spec 4.3 step 4 for one name of `N`. */
@@ -586,7 +611,19 @@ function indexRead(read: SevenTvSetEntries): ReadIndex {
       holdersByName.set(alias, holders);
     }
   }
-  return { read, holdersByName };
+  const aliaslessDefaultNameHolders = new Map<string, Set<string>>();
+  for (const id of read.aliaslessIds) {
+    // An empty default name (7TV's own fallback, `SevenTvSetEntries.defaultNameById`'s doc) names
+    // nothing an ADD could collide with.
+    const name = read.defaultNameById.get(id);
+    if (name === undefined || name.length === 0) {
+      continue;
+    }
+    const holders = aliaslessDefaultNameHolders.get(name) ?? new Set<string>();
+    holders.add(id);
+    aliaslessDefaultNameHolders.set(name, holders);
+  }
+  return { read, holdersByName, aliaslessDefaultNameHolders };
 }
 
 function assertCompleteRead(read: SevenTvSetEntries, caller: string): void {

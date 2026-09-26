@@ -45,8 +45,11 @@ function candidate(
 
 /** A complete read holding exactly `entries`; `alias: null` is an aliasless entry. Every id's live
  *  `defaultNameById` is deliberately a value no case expects, so any case that would pass only by
- *  reading it (E21 forbids that) fails. */
-function read(entries: { id: string; alias: string | null }[]): SevenTvSetEntries {
+ *  reading it (E21 forbids that) fails — unless the entry names its own `defaultName`, for a case
+ *  that means to test the live default name itself (the aliasless-holder rule, spec §18). */
+function read(
+  entries: { id: string; alias: string | null; defaultName?: string }[],
+): SevenTvSetEntries {
   const aliasesById = new Map<string, string[]>();
   const aliaslessIds = new Set<string>();
   const defaultNameById = new Map<string, string>();
@@ -58,7 +61,7 @@ function read(entries: { id: string; alias: string | null }[]): SevenTvSetEntrie
       aliases.push(entry.alias);
     }
     aliasesById.set(entry.id, aliases);
-    defaultNameById.set(entry.id, `LIVE-DEFAULT-${entry.id}`);
+    defaultNameById.set(entry.id, entry.defaultName ?? `LIVE-DEFAULT-${entry.id}`);
   }
   return {
     aliasesById,
@@ -538,6 +541,34 @@ describe('classifyUndoRows — step 5, whether the name is free', () => {
 
     expect(row.adds).toEqual([{ alias: 'A' }]);
     expect(row.omittedEntries).toEqual([{ alias: 'D', reason: 'targetNameTaken' }]);
+  });
+
+  it('step 5: a third id’s aliasless entry occupies its live default name, skipping a full row as targetNameTaken (spec §18)', () => {
+    const skipped = onlySkipped(
+      classifyUndoRows(
+        [candidate({ target: { entries: [{ alias: 'A' }, { alias: 'B' }] } })],
+        read([
+          { id: S, alias: 'A' },
+          { id: THIRD, alias: null, defaultName: 'B' },
+        ]),
+      ),
+    );
+
+    expect(skipped.reason).toBe('targetNameTaken');
+    expect(skipped.omittedEntries).toEqual([{ alias: 'B', reason: 'targetNameTaken' }]);
+  });
+
+  it('step 5: a third id’s aliasless entry omits just that entry from an addOnly row (spec §18)', () => {
+    const row = onlyRow(
+      classifyUndoRows(
+        [candidate({ target: { entries: [{ alias: 'A' }, { alias: 'B' }] } })],
+        read([{ id: THIRD, alias: null, defaultName: 'B' }]),
+      ),
+    );
+
+    expect(row.mode).toBe('addOnly');
+    expect(row.adds).toEqual([{ alias: 'A' }]);
+    expect(row.omittedEntries).toEqual([{ alias: 'B', reason: 'targetNameTaken' }]);
   });
 });
 
