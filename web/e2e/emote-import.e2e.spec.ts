@@ -2708,6 +2708,9 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
     await page.addInitScript(() => {
       window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
     });
+    // #255: the confirmation's own open-time duplicate check now reads the target set's live
+    // entries before it ever opens — empty here, so nothing about the row it shows is filtered.
+    await mockSevenTvGql(page, () => sevenTvSetReadPayload([]));
     // The file step checks the set the protocol names against the target list (spec #253, 4.2) —
     // here the channel's own, non-active Halloween set, editable.
     await mockEmoteSetTargets(page, [
@@ -2966,7 +2969,11 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await page.clock.runFor(5000);
-    await expect(page.getByText('3 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    // The adopt (Pog) renames an existing target entry rather than copying one in, so it no longer
+    // counts as "kopiert" (spec #255) — the replace and the rename-under-KEKWv2 are the 2 copies.
+    await expect(
+      page.getByText('2 kopiert · 1 umbenannt · 0 fehlgeschlagen · 0 abgebrochen'),
+    ).toBeVisible();
 
     // buildTransferPlan groups rows replace-then-adopt-then-add-then-rename (never source order,
     // `transfer-plan.ts`'s own doc) — with no untouched `add` row here the mutations run REMOVE,
@@ -3545,12 +3552,19 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
       buffer: Buffer.from(finishedProtocolText, 'utf-8'),
     });
 
+    // #255: the confirmation's own open-time duplicate check (`loadRestoreConfirmPreview`) is a
+    // third `setRead` here, past the two the transfer run above already spent — so it, too, lands
+    // on `postRunTarget`, the same state the confirm-time re-check below still sees. CatJAM's row
+    // (target-a) is dropped before the dialog ever opens: target-a itself is gone, but 7tv-1 now
+    // holds the name 'CatJAM', so the row is skipped as name-taken (rule 4) rather than restored.
+    // KEKW's row (target-b) is genuinely missing, so it survives. The dialog therefore opens
+    // already counting and naming only the one row that will actually be sent.
     const restoreConfirm = page.getByRole('dialog');
     await expect(restoreConfirm.locator('#app-dialog-title')).toHaveText(
-      '2 Emotes wieder zum Set hinzufügen?',
+      '1 Emote wieder zum Set hinzufügen?',
     );
-    await expect(restoreConfirm.locator('app-name-preview-list')).toContainText('CatJAM');
     await expect(restoreConfirm.locator('app-name-preview-list')).toContainText('KEKW');
+    await expect(restoreConfirm.locator('app-name-preview-list')).not.toContainText('CatJAM');
     await restoreConfirm.getByRole('button', { name: 'Wiederherstellen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
@@ -4077,6 +4091,9 @@ test.describe('restore per set: the file names the target (#253)', () => {
     await page.addInitScript(() => {
       window.sessionStorage.setItem('ep_7tv_write_token', 'e2e-fake-write-token');
     });
+    // #255: the confirmation's own open-time duplicate check reads the target set's live entries
+    // before it ever opens — empty here, so the row it shows is unfiltered.
+    await mockSevenTvGql(page, () => sevenTvSetReadPayload([]));
     const sevenTvRequests: string[] = [];
     page.on('request', (request) => {
       if (request.url().startsWith('https://7tv.io/')) {
@@ -4133,9 +4150,10 @@ test.describe('restore per set: the file names the target (#253)', () => {
     await expect(confirm.getByText('Dieses Set ist gerade nicht aktiv.')).toBeVisible();
     await expect(confirm.getByText('Diese Ansicht zeigt von diesem Lauf nichts.')).toBeVisible();
 
-    // A cancelled confirmation writes nothing.
+    // A cancelled confirmation writes nothing — the only 7TV traffic is the read-only open-time
+    // duplicate check (#255), never an `addEmote` mutation.
     await confirm.getByRole('button', { name: 'Abbrechen' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    expect(sevenTvRequests).toEqual([]);
+    expect(sevenTvRequests).toEqual(['https://7tv.io/v4/gql']);
   });
 });

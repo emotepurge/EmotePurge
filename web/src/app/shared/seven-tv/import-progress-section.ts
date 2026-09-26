@@ -5,6 +5,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
+import { isChannelMismatch } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
 import { ExportDialogData, FORMAT_EXPORT_OPTIONS, openExportDialog } from '../export/export-dialog';
 import { JSON_MIME } from '../export/export-envelope';
@@ -20,6 +21,7 @@ import { NoticeBanner } from '../ui/notice-banner';
 import {
   copiedNotActiveNotice,
   importTargetCheckBlockedKey,
+  renamedNotActiveNotice,
   resyncNoticeKey,
 } from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
@@ -122,6 +124,7 @@ import { RunProgressPanel } from './run-progress-panel';
             [items]="importService.items()"
             [isRunning]="importService.isRunning()"
             labelPrefix="import"
+            [renamedCount]="importService.doneAdoptCount()"
             [syncReport]="importService.syncReport()"
             [rateLimitPauseSeconds]="importService.rateLimitPauseSeconds()"
             [dismissible]="run.settlement === 'settled'"
@@ -170,17 +173,16 @@ import { RunProgressPanel } from './run-progress-panel';
               ) {
                 <app-notice-banner variant="warning">
                   <span class="flex flex-col gap-1">
-                    <span class="font-medium">{{
-                      'import.removalSyncFailedTitle' | transloco
-                    }}</span>
-                    <span>{{ 'import.removalSyncFailed' | transloco }}</span>
+                    <span class="font-medium">{{ removalSyncTitleKey() | transloco }}</span>
+                    <span>{{ removalSyncTextKey() | transloco }}</span>
                     <!-- Why the removal report failed or fell short (spec E23). -->
                     @if (importService.removalReportReason(); as reason) {
                       <span>{{ 'syncReportReason.' + reason | transloco }}</span>
                     }
                   </span>
-                  <!-- No retry for a channel mismatch (addendum N4), as in RunProgressPanel. -->
-                  @if (importService.removalReportReason() !== 'channelMismatch') {
+                  <!-- No retry for either channel-mismatch reason (addendum N4), as in
+                       RunProgressPanel. -->
+                  @if (!removalReportIsChannelMismatch()) {
                     <button
                       notice-action
                       type="button"
@@ -199,13 +201,20 @@ import { RunProgressPanel } from './run-progress-panel';
                 </span>
               }
               <!-- A tracked *non*-active target never gets the resync notice (onRunComplete skips
-                   the resync itself, finding 3, Live-Verifikation K2 2026-09-21) — this notice takes
-                   its place, naming what actually happened instead of claiming a channel-page update
-                   that never comes. aria-hidden for the same reason as the duplicate notices above,
-                   and as the resync notice it replaces. -->
+                   the resync itself, finding 3, Live-Verifikation K2 2026-09-21) — one of the next
+                   two notices takes its place, naming what actually happened instead of claiming a
+                   channel-page update that never comes. Split in two since #255 P2-2: "kopiert"
+                   only when at least one done row actually added something, "umbenannt" for a run
+                   whose done rows are exclusively renames-in-place, and neither when nothing at all
+                   succeeded. aria-hidden for the same reason as the duplicate notices above, and as
+                   the resync notice they replace. -->
               @if (copiedNotActiveNotice(); as notActive) {
                 <span aria-hidden="true" class="text-xs text-fg-muted">
                   {{ 'import.summary.copiedNotActive' | transloco: notActive }}
+                </span>
+              } @else if (renamedNotActiveNotice(); as notActive) {
+                <span aria-hidden="true" class="text-xs text-fg-muted">
+                  {{ 'import.summary.renamedNotActive' | transloco: notActive }}
                 </span>
               } @else if (resyncNoticeKey(); as noticeKey) {
                 <span aria-hidden="true" class="text-xs text-fg-muted">
@@ -280,6 +289,29 @@ export class ImportProgressSection {
     pluralKey(this.importService.run()?.unknownCount ?? 0, 'import.summary.unknownRows'),
   );
 
+  /** The removal report's title/text key — `.removalSyncPartialTitle`/`.removalSyncPartial` while
+   *  `removalReport` is `'partial'` (recorded, just not fully — #255), the plain
+   *  `.removalSyncFailedTitle`/`.removalSyncFailed` for `'failed'`. Same split as
+   *  `RunProgressPanel`'s own `syncReportTitleKey`/`syncReportTextKey`, duplicated rather than
+   *  shared because this notice is not routed through that component (doc comment above the
+   *  block that reads these). */
+  protected readonly removalSyncTitleKey = computed(() =>
+    this.importService.removalReport() === 'partial'
+      ? 'import.removalSyncPartialTitle'
+      : 'import.removalSyncFailedTitle',
+  );
+  protected readonly removalSyncTextKey = computed(() =>
+    this.importService.removalReport() === 'partial'
+      ? 'import.removalSyncPartial'
+      : 'import.removalSyncFailed',
+  );
+
+  /** Whether the removal report's reason is either channel-mismatch variant (addendum N4) — gates
+   *  the retry button, same rule as `RunProgressPanel.syncRetryOffered`. */
+  protected readonly removalReportIsChannelMismatch = computed(() =>
+    isChannelMismatch(this.importService.removalReportReason()),
+  );
+
   /** Same key the page's DockOutcomeAnnouncer speaks — see `resyncNoticeKey`. */
   protected readonly resyncNoticeKey = computed(() =>
     resyncNoticeKey(this.importService.resyncTrigger(), 'import'),
@@ -288,6 +320,11 @@ export class ImportProgressSection {
   /** Same params the page's DockOutcomeAnnouncer speaks — see `copiedNotActiveNotice`. */
   protected readonly copiedNotActiveNotice = computed(() =>
     copiedNotActiveNotice(this.importService.run()),
+  );
+
+  /** Same params the page's DockOutcomeAnnouncer speaks — see `renamedNotActiveNotice`. */
+  protected readonly renamedNotActiveNotice = computed(() =>
+    renamedNotActiveNotice(this.importService.run()),
   );
 
   /** The `finished`-stage transfer-run protocol — offered after every settled run, mirroring

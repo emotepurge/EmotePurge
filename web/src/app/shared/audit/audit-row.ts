@@ -1,5 +1,6 @@
 import { ACTION_KEYS, DETAIL_KEYS, TARGET_EMOTE_SET_KEYS } from './audit-actions';
 import { AuditLogDetail, AuditLogEntry } from '../../core/audit/audit.model';
+import { pluralKey } from '../../core/i18n/plural';
 import {
   LEADERBOARD_SORT_LABEL_KEYS,
   isLeaderboardSort,
@@ -85,13 +86,18 @@ export function toAuditRows(
  * than the backend that wrote the row — drops the whole detail, same as an unrecognized `kind`
  * below: a missing-key placeholder or the bare code would be worse than the row simply keeping its
  * action and actor.
+ *
+ * Five of the six `DETAIL_KEYS` carry a `count` (every one but `title`) — routed through
+ * `pluralKey` here rather than baked into `DETAIL_KEYS` itself, because the lookup table stays a
+ * plain kind-to-key map and the `.one`/`.other` suffixing is this function's business alone, same
+ * as everywhere else in the app that calls `pluralKey`.
  */
 function renderDetail(
   detail: AuditLogDetail | null,
   translate: (key: string) => string,
 ): RenderedDetail | null {
-  const key = detail && DETAIL_KEYS[detail.kind];
-  if (!detail || !key) {
+  const baseKey = detail && DETAIL_KEYS[detail.kind];
+  if (!detail || !baseKey) {
     return null;
   }
 
@@ -109,6 +115,7 @@ function renderDetail(
     params['title'] = detail.text;
   }
 
+  const key = detail.count === null ? baseKey : pluralKey(detail.count, baseKey);
   return { key, params };
 }
 

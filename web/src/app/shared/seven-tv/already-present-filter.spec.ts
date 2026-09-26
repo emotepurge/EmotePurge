@@ -10,6 +10,8 @@ import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import {
   filterAlreadyPresent,
   filterAlreadyPresentForRestore,
+  loadRestoreConfirmPreview,
+  restoreConfirmPreviewUnavailable,
   stampReplaceTargets,
   verifyReplaceTargets,
 } from './already-present-filter';
@@ -192,6 +194,7 @@ describe('filterAlreadyPresent', () => {
           ['7tv-1', ''],
           ['7tv-999', ''],
         ]),
+        occupiedSlots: 2,
         complete: true,
       },
     });
@@ -324,6 +327,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 0,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -338,7 +342,7 @@ describe('filterAlreadyPresentForRestore', () => {
           { id: '7tv-1', alias: 'B' },
         ],
       ),
-    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true });
+    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true, complete: true });
   });
 
   // The partial retry the id-only check made impossible: A came back, B failed — re-running the
@@ -351,6 +355,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 1,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -364,6 +369,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 2,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -378,7 +384,7 @@ describe('filterAlreadyPresentForRestore', () => {
           { id: '7tv-1', alias: 'C' },
         ],
       ),
-    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true });
+    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true, complete: true });
   });
 
   it('reads a row without aliases as [name], like the restore queue does', async () => {
@@ -393,7 +399,7 @@ describe('filterAlreadyPresentForRestore', () => {
           { id: '7tv-2', alias: 'NotB' },
         ],
       ),
-    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true });
+    ).toEqual({ rows: [], skipped: 2, skippedNameTaken: 0, available: true, complete: true });
   });
 
   it('compares aliases exactly, so a case-only difference counts as a foreign alias', async () => {
@@ -404,6 +410,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 1,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -413,7 +420,13 @@ describe('filterAlreadyPresentForRestore', () => {
     const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', rows));
     httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('network error'));
 
-    expect(await result$).toEqual({ rows, skipped: 0, skippedNameTaken: 0, available: false });
+    expect(await result$).toEqual({
+      rows,
+      skipped: 0,
+      skippedNameTaken: 0,
+      available: false,
+      complete: false,
+    });
   });
 
   // K5 fix round, spec §37/§38: an aliasless 7TV entry occupies a slot the row can never name, so
@@ -427,6 +440,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 1,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -438,6 +452,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 1,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -455,6 +470,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 2,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -468,6 +484,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 0,
       skippedNameTaken: 1,
       available: true,
+      complete: true,
     });
   });
 
@@ -482,7 +499,7 @@ describe('filterAlreadyPresentForRestore', () => {
           { id: '7tv-third', alias: 'B' },
         ],
       ),
-    ).toEqual({ rows: [], skipped: 0, skippedNameTaken: 2, available: true });
+    ).toEqual({ rows: [], skipped: 0, skippedNameTaken: 2, available: true, complete: true });
   });
 
   // The "replace target succeeded" case of a transfer-run file: the source emote holds the target's
@@ -509,6 +526,7 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 1,
       skippedNameTaken: 2,
       available: true,
+      complete: true,
     });
     const sent = result.rows.reduce((sum, row) => sum + (row.aliases?.length ?? 1), 0);
     const input = rows.reduce((sum, row) => sum + (row.aliases?.length ?? 1), 0);
@@ -530,12 +548,14 @@ describe('filterAlreadyPresentForRestore', () => {
       skipped: 1,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
     expect(await run([transferRow], [{ id: '7tv-1' }])).toEqual({
       rows: [{ ...transferRow, aliases: ['PogU'] }],
       skipped: 1,
       skippedNameTaken: 0,
       available: true,
+      complete: true,
     });
   });
 
@@ -543,7 +563,10 @@ describe('filterAlreadyPresentForRestore', () => {
   // here — the per-alias comparison still applies to whatever the (partial) read did see, which
   // skips strictly more genuine duplicates than discarding the read entirely would. Restore only
   // fails open on an actual fetch/GraphQL error (see the test above), never on an incomplete one.
-  it('still filters against a read that hit the runaway guard, rather than failing the whole check open', async () => {
+  // #255 P2, Codex review: `complete: false` is still surfaced on the result even though filtering
+  // does not change because of it — a caller that turns this into an exact-sounding count needs to
+  // tell "verified against the whole set" apart from "verified against only part of it".
+  it('still filters against a read that hit the runaway guard, rather than failing the whole check open, but reports the result as incomplete', async () => {
     const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A'] };
     const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', [row]));
 
@@ -576,7 +599,172 @@ describe('filterAlreadyPresentForRestore', () => {
 
     // The row's own id was seen (and matched) on the very first, well within-guard page — the
     // truncation happened later, for ids this row never needed to know about.
-    expect(await result$).toEqual({ rows: [], skipped: 1, skippedNameTaken: 0, available: true });
+    expect(await result$).toEqual({
+      rows: [],
+      skipped: 1,
+      skippedNameTaken: 0,
+      available: true,
+      complete: false,
+    });
+  });
+});
+
+// Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the restore
+// confirmation's own numbers, derived over `filterAlreadyPresentForRestore`'s result rather than
+// each call site re-deriving them.
+describe('loadRestoreConfirmPreview', () => {
+  let httpClient: HttpClient;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    httpClient = TestBed.inject(HttpClient);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  async function run(rows: RestoreRow[], entries: { id: string; alias?: string }[]) {
+    const result$ = firstValueFrom(loadRestoreConfirmPreview(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).flush(entriesPage(entries));
+    return result$;
+  }
+
+  it('names and counts every row when nothing in the target set collides', async () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa', 'KappaAlt'] },
+    ];
+
+    const result = await run(rows, []);
+
+    expect(result.names).toEqual(['PogU', 'Kappa']);
+    // spec #200, 7.2: ADDs, one per alias — Kappa's duplicate cell counts as two.
+    expect(result.addCount).toBe(3);
+    expect(result.available).toBe(true);
+  });
+
+  it('drops an already-present row from both names and addCount, not only from rows', async () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] },
+    ];
+
+    const result = await run(rows, [{ id: '7tv-1', alias: 'PogU' }]);
+
+    expect(result.names).toEqual(['Kappa']);
+    expect(result.addCount).toBe(1);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('counts only the surviving aliases of a partially-present duplicate cell', async () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'Kappa', aliases: ['Kappa', 'KappaAlt'] },
+    ];
+
+    const result = await run(rows, [{ id: '7tv-1', alias: 'Kappa' }]);
+
+    expect(result.names).toEqual(['Kappa']);
+    expect(result.addCount).toBe(1);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('reports every row unfiltered, with available false, when the read fails', async () => {
+    const rows: RestoreRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }];
+
+    const result$ = firstValueFrom(loadRestoreConfirmPreview(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).error(new ProgressEvent('error'));
+    const result = await result$;
+
+    expect(result.names).toEqual(['PogU']);
+    expect(result.addCount).toBe(1);
+    expect(result.available).toBe(false);
+  });
+
+  it('reports an empty preview once every row is filtered out', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] };
+
+    const result = await run([row], [{ id: '7tv-1', alias: 'PogU' }]);
+
+    expect(result.rows).toEqual([]);
+    expect(result.names).toEqual([]);
+    expect(result.addCount).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.available).toBe(true);
+  });
+
+  // #255 P2, Codex review: a read that stopped at the runaway guard or a `totalCount` mismatch
+  // still filters the rows it did see — `names`/`addCount` are not thrown away — but reports
+  // `complete: false` so a caller (the restore confirmation dialogs) can hedge the wording instead
+  // of claiming an exact number a partial read never verified.
+  it('still names and counts the surviving rows, but reports complete: false, when the read is truncated', async () => {
+    const rows: RestoreRow[] = [{ sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }];
+    const result$ = firstValueFrom(loadRestoreConfirmPreview(httpClient, 'target-set', rows));
+
+    // Single page, but `totalCount` claims more than this page delivered — the K5 mismatch guard,
+    // not the 10-page runaway one, but the same `complete: false` outcome.
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 2,
+              pageCount: 1,
+              items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+            },
+          },
+        },
+      },
+    });
+    const result = await result$;
+
+    expect(result.available).toBe(true);
+    expect(result.complete).toBe(false);
+    expect(result.names).toEqual(['Kappa']);
+    expect(result.addCount).toBe(1);
+    expect(result.skipped).toBe(0);
+  });
+});
+
+// #255 P2a: the "could not verify" shape a caller builds by hand when its own wrapping `timeout`
+// fires before `loadRestoreConfirmPreview`'s read does — a timeout error lands outside that
+// function's own `catchError`, so nothing inside it ever gets a chance to build this.
+describe('restoreConfirmPreviewUnavailable', () => {
+  it('passes every row through unfiltered, names and counts them all, and reports the check as unavailable', () => {
+    const rows: RestoreRow[] = [
+      { sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+      { sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa', 'KappaAlt'] },
+    ];
+
+    const result = restoreConfirmPreviewUnavailable(rows);
+
+    expect(result.rows).toEqual(rows);
+    expect(result.names).toEqual(['PogU', 'Kappa']);
+    // ADDs, one per alias — same accounting as `loadRestoreConfirmPreview`'s successful path.
+    expect(result.addCount).toBe(3);
+    expect(result.skipped).toBe(0);
+    expect(result.skippedNameTaken).toBe(0);
+    expect(result.available).toBe(false);
+    expect(result.complete).toBe(false);
+  });
+
+  it('returns a defensive copy of rows, not the same array reference', () => {
+    const rows: RestoreRow[] = [{ sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] }];
+
+    expect(restoreConfirmPreviewUnavailable(rows).rows).not.toBe(rows);
+  });
+
+  it('counts a bare row (no aliases) as one ADD under its own name, like the successful path does', () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'PogU' };
+
+    const result = restoreConfirmPreviewUnavailable([row]);
+
+    expect(result.names).toEqual(['PogU']);
+    expect(result.addCount).toBe(1);
   });
 });
 
@@ -593,7 +781,13 @@ function setEntries(entries: { id: string; alias: string | null }[]): SevenTvSet
     }
     aliasesById.set(entry.id, aliases);
   }
-  return { aliasesById, aliaslessIds, defaultNameById: new Map(), complete: true };
+  return {
+    aliasesById,
+    aliaslessIds,
+    defaultNameById: new Map(),
+    occupiedSlots: entries.length,
+    complete: true,
+  };
 }
 
 const SOURCE: ImportRow = { sevenTvEmoteId: 'src-1', name: 'Kappa', imageUrl: null };

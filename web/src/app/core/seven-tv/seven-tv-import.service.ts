@@ -33,6 +33,7 @@ import {
   TargetCheckBlockReason,
   classifySyncInSetFailure,
   classifySyncInSetResponse,
+  isChannelMismatch,
 } from './sync-report-outcome';
 import { TransferPlan, TransferRow } from './transfer-plan';
 
@@ -265,6 +266,16 @@ export class SevenTvImportService {
     }
     return this.run()?.result?.items ?? [];
   });
+
+  /** How many of `items()` are a `done` adopt — an existing target entry renamed in place rather
+   *  than a new one added. What `RunProgressPanel.renamedCount` (spec #255) splits out of the
+   *  dock's "N kopiert" into its own "M umbenannt". */
+  readonly doneAdoptCount = computed(
+    () =>
+      this.items().filter(
+        (item) => item.status === 'done' && item.transfer.action === 'adoptSourceName',
+      ).length,
+  );
 
   /** True while a run that deletes (its plan has a `replace` row) is in flight *or* still waiting
    *  for its re-read — what a `beforeunload` guard hangs off. The pending window counts: until the
@@ -513,13 +524,14 @@ export class SevenTvImportService {
   }
 
   /** Manual retry for the removal report — same rules as `retrySyncReport`, same record, and none
-   *  for a channel mismatch (addendum N4, AK 40): it is recorded and its resync already runs, so a
-   *  retry could only write the same mismatch again. */
+   *  for either channel-mismatch reason (addendum N4, AK 40): it is recorded and, for
+   *  activeSetDiffers, its resync already runs, so a retry could only write the same mismatch
+   *  again. */
   retryRemovalReport(): void {
     const current = this.run();
     if (
       this.removalReport() === 'pending' ||
-      this.removalReportReason() === 'channelMismatch' ||
+      isChannelMismatch(this.removalReportReason()) ||
       current?.settlement !== 'settled' ||
       removedTargetIds(current).length === 0
     ) {

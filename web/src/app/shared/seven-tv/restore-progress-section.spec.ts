@@ -38,6 +38,9 @@ const DE_TRANSLATIONS = {
     syncFailedTitle: 'Rückmeldung an EmotePurge fehlgeschlagen',
     syncFailed:
       'Die Emotes sind bei 7TV wiederhergestellt, aber EmotePurge konnte es nicht vermerken.',
+    syncPartialTitle: 'Rückmeldung an EmotePurge unvollständig',
+    syncPartial:
+      'Die Emotes sind bei 7TV wiederhergestellt und bei EmotePurge vermerkt — aber nicht vollständig.',
     syncRetry: 'Erneut melden',
     syncRetrySucceeded: 'Rückmeldung erfolgreich.',
     summary: {
@@ -61,7 +64,9 @@ const DE_TRANSLATIONS = {
     forbidden: 'Grund: Dein Konto darf dieses Set laut 7TV nicht mehr bearbeiten.',
     setNotFound: 'Grund: Das Set gibt es bei 7TV nicht mehr.',
     unavailable: 'Grund: EmotePurge oder 7TV war gerade nicht erreichbar.',
-    channelMismatch:
+    channelMismatchNotTracked:
+      'Grund: Der erwartete Kanal ist bei EmotePurge gerade nicht getrackt.',
+    channelMismatchActiveSetDiffers:
       'Grund: Der erwartete Kanal nutzt dieses Set laut EmotePurge gerade nicht als aktives Set.',
     shortfall: 'Grund: Nicht alle Emotes waren in EmotePurge vermerkt.',
     other: 'Grund: Unerwarteter Fehler.',

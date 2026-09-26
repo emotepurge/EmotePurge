@@ -44,9 +44,21 @@ describe('audit action tables', () => {
     expect(lookup(en, key)).toBeTypeOf('string');
   });
 
-  it.each(Object.entries(DETAIL_KEYS))('translates the %s detail in both locales', (_kind, key) => {
-    expect(lookup(de, key)).toBeTypeOf('string');
-    expect(lookup(en, key)).toBeTypeOf('string');
+  // #255: every kind but `title` carries a count and is routed through `pluralKey`
+  // (`audit-row.ts`'s `renderDetail`), so its locale entry is a `{ one, other }` pair rather than
+  // a single string — `title` is the one kind that never gets a count and stays a plain string.
+  it.each(Object.entries(DETAIL_KEYS))('translates the %s detail in both locales', (kind, key) => {
+    if (kind === 'title') {
+      expect(lookup(de, key)).toBeTypeOf('string');
+      expect(lookup(en, key)).toBeTypeOf('string');
+      return;
+    }
+    for (const bundle of [de, en]) {
+      const entry = lookup(bundle, key);
+      expect(entry).toBeTypeOf('object');
+      expect((entry as { one: unknown }).one).toBeTypeOf('string');
+      expect((entry as { other: unknown }).other).toBeTypeOf('string');
+    }
   });
 
   it('covers every detail kind the server can send', () => {

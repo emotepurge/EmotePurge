@@ -10,6 +10,238 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-09-26 — The restore confirmation hedges its count on a truncated read too, not only a failed one
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts`
+(`RestoreAlreadyPresentFilterResult.complete`, `filterAlreadyPresentForRestore`,
+`restoreConfirmPreviewUnavailable`) · `web/src/app/shared/seven-tv/restore-flow.ts`
+(`startRestoreFlow`) · `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(`handleRestoreConfirmPreview`) · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+(`RestoreConfirmDialogData.countIsUpperBound` doc) · `already-present-filter.spec.ts` ·
+`restore-flow.spec.ts` · `mass-delete-panel.spec.ts`.
+
+Codex review finding (P2) on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change: both
+restore confirmations already hedge their title and slot projection as "up to N" when the open-time
+duplicate check's own 7TV read fails outright (`available: false`). But `loadSevenTvSetEntries` can
+also come back `available: true` with `complete: false` — the read succeeded, but stopped at the
+10-page runaway guard, or 7TV's own `totalCount` did not match what the pages actually delivered
+(`SevenTvSetEntries.complete`). `filterAlreadyPresentForRestore` deliberately keeps filtering
+against a truncated read rather than failing the whole check open (see its own doc — a partial read
+still catches every duplicate genuinely inside the pages it saw), but its `available: true` result
+used to discard that read's own completeness signal entirely. Both confirmations therefore showed an
+exact-looking ADD count and an exact-looking slot projection built from a read that had not actually
+seen the whole set — silently more confident than the check itself was.
+
+**What changed.** `RestoreAlreadyPresentFilterResult` gains a `complete` field, carrying
+`SevenTvSetEntries.complete` through from `filterAlreadyPresentForRestore`'s own read (`false` on a
+failed fetch, same as `available`). `RestoreConfirmPreview` inherits it via
+`loadRestoreConfirmPreview`, unchanged otherwise. Both call sites now compute
+`countIsUpperBound: !preview.available || !preview.complete` instead of `!preview.available` alone.
+Nothing about *what* gets filtered changes — the aliases found present or name-taken in the pages
+the read did see are still dropped exactly as before, and the confirmation still names and counts
+exactly those survivors; only the *wording* now also hedges when the read was merely partial, not
+only when it failed outright.
+
+---
+
+### 2026-09-26 — A restore's confirm-time recheck can only narrow the confirmation, never widen it
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts` (`clipToShown`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (`handleRestoreConfirmPreview`) ·
+`web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Codex review finding on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change
+(2026-09-25 entry below): that change made both restore entry points run
+`filterAlreadyPresentForRestore` once, fresh, right before the confirmation opens, so its title and
+slot projection count what the run will actually send. The confirm-time re-check that already ran
+afterward, right before `startRestore`, kept querying the *original*, unfiltered row set every
+time — correct for *narrowing* the set further (that is the whole reason it re-reads instead of
+reusing the open-time answer), but it left a hole for *widening* it back: a row, or one alias of a
+row, the open-time check had already found present — and which the confirmation dialog therefore
+never named or counted — could come back as "missing" at confirm time if the live entry disappeared
+from the target set in the window between the two reads (another editor, or the confirmation simply
+left open a while). It would then be sent as an `ADD` the user never saw or agreed to, silently
+invalidating the capacity number the dialog had already committed to.
+
+**What changed.** The confirm-time check still queries `filterAlreadyPresentForRestore` with every
+row's full, original alias context — it has to, to keep applying that function's rule 2 correctly
+(a row whose input aliases were pre-trimmed to only what survived the open-time filter would make an
+alias that lives under a different, correctly-still-missing name of the *same* row look "foreign",
+and drop the row outright — the #74 duplicate-cell partial retry this filter exists to support).
+Its result is intersected through the new `clipToShown(rows, shown)` against the open-time
+preview's own `rows` — id by id, then alias by alias for whichever ids survive that — before it
+ever reaches `startRestore`. A row whose id was filtered out entirely at open time is dropped even
+if the confirm-time read now calls it missing; a row that only partially survived keeps at most the
+aliases the open-time answer still named for it. The invariant this establishes, and the reason for
+the two-step shape (query full, then clip) rather than querying the already-narrowed set directly:
+**the confirm-time check can only narrow what the confirmation showed, never widen it.** The skip
+counters (`skippedDuplicates`/`skippedNameTaken`) are unaffected — they still come straight from the
+confirm-time check's own fresh count, exactly as before this fix.
+
+---
+
+### 2026-09-26 — The shared restore pre-check gate now releases on the caller's own teardown too
+
+**Betrifft:** `web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`'s `previewPending`
+read) · `web/src/app/shared/seven-tv/mass-delete-panel.ts` (`openRestoreConfirm`,
+`openRestoreConfirmDialog`) · `web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Second Codex review finding on the 2026-09-26 "share the restore pre-check gate across both entry
+points" fix: moving `previewPending`/`restoreConfirmPending` onto the shared, root-level
+`SevenTvRestoreService.restorePreCheckPending` closed the race between the two restore entry
+points, but it also raised the cost of a gap that fixing entry-local flags had made harmless before
+it — every read in the pre-check chain (`resolveEditableSet`, then the open-time duplicate check)
+released the flag only from its own `next`/`error` branches. `takeUntilDestroyed` unsubscribes on
+the caller's teardown (a route change, a closed panel) without ever calling either, so tearing down
+mid-read left the flag `true` for good. Before the flag was shared this only ever disabled a
+component that no longer existed; once it lives on the service, the same gap disabled *both* restore
+entries, on whichever page they next mounted, until a full reload.
+
+**What changed.** Every read in the chain now releases the flag through `finalize` on its own pipe
+rather than a manual `.set(false)` inside `next`/`error`, so teardown releases it exactly like a
+settled answer does. `mass-delete-panel.ts`'s `openRestoreConfirm` has two chained reads sharing one
+flag; its `resolveEditableSet` pipe's `finalize` skips the release when a local `handedOff` flag is
+`true` — set right before the second read (`openRestoreConfirmDialog`) starts — so the flag stays
+held across the handoff instead of flickering to `false` between the two reads. The
+already-documented behaviour of releasing the flag while a token prompt is open in between is
+unchanged: that exit still sets `handedOff` to `false`, so it still releases. `restore-flow.ts` has
+only the one read, so its `finalize` releases unconditionally, same as `openRestoreConfirmDialog`'s
+own single read in `mass-delete-panel.ts`.
+
+---
+
+### 2026-09-26 — `channelMismatch` splits into two reasons, and `partial` gets its own wording
+
+**Betrifft:** `web/src/app/core/seven-tv/sync-report-outcome.ts` (`SyncReportReason`,
+`isChannelMismatch`, `classifySyncInSetResponse`) ·
+`web/src/app/shared/seven-tv/run-progress-panel.ts` (`syncReportTitleKey`/`syncReportTextKey`,
+`syncRetryOffered`) · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.ts` ·
+`web/src/app/core/seven-tv/seven-tv-emote-set.model.ts` (`UnresolvedChannel` doc) ·
+`web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E18, E23, 4.4 Nr. 14, 6.4, N4,
+§18 addendum).
+
+Review finding on issue #255. `syncReportReason` used to fold both `UnresolvedChannel.reason`
+values (E18: `'notTracked'` — the expected channel is not currently tracked at all — and
+`'activeSetDiffers'` — it is tracked, but this set is not its active one right now) into one
+`'channelMismatch'` value, so the dock could never say *which* of the two applied, even though they
+call for different expectations (one never heals itself, the other heals over the resync that is
+already running for `activeSetDiffers`). `SyncReportReason` now carries
+`'channelMismatchNotTracked'`/`'channelMismatchActiveSetDiffers'` instead, and every producer
+(`classifySyncInSetResponse` in the shared `sync-report-outcome.ts`, used identically by the
+delete, import and restore services) and consumer picks the one that matches
+`UnresolvedChannel.reason`. `isChannelMismatch(reason)` folds both back into one boolean wherever a
+caller only needs "is this some channel-mismatch reason at all" — chiefly addendum N4's retry rule
+(`syncRetryOffered`, and the `retrySyncReport`/`retryRemovalReport` refusal in all three services),
+which treats both identically and would otherwise have had to enumerate them at every comparison
+site.
+
+Separately, but in the same commit because it touches the same notice: `partial` gets its own
+title and body text, distinct from `failed`. `RunProgressPanel.syncReportTitleKey`/
+`syncReportTextKey` (`labelPrefix() === 'restore' | 'massDelete'`) now switch on
+`syncReport() === 'partial'` to `.syncPartialTitle`/`.syncPartial` ("… recorded at EmotePurge — but
+not completely.") rather than reusing `.syncFailedTitle`/`.syncFailed` ("… reporting back to
+EmotePurge failed …"), which was simply wrong for a report that in fact went through, just not for
+every row. `import.syncPartialTitle`/`import.syncPartial` never had a way to be reached — the
+import's own `syncReport` (the sync-imported call) answers with a bodyless 204 and can never become
+`'partial'` — and are removed rather than kept dead; `import.removalSyncPartial*`, the unrelated
+pair for the *removal* report of a replace row's confirmed REMOVE (which can become `'partial'`),
+is untouched.
+
+---
+
+### 2026-09-26 — Adopts count as "renamed" in the dock, and a rename-only plan's button says "Align"
+
+**Betrifft:** `web/src/app/shared/seven-tv/run-progress-panel.ts` (`renamedCount` input,
+`summaryCountsKey`) · `web/src/app/shared/seven-tv/import-progress-section.ts` ·
+`web/src/app/core/seven-tv/seven-tv-import.service.ts` (`doneAdoptCount`) ·
+`web/src/app/shared/seven-tv/import-confirm-dialog.ts` (`executeLabelKey`, `titleIsRenameOnly`) ·
+`web/src/app/shared/seven-tv/dock-outcome-announcer.ts` (`copiedNotActiveNotice`,
+`renamedNotActiveNotice`) · `web/public/i18n/de.json` · `web/public/i18n/en.json`.
+
+Review findings on issue #255. An adopt (`adoptSourceName`) renames an existing target-set entry in
+place; it is not a copy. The dock's summary line used to count a `done` adopt the same as a `done`
+plain add ("N kopiert"), overstating what the run actually added — `RunProgressPanel` now accepts
+an optional `renamedCount` (fed from the import service's own `doneAdoptCount`, a count only the
+import run can ever produce) and splits it out of "kopiert" into its own "M umbenannt" segment,
+shown only once there is something to name. The same distinction reaches the two dock notices for a
+copy into a tracked but *not currently active* set (`copiedNotActiveNotice`): it now requires at
+least one `done` row that is not an adopt, and a rename-only outcome (every `done` row an adopt, at
+least one) gets its own `renamedNotActiveNotice` wording ("In Set '…' umbenannt — …") instead; a run
+where nothing at all succeeded gets neither.
+
+The confirm dialog's button follows the same distinction for a plan that is *exclusively* renames
+(`titleIsRenameOnly`, no `add`/`replace` row at all): "Kopieren" would misdescribe it exactly as
+"Hinzufügen läuft danach…" would, so both are replaced for that one case — the run notice with a
+sentence about renaming, and the button with a fourth word, "Angleichen"/"Align", matching the
+title it already used for this case (`import.confirm.titleAlign`, "N Namen im Zielset angleichen?").
+This corrects an earlier fix's own choice to reuse "Übertragen" for that button: the entry of
+2026-09-07 ("Ein Verb für die Übertragung", #92) reserves that verb for the header button/dock
+shortcut that opens the whole import flow (`import.copyButton`/`import.dockCopyButton`) — using it
+a second time, for a button inside the confirmation that flow leads to, would have reintroduced the
+exact ambiguity #92 exists to prevent (two controls, same word, in this case not even the same
+*step*). A plan that adds anything at all, mixed with adopts or not, keeps "Kopieren"/"Hinzufügen
+läuft danach…" unchanged — that wording is still literally true there.
+
+---
+
+### 2026-09-25 — A restore into a non-active target no longer triggers its own resync
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-restore.service.ts` (`resyncAfterReport`,
+`ResyncTriggerState` doc, `RestoreStartTarget`/`RestoreRunInfo` doc) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`restoreStartTarget` doc) ·
+`web/src/app/shared/seven-tv/restore-progress-section.ts` (doc only) ·
+`web/src/app/core/seven-tv/seven-tv-restore.service.spec.ts` ·
+`docs/superpowers/specs/2026-09-24-restore-pro-set-253-design.md` (E12, 6.4, §18 addendum).
+
+Part of task T1 of issue #255, itself a follow-up to the restore-per-set plan (#253). Before this,
+a restore into a **non-active** set of a tracked channel made the client trigger its own resync of
+that channel once the closing `sync-restored` report answered (the former E12 in the design doc,
+`resyncAfterReport` reading `resyncChannelName`) — the one case no backend resync covered, because
+the backend only resyncs a channel's active set. The reasoning at the time was that this at least
+reloaded *something*, but it never reloaded the *right* thing: a channel resync only pulls the
+channel's active-set view current, never a non-active set's member list, which is what the run
+actually changed. The request could succeed while confirming nothing the operator or the user
+watching the dock actually cared about — a resync line and a "being re-synced" state describing a
+list that never moves. The import already drew this conclusion for the identical situation and
+never resyncs a non-active target at all (`seven-tv-import.service.ts:657-671`); the restore now
+matches it.
+
+**What changed.** `SevenTvRestoreService.resyncAfterReport` now returns immediately whenever
+`expectedChannelName` is `null` — i.e. for any target that is not the tracked channel's active set,
+tracked or not — before even looking at the report's `resyncTriggered` answer. No
+`POST /api/channels/{channel}/resync` goes out, `resyncTrigger` stays `'idle'`, and the dock shows
+no resync line for that run. This applies uniformly: a successful report that names the channel in
+`resyncTriggered` no longer flips to `'backendTriggered'` either (there is no client resync left to
+suppress) — it simply stays `'idle'`, same as a report that names nothing. The **N1 fallback**
+(2026-09-25, addendum in the design doc's §18: a report that fails for good gets a client resync
+standing in for the backend's) is now active-set-only as well — it used to fall back to
+`resyncChannelName ?? expectedChannelName`, which is now just `expectedChannelName`, since
+`resyncChannelName` no longer feeds any resync decision.
+
+**What did not change.** The active set of a tracked channel keeps its full pre-#255 behaviour
+unchanged: the backend's own resync (E17) still covers it, `resyncTrigger` still becomes
+`'backendTriggered'` when the answer already names the expected channel (including the stale,
+`activeSetDiffers` case); when the answer names some other channel or none at all, `resyncTrigger`
+simply stays `'idle'` and no request of the client's own goes out — the backend's own resync
+already covers the active set unconditionally there, whatever `resyncTriggered` happens to list.
+The only client resync left for the active set is the N1 fallback, which still fires when the
+report fails for good. An untracked target still gets no client resync either, exactly as before —
+nothing there depended on `resyncChannelName`. `resyncChannelName` itself is not removed from
+`RestoreStartTarget`/
+`RestoreRunInfo`: it still names a non-active tracked target's channel for
+`RestoreProgressSection`'s target line (the "Target: *channel* · set *name*" wording versus the
+untracked "Target: set *name* of *owner*" one), a purely cosmetic use unrelated to resyncing
+anything — only `resyncAfterReport` stopped reading it. No i18n key became unreachable: every
+`restore.resync.*` string is still shown, just only ever from the active-set path now.
+
+---
+
 ### 2026-09-25 — usage-stats becomes a lazy child route to keep the leave guard out of the initial bundle
 
 **Betrifft:** `web/src/app/app.routes.ts` (the `usage-stats` entry: `loadChildren` instead of
