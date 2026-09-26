@@ -766,6 +766,47 @@ describe('startRestoreFlow', () => {
     expect(confirmData(dialogOpen).countIsUpperBound).toBe(false);
   });
 
+  // #255 P2 (Codex review): a read that succeeds but only sees part of the target set
+  // (`SevenTvSetEntries.complete: false` — here, 7TV's own `totalCount` promising one more entry
+  // than this single page delivered) must not let the confirmation claim an exact count it never
+  // verified. The filtering itself is unaffected — the found-present row still drops out, the
+  // genuinely-missing one still shows — only the wording changes, same as a failed read.
+  it('marks the count an upper bound, while still filtering rows normally, when the open-time read is truncated', () => {
+    const { deps, dialogOpen, httpPost } = setup();
+    // '7tv-1' (PogU, from rows()) is already in the target set; a second, genuinely missing row is
+    // not — same setup as the test above, but the read's own totalCount does not match what this
+    // page delivered.
+    httpPost.mockReturnValue(
+      of({
+        data: {
+          emoteSets: {
+            emoteSet: {
+              emotes: {
+                totalCount: 2,
+                pageCount: 1,
+                items: [{ alias: 'PogU', emote: { id: '7tv-1' } }],
+              },
+            },
+          },
+        },
+      }),
+    );
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+    expect(confirmData(dialogOpen).addCount).toBe(1);
+    expect(confirmData(dialogOpen).countIsUpperBound).toBe(true);
+  });
+
   // A removed transfer target without a named alias: listed under its default name, and its one
   // entry without an alias is an ADD like any other.
   it('counts an entry without an alias as an ADD and lists its row under the default name', () => {
@@ -822,6 +863,23 @@ describe('startRestoreFlow', () => {
       fetch.complete();
 
       expect(dialogOpen).not.toHaveBeenCalled();
+    });
+
+    // #255 P2 (Codex review, second finding): `takeUntilDestroyed` tears the read down silently —
+    // neither `next` nor `error` fires — so a reset reachable only from those never ran, and this
+    // flag aliases `SevenTvRestoreService.restorePreCheckPending`, shared with `MassDeletePanel`'s
+    // own restore button: leaving it `true` here left *both* restore entries disabled until a full
+    // page reload, not just this caller's own.
+    it('clears previewPending once the caller tears down mid-read, not just on a settled answer', () => {
+      const { deps, httpPost, previewPending, destroyRef } = setup();
+      httpPost.mockReturnValueOnce(new Subject<ReturnType<typeof emoteSetPage>>());
+
+      startRestoreFlow(deps, target(), rows());
+      expect(previewPending()).toBe(true);
+
+      destroyRef.triggerDestroy();
+
+      expect(previewPending()).toBe(false);
     });
 
     it('refuses a second open-time read while the first is still out, so only one confirmation ever opens', () => {
@@ -895,6 +953,45 @@ describe('startRestoreFlow', () => {
       [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }],
       1,
       false,
+      0,
+    );
+  });
+
+  // #255 P1 (Codex review): a row the open-time check already found present is hidden from the
+  // confirmation dialog entirely — it must stay hidden from the *run* too, even if it goes missing
+  // from the target set again before the user confirms (another editor, or the confirmation simply
+  // left open a while). Without the fix, the confirm-time re-check's own fresh read — which has to
+  // query the full row set to apply its per-alias rule correctly — would see the row as newly
+  // missing and resend it as an `ADD` the user never saw or agreed to.
+  it('never sends a row the open-time check already hid, even if it goes missing again before confirm', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    const missingRow: PurgeRunRow = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-2',
+      name: 'Kappa',
+      aliases: ['Kappa'],
+      status: 'done',
+      errorMessage: null,
+    };
+    // Open-time: '7tv-1' (PogU) is already present -> hidden from the dialog; '7tv-2' (Kappa) is
+    // not -> shown.
+    httpPost.mockReturnValueOnce(of(emoteSetPage(['7tv-1'])));
+    // Confirm-time: '7tv-1' has since been removed from the set too, so a full re-check now finds
+    // BOTH rows missing.
+    httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+
+    startRestoreFlow(deps, target(), [...rows(), missingRow]);
+    expect(confirmData(dialogOpen).names).toEqual(['Kappa']);
+
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    // 'PogU' (7tv-1) never appeared in the confirmation and must not appear in the run either,
+    // however the confirm-time read now classifies it.
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: SET_ID, hostChannelName: CHANNEL }),
+      [{ emoteId: 'e2', sevenTvEmoteId: '7tv-2', name: 'Kappa', aliases: ['Kappa'] }],
+      0,
+      true,
       0,
     );
   });

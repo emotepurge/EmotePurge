@@ -99,6 +99,109 @@ Delete and restore follow in the next step of #256 on the same building block; t
 
 ---
 
+### 2026-09-26 — The restore confirmation hedges its count on a truncated read too, not only a failed one
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts`
+(`RestoreAlreadyPresentFilterResult.complete`, `filterAlreadyPresentForRestore`,
+`restoreConfirmPreviewUnavailable`) · `web/src/app/shared/seven-tv/restore-flow.ts`
+(`startRestoreFlow`) · `web/src/app/shared/seven-tv/mass-delete-panel.ts`
+(`handleRestoreConfirmPreview`) · `web/src/app/shared/seven-tv/restore-confirm-dialog.ts`
+(`RestoreConfirmDialogData.countIsUpperBound` doc) · `already-present-filter.spec.ts` ·
+`restore-flow.spec.ts` · `mass-delete-panel.spec.ts`.
+
+Codex review finding (P2) on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change: both
+restore confirmations already hedge their title and slot projection as "up to N" when the open-time
+duplicate check's own 7TV read fails outright (`available: false`). But `loadSevenTvSetEntries` can
+also come back `available: true` with `complete: false` — the read succeeded, but stopped at the
+10-page runaway guard, or 7TV's own `totalCount` did not match what the pages actually delivered
+(`SevenTvSetEntries.complete`). `filterAlreadyPresentForRestore` deliberately keeps filtering
+against a truncated read rather than failing the whole check open (see its own doc — a partial read
+still catches every duplicate genuinely inside the pages it saw), but its `available: true` result
+used to discard that read's own completeness signal entirely. Both confirmations therefore showed an
+exact-looking ADD count and an exact-looking slot projection built from a read that had not actually
+seen the whole set — silently more confident than the check itself was.
+
+**What changed.** `RestoreAlreadyPresentFilterResult` gains a `complete` field, carrying
+`SevenTvSetEntries.complete` through from `filterAlreadyPresentForRestore`'s own read (`false` on a
+failed fetch, same as `available`). `RestoreConfirmPreview` inherits it via
+`loadRestoreConfirmPreview`, unchanged otherwise. Both call sites now compute
+`countIsUpperBound: !preview.available || !preview.complete` instead of `!preview.available` alone.
+Nothing about *what* gets filtered changes — the aliases found present or name-taken in the pages
+the read did see are still dropped exactly as before, and the confirmation still names and counts
+exactly those survivors; only the *wording* now also hedges when the read was merely partial, not
+only when it failed outright.
+
+---
+
+### 2026-09-26 — A restore's confirm-time recheck can only narrow the confirmation, never widen it
+
+**Betrifft:** `web/src/app/shared/seven-tv/already-present-filter.ts` (`clipToShown`) ·
+`web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`) ·
+`web/src/app/shared/seven-tv/mass-delete-panel.ts` (`handleRestoreConfirmPreview`) ·
+`web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Codex review finding on top of issue #255's own "Slot-Zahl nach dem Skip-Filter" change
+(2026-09-25 entry below): that change made both restore entry points run
+`filterAlreadyPresentForRestore` once, fresh, right before the confirmation opens, so its title and
+slot projection count what the run will actually send. The confirm-time re-check that already ran
+afterward, right before `startRestore`, kept querying the *original*, unfiltered row set every
+time — correct for *narrowing* the set further (that is the whole reason it re-reads instead of
+reusing the open-time answer), but it left a hole for *widening* it back: a row, or one alias of a
+row, the open-time check had already found present — and which the confirmation dialog therefore
+never named or counted — could come back as "missing" at confirm time if the live entry disappeared
+from the target set in the window between the two reads (another editor, or the confirmation simply
+left open a while). It would then be sent as an `ADD` the user never saw or agreed to, silently
+invalidating the capacity number the dialog had already committed to.
+
+**What changed.** The confirm-time check still queries `filterAlreadyPresentForRestore` with every
+row's full, original alias context — it has to, to keep applying that function's rule 2 correctly
+(a row whose input aliases were pre-trimmed to only what survived the open-time filter would make an
+alias that lives under a different, correctly-still-missing name of the *same* row look "foreign",
+and drop the row outright — the #74 duplicate-cell partial retry this filter exists to support).
+Its result is intersected through the new `clipToShown(rows, shown)` against the open-time
+preview's own `rows` — id by id, then alias by alias for whichever ids survive that — before it
+ever reaches `startRestore`. A row whose id was filtered out entirely at open time is dropped even
+if the confirm-time read now calls it missing; a row that only partially survived keeps at most the
+aliases the open-time answer still named for it. The invariant this establishes, and the reason for
+the two-step shape (query full, then clip) rather than querying the already-narrowed set directly:
+**the confirm-time check can only narrow what the confirmation showed, never widen it.** The skip
+counters (`skippedDuplicates`/`skippedNameTaken`) are unaffected — they still come straight from the
+confirm-time check's own fresh count, exactly as before this fix.
+
+---
+
+### 2026-09-26 — The shared restore pre-check gate now releases on the caller's own teardown too
+
+**Betrifft:** `web/src/app/shared/seven-tv/restore-flow.ts` (`startRestoreFlow`'s `previewPending`
+read) · `web/src/app/shared/seven-tv/mass-delete-panel.ts` (`openRestoreConfirm`,
+`openRestoreConfirmDialog`) · `web/src/app/shared/seven-tv/restore-flow.spec.ts` ·
+`web/src/app/shared/seven-tv/mass-delete-panel.spec.ts`.
+
+Second Codex review finding on the 2026-09-26 "share the restore pre-check gate across both entry
+points" fix: moving `previewPending`/`restoreConfirmPending` onto the shared, root-level
+`SevenTvRestoreService.restorePreCheckPending` closed the race between the two restore entry
+points, but it also raised the cost of a gap that fixing entry-local flags had made harmless before
+it — every read in the pre-check chain (`resolveEditableSet`, then the open-time duplicate check)
+released the flag only from its own `next`/`error` branches. `takeUntilDestroyed` unsubscribes on
+the caller's teardown (a route change, a closed panel) without ever calling either, so tearing down
+mid-read left the flag `true` for good. Before the flag was shared this only ever disabled a
+component that no longer existed; once it lives on the service, the same gap disabled *both* restore
+entries, on whichever page they next mounted, until a full reload.
+
+**What changed.** Every read in the chain now releases the flag through `finalize` on its own pipe
+rather than a manual `.set(false)` inside `next`/`error`, so teardown releases it exactly like a
+settled answer does. `mass-delete-panel.ts`'s `openRestoreConfirm` has two chained reads sharing one
+flag; its `resolveEditableSet` pipe's `finalize` skips the release when a local `handedOff` flag is
+`true` — set right before the second read (`openRestoreConfirmDialog`) starts — so the flag stays
+held across the handoff instead of flickering to `false` between the two reads. The
+already-documented behaviour of releasing the flag while a token prompt is open in between is
+unchanged: that exit still sets `handedOff` to `false`, so it still releases. `restore-flow.ts` has
+only the one read, so its `finalize` releases unconditionally, same as `openRestoreConfirmDialog`'s
+own single read in `mass-delete-panel.ts`.
+
+---
+
 ### 2026-09-26 — `channelMismatch` splits into two reasons, and `partial` gets its own wording
 
 **Betrifft:** `web/src/app/core/seven-tv/sync-report-outcome.ts` (`SyncReportReason`,

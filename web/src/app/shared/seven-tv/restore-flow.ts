@@ -2,7 +2,7 @@ import { Dialog } from '@angular/cdk/dialog';
 import { HttpClient } from '@angular/common/http';
 import { DestroyRef, WritableSignal, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { timeout } from 'rxjs';
+import { finalize, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
@@ -15,6 +15,7 @@ import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { RestoreRow } from '../export/purge-run-export';
 import {
+  clipToShown,
   filterAlreadyPresentForRestore,
   loadRestoreConfirmPreview,
   RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS,
@@ -76,10 +77,17 @@ export interface RestoreFlowDeps {
   /** Set to `true` right before the open-time duplicate check (`loadRestoreConfirmPreview`, #255
    *  P2a) starts, and back to `false` once it has settled — the confirmation opened, the
    *  "everything already there" shortcut taken, or the read failed/timed out and the confirmation
-   *  opened anyway with an upper-bound count. Never left `true` on any exit; `openConfirm` also
-   *  refuses to start a second read of its own while this is already `true`, so the flow guards
-   *  itself even if a caller's own disabled button outraces a click. The caller reads it to
-   *  disable whatever button opens this flow — `ImportTrigger` is the only one today.
+   *  opened anyway with an upper-bound count. Never left `true` on any exit — including the
+   *  caller's own teardown mid-read (#255 P2, Codex review): `takeUntilDestroyed` unsubscribes
+   *  without ever calling `next` or `error`, so the reset used to live only in `handlePreview`,
+   *  reachable from neither. A `finalize` on the read's own pipe now covers exit by teardown the
+   *  same way the `next`/`error` branches already covered a settled answer — otherwise, since this
+   *  aliases the *shared*, root-level `SevenTvRestoreService.restorePreCheckPending`, tearing down
+   *  the flow mid-read (a route change, a closed panel) left both restore entries disabled until a
+   *  full page reload, not just this one caller's own button. `openConfirm` also refuses to start a
+   *  second read of its own while this is already `true`, so the flow guards itself even if a
+   *  caller's own disabled button outraces a click. The caller reads it to disable whatever button
+   *  opens this flow — `ImportTrigger` is the only one today.
    *
    *  `ImportTrigger` passes its `SevenTvRestoreService.restorePreCheckPending` here, not a signal
    *  of its own (#255 P2, Codex review): `MassDeletePanel`'s restore button runs the identical
@@ -153,15 +161,27 @@ export function startRestoreFlow(
     // `timeout` error lands outside `loadRestoreConfirmPreview`'s own `catchError`, so it is
     // treated exactly like the fetch failure that filter already fails open on:
     // `restoreConfirmPreviewUnavailable` builds the identical "could not verify" shape by hand.
+    //
+    // #255 P2 (Codex review): `finalize` is what actually clears `previewPending` now, on every
+    // exit — a settled answer (`next`/`error`, still handled inside `handlePreview` below for the
+    // outcome, not the flag any more) and, the gap this closes, the caller's own teardown, which
+    // `takeUntilDestroyed` unsubscribes silently with neither callback ever firing. Left as a
+    // manual reset only inside `handlePreview`, that exit never ran it — and since this flag
+    // aliases the shared, root-level `restorePreCheckPending` (see the field doc), a route change
+    // or a closed panel mid-read left *both* restore entries disabled until a full page reload, not
+    // just this caller's own.
     loadRestoreConfirmPreview(deps.httpClient, target.emoteSetId, emotes)
-      .pipe(timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS), takeUntilDestroyed(deps.destroyRef))
+      .pipe(
+        timeout(RESTORE_CONFIRM_PREVIEW_TIMEOUT_MS),
+        takeUntilDestroyed(deps.destroyRef),
+        finalize(() => deps.previewPending.set(false)),
+      )
       .subscribe({
         next: (preview) => handlePreview(preview),
         error: () => handlePreview(restoreConfirmPreviewUnavailable(emotes)),
       });
 
     function handlePreview(preview: RestoreConfirmPreview<RestoreQueueEmote>): void {
-      deps.previewPending.set(false);
       if (preview.available && preview.rows.length === 0) {
         // Nothing survives the filter — every row is already back (or its alias is taken) and
         // there is nothing left to confirm. A dialog with zero names and a button that could only
@@ -204,7 +224,13 @@ export function startRestoreFlow(
       const data: RestoreConfirmDialogData = {
         names: preview.names,
         addCount: preview.addCount,
-        countIsUpperBound: !preview.available,
+        // #255 P2, Codex review: a read that stopped short of the whole target set
+        // (`SevenTvSetEntries.complete: false` — the 10-page runaway guard, or a `totalCount`
+        // mismatch) still filters `preview.rows` against whatever it saw (see
+        // `filterAlreadyPresentForRestore`'s doc for why that stays fail-*open*, not a reason to
+        // discard the count), but the resulting title and slot projection would otherwise claim an
+        // exact number a partial read never verified. Hedged the same way a failed read already is.
+        countIsUpperBound: !preview.available || !preview.complete,
         slots: slots.asReadonly(),
         setName: target.setName,
         isActiveSet: target.isActiveSet,
@@ -255,9 +281,24 @@ export function startRestoreFlow(
             // *which rows* get sent, not whether the caller is told the check could not confirm
             // them just now.
             const fallOnOpenTime = !confirmCheck.available && preview.available;
+            // #255 P1 (Codex review): the confirmation only ever showed `preview.rows` — a row (or
+            // one alias of a row) the open-time check above had already found present, and which
+            // never appeared in the dialog's names or `addCount`, must not come back just because
+            // it went missing again by the time this fresher check ran (the target set changing in
+            // the few seconds a confirmation sits open, or between the two reads). `confirmCheck`
+            // itself still has to query with every row's full, original aliases — `clipToShown`'s
+            // own doc explains why a narrower input here would break the #74 partial-retry case —
+            // so the invariant is enforced afterward instead: the confirm-time answer only ever
+            // narrows what was shown, `startRestore` can never see more than that. `fallOnOpenTime`
+            // already reuses `preview.rows` unclipped — that IS what was shown, nothing to narrow
+            // further. Unaffected: the skip counters below, which still come straight from
+            // `confirmCheck`'s own fresh count, exactly as before this fix.
+            const rows = fallOnOpenTime
+              ? preview.rows
+              : clipToShown(confirmCheck.rows, preview.rows);
             deps.restoreService.startRestore(
               restoreStartTarget(target),
-              fallOnOpenTime ? preview.rows : confirmCheck.rows,
+              rows,
               fallOnOpenTime ? preview.skipped : confirmCheck.skipped,
               confirmCheck.available,
               fallOnOpenTime ? preview.skippedNameTaken : confirmCheck.skippedNameTaken,

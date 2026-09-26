@@ -23,12 +23,16 @@ export interface RestoreConfirmDialogData {
    *  capacity projection below is computed against; using the row count instead would understate
    *  the projection by one slot per duplicate and could silently miss the overflow warning. */
   addCount: number;
-  /** Whether `names`/`addCount` above are the *unfiltered* input rather than the open-time
-   *  duplicate check's actual result (operator decision 2026-09-25, #255) — true when that check's
-   *  own 7TV read failed (`available: false` from `loadRestoreConfirmPreview`, which fails open, the
-   *  same as `filterAlreadyPresentForRestore` itself). The dialog then phrases the count as an upper
-   *  bound ("up to N") instead of claiming an exact number it does not have — never a smaller,
-   *  possibly wrong one, and never silence about the uncertainty either. */
+  /** Whether `names`/`addCount` above are not guaranteed to be exact (operator decision 2026-09-25,
+   *  #255; widened #255 P2, Codex review) — true in either of two cases: the open-time duplicate
+   *  check's own 7TV read failed outright (`available: false` from `loadRestoreConfirmPreview`,
+   *  which fails open, the same as `filterAlreadyPresentForRestore` itself), or it succeeded but
+   *  only saw part of the target set (`available: true`, `complete: false` — the 10-page runaway
+   *  guard, or a `totalCount` mismatch, see `SevenTvSetEntries.complete`). In both cases `names`/
+   *  `addCount` still reflect real filtering against whatever the read did see — they are not the
+   *  unfiltered input — the dialog just cannot vouch for them being the *whole* answer, so it
+   *  phrases the count as an upper bound ("up to N") instead of claiming an exact number it does not
+   *  have — never a smaller, possibly wrong one, and never silence about the uncertainty either. */
   countIsUpperBound: boolean;
   /** Live view of the set status, so the capacity line pops in once the check answers.
    *  null = unknown (no capacity reported) — then no projection line is shown at all. */
