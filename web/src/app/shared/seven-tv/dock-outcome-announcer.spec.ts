@@ -13,7 +13,9 @@ import {
   ResyncTriggerState,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
+import { UndoSkippedRow } from '../../core/seven-tv/undo-plan';
 import {
   DockOutcomeAnnouncer,
   hiddenByFilterNoticeKey,
@@ -22,6 +24,11 @@ import {
 } from './dock-outcome-announcer';
 
 const DE_TRANSLATIONS = {
+  undo: {
+    confirm: { reason: { nothingToDo: 'nichts zu tun' } },
+    summary: { skipped: '{{ count }} übersprungen: {{ reason }}' },
+    resync: { backendTriggered: 'Abgleich läuft bereits.' },
+  },
   usageStats: {
     dock: {
       markedAnnounced: {
@@ -118,6 +125,26 @@ function createFakeSource(): FakeOutcomeSource {
   };
 }
 
+/** The undo service's side of the announcer (#254): its transient skipped notice and its resync
+ *  acknowledgement, plus what the notice's gate reads. */
+interface FakeUndoSource {
+  noticePending: WritableSignal<boolean>;
+  noticeSkipped: WritableSignal<readonly UndoSkippedRow[]>;
+  run: WritableSignal<UndoRunInfo | null>;
+  isRunning: WritableSignal<boolean>;
+  resyncTrigger: WritableSignal<ResyncTriggerState>;
+}
+
+function createFakeUndoSource(): FakeUndoSource {
+  return {
+    noticePending: signal(false),
+    noticeSkipped: signal<readonly UndoSkippedRow[]>([]),
+    run: signal<UndoRunInfo | null>(null),
+    isRunning: signal(false),
+    resyncTrigger: signal<ResyncTriggerState>('idle'),
+  };
+}
+
 /** Stands in for a host page: the announcer mounted once, with the page's own `withImport`. */
 @Component({
   imports: [DockOutcomeAnnouncer],
@@ -179,11 +206,13 @@ describe('markedCountNoticeKey', () => {
 describe('DockOutcomeAnnouncer', () => {
   let restoreService: FakeOutcomeSource;
   let importService: FakeOutcomeSource;
+  let undoService: FakeUndoSource;
   let fixture: ComponentFixture<HostPage>;
 
   beforeEach(async () => {
     restoreService = createFakeSource();
     importService = createFakeSource();
+    undoService = createFakeUndoSource();
 
     await TestBed.configureTestingModule({
       imports: [
@@ -196,6 +225,7 @@ describe('DockOutcomeAnnouncer', () => {
       providers: [
         { provide: SevenTvRestoreService, useValue: restoreService },
         { provide: SevenTvImportService, useValue: importService },
+        { provide: SevenTvUndoService, useValue: undoService },
       ],
     }).compileComponents();
 
@@ -558,5 +588,38 @@ describe('DockOutcomeAnnouncer', () => {
     fixture.detectChanges();
 
     expect(spoken()).toEqual(['Sync-Cooldown aktiv.']);
+  });
+
+  // #254: a start that skipped every candidate leaves no run — the dock mounts for its notice alone,
+  // so the notice is spoken from here, after the import's outcomes, like the undo's resync line.
+  it('speaks the undo skipped notice by reason and its resync line after the import, on the usage-stats page only', () => {
+    const skipped = (n: string): UndoSkippedRow => ({
+      candidate: {
+        sourceSevenTvEmoteId: `src-${n}`,
+        sourceName: `S${n}`,
+        alias: `A${n}`,
+        fileStatus: 'done',
+        target: { sevenTvEmoteId: `tgt-${n}`, entries: [], defaultName: null },
+        provenance: 'confirmed',
+      },
+      reason: 'nothingToDo',
+      live: { sourceEntries: [], targetEntries: [] },
+      omittedEntries: [],
+    });
+    importService.resyncTrigger.set('failed');
+    undoService.noticeSkipped.set([skipped('1'), skipped('2')]);
+    undoService.noticePending.set(true);
+    undoService.resyncTrigger.set('backendTriggered');
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual([
+      'Abgleich fehlgeschlagen.',
+      '2 übersprungen: nichts zu tun',
+      'Abgleich läuft bereits.',
+    ]);
+
+    fixture.componentInstance.withImport.set(false);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
   });
 });
