@@ -1,4 +1,5 @@
 import { ImportOrigin } from '../../core/seven-tv/import-source';
+import { isLeaderboardSort } from '../../core/seven-tv/leaderboard.model';
 import { ImportRunItem } from '../../core/seven-tv/seven-tv-import.service';
 import { RunItemStatus } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
@@ -382,14 +383,77 @@ export interface UndoCandidate {
  * file's `meta.undoneFile` (F6) so a human reading the undo's paper trail can follow the chain back
  * to the transfer it reverses, the same way `TransferRunRow.sourceName` lets a restore reconstruct a
  * rename. `verifiedAt`/`finishedAt` mirror whichever of `TransferRunMetaPlanned`/`Finished` the file
- * actually was — only one of the two is ever non-null.
+ * actually was — only one of the two is ever non-null. `origin` is `null` when the file's own
+ * `meta.origin` is missing or not a recognizable {@link ImportOrigin} — untrusted JSON from a file,
+ * validated rather than cast (see {@link readImportOrigin}), so a corrupted or hand-edited field
+ * shows up here as an honest "unknown" instead of throwing later wherever this gets displayed or
+ * re-serialized.
  */
 export interface UndoSourceFileInfo {
   stage: TransferRunMeta['stage'];
   exportedAt: string;
   verifiedAt: string | null;
   finishedAt: string | null;
-  origin: ImportOrigin;
+  origin: ImportOrigin | null;
+}
+
+/** Every {@link RunItemStatus} value, for validating an untrusted `status` field rather than casting
+ *  it — a file can claim any string there. */
+const KNOWN_RUN_ITEM_STATUSES: ReadonlySet<string> = new Set<RunItemStatus>([
+  'pending',
+  'in-progress',
+  'done',
+  'failed',
+  'cancelled',
+  'unknown',
+]);
+
+/**
+ * Validates an untrusted `meta.origin` value as an {@link ImportOrigin} — there is no existing
+ * general-purpose reader for it (the one other place that builds one, `import-source-parser.ts`,
+ * only ever constructs a `kind: 'file'` origin from fields it already trusts). `null` for anything
+ * that is not an object, has an unrecognized `kind`, or is missing a field its `kind` requires —
+ * fail closed rather than pass a shape-mismatched value on to a caller that reads it as if it were
+ * one of the four real variants.
+ */
+function readImportOrigin(value: unknown): ImportOrigin | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const origin = value as Record<string, unknown>;
+  const kind = origin['kind'];
+  switch (kind) {
+    case 'channel':
+    case 'seventv-channel':
+      return typeof origin['channelName'] === 'string'
+        ? { kind, channelName: origin['channelName'] }
+        : null;
+    case 'file': {
+      const fileName = origin['fileName'];
+      const exportedAt = origin['exportedAt'];
+      const channelName = origin['channelName'];
+      const envelopeKind = origin['envelopeKind'];
+      if (typeof fileName !== 'string') {
+        return null;
+      }
+      if (exportedAt !== null && typeof exportedAt !== 'string') {
+        return null;
+      }
+      if (channelName !== null && typeof channelName !== 'string') {
+        return null;
+      }
+      if (envelopeKind !== 'emote-list' && envelopeKind !== 'usage') {
+        return null;
+      }
+      return { kind: 'file', fileName, exportedAt, channelName, envelopeKind };
+    }
+    case 'seventv-leaderboard':
+      return typeof origin['sortBy'] === 'string' && isLeaderboardSort(origin['sortBy'])
+        ? { kind: 'seventv-leaderboard', sortBy: origin['sortBy'] }
+        : null;
+    default:
+      return null;
+  }
 }
 
 export type TransferRunUndoParseResult =
@@ -466,15 +530,16 @@ export function parseTransferRunForUndo(text: string): TransferRunUndoParseResul
     exportedAt: typeof envelope.exportedAt === 'string' ? envelope.exportedAt : '',
     verifiedAt: stage === 'planned' && typeof rawVerifiedAt === 'string' ? rawVerifiedAt : null,
     finishedAt: stage === 'finished' && typeof rawFinishedAt === 'string' ? rawFinishedAt : null,
-    origin: untypedMeta['origin'] as ImportOrigin,
+    origin: readImportOrigin(untypedMeta['origin']),
   };
 
   return { ok: true, candidates, stage, target: { emoteSetId: targetEmoteSetId }, sourceFile };
 }
 
 /** The undo candidate for one untrusted transfer-run row, or `null` when it names nothing an undo
- *  could reverse: not a `replace` row, no readable `removedTarget`, or — in the `finished` stage — a
- *  REMOVE 7TV never confirmed. */
+ *  could reverse: not a `replace` row, no readable `removedTarget`, an empty own `alias`, no target
+ *  entry to compare against (same "nothing to restore" rule the restore parser's own
+ *  `readRemovedTarget` uses), or — in the `finished` stage — a REMOVE 7TV never confirmed. */
 function readUndoCandidate(value: unknown, stage: TransferRunMeta['stage']): UndoCandidate | null {
   if (typeof value !== 'object' || value === null) {
     return null;
@@ -503,15 +568,22 @@ function readUndoCandidate(value: unknown, stage: TransferRunMeta['stage']): Und
   if (typeof sourceSevenTvEmoteId !== 'string' || sourceSevenTvEmoteId.length === 0) {
     return null;
   }
-  if (typeof sourceName !== 'string' || typeof alias !== 'string') {
+  if (typeof sourceName !== 'string' || typeof alias !== 'string' || alias.length === 0) {
     return null;
   }
   const status = row['status'];
   const fileStatus: RunItemStatus | 'pending' =
-    typeof status === 'string' ? (status as RunItemStatus | 'pending') : 'pending';
+    typeof status === 'string' && KNOWN_RUN_ITEM_STATUSES.has(status)
+      ? (status as RunItemStatus)
+      : 'pending';
   const targetEntries = readEntryAliases(entries, aliases).map(
     (entryAlias): UndoCandidateTargetEntry => ({ alias: entryAlias }),
   );
+  // Same rule `readRemovedTarget` (the restore parser) applies to its own `restoreAliases`: a
+  // target with no readable entry at all is nothing an undo could restore anything back onto.
+  if (targetEntries.length === 0) {
+    return null;
+  }
   const knownDefaultName =
     typeof defaultName === 'string' && defaultName.length > 0 ? defaultName : null;
 

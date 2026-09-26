@@ -913,4 +913,177 @@ describe('parseTransferRunForUndo', () => {
       errorKey: 'restore.import.errors.wrongKind',
     });
   });
+
+  it("reads sourceFile from a planned file's own meta — verifiedAt set, finishedAt null, the exact origin", () => {
+    const text = plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) }));
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const record = JSON.parse(text) as { exportedAt: string; meta: { verifiedAt: string } };
+    expect(result.sourceFile).toEqual({
+      stage: 'planned',
+      exportedAt: record.exportedAt,
+      verifiedAt: record.meta.verifiedAt,
+      finishedAt: null,
+      origin: ORIGIN,
+    });
+  });
+
+  it("reads sourceFile from a finished file's own meta — finishedAt set, verifiedAt null", () => {
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: Date.parse('2026-09-26T10:05:00Z'),
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sourceFile).toEqual({
+      stage: 'finished',
+      exportedAt: (JSON.parse(text) as { exportedAt: string }).exportedAt,
+      verifiedAt: null,
+      finishedAt: '2026-09-26T10:05:00.000Z',
+      origin: ORIGIN,
+    });
+  });
+
+  it('reads sourceFile.origin as null when meta.origin is missing, rather than passing an undefined value through as if it were one', () => {
+    const record = JSON.parse(
+      plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+    ) as { meta: Record<string, unknown> };
+    const { origin: _origin, ...metaWithoutOrigin } = record.meta;
+    const text = JSON.stringify({ ...record, meta: metaWithoutOrigin });
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sourceFile.origin).toBeNull();
+  });
+
+  it('reads sourceFile.origin as null for an unrecognized kind, rather than casting it through unchecked', () => {
+    const record = JSON.parse(
+      plannedText(setEntries({ aliasesById: new Map([['tgt-1', ['Kappa']]]) })),
+    ) as { meta: Record<string, unknown> };
+    const text = JSON.stringify({
+      ...record,
+      meta: { ...record.meta, origin: { kind: 'from-the-future', channelName: 'x' } },
+    });
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sourceFile.origin).toBeNull();
+  });
+
+  it('reads a candidate defaultName of an empty string the same as a missing one — both become null', () => {
+    const replace: TransferRow = {
+      action: 'replace',
+      source: SOURCE_KAPPA,
+      alias: 'Kappa',
+      target: {
+        sevenTvEmoteId: 'tgt-1',
+        aliases: ['Kappa'],
+        hasAliaslessEntry: false,
+        defaultName: '',
+      },
+    };
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [item({ transfer: replace, completedSteps: 2 })],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates[0].target.defaultName).toBeNull();
+  });
+
+  it("falls back to the named aliases list when a row's target entries array is empty", () => {
+    // A row written before `entries` existed (or one with a broken `entries` array) still names its
+    // target's aliases — same fallback `readEntryAliases` gives the restore parser.
+    const record = JSON.parse(
+      transferRunJson(
+        buildTransferRunProtocol({
+          ...TARGET,
+          origin: ORIGIN,
+          startedAt: 0,
+          finishedAt: 1,
+          items: [
+            item({
+              transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa', 'KappaAlt']),
+              completedSteps: 2,
+            }),
+          ],
+        }),
+      ),
+    ) as { rows: { removedTarget: Record<string, unknown> }[] };
+    record.rows[0].removedTarget['entries'] = [];
+
+    const result = parseTransferRunForUndo(JSON.stringify(record));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates[0].target.entries).toEqual([
+      { alias: 'Kappa' },
+      { alias: 'KappaAlt' },
+    ]);
+  });
+
+  it('excludes renameSource and adoptSourceName rows — nothing about them was ever removed', () => {
+    const renameRow: TransferRow = {
+      action: 'renameSource',
+      source: SOURCE_POG,
+      alias: 'PogAlt',
+    };
+    const adoptRow: TransferRow = {
+      action: 'adoptSourceName',
+      source: SOURCE_LUL,
+      alias: 'LUL',
+      target: {
+        sevenTvEmoteId: 'src-lul',
+        aliases: ['LULOld'],
+        hasAliaslessEntry: false,
+        defaultName: null,
+      },
+    };
+    const text = transferRunJson(
+      buildTransferRunProtocol({
+        ...TARGET,
+        origin: ORIGIN,
+        startedAt: 0,
+        finishedAt: 1,
+        items: [
+          item({ transfer: replaceRow(SOURCE_KAPPA, 'tgt-1', ['Kappa']), completedSteps: 2 }),
+          item({ transfer: renameRow }),
+          item({ transfer: adoptRow }),
+        ],
+      }),
+    );
+
+    const result = parseTransferRunForUndo(text);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates.map((candidate) => candidate.sourceSevenTvEmoteId)).toEqual([
+      'src-kappa',
+    ]);
+  });
 });
