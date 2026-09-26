@@ -65,6 +65,7 @@ import {
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { REFUSED_START_FEEDBACK_MS } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
@@ -1818,6 +1819,24 @@ describe('UsageStatsPage — import entry without a selected set (spec #253, AK 
     const host: HTMLElement = fixture.nativeElement;
     expect(host.querySelector('.app-dock')).not.toBeNull();
     expect(host.querySelector('app-restore-progress-section')).not.toBeNull();
+  });
+
+  // #254 spec 6.6: an undo writes into the set its transfer file names, whichever set the page
+  // shows — a shown undo run mounts the dock and its section without a selected set, like the
+  // restore above; a start that skipped everything mounts it for its notice alone.
+  it('shows the dock with the undo section for a shown undo run or its notice, even without a selected set', () => {
+    mountWithoutActiveSet('a');
+    const undoService = TestBed.inject(SevenTvUndoService);
+
+    undoService.noticePending.set(true);
+    fixture.detectChanges();
+    const host: HTMLElement = fixture.nativeElement;
+    expect(host.querySelector('.app-dock')).not.toBeNull();
+    expect(host.querySelector('app-undo-progress-section')).not.toBeNull();
+
+    undoService.noticePending.set(false);
+    fixture.detectChanges();
+    expect(host.querySelector('.app-dock')).toBeNull();
   });
 
   // The other half of the same fix: marking-only content (nothing running, nothing pending) must
@@ -3675,6 +3694,20 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     });
   }
 
+  /** Settles an undo run into `setId` the way `SevenTvUndoService.settleRun` does — `doneKeys` with
+   *  its `partial` rows, which are `done` for the engine. */
+  function settleUndo(setId: string, doneKeys: string[]): void {
+    TestBed.inject(SevenTvUndoService).run.set({
+      runId: 'undo-1',
+      phase: 'reporting',
+      destructive: true,
+      targetSetId: setId,
+      settlement: 'settled',
+      result: runResult(doneKeys),
+      removalReport: 'pending',
+    } as unknown as UndoRunInfo);
+  }
+
   function liveListRequestsFor(setId: string): TestRequest[] {
     return liveListRequests().filter((r) => r.request.params.get('emoteSetId') === setId);
   }
@@ -3683,6 +3716,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     ['restore', settleRestore],
     ['delete', settleDelete],
     ['import', settleImport],
+    ['undo', settleUndo],
   ] as const)(
     'reloads the chosen non-active set’s members bypassing the cache once a %s run into it settles',
     async (_kind, settleRun) => {
@@ -3727,6 +3761,32 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     await settle();
 
     expect(liveListRequests()).toHaveLength(0);
+  });
+
+  // The undo's result exists from the engine's end on, before its re-read settles it (spec 4.4
+  // point 12) — the member list follows the settled outcome, not the snapshot.
+  it('waits for an undo run to settle before it reloads the members of its non-active target', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [],
+      members: memberList([member('7tv-x', 'PumpkinX')]),
+    });
+    const undoService = TestBed.inject(SevenTvUndoService);
+
+    undoService.run.set({
+      runId: 'undo-1',
+      phase: 'settling',
+      destructive: true,
+      targetSetId: 'set-b',
+      settlement: 'pending',
+      result: runResult(['7tv-y']),
+    } as unknown as UndoRunInfo);
+    await settle();
+    expect(liveListRequests()).toHaveLength(0);
+
+    settleUndo('set-b', ['7tv-y']);
+    await settle();
+    expect(liveListRequests()).toHaveLength(1);
   });
 
   it('sends nothing for a run without a done row, or one into the active set', async () => {

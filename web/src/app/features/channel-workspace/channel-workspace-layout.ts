@@ -10,6 +10,7 @@ import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.mod
 import { liveEvents } from '../../core/live/live-reload';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import { SevenTvUndoService } from '../../core/seven-tv/seven-tv-undo.service';
 import { BackLink } from '../../shared/ui/back-link';
 import { Button } from '../../shared/ui/button';
 import { ConfirmDialogData, openConfirmDialog } from '../../shared/ui/confirm-dialog';
@@ -122,6 +123,7 @@ export class ChannelWorkspaceLayout {
   private readonly channelService = inject(ChannelService);
   private readonly deleteService = inject(SevenTvDeleteService);
   private readonly restoreService = inject(SevenTvRestoreService);
+  private readonly undoService = inject(SevenTvUndoService);
   private readonly router = inject(Router);
   private readonly translocoService = inject(TranslocoService);
   private readonly dialog = inject(Dialog);
@@ -152,7 +154,7 @@ export class ChannelWorkspaceLayout {
     effect(() => {
       const channelName = this.channelName();
       // #256 P1 (Plan-256 review): everything below must run only when `channelName` itself
-      // changes, never when a run's own signal does. `resetIfChannelChanged` (both services) has
+      // changes, never when a run's own signal does. `resetIfChannelChanged` (every service) has
       // read `run()`/`phase` since #256 T2 — without `untracked`, that read makes this effect a
       // dependent of the very record it inspects, so the moment a carried-over run's report reaches
       // `closed` (Plan-256 Festlegung 13 lets it follow the user here while still `reporting`), the
@@ -162,10 +164,11 @@ export class ChannelWorkspaceLayout {
       // a run reaching `closed` on the page it now sits on then waits for the next switch (or an
       // explicit close) exactly as Festlegung 13 intends.
       untracked(() => {
-        // A finished mass-delete or restore run from another channel must not follow the user in
-        // here.
+        // A finished mass-delete, restore or undo run from another channel must not follow the user
+        // in here.
         this.deleteService.resetIfChannelChanged(channelName);
         this.restoreService.resetIfChannelChanged(channelName);
+        this.undoService.resetIfChannelChanged(channelName);
         // Its own call, not part of the reset above: `resetIfChannelChanged` deliberately returns
         // early when there is no run record at all, which is exactly the state a
         // confirmed-but-not-yet started delete is in. Its dock claim would otherwise survive the

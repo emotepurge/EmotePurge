@@ -1214,6 +1214,10 @@
            reason the import section does — a page without an active set must not hide a
            still-writing restore together with its Cancel button. Renders nothing between restores. -->
       <app-restore-progress-section />
+      <!-- The replace undo (#254, spec 6.6) — outside the set gate for the same reason as the two
+           sections above: it writes into the set its transfer file names, whichever set this page
+           shows. Renders nothing between undo runs. -->
+      <app-undo-progress-section />
     </div>
   </div>
 }

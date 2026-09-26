@@ -1522,6 +1522,75 @@
       "unknownOutcome": "7TV hat nicht eindeutig geantwortet, und laut Nachlesen wurde die Änderung nicht übernommen.",
       "skippedDrift": "Übersprungen — das Set hat sich seit der Bestätigung verändert; an dieser Zeile wurde nichts geändert.",
       "recheckUnavailable": "Übersprungen — das Set ließ sich unmittelbar vor dem Entfernen nicht lesen; an dieser Zeile wurde nichts geändert."
+    },
+    "progress": "{{ finished }} / {{ total }} verarbeitet",
+    "progressBarLabel": "Fortschritt der Rücknahme",
+    "rateLimitPaused": "7TV-Rate-Limit erreicht — es geht in {{ seconds }} s automatisch weiter.",
+    "unknownOutcome": "Unklar, ob zurückgenommen — 7TV hat nicht eindeutig geantwortet. Bitte im Set nachsehen.",
+    "deleteFailedFallback": "Rücknahme fehlgeschlagen",
+    "syncFailedTitle": "Rückmeldung über die Entfernung fehlgeschlagen",
+    "syncFailed": "Die Quell-Emotes sind bei 7TV aus dem Set entfernt, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "syncPartialTitle": "Rückmeldung über die Entfernung unvollständig",
+    "syncPartial": "Die Quell-Emotes sind bei 7TV aus dem Set entfernt und bei EmotePurge vermerkt — aber nicht vollständig.",
+    "syncRetry": "Entfernung erneut melden",
+    "syncRetrySucceeded": "Rückmeldung über die Entfernung erfolgreich.",
+    "restoreSyncFailedTitle": "Rückmeldung über die Wiederherstellung fehlgeschlagen",
+    "restoreSyncFailed": "Die Ziel-Emotes sind bei 7TV wieder im Set, aber EmotePurge konnte es nicht vermerken. Normalerweise zieht sich das innerhalb einer Minute von selbst nach.",
+    "restoreSyncPartialTitle": "Rückmeldung über die Wiederherstellung unvollständig",
+    "restoreSyncPartial": "Die Ziel-Emotes sind bei 7TV wieder im Set und bei EmotePurge vermerkt — aber nicht vollständig.",
+    "restoreSyncRetry": "Wiederherstellung erneut melden",
+    "restoreSyncSucceeded": "Rückmeldung über die Wiederherstellung erfolgreich.",
+    "resync": {
+      "pending": "Synchronisierung wird angestoßen…",
+      "succeeded": "Synchronisierung angestoßen — die Liste aktualisiert sich gleich.",
+      "cooldown": "Sync-Cooldown aktiv — die Liste aktualisiert sich innerhalb einer Minute von selbst.",
+      "failed": "Synchronisierung konnte nicht angestoßen werden — der periodische Sync holt es innerhalb einer Minute nach.",
+      "backendTriggered": "Abgleich läuft bereits — die Liste aktualisiert sich gleich."
+    },
+    "leaveWhileRunning": {
+      "message": "Die Rücknahme der Ersetzungen läuft noch. Sie läuft im Hintergrund weiter, ihr Fortschritt ist aber nur auf der Emote-Nutzungsseite sichtbar. Seite trotzdem verlassen?",
+      "confirm": "Verlassen"
+    },
+    "summary": {
+      "counts": "{{done}} zurückgenommen · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "targetChannel": "Ziel: {{ channel }} · Set {{ setName }}",
+      "targetOwner": "Ziel: Set {{ setName }} von {{ owner }}",
+      "removed": {
+        "one": "{{ count }} Quell-Emote wurde entfernt.",
+        "other": "{{ count }} Quell-Emotes wurden entfernt."
+      },
+      "restored": {
+        "one": "{{ count }} Ziel-Eintrag ist wieder da.",
+        "other": "{{ count }} Ziel-Einträge sind wieder da."
+      },
+      "unknownRows": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
+      },
+      "unknownRecordedIn": {
+        "one": "Bei {{ count }} Zeile ist unklar, ob das Quell-Emote entfernt wurde — im Ergebnisprotokoll steht sie nicht als bestätigte Entfernung, nur die Rückweg-Datei der Rücknahme deckt sie ab.",
+        "other": "Bei {{ count }} Zeilen ist unklar, ob das Quell-Emote entfernt wurde — im Ergebnisprotokoll stehen sie nicht als bestätigte Entfernungen, nur die Rückweg-Datei der Rücknahme deckt sie ab."
+      },
+      "gaps": {
+        "one": "{{ count }} Zeile hat eine Lücke hinterlassen: das Quell-Emote ist weg, das Ziel aber nicht vollständig zurück. Dieselbe Rücknahme aus derselben Datei erneut starten schließt sie.",
+        "other": "{{ count }} Zeilen haben eine Lücke hinterlassen: die Quell-Emotes sind weg, die Ziele aber nicht vollständig zurück. Dieselbe Rücknahme aus derselben Datei erneut starten schließt sie."
+      },
+      "partialRows": {
+        "one": "Von den zurückgenommenen Zeilen ist {{ count }} nur teilweise zurück — ein Eintrag blieb aus.",
+        "other": "Von den zurückgenommenen Zeilen sind {{ count }} nur teilweise zurück — Einträge blieben aus."
+      },
+      "omittedEntries": {
+        "one": "{{ count }} Ziel-Eintrag blieb aus, weil sein Name belegt oder nicht prüfbar ist — Namen freimachen und dieselbe Rücknahme erneut starten.",
+        "other": "{{ count }} Ziel-Einträge blieben aus, weil ihre Namen belegt oder nicht prüfbar sind — Namen freimachen und dieselbe Rücknahme erneut starten."
+      },
+      "foreignNoted": {
+        "one": "{{ count }} Ziel trug schon einen Eintrag, den die Datei nicht kennt — er blieb unangetastet.",
+        "other": "{{ count }} Ziele trugen schon einen Eintrag, den die Datei nicht kennt — er blieb jeweils unangetastet."
+      },
+      "skipped": "{{ count }} übersprungen: {{ reason }}",
+      "insufficientPrivileges": "Das 7TV-Token hat im Zielset kein Schreibrecht — der Lauf wurde abgebrochen und das Token entfernt.",
+      "downloadProtocol": "Ergebnisprotokoll herunterladen",
+      "protocolNotSaved": "Ergebnisprotokoll noch nicht gespeichert — nach dem Schließen ist es weg."
     }
   },
   "sevenTvRun": {

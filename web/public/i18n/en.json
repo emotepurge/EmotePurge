@@ -1522,6 +1522,75 @@
       "unknownOutcome": "7TV gave no clear answer, and a re-read shows the change was not applied.",
       "skippedDrift": "Skipped — the set changed since you confirmed; nothing on this row was touched.",
       "recheckUnavailable": "Skipped — the set could not be read right before the removal; nothing on this row was touched."
+    },
+    "progress": "{{ finished }} / {{ total }} processed",
+    "progressBarLabel": "Undo progress",
+    "rateLimitPaused": "7TV rate limit reached — resuming automatically in {{ seconds }}s.",
+    "unknownOutcome": "Unclear whether it was undone — 7TV gave no clear answer. Please check the set.",
+    "deleteFailedFallback": "Undo failed",
+    "syncFailedTitle": "Reporting the removal back to EmotePurge failed",
+    "syncFailed": "The source emotes were removed from the set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
+    "syncPartialTitle": "Reporting the removal back to EmotePurge incomplete",
+    "syncPartial": "The source emotes were removed from the set on 7TV and recorded at EmotePurge — but not completely.",
+    "syncRetry": "Report removal again",
+    "syncRetrySucceeded": "Removal reported back successfully.",
+    "restoreSyncFailedTitle": "Reporting the restored targets back to EmotePurge failed",
+    "restoreSyncFailed": "The target emotes are back in the set on 7TV, but EmotePurge could not record it. This usually catches up within a minute on its own.",
+    "restoreSyncPartialTitle": "Reporting the restored targets back to EmotePurge incomplete",
+    "restoreSyncPartial": "The target emotes are back in the set on 7TV and recorded at EmotePurge — but not completely.",
+    "restoreSyncRetry": "Report restore again",
+    "restoreSyncSucceeded": "Restore reported back successfully.",
+    "resync": {
+      "pending": "Triggering a sync…",
+      "succeeded": "Sync triggered — the list will refresh in a moment.",
+      "cooldown": "Sync cooldown active — the list refreshes on its own within a minute.",
+      "failed": "Could not trigger a sync — the periodic sync catches up within a minute.",
+      "backendTriggered": "Already being re-synced — the list updates shortly."
+    },
+    "leaveWhileRunning": {
+      "message": "The replace undo is still running. It continues in the background, but its progress is only visible on the emote-usage page. Leave the page anyway?",
+      "confirm": "Leave"
+    },
+    "summary": {
+      "counts": "{{done}} undone · {{failed}} failed · {{cancelled}} cancelled",
+      "targetChannel": "Target: {{ channel }} · set {{ setName }}",
+      "targetOwner": "Target: set {{ setName }} of {{ owner }}",
+      "removed": {
+        "one": "{{ count }} source emote was removed.",
+        "other": "{{ count }} source emotes were removed."
+      },
+      "restored": {
+        "one": "{{ count }} target entry was brought back.",
+        "other": "{{ count }} target entries were brought back."
+      },
+      "unknownRows": {
+        "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
+        "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
+      },
+      "unknownRecordedIn": {
+        "one": "For {{ count }} row it is unclear whether the source emote was removed — the result log does not record it as a confirmed removal, only the undo's recovery file covers it.",
+        "other": "For {{ count }} rows it is unclear whether the source emote was removed — the result log does not record them as confirmed removals, only the undo's recovery file covers them."
+      },
+      "gaps": {
+        "one": "{{ count }} row left a gap: the source emote is gone, but the target is not fully back. Run the same undo from the same file again to close it.",
+        "other": "{{ count }} rows left a gap: the source emotes are gone, but the targets are not fully back. Run the same undo from the same file again to close them."
+      },
+      "partialRows": {
+        "one": "Of the undone rows, {{ count }} is only partly back — an entry was left out.",
+        "other": "Of the undone rows, {{ count }} are only partly back — entries were left out."
+      },
+      "omittedEntries": {
+        "one": "{{ count }} target entry was left out because its name is taken or cannot be checked — free the name and run the same undo again.",
+        "other": "{{ count }} target entries were left out because their names are taken or cannot be checked — free the names and run the same undo again."
+      },
+      "foreignNoted": {
+        "one": "{{ count }} target already carried an entry the file does not know — it was left untouched.",
+        "other": "{{ count }} targets already carried an entry the file does not know — each was left untouched."
+      },
+      "skipped": "{{ count }} skipped: {{ reason }}",
+      "insufficientPrivileges": "The 7TV token has no write access to the target set — the run stopped and the token was removed.",
+      "downloadProtocol": "Download result log",
+      "protocolNotSaved": "Result log not saved yet — it is gone once you close this."
     }
   },
   "sevenTvRun": {
