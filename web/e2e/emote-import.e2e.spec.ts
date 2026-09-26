@@ -3461,7 +3461,8 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     const protocolDownloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Protokoll herunterladen' }).click();
     const exportDialog = page.getByRole('dialog');
-    await exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' }).check();
+    // JSON is the preselected, re-importable format for a run protocol — no click needed.
+    await expect(exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' })).toBeChecked();
     await exportDialog.getByRole('button', { name: 'Exportieren' }).click();
     const protocolDownload = await protocolDownloadPromise;
     const protocolPath = await protocolDownload.path();
@@ -3883,7 +3884,8 @@ test.describe('push flow: resolving name conflicts (#230)', () => {
     const protocolDownloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Protokoll herunterladen' }).click();
     const exportDialog = page.getByRole('dialog');
-    await exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' }).check();
+    // JSON is the preselected, re-importable format for a run protocol — no click needed.
+    await expect(exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' })).toBeChecked();
     await exportDialog.getByRole('button', { name: 'Exportieren' }).click();
     const finishedDownload = await protocolDownloadPromise;
     const finishedPath = await finishedDownload.path();
@@ -4938,14 +4940,15 @@ test.describe('replace undo (#254)', () => {
     };
   }
 
-  /** The dock's "Ergebnisprotokoll herunterladen" as JSON (AK 18). */
+  /** The dock's "Ergebnisprotokoll herunterladen" as JSON (AK 18) — JSON is the preselected,
+   *  re-importable format for a run protocol, so this asserts the default rather than clicking it. */
   async function downloadUndoProtocol(
     page: Page,
   ): Promise<{ filename: string; file: UndoFileJson }> {
     const downloadPromise = page.waitForEvent('download');
     await undoDock(page).getByRole('button', { name: 'Ergebnisprotokoll herunterladen' }).click();
     const exportDialog = page.getByRole('dialog');
-    await exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' }).check();
+    await expect(exportDialog.getByRole('radio', { name: 'JSON (Datenauszug)' })).toBeChecked();
     await exportDialog.getByRole('button', { name: 'Exportieren' }).click();
     const download = await downloadPromise;
     return {

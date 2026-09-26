@@ -7,7 +7,11 @@ import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { isChannelMismatch } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
-import { ExportDialogData, FORMAT_EXPORT_OPTIONS, openExportDialog } from '../export/export-dialog';
+import {
+  ExportDialogData,
+  FORMAT_EXPORT_OPTIONS_JSON_FIRST,
+  openExportDialog,
+} from '../export/export-dialog';
 import { JSON_MIME } from '../export/export-envelope';
 import { downloadFile } from '../export/file-download';
 import {
@@ -370,7 +374,7 @@ export class ImportProgressSection {
       selectionCount: null,
       noticeKeys: [],
       optionsLegendKey: 'export.formatLabel',
-      options: FORMAT_EXPORT_OPTIONS,
+      options: FORMAT_EXPORT_OPTIONS_JSON_FIRST,
     };
     openExportDialog(this.dialog, data).closed.subscribe((choice) => {
       if (choice?.optionId === 'csv') {

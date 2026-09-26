@@ -3,7 +3,7 @@ import { Signal, WritableSignal, computed, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -681,6 +681,27 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(findButton(fixture, 'Protokoll herunterladen')).toBeDefined();
+    });
+
+    // Only the JSON protocol can be read back in (file-import step); the dialog preselects and
+    // lists `options[0]` (ExportDialog's own contract), so passing JSON first is the whole fix.
+    it('offers JSON first when the protocol is downloaded, since only JSON can be read back in', () => {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(
+        runInfo({
+          settlement: 'settled',
+          result: { doneKeys: ['7tv-a'], items: [doneItem()], startedAt: 0, finishedAt: 1000 },
+        }),
+      );
+      const fixture = render();
+      const openSpy = TestBed.inject(Dialog).open as ReturnType<typeof vi.fn>;
+      openSpy.mockReturnValue({ closed: of(undefined) });
+
+      findButton(fixture, 'Protokoll herunterladen')!.click();
+
+      const data = openSpy.mock.calls[0][1].data as { options: { id: string }[] };
+      expect(data.options.map((option) => option.id)).toEqual(['json', 'csv']);
     });
 
     it('shows no download-protocol button while the run is still pending settlement', () => {

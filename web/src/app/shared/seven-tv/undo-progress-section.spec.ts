@@ -388,6 +388,19 @@ describe('UndoProgressSection', () => {
       expect(undo.reset).toHaveBeenCalledTimes(1);
     });
 
+    // Only the JSON protocol can be read back in (file-import step); the dialog preselects and
+    // lists `options[0]` (ExportDialog's own contract), so passing JSON first is the whole fix.
+    it('offers JSON first when the protocol is downloaded, since only JSON can be read back in', () => {
+      settle([item('1')]);
+      dialogOpen.mockReturnValue({ closed: of(undefined) });
+
+      const { fixture } = render();
+      button(fixture, 'Ergebnisprotokoll herunterladen')?.click();
+
+      const data = dialogOpen.mock.calls[0][1].data as { options: { id: string }[] };
+      expect(data.options.map((option) => option.id)).toEqual(['json', 'csv']);
+    });
+
     it('saves the finished protocol as JSON under the target channel and marks it saved', async () => {
       settle([item('1')]);
       dialogOpen.mockReturnValue({ closed: of({ optionId: 'json', scope: 'all' }) });

@@ -415,6 +415,17 @@ describe('MassDeletePanel — protocol export choice handling (#141)', () => {
     expect(panel['protocolSaved']()).toBe(true);
   });
 
+  // Only the JSON protocol can be read back in (restore); the dialog preselects and lists
+  // `options[0]` (ExportDialog's own contract), so passing JSON first is the whole fix.
+  it('offers JSON first, ahead of CSV, since only JSON can be restored', () => {
+    openSpy.mockReturnValue({ closed: of(undefined) });
+
+    panel['openProtocolExport']();
+
+    const data = openSpy.mock.calls[0][1].data as { options: { id: string }[] };
+    expect(data.options.map((option) => option.id)).toEqual(['json', 'csv']);
+  });
+
   // Spec #200, F3/AK 72: this panel used to filter rows without an emoteId out of the protocol
   // ("a silently short protocol") — which, with set-view rows that have none, would make their
   // deletion irreversible and traceless. Every row of the run is written.
