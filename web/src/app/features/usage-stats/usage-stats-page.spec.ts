@@ -3907,7 +3907,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     ['import', settleImport],
     ['undo', settleUndo],
   ] as const)(
-    'reloads a %s run’s non-active target when a row failed after a confirmed step, even without a done key',
+    'reloads the non-active target of a %s run when a row failed after a confirmed step, even without a done key',
     async (_kind, settleRun) => {
       await openView({
         emoteSetId: 'set-b',
@@ -3929,7 +3929,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     ['import', settleImport],
     ['undo', settleUndo],
   ] as const)(
-    'reloads a %s run’s non-active target when a row is still unknown after the re-read',
+    'reloads the non-active target of a %s run when a row is still unknown after the re-read',
     async (_kind, settleRun) => {
       await openView({
         emoteSetId: 'set-b',
@@ -3956,7 +3956,20 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
         members: memberList([member('7tv-x', 'PumpkinX')]),
       });
 
-      settleRun('set-b', [], [runItem({ status: 'failed', completedSteps: 0, failedStep: 0 })]);
+      settleRun(
+        'set-b',
+        [],
+        [
+          runItem({ status: 'failed', completedSteps: 0, failedStep: 0 }),
+          runItem({
+            key: '7tv-w',
+            sevenTvEmoteId: '7tv-w',
+            status: 'cancelled',
+            completedSteps: 0,
+            failedStep: null,
+          }),
+        ],
+      );
       await settle();
 
       expect(liveListRequests()).toHaveLength(0);
