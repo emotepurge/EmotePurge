@@ -233,7 +233,11 @@ export function startRestoreFlow(
       // A5) — same fork `loadImportTarget` also uses. Unrelated to the duplicate check above: this
       // one reads occupied/capacity counts, never entries.
       const slots = signal<RestoreSlotPreview>(null);
-      loadRestoreSlotPreview(deps, target).subscribe((slotPreview) => slots.set(slotPreview));
+      // #275: a confirmation with nothing left to add (every row an unclear one the check could not
+      // vouch for) projects nothing, so it spends no 7TV read on a projection either.
+      if (preview.addCount > 0) {
+        loadRestoreSlotPreview(deps, target).subscribe((slotPreview) => slots.set(slotPreview));
+      }
 
       const data: RestoreConfirmDialogData = {
         names: preview.names,

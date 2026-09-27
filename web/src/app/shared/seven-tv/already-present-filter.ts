@@ -183,8 +183,12 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
  * `rows` whole and counted in `uncertainDropped` instead of `skipped`; `done` rows are unaffected
  * (their delete *is* confirmed — the id was provably gone from the set — so they keep the ordinary
  * fail-open behaviour). This rule lives here and only here: both restore entry points take it from
- * this result, and neither branches on it themselves — including the confirm-time `fallOnOpenTime`
- * fallback, which reuses open-time rows this same rule already passed.
+ * this result, and branch on it only as far as not taking their "everything already there"
+ * shortcut while `uncertainDropped > 0` — including the confirm-time `fallOnOpenTime` fallback,
+ * which reuses open-time rows this same rule already passed. That fallback covers only a
+ * confirm-time read that *failed*: one that succeeds but comes back incomplete drops an `uncertain`
+ * row the dialog already showed, silently, after the user confirmed. Accepted on purpose — it can
+ * only ever send less, never a blind `ADD` (operator decision 2026-09-27).
  *
  * `complete: false` from the read (the 10-page runaway guard, or a `totalCount` mismatch — K5 fix
  * round, see `seven-tv-set-entries.ts`) is deliberately **not** treated as a reason to fail open

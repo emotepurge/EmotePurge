@@ -891,10 +891,13 @@ export class MassDeletePanel {
     // Unrelated to the duplicate check above: this one reads occupied/capacity counts, never
     // entries.
     this.restoreSlots.set(null);
-    loadRestoreSlotPreview(
-      { emoteAdminService: this.emoteAdminService, emoteSetService: this.emoteSetService },
-      target,
-    ).subscribe((slotPreview) => this.restoreSlots.set(slotPreview));
+    // #275: nothing left to add projects nothing — no slot read either (same as `restore-flow.ts`).
+    if (preview.addCount > 0) {
+      loadRestoreSlotPreview(
+        { emoteAdminService: this.emoteAdminService, emoteSetService: this.emoteSetService },
+        target,
+      ).subscribe((slotPreview) => this.restoreSlots.set(slotPreview));
+    }
 
     const data: RestoreConfirmDialogData = {
       names: preview.names,

@@ -3338,6 +3338,8 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
   let httpMock: HttpTestingController;
   let startRestore: ReturnType<typeof vi.fn>;
   let dialogOpen: ReturnType<typeof vi.fn>;
+  let closed: Subject<boolean | undefined>;
+  let getSetStatus: ReturnType<typeof vi.fn>;
 
   function item(
     sevenTvEmoteId: string,
@@ -3362,7 +3364,9 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
    *  run-progress panel (and with it the restore entry) is on screen. */
   async function mount(items: RunQueueItem[]): Promise<void> {
     startRestore = vi.fn();
-    dialogOpen = vi.fn().mockReturnValue({ closed: new Subject<boolean | undefined>() });
+    closed = new Subject<boolean | undefined>();
+    dialogOpen = vi.fn().mockReturnValue({ closed });
+    getSetStatus = vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 }));
     const lastRun = signal({
       setId: 'set-1',
       channelName: RUN_CHANNEL,
@@ -3377,9 +3381,7 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
       deleteService: fakeDeleteService({ lastRun, queue: signal(items) }),
       restoreService: { ...fakeRestoreService(), startRestore } as unknown as RestoreServiceFake,
       dialogOpen,
-      emoteAdminService: {
-        getSetStatus: vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 })),
-      } as unknown as Partial<EmoteAdminService>,
+      emoteAdminService: { getSetStatus } as unknown as Partial<EmoteAdminService>,
       emoteSetService: null,
     });
 
@@ -3434,6 +3436,12 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
 
   function confirmData(): RestoreConfirmDialogData {
     return dialogOpen.mock.calls[0][1].data as RestoreConfirmDialogData;
+  }
+
+  function sentIds(): string[] {
+    return (startRestore.mock.calls[0][1] as { sevenTvEmoteId: string }[]).map(
+      (row) => row.sevenTvEmoteId,
+    );
   }
 
   function restoreEntry(): HTMLButtonElement | undefined {
@@ -3512,6 +3520,44 @@ describe('MassDeletePanel — unclear rows of a finished delete run are offered 
     expect(confirmData().addCount).toBe(0);
     expect(confirmData().uncertainDropped).toBe(1);
     expect(startRestore).not.toHaveBeenCalled();
+  });
+
+  it('spends no slot read on a confirmation with nothing to add', async () => {
+    await mount([UNKNOWN]);
+    openRestore();
+
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(getSetStatus).not.toHaveBeenCalled();
+  });
+
+  // Plan Festlegung 16, unchanged fallback: a confirm-time read that *fails* reuses the open-time
+  // rows, which already include the unknown row a complete open-time read vouched for.
+  it('keeps an unknown row the open-time read vouched for when only the confirm-time read fails', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+
+    closed.next(true);
+    httpMock.expectOne(GQL).error(new ProgressEvent('error'));
+
+    expect(sentIds()).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // Accepted on purpose (operator decision 2026-09-27): a confirm-time read that succeeds but is
+  // incomplete does not fall back — the unknown row the dialog showed is dropped silently, the
+  // done row still goes. It can only ever send less, never a blind ADD.
+  it('drops an unknown row the dialog showed when the confirm-time read succeeds but is incomplete, still sending the done row', async () => {
+    await mount([DONE, UNKNOWN]);
+    openRestore();
+    httpMock.expectOne(GQL).flush(entriesPage([]));
+    expect(confirmData().names).toEqual(['PogU', 'KEKW']);
+
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(entriesPage([], true));
+
+    expect(sentIds()).toEqual(['7tv-1']);
+    expect(startRestore.mock.calls[0][3]).toBe(true);
   });
 
   // No special rule once the read is complete: the unknown row's emote is still in the set (its

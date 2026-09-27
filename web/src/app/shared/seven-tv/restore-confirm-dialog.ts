@@ -108,9 +108,10 @@ export interface RestoreConfirmDialogData {
       }
       @if (data.uncertainDropped > 0) {
         <!-- A warning, not info: this is the one finding that sets this run apart (§7, "colour in
-             a dialog means this case is unusual") — emotes
-             the file or run names that nobody could check, and that therefore stay unrestored. -->
-        <app-notice-banner variant="warning">
+             a dialog means this case is unusual") — emotes the file or run names that nobody could
+             check, and that therefore stay unrestored. Also the visible reason a disabled executor
+             points at (executeLockReasonId). -->
+        <app-notice-banner id="restore-confirm-uncertain-dropped" variant="warning">
           {{ uncertainDroppedKey | transloco: { count: data.uncertainDropped } }}
         </app-notice-banner>
       }
@@ -154,7 +155,9 @@ export interface RestoreConfirmDialogData {
         type="button"
         appButton="primary"
         buttonSize="lg"
+        class="disabled:cursor-not-allowed"
         [disabled]="data.addCount === 0"
+        [attr.aria-describedby]="executeLockReasonId"
         (click)="dialogRef.close(true)"
       >
         {{ 'restore.confirmExecute' | transloco }}
@@ -169,10 +172,15 @@ export class RestoreConfirmDialog {
   /** #255: the "up to N" family once the open-time check could not verify the count — never mixed
    *  with the plain family, so a translator can never see one language's title claim certainty the
    *  other one hedges. */
-  protected readonly titleKey = pluralKey(
-    this.data.names.length,
-    this.data.countIsUpperBound ? 'restore.confirmTitleUpTo' : 'restore.confirmTitle',
-  );
+  /** #275: with nothing left to add (every row was an unclear one the check could not vouch for),
+   *  neither family fits — "up to 0 emotes" is no question — so the title says so plainly. */
+  protected readonly titleKey =
+    this.data.addCount === 0
+      ? 'restore.confirm.nothingToRestore'
+      : pluralKey(
+          this.data.names.length,
+          this.data.countIsUpperBound ? 'restore.confirmTitleUpTo' : 'restore.confirmTitle',
+        );
 
   /** Same hedge as `titleKey`, for the capacity line below — `data` never changes after the dialog
    *  is created, so a plain field is enough, same reasoning as `titleKey`. */
@@ -193,9 +201,18 @@ export class RestoreConfirmDialog {
     'restore.confirm.uncertainDropped',
   );
 
+  /** #275: the executor is only ever disabled for nothing left to add, and the one element that
+   *  visibly says why is the "not offered" notice — pointed at rather than repeated (the
+   *  `blockReasonElementId` pattern of `import-confirm-dialog.ts`). */
+  protected readonly executeLockReasonId =
+    this.data.addCount === 0 && this.data.uncertainDropped > 0
+      ? 'restore-confirm-uncertain-dropped'
+      : null;
+
   protected readonly projection = computed(() => {
     const slots = this.data.slots();
-    if (!slots) {
+    // #275: nothing to add projects nothing — the callers skip the slot read then, too.
+    if (!slots || this.data.addCount === 0) {
       return null;
     }
     // spec #200, 7.2: projected against the number of ADDs, not the number of rows — a #74

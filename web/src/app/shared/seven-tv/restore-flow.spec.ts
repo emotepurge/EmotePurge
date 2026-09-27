@@ -1201,6 +1201,15 @@ describe('startRestoreFlow — unclear protocol rows (#275)', () => {
     expect(startRestore).not.toHaveBeenCalled();
   });
 
+  it('spends no slot read on a confirmation with nothing to add', () => {
+    const { deps, getSetStatus, httpPost } = setup();
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [unclearRow]);
+
+    expect(getSetStatus).not.toHaveBeenCalled();
+  });
+
   it('opens the confirmation with nothing to add when every row was unclear and the read fails', () => {
     const { deps, dialogOpen, httpPost, startRestore } = setup();
     httpPost.mockReturnValueOnce(throwError(() => new Error('network error')));
@@ -1237,5 +1246,22 @@ describe('startRestoreFlow — unclear protocol rows (#275)', () => {
     firstClosed<boolean>(dialogOpen).next(true);
 
     expect(sentIds(startRestore)).toEqual(['7tv-1', '7tv-2']);
+  });
+
+  // Accepted on purpose (operator decision 2026-09-27): only a *failed* confirm-time read falls
+  // back to the open-time rows. One that succeeds but comes back incomplete applies the filter's
+  // fail-closed rule afresh — the unclear row the dialog showed is not sent, silently. It can only
+  // ever send less, never a blind ADD.
+  it('drops an unclear row the dialog showed when the confirm-time read succeeds but is incomplete, still sending the done row', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValueOnce(of(emoteSetPage([])));
+    httpPost.mockReturnValueOnce(of(truncatedPage()));
+
+    startRestoreFlow(deps, target(), [doneRow, unclearRow]);
+    expect(confirmData(dialogOpen).names).toEqual(['PogU', 'KEKW']);
+    firstClosed<boolean>(dialogOpen).next(true);
+
+    expect(sentIds(startRestore)).toEqual(['7tv-1']);
+    expect(startRestore.mock.calls[0][3]).toBe(true);
   });
 });

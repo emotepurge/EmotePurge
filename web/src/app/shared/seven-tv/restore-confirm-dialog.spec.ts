@@ -37,10 +37,11 @@ const DE_TRANSLATIONS = {
       'Das könnte die Kapazität überschreiten — 7TV würde überzählige Emotes dann ablehnen.',
     historyNote: 'Die Nutzungshistorie bleibt unverändert.',
     confirm: {
+      nothingToRestore: 'Nichts wiederherzustellen',
       uncertainDropped: {
-        one: '{{ count }} unklares Emote wurde nicht angeboten, weil 7TV gerade nicht prüfen konnte, ob es noch im Set ist.',
+        one: '{{ count }} unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.',
         other:
-          '{{ count }} unklare Emotes wurden nicht angeboten, weil 7TV gerade nicht prüfen konnte, ob sie noch im Set sind.',
+          '{{ count }} unklare Emotes werden nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob sie noch im Set sind.',
       },
     },
   },
@@ -263,7 +264,7 @@ describe('RestoreConfirmDialog', () => {
   // left to confirm; then there is nothing to execute either.
   describe('unclear rows left out (#275)', () => {
     const ONE_DROPPED =
-      '1 unklares Emote wurde nicht angeboten, weil 7TV gerade nicht prüfen konnte, ob es noch im Set ist.';
+      '1 unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.';
 
     it('announces how many unclear rows were not offered, as a status notice', () => {
       const dialog = render({ uncertainDropped: 1 });
@@ -274,13 +275,13 @@ describe('RestoreConfirmDialog', () => {
     it('uses the plural notice for several unclear rows', () => {
       const dialog = render({ uncertainDropped: 3 });
 
-      expect(dialog.text()).toContain('3 unklare Emotes wurden nicht angeboten');
+      expect(dialog.text()).toContain('3 unklare Emotes werden nicht wiederhergestellt');
     });
 
     it('shows no such notice when none were left out', () => {
       const dialog = render({ uncertainDropped: 0 });
 
-      expect(dialog.text()).not.toContain('nicht angeboten');
+      expect(dialog.text()).not.toContain('nicht wiederhergestellt');
     });
 
     it('disables the executor when nothing is left to add, but still lets the user cancel', () => {
@@ -292,10 +293,45 @@ describe('RestoreConfirmDialog', () => {
       expect(closed).toEqual([false]);
     });
 
-    it('keeps the executor enabled while at least one ADD is left', () => {
+    // UI-Designsprache §7: a disabled executor names its reason as linked text — here the one
+    // notice that already says it, pointed at rather than repeated.
+    it('describes the disabled executor by the notice that says why', () => {
+      const dialog = render({ names: [], addCount: 0, uncertainDropped: 1 });
+
+      const reasonId = dialog.button(CONFIRM).getAttribute('aria-describedby');
+      expect(reasonId).not.toBeNull();
+      const reason = (dialog.fixture.nativeElement as HTMLElement).querySelector(`#${reasonId}`);
+      expect(reason?.textContent?.trim()).toBe(ONE_DROPPED);
+    });
+
+    it('keeps the executor enabled, and undescribed, while at least one ADD is left', () => {
       const dialog = render({ names: ['PogU'], addCount: 1, uncertainDropped: 2 });
 
       expect(dialog.button(CONFIRM).disabled).toBe(false);
+      expect(dialog.button(CONFIRM).hasAttribute('aria-describedby')).toBe(false);
+    });
+
+    it('says there is nothing to restore instead of counting zero emotes, even as an upper bound', () => {
+      const dialog = render({
+        names: [],
+        addCount: 0,
+        uncertainDropped: 1,
+        countIsUpperBound: true,
+      });
+
+      expect(dialog.text()).toContain('Nichts wiederherzustellen');
+      expect(dialog.text()).not.toContain('0 Emotes');
+    });
+
+    it('projects no slots when nothing is left to add', () => {
+      const dialog = render({
+        names: [],
+        addCount: 0,
+        uncertainDropped: 1,
+        slots: { occupied: 3, capacity: 100 },
+      });
+
+      expect(dialog.text()).not.toContain('Slots belegt');
     });
   });
 

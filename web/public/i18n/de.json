@@ -943,9 +943,10 @@
     "confirmForeignToView": "Diese Ansicht zeigt von diesem Lauf nichts.",
     "confirmExecute": "Wiederherstellen",
     "confirm": {
+      "nothingToRestore": "Nichts wiederherzustellen",
       "uncertainDropped": {
-        "one": "{{ count }} unklares Emote wurde nicht angeboten, weil 7TV gerade nicht prüfen konnte, ob es noch im Set ist.",
-        "other": "{{ count }} unklare Emotes wurden nicht angeboten, weil 7TV gerade nicht prüfen konnte, ob sie noch im Set sind."
+        "one": "{{ count }} unklares Emote wird nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob es noch im Set ist.",
+        "other": "{{ count }} unklare Emotes werden nicht wiederhergestellt, weil wir gerade nicht prüfen konnten, ob sie noch im Set sind."
       }
     },
     "capacityProjection": "Das Set hätte danach {{ projected }} von {{ capacity }} Slots belegt.",

@@ -19,10 +19,12 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `RestoreFilterRow.uncertain`, new `uncertainDropped` on `RestoreAlreadyPresentFilterResult` (and so
 on `RestoreConfirmPreview`/`restoreConfirmPreviewUnavailable`) ·
 `web/src/app/shared/seven-tv/restore-confirm-dialog.ts` (+ spec) — new
-`RestoreConfirmDialogData.uncertainDropped`, its notice, executor disabled at `addCount === 0` ·
+`RestoreConfirmDialogData.uncertainDropped`, its notice, executor disabled at `addCount === 0`
+(described by that notice, own title, no slot projection) ·
 `web/src/app/shared/seven-tv/restore-flow.ts`, `mass-delete-panel.ts` (+ specs) — `unknown` rows
 offered with the marker, no "everything already there" shortcut while `uncertainDropped > 0` ·
-`web/public/i18n/{de,en}.json` (`restore.confirm.uncertainDropped`).
+`web/public/i18n/{de,en}.json` (`restore.confirm.uncertainDropped`,
+`restore.confirm.nothingToRestore`).
 
 Issue #275 (plan Festlegungen 15–17). A delete or restore run whose request was still in flight
 when the user cancelled it, or whose 7TV answer was lost in transport, no longer ends the row
@@ -80,7 +82,12 @@ already lists, its present aliases are skipped and only the missing ones restore
 window between that filter read and the eventual `ADD` stays open on purpose — a third party could
 still add the id in between, the same residual race every restore row already carries, not a new one
 this marker introduces. Neither restore call site (`restore-flow.ts`, `mass-delete-panel.ts`) grows
-a branch of its own for any of this; it all sits inside the one filter.
+a branch of its own for any of this beyond one: neither takes its "everything already there"
+shortcut while `uncertainDropped > 0` (that notice would be untrue for the dropped rows) — the rule
+itself sits inside the one filter. The confirm-time re-check applies the same rule, and only a
+confirm-time read that *fails* falls back to the open-time rows; one that succeeds but comes back
+incomplete drops an `uncertain` row the dialog already showed, silently, after the user confirmed.
+That is accepted on purpose: it can only ever send less, never a blind `ADD`.
 
 ### 2026-09-26 — Run-protocol exports default to JSON, the re-importable format
 
