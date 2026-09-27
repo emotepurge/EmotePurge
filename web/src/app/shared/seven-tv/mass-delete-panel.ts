@@ -267,8 +267,9 @@ export interface DeletableEmote {
 
       @if (deleteService.isRunning() || deleteService.queue().length > 0) {
         <app-run-progress-panel
-          [items]="shownQueue()"
+          [items]="deleteService.queue()"
           [isRunning]="deleteService.isRunning()"
+          [settling]="deleteService.run()?.phase === 'settling'"
           [dismissible]="deleteService.run()?.phase === 'closed'"
           [syncReport]="deleteService.syncReport()"
           [syncReportReason]="deleteService.syncReportReason()"
@@ -544,20 +545,6 @@ export class MassDeletePanel {
     return run !== null && restorableItems(run.result.items).length > 0;
   });
 
-  /** The rows the panel hands `app-run-progress-panel` (#275 T4) — masks the pre-settle snapshot
-   *  the service's own `queue()` intentionally keeps showing while `settling`
-   *  (`seven-tv-delete.service.ts`, Plan-275 Festlegung 11: "the engine's own snapshot ... while
-   *  ... settling"), which is exactly right for a caller that needs to know a run is still writing
-   *  but wrong for this panel's own summary line and "Unklar, ob gelöscht" alert — both read straight
-   *  off `items`, and a row that snapshot still marks `unknown` can flip to `done` seconds later, once
-   *  the settle's one confirming re-read answers. `SevenTvImportService.items()` avoids the same
-   *  trap the same way, returning `[]` for the identical reason (review finding out of T2). `queue()`
-   *  itself keeps its documented contract — the panel's own mount gate above still reads it directly,
-   *  and it must stay non-empty through `settling` so "Wird abgeschlossen…" keeps rendering. */
-  protected readonly shownQueue = computed(() =>
-    this.deleteService.run()?.phase === 'settling' ? [] : this.deleteService.queue(),
-  );
-
   /** How many of the settled run's rows 7TV's answer never clarified (#275) — `0` before the run has
    *  settled (`lastRun()` is `null` while running or settling), same source `restoreOffered` reads. */
   protected readonly unknownRowCount = computed(() => {
@@ -603,12 +590,14 @@ export class MassDeletePanel {
       // 'idle' also covers a run in which nothing succeeded — usually nothing to report either way,
       // except the nothing-but-unknown case (#275, Festlegung 13 (a)): every remaining row stayed
       // `unknown`, none `done`, so `settleRun` never sends a sync-deleted call and `syncReport` stays
-      // `idle` for good — the service resyncs the active set on its own instead. That resync is
-      // invisible to this page until something refetches: nothing else in this effect ever will for
-      // an `idle` report, so this is the one place left to ask for it.
+      // `idle` for good — the service asks the backend for a resync of the active set instead. What
+      // this reload mainly does is clear the host's selection, so the rows this run may or may not
+      // have deleted do not stay marked as if nothing had happened. Its refetch will usually still
+      // see the state from before that resync, which runs asynchronously: the new state reaches the
+      // page through `channel.synced` once the resync is done, like any other sync.
       if (report === 'idle') {
         const run = this.deleteService.lastRun();
-        if (run !== null && run.result.items.some((item) => item.status === 'unknown')) {
+        if (run !== null && unknownCount(run.result.items) > 0) {
           notifiedForThisRun = true;
           this.reloadRequested.emit();
         }

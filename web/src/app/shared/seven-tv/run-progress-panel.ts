@@ -68,13 +68,23 @@ export interface RunProgressTally {
         </p>
       }
 
-      @if (failedItems().length > 0) {
-        <ul class="mt-3 space-y-1 text-sm text-danger-fg" role="alert">
-          @for (item of failedItems(); track item.key) {
-            <li>{{ item.name }}: {{ failureText(item) }}</li>
-          }
-        </ul>
-      }
+      <!-- The failure list's live region lives as long as the panel does; only its rows come and
+           go. role="alert" is implicitly aria-atomic="true" (WAI-ARIA 1.2), so without the
+           explicit "false" every added row would re-read every row already listed — and a region
+           that left the DOM and came back would announce its whole content again. Both matter at
+           the end of a settle (#275): the unknown rows the re-read left unclear rejoin a list
+           whose failed rows never left it, and only the rejoining rows are spoken. The region is
+           a wrapper rather than the ul itself: a ul whose role is overridden is no list, and
+           its items then fail axe's listitem rule. -->
+      <div role="alert" aria-atomic="false" [class.mt-3]="failedItems().length > 0">
+        @if (failedItems().length > 0) {
+          <ul class="space-y-1 text-sm text-danger-fg">
+            @for (item of failedItems(); track item.key) {
+              <li>{{ item.name }}: {{ failureText(item) }}</li>
+            }
+          </ul>
+        }
+      </div>
 
       <!-- Post-run summary (A6): the counts as text, plus whatever run-scoped actions the host
            projects (protocol download, restore). Rendered only once the run has settled — during
@@ -93,8 +103,11 @@ export interface RunProgressTally {
            engine's per-row abort hook, not afterwards. It is never visible mid-run only because
            the abort and isRunning.set(false) fall in the same synchronous tick, and zoneless
            change detection renders nothing in between. Should that hook ever gain a warning that
-           does not abort, this block would swallow it silently. -->
-      @if (!isRunning() && total() > 0) {
+           does not abort, this block would swallow it silently.
+
+           settling holds the block back too (#275): the rows are still the pre-settle snapshot
+           then, and a count or a host line read off them could flip once the re-read answers. -->
+      @if (!isRunning() && !settling() && total() > 0) {
         <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
           <span class="text-fg-secondary">
             {{ summaryCountsKey() | transloco: summaryCounts() }}
@@ -167,6 +180,14 @@ export class RunProgressPanel {
    *  cancellation — counted from `items` it would hold the bar short and appear twice. `total` and
    *  the failure list keep reading `items`. */
   readonly tally = input<RunProgressTally | null>(null);
+  /** The run's engine work is over but its `unknown` rows are still being read back once (#275,
+   *  the delete's and the restore's `settling` phase). `items` then still holds the pre-settle
+   *  snapshot, which keeps the bar and the progress text exactly where the run left them; what
+   *  the re-read can still change is held back until it answers — the summary block (counts and
+   *  the host's `run-actions`) and the `unknown` rows of the failure list. `failed` rows stay
+   *  listed: the re-read never touches them. `false` (the default) for a host without such a
+   *  phase (import, undo). */
+  readonly settling = input(false);
   readonly cancelled = output<void>();
   readonly dismissed = output<void>();
   readonly syncRetryRequested = output<void>();
@@ -190,7 +211,9 @@ export class RunProgressPanel {
   // keeps min <= max for an empty queue; hosts never render the bar for one.
   protected readonly progressValueMax = computed(() => Math.max(1, this.total()));
   protected readonly failedItems = computed(() =>
-    this.items().filter((item) => item.status === 'failed' || item.status === 'unknown'),
+    this.items().filter(
+      (item) => item.status === 'failed' || (item.status === 'unknown' && !this.settling()),
+    ),
   );
 
   protected readonly summaryCounts = computed(() => {

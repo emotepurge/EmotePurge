@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
@@ -114,6 +114,7 @@ function accessibleName(el: Element): string {
       [dismissible]="dismissible"
       [renamedCount]="renamedCount"
       [tally]="tally"
+      [settling]="settling"
       (cancelled)="cancelledCount = cancelledCount + 1"
       (dismissed)="dismissedCount = dismissedCount + 1"
       (syncRetryRequested)="syncRetryRequestedCount = syncRetryRequestedCount + 1"
@@ -136,10 +137,33 @@ class HostComponent {
   dismissible = true;
   renamedCount: number | null = null;
   tally: RunProgressTally | null = null;
+  settling = false;
   projectRunActions = false;
   cancelledCount = 0;
   dismissedCount = 0;
   syncRetryRequestedCount = 0;
+}
+
+/** A host whose bindings are signals, for the one case a test must drive an already-rendered
+ *  panel through a change (#275: `settling` ending) — `HostComponent`'s plain fields are only read
+ *  once, see `render()` below. */
+@Component({
+  selector: 'app-settling-host',
+  imports: [RunProgressPanel],
+  template: `
+    <app-run-progress-panel
+      [items]="items()"
+      [isRunning]="false"
+      [settling]="settling()"
+      [dismissible]="!settling()"
+    >
+      <span run-actions>projected-marker</span>
+    </app-run-progress-panel>
+  `,
+})
+class SettlingHostComponent {
+  readonly items = signal<RunQueueItem[]>([]);
+  readonly settling = signal(false);
 }
 
 interface Harness {
@@ -326,6 +350,80 @@ describe('RunProgressPanel', () => {
         (entry: Element) => entry.textContent?.trim(),
       );
       expect(entries).toEqual([`Emote-b: ${DE_TRANSLATIONS.massDelete.unknownOutcome}`]);
+    });
+  });
+
+  // #275: while a delete or restore run re-reads its `unknown` rows (`settling`), `items` is still
+  // the pre-settle snapshot. The bar and the failed rows stay exactly as they were — a failed row
+  // vanishing and coming back would be announced twice — while what the re-read can still change
+  // (the counts, the host's run-actions, the unknown rows) waits for its answer.
+  describe('settling (#275)', () => {
+    const failed: RunQueueItem = { ...queueItem('b', 'failed'), errorMessage: 'HTTP 500' };
+
+    function alertRows(root: HTMLElement): string[] {
+      return Array.from(root.querySelectorAll('[role="alert"] li'), (row) =>
+        (row.textContent ?? '').trim(),
+      );
+    }
+
+    it('holds back the summary and the unknown rows, but keeps the failed rows and the progress', () => {
+      const dialog = render({
+        items: [queueItem('a', 'done'), failed, queueItem('c', 'unknown')],
+        isRunning: false,
+        dismissible: false,
+        settling: true,
+        projectRunActions: true,
+      });
+
+      expect(dialog.text()).toContain(DE_TRANSLATIONS.massDelete.settling);
+      expect(dialog.text()).toContain('3 / 3 verarbeitet');
+      expect(dialog.progressBar().getAttribute('aria-valuenow')).toBe('3');
+      expect(alertRows(dialog.fixture.nativeElement)).toEqual(['Emote-b: HTTP 500']);
+      expect(dialog.text()).not.toContain('gelöscht ·');
+      expect(dialog.fixture.nativeElement.querySelector('[run-actions]')).toBeNull();
+    });
+
+    it('shows the summary and only the rows the re-read left unclear once settling ends, in the same alert region', () => {
+      const fixture = TestBed.createComponent(SettlingHostComponent);
+      const root: HTMLElement = fixture.nativeElement;
+      fixture.componentInstance.items.set([
+        queueItem('a', 'done'),
+        failed,
+        queueItem('c', 'unknown'),
+        queueItem('d', 'unknown'),
+      ]);
+      fixture.componentInstance.settling.set(true);
+      fixture.detectChanges();
+
+      const regionBefore = root.querySelector('[role="alert"]');
+      const failedRowBefore = root.querySelector('[role="alert"] li');
+      expect(alertRows(root)).toEqual(['Emote-b: HTTP 500']);
+
+      // The settled result: the re-read cleared `c` up, `d` stayed unclear. Rows it did not touch
+      // keep their object identity (`settleDeleteResult`), `failed` included.
+      fixture.componentInstance.items.set([
+        queueItem('a', 'done'),
+        failed,
+        queueItem('c', 'done'),
+        queueItem('d', 'unknown'),
+      ]);
+      fixture.componentInstance.settling.set(false);
+      fixture.detectChanges();
+
+      expect(root.textContent).toContain('2 gelöscht · 1 fehlgeschlagen · 0 abgebrochen');
+      expect(root.querySelector('[run-actions]')).not.toBeNull();
+      expect(root.textContent).toContain('4 / 4 verarbeitet');
+      expect(alertRows(root)).toEqual([
+        'Emote-b: HTTP 500',
+        `Emote-d: ${DE_TRANSLATIONS.massDelete.unknownOutcome}`,
+      ]);
+      // Neither the region nor the failed row was re-mounted, and the region is non-atomic: only
+      // the rejoining unknown row is an addition a screen reader speaks, the failed one is not
+      // announced a second time.
+      const region = root.querySelector('[role="alert"]');
+      expect(region).toBe(regionBefore);
+      expect(region?.getAttribute('aria-atomic')).toBe('false');
+      expect(root.querySelector('[role="alert"] li')).toBe(failedRowBefore);
     });
   });
 

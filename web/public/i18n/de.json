@@ -1108,8 +1108,8 @@
         "other": "Bei {{ count }} Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen."
       },
       "unknownInProtocol": {
-        "one": "Im Protokoll steht es als unklar — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.",
-        "other": "Im Protokoll stehen sie als unklar — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen."
+        "one": "Im Protokoll steht es als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.",
+        "other": "Im Protokoll stehen sie als ‚unklar‘ — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen."
       }
     },
     "errors": {

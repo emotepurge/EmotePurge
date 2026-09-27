@@ -160,6 +160,30 @@ function unknownItem(overrides: Partial<RunQueueItem> = {}): RunQueueItem {
   };
 }
 
+function failedItem(overrides: Partial<RunQueueItem> = {}): RunQueueItem {
+  return {
+    key: 'c',
+    sevenTvEmoteId: '7tv-c',
+    name: 'C',
+    status: 'failed',
+    completedSteps: 0,
+    failedStep: 0,
+    errorMessage: 'HTTP 500',
+    ...overrides,
+  };
+}
+
+function progressValue(fixture: ComponentFixture<RestoreProgressSection>): string | null {
+  return fixture.nativeElement.querySelector('[role="progressbar"]').getAttribute('aria-valuenow');
+}
+
+/** The names of the rows in the failure list's alert region, in order. */
+function alertRowNames(fixture: ComponentFixture<RestoreProgressSection>): string[] {
+  return Array.from(fixture.nativeElement.querySelectorAll('[role="alert"] li'), (row: Element) =>
+    (row.textContent ?? '').split(':')[0].trim(),
+  );
+}
+
 /** The run's own settled outcome (`RestoreRunInfo.result`) — `null` while running or `settling`
  *  (Plan-275 Festlegung 10), the same shape `settleRestoreResult` builds. */
 function settledResult(items: RunQueueItem[]): RunResult {
@@ -439,7 +463,7 @@ describe('RestoreProgressSection', () => {
   });
 
   // #275 T4 (Plan-275 Festlegung 18): the settled run's rows 7TV's answer never clarified — read
-  // from `run().result`, the geklärte (settled) outcome, never from the live `queue()`.
+  // from `run().result`, the settled outcome, never from the live `queue()`.
   describe('unknown rows (#275)', () => {
     it('shows the unknownRows line once the settled result has one unclear row', () => {
       restoreService.isRunning.set(false);
@@ -485,38 +509,58 @@ describe('RestoreProgressSection', () => {
       expect(fixture.nativeElement.textContent).not.toContain('ist unklar');
     });
 
-    // Review finding out of T2 (Plan-275 T4, point 2): the pre-settle snapshot the service's own
-    // `queue()` intentionally keeps showing while `settling` (Festlegung 11) can still mark a row
-    // `unknown` that the settle's one confirming re-read is about to clear up — a summary line or an
-    // alert built off that snapshot could flash a count and a "unklar" notice that both then flip.
-    // `result` is `null` throughout `settling` (Festlegung 10), so nothing here can read it early;
-    // this only pins that the section does not fall back to the live `queue()` instead.
-    it('shows nothing but "Wird abgeschlossen…" while settling, even with an unclear row still on the live queue', () => {
+    // While `settling`, `queue()` is the pre-settle snapshot (Plan-275 Festlegung 11): the bar and
+    // the failed rows stay as they were, but a row it still marks `unknown` may flip to `done` once
+    // the re-read answers — so the summary and the unknown rows wait for `result` (review of T4).
+    it('keeps the progress and the failed row while settling, but holds back the summary and the unclear row', () => {
       restoreService.isRunning.set(false);
-      restoreService.queue.set([doneItem(), unknownItem()]);
+      restoreService.queue.set([doneItem(), unknownItem(), failedItem()]);
       restoreService.run.set(runInfo({ phase: 'settling', result: null }));
 
       const fixture = render();
       const text: string = fixture.nativeElement.textContent;
 
       expect(text).toContain('Wird abgeschlossen…');
+      expect(text).toContain('3 / 3 verarbeitet');
+      expect(progressValue(fixture)).toBe('3');
+      expect(alertRowNames(fixture)).toEqual(['C']);
       expect(text).not.toContain('wiederhergestellt ·');
       expect(text).not.toContain('ist unklar');
-      expect(fixture.nativeElement.querySelector('[role="alert"]')).toBeNull();
     });
 
-    it('shows the summary and the unknownRows line again once the run leaves settling', () => {
+    it('shows the summary and the still unclear row once the run moves from settling to closed', () => {
       restoreService.isRunning.set(false);
-      restoreService.queue.set([doneItem(), unknownItem()]);
-      restoreService.run.set(
-        runInfo({ phase: 'closed', result: settledResult([doneItem(), unknownItem()]) }),
-      );
-
+      restoreService.queue.set([
+        doneItem(),
+        unknownItem(),
+        unknownItem({ key: 'd', sevenTvEmoteId: '7tv-d', name: 'D' }),
+        failedItem(),
+      ]);
+      restoreService.run.set(runInfo({ phase: 'settling', result: null }));
       const fixture = render();
-      const text: string = fixture.nativeElement.textContent;
+      const regionBefore = fixture.nativeElement.querySelector('[role="alert"]');
+      expect(alertRowNames(fixture)).toEqual(['C']);
 
-      expect(text).toContain('1 wiederhergestellt');
-      expect(text).toContain('ist unklar');
+      // The re-read cleared `D` up; `B` stayed unclear.
+      const items = [
+        doneItem(),
+        unknownItem(),
+        doneItem({ key: 'd', sevenTvEmoteId: '7tv-d', name: 'D' }),
+        failedItem(),
+      ];
+      restoreService.queue.set(items);
+      restoreService.run.set(runInfo({ phase: 'closed', result: settledResult(items) }));
+      fixture.detectChanges();
+
+      const text: string = fixture.nativeElement.textContent;
+      expect(text).toContain('2 wiederhergestellt · 1 fehlgeschlagen · 0 abgebrochen');
+      expect(text).toContain(
+        'Bei 1 Emote ist unklar, ob 7TV es wiederhergestellt hat — bitte das Set bei 7TV prüfen.',
+      );
+      expect(progressValue(fixture)).toBe('4');
+      expect(alertRowNames(fixture)).toEqual(['B', 'C']);
+      // Same live region throughout: the failed row is not announced a second time.
+      expect(fixture.nativeElement.querySelector('[role="alert"]')).toBe(regionBefore);
     });
   });
 });

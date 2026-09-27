@@ -3676,7 +3676,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(component['deleteRunActive']()).toBe(false);
     });
 
-    // Unchanged existing case (bestehende Fälle unverändert) — pinned so a future refactor of the
+    // An existing case, unchanged by #275 — pinned so a future refactor of the
     // `computed()` cannot silently drop this disjunct.
     it('stays true while the closing sync-deleted report is still pending (unchanged)', async () => {
       await openView({ totals: [emote('a', 'Alpha', 40)] });

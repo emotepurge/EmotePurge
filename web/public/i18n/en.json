@@ -1108,8 +1108,8 @@
         "other": "For {{ count }} emotes it is unclear whether 7TV deleted them — please check the set on 7TV."
       },
       "unknownInProtocol": {
-        "one": "The log lists it as unclear — restoring from the log brings it back if it is missing.",
-        "other": "The log lists them as unclear — restoring from the log brings them back if they are missing."
+        "one": "The log lists it as ‘unclear’ — restoring from the log brings it back if it is missing.",
+        "other": "The log lists them as ‘unclear’ — restoring from the log brings them back if they are missing."
       }
     },
     "errors": {
