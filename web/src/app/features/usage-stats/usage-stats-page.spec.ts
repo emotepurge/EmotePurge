@@ -4041,6 +4041,149 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     },
   );
 
+  // --- #293: a second loud reload landing before the first one's loader ran -------------------
+
+  it("keeps the earlier loud reload's refresh flag when a second one lands in the same turn, before the resource's loader ran", async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+
+    // Two refresh-button clicks back-to-back, with nothing flushed in between (no `settle()`, no
+    // `detectChanges()`): `rxResource.reload()` flips the resource's internal status to loading
+    // synchronously, before its own load effect has actually run `stream` — the one place that reads
+    // and clears `liveMembersRefreshFor`. So the second call's `reload()` already sees the resource
+    // loading and returns `false`, in the very same synchronous turn as the first call's — no need
+    // for two different components' effects to interleave to reproduce the race.
+    // Expire the 60s preview cache so a lost flag shows up as a request without `refresh=true` (the
+    // issue's symptom), not as no request at all.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 61_000);
+
+    component['refresh']();
+    component['refresh']();
+    httpMock
+      .match((r) => r.url === '/api/channels/a/emotes/active-set')
+      .forEach((request) =>
+        request.flush(
+          setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }),
+        ),
+      );
+    await settle();
+
+    // Exactly one GET went out for the loud reload (the second reload() call was a no-op), and it
+    // still carries refresh=true — before the fix, the second call's failed reload() blanked the flag
+    // the first call had just set, and this request went out without it.
+    const reloaded = liveListRequests();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].request.params.get('emoteSetId')).toBe('set-b');
+    expect(reloaded[0].request.params.get('refresh')).toBe('true');
+  });
+
+  it('adds no extra request for a loud reload landing while the first one is already in flight, and leaves nothing marked for the next params-driven load', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+    });
+
+    // The first loud reload: by the time its HTTP request sits here unflushed, its `stream` has
+    // already run — it read and cleared the flag into this request's `refresh=true`.
+    component['refresh']();
+    httpMock
+      .match((r) => r.url === '/api/channels/a/emotes/active-set')
+      .forEach((request) =>
+        request.flush(
+          setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }),
+        ),
+      );
+    await settle();
+    // `httpMock.match()` removes what it finds from the harness's own open-request list (that is how
+    // `expectOne` can tell "found none" from "found more than one"), so this reference is the only
+    // way to reach this request again — a second `liveListRequests()` call would no longer see it,
+    // flushed or not.
+    const inFlight = liveListRequests();
+    expect(inFlight).toHaveLength(1);
+    expect(inFlight[0].request.params.get('refresh')).toBe('true');
+
+    // A second loud reload lands while that request is still outstanding: reload() again returns
+    // false (the resource is still loading), but this time "the value before this call" is already
+    // null — the first stream run consumed it — so restoring it is a no-op: no extra request, and
+    // nothing left marked.
+    component['refresh']();
+    httpMock
+      .match((r) => r.url === '/api/channels/a/emotes/active-set')
+      .forEach((request) =>
+        request.flush(
+          setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }),
+        ),
+      );
+    await settle();
+    // No new request besides the one already captured above.
+    expect(liveListRequests()).toHaveLength(0);
+    expect(component['liveMembersRefreshFor']).toBeNull();
+
+    inFlight[0].flush(memberList([member('7tv-a', 'PeepoA')]));
+    await settle();
+
+    // The next params-driven load must land on set-b again: switching to a *different* set would
+    // have its own `stream` run clear the field unconditionally no matter what was in it, so it
+    // cannot tell the fix apart from a naive variant that simply never resets the field on a refused
+    // reload. Going through set-a first — the active set, which `liveMembersResource` never
+    // fetches — reselects set-b without any intervening load having already cleared a leaked mark.
+    component['onEmoteSetSelected']('set-a');
+    await settle();
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    // The cache is warm, so nothing goes out; a leaked mark would bypass it and show up here.
+    expect(liveListRequestsFor('set-b')).toHaveLength(0);
+  });
+
+  it('keeps a mark left for a non-chosen target through a refused loud reload of the chosen set', async () => {
+    await openView({
+      emoteSetId: 'set-b',
+      totals: [emote('a', 'PeepoA')],
+      members: memberList([member('7tv-a', 'PeepoA')]),
+      extraSets: [emoteSet({ id: 'set-c', name: 'Winter', isActive: false })],
+    });
+
+    // The chosen set's own loud reload, its request already in flight — `stream` has already run and
+    // consumed the flag it was given.
+    component['refresh']();
+    httpMock
+      .match((r) => r.url === '/api/channels/a/emotes/active-set')
+      .forEach((request) =>
+        request.flush(
+          setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }),
+        ),
+      );
+    await settle();
+
+    // A run settles into a different, non-chosen, non-active target: onOwnRunSettled's third branch
+    // marks it directly (no reload() call of its own).
+    settleRestore('set-c', ['7tv-y']);
+    await settle();
+
+    // A second loud reload of the still-chosen set 'set-b' — refused, since the first one's request
+    // is still outstanding — must not clear the mark for 'set-c' it finds in the field.
+    component['refresh']();
+    httpMock
+      .match((r) => r.url === '/api/channels/a/emotes/active-set')
+      .forEach((request) =>
+        request.flush(
+          setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }),
+        ),
+      );
+    await settle();
+
+    component['onEmoteSetSelected']('set-c');
+    await settle();
+    const request = liveListRequestsFor('set-c');
+    expect(request).toHaveLength(1);
+    expect(request[0].request.params.get('refresh')).toBe('true');
+  });
+
   // --- T4.4: the caption matrix (8.4, AK 60) ----------------------------------------------------
 
   function captionKeys(): string[] {
