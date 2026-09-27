@@ -186,10 +186,15 @@ describe('SevenTvImportService', () => {
     tokenService.setToken('write-token');
   });
 
+  // Cleanup runs even when `verify()` throws: otherwise one red case leaves fake timers and mocks
+  // behind and drags unrelated cases after it down with it.
   afterEach(() => {
-    httpMock.verify();
-    vi.useRealTimers();
-    vi.restoreAllMocks();
+    try {
+      httpMock.verify();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   /** Runs both rows of ROWS to 'done' and drains the closing calls of a successful run. */
@@ -1763,9 +1768,12 @@ describe('SevenTvImportService', () => {
       expect(add.cancelled).toBe(true);
     }
 
-    /** Lets the cancel's grace period run out and returns the one re-read it then sends. */
+    /** Lets the cancel's grace period run out — checking that nothing is read a moment before it
+     *  ends — and returns the one re-read it then sends. */
     function readAfterGrace() {
-      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS - 1);
+      httpMock.expectNone(isSetRead);
+      vi.advanceTimersByTime(1);
       return httpMock.expectOne(isSetRead);
     }
 
@@ -1863,6 +1871,19 @@ describe('SevenTvImportService', () => {
       drainReplaceReports(null);
     });
 
+    it('leaves the row unknown when the read after the grace period comes back incomplete, and still settles and reports', () => {
+      cancelReplaceWithAddInFlight();
+
+      // The source id *is* under its alias — but the read only vouches for part of the set.
+      const partial = setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]);
+      partial.data.emoteSets.emoteSet.emotes.totalCount = 7;
+      readAfterGrace().flush(partial);
+
+      expect(service.run()).toMatchObject({ settlement: 'settled', unknownCount: 1 });
+      expect(service.run()?.result?.items[0].status).toBe('unknown');
+      drainReplaceReports(null);
+    });
+
     it('gives the read after the grace period SET_ENTRIES_READ_TIMEOUT_MS, then settles without it', () => {
       cancelReplaceWithAddInFlight();
       const read = readAfterGrace();
@@ -1886,6 +1907,37 @@ describe('SevenTvImportService', () => {
       vi.advanceTimersByTime(RUN_DELAY_MS);
       httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
 
+      drainReplaceReports(['src-x']);
+    });
+
+    // Plan-284 Festlegung 1: an `abortOn` abort ends the run through the engine, not through this
+    // service's `cancel()` — so a run it stops with an older transport-loss row reads at once.
+    it('reads at once, without a grace period, when a privileges abort ends a run that has an unknown row', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y), addRow(SOURCE_Z)],
+      });
+      answerNext({}); // the replace row's REMOVE
+      nextMutation().flush('boom', { status: 500, statusText: 'Server Error' }); // its ADD: lost
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      nextMutation().flush({
+        errors: [
+          {
+            message: 'LACKING_PRIVILEGES you are not an editor for this user',
+            extensions: { code: 'LACKING_PRIVILEGES', status: 403 },
+          },
+        ],
+      });
+
+      expect(service.abortedForPrivileges()).toBe(true);
+      expect(service.run()?.result?.items.map((item) => item.status)).toEqual([
+        'unknown',
+        'failed',
+        'cancelled',
+      ]);
+      // No timer advanced at all — the read is already out.
+      httpMock.expectOne(isSetRead).flush(setEntriesPage([{ id: 'src-x', alias: 'Kappa' }]));
+
+      expect(service.run()?.result?.items[0].status).toBe('done');
       drainReplaceReports(['src-x']);
     });
 

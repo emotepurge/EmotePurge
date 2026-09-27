@@ -123,10 +123,10 @@ function abortsForMissingPrivileges(failure: {
  *  `import.errors.nameTakenNow`, `import.errors.removedButNotAdded` or `import.errors.unknownOutcome`
  *  — the run's `result` replaces it with that translated reason (a row the engine left `failed`
  *  already in the settling snapshot, one cleared up from `unknown` once the run is settled) and
- *  keeps the text the engine had
- *  in `sevenTvErrorMessage` (7TV's raw GraphQL message, or the engine's transport text). Every other
- *  row keeps the engine's `errorMessage` untouched and has no `sevenTvErrorMessage`. A protocol
- *  that wants 7TV's own words therefore writes `sevenTvErrorMessage ?? errorMessage`. */
+ *  keeps the text the engine had in `sevenTvErrorMessage` (7TV's raw GraphQL message, or the
+ *  engine's transport text). Every other row keeps the engine's `errorMessage` untouched and has no
+ *  `sevenTvErrorMessage`. A protocol that wants 7TV's own words therefore writes
+ *  `sevenTvErrorMessage ?? errorMessage`. */
 export interface ImportRunItem extends RunQueueItem {
   transfer: TransferRow;
   sevenTvErrorMessage?: string | null;

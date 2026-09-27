@@ -39,8 +39,8 @@ drops the display. Both services drop their own settle-read constants
 `SET_ENTRIES_READ_TIMEOUT_MS` (20 s, unchanged); `RECHECK_READ_TIMEOUT_MS` stays on its own.
 
 **`result` is still the published snapshot — only the display is gated.** Unlike the delete and the
-restore, import and undo keep publishing their snapshot with `phase: 'settling'` (`items()`,
-`settleRun`, the protocol gates and the usage-stats page's `watchRunSettle` rely on it). What
+restore, import and undo keep publishing their snapshot with `phase: 'settling'` (`items()`, the
+protocol gates and the usage-stats page's `watchRunSettle` rely on it). What
 changes is what their docks show from it: while a run is `settling`, the import and undo docks bind
 `RunProgressPanel.settling` like delete and restore, so the summary block, its actions and the
 `unknown` rows stay hidden, and the not-active notice is neither shown nor announced until the run
