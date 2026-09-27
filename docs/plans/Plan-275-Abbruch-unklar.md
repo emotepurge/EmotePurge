@@ -237,5 +237,5 @@ Welle 7   T7
 
 1. ~~Confirm-Time-Verwurf ohne Dialog~~ — entschieden 2026-09-27: kein eigener Confirm-Time-Verwurf, der bestehende `fallOnOpenTime`-Pfad bleibt (Festlegung 16).
 2. **Festlegung 4 (Import/Undo behalten ihre Konstanten)** ist die Minimal-Diff-Lesart von D8; wer die Vereinheitlichung schon hier will, ergänzt T1 um zwei Import-Zeilen und drei Undo-Zeilen — dann laufen auch deren Specs mit.
-3. **Wertwahl 3 000 ms (Festlegung 5)** ist innerhalb der D5-Spanne gesetzt, nicht gemessen; T7 liefert die Rundlaufzeit nach, ein anderer Wert ist eine Konstante.
+3. ~~Wertwahl 3 000 ms (Festlegung 5)~~ — gemessen im T7-Live-Test am 2026-09-27: vier 7TV-Mutationen (REMOVE/ADD) brauchten 345–872 ms, Median 414 ms, die Engine meldete `averageRoundTripMs` 460. 3 000 ms sind rund das 3,4-fache des Maximums; in beiden Szenarien „Request angekommen“ lief der Read 3 042–3 044 ms nach dem Abbruch und bestätigte. Wert bleibt.
 4. **`reloadRequested` für den Nur-`unknown`-Fall (Festlegung 13 (a))** ist in der Analyse als D6 nur für den aktiven Set-Resync genannt; das Panel-Signal ergänzt der Plan, weil die Seite sonst bis zum `channel.synced` einen Stand zeigt, den der Resync gerade ändert. Veto trifft T4.
