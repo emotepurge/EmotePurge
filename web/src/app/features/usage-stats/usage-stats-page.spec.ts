@@ -58,7 +58,7 @@ import {
   EmoteSetListResponse,
   EmoteSetSummary,
 } from '../../core/seven-tv/seven-tv-emote-set.model';
-import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { DeleteRunInfo, SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { ImportRunInfo, SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import {
   RestoreRunInfo,
@@ -3633,6 +3633,64 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
     component['onDeleted'](['7tv-a']);
 
     expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
+  // #275, Plan-275 Festlegung 14: `deleteRunActive` used to end the moment the engine stopped
+  // (`isRunning() === false`) and the closing report had not yet started (`syncReport === 'idle'`)
+  // — exactly the `settling` window a run with an `unknown` row now spends re-reading the set before
+  // it knows what to report. Without this the set dropdown unlocked mid-read.
+  describe('deleteRunActive (#275)', () => {
+    function settlingRun(overrides: Partial<DeleteRunInfo> = {}): DeleteRunInfo {
+      return {
+        runId: 'delete-1',
+        phase: 'settling',
+        destructive: true,
+        channelName: 'a',
+        expectedChannelName: 'a',
+        setId: 'set-a',
+        result: null,
+        syncReport: 'idle',
+        syncReportReason: null,
+        ...overrides,
+      };
+    }
+
+    it('is true while the shown run is settling, even though the engine already stopped and nothing is pending', async () => {
+      await openView({ totals: [emote('a', 'Alpha', 40)] });
+
+      TestBed.inject(SevenTvDeleteService).run.set(settlingRun());
+
+      expect(component['deleteRunActive']()).toBe(true);
+    });
+
+    it('is false again once the settled run has closed with an idle report', async () => {
+      await openView({ totals: [emote('a', 'Alpha', 40)] });
+
+      TestBed.inject(SevenTvDeleteService).run.set(
+        settlingRun({
+          phase: 'closed',
+          result: { doneKeys: [], items: [], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+
+      expect(component['deleteRunActive']()).toBe(false);
+    });
+
+    // Unchanged existing case (bestehende Fälle unverändert) — pinned so a future refactor of the
+    // `computed()` cannot silently drop this disjunct.
+    it('stays true while the closing sync-deleted report is still pending (unchanged)', async () => {
+      await openView({ totals: [emote('a', 'Alpha', 40)] });
+
+      TestBed.inject(SevenTvDeleteService).run.set(
+        settlingRun({
+          phase: 'reporting',
+          syncReport: 'pending',
+          result: { doneKeys: ['7tv-a'], items: [], startedAt: 0, finishedAt: 1 },
+        }),
+      );
+
+      expect(component['deleteRunActive']()).toBe(true);
+    });
   });
 
   it('names a name twin by the set the dropdown list calls it, and never adds its numbers (AK 59)', async () => {

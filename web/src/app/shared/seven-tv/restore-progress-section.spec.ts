@@ -9,7 +9,7 @@ import {
   RestoreRunInfo,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
-import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SyncReportReason, SyncReportState } from '../../core/seven-tv/sync-report-outcome';
 import { RestoreProgressSection } from './restore-progress-section';
 
@@ -45,6 +45,11 @@ const DE_TRANSLATIONS = {
     syncRetrySucceeded: 'Rückmeldung erfolgreich.',
     summary: {
       counts: '{{done}} wiederhergestellt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      unknownRows: {
+        one: 'Bei {{ count }} Emote ist unklar, ob 7TV es wiederhergestellt hat — bitte das Set bei 7TV prüfen.',
+        other:
+          'Bei {{ count }} Emotes ist unklar, ob 7TV sie wiederhergestellt hat — bitte das Set bei 7TV prüfen.',
+      },
     },
     targetLine: {
       channel: 'Ziel: {{ channel }} · Set {{ setName }}',
@@ -140,6 +145,29 @@ function doneItem(overrides: Partial<RunQueueItem> = {}): RunQueueItem {
     completedSteps: 1,
     failedStep: null,
     ...overrides,
+  };
+}
+
+function unknownItem(overrides: Partial<RunQueueItem> = {}): RunQueueItem {
+  return {
+    key: 'b',
+    sevenTvEmoteId: '7tv-b',
+    name: 'B',
+    status: 'unknown',
+    completedSteps: 0,
+    failedStep: 0,
+    ...overrides,
+  };
+}
+
+/** The run's own settled outcome (`RestoreRunInfo.result`) — `null` while running or `settling`
+ *  (Plan-275 Festlegung 10), the same shape `settleRestoreResult` builds. */
+function settledResult(items: RunQueueItem[]): RunResult {
+  return {
+    doneKeys: items.filter((item) => item.status === 'done').map((item) => item.key),
+    items,
+    startedAt: Date.parse('2026-09-27T12:00:00Z'),
+    finishedAt: Date.parse('2026-09-27T12:05:00Z'),
   };
 }
 
@@ -407,6 +435,88 @@ describe('RestoreProgressSection', () => {
         (button: HTMLElement) => button.textContent?.trim(),
       );
       expect(buttons).toContain('Schließen');
+    });
+  });
+
+  // #275 T4 (Plan-275 Festlegung 18): the settled run's rows 7TV's answer never clarified — read
+  // from `run().result`, the geklärte (settled) outcome, never from the live `queue()`.
+  describe('unknown rows (#275)', () => {
+    it('shows the unknownRows line once the settled result has one unclear row', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem()]);
+      restoreService.run.set(
+        runInfo({ phase: 'closed', result: settledResult([doneItem(), unknownItem()]) }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Bei 1 Emote ist unklar, ob 7TV es wiederhergestellt hat — bitte das Set bei 7TV prüfen.',
+      );
+    });
+
+    it('uses the plural wording for more than one unclear row', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem()]);
+      restoreService.run.set(
+        runInfo({
+          phase: 'closed',
+          result: settledResult([
+            unknownItem({ key: 'b', sevenTvEmoteId: '7tv-b' }),
+            unknownItem({ key: 'c', sevenTvEmoteId: '7tv-c' }),
+          ]),
+        }),
+      );
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(
+        'Bei 2 Emotes ist unklar, ob 7TV sie wiederhergestellt hat — bitte das Set bei 7TV prüfen.',
+      );
+    });
+
+    it('shows no unknownRows line once every row settled done', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem()]);
+      restoreService.run.set(runInfo({ phase: 'closed', result: settledResult([doneItem()]) }));
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('ist unklar');
+    });
+
+    // Review finding out of T2 (Plan-275 T4, point 2): the pre-settle snapshot the service's own
+    // `queue()` intentionally keeps showing while `settling` (Festlegung 11) can still mark a row
+    // `unknown` that the settle's one confirming re-read is about to clear up — a summary line or an
+    // alert built off that snapshot could flash a count and a "unklar" notice that both then flip.
+    // `result` is `null` throughout `settling` (Festlegung 10), so nothing here can read it early;
+    // this only pins that the section does not fall back to the live `queue()` instead.
+    it('shows nothing but "Wird abgeschlossen…" while settling, even with an unclear row still on the live queue', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem(), unknownItem()]);
+      restoreService.run.set(runInfo({ phase: 'settling', result: null }));
+
+      const fixture = render();
+      const text: string = fixture.nativeElement.textContent;
+
+      expect(text).toContain('Wird abgeschlossen…');
+      expect(text).not.toContain('wiederhergestellt ·');
+      expect(text).not.toContain('ist unklar');
+      expect(fixture.nativeElement.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it('shows the summary and the unknownRows line again once the run leaves settling', () => {
+      restoreService.isRunning.set(false);
+      restoreService.queue.set([doneItem(), unknownItem()]);
+      restoreService.run.set(
+        runInfo({ phase: 'closed', result: settledResult([doneItem(), unknownItem()]) }),
+      );
+
+      const fixture = render();
+      const text: string = fixture.nativeElement.textContent;
+
+      expect(text).toContain('1 wiederhergestellt');
+      expect(text).toContain('ist unklar');
     });
   });
 });

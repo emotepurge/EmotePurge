@@ -3,6 +3,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import { unknownCount } from '../../core/seven-tv/seven-tv-run-settlement';
 import { resyncNoticeKey } from './dock-outcome-announcer';
 import { RunProgressPanel } from './run-progress-panel';
 
@@ -86,7 +87,7 @@ import { RunProgressPanel } from './run-progress-panel';
             }
           </p>
           <app-run-progress-panel
-            [items]="restoreService.queue()"
+            [items]="shownQueue()"
             [isRunning]="restoreService.isRunning()"
             [dismissible]="run.phase === 'closed'"
             labelPrefix="restore"
@@ -98,6 +99,13 @@ import { RunProgressPanel } from './run-progress-panel';
             (syncRetryRequested)="restoreService.retrySyncReport()"
           >
             <ng-container run-actions>
+              @if (unknownRowCount() > 0) {
+                <!-- #275: the settled run still has rows 7TV's answer never clarified — see the
+                     identical line and doc comment on the delete panel's own unknownRowsKey. -->
+                <span class="text-xs text-fg-muted">
+                  {{ unknownRowsKey() | transloco: { count: unknownRowCount() } }}
+                </span>
+              }
               <!-- aria-hidden for the same reason as the duplicate notices above. -->
               @if (resyncNoticeKeyValue(); as noticeKey) {
                 <span aria-hidden="true" class="text-xs text-fg-muted">
@@ -113,6 +121,30 @@ import { RunProgressPanel } from './run-progress-panel';
 })
 export class RestoreProgressSection {
   protected readonly restoreService = inject(SevenTvRestoreService);
+
+  /** The rows this section hands `app-run-progress-panel` (#275 T4) — masks the pre-settle snapshot
+   *  `restoreService.queue()` intentionally keeps showing while `settling`
+   *  (`seven-tv-restore.service.ts`, Plan-275 Festlegung 11), the mirror of
+   *  `MassDeletePanel.shownQueue` for the identical reason: a row that snapshot still marks
+   *  `unknown` can flip to `done` once the settle's one confirming re-read answers, so the summary
+   *  line and the "Unklar, ob wiederhergestellt" alert below must not read it early.
+   *  `restoreService.queue()` itself keeps its documented contract — this section's own mount gate
+   *  above still reads it directly, and it must stay non-empty through `settling` so "Wird
+   *  abgeschlossen…" keeps rendering. */
+  protected readonly shownQueue = computed(() =>
+    this.restoreService.run()?.phase === 'settling' ? [] : this.restoreService.queue(),
+  );
+
+  /** How many of the settled run's rows 7TV's answer never clarified (#275) — `0` before the run has
+   *  settled (`result` is `null` while running or settling). */
+  protected readonly unknownRowCount = computed(() => {
+    const result = this.restoreService.run()?.result ?? null;
+    return result === null ? 0 : unknownCount(result.items);
+  });
+
+  protected readonly unknownRowsKey = computed(() =>
+    pluralKey(this.unknownRowCount(), 'restore.summary.unknownRows'),
+  );
 
   /** #149/T5: wording for how many `ADD`s (aliases, since the 2026-09-22 per-alias rule) the
    *  pre-run duplicate check (`already-present-filter.ts`) dropped — shown independently of the

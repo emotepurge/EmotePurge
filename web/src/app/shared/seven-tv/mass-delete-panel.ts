@@ -28,6 +28,7 @@ import {
   SevenTvRunArbiter,
   SevenTvRunClaim,
 } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { unknownCount } from '../../core/seven-tv/seven-tv-run-settlement';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { TargetCheckBlockReason } from '../../core/seven-tv/sync-report-outcome';
 import { CSV_MIME } from '../export/csv';
@@ -266,7 +267,7 @@ export interface DeletableEmote {
 
       @if (deleteService.isRunning() || deleteService.queue().length > 0) {
         <app-run-progress-panel
-          [items]="deleteService.queue()"
+          [items]="shownQueue()"
           [isRunning]="deleteService.isRunning()"
           [dismissible]="deleteService.run()?.phase === 'closed'"
           [syncReport]="deleteService.syncReport()"
@@ -281,6 +282,19 @@ export interface DeletableEmote {
               <button type="button" appButton="neutral" (click)="openProtocolExport()">
                 {{ 'massDelete.summary.downloadProtocol' | transloco }}
               </button>
+              @if (unknownRowCount() > 0) {
+                <!-- #275: the settled run still has rows 7TV's answer never clarified — the backend
+                     resync this run already triggered (a report's own, or the client fallback for a
+                     run with nothing to report) heals them without another click, but the admin
+                     needs telling to go check the set directly, and that a restore from the protocol
+                     below still offers these rows back in case the resync finds them still gone. -->
+                <span class="text-xs text-fg-muted">
+                  {{ unknownRowsKey() | transloco: { count: unknownRowCount() } }}
+                </span>
+                <span class="text-xs text-fg-muted">
+                  {{ unknownInProtocolKey() | transloco }}
+                </span>
+              }
               @if (restoreOffered() && arbiter.activeRun() === null) {
                 <!-- The two-tier *shape* of the destructive convention, not its colour: outline
                      triggers, the dialog's primary-solid executes — restore is constructive.
@@ -530,6 +544,39 @@ export class MassDeletePanel {
     return run !== null && restorableItems(run.result.items).length > 0;
   });
 
+  /** The rows the panel hands `app-run-progress-panel` (#275 T4) — masks the pre-settle snapshot
+   *  the service's own `queue()` intentionally keeps showing while `settling`
+   *  (`seven-tv-delete.service.ts`, Plan-275 Festlegung 11: "the engine's own snapshot ... while
+   *  ... settling"), which is exactly right for a caller that needs to know a run is still writing
+   *  but wrong for this panel's own summary line and "Unklar, ob gelöscht" alert — both read straight
+   *  off `items`, and a row that snapshot still marks `unknown` can flip to `done` seconds later, once
+   *  the settle's one confirming re-read answers. `SevenTvImportService.items()` avoids the same
+   *  trap the same way, returning `[]` for the identical reason (review finding out of T2). `queue()`
+   *  itself keeps its documented contract — the panel's own mount gate above still reads it directly,
+   *  and it must stay non-empty through `settling` so "Wird abgeschlossen…" keeps rendering. */
+  protected readonly shownQueue = computed(() =>
+    this.deleteService.run()?.phase === 'settling' ? [] : this.deleteService.queue(),
+  );
+
+  /** How many of the settled run's rows 7TV's answer never clarified (#275) — `0` before the run has
+   *  settled (`lastRun()` is `null` while running or settling), same source `restoreOffered` reads. */
+  protected readonly unknownRowCount = computed(() => {
+    const run = this.deleteService.lastRun();
+    return run === null ? 0 : unknownCount(run.result.items);
+  });
+
+  protected readonly unknownRowsKey = computed(() =>
+    pluralKey(this.unknownRowCount(), 'massDelete.summary.unknownRows'),
+  );
+
+  /** Delete-only companion line to `unknownRowsKey` (Plan-275 Festlegung 18): the restore entry
+   *  right below already offers these very rows back from the protocol, in case the resync the
+   *  settle triggered still finds them gone. Restore's own summary has no such second line — a
+   *  restore's protocol is not itself restorable. */
+  protected readonly unknownInProtocolKey = computed(() =>
+    pluralKey(this.unknownRowCount(), 'massDelete.summary.unknownInProtocol'),
+  );
+
   constructor() {
     this.destroyRef.onDestroy(() => (this.destroyed = true));
 
@@ -549,8 +596,26 @@ export class MassDeletePanel {
         return;
       }
 
-      // 'idle' also covers a run in which nothing succeeded — there is nothing to report either way.
-      if (notifiedForThisRun || report === 'idle' || report === 'pending') {
+      if (notifiedForThisRun) {
+        return;
+      }
+
+      // 'idle' also covers a run in which nothing succeeded — usually nothing to report either way,
+      // except the nothing-but-unknown case (#275, Festlegung 13 (a)): every remaining row stayed
+      // `unknown`, none `done`, so `settleRun` never sends a sync-deleted call and `syncReport` stays
+      // `idle` for good — the service resyncs the active set on its own instead. That resync is
+      // invisible to this page until something refetches: nothing else in this effect ever will for
+      // an `idle` report, so this is the one place left to ask for it.
+      if (report === 'idle') {
+        const run = this.deleteService.lastRun();
+        if (run !== null && run.result.items.some((item) => item.status === 'unknown')) {
+          notifiedForThisRun = true;
+          this.reloadRequested.emit();
+        }
+        return;
+      }
+
+      if (report === 'pending') {
         return;
       }
 

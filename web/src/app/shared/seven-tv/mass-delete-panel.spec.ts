@@ -96,6 +96,16 @@ const DE_TRANSLATIONS = {
     settling: 'Wird abgeschlossen…',
     summary: {
       counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      unknownRows: {
+        one: 'Bei {{ count }} Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+        other:
+          'Bei {{ count }} Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen.',
+      },
+      unknownInProtocol: {
+        one: 'Im Protokoll steht es als unklar — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+        other:
+          'Im Protokoll stehen sie als unklar — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen.',
+      },
     },
   },
   // Real text (matches public/i18n/de.json), unlike the other abort-notice families in this fixture
@@ -806,6 +816,115 @@ describe('MassDeletePanel — delete latch: deleted vs reloadRequested (#89)', (
     expect(reloads).toEqual([]);
   });
 
+  // #275, Festlegung 13 (a): a run that settled with nothing but `unknown` rows never sends a
+  // sync-deleted call at all — `settleRun` only reports confirmed `doneKeys`, and there are none —
+  // so `syncReport` stays `idle` for good on this run. The service resyncs the active set on its
+  // own instead, but that resync is invisible to this page until something refetches it: without
+  // this branch the effect's own "'idle' means nothing to report either way" comment above would
+  // make it (wrongly) skip this case forever.
+  it('asks the host to reload once for a run that settled with nothing but unknown rows', () => {
+    const deleted: string[][] = [];
+    const reloads: void[] = [];
+    panel.deleted.subscribe((ids) => deleted.push(ids));
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    // syncReport stays 'idle' — never sent, doneKeys is empty.
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: {
+        doneKeys: [],
+        items: [
+          {
+            key: 'e1',
+            emoteId: 'guid-e1',
+            sevenTvEmoteId: 'e1',
+            name: 'e1',
+            status: 'unknown',
+            completedSteps: 0,
+            failedStep: 0,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
+    expect(deleted).toEqual([]);
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('does not reload a second time when the still-idle run settles again with the same result', () => {
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+    const result = {
+      doneKeys: [],
+      items: [
+        {
+          key: 'e1',
+          emoteId: 'guid-e1',
+          sevenTvEmoteId: 'e1',
+          name: 'e1',
+          status: 'unknown' as const,
+          completedSteps: 0,
+          failedStep: 0,
+        },
+      ],
+      startedAt: 0,
+      finishedAt: 1,
+    };
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+
+    // Change detection running again over the same, still-idle run (e.g. an unrelated input change)
+    // must not re-fire the latch.
+    fixture.detectChanges();
+    expect(reloads).toHaveLength(1);
+  });
+
+  it('does not reload for a settled run whose only remaining rows are failed/cancelled, never unknown', () => {
+    // Same 'idle' report as the nothing-but-unknown case, but nothing here can ever clarify — this
+    // pins that the new branch does not fire indiscriminately for every idle-report settle.
+    const reloads: void[] = [];
+    panel.reloadRequested.subscribe(() => reloads.push(undefined));
+
+    isRunning.set(true);
+    fixture.detectChanges();
+    isRunning.set(false);
+    lastRun.set({
+      setId: 'set-1',
+      channelName: 'somechannel',
+      result: {
+        doneKeys: [],
+        items: [
+          {
+            key: 'e1',
+            emoteId: 'guid-e1',
+            sevenTvEmoteId: 'e1',
+            name: 'e1',
+            status: 'failed',
+            completedSteps: 0,
+            failedStep: 0,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+    fixture.detectChanges();
+
+    expect(reloads).toEqual([]);
+  });
+
   it('does not retroactively emit deleted when a manual retry of a failed sync report later succeeds', () => {
     // The real path this guards: retrySyncReport() (seven-tv-delete.service.ts ~162-219) re-sends
     // the closing report and walks syncReport from 'pending' to 'succeeded' without isRunning ever
@@ -999,6 +1118,149 @@ describe('MassDeletePanel — Schließen-Gate (#256)', () => {
     fixture.detectChanges();
 
     expect(closeButton()).toBeDefined();
+  });
+});
+
+/**
+ * #275 T4: the settled run's rows 7TV's answer never clarified get their own summary line, read
+ * from the settled `lastRun().result`, never from the live `queue()` — and, while the run is still
+ * `settling`, the panel shows nothing but "Wird abgeschlossen…" (review finding out of T2, Plan-275
+ * T4 point 2): the pre-settle snapshot `queue()` intentionally keeps showing during `settling`
+ * (`seven-tv-delete.service.ts`, Festlegung 11), and a row it still marks `unknown` there can flip
+ * to `done` once the settle's one confirming re-read answers — a summary or an alert built off that
+ * snapshot would flash a count and a notice that could both then turn out wrong.
+ */
+describe('MassDeletePanel — unknown rows summary and the settling gap (#275 T4)', () => {
+  let fixture: ComponentFixture<MassDeletePanel>;
+  let queue: WritableSignal<RunQueueItem[]>;
+  let run: WritableSignal<DeleteRunInfo | null>;
+  let lastRun: WritableSignal<{ setId: string; channelName: string; result: RunResult } | null>;
+
+  function unknownItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'unknown',
+      completedSteps: 0,
+      failedStep: 0,
+    };
+  }
+
+  function doneItem(key: string): RunQueueItem {
+    return {
+      key,
+      emoteId: `guid-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    };
+  }
+
+  function baseRun(overrides: Partial<DeleteRunInfo>): DeleteRunInfo {
+    return {
+      runId: 'delete-1',
+      phase: 'reporting',
+      destructive: true,
+      channelName: 'somechannel',
+      expectedChannelName: 'somechannel',
+      setId: 'set-1',
+      result: null,
+      syncReport: 'idle',
+      syncReportReason: null,
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    queue = signal<RunQueueItem[]>([]);
+    run = signal<DeleteRunInfo | null>(null);
+    lastRun = signal<{ setId: string; channelName: string; result: RunResult } | null>(null);
+
+    await TestBed.configureTestingModule({
+      imports: [
+        MassDeletePanel,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE_TRANSLATIONS },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: panelProviders({
+        deleteService: fakeDeleteService({ isRunning: signal(false), queue, run, lastRun }),
+      }),
+    }).compileComponents();
+
+    await TestBed.inject(TranslocoService).load('de');
+
+    fixture = TestBed.createComponent(MassDeletePanel);
+    fixture.componentRef.setInput('setId', 'set-1');
+    fixture.componentRef.setInput('channelName', 'somechannel');
+    fixture.componentRef.setInput('selectedEmotes', []);
+    fixture.detectChanges();
+  });
+
+  it('shows the unknownRows and unknownInProtocol lines once the settled run has one unclear row', () => {
+    const items = [doneItem('e1'), unknownItem('e2')];
+    const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain(
+      'Bei 1 Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.',
+    );
+    expect(text).toContain(
+      'Im Protokoll steht es als unklar — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.',
+    );
+  });
+
+  it('shows neither line once every row in the settled run is done', () => {
+    const items = [doneItem('e1')];
+    const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).not.toContain('ist unklar');
+  });
+
+  it('shows nothing but "Wird abgeschlossen…" while settling, even with an unclear row still on the live queue', () => {
+    const items = [doneItem('e1'), unknownItem('e2')];
+    queue.set(items);
+    run.set(baseRun({ phase: 'settling', result: null }));
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain('Wird abgeschlossen…');
+    expect(text).not.toContain('gelöscht ·');
+    expect(text).not.toContain('ist unklar');
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).toBeNull();
+    // The whole run-actions slot is gated on the same `total() > 0` the summary line is (#256's
+    // "Post-run summary" contract) — the protocol download belongs there too, and `lastRun()` is
+    // still `null` throughout `settling` regardless (Plan-275 Festlegung 10).
+    const buttons = [...fixture.nativeElement.querySelectorAll('button')].map(
+      (button: HTMLElement) => button.textContent?.trim(),
+    );
+    expect(buttons).not.toContain('massDelete.summary.downloadProtocol');
+  });
+
+  it('shows the summary and the unknownRows line again once the run leaves settling', () => {
+    const items = [doneItem('e1'), unknownItem('e2')];
+    const result: RunResult = { doneKeys: ['e1'], items, startedAt: 0, finishedAt: 1 };
+    queue.set(items);
+    run.set(baseRun({ phase: 'closed', result, syncReport: 'succeeded' }));
+    lastRun.set({ setId: 'set-1', channelName: 'somechannel', result });
+    fixture.detectChanges();
+
+    const text: string = fixture.nativeElement.textContent;
+    expect(text).toContain('1 gelöscht');
+    expect(text).toContain('ist unklar');
   });
 });
 

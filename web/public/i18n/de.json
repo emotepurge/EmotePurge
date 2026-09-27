@@ -968,7 +968,11 @@
     "syncRetry": "Erneut melden",
     "syncRetrySucceeded": "Rückmeldung erfolgreich.",
     "summary": {
-      "counts": "{{done}} wiederhergestellt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen"
+      "counts": "{{done}} wiederhergestellt · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
+      "unknownRows": {
+        "one": "Bei {{ count }} Emote ist unklar, ob 7TV es wiederhergestellt hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Emotes ist unklar, ob 7TV sie wiederhergestellt hat — bitte das Set bei 7TV prüfen."
+      }
     },
     "resync": {
       "pending": "Synchronisierung wird angestoßen…",
@@ -1098,7 +1102,15 @@
     "summary": {
       "counts": "{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen",
       "downloadProtocol": "Protokoll herunterladen",
-      "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg."
+      "protocolNotSaved": "Protokoll noch nicht gespeichert — nach dem Schließen ist es weg.",
+      "unknownRows": {
+        "one": "Bei {{ count }} Emote ist unklar, ob 7TV es gelöscht hat — bitte das Set bei 7TV prüfen.",
+        "other": "Bei {{ count }} Emotes ist unklar, ob 7TV sie gelöscht hat — bitte das Set bei 7TV prüfen."
+      },
+      "unknownInProtocol": {
+        "one": "Im Protokoll steht es als unklar — ein Wiederherstellen aus dem Protokoll holt es zurück, falls es fehlt.",
+        "other": "Im Protokoll stehen sie als unklar — ein Wiederherstellen aus dem Protokoll holt sie zurück, falls sie fehlen."
+      }
     },
     "errors": {
       "tokenInvalid": "Token ungültig oder abgelaufen — bitte neues 7TV-Token eintragen.",
